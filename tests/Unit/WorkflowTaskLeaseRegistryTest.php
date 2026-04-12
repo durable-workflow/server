@@ -2,9 +2,15 @@
 
 namespace Tests\Unit;
 
+use App\Models\WorkflowTaskProtocolLease;
+use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkflowTaskLeaseRegistry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 
 class WorkflowTaskLeaseRegistryTest extends TestCase
 {
@@ -137,5 +143,118 @@ class WorkflowTaskLeaseRegistryTest extends TestCase
         ], packageAttemptCount: 5);
 
         $this->assertSame(5, $second->workflow_task_attempt);
+    }
+
+    public function test_sync_task_state_does_not_write_lease_fields_during_active_lease(): void
+    {
+        $registry = app(WorkflowTaskLeaseRegistry::class);
+
+        $lease = $registry->recordClaim('default', [
+            'task_id' => 'task-sync-no-write',
+            'workflow_instance_id' => 'workflow-sync-no-write',
+            'workflow_run_id' => 'run-sync-no-write',
+            'lease_owner' => 'worker-a',
+            'lease_expires_at' => now()->addMinutes(5)->toJSON(),
+        ]);
+
+        $this->assertSame('worker-a', $lease->lease_owner);
+
+        $task = new WorkflowTask([
+            'id' => 'task-sync-no-write',
+            'task_type' => TaskType::Workflow,
+            'status' => TaskStatus::Leased,
+            'lease_owner' => 'worker-b',
+            'lease_expires_at' => now()->addMinutes(10),
+        ]);
+        $task->exists = true;
+
+        $registry->syncTaskState($task);
+
+        $refreshed = WorkflowTaskProtocolLease::query()->find('task-sync-no-write');
+        $this->assertInstanceOf(WorkflowTaskProtocolLease::class, $refreshed);
+        // The mirror should retain the original claim values, not sync from
+        // the package task, because per-update lease sync has been removed.
+        $this->assertSame('worker-a', $refreshed->lease_owner);
+    }
+
+    public function test_sync_task_state_clears_mirror_when_task_leaves_leased_status(): void
+    {
+        $registry = app(WorkflowTaskLeaseRegistry::class);
+
+        $registry->recordClaim('default', [
+            'task_id' => 'task-sync-clear',
+            'workflow_instance_id' => 'workflow-sync-clear',
+            'workflow_run_id' => 'run-sync-clear',
+            'lease_owner' => 'worker-a',
+            'lease_expires_at' => now()->addMinutes(5)->toJSON(),
+        ], 'poll-123');
+
+        $task = new WorkflowTask([
+            'id' => 'task-sync-clear',
+            'task_type' => TaskType::Workflow,
+            'status' => TaskStatus::Ready,
+        ]);
+        $task->exists = true;
+
+        $registry->syncTaskState($task);
+
+        $refreshed = WorkflowTaskProtocolLease::query()->find('task-sync-clear');
+        $this->assertInstanceOf(WorkflowTaskProtocolLease::class, $refreshed);
+        $this->assertNull($refreshed->lease_owner);
+        $this->assertNull($refreshed->lease_expires_at);
+        $this->assertNull($refreshed->last_poll_request_id);
+    }
+
+    public function test_active_lease_for_poll_request_returns_null_when_package_task_is_no_longer_leased(): void
+    {
+        $registry = app(WorkflowTaskLeaseRegistry::class);
+
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => 'workflow-stale-poll',
+            'run_number' => 1,
+            'workflow_class' => 'App\\Workflows\\TestWorkflow',
+            'workflow_type' => 'test.workflow',
+            'status' => 'pending',
+        ]);
+
+        NamespaceWorkflowScope::bind('default', 'workflow-stale-poll');
+
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'queue' => 'test-queue',
+            'lease_owner' => 'worker-a',
+            'lease_expires_at' => now()->addMinutes(5),
+            'attempt_count' => 1,
+        ]);
+
+        $registry->recordClaim('default', [
+            'task_id' => $task->id,
+            'workflow_instance_id' => 'workflow-stale-poll',
+            'workflow_run_id' => $run->id,
+            'lease_owner' => 'worker-a',
+            'lease_expires_at' => now()->addMinutes(5)->toJSON(),
+        ], 'poll-stale-check');
+
+        // Verify the lease is found when the package task is still leased.
+        $found = $registry->activeLeaseForPollRequest(
+            'default', 'test-queue', null, 'worker-a', 'poll-stale-check',
+        );
+        $this->assertInstanceOf(WorkflowTaskProtocolLease::class, $found);
+
+        // Simulate the package task completing (no longer leased).
+        $task->forceFill([
+            'status' => TaskStatus::Ready->value,
+            'lease_owner' => null,
+            'lease_expires_at' => null,
+        ])->save();
+
+        // The mirror still has stale lease data, but the query should verify
+        // against the package's task and return null.
+        $stale = $registry->activeLeaseForPollRequest(
+            'default', 'test-queue', null, 'worker-a', 'poll-stale-check',
+        );
+        $this->assertNull($stale);
     }
 }

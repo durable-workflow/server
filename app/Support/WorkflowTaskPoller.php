@@ -654,26 +654,13 @@ final class WorkflowTaskPoller
             return false;
         }
 
+        // The mirror table is checked only for last_poll_request_id, which the
+        // package does not track. All lease-status fields (owner, expiry,
+        // attempt) are verified against the package's WorkflowTask below.
         $lease = $this->leases->activeLease($namespace, $taskId);
-        $workflowTaskAttempt = is_numeric($task['workflow_task_attempt'] ?? null)
-            ? (int) $task['workflow_task_attempt']
-            : null;
 
         if ($lease instanceof WorkflowTaskProtocolLease) {
-            if (
-                ! $lease->hasActiveLease()
-                || $lease->lease_expires_at === null
-                || $lease->lease_expires_at->lte(now())
-                || $this->nonEmptyString($lease->lease_owner) !== $leaseOwner
-                || $this->nonEmptyString($lease->last_poll_request_id) !== $pollRequestId
-            ) {
-                return false;
-            }
-
-            if (
-                $workflowTaskAttempt !== null
-                && (int) $lease->workflow_task_attempt !== $workflowTaskAttempt
-            ) {
+            if ($this->nonEmptyString($lease->last_poll_request_id) !== $pollRequestId) {
                 return false;
             }
         }
@@ -705,6 +692,18 @@ final class WorkflowTaskPoller
         }
 
         if ($workflowTask->lease_expires_at === null || $workflowTask->lease_expires_at->lte(now())) {
+            return false;
+        }
+
+        $workflowTaskAttempt = is_numeric($task['workflow_task_attempt'] ?? null)
+            ? (int) $task['workflow_task_attempt']
+            : null;
+
+        if (
+            $workflowTaskAttempt !== null
+            && is_int($workflowTask->attempt_count)
+            && (int) $workflowTask->attempt_count !== $workflowTaskAttempt
+        ) {
             return false;
         }
 

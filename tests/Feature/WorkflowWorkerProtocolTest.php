@@ -471,7 +471,7 @@ class WorkflowWorkerProtocolTest extends TestCase
         $task->forceFill([
             'status' => TaskStatus::Leased,
             'lease_owner' => 'existing-worker',
-            'attempt_count' => 7,
+            'attempt_count' => 0,
         ])->save();
 
         $leaseExpiresAt = now()->addMinutes(5)->toJSON();

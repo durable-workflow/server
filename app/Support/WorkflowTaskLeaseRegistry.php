@@ -215,7 +215,8 @@ final class WorkflowTaskLeaseRegistry
             ->where('workflow_task_protocol_leases.namespace', $namespace)
             ->where('workflow_tasks.task_type', TaskType::Workflow->value)
             ->where('workflow_tasks.queue', $taskQueue)
-            ->where('workflow_task_protocol_leases.lease_owner', $leaseOwner)
+            ->where('workflow_tasks.status', TaskStatus::Leased->value)
+            ->where('workflow_tasks.lease_owner', $leaseOwner)
             ->where('workflow_task_protocol_leases.last_poll_request_id', $pollRequestId)
             ->when($buildId === null, static function ($query): void {
                 $query->where(function ($builder): void {
@@ -232,7 +233,7 @@ final class WorkflowTaskLeaseRegistry
             return null;
         }
 
-        if (! $lease->hasActiveLease() || ! $this->leaseStillActive($lease->lease_expires_at)) {
+        if (! $this->packageLeaseStillActive($lease->task_id)) {
             return null;
         }
 
@@ -279,19 +280,13 @@ final class WorkflowTaskLeaseRegistry
             return;
         }
 
-        /** @var WorkflowTaskProtocolLease|null $lease */
-        $lease = WorkflowTaskProtocolLease::query()->find($task->id);
-
-        if (! $lease instanceof WorkflowTaskProtocolLease) {
-            return;
-        }
-
         if ($task->status === TaskStatus::Leased) {
-            $lease->forceFill([
-                'lease_owner' => $this->nullableString($task->lease_owner),
-                'lease_expires_at' => $task->lease_expires_at,
-            ])->save();
-
+            // The mirror's lease_owner and lease_expires_at are set at claim
+            // time by recordClaim() and kept current by renewLease(). The
+            // package's WorkflowTask is the authoritative source for these
+            // fields; callers (ownershipLease, activeLeaseForPollRequest) now
+            // verify against the package directly, so per-update sync is no
+            // longer needed for correctness.
             return;
         }
 
@@ -381,6 +376,17 @@ final class WorkflowTaskLeaseRegistry
     {
         return $leaseExpiresAt instanceof Carbon
             && $leaseExpiresAt->gt(now());
+    }
+
+    private function packageLeaseStillActive(string $taskId): bool
+    {
+        /** @var WorkflowTask|null $task */
+        $task = WorkflowTask::query()->find($taskId);
+
+        return $task instanceof WorkflowTask
+            && $task->status === TaskStatus::Leased
+            && $task->lease_expires_at instanceof Carbon
+            && $task->lease_expires_at->gt(now());
     }
 
     private function timestamp(mixed $value): ?Carbon
