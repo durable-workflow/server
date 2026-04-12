@@ -168,6 +168,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Response Compression
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, JSON responses above the minimum size threshold are
+    | compressed using the encoding requested by the client's Accept-Encoding
+    | header (gzip or deflate). Disable when a reverse proxy already handles
+    | compression.
+    |
+    */
+
+    'compression' => [
+        'enabled' => (bool) env('WORKFLOW_SERVER_COMPRESSION_ENABLED', true),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Payload Limits
     |--------------------------------------------------------------------------
     */

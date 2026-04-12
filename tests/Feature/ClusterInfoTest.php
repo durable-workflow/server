@@ -28,6 +28,30 @@ class ClusterInfoTest extends TestCase
             );
     }
 
+    public function test_it_advertises_response_compression_in_capabilities(): void
+    {
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('capabilities.response_compression', ['gzip', 'deflate']);
+    }
+
+    public function test_it_advertises_response_compression_in_worker_protocol(): void
+    {
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('worker_protocol.server_capabilities.response_compression', ['gzip', 'deflate']);
+    }
+
+    public function test_it_advertises_empty_compression_when_disabled(): void
+    {
+        config(['server.compression.enabled' => false]);
+
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('capabilities.response_compression', [])
+            ->assertJsonPath('worker_protocol.server_capabilities.response_compression', []);
+    }
+
     public function test_it_omits_package_provenance_when_the_provenance_file_does_not_exist(): void
     {
         $this->getJson('/api/cluster/info')

@@ -85,6 +85,9 @@ class WorkerProtocol
             'workflow_task_poll_request_idempotency' => true,
             'history_page_size_default' => (int) config('server.worker_protocol.history_page_size_default', 500),
             'history_page_size_max' => (int) config('server.worker_protocol.history_page_size_max', 1000),
+            'response_compression' => (bool) config('server.compression.enabled', true)
+                ? ['gzip', 'deflate']
+                : [],
         ];
     }
 
