@@ -4,6 +4,7 @@ namespace App\Support;
 
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Workflow\V2\Support\WorkerProtocolVersion;
 
 class WorkerProtocol
 {
@@ -75,6 +76,8 @@ class WorkerProtocol
      *     workflow_task_poll_request_idempotency: bool,
      *     history_page_size_default: int,
      *     history_page_size_max: int,
+     *     response_compression: list<string>,
+     *     history_compression: array{supported_encodings: list<string>, compression_threshold: int},
      * }
      */
     public static function serverCapabilities(): array
@@ -88,6 +91,10 @@ class WorkerProtocol
             'response_compression' => (bool) config('server.compression.enabled', true)
                 ? ['gzip', 'deflate']
                 : [],
+            'history_compression' => [
+                'supported_encodings' => WorkerProtocolVersion::supportedHistoryEncodings(),
+                'compression_threshold' => WorkerProtocolVersion::COMPRESSION_THRESHOLD,
+            ],
         ];
     }
 

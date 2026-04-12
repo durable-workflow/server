@@ -14,6 +14,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Support\HistoryPayloadCompression;
 
 class WorkerController
 {
@@ -150,7 +151,15 @@ class WorkerController
             'build_id' => ['nullable', 'string'],
             'poll_request_id' => ['nullable', 'string', 'max:255'],
             'history_page_size' => ['nullable', 'integer', 'min:1', 'max:1000'],
+            'accept_history_encoding' => ['nullable', 'string', 'max:64'],
         ]);
+
+        $maxPageSize = (int) config('server.worker_protocol.history_page_size_max', 1000);
+        $defaultPageSize = (int) config('server.worker_protocol.history_page_size_default', 500);
+        $requestedPageSize = $validated['history_page_size'] ?? null;
+        $pageSize = min($requestedPageSize ?? $defaultPageSize, $maxPageSize);
+
+        $acceptHistoryEncoding = $validated['accept_history_encoding'] ?? null;
 
         $task = $this->workflowTaskPoller->poll(
             request: $request,
@@ -159,9 +168,11 @@ class WorkerController
             leaseOwner: $validated['worker_id'],
             buildId: $validated['build_id'] ?? null,
             pollRequestId: $validated['poll_request_id'] ?? null,
+            historyPageSize: $pageSize,
+            acceptHistoryEncoding: $acceptHistoryEncoding,
         );
 
-        $task = $this->paginateTaskHistory($task, $validated['history_page_size'] ?? null);
+        $task = $this->formatTaskHistoryPagination($task);
 
         return WorkerProtocol::json([
             'task' => $task,
@@ -187,6 +198,7 @@ class WorkerController
             'workflow_task_attempt' => ['required', 'integer', 'min:1'],
             'next_history_page_token' => ['required', 'string'],
             'history_page_size' => ['nullable', 'integer', 'min:1', 'max:1000'],
+            'accept_history_encoding' => ['nullable', 'string', 'max:64'],
         ]);
 
         if ($response = $this->guardWorkflowTaskOwnership(
@@ -209,9 +221,13 @@ class WorkerController
             ], 400);
         }
 
+        $maxPageSize = (int) config('server.worker_protocol.history_page_size_max', 1000);
+        $defaultPageSize = (int) config('server.worker_protocol.history_page_size_default', 500);
+        $pageSize = min($validated['history_page_size'] ?? $defaultPageSize, $maxPageSize);
+
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
-        $history = $bridge->historyPayload($taskId);
+        $history = $bridge->historyPayloadPaginated($taskId, $afterSequence, $pageSize);
 
         if (! is_array($history)) {
             return WorkerProtocol::json([
@@ -221,33 +237,31 @@ class WorkerController
             ], 404);
         }
 
-        $allEvents = $history['history_events'] ?? [];
-        $maxPageSize = (int) config('server.worker_protocol.history_page_size_max', 1000);
-        $defaultPageSize = (int) config('server.worker_protocol.history_page_size_default', 500);
-        $pageSize = min($validated['history_page_size'] ?? $defaultPageSize, $maxPageSize);
+        $acceptHistoryEncoding = $validated['accept_history_encoding'] ?? null;
 
-        // Filter events after the given sequence
-        $remaining = array_values(array_filter(
-            $allEvents,
-            static fn (array $event): bool => ((int) ($event['sequence'] ?? 0)) > $afterSequence,
-        ));
+        if ($acceptHistoryEncoding !== null) {
+            $history = HistoryPayloadCompression::compress($history, $acceptHistoryEncoding);
+        }
 
-        $totalRemaining = count($remaining);
-        $page = array_slice($remaining, 0, $pageSize);
-        $hasMore = $totalRemaining > $pageSize;
+        $hasMore = $history['has_more'] ?? false;
+        $nextAfterSequence = $history['next_after_sequence'] ?? null;
 
-        $lastEvent = $hasMore ? end($page) : null;
-        $lastSequence = is_array($lastEvent) ? ($lastEvent['sequence'] ?? null) : null;
-
-        return WorkerProtocol::json([
+        $response = [
             'task_id' => $taskId,
             'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
-            'history_events' => $page,
-            'total_history_events' => count($allEvents),
-            'next_history_page_token' => $hasMore && $lastSequence !== null
-                ? self::encodeHistoryPageToken((int) $lastSequence)
+            'history_events' => $history['history_events'] ?? [],
+            'total_history_events' => $history['last_history_sequence'] ?? 0,
+            'next_history_page_token' => $hasMore && $nextAfterSequence !== null
+                ? self::encodeHistoryPageToken((int) $nextAfterSequence)
                 : null,
-        ]);
+        ];
+
+        if (isset($history['history_events_compressed'])) {
+            $response['history_events_compressed'] = $history['history_events_compressed'];
+            $response['history_events_encoding'] = $history['history_events_encoding'];
+        }
+
+        return WorkerProtocol::json($response);
     }
 
     /**
@@ -406,50 +420,37 @@ class WorkerController
     }
 
     /**
-     * Paginate the history_events within a polled workflow task payload.
+     * Convert bridge pagination metadata to protocol page tokens.
      *
-     * When the caller supplies a history_page_size, only the first page of
-     * events is returned along with a next_history_page_token and the
-     * total_history_events count. Workers fetch subsequent pages through
-     * the dedicated /worker/workflow-tasks/{taskId}/history endpoint.
+     * The poller now fetches history via historyPayloadPaginated() which
+     * provides has_more / next_after_sequence. This method converts those
+     * into the protocol's token-based pagination (total_history_events and
+     * next_history_page_token).
      *
      * @param  array<string, mixed>|null  $task
      * @return array<string, mixed>|null
      */
-    private function paginateTaskHistory(?array $task, ?int $requestedPageSize): ?array
+    private function formatTaskHistoryPagination(?array $task): ?array
     {
         if ($task === null) {
             return null;
         }
 
-        $events = $task['history_events'] ?? [];
+        $hasMore = $task['has_more'] ?? false;
+        $nextAfterSequence = $task['next_after_sequence'] ?? null;
 
-        if (! is_array($events)) {
-            return $task;
+        // total_history_events is set by the poller from last_history_sequence
+        // when pagination metadata is present, or defaults to event count.
+        if (! isset($task['total_history_events'])) {
+            $task['total_history_events'] = count($task['history_events'] ?? []);
         }
 
-        $maxPageSize = (int) config('server.worker_protocol.history_page_size_max', 1000);
-        $defaultPageSize = (int) config('server.worker_protocol.history_page_size_default', 500);
-        $pageSize = min($requestedPageSize ?? $defaultPageSize, $maxPageSize);
-
-        $totalEvents = count($events);
-
-        if ($totalEvents <= $pageSize) {
-            $task['total_history_events'] = $totalEvents;
-            $task['next_history_page_token'] = null;
-
-            return $task;
-        }
-
-        $page = array_slice($events, 0, $pageSize);
-        $lastEvent = end($page);
-        $lastSequence = is_array($lastEvent) ? ($lastEvent['sequence'] ?? null) : null;
-
-        $task['history_events'] = $page;
-        $task['total_history_events'] = $totalEvents;
-        $task['next_history_page_token'] = $lastSequence !== null
-            ? self::encodeHistoryPageToken((int) $lastSequence)
+        $task['next_history_page_token'] = ($hasMore && $nextAfterSequence !== null)
+            ? self::encodeHistoryPageToken((int) $nextAfterSequence)
             : null;
+
+        // Remove internal pagination fields not part of the protocol.
+        unset($task['has_more'], $task['next_after_sequence']);
 
         return $task;
     }

@@ -10,6 +10,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\HistoryPayloadCompression;
 
 final class WorkflowTaskPoller
 {
@@ -33,6 +34,8 @@ final class WorkflowTaskPoller
         string $leaseOwner,
         ?string $buildId,
         ?string $pollRequestId,
+        ?int $historyPageSize = null,
+        ?string $acceptHistoryEncoding = null,
     ): ?array {
         $pollRequestId = $this->nonEmptyString($pollRequestId);
 
@@ -44,6 +47,8 @@ final class WorkflowTaskPoller
                 leaseOwner: $leaseOwner,
                 buildId: $buildId,
                 pollRequestId: null,
+                historyPageSize: $historyPageSize,
+                acceptHistoryEncoding: $acceptHistoryEncoding,
             );
         }
 
@@ -54,6 +59,8 @@ final class WorkflowTaskPoller
             leaseOwner: $leaseOwner,
             buildId: $buildId,
             pollRequestId: $pollRequestId,
+            historyPageSize: $historyPageSize,
+            acceptHistoryEncoding: $acceptHistoryEncoding,
         );
     }
 
@@ -67,6 +74,8 @@ final class WorkflowTaskPoller
         string $leaseOwner,
         ?string $buildId,
         string $pollRequestId,
+        ?int $historyPageSize = null,
+        ?string $acceptHistoryEncoding = null,
     ): ?array {
         for ($attempt = 0; $attempt < 3; $attempt++) {
             $cached = $this->cachedPollResult(
@@ -95,6 +104,8 @@ final class WorkflowTaskPoller
                     leaseOwner: $leaseOwner,
                     buildId: $buildId,
                     pollRequestId: $pollRequestId,
+                    historyPageSize: $historyPageSize,
+                    acceptHistoryEncoding: $acceptHistoryEncoding,
                 );
             }
 
@@ -198,6 +209,8 @@ final class WorkflowTaskPoller
         string $leaseOwner,
         ?string $buildId,
         string $pollRequestId,
+        ?int $historyPageSize = null,
+        ?string $acceptHistoryEncoding = null,
     ): ?array {
         try {
             $task = $this->performPoll(
@@ -207,6 +220,8 @@ final class WorkflowTaskPoller
                 leaseOwner: $leaseOwner,
                 buildId: $buildId,
                 pollRequestId: $pollRequestId,
+                historyPageSize: $historyPageSize,
+                acceptHistoryEncoding: $acceptHistoryEncoding,
             );
         } catch (Throwable $exception) {
             $this->pollRequests->forgetPending(
@@ -242,6 +257,8 @@ final class WorkflowTaskPoller
         string $leaseOwner,
         ?string $buildId,
         ?string $pollRequestId,
+        ?int $historyPageSize = null,
+        ?string $acceptHistoryEncoding = null,
     ): ?array {
         $limit = max(10, max(1, (int) config('server.polling.max_tasks_per_poll', 1)) * 10);
         $nextProbeAt = null;
@@ -254,6 +271,8 @@ final class WorkflowTaskPoller
                 $leaseOwner,
                 $buildId,
                 $pollRequestId,
+                $historyPageSize,
+                $acceptHistoryEncoding,
                 $limit,
                 &$nextProbeAt,
             ): ?array {
@@ -265,6 +284,8 @@ final class WorkflowTaskPoller
                     $buildId,
                     $pollRequestId,
                     $limit,
+                    $historyPageSize,
+                    $acceptHistoryEncoding,
                 );
                 $nextProbeAt = $result['next_probe_at'] ?? null;
 
@@ -289,6 +310,8 @@ final class WorkflowTaskPoller
         ?string $buildId,
         ?string $pollRequestId,
         int $limit,
+        ?int $historyPageSize = null,
+        ?string $acceptHistoryEncoding = null,
     ): array {
         $this->applyWorkerCompatibility($namespace, $buildId);
 
@@ -298,6 +321,8 @@ final class WorkflowTaskPoller
             leaseOwner: $leaseOwner,
             buildId: $buildId,
             pollRequestId: $pollRequestId,
+            historyPageSize: $historyPageSize,
+            acceptHistoryEncoding: $acceptHistoryEncoding,
         );
 
         if (is_array($task)) {
@@ -314,6 +339,8 @@ final class WorkflowTaskPoller
             buildId: $buildId,
             pollRequestId: $pollRequestId,
             limit: $limit,
+            historyPageSize: $historyPageSize,
+            acceptHistoryEncoding: $acceptHistoryEncoding,
         );
 
         if (is_array($task)) {
@@ -329,6 +356,8 @@ final class WorkflowTaskPoller
             leaseOwner: $leaseOwner,
             buildId: $buildId,
             pollRequestId: $pollRequestId,
+            historyPageSize: $historyPageSize,
+            acceptHistoryEncoding: $acceptHistoryEncoding,
         );
 
         if (is_array($task)) {
@@ -346,6 +375,8 @@ final class WorkflowTaskPoller
                 buildId: $buildId,
                 pollRequestId: $pollRequestId,
                 limit: $limit,
+                historyPageSize: $historyPageSize,
+                acceptHistoryEncoding: $acceptHistoryEncoding,
             );
 
             if (is_array($task)) {
@@ -372,6 +403,8 @@ final class WorkflowTaskPoller
         ?string $buildId,
         ?string $pollRequestId,
         int $limit,
+        ?int $historyPageSize = null,
+        ?string $acceptHistoryEncoding = null,
     ): ?array {
         $readyTasks = $this->bridge->poll(
             connection: null,
@@ -426,7 +459,7 @@ final class WorkflowTaskPoller
                 is_int($packageAttemptCount) ? (int) $packageAttemptCount : null,
             );
 
-            $history = $this->bridge->historyPayload($taskId);
+            $history = $this->fetchHistory($taskId, $historyPageSize, $acceptHistoryEncoding);
 
             if (! is_array($history)) {
                 $this->leases->clearActiveLease($taskId);
@@ -449,6 +482,8 @@ final class WorkflowTaskPoller
         string $leaseOwner,
         ?string $buildId,
         ?string $pollRequestId,
+        ?int $historyPageSize = null,
+        ?string $acceptHistoryEncoding = null,
     ): ?array {
         $pollRequestId = $this->nonEmptyString($pollRequestId);
 
@@ -498,7 +533,7 @@ final class WorkflowTaskPoller
             return null;
         }
 
-        $history = $this->bridge->historyPayload($task->id);
+        $history = $this->fetchHistory($task->id, $historyPageSize, $acceptHistoryEncoding);
 
         if (! is_array($history)) {
             $this->leases->clearActiveLease($task->id);
@@ -767,6 +802,34 @@ final class WorkflowTaskPoller
     }
 
     /**
+     * Fetch history for a claimed task, using database-level pagination
+     * and protocol-level compression when requested.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function fetchHistory(
+        string $taskId,
+        ?int $historyPageSize,
+        ?string $acceptHistoryEncoding,
+    ): ?array {
+        if ($historyPageSize !== null) {
+            $history = $this->bridge->historyPayloadPaginated($taskId, 0, $historyPageSize);
+        } else {
+            $history = $this->bridge->historyPayload($taskId);
+        }
+
+        if (! is_array($history)) {
+            return null;
+        }
+
+        if ($acceptHistoryEncoding !== null) {
+            $history = HistoryPayloadCompression::compress($history, $acceptHistoryEncoding);
+        }
+
+        return $history;
+    }
+
+    /**
      * @param  array<string, mixed>  $claim
      * @param  array<string, mixed>  $history
      * @return array<string, mixed>
@@ -777,7 +840,7 @@ final class WorkflowTaskPoller
         array $history,
         ?string $workflowIdFallback,
     ): array {
-        return [
+        $payload = [
             'task_id' => $claim['task_id'],
             'workflow_id' => $history['workflow_instance_id']
                 ?? $claim['workflow_instance_id']
@@ -797,6 +860,23 @@ final class WorkflowTaskPoller
             'lease_owner' => $claim['lease_owner'],
             'lease_expires_at' => $claim['lease_expires_at'],
         ];
+
+        // Include pagination metadata when history was fetched via
+        // historyPayloadPaginated() so the controller can build page tokens.
+        if (array_key_exists('has_more', $history)) {
+            $payload['total_history_events'] = $history['last_history_sequence'] ?? count($history['history_events'] ?? []);
+            $payload['has_more'] = $history['has_more'];
+            $payload['next_after_sequence'] = $history['next_after_sequence'] ?? null;
+        }
+
+        // Include compression envelope fields when history was compressed
+        // by HistoryPayloadCompression.
+        if (isset($history['history_events_compressed'])) {
+            $payload['history_events_compressed'] = $history['history_events_compressed'];
+            $payload['history_events_encoding'] = $history['history_events_encoding'];
+        }
+
+        return $payload;
     }
 
     private function nonEmptyString(mixed $value): ?string

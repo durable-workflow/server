@@ -601,10 +601,16 @@ class WorkflowWorkerProtocolTest extends TestCase
                     ];
                 });
 
-            $mock->shouldReceive('historyPayload')
+            $paginatedHistoryPayload = array_merge($historyPayload, [
+                'after_sequence' => 0,
+                'page_size' => 500,
+                'has_more' => false,
+                'next_after_sequence' => null,
+            ]);
+
+            $mock->shouldReceive('historyPayloadPaginated')
                 ->times(3)
-                ->with($task->id)
-                ->andReturn($historyPayload, $historyPayload, $historyPayload);
+                ->andReturn($paginatedHistoryPayload, $paginatedHistoryPayload, $paginatedHistoryPayload);
         });
 
         $firstPoll = $this->withHeaders($this->workerHeaders())
@@ -1240,9 +1246,8 @@ class WorkflowWorkerProtocolTest extends TestCase
                     'reason_detail' => null,
                 ]);
 
-            $mock->shouldReceive('historyPayload')
+            $mock->shouldReceive('historyPayloadPaginated')
                 ->once()
-                ->with('wf-task-missing-row')
                 ->andReturn(null);
         });
 
@@ -2395,6 +2400,168 @@ class WorkflowWorkerProtocolTest extends TestCase
         $register->assertCreated()
             ->assertJsonPath('server_capabilities.history_page_size_default', 500)
             ->assertJsonPath('server_capabilities.history_page_size_max', 1000);
+    }
+
+    public function test_server_capabilities_advertise_history_compression(): void
+    {
+        $this->createNamespace('default', 'Default namespace');
+
+        $register = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'php-worker-compression-check',
+                'task_queue' => 'external-workflows',
+                'runtime' => 'php',
+            ]);
+
+        $register->assertCreated()
+            ->assertJsonPath('server_capabilities.history_compression.supported_encodings', ['gzip', 'deflate'])
+            ->assertJsonPath('server_capabilities.history_compression.compression_threshold', 50);
+    }
+
+    public function test_poll_response_compresses_history_when_accept_history_encoding_is_set(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-history-compression',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        // The real workflow only has a few history events (below the 50-event
+        // compression threshold), so compression should NOT be applied even
+        // when requested. This validates the threshold guard works.
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-compress',
+                'task_queue' => 'external-workflows',
+                'accept_history_encoding' => 'gzip',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.run_id', $runId);
+
+        // Events below compression threshold should be uncompressed.
+        $this->assertNotEmpty($poll->json('task.history_events'));
+        $this->assertNull($poll->json('task.history_events_compressed'));
+        $this->assertNull($poll->json('task.history_events_encoding'));
+    }
+
+    public function test_poll_response_compresses_history_above_threshold_via_mock(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        WorkflowNamespaceWorkflow::query()->create([
+            'namespace' => 'default',
+            'workflow_instance_id' => 'wf-compress-mock',
+            'workflow_type' => 'tests.external-greeting-workflow',
+        ]);
+
+        $recordedAt = now()->toJSON();
+        $events = [];
+
+        // Generate 60 events to exceed the 50-event compression threshold.
+        for ($i = 1; $i <= 60; $i++) {
+            $events[] = [
+                'id' => "evt-{$i}",
+                'sequence' => $i,
+                'event_type' => 'WorkflowStarted',
+                'payload' => [],
+                'workflow_task_id' => null,
+                'workflow_command_id' => null,
+                'recorded_at' => $recordedAt,
+            ];
+        }
+
+        $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use ($events, $recordedAt): void {
+            $mock->shouldReceive('poll')
+                ->once()
+                ->andReturn([[
+                    'task_id' => 'wf-task-compress',
+                    'workflow_run_id' => 'run-compress',
+                    'workflow_instance_id' => 'wf-compress-mock',
+                    'workflow_type' => 'tests.external-greeting-workflow',
+                    'workflow_class' => ExternalGreetingWorkflow::class,
+                    'connection' => null,
+                    'queue' => 'external-workflows',
+                    'compatibility' => null,
+                    'available_at' => $recordedAt,
+                ]]);
+
+            $mock->shouldReceive('claimStatus')
+                ->once()
+                ->andReturn([
+                    'claimed' => true,
+                    'task_id' => 'wf-task-compress',
+                    'workflow_run_id' => 'run-compress',
+                    'workflow_instance_id' => 'wf-compress-mock',
+                    'workflow_type' => 'tests.external-greeting-workflow',
+                    'workflow_class' => ExternalGreetingWorkflow::class,
+                    'payload_codec' => (string) config('workflows.serializer'),
+                    'connection' => null,
+                    'queue' => 'external-workflows',
+                    'compatibility' => null,
+                    'lease_owner' => 'php-worker-compress-mock',
+                    'lease_expires_at' => now()->addMinutes(5)->toJSON(),
+                    'reason' => null,
+                    'reason_detail' => null,
+                ]);
+
+            $mock->shouldReceive('historyPayloadPaginated')
+                ->once()
+                ->andReturn([
+                    'task_id' => 'wf-task-compress',
+                    'workflow_run_id' => 'run-compress',
+                    'workflow_instance_id' => 'wf-compress-mock',
+                    'workflow_type' => 'tests.external-greeting-workflow',
+                    'workflow_class' => ExternalGreetingWorkflow::class,
+                    'payload_codec' => (string) config('workflows.serializer'),
+                    'arguments' => null,
+                    'run_status' => 'pending',
+                    'last_history_sequence' => 60,
+                    'after_sequence' => 0,
+                    'page_size' => 500,
+                    'has_more' => false,
+                    'next_after_sequence' => null,
+                    'history_events' => $events,
+                ]);
+        });
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-compress-mock',
+                'task_queue' => 'external-workflows',
+                'accept_history_encoding' => 'gzip',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.task_id', 'wf-task-compress');
+
+        // History should be compressed since it exceeds the threshold.
+        $this->assertNotNull($poll->json('task.history_events_compressed'));
+        $this->assertSame('gzip', $poll->json('task.history_events_encoding'));
+        $this->assertSame([], $poll->json('task.history_events'));
+
+        // Verify the compressed payload is decompressible.
+        $compressed = base64_decode($poll->json('task.history_events_compressed'), true);
+        $this->assertNotFalse($compressed);
+        $decompressed = gzdecode($compressed);
+        $this->assertNotFalse($decompressed);
+        $decoded = json_decode($decompressed, true);
+        $this->assertIsArray($decoded);
+        $this->assertCount(60, $decoded);
     }
 
     private function configureWorkflowTypes(): void
