@@ -66,7 +66,8 @@ final class WorkflowTaskLeaseRecovery
             'trigger' => 'expired_workflow_task_lease',
             'task_id' => $task->id,
             'lease_owner' => $task->lease_owner,
-            'workflow_task_attempt' => $lease?->workflow_task_attempt,
+            'workflow_task_attempt' => $lease?->workflow_task_attempt
+                ?? (is_int($task->attempt_count) ? (int) $task->attempt_count : null),
         ], static fn (mixed $value): bool => $value !== null && $value !== '');
 
         try {

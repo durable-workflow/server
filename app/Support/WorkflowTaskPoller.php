@@ -411,7 +411,20 @@ final class WorkflowTaskPoller
                 continue;
             }
 
-            $lease = $this->leases->recordClaim($namespace, $claim, $pollRequestId);
+            // Source the fencing token from the package's authoritative attempt
+            // counter rather than computing it independently in the mirror table.
+            // The package increments WorkflowTask.attempt_count atomically inside
+            // claimStatus(), so reading it here gives the post-claim value.
+            $packageAttemptCount = WorkflowTask::query()
+                ->whereKey($taskId)
+                ->value('attempt_count');
+
+            $lease = $this->leases->recordClaim(
+                $namespace,
+                $claim,
+                $pollRequestId,
+                is_int($packageAttemptCount) ? (int) $packageAttemptCount : null,
+            );
 
             $history = $this->bridge->historyPayload($taskId);
 

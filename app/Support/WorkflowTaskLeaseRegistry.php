@@ -13,8 +13,12 @@ final class WorkflowTaskLeaseRegistry
 {
     /**
      * @param  array<string, mixed>  $claim
+     * @param  int|null  $packageAttemptCount  When provided, the attempt counter is
+     *     sourced from the package's WorkflowTask.attempt_count rather than being
+     *     computed independently from the mirror table. This keeps the fencing token
+     *     aligned with the package's authoritative counter.
      */
-    public function recordClaim(string $namespace, array $claim, ?string $pollRequestId = null): WorkflowTaskProtocolLease
+    public function recordClaim(string $namespace, array $claim, ?string $pollRequestId = null, ?int $packageAttemptCount = null): WorkflowTaskProtocolLease
     {
         $taskId = (string) ($claim['task_id'] ?? '');
         $workflowInstanceId = $this->nullableString($claim['workflow_instance_id'] ?? null);
@@ -27,6 +31,7 @@ final class WorkflowTaskLeaseRegistry
             $leaseExpiresAt,
             $leaseOwner,
             $namespace,
+            $packageAttemptCount,
             $pollRequestId,
             $taskId,
             $workflowInstanceId,
@@ -38,18 +43,22 @@ final class WorkflowTaskLeaseRegistry
                 ->find($taskId)
                 ?? new WorkflowTaskProtocolLease(['task_id' => $taskId]);
 
-            $lease->fill([
-                'namespace' => $namespace,
-                'workflow_instance_id' => $workflowInstanceId,
-                'workflow_run_id' => $workflowRunId,
-                'workflow_task_attempt' => $this->nextWorkflowTaskAttempt(
+            $attempt = is_int($packageAttemptCount) && $packageAttemptCount > 0
+                ? $packageAttemptCount
+                : $this->nextWorkflowTaskAttempt(
                     $lease,
                     $namespace,
                     $workflowInstanceId,
                     $workflowRunId,
                     $leaseOwner,
                     $leaseExpiresAt,
-                ),
+                );
+
+            $lease->fill([
+                'namespace' => $namespace,
+                'workflow_instance_id' => $workflowInstanceId,
+                'workflow_run_id' => $workflowRunId,
+                'workflow_task_attempt' => $attempt,
                 'lease_owner' => $leaseOwner,
                 'lease_expires_at' => $leaseExpiresAt,
                 'last_claimed_at' => now(),
@@ -156,10 +165,18 @@ final class WorkflowTaskLeaseRegistry
 
             $lease ??= new WorkflowTaskProtocolLease(['task_id' => $taskId]);
 
+            // Incorporate the package's authoritative attempt counter when
+            // reconciling. This keeps the mirror table aligned even when its
+            // own value is stale or the row was missing.
+            $packageAttemptCount = is_int($task->attempt_count)
+                ? (int) $task->attempt_count
+                : null;
+
             $attempt = $this->recoveredWorkflowTaskAttempt(
                 lease: $lease,
                 expectedLeaseOwner: $expectedLeaseOwner,
                 expectedWorkflowTaskAttempt: $workflowTaskAttempt,
+                packageAttemptCount: $packageAttemptCount,
             );
 
             $preservePollRequestId = $lease->exists
@@ -309,18 +326,26 @@ final class WorkflowTaskLeaseRegistry
         WorkflowTaskProtocolLease $lease,
         string $expectedLeaseOwner,
         int $expectedWorkflowTaskAttempt,
+        ?int $packageAttemptCount = null,
     ): int {
         $currentAttempt = max(1, (int) $lease->workflow_task_attempt);
+
+        // When the package's authoritative counter is available and higher
+        // than the mirror table's value, use it as the floor. This corrects
+        // stale or missing mirror rows without lowering the fencing bar.
+        $packageFloor = is_int($packageAttemptCount) && $packageAttemptCount > 0
+            ? $packageAttemptCount
+            : 0;
 
         if (
             $lease->exists
             && $lease->hasActiveLease()
             && $lease->lease_owner === $expectedLeaseOwner
         ) {
-            return $currentAttempt;
+            return max($currentAttempt, $packageFloor);
         }
 
-        return max(1, $expectedWorkflowTaskAttempt, $currentAttempt);
+        return max(1, $expectedWorkflowTaskAttempt, $currentAttempt, $packageFloor);
     }
 
     private function sameActiveClaim(
