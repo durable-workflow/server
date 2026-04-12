@@ -149,6 +149,7 @@ class WorkerController
             'task_queue' => ['required', 'string'],
             'build_id' => ['nullable', 'string'],
             'poll_request_id' => ['nullable', 'string', 'max:255'],
+            'history_page_size' => ['nullable', 'integer', 'min:1', 'max:1000'],
         ]);
 
         $task = $this->workflowTaskPoller->poll(
@@ -160,8 +161,92 @@ class WorkerController
             pollRequestId: $validated['poll_request_id'] ?? null,
         );
 
+        $task = $this->paginateTaskHistory($task, $validated['history_page_size'] ?? null);
+
         return WorkerProtocol::json([
             'task' => $task,
+        ]);
+    }
+
+    /**
+     * Fetch a subsequent page of history events for a leased workflow task.
+     *
+     * Workers that received a next_history_page_token in the poll response
+     * use this endpoint to retrieve additional pages before completing replay.
+     */
+    public function workflowTaskHistory(Request $request, string $taskId): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = $request->attributes->get('namespace');
+
+        $validated = $request->validate([
+            'lease_owner' => ['required', 'string'],
+            'workflow_task_attempt' => ['required', 'integer', 'min:1'],
+            'next_history_page_token' => ['required', 'string'],
+            'history_page_size' => ['nullable', 'integer', 'min:1', 'max:1000'],
+        ]);
+
+        if ($response = $this->guardWorkflowTaskOwnership(
+            $request,
+            $namespace,
+            $taskId,
+            (int) $validated['workflow_task_attempt'],
+            $validated['lease_owner'],
+        )) {
+            return $response;
+        }
+
+        $afterSequence = self::decodeHistoryPageToken($validated['next_history_page_token']);
+
+        if ($afterSequence === null) {
+            return WorkerProtocol::json([
+                'task_id' => $taskId,
+                'error' => 'Invalid history page token.',
+                'reason' => 'invalid_page_token',
+            ], 400);
+        }
+
+        /** @var WorkflowTaskBridge $bridge */
+        $bridge = app(WorkflowTaskBridge::class);
+        $history = $bridge->historyPayload($taskId);
+
+        if (! is_array($history)) {
+            return WorkerProtocol::json([
+                'task_id' => $taskId,
+                'error' => 'Workflow task history not available.',
+                'reason' => 'history_not_available',
+            ], 404);
+        }
+
+        $allEvents = $history['history_events'] ?? [];
+        $maxPageSize = (int) config('server.worker_protocol.history_page_size_max', 1000);
+        $defaultPageSize = (int) config('server.worker_protocol.history_page_size_default', 500);
+        $pageSize = min($validated['history_page_size'] ?? $defaultPageSize, $maxPageSize);
+
+        // Filter events after the given sequence
+        $remaining = array_values(array_filter(
+            $allEvents,
+            static fn (array $event): bool => ((int) ($event['sequence'] ?? 0)) > $afterSequence,
+        ));
+
+        $totalRemaining = count($remaining);
+        $page = array_slice($remaining, 0, $pageSize);
+        $hasMore = $totalRemaining > $pageSize;
+
+        $lastEvent = $hasMore ? end($page) : null;
+        $lastSequence = is_array($lastEvent) ? ($lastEvent['sequence'] ?? null) : null;
+
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
+            'history_events' => $page,
+            'total_history_events' => count($allEvents),
+            'next_history_page_token' => $hasMore && $lastSequence !== null
+                ? self::encodeHistoryPageToken((int) $lastSequence)
+                : null,
         ]);
     }
 
@@ -217,6 +302,7 @@ class WorkerController
             'recorded' => $outcome['completed'],
             'run_id' => $outcome['workflow_run_id'],
             'run_status' => $outcome['run_status'],
+            'created_task_ids' => $outcome['created_task_ids'] ?? [],
             'reason' => $outcome['reason'],
         ], $this->workflowOutcomeStatus($outcome['reason']));
     }
@@ -317,6 +403,75 @@ class WorkerController
             'recorded' => $outcome['recorded'],
             'reason' => $outcome['reason'],
         ], $this->workflowOutcomeStatus($outcome['reason']));
+    }
+
+    /**
+     * Paginate the history_events within a polled workflow task payload.
+     *
+     * When the caller supplies a history_page_size, only the first page of
+     * events is returned along with a next_history_page_token and the
+     * total_history_events count. Workers fetch subsequent pages through
+     * the dedicated /worker/workflow-tasks/{taskId}/history endpoint.
+     *
+     * @param  array<string, mixed>|null  $task
+     * @return array<string, mixed>|null
+     */
+    private function paginateTaskHistory(?array $task, ?int $requestedPageSize): ?array
+    {
+        if ($task === null) {
+            return null;
+        }
+
+        $events = $task['history_events'] ?? [];
+
+        if (! is_array($events)) {
+            return $task;
+        }
+
+        $maxPageSize = (int) config('server.worker_protocol.history_page_size_max', 1000);
+        $defaultPageSize = (int) config('server.worker_protocol.history_page_size_default', 500);
+        $pageSize = min($requestedPageSize ?? $defaultPageSize, $maxPageSize);
+
+        $totalEvents = count($events);
+
+        if ($totalEvents <= $pageSize) {
+            $task['total_history_events'] = $totalEvents;
+            $task['next_history_page_token'] = null;
+
+            return $task;
+        }
+
+        $page = array_slice($events, 0, $pageSize);
+        $lastEvent = end($page);
+        $lastSequence = is_array($lastEvent) ? ($lastEvent['sequence'] ?? null) : null;
+
+        $task['history_events'] = $page;
+        $task['total_history_events'] = $totalEvents;
+        $task['next_history_page_token'] = $lastSequence !== null
+            ? self::encodeHistoryPageToken((int) $lastSequence)
+            : null;
+
+        return $task;
+    }
+
+    private static function encodeHistoryPageToken(int $sequence): string
+    {
+        return base64_encode((string) $sequence);
+    }
+
+    private static function decodeHistoryPageToken(?string $token): ?int
+    {
+        if (! is_string($token) || trim($token) === '') {
+            return null;
+        }
+
+        $decoded = base64_decode($token, true);
+
+        if (! is_string($decoded) || ! ctype_digit($decoded)) {
+            return null;
+        }
+
+        return (int) $decoded;
     }
 
     private function guardWorkflowTaskOwnership(

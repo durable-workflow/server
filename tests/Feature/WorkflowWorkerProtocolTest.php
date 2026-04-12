@@ -2147,6 +2147,256 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.run_id', $continuedRunId);
     }
 
+    public function test_poll_response_paginates_history_events_when_history_page_size_is_set(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-paginated-history',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $workflowId = (string) $start->json('workflow_id');
+        $runId = (string) $start->json('run_id');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-paginated',
+                'task_queue' => 'external-workflows',
+                'history_page_size' => 1,
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId);
+
+        $events = $poll->json('task.history_events');
+        $totalEvents = $poll->json('task.total_history_events');
+        $nextToken = $poll->json('task.next_history_page_token');
+
+        $this->assertCount(1, $events);
+        $this->assertGreaterThan(1, $totalEvents);
+        $this->assertNotNull($nextToken);
+
+        $taskId = (string) $poll->json('task.task_id');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $historyPage = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/history", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'next_history_page_token' => $nextToken,
+                'history_page_size' => 100,
+            ]);
+
+        $historyPage->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('total_history_events', $totalEvents);
+
+        $pageEvents = $historyPage->json('history_events');
+
+        $this->assertNotEmpty($pageEvents);
+        $this->assertNull($historyPage->json('next_history_page_token'));
+
+        $allSequences = array_merge(
+            array_column($events, 'sequence'),
+            array_column($pageEvents, 'sequence'),
+        );
+
+        $this->assertSame(
+            $allSequences,
+            array_unique($allSequences),
+            'Pages must not contain duplicate events.',
+        );
+    }
+
+    public function test_poll_response_includes_all_history_events_when_within_default_page_size(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-no-pagination-needed',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-no-pagination',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $totalEvents = $poll->json('task.total_history_events');
+        $events = $poll->json('task.history_events');
+
+        $this->assertSame(count($events), $totalEvents);
+        $this->assertNull($poll->json('task.next_history_page_token'));
+    }
+
+    public function test_workflow_task_history_endpoint_rejects_invalid_page_token(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-invalid-page-token',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-invalid-token',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/history", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'next_history_page_token' => 'not-valid-base64-sequence',
+            ])
+            ->assertStatus(400)
+            ->assertJsonPath('reason', 'invalid_page_token');
+    }
+
+    public function test_workflow_task_history_endpoint_guards_lease_ownership(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-history-ownership-guard',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-history-owner',
+                'task_queue' => 'external-workflows',
+                'history_page_size' => 1,
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $nextToken = $poll->json('task.next_history_page_token');
+
+        $this->assertNotNull($nextToken);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/history", [
+                'lease_owner' => 'wrong-worker',
+                'workflow_task_attempt' => $attempt,
+                'next_history_page_token' => $nextToken,
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'lease_owner_mismatch');
+    }
+
+    public function test_complete_response_includes_created_task_ids(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-created-task-ids',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-created-tasks',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serialize(['greeting' => 'Hello, Ada!']),
+                    ],
+                ],
+            ]);
+
+        $complete->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('recorded', true);
+
+        $this->assertIsArray($complete->json('created_task_ids'));
+    }
+
+    public function test_server_capabilities_advertise_history_pagination(): void
+    {
+        $this->createNamespace('default', 'Default namespace');
+
+        $register = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'php-worker-capabilities-check',
+                'task_queue' => 'external-workflows',
+                'runtime' => 'php',
+            ]);
+
+        $register->assertCreated()
+            ->assertJsonPath('server_capabilities.history_page_size_default', 500)
+            ->assertJsonPath('server_capabilities.history_page_size_max', 1000);
+    }
+
     private function configureWorkflowTypes(): void
     {
         config()->set('workflows.v2.types.workflows', [

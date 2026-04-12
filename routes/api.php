@@ -66,6 +66,7 @@ Route::middleware(Authenticate::class)->group(function () {
 
         // Workflow tasks (long-poll)
         Route::post('/workflow-tasks/poll', [WorkerController::class, 'pollWorkflowTasks']);
+        Route::post('/workflow-tasks/{taskId}/history', [WorkerController::class, 'workflowTaskHistory']);
         Route::post('/workflow-tasks/{taskId}/heartbeat', [WorkerController::class, 'heartbeatWorkflowTask']);
         Route::post('/workflow-tasks/{taskId}/complete', [WorkerController::class, 'completeWorkflowTask']);
         Route::post('/workflow-tasks/{taskId}/fail', [WorkerController::class, 'failWorkflowTask']);

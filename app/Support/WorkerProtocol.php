@@ -73,6 +73,8 @@ class WorkerProtocol
      *     long_poll_timeout: int,
      *     supported_workflow_task_commands: list<string>,
      *     workflow_task_poll_request_idempotency: bool,
+     *     history_page_size_default: int,
+     *     history_page_size_max: int,
      * }
      */
     public static function serverCapabilities(): array
@@ -81,6 +83,8 @@ class WorkerProtocol
             'long_poll_timeout' => (int) config('server.polling.timeout', 30),
             'supported_workflow_task_commands' => self::supportedWorkflowTaskCommands(),
             'workflow_task_poll_request_idempotency' => true,
+            'history_page_size_default' => (int) config('server.worker_protocol.history_page_size_default', 500),
+            'history_page_size_max' => (int) config('server.worker_protocol.history_page_size_max', 1000),
         ];
     }
 

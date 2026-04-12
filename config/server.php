@@ -115,6 +115,8 @@ return [
 
     'worker_protocol' => [
         'version' => env('WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION', '1'),
+        'history_page_size_default' => (int) env('WORKFLOW_SERVER_HISTORY_PAGE_SIZE_DEFAULT', 500),
+        'history_page_size_max' => (int) env('WORKFLOW_SERVER_HISTORY_PAGE_SIZE_MAX', 1000),
     ],
 
     /*
