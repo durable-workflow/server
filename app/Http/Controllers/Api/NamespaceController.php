@@ -1,0 +1,84 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Models\WorkflowNamespace;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+
+class NamespaceController
+{
+    public function index(): JsonResponse
+    {
+        $namespaces = WorkflowNamespace::all();
+
+        return response()->json([
+            'namespaces' => $namespaces->map(fn (WorkflowNamespace $ns) => [
+                'name' => $ns->name,
+                'description' => $ns->description,
+                'retention_days' => $ns->retention_days,
+                'status' => $ns->status,
+                'created_at' => $ns->created_at?->toIso8601String(),
+                'updated_at' => $ns->updated_at?->toIso8601String(),
+            ]),
+        ]);
+    }
+
+    public function store(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:128', 'regex:/^[a-zA-Z0-9._-]+$/'],
+            'description' => ['nullable', 'string', 'max:1000'],
+            'retention_days' => ['nullable', 'integer', 'min:1', 'max:365'],
+        ]);
+
+        $namespace = WorkflowNamespace::create([
+            'name' => $validated['name'],
+            'description' => $validated['description'] ?? null,
+            'retention_days' => $validated['retention_days'] ?? config('server.history.retention_days'),
+            'status' => 'active',
+        ]);
+
+        return response()->json([
+            'name' => $namespace->name,
+            'description' => $namespace->description,
+            'retention_days' => $namespace->retention_days,
+            'status' => $namespace->status,
+            'created_at' => $namespace->created_at?->toIso8601String(),
+        ], 201);
+    }
+
+    public function show(string $namespace): JsonResponse
+    {
+        $ns = WorkflowNamespace::where('name', $namespace)->firstOrFail();
+
+        return response()->json([
+            'name' => $ns->name,
+            'description' => $ns->description,
+            'retention_days' => $ns->retention_days,
+            'status' => $ns->status,
+            'created_at' => $ns->created_at?->toIso8601String(),
+            'updated_at' => $ns->updated_at?->toIso8601String(),
+        ]);
+    }
+
+    public function update(Request $request, string $namespace): JsonResponse
+    {
+        $ns = WorkflowNamespace::where('name', $namespace)->firstOrFail();
+
+        $validated = $request->validate([
+            'description' => ['nullable', 'string', 'max:1000'],
+            'retention_days' => ['nullable', 'integer', 'min:1', 'max:365'],
+        ]);
+
+        $ns->update(array_filter($validated, fn ($v) => $v !== null));
+
+        return response()->json([
+            'name' => $ns->name,
+            'description' => $ns->description,
+            'retention_days' => $ns->retention_days,
+            'status' => $ns->status,
+            'updated_at' => $ns->updated_at?->toIso8601String(),
+        ]);
+    }
+}

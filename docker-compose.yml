@@ -1,0 +1,129 @@
+services:
+  bootstrap:
+    build:
+      context: .
+      args:
+        WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
+        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-v2}
+    command: ["server-bootstrap"]
+    environment:
+      APP_NAME: "Durable Workflow Server"
+      APP_ENV: local
+      APP_KEY: "${APP_KEY}"
+      APP_DEBUG: "false"
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: durable_workflow
+      DB_USERNAME: workflow
+      DB_PASSWORD: workflow
+      REDIS_HOST: redis
+      QUEUE_CONNECTION: redis
+      CACHE_STORE: redis
+      WORKFLOW_SERVER_AUTH_DRIVER: token
+      WORKFLOW_SERVER_AUTH_TOKEN: "${WORKFLOW_SERVER_AUTH_TOKEN}"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  server:
+    build:
+      context: .
+      args:
+        WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
+        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-v2}
+    ports:
+      - "8080:8080"
+    environment:
+      APP_NAME: "Durable Workflow Server"
+      APP_ENV: local
+      APP_KEY: "${APP_KEY}"
+      APP_DEBUG: "false"
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: durable_workflow
+      DB_USERNAME: workflow
+      DB_PASSWORD: workflow
+      REDIS_HOST: redis
+      QUEUE_CONNECTION: redis
+      CACHE_STORE: redis
+      WORKFLOW_SERVER_AUTH_DRIVER: token
+      WORKFLOW_SERVER_AUTH_TOKEN: "${WORKFLOW_SERVER_AUTH_TOKEN}"
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    build:
+      context: .
+      args:
+        WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
+        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-v2}
+    command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
+    environment:
+      APP_NAME: "Durable Workflow Server"
+      APP_ENV: local
+      APP_KEY: "${APP_KEY}"
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: durable_workflow
+      DB_USERNAME: workflow
+      DB_PASSWORD: workflow
+      REDIS_HOST: redis
+      QUEUE_CONNECTION: redis
+      CACHE_STORE: redis
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      server:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: durable_workflow
+      MYSQL_USER: workflow
+      MYSQL_PASSWORD: workflow
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  mysql_data:
+  redis_data:
