@@ -1,0 +1,2103 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\WorkerRegistration;
+use App\Models\WorkflowNamespace;
+use App\Models\WorkflowNamespaceWorkflow;
+use App\Models\WorkflowTaskProtocolLease;
+use App\Support\LongPollSignalStore;
+use App\Support\LongPoller;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
+use Mockery\MockInterface;
+use Tests\Fixtures\ExternalGreetingWorkflow;
+use Tests\TestCase;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
+use Workflow\V2\Models\WorkflowTask;
+
+class WorkflowWorkerProtocolTest extends TestCase
+{
+    use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config([
+            'cache.default' => 'file',
+        ]);
+    }
+
+    public function test_it_starts_workflows_and_completes_workflow_tasks_through_the_external_worker_protocol(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-external-worker-complete',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+                'business_key' => 'invoice-42',
+                'memo' => ['source' => 'server-api'],
+                'search_attributes' => ['tenant' => 'acme'],
+            ]);
+
+        $start->assertCreated()
+            ->assertHeader('X-Durable-Workflow-Control-Plane-Version', '2')
+            ->assertJsonPath('workflow_id', 'wf-external-worker-complete')
+            ->assertJsonPath('workflow_type', 'tests.external-greeting-workflow')
+            ->assertJsonPath('status', 'pending')
+            ->assertJsonPath('outcome', 'started_new');
+
+        $workflowId = (string) $start->json('workflow_id');
+        $runId = (string) $start->json('run_id');
+
+        $describe = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}");
+
+        $describe->assertOk()
+            ->assertHeader('X-Durable-Workflow-Control-Plane-Version', '2')
+            ->assertJsonPath('workflow_id', $workflowId)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('business_key', 'invoice-42')
+            ->assertJsonPath('status', 'pending')
+            ->assertJsonPath('status_bucket', 'running')
+            ->assertJsonPath('run_number', 1)
+            ->assertJsonPath('run_count', 1)
+            ->assertJsonPath('is_current_run', true)
+            ->assertJsonPath('task_queue', 'external-workflows')
+            ->assertJsonPath('input.0', 'Ada')
+            ->assertJsonPath('memo.source', 'server-api')
+            ->assertJsonPath('search_attributes.tenant', 'acme')
+            ->assertJsonPath('actions.can_signal', true)
+            ->assertJsonPath('actions.can_query', true)
+            ->assertJsonPath('actions.can_update', true)
+            ->assertJsonPath('actions.can_cancel', true)
+            ->assertJsonPath('actions.can_terminate', true);
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-1',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk()
+            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1')
+            ->assertJsonPath('protocol_version', '1')
+            ->assertJsonPath('server_capabilities.supported_workflow_task_commands.3', 'schedule_activity')
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow')
+            ->assertJsonPath('task.workflow_task_attempt', 1)
+            ->assertJsonPath('task.lease_owner', 'php-worker-1')
+            ->assertJsonPath('task.task_queue', 'external-workflows');
+
+        $taskId = (string) $poll->json('task.task_id');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $eventTypes = array_column((array) $poll->json('task.history_events'), 'event_type');
+
+        $this->assertContains('StartAccepted', $eventTypes);
+        $this->assertContains('WorkflowStarted', $eventTypes);
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serialize([
+                            'greeting' => 'Hello, Ada!',
+                            'workflow_id' => $workflowId,
+                        ]),
+                    ],
+                ],
+            ]);
+
+        $complete->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', 1)
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('run_status', 'completed');
+
+        $showRun = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}/runs/{$runId}");
+
+        $showRun->assertOk()
+            ->assertHeader('X-Durable-Workflow-Control-Plane-Version', '2')
+            ->assertJsonPath('workflow_id', $workflowId)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('status', 'completed')
+            ->assertJsonPath('output.greeting', 'Hello, Ada!')
+            ->assertJsonPath('output.workflow_id', $workflowId);
+
+        $history = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}/runs/{$runId}/history");
+
+        $history->assertOk()
+            ->assertHeader('X-Durable-Workflow-Control-Plane-Version', '2');
+
+        $historyEventTypes = array_column($history->json('events'), 'event_type');
+
+        $this->assertContains('WorkflowCompleted', $historyEventTypes);
+    }
+
+    public function test_it_starts_remote_durable_types_without_local_registration_and_completes_them_through_the_worker_protocol(): void
+    {
+        Queue::fake();
+
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-remote-durable-type',
+                'workflow_type' => 'remote.greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+                'memo' => ['source' => 'remote-client'],
+                'search_attributes' => ['team' => 'remote-worker'],
+            ]);
+
+        $start->assertCreated()
+            ->assertJsonPath('workflow_id', 'wf-remote-durable-type')
+            ->assertJsonPath('workflow_type', 'remote.greeting-workflow')
+            ->assertJsonPath('status', 'pending')
+            ->assertJsonPath('outcome', 'started_new');
+
+        $workflowId = (string) $start->json('workflow_id');
+        $runId = (string) $start->json('run_id');
+
+        $describe = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}");
+
+        $describe->assertOk()
+            ->assertJsonPath('workflow_id', $workflowId)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('workflow_type', 'remote.greeting-workflow')
+            ->assertJsonPath('status', 'pending')
+            ->assertJsonPath('task_queue', 'external-workflows')
+            ->assertJsonPath('input.0', 'Ada')
+            ->assertJsonPath('memo.source', 'remote-client')
+            ->assertJsonPath('search_attributes.team', 'remote-worker');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-remote',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.workflow_type', 'remote.greeting-workflow')
+            ->assertJsonPath('task.task_queue', 'external-workflows');
+
+        $taskId = (string) $poll->json('task.task_id');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $eventTypes = array_column((array) $poll->json('task.history_events'), 'event_type');
+
+        $this->assertContains('StartAccepted', $eventTypes);
+        $this->assertContains('WorkflowStarted', $eventTypes);
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serialize([
+                            'greeting' => 'Hello from remote worker, Ada!',
+                            'workflow_id' => $workflowId,
+                        ]),
+                    ],
+                ],
+            ]);
+
+        $complete->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', 1)
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('run_status', 'completed');
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}/runs/{$runId}")
+            ->assertOk()
+            ->assertJsonPath('workflow_id', $workflowId)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('workflow_type', 'remote.greeting-workflow')
+            ->assertJsonPath('status', 'completed')
+            ->assertJsonPath('output.greeting', 'Hello from remote worker, Ada!')
+            ->assertJsonPath('output.workflow_id', $workflowId);
+    }
+
+    public function test_worker_registration_and_heartbeat_advertise_protocol_capabilities_and_package_fleet_visibility(): void
+    {
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->withHeaders([
+            'X-Namespace' => 'default',
+        ])->postJson('/api/worker/register', [
+            'worker_id' => 'php-worker-register-missing-version',
+            'task_queue' => 'external-workflows',
+            'runtime' => 'php',
+        ])->assertStatus(400)
+            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1')
+            ->assertJsonPath('reason', 'missing_protocol_version')
+            ->assertJsonPath('supported_version', '1');
+
+        $register = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'php-worker-register',
+                'task_queue' => 'external-workflows',
+                'runtime' => 'php',
+                'build_id' => 'build-register',
+            ]);
+
+        $register->assertCreated()
+            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1')
+            ->assertJsonPath('protocol_version', '1')
+            ->assertJsonPath('worker_id', 'php-worker-register')
+            ->assertJsonPath('registered', true)
+            ->assertJsonPath('server_capabilities.long_poll_timeout', 0)
+            ->assertJsonFragment([
+                'supported_workflow_task_commands' => [
+                    'complete_workflow',
+                    'fail_workflow',
+                    'continue_as_new',
+                    'schedule_activity',
+                    'start_timer',
+                    'start_child_workflow',
+                ],
+            ]);
+
+        $this->withHeaders([
+            'X-Namespace' => 'default',
+        ])->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('worker_fleet.namespace', 'default')
+            ->assertJsonPath('control_plane.version', '2')
+            ->assertJsonPath('control_plane.header', 'X-Durable-Workflow-Control-Plane-Version')
+            ->assertJsonPath('control_plane.response_contract.schema', 'durable-workflow.v2.control-plane-response')
+            ->assertJsonPath(
+                'control_plane.response_contract.contract.schema',
+                'durable-workflow.v2.control-plane-response.contract',
+            )
+            ->assertJsonPath(
+                'control_plane.request_contract.schema',
+                'durable-workflow.v2.control-plane-request.contract',
+            )
+            ->assertJsonPath('control_plane.request_contract.version', 1)
+            ->assertJsonPath(
+                'control_plane.request_contract.operations.start.fields.duplicate_policy.canonical_values.1',
+                'use-existing',
+            )
+            ->assertJsonPath(
+                'control_plane.request_contract.operations.update.removed_fields.wait_policy',
+                'Use wait_for.',
+            )
+            ->assertJsonPath('worker_fleet.active_workers', 1)
+            ->assertJsonPath('worker_fleet.active_worker_scopes', 1)
+            ->assertJsonPath('worker_fleet.build_ids.0', 'build-register')
+            ->assertJsonPath('worker_fleet.queues.0', 'external-workflows')
+            ->assertJsonPath('worker_fleet.workers.0.worker_id', 'php-worker-register')
+            ->assertJsonPath('worker_fleet.workers.0.build_ids.0', 'build-register')
+            ->assertJsonPath('worker_fleet.workers.0.queues.0', 'external-workflows');
+
+        WorkerCompatibilityHeartbeat::query()->delete();
+
+        $heartbeat = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/heartbeat', [
+                'worker_id' => 'php-worker-register',
+            ]);
+
+        $heartbeat->assertOk()
+            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1')
+            ->assertJsonPath('protocol_version', '1')
+            ->assertJsonPath('worker_id', 'php-worker-register')
+            ->assertJsonPath('acknowledged', true)
+            ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
+            ->assertJsonPath('server_capabilities.supported_workflow_task_commands.5', 'start_child_workflow');
+
+        $this->withHeaders([
+            'X-Namespace' => 'default',
+        ])->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('worker_protocol.version', '1')
+            ->assertJsonPath('worker_fleet.active_workers', 1)
+            ->assertJsonPath('worker_fleet.build_ids.0', 'build-register')
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.supported_workflow_task_commands.2',
+                'continue_as_new',
+            );
+
+        $this->withHeaders([
+            'X-Namespace' => 'default',
+            'X-Durable-Workflow-Protocol-Version' => '999',
+        ])->postJson('/api/worker/register', [
+            'worker_id' => 'php-worker-register-unsupported',
+            'task_queue' => 'external-workflows',
+            'runtime' => 'php',
+        ])->assertStatus(400)
+            ->assertJsonPath('reason', 'unsupported_protocol_version')
+            ->assertJsonPath('supported_version', '1');
+    }
+
+    public function test_worker_heartbeat_is_scoped_to_the_resolved_namespace(): void
+    {
+        $this->createNamespace('default', 'Default namespace');
+        $this->createNamespace('other', 'Other namespace');
+
+        $otherHeartbeatAt = now()->subHours(2)->startOfSecond();
+        $defaultHeartbeatAt = now()->subHour()->startOfSecond();
+
+        WorkerRegistration::query()->create([
+            'worker_id' => 'php-worker-shared-id',
+            'namespace' => 'other',
+            'task_queue' => 'external-workflows',
+            'runtime' => 'php',
+            'last_heartbeat_at' => $otherHeartbeatAt,
+            'status' => 'active',
+        ]);
+
+        WorkerRegistration::query()->create([
+            'worker_id' => 'php-worker-shared-id',
+            'namespace' => 'default',
+            'task_queue' => 'external-workflows',
+            'runtime' => 'php',
+            'last_heartbeat_at' => $defaultHeartbeatAt,
+            'status' => 'active',
+        ]);
+
+        $heartbeatAt = now()->addMinutes(5)->startOfSecond();
+        $this->travelTo($heartbeatAt);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/heartbeat', [
+                'worker_id' => 'php-worker-shared-id',
+            ])
+            ->assertOk()
+            ->assertJsonPath('worker_id', 'php-worker-shared-id')
+            ->assertJsonPath('acknowledged', true);
+
+        $defaultWorker = WorkerRegistration::query()
+            ->where('worker_id', 'php-worker-shared-id')
+            ->where('namespace', 'default')
+            ->firstOrFail();
+        $otherWorker = WorkerRegistration::query()
+            ->where('worker_id', 'php-worker-shared-id')
+            ->where('namespace', 'other')
+            ->firstOrFail();
+
+        $this->assertSame($heartbeatAt->toJSON(), $defaultWorker->last_heartbeat_at?->toJSON());
+        $this->assertSame('active', $defaultWorker->status);
+        $this->assertSame($otherHeartbeatAt->toJSON(), $otherWorker->last_heartbeat_at?->toJSON());
+
+        $this->withHeaders($this->workerHeaders(namespace: 'missing'))
+            ->postJson('/api/worker/heartbeat', [
+                'worker_id' => 'php-worker-shared-id',
+            ])
+            ->assertNotFound()
+            ->assertJsonPath('error', 'Worker not registered.');
+    }
+
+    public function test_it_scopes_workflow_task_polling_by_namespace(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+        $this->createNamespace('other', 'Other namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-hidden-workflow-task',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Grace'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->withHeaders($this->workerHeaders(namespace: 'other'))
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-2',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+    }
+
+    public function test_it_uses_a_server_local_lease_counter_for_workflow_task_attempts(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-bridge-poll-discovery',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $workflowId = (string) $start->json('workflow_id');
+        $runId = (string) $start->json('run_id');
+
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', 'workflow')
+            ->firstOrFail();
+
+        $task->forceFill([
+            'status' => TaskStatus::Leased,
+            'lease_owner' => 'existing-worker',
+            'attempt_count' => 7,
+        ])->save();
+
+        $leaseExpiresAt = now()->addMinutes(5)->toJSON();
+        $recordedAt = now()->toJSON();
+        $duplicateLeaseExpiresAt = now()->addMinutes(10)->toJSON();
+        $retryLeaseExpiresAt = now()->addMinutes(15)->toJSON();
+        $historyPayload = [
+            'task_id' => $task->id,
+            'workflow_run_id' => $runId,
+            'workflow_instance_id' => $workflowId,
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'workflow_class' => ExternalGreetingWorkflow::class,
+            'payload_codec' => (string) config('workflows.serializer'),
+            'arguments' => null,
+            'run_status' => 'pending',
+            'last_history_sequence' => 2,
+            'history_events' => [
+                [
+                    'id' => 'evt-start-accepted',
+                    'sequence' => 1,
+                    'event_type' => 'StartAccepted',
+                    'payload' => [],
+                    'workflow_task_id' => null,
+                    'workflow_command_id' => null,
+                    'recorded_at' => $recordedAt,
+                ],
+                [
+                    'id' => 'evt-workflow-started',
+                    'sequence' => 2,
+                    'event_type' => 'WorkflowStarted',
+                    'payload' => [],
+                    'workflow_task_id' => null,
+                    'workflow_command_id' => null,
+                    'recorded_at' => $recordedAt,
+                ],
+            ],
+        ];
+        $claimCalls = 0;
+
+        $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use (
+            $leaseExpiresAt,
+            $duplicateLeaseExpiresAt,
+            $retryLeaseExpiresAt,
+            $recordedAt,
+            $runId,
+            $task,
+            $workflowId,
+            $historyPayload,
+            &$claimCalls,
+        ): void {
+            $mock->shouldReceive('poll')
+                ->times(3)
+                ->with(null, 'external-workflows', 10, null)
+                ->andReturn(
+                    [[
+                        'task_id' => $task->id,
+                        'workflow_run_id' => $runId,
+                        'workflow_instance_id' => $workflowId,
+                        'workflow_type' => 'tests.external-greeting-workflow',
+                        'workflow_class' => ExternalGreetingWorkflow::class,
+                        'connection' => null,
+                        'queue' => 'external-workflows',
+                        'compatibility' => null,
+                        'available_at' => $recordedAt,
+                    ]],
+                    [[
+                        'task_id' => $task->id,
+                        'workflow_run_id' => $runId,
+                        'workflow_instance_id' => $workflowId,
+                        'workflow_type' => 'tests.external-greeting-workflow',
+                        'workflow_class' => ExternalGreetingWorkflow::class,
+                        'connection' => null,
+                        'queue' => 'external-workflows',
+                        'compatibility' => null,
+                        'available_at' => $recordedAt,
+                    ]],
+                    [[
+                        'task_id' => $task->id,
+                        'workflow_run_id' => $runId,
+                        'workflow_instance_id' => $workflowId,
+                        'workflow_type' => 'tests.external-greeting-workflow',
+                        'workflow_class' => ExternalGreetingWorkflow::class,
+                        'connection' => null,
+                        'queue' => 'external-workflows',
+                        'compatibility' => null,
+                        'available_at' => $recordedAt,
+                    ]],
+                );
+
+            $mock->shouldReceive('claimStatus')
+                ->times(3)
+                ->andReturnUsing(function (string $claimedTaskId, string $leaseOwner) use (
+                    &$claimCalls,
+                    $leaseExpiresAt,
+                    $duplicateLeaseExpiresAt,
+                    $retryLeaseExpiresAt,
+                    $runId,
+                    $task,
+                    $workflowId,
+                ): array {
+                    $claimCalls++;
+                    $this->assertSame($task->id, $claimedTaskId);
+                    $this->assertSame(
+                        $claimCalls <= 2 ? 'php-worker-bridge' : 'php-worker-bridge-retry',
+                        $leaseOwner,
+                    );
+
+                    return [
+                        'claimed' => true,
+                        'task_id' => $task->id,
+                        'workflow_run_id' => $runId,
+                        'workflow_instance_id' => $workflowId,
+                        'workflow_type' => 'tests.external-greeting-workflow',
+                        'workflow_class' => ExternalGreetingWorkflow::class,
+                        'payload_codec' => (string) config('workflows.serializer'),
+                        'connection' => null,
+                        'queue' => 'external-workflows',
+                        'compatibility' => null,
+                        'lease_owner' => $leaseOwner,
+                        'lease_expires_at' => match ($claimCalls) {
+                            1 => $leaseExpiresAt,
+                            2 => $duplicateLeaseExpiresAt,
+                            default => $retryLeaseExpiresAt,
+                        },
+                        'reason' => null,
+                        'reason_detail' => null,
+                    ];
+                });
+
+            $mock->shouldReceive('historyPayload')
+                ->times(3)
+                ->with($task->id)
+                ->andReturn($historyPayload, $historyPayload, $historyPayload);
+        });
+
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-bridge',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('task.task_id', $task->id)
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.workflow_task_attempt', 1)
+            ->assertJsonPath('task.lease_owner', 'php-worker-bridge');
+
+        $lease = WorkflowTaskProtocolLease::query()->findOrFail($task->id);
+        $this->assertSame(1, $lease->workflow_task_attempt);
+
+        $duplicatePoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-bridge',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $duplicatePoll->assertOk()
+            ->assertJsonPath('task.task_id', $task->id)
+            ->assertJsonPath('task.workflow_task_attempt', 1)
+            ->assertJsonPath('task.lease_owner', 'php-worker-bridge');
+
+        $this->assertSame(1, WorkflowTaskProtocolLease::query()->findOrFail($task->id)->workflow_task_attempt);
+
+        $lease->forceFill([
+            'lease_owner' => null,
+            'lease_expires_at' => null,
+        ])->save();
+
+        $retryPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-bridge-retry',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $retryPoll->assertOk()
+            ->assertJsonPath('task.task_id', $task->id)
+            ->assertJsonPath('task.workflow_task_attempt', 2)
+            ->assertJsonPath('task.lease_owner', 'php-worker-bridge-retry');
+
+        $this->assertSame(2, WorkflowTaskProtocolLease::query()->findOrFail($task->id)->workflow_task_attempt);
+    }
+
+    public function test_it_redelivers_the_same_workflow_task_for_duplicate_poll_request_ids(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-duplicate-poll-request',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-duplicate-poll',
+                'task_queue' => 'external-workflows',
+                'poll_request_id' => 'poll-request-1',
+            ]);
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
+            ->assertJsonPath('task.workflow_id', 'wf-duplicate-poll-request')
+            ->assertJsonPath('task.workflow_task_attempt', 1)
+            ->assertJsonPath('task.lease_owner', 'php-worker-duplicate-poll');
+
+        $taskId = (string) $firstPoll->json('task.task_id');
+        $attempt = (int) $firstPoll->json('task.workflow_task_attempt');
+
+        $duplicatePoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-duplicate-poll',
+                'task_queue' => 'external-workflows',
+                'poll_request_id' => 'poll-request-1',
+            ]);
+
+        $duplicatePoll->assertOk()
+            ->assertJsonPath('task.task_id', $taskId)
+            ->assertJsonPath('task.workflow_task_attempt', $attempt)
+            ->assertJsonPath('task.lease_owner', 'php-worker-duplicate-poll');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-duplicate-poll',
+                'task_queue' => 'external-workflows',
+                'poll_request_id' => 'poll-request-2',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-other',
+                'task_queue' => 'external-workflows',
+                'poll_request_id' => 'poll-request-1',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+
+        $lease = WorkflowTaskProtocolLease::query()->findOrFail($taskId);
+
+        $this->assertSame(1, $lease->workflow_task_attempt);
+        $this->assertSame('poll-request-1', $lease->last_poll_request_id);
+    }
+
+    public function test_duplicate_poll_request_redelivery_is_scoped_by_task_queue(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-duplicate-poll-request-queue-a',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows-a',
+                'input' => ['Ada'],
+            ])
+            ->assertCreated();
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-duplicate-poll-request-queue-b',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows-b',
+                'input' => ['Grace'],
+            ])
+            ->assertCreated();
+
+        $queueAPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-shared-poll-request',
+                'task_queue' => 'external-workflows-a',
+                'poll_request_id' => 'shared-poll-request',
+            ]);
+
+        $queueAPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-duplicate-poll-request-queue-a')
+            ->assertJsonPath('task.task_queue', 'external-workflows-a')
+            ->assertJsonPath('task.workflow_task_attempt', 1);
+
+        $queueATaskId = (string) $queueAPoll->json('task.task_id');
+
+        $queueBPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-shared-poll-request',
+                'task_queue' => 'external-workflows-b',
+                'poll_request_id' => 'shared-poll-request',
+            ]);
+
+        $queueBPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-duplicate-poll-request-queue-b')
+            ->assertJsonPath('task.task_queue', 'external-workflows-b')
+            ->assertJsonPath('task.workflow_task_attempt', 1);
+
+        $queueBTaskId = (string) $queueBPoll->json('task.task_id');
+
+        $duplicateQueueA = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-shared-poll-request',
+                'task_queue' => 'external-workflows-a',
+                'poll_request_id' => 'shared-poll-request',
+            ]);
+
+        $duplicateQueueA->assertOk()
+            ->assertJsonPath('task.task_id', $queueATaskId)
+            ->assertJsonPath('task.workflow_id', 'wf-duplicate-poll-request-queue-a')
+            ->assertJsonPath('task.task_queue', 'external-workflows-a')
+            ->assertJsonPath('task.workflow_task_attempt', 1);
+
+        $duplicateQueueB = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-shared-poll-request',
+                'task_queue' => 'external-workflows-b',
+                'poll_request_id' => 'shared-poll-request',
+            ]);
+
+        $duplicateQueueB->assertOk()
+            ->assertJsonPath('task.task_id', $queueBTaskId)
+            ->assertJsonPath('task.workflow_id', 'wf-duplicate-poll-request-queue-b')
+            ->assertJsonPath('task.task_queue', 'external-workflows-b')
+            ->assertJsonPath('task.workflow_task_attempt', 1);
+    }
+
+    public function test_it_replays_cached_duplicate_poll_request_results_even_if_the_lease_row_is_missing(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-duplicate-poll-request-cache',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-duplicate-cache',
+                'task_queue' => 'external-workflows',
+                'poll_request_id' => 'poll-request-cache-1',
+            ]);
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-duplicate-poll-request-cache')
+            ->assertJsonPath('task.workflow_task_attempt', 1)
+            ->assertJsonPath('task.lease_owner', 'php-worker-duplicate-cache');
+
+        $taskId = (string) $firstPoll->json('task.task_id');
+
+        WorkflowTaskProtocolLease::query()->whereKey($taskId)->delete();
+
+        $duplicatePoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-duplicate-cache',
+                'task_queue' => 'external-workflows',
+                'poll_request_id' => 'poll-request-cache-1',
+            ]);
+
+        $duplicatePoll->assertOk()
+            ->assertJsonPath('task.task_id', $taskId)
+            ->assertJsonPath('task.workflow_task_attempt', 1)
+            ->assertJsonPath('task.lease_owner', 'php-worker-duplicate-cache');
+
+        $this->assertNull(WorkflowTaskProtocolLease::query()->find($taskId));
+    }
+
+    public function test_it_replays_cached_duplicate_poll_request_results_after_the_old_short_cache_window_when_the_lease_is_still_active(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-duplicate-poll-request-cache-late-retry',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-duplicate-cache-late',
+                'task_queue' => 'external-workflows',
+                'poll_request_id' => 'poll-request-cache-late-1',
+            ]);
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-duplicate-poll-request-cache-late-retry')
+            ->assertJsonPath('task.workflow_task_attempt', 1)
+            ->assertJsonPath('task.lease_owner', 'php-worker-duplicate-cache-late');
+
+        $taskId = (string) $firstPoll->json('task.task_id');
+
+        WorkflowTaskProtocolLease::query()->whereKey($taskId)->delete();
+
+        $this->travel(10)->seconds();
+
+        try {
+            $duplicatePoll = $this->withHeaders($this->workerHeaders())
+                ->postJson('/api/worker/workflow-tasks/poll', [
+                    'worker_id' => 'php-worker-duplicate-cache-late',
+                    'task_queue' => 'external-workflows',
+                    'poll_request_id' => 'poll-request-cache-late-1',
+                ]);
+
+            $duplicatePoll->assertOk()
+                ->assertJsonPath('task.task_id', $taskId)
+                ->assertJsonPath('task.workflow_task_attempt', 1)
+                ->assertJsonPath('task.lease_owner', 'php-worker-duplicate-cache-late');
+
+            $this->assertNull(WorkflowTaskProtocolLease::query()->find($taskId));
+        } finally {
+            $this->travelBack();
+        }
+    }
+
+    public function test_it_does_not_replay_cached_duplicate_poll_results_after_the_task_is_completed(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-duplicate-poll-request-completed',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-duplicate-complete',
+                'task_queue' => 'external-workflows',
+                'poll_request_id' => 'poll-request-complete-1',
+            ]);
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-duplicate-poll-request-completed')
+            ->assertJsonPath('task.workflow_task_attempt', 1)
+            ->assertJsonPath('task.lease_owner', 'php-worker-duplicate-complete');
+
+        $taskId = (string) $firstPoll->json('task.task_id');
+        $attempt = (int) $firstPoll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $firstPoll->json('task.lease_owner');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serialize([
+                            'greeting' => 'Hello, Ada!',
+                        ]),
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'completed');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-duplicate-complete',
+                'task_queue' => 'external-workflows',
+                'poll_request_id' => 'poll-request-complete-1',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+    }
+
+    public function test_duplicate_poll_request_redelivery_refreshes_live_lease_metadata_after_a_heartbeat(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-duplicate-poll-request-heartbeat-refresh',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-duplicate-heartbeat',
+                'task_queue' => 'external-workflows',
+                'poll_request_id' => 'poll-request-heartbeat-1',
+            ]);
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-duplicate-poll-request-heartbeat-refresh')
+            ->assertJsonPath('task.workflow_task_attempt', 1)
+            ->assertJsonPath('task.lease_owner', 'php-worker-duplicate-heartbeat');
+
+        $taskId = (string) $firstPoll->json('task.task_id');
+        $attempt = (int) $firstPoll->json('task.workflow_task_attempt');
+        $initialLeaseExpiresAt = (string) $firstPoll->json('task.lease_expires_at');
+
+        $heartbeat = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/heartbeat", [
+                'lease_owner' => 'php-worker-duplicate-heartbeat',
+                'workflow_task_attempt' => $attempt,
+            ]);
+
+        $heartbeat->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('lease_owner', 'php-worker-duplicate-heartbeat')
+            ->assertJsonPath('renewed', true)
+            ->assertJsonPath('reason', null);
+
+        $renewedLeaseExpiresAt = (string) $heartbeat->json('lease_expires_at');
+
+        $this->assertNotSame($initialLeaseExpiresAt, $renewedLeaseExpiresAt);
+
+        $duplicatePoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-duplicate-heartbeat',
+                'task_queue' => 'external-workflows',
+                'poll_request_id' => 'poll-request-heartbeat-1',
+            ]);
+
+        $duplicatePoll->assertOk()
+            ->assertJsonPath('task.task_id', $taskId)
+            ->assertJsonPath('task.workflow_task_attempt', $attempt)
+            ->assertJsonPath('task.lease_owner', 'php-worker-duplicate-heartbeat')
+            ->assertJsonPath('task.lease_expires_at', $renewedLeaseExpiresAt);
+    }
+
+    public function test_it_repairs_missing_workflow_task_lease_rows_before_completion(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-missing-workflow-task-lease-complete',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-missing-lease-complete',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        WorkflowTaskProtocolLease::query()->whereKey($taskId)->delete();
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serialize([
+                            'greeting' => 'Hello, Ada!',
+                        ]),
+                    ],
+                ],
+            ]);
+
+        $complete->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'completed');
+
+        $lease = WorkflowTaskProtocolLease::query()->findOrFail($taskId);
+
+        $this->assertSame($attempt, $lease->workflow_task_attempt);
+        $this->assertNull($lease->lease_owner);
+        $this->assertNull($lease->lease_expires_at);
+    }
+
+    public function test_it_repairs_stale_workflow_task_lease_rows_before_heartbeats(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-stale-workflow-task-lease-heartbeat',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-stale-lease-heartbeat',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        WorkflowTaskProtocolLease::query()->findOrFail($taskId)
+            ->forceFill([
+                'lease_owner' => null,
+                'lease_expires_at' => null,
+                'last_poll_request_id' => null,
+            ])->save();
+
+        $heartbeat = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/heartbeat", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+            ]);
+
+        $heartbeat->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('lease_owner', $leaseOwner)
+            ->assertJsonPath('renewed', true)
+            ->assertJsonPath('reason', null);
+
+        $lease = WorkflowTaskProtocolLease::query()->findOrFail($taskId);
+
+        $this->assertSame($attempt, $lease->workflow_task_attempt);
+        $this->assertSame($leaseOwner, $lease->lease_owner);
+        $this->assertNotNull($lease->lease_expires_at);
+    }
+
+    public function test_it_reports_lease_owner_mismatch_from_the_package_task_row_when_the_mirror_row_is_missing(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-missing-workflow-task-lease-mismatch',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-mirror-owner',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        WorkflowTaskProtocolLease::query()->whereKey($taskId)->delete();
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/heartbeat", [
+                'lease_owner' => 'php-worker-wrong-owner',
+                'workflow_task_attempt' => $attempt,
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'lease_owner_mismatch')
+            ->assertJsonPath('lease_owner', 'php-worker-mirror-owner');
+
+        $this->assertNull(WorkflowTaskProtocolLease::query()->find($taskId));
+    }
+
+    public function test_it_drops_claimed_workflow_tasks_when_the_bridge_cannot_build_the_history_payload(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        WorkflowNamespaceWorkflow::query()->create([
+            'namespace' => 'default',
+            'workflow_instance_id' => 'wf-bridge-missing-task',
+            'workflow_type' => 'tests.external-greeting-workflow',
+        ]);
+
+        $recordedAt = now()->toJSON();
+
+        $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use ($recordedAt): void {
+            $mock->shouldReceive('poll')
+                ->once()
+                ->with(null, 'external-workflows', 10, null)
+                ->andReturn([
+                    [
+                        'task_id' => 'wf-task-missing-row',
+                        'workflow_run_id' => 'run-bridge-missing-task',
+                        'workflow_instance_id' => 'wf-bridge-missing-task',
+                        'workflow_type' => 'tests.external-greeting-workflow',
+                        'workflow_class' => ExternalGreetingWorkflow::class,
+                        'connection' => null,
+                        'queue' => 'external-workflows',
+                        'compatibility' => null,
+                        'available_at' => $recordedAt,
+                    ],
+                ]);
+
+            $mock->shouldReceive('claimStatus')
+                ->once()
+                ->with('wf-task-missing-row', 'php-worker-missing-row')
+                ->andReturn([
+                    'claimed' => true,
+                    'task_id' => 'wf-task-missing-row',
+                    'workflow_run_id' => 'run-bridge-missing-task',
+                    'workflow_instance_id' => 'wf-bridge-missing-task',
+                    'workflow_type' => 'tests.external-greeting-workflow',
+                    'workflow_class' => ExternalGreetingWorkflow::class,
+                    'payload_codec' => (string) config('workflows.serializer'),
+                    'connection' => null,
+                    'queue' => 'external-workflows',
+                    'compatibility' => null,
+                    'lease_owner' => 'php-worker-missing-row',
+                    'lease_expires_at' => now()->addMinutes(5)->toJSON(),
+                    'reason' => null,
+                    'reason_detail' => null,
+                ]);
+
+            $mock->shouldReceive('historyPayload')
+                ->once()
+                ->with('wf-task-missing-row')
+                ->andReturn(null);
+        });
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-missing-row',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+
+        $lease = WorkflowTaskProtocolLease::query()->findOrFail('wf-task-missing-row');
+        $this->assertSame(1, $lease->workflow_task_attempt);
+        $this->assertNull($lease->lease_owner);
+        $this->assertNull($lease->lease_expires_at);
+    }
+
+    public function test_it_does_not_fall_back_to_a_local_ready_scan_when_the_workflow_bridge_returns_no_tasks(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-bridge-only-poll',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('poll')
+                ->once()
+                ->with(null, 'external-workflows', 10, null)
+                ->andReturn([]);
+        });
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-bridge-only',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+    }
+
+    public function test_it_passes_the_next_visible_workflow_task_deadline_into_long_polling(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-workflow-task-next-probe',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+        $futureAvailableAt = now()->addMinutes(2)->startOfSecond();
+
+        WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', 'workflow')
+            ->firstOrFail()
+            ->forceFill([
+                'available_at' => $futureAvailableAt,
+            ])->save();
+
+        /** @var LongPollSignalStore $signals */
+        $signals = app(LongPollSignalStore::class);
+        $expectedChannels = $signals->workflowTaskPollChannels('default', null, 'external-workflows');
+
+        $this->mock(LongPoller::class, function (MockInterface $mock) use (
+            $expectedChannels,
+            $futureAvailableAt,
+        ): void {
+            $mock->shouldReceive('until')
+                ->once()
+                ->andReturnUsing(function (
+                    callable $probe,
+                    callable $ready,
+                    ?int $timeoutSeconds = null,
+                    ?int $intervalMilliseconds = null,
+                    array $wakeChannels = [],
+                    ?callable $nextProbeAt = null,
+                ) use ($expectedChannels, $futureAvailableAt) {
+                    $this->assertSame($expectedChannels, $wakeChannels);
+
+                    $initial = $probe();
+
+                    $this->assertNull($initial);
+                    $this->assertFalse($ready($initial));
+                    $this->assertIsCallable($nextProbeAt);
+
+                    $hint = $nextProbeAt();
+
+                    $this->assertInstanceOf(\DateTimeInterface::class, $hint);
+                    $this->assertSame(
+                        $futureAvailableAt->format('U.u'),
+                        $hint->format('U.u'),
+                    );
+
+                    return null;
+                });
+        });
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-next-probe',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+    }
+
+    public function test_it_filters_workflow_tasks_by_worker_build_id(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-build-compatible',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Margaret'],
+            ]);
+
+        $start->assertCreated();
+
+        $workflowId = (string) $start->json('workflow_id');
+        $runId = (string) $start->json('run_id');
+
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', 'workflow')
+            ->firstOrFail();
+
+        $task->forceFill([
+            'compatibility' => 'build-a',
+        ])->save();
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-no-build',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-build-a',
+                'task_queue' => 'external-workflows',
+                'build_id' => 'build-a',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.compatibility', 'build-a')
+            ->assertJsonPath('task.lease_owner', 'php-worker-build-a');
+    }
+
+    public function test_it_fences_stale_workflow_task_workers_and_records_failures(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-external-worker-fail',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Linus'],
+            ]);
+
+        $start->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-3',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/fail", [
+                'lease_owner' => 'wrong-worker',
+                'workflow_task_attempt' => $attempt,
+                'failure' => [
+                    'message' => 'Replay failed',
+                ],
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'lease_owner_mismatch');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/fail", [
+                'lease_owner' => 'php-worker-3',
+                'workflow_task_attempt' => $attempt + 1,
+                'failure' => [
+                    'message' => 'Replay failed',
+                ],
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'workflow_task_attempt_mismatch');
+
+        $fail = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/fail", [
+                'lease_owner' => 'php-worker-3',
+                'workflow_task_attempt' => $attempt,
+                'failure' => [
+                    'message' => 'Determinism violation',
+                    'type' => 'determinism_violation',
+                ],
+            ]);
+
+        $fail->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('outcome', 'failed')
+            ->assertJsonPath('recorded', true);
+
+        $task = WorkflowTask::query()->findOrFail($taskId);
+
+        $this->assertSame(TaskStatus::Failed, $task->status);
+        $this->assertSame('Determinism violation', $task->last_error);
+    }
+
+    public function test_it_heartbeats_leased_workflow_tasks_and_fences_stale_workers(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-external-worker-heartbeat',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Grace'],
+            ]);
+
+        $start->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-heartbeat',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-external-worker-heartbeat')
+            ->assertJsonPath('task.workflow_task_attempt', 1);
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $initialLeaseExpiresAt = $poll->json('task.lease_expires_at');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/heartbeat", [
+                'lease_owner' => 'wrong-worker',
+                'workflow_task_attempt' => $attempt,
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'lease_owner_mismatch');
+
+        $heartbeat = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/heartbeat", [
+                'lease_owner' => 'php-worker-heartbeat',
+                'workflow_task_attempt' => $attempt,
+            ]);
+
+        $heartbeat->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('lease_owner', 'php-worker-heartbeat')
+            ->assertJsonPath('renewed', true)
+            ->assertJsonPath('task_status', 'leased')
+            ->assertJsonPath('reason', null);
+
+        $this->assertIsString($heartbeat->json('lease_expires_at'));
+        $this->assertNotSame($initialLeaseExpiresAt, $heartbeat->json('lease_expires_at'));
+    }
+
+    public function test_it_proactively_repairs_expired_workflow_task_leases_when_a_new_worker_polls(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-expired-workflow-task-poll-repair',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-expired-poll-lease',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+        $expiredAt = now()->subMinute()->startOfSecond();
+
+        WorkflowTask::query()->findOrFail($taskId)
+            ->forceFill([
+                'lease_expires_at' => $expiredAt,
+            ])->save();
+
+        $recoveredPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-recovered-during-poll',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $recoveredPoll->assertOk()
+            ->assertJsonPath('task.task_id', $taskId)
+            ->assertJsonPath('task.lease_owner', 'php-worker-recovered-during-poll');
+
+        $recoveredAttempt = (int) $recoveredPoll->json('task.workflow_task_attempt');
+        $this->assertGreaterThanOrEqual(1, $recoveredAttempt);
+
+        $repairHistory = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/wf-expired-workflow-task-poll-repair/runs/{$start->json('run_id')}/history");
+
+        $repairHistory->assertOk();
+
+        $this->assertContains(
+            'RepairRequested',
+            array_column($repairHistory->json('events'), 'event_type'),
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serialize(['late' => 'stale-worker']),
+                    ],
+                ],
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'lease_owner_mismatch')
+            ->assertJsonPath('lease_owner', 'php-worker-recovered-during-poll');
+    }
+
+    public function test_it_requests_package_repair_when_a_workflow_task_lease_expires(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-expired-workflow-task-lease',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-expired-lease',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+        $expiredAt = now()->subMinute()->startOfSecond();
+
+        WorkflowTask::query()->findOrFail($taskId)
+            ->forceFill([
+                'lease_expires_at' => $expiredAt,
+            ])->save();
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/heartbeat", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'lease_expired')
+            ->assertJsonPath('lease_owner', $leaseOwner)
+            ->assertJsonPath('task_status', 'leased')
+            ->assertJsonPath('lease_expires_at', $expiredAt->toJSON());
+
+        $recoveredPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-recovered-lease',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $recoveredPoll->assertOk()
+            ->assertJsonPath('task.task_id', $taskId)
+            ->assertJsonPath('task.lease_owner', 'php-worker-recovered-lease');
+
+        $recoveredAttempt = (int) $recoveredPoll->json('task.workflow_task_attempt');
+        $this->assertGreaterThanOrEqual(1, $recoveredAttempt);
+
+        $repairHistory = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/wf-expired-workflow-task-lease/runs/{$start->json('run_id')}/history");
+
+        $repairHistory->assertOk();
+
+        $this->assertContains(
+            'RepairRequested',
+            array_column($repairHistory->json('events'), 'event_type'),
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serialize(['late' => 'stale-worker']),
+                    ],
+                ],
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'lease_owner_mismatch')
+            ->assertJsonPath('lease_owner', 'php-worker-recovered-lease');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => 'php-worker-recovered-lease',
+                'workflow_task_attempt' => $recoveredAttempt,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serialize(['late' => true]),
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('run_status', 'completed');
+
+        $task = WorkflowTask::query()->findOrFail($taskId);
+        $lease = WorkflowTaskProtocolLease::query()->findOrFail($taskId);
+
+        $this->assertSame(TaskStatus::Completed, $task->status);
+        $this->assertNull($lease->lease_owner);
+        $this->assertNull($lease->lease_expires_at);
+    }
+
+    public function test_it_schedules_external_activities_from_non_terminal_workflow_task_commands(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-external-worker-schedules-activity',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $workflowId = (string) $start->json('workflow_id');
+        $runId = (string) $start->json('run_id');
+
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-schedule',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId);
+
+        $scheduleActivity = $this->withHeaders($this->workerHeaders())
+            ->postJson(sprintf('/api/worker/workflow-tasks/%s/complete', $firstPoll->json('task.task_id')), [
+                'lease_owner' => $firstPoll->json('task.lease_owner'),
+                'workflow_task_attempt' => $firstPoll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'schedule_activity',
+                        'activity_type' => 'tests.external-greeting-activity',
+                        'arguments' => Serializer::serialize(['Ada']),
+                        'queue' => 'external-activities',
+                    ],
+                ],
+            ]);
+
+        $scheduleActivity->assertOk()
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('run_status', 'waiting');
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}/runs/{$runId}")
+            ->assertOk()
+            ->assertJsonPath('status', 'waiting');
+
+        $activityPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-activity-worker',
+                'task_queue' => 'external-activities',
+            ]);
+
+        $activityPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');
+
+        $this->assertSame(
+            ['Ada'],
+            Serializer::unserialize((string) $activityPoll->json('task.arguments')),
+        );
+
+        $completeActivity = $this->withHeaders($this->workerHeaders())
+            ->postJson(sprintf('/api/worker/activity-tasks/%s/complete', $activityPoll->json('task.task_id')), [
+                'activity_attempt_id' => $activityPoll->json('task.activity_attempt_id'),
+                'lease_owner' => $activityPoll->json('task.lease_owner'),
+                'result' => 'Hello, Ada!',
+            ]);
+
+        $completeActivity->assertOk()
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true);
+
+        $resumePoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-resume',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $resumePoll->assertOk()
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId);
+
+        $resumeEventTypes = array_column((array) $resumePoll->json('task.history_events'), 'event_type');
+
+        $this->assertContains('ActivityScheduled', $resumeEventTypes);
+        $this->assertContains('ActivityStarted', $resumeEventTypes);
+        $this->assertContains('ActivityCompleted', $resumeEventTypes);
+
+        $completeWorkflow = $this->withHeaders($this->workerHeaders())
+            ->postJson(sprintf('/api/worker/workflow-tasks/%s/complete', $resumePoll->json('task.task_id')), [
+                'lease_owner' => $resumePoll->json('task.lease_owner'),
+                'workflow_task_attempt' => $resumePoll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serialize([
+                            'greeting' => 'Hello, Ada!',
+                            'workflow_id' => $workflowId,
+                        ]),
+                    ],
+                ],
+            ]);
+
+        $completeWorkflow->assertOk()
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'completed');
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}/runs/{$runId}")
+            ->assertOk()
+            ->assertJsonPath('status', 'completed')
+            ->assertJsonPath('output.greeting', 'Hello, Ada!');
+    }
+
+    public function test_it_starts_timers_from_non_terminal_workflow_task_commands(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-external-worker-starts-timer',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Grace'],
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-timer',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson(sprintf('/api/worker/workflow-tasks/%s/complete', $poll->json('task.task_id')), [
+                'lease_owner' => $poll->json('task.lease_owner'),
+                'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'start_timer',
+                        'delay_seconds' => 30,
+                    ],
+                ],
+            ]);
+
+        $complete->assertOk()
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'waiting');
+
+        $timerTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', 'timer')
+            ->where('status', 'ready')
+            ->first();
+
+        $this->assertNotNull($timerTask);
+        $this->assertNotNull($timerTask->available_at);
+
+        $history = $this->withHeaders($this->apiHeaders())
+            ->getJson(sprintf('/api/workflows/%s/runs/%s/history', $start->json('workflow_id'), $runId));
+
+        $history->assertOk();
+
+        $eventTypes = array_column($history->json('events'), 'event_type');
+
+        $this->assertContains('TimerScheduled', $eventTypes);
+    }
+
+    public function test_it_binds_child_workflows_started_by_external_workflow_tasks_to_the_namespace(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-external-worker-starts-child',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Linus'],
+            ]);
+
+        $start->assertCreated();
+
+        $parentWorkflowId = (string) $start->json('workflow_id');
+        $parentRunId = (string) $start->json('run_id');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-parent',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.workflow_id', $parentWorkflowId)
+            ->assertJsonPath('task.run_id', $parentRunId);
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson(sprintf('/api/worker/workflow-tasks/%s/complete', $poll->json('task.task_id')), [
+                'lease_owner' => $poll->json('task.lease_owner'),
+                'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'start_child_workflow',
+                        'workflow_type' => 'tests.external-child-workflow',
+                        'queue' => 'external-workflows',
+                    ],
+                ],
+            ]);
+
+        $complete->assertOk()
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'waiting');
+
+        $childBinding = WorkflowNamespaceWorkflow::query()
+            ->where('namespace', 'default')
+            ->where('workflow_type', 'tests.external-child-workflow')
+            ->first();
+
+        $this->assertNotNull($childBinding);
+
+        $childWorkflowId = (string) $childBinding->workflow_instance_id;
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$childWorkflowId}")
+            ->assertOk()
+            ->assertJsonPath('workflow_id', $childWorkflowId)
+            ->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('workflow_type', 'tests.external-child-workflow')
+            ->assertJsonPath('status', 'pending');
+
+        $childPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-child',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $childPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', $childWorkflowId)
+            ->assertJsonPath('task.workflow_type', 'tests.external-child-workflow');
+    }
+
+    public function test_it_continues_workflows_as_new_from_external_workflow_tasks(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-external-worker-continue-as-new',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $workflowId = (string) $start->json('workflow_id');
+        $originalRunId = (string) $start->json('run_id');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-continue',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $originalRunId);
+
+        $continueAsNew = $this->withHeaders($this->workerHeaders())
+            ->postJson(sprintf('/api/worker/workflow-tasks/%s/complete', $poll->json('task.task_id')), [
+                'lease_owner' => $poll->json('task.lease_owner'),
+                'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'continue_as_new',
+                        'workflow_type' => 'tests.external-greeting-workflow',
+                        'arguments' => Serializer::serialize(['Ada v2']),
+                    ],
+                ],
+            ]);
+
+        $continueAsNew->assertOk()
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_id', $originalRunId)
+            ->assertJsonPath('run_status', 'completed');
+
+        $runs = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}/runs");
+
+        $runs->assertOk()
+            ->assertJsonCount(2, 'runs')
+            ->assertJsonPath('runs.0.run_id', $originalRunId)
+            ->assertJsonPath('runs.0.status', 'completed')
+            ->assertJsonPath('runs.1.run_number', 2)
+            ->assertJsonPath('runs.1.status', 'pending');
+
+        $continuedRunId = (string) $runs->json('runs.1.run_id');
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}")
+            ->assertOk()
+            ->assertJsonPath('workflow_id', $workflowId)
+            ->assertJsonPath('run_id', $continuedRunId)
+            ->assertJsonPath('status', 'pending');
+
+        $continuedPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-continued-run',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $continuedPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $continuedRunId);
+    }
+
+    private function configureWorkflowTypes(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+    }
+
+    private function createNamespace(string $name, string $description): void
+    {
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => $name],
+            [
+                'description' => $description,
+                'retention_days' => 30,
+                'status' => 'active',
+            ],
+        );
+    }
+
+    private function apiHeaders(string $namespace = 'default'): array
+    {
+        return [
+            'X-Namespace' => $namespace,
+            'X-Durable-Workflow-Control-Plane-Version' => '2',
+        ];
+    }
+
+    private function workerHeaders(string $namespace = 'default'): array
+    {
+        return [
+            'X-Namespace' => $namespace,
+            'X-Durable-Workflow-Protocol-Version' => '1',
+        ];
+    }
+}

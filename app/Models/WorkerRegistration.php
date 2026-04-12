@@ -1,0 +1,34 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class WorkerRegistration extends Model
+{
+    protected $table = 'workflow_worker_registrations';
+
+    protected $fillable = [
+        'worker_id',
+        'namespace',
+        'task_queue',
+        'runtime',
+        'sdk_version',
+        'build_id',
+        'supported_workflow_types',
+        'supported_activity_types',
+        'max_concurrent_workflow_tasks',
+        'max_concurrent_activity_tasks',
+        'last_heartbeat_at',
+        'status',
+    ];
+
+    protected function casts(): array
+    {
+        return [
+            'supported_workflow_types' => 'array',
+            'supported_activity_types' => 'array',
+            'last_heartbeat_at' => 'datetime',
+        ];
+    }
+}

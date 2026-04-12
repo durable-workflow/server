@@ -1,0 +1,20 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: durable-workflow-migrate
+  namespace: durable-workflow
+  labels:
+    app.kubernetes.io/name: durable-workflow
+    app.kubernetes.io/component: migration
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: ghcr.io/durable-workflow/server:latest
+          command: ["server-bootstrap"]
+          envFrom:
+            - secretRef:
+                name: durable-workflow-env
