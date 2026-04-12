@@ -514,35 +514,29 @@ final class WorkflowTaskPoller
         string $taskQueue,
     ): bool {
         $limit = max(1, (int) config('server.polling.expired_workflow_task_recovery_scan_limit', 5));
-        $expiredLeases = WorkflowTaskProtocolLease::query()
-            ->where('namespace', $namespace)
-            ->whereNotNull('lease_owner')
-            ->whereNotNull('lease_expires_at')
-            ->where('lease_expires_at', '<=', now())
-            ->orderBy('lease_expires_at')
+
+        // Scan the package's WorkflowTask table directly for expired leases.
+        // This is the source of truth for lease state and does not require a
+        // mirror table row to exist for recovery to work.
+        $expiredTasks = NamespaceWorkflowScope::taskQuery($namespace)
+            ->where('workflow_tasks.task_type', TaskType::Workflow->value)
+            ->where('workflow_tasks.status', TaskStatus::Leased->value)
+            ->where('workflow_tasks.queue', $taskQueue)
+            ->whereNotNull('workflow_tasks.lease_owner')
+            ->whereNotNull('workflow_tasks.lease_expires_at')
+            ->where('workflow_tasks.lease_expires_at', '<=', now())
+            ->orderBy('workflow_tasks.lease_expires_at')
             ->limit($limit)
             ->get();
 
         $recovered = false;
 
-        foreach ($expiredLeases as $lease) {
-            $task = NamespaceWorkflowScope::task($namespace, $lease->task_id);
-
-            if ($task instanceof WorkflowTask) {
-                if ($task->task_type !== TaskType::Workflow) {
-                    continue;
-                }
-
-                if ((string) $task->queue !== $taskQueue) {
-                    continue;
-                }
-            }
-
-            if (! $this->markRecoveryAttempt($lease->task_id)) {
+        foreach ($expiredTasks as $task) {
+            if (! $this->markRecoveryAttempt($task->id)) {
                 continue;
             }
 
-            $this->leaseRecovery->recoverExpiredLease($request, $namespace, $lease);
+            $this->leaseRecovery->recoverExpiredTaskLease($request, $namespace, $task);
             $recovered = true;
         }
 

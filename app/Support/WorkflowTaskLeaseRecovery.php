@@ -18,16 +18,17 @@ final class WorkflowTaskLeaseRecovery
         private readonly WorkflowTaskLeaseRegistry $leases,
     ) {}
 
-    public function recoverExpiredLease(
+    /**
+     * Recover an expired lease using the package's WorkflowTask as the source
+     * of truth for lease state. The mirror table row is used only for metadata
+     * enrichment (attempt counter, cached workflow IDs) when available.
+     */
+    public function recoverExpiredTaskLease(
         Request $request,
         string $namespace,
-        WorkflowTaskProtocolLease $lease,
+        WorkflowTask $task,
     ): void {
-        $task = NamespaceWorkflowScope::task($namespace, $lease->task_id);
-
-        if (! $task instanceof WorkflowTask || $task->task_type !== TaskType::Workflow) {
-            $this->leases->clearActiveLease($lease->task_id);
-
+        if ($task->task_type !== TaskType::Workflow) {
             return;
         }
 
@@ -43,17 +44,30 @@ final class WorkflowTaskLeaseRecovery
             return;
         }
 
-        $workflowRunId = is_string($lease->workflow_run_id) && $lease->workflow_run_id !== ''
-            ? $lease->workflow_run_id
-            : $task->workflow_run_id;
+        $lease = $this->leases->activeLease($namespace, $task->id);
 
-        $workflowId = is_string($lease->workflow_instance_id) && $lease->workflow_instance_id !== ''
-            ? $lease->workflow_instance_id
-            : WorkflowRun::query()->whereKey($workflowRunId)->value('workflow_instance_id');
+        $workflowRunId = $task->workflow_run_id;
+
+        if ($lease instanceof WorkflowTaskProtocolLease && is_string($lease->workflow_run_id) && $lease->workflow_run_id !== '') {
+            $workflowRunId = $lease->workflow_run_id;
+        }
+
+        $workflowId = $lease instanceof WorkflowTaskProtocolLease
+            && is_string($lease->workflow_instance_id)
+            && $lease->workflow_instance_id !== ''
+                ? $lease->workflow_instance_id
+                : WorkflowRun::query()->whereKey($workflowRunId)->value('workflow_instance_id');
 
         if (! is_string($workflowId) || $workflowId === '' || ! is_string($workflowRunId) || $workflowRunId === '') {
             return;
         }
+
+        $metadata = array_filter([
+            'trigger' => 'expired_workflow_task_lease',
+            'task_id' => $task->id,
+            'lease_owner' => $task->lease_owner,
+            'workflow_task_attempt' => $lease?->workflow_task_attempt,
+        ], static fn (mixed $value): bool => $value !== null && $value !== '');
 
         try {
             WorkflowStub::loadSelection($workflowId, $workflowRunId)
@@ -61,12 +75,7 @@ final class WorkflowTaskLeaseRecovery
                     $request,
                     workflowId: $workflowId,
                     commandName: 'repair',
-                    metadata: array_filter([
-                        'trigger' => 'expired_workflow_task_lease',
-                        'task_id' => $lease->task_id,
-                        'lease_owner' => $lease->lease_owner,
-                        'workflow_task_attempt' => $lease->workflow_task_attempt,
-                    ], static fn (mixed $value): bool => $value !== null && $value !== ''),
+                    metadata: $metadata,
                 ))
                 ->attemptRepair();
         } catch (Throwable) {
@@ -74,5 +83,27 @@ final class WorkflowTaskLeaseRecovery
             // selected here, the caller still gets the lease-expired fence response
             // and the normal repair loop remains available.
         }
+    }
+
+    /**
+     * Recover an expired lease from a mirror table row. This delegates to
+     * recoverExpiredTaskLease() after resolving the WorkflowTask from the
+     * package's table. Retained for callers that already hold a lease (e.g.
+     * the ownership guard on complete/heartbeat/fail).
+     */
+    public function recoverExpiredLease(
+        Request $request,
+        string $namespace,
+        WorkflowTaskProtocolLease $lease,
+    ): void {
+        $task = NamespaceWorkflowScope::task($namespace, $lease->task_id);
+
+        if (! $task instanceof WorkflowTask || $task->task_type !== TaskType::Workflow) {
+            $this->leases->clearActiveLease($lease->task_id);
+
+            return;
+        }
+
+        $this->recoverExpiredTaskLease($request, $namespace, $task);
     }
 }

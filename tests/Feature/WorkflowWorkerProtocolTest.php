@@ -1727,6 +1727,87 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->assertNull($lease->lease_expires_at);
     }
 
+    public function test_it_recovers_expired_workflow_task_leases_when_no_mirror_table_row_exists(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-recovery-without-mirror-row',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-mirror-absent',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $expiredAt = now()->subMinute()->startOfSecond();
+
+        // Expire the lease on the package's WorkflowTask.
+        WorkflowTask::query()->findOrFail($taskId)
+            ->forceFill([
+                'lease_expires_at' => $expiredAt,
+            ])->save();
+
+        // Delete the mirror table row so recovery must rely on the package's
+        // WorkflowTask table directly.
+        WorkflowTaskProtocolLease::query()->where('task_id', $taskId)->delete();
+
+        $this->assertNull(
+            WorkflowTaskProtocolLease::query()->find($taskId),
+            'Mirror row should be absent before recovery poll.',
+        );
+
+        $recoveredPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-recovered-without-mirror',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $recoveredPoll->assertOk()
+            ->assertJsonPath('task.task_id', $taskId)
+            ->assertJsonPath('task.lease_owner', 'php-worker-recovered-without-mirror');
+
+        $recoveredAttempt = (int) $recoveredPoll->json('task.workflow_task_attempt');
+        $this->assertGreaterThanOrEqual(1, $recoveredAttempt);
+
+        $repairHistory = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/wf-recovery-without-mirror-row/runs/{$start->json('run_id')}/history");
+
+        $repairHistory->assertOk();
+
+        $this->assertContains(
+            'RepairRequested',
+            array_column($repairHistory->json('events'), 'event_type'),
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => 'php-worker-recovered-without-mirror',
+                'workflow_task_attempt' => $recoveredAttempt,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serialize(['recovered' => true]),
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('run_status', 'completed');
+    }
+
     public function test_it_schedules_external_activities_from_non_terminal_workflow_task_commands(): void
     {
         Queue::fake();
