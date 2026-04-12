@@ -5,6 +5,7 @@ services:
       args:
         WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
         WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-v2}
+        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
     command: ["server-bootstrap"]
     environment:
       APP_NAME: "Durable Workflow Server"
@@ -34,6 +35,7 @@ services:
       args:
         WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
         WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-v2}
+        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
     ports:
       - "8080:8080"
     environment:
@@ -71,6 +73,7 @@ services:
       args:
         WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
         WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-v2}
+        WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
     command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
     environment:
       APP_NAME: "Durable Workflow Server"

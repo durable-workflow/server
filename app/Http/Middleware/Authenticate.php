@@ -31,8 +31,8 @@ class Authenticate
     {
         $token = config('server.auth.token');
 
-        if (! $token) {
-            return $next($request);
+        if (! is_string($token) || $token === '') {
+            abort(500, 'Auth driver is set to "token" but WORKFLOW_SERVER_AUTH_TOKEN is not configured.');
         }
 
         $provided = $request->bearerToken();
@@ -48,8 +48,8 @@ class Authenticate
     {
         $key = config('server.auth.signature_key');
 
-        if (! $key) {
-            return $next($request);
+        if (! is_string($key) || $key === '') {
+            abort(500, 'Auth driver is set to "signature" but WORKFLOW_SERVER_SIGNATURE_KEY is not configured.');
         }
 
         $signature = $request->header('X-Signature');
