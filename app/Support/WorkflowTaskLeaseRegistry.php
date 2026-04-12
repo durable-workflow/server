@@ -134,13 +134,16 @@ final class WorkflowTaskLeaseRegistry
                 return $lease?->fresh() ?? $lease;
             }
 
-            $workflowInstanceId = $this->nullableString($lease?->workflow_instance_id)
-                ?? $this->nullableString(
+            // Prefer the package's tables as the authoritative source for
+            // workflow_instance_id. The mirror's cached value is used only as
+            // a fallback for edge cases where the join path is unavailable.
+            $workflowInstanceId = $this->nullableString(
                     WorkflowTask::query()
                         ->whereKey($taskId)
                         ->join('workflow_runs', 'workflow_runs.id', '=', 'workflow_tasks.workflow_run_id')
                         ->value('workflow_runs.workflow_instance_id'),
-                );
+                )
+                ?? $this->nullableString($lease?->workflow_instance_id);
 
             if ($taskLeaseOwner !== $expectedLeaseOwner) {
                 if (

@@ -44,19 +44,24 @@ final class WorkflowTaskLeaseRecovery
             return;
         }
 
+        // The package's WorkflowTask is the source of truth for run identity.
+        // The mirror table is read opportunistically for metadata enrichment
+        // but the package's fields take precedence.
         $lease = $this->leases->activeLease($namespace, $task->id);
 
         $workflowRunId = $task->workflow_run_id;
 
-        if ($lease instanceof WorkflowTaskProtocolLease && is_string($lease->workflow_run_id) && $lease->workflow_run_id !== '') {
-            $workflowRunId = $lease->workflow_run_id;
-        }
+        $workflowId = is_string($workflowRunId) && $workflowRunId !== ''
+            ? WorkflowRun::query()->whereKey($workflowRunId)->value('workflow_instance_id')
+            : null;
 
-        $workflowId = $lease instanceof WorkflowTaskProtocolLease
-            && is_string($lease->workflow_instance_id)
-            && $lease->workflow_instance_id !== ''
+        // Fall back to the mirror's cached workflow_instance_id only when the
+        // package's join path is unavailable.
+        if ((! is_string($workflowId) || $workflowId === '') && $lease instanceof WorkflowTaskProtocolLease) {
+            $workflowId = is_string($lease->workflow_instance_id) && $lease->workflow_instance_id !== ''
                 ? $lease->workflow_instance_id
-                : WorkflowRun::query()->whereKey($workflowRunId)->value('workflow_instance_id');
+                : null;
+        }
 
         if (! is_string($workflowId) || $workflowId === '' || ! is_string($workflowRunId) || $workflowRunId === '') {
             return;
@@ -66,8 +71,10 @@ final class WorkflowTaskLeaseRecovery
             'trigger' => 'expired_workflow_task_lease',
             'task_id' => $task->id,
             'lease_owner' => $task->lease_owner,
-            'workflow_task_attempt' => $lease?->workflow_task_attempt
-                ?? (is_int($task->attempt_count) ? (int) $task->attempt_count : null),
+            // Prefer the package's authoritative attempt counter over the
+            // mirror table's cached value.
+            'workflow_task_attempt' => (is_int($task->attempt_count) ? (int) $task->attempt_count : null)
+                ?? $lease?->workflow_task_attempt,
         ], static fn (mixed $value): bool => $value !== null && $value !== '');
 
         try {

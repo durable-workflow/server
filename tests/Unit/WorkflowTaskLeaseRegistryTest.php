@@ -257,4 +257,98 @@ class WorkflowTaskLeaseRegistryTest extends TestCase
         );
         $this->assertNull($stale);
     }
+
+    public function test_ownership_lease_resolves_workflow_instance_id_from_package_over_stale_mirror(): void
+    {
+        $registry = app(WorkflowTaskLeaseRegistry::class);
+
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => 'workflow-package-resolve',
+            'run_number' => 1,
+            'workflow_class' => 'App\\Workflows\\TestWorkflow',
+            'workflow_type' => 'test.workflow',
+            'status' => 'pending',
+        ]);
+
+        NamespaceWorkflowScope::bind('default', 'workflow-package-resolve');
+
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'queue' => 'test-queue',
+            'lease_owner' => 'worker-a',
+            'lease_expires_at' => now()->addMinutes(5),
+            'attempt_count' => 1,
+        ]);
+
+        // Record a claim with a deliberately wrong workflow_instance_id in the
+        // mirror to simulate a stale cached value.
+        $registry->recordClaim('default', [
+            'task_id' => $task->id,
+            'workflow_instance_id' => 'stale-cached-instance-id',
+            'workflow_run_id' => $run->id,
+            'lease_owner' => 'worker-a',
+            'lease_expires_at' => now()->addMinutes(5)->toJSON(),
+        ], packageAttemptCount: 1);
+
+        // ownershipLease should resolve workflow_instance_id from the package's
+        // tables (via workflow_tasks → workflow_runs join) rather than the
+        // mirror's stale cached value.
+        $lease = $registry->ownershipLease(
+            namespace: 'default',
+            taskId: $task->id,
+            expectedLeaseOwner: 'worker-a',
+            workflowTaskAttempt: 1,
+        );
+
+        $this->assertInstanceOf(WorkflowTaskProtocolLease::class, $lease);
+        $this->assertSame('workflow-package-resolve', $lease->workflow_instance_id);
+    }
+
+    public function test_ownership_lease_uses_package_attempt_count_when_mirror_is_stale(): void
+    {
+        $registry = app(WorkflowTaskLeaseRegistry::class);
+
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => 'workflow-attempt-reconcile',
+            'run_number' => 1,
+            'workflow_class' => 'App\\Workflows\\TestWorkflow',
+            'workflow_type' => 'test.workflow',
+            'status' => 'pending',
+        ]);
+
+        NamespaceWorkflowScope::bind('default', 'workflow-attempt-reconcile');
+
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'queue' => 'test-queue',
+            'lease_owner' => 'worker-a',
+            'lease_expires_at' => now()->addMinutes(5),
+            'attempt_count' => 4,
+        ]);
+
+        // Record a claim with mirror attempt 1 (stale)
+        $registry->recordClaim('default', [
+            'task_id' => $task->id,
+            'workflow_instance_id' => 'workflow-attempt-reconcile',
+            'workflow_run_id' => $run->id,
+            'lease_owner' => 'worker-a',
+            'lease_expires_at' => now()->addMinutes(5)->toJSON(),
+        ], packageAttemptCount: 1);
+
+        // ownershipLease should pick up the package's attempt_count (4)
+        // during reconciliation, not the mirror's stale value (1).
+        $lease = $registry->ownershipLease(
+            namespace: 'default',
+            taskId: $task->id,
+            expectedLeaseOwner: 'worker-a',
+            workflowTaskAttempt: 4,
+        );
+
+        $this->assertInstanceOf(WorkflowTaskProtocolLease::class, $lease);
+        $this->assertSame(4, $lease->workflow_task_attempt);
+    }
 }

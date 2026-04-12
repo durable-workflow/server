@@ -732,15 +732,20 @@ final class WorkflowTaskPoller
             return $task;
         }
 
-        $lease = $this->leases->activeLease($namespace, $taskId);
         $payload = $task;
 
-        if ($lease instanceof WorkflowTaskProtocolLease) {
-            $payload['workflow_task_attempt'] = (int) $lease->workflow_task_attempt;
+        // Source workflow_task_attempt from the package's authoritative
+        // counter rather than the mirror table's cached value.
+        if (is_int($workflowTask->attempt_count) && $workflowTask->attempt_count > 0) {
+            $payload['workflow_task_attempt'] = (int) $workflowTask->attempt_count;
+        }
 
-            if ($this->nonEmptyString($lease->workflow_instance_id) !== null) {
-                $payload['workflow_id'] = $lease->workflow_instance_id;
-            }
+        // Resolve workflow_instance_id through the package's run
+        // relationship rather than the mirror table's cached value.
+        $workflowInstanceId = $workflowTask->run?->workflow_instance_id;
+
+        if (is_string($workflowInstanceId) && $workflowInstanceId !== '') {
+            $payload['workflow_id'] = $workflowInstanceId;
         }
 
         if ($this->nonEmptyString($workflowTask->workflow_run_id) !== null) {
