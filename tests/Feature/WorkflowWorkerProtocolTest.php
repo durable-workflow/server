@@ -1037,7 +1037,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.lease_expires_at', $renewedLeaseExpiresAt);
     }
 
-    public function test_it_repairs_missing_workflow_task_lease_rows_before_completion(): void
+    public function test_completion_succeeds_when_mirror_row_is_missing(): void
     {
         Queue::fake();
 
@@ -1088,14 +1088,13 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('recorded', true)
             ->assertJsonPath('run_status', 'completed');
 
-        $lease = WorkflowTaskProtocolLease::query()->findOrFail($taskId);
-
-        $this->assertSame($attempt, $lease->workflow_task_attempt);
-        $this->assertNull($lease->lease_owner);
-        $this->assertNull($lease->lease_expires_at);
+        // The ownership guard now verifies against the package's WorkflowTask
+        // directly, so it does not create a mirror row when one is missing.
+        // The clearActiveLease() cleanup is a no-op when the row doesn't exist.
+        $this->assertNull(WorkflowTaskProtocolLease::query()->find($taskId));
     }
 
-    public function test_it_repairs_stale_workflow_task_lease_rows_before_heartbeats(): void
+    public function test_heartbeat_succeeds_even_when_mirror_row_is_stale(): void
     {
         Queue::fake();
 
@@ -1124,6 +1123,9 @@ class WorkflowWorkerProtocolTest extends TestCase
         $attempt = (int) $poll->json('task.workflow_task_attempt');
         $leaseOwner = (string) $poll->json('task.lease_owner');
 
+        // Clear the mirror row's lease fields to simulate stale state.
+        // The ownership guard now verifies directly against the package's
+        // WorkflowTask, so a stale mirror should not prevent heartbeat.
         WorkflowTaskProtocolLease::query()->findOrFail($taskId)
             ->forceFill([
                 'lease_owner' => null,
@@ -1144,11 +1146,13 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('renewed', true)
             ->assertJsonPath('reason', null);
 
+        // The mirror row is NOT reconciled by the heartbeat path anymore —
+        // ownership is verified against the package's WorkflowTask directly.
+        // The mirror's stale lease fields remain unchanged.
         $lease = WorkflowTaskProtocolLease::query()->findOrFail($taskId);
-
-        $this->assertSame($attempt, $lease->workflow_task_attempt);
-        $this->assertSame($leaseOwner, $lease->lease_owner);
-        $this->assertNotNull($lease->lease_expires_at);
+        $this->assertNull($lease->lease_owner);
+        $this->assertNull($lease->lease_expires_at);
+        $this->assertNull($lease->last_poll_request_id);
     }
 
     public function test_it_reports_lease_owner_mismatch_from_the_package_task_row_when_the_mirror_row_is_missing(): void

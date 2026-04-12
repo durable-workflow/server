@@ -3,7 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Models\WorkerRegistration;
-use App\Models\WorkflowTaskProtocolLease;
+use App\Support\NamespaceWorkflowScope;
 use App\Support\StandaloneWorkerFleet;
 use App\Support\WorkflowTaskLeaseRecovery;
 use App\Support\WorkerProtocol;
@@ -14,6 +14,9 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\HistoryPayloadCompression;
 
 class WorkerController
@@ -351,15 +354,11 @@ class WorkerController
         $bridge = app(WorkflowTaskBridge::class);
         $status = $bridge->heartbeat($taskId);
 
-        if (($status['renewed'] ?? false) === true) {
-            $this->workflowTaskLeases->renewLease(
-                namespace: $namespace,
-                taskId: $taskId,
-                leaseOwner: $validated['lease_owner'],
-                workflowTaskAttempt: (int) $validated['workflow_task_attempt'],
-                leaseExpiresAt: $status['lease_expires_at'] ?? null,
-            );
-        } else {
+        // The package's heartbeat() already updates the authoritative
+        // lease_expires_at on the WorkflowTask. The mirror table no longer
+        // needs to track lease expiry since the ownership guard now verifies
+        // directly against the package's table (TD-S006 narrowing).
+        if (($status['renewed'] ?? false) !== true) {
             $this->reconcileWorkflowTaskLease($taskId, $status['reason'] ?? null);
         }
 
@@ -475,6 +474,12 @@ class WorkerController
         return (int) $decoded;
     }
 
+    /**
+     * Verify workflow task ownership directly against the package's WorkflowTask
+     * table. This eliminates mirror-table reads and reconciliation writes from
+     * the heartbeat/complete/fail hot path (TD-S006 narrowing). The mirror table
+     * is only consulted for expired-lease recovery when a mirror row exists.
+     */
     private function guardWorkflowTaskOwnership(
         Request $request,
         string $namespace,
@@ -482,14 +487,9 @@ class WorkerController
         int $workflowTaskAttempt,
         string $leaseOwner,
     ): ?JsonResponse {
-        $lease = $this->workflowTaskLeases->ownershipLease(
-            namespace: $namespace,
-            taskId: $taskId,
-            expectedLeaseOwner: $leaseOwner,
-            workflowTaskAttempt: $workflowTaskAttempt,
-        );
+        $task = NamespaceWorkflowScope::task($namespace, $taskId);
 
-        if (! $lease instanceof WorkflowTaskProtocolLease) {
+        if (! $task instanceof WorkflowTask || $task->task_type !== TaskType::Workflow) {
             return WorkerProtocol::json([
                 'task_id' => $taskId,
                 'workflow_task_attempt' => $workflowTaskAttempt,
@@ -498,7 +498,9 @@ class WorkerController
             ], 404);
         }
 
-        if (! $lease->hasActiveLease()) {
+        if ($task->status !== TaskStatus::Leased) {
+            $this->workflowTaskLeases->syncTaskState($task);
+
             return WorkerProtocol::json([
                 'task_id' => $taskId,
                 'workflow_task_attempt' => $workflowTaskAttempt,
@@ -507,8 +509,24 @@ class WorkerController
             ], 409);
         }
 
-        if ($lease->lease_expires_at !== null && $lease->lease_expires_at->lte(now())) {
-            $this->workflowTaskLeaseRecovery->recoverExpiredLease($request, $namespace, $lease);
+        $taskLeaseOwner = is_string($task->lease_owner) && trim($task->lease_owner) !== ''
+            ? trim($task->lease_owner)
+            : null;
+        $taskLeaseExpiresAt = $task->lease_expires_at;
+
+        if ($taskLeaseOwner === null || $taskLeaseExpiresAt === null) {
+            $this->workflowTaskLeases->syncTaskState($task);
+
+            return WorkerProtocol::json([
+                'task_id' => $taskId,
+                'workflow_task_attempt' => $workflowTaskAttempt,
+                'error' => 'Workflow task is not currently leased.',
+                'reason' => 'task_not_leased',
+            ], 409);
+        }
+
+        if ($taskLeaseExpiresAt->lte(now())) {
+            $this->workflowTaskLeaseRecovery->recoverExpiredTaskLease($request, $namespace, $task);
 
             return WorkerProtocol::json([
                 'task_id' => $taskId,
@@ -516,28 +534,30 @@ class WorkerController
                 'error' => 'Workflow task lease has expired and is waiting for recovery.',
                 'reason' => 'lease_expired',
                 'task_status' => 'leased',
-                'lease_owner' => $lease->lease_owner,
-                'lease_expires_at' => $lease->lease_expires_at?->toJSON(),
+                'lease_owner' => $taskLeaseOwner,
+                'lease_expires_at' => $taskLeaseExpiresAt->toJSON(),
             ], 409);
         }
 
-        if ((string) $lease->lease_owner !== $leaseOwner) {
+        if ($taskLeaseOwner !== $leaseOwner) {
             return WorkerProtocol::json([
                 'task_id' => $taskId,
                 'workflow_task_attempt' => $workflowTaskAttempt,
                 'error' => 'Workflow task lease is owned by another worker.',
                 'reason' => 'lease_owner_mismatch',
-                'lease_owner' => $lease->lease_owner,
+                'lease_owner' => $taskLeaseOwner,
             ], 409);
         }
 
-        if ((int) $lease->workflow_task_attempt !== $workflowTaskAttempt) {
+        $packageAttempt = is_int($task->attempt_count) ? (int) $task->attempt_count : null;
+
+        if ($packageAttempt !== null && $packageAttempt !== $workflowTaskAttempt) {
             return WorkerProtocol::json([
                 'task_id' => $taskId,
                 'workflow_task_attempt' => $workflowTaskAttempt,
                 'error' => 'Workflow task lease attempt does not match the current claim.',
                 'reason' => 'workflow_task_attempt_mismatch',
-                'current_attempt' => (int) $lease->workflow_task_attempt,
+                'current_attempt' => $packageAttempt,
             ], 409);
         }
 

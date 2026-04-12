@@ -243,28 +243,6 @@ final class WorkflowTaskLeaseRegistry
         return $lease;
     }
 
-    public function renewLease(
-        string $namespace,
-        string $taskId,
-        string $leaseOwner,
-        int $workflowTaskAttempt,
-        mixed $leaseExpiresAt,
-    ): void {
-        $lease = $this->activeLease($namespace, $taskId);
-
-        if (! $lease instanceof WorkflowTaskProtocolLease) {
-            return;
-        }
-
-        if ((int) $lease->workflow_task_attempt !== $workflowTaskAttempt || (string) $lease->lease_owner !== $leaseOwner) {
-            return;
-        }
-
-        $lease->forceFill([
-            'lease_expires_at' => $this->timestamp($leaseExpiresAt),
-        ])->save();
-    }
-
     public function clearActiveLease(string $taskId): void
     {
         /** @var WorkflowTaskProtocolLease|null $lease */
@@ -285,11 +263,10 @@ final class WorkflowTaskLeaseRegistry
 
         if ($task->status === TaskStatus::Leased) {
             // The mirror's lease_owner and lease_expires_at are set at claim
-            // time by recordClaim() and kept current by renewLease(). The
-            // package's WorkflowTask is the authoritative source for these
-            // fields; callers (ownershipLease, activeLeaseForPollRequest) now
-            // verify against the package directly, so per-update sync is no
-            // longer needed for correctness.
+            // time by recordClaim(). The package's WorkflowTask is the
+            // authoritative source for these fields; the ownership guard and
+            // activeLeaseForPollRequest() verify against the package directly,
+            // so per-update sync is not needed for correctness.
             return;
         }
 
