@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\HistoryController;
 use App\Http\Controllers\Api\NamespaceController;
 use App\Http\Controllers\Api\ScheduleController;
 use App\Http\Controllers\Api\SearchAttributeController;
+use App\Http\Controllers\Api\SystemController;
 use App\Http\Controllers\Api\TaskQueueController;
 use App\Http\Controllers\Api\WorkerController;
 use App\Http\Controllers\Api\WorkflowController;
@@ -109,5 +110,11 @@ Route::middleware(Authenticate::class)->group(function () {
         Route::get('/', [SearchAttributeController::class, 'index']);
         Route::post('/', [SearchAttributeController::class, 'store']);
         Route::delete('/{name}', [SearchAttributeController::class, 'destroy']);
+    });
+
+    // ── System / Operations ─────────────────────────────────────────
+    Route::prefix('system')->group(function () {
+        Route::get('/repair', [SystemController::class, 'repairStatus']);
+        Route::post('/repair/pass', [SystemController::class, 'repairPass']);
     });
 });

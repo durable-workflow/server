@@ -9,6 +9,7 @@ use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\TaskRepairPolicy;
 
 final class TaskQueueVisibility
 {
@@ -27,6 +28,7 @@ final class TaskQueueVisibility
             'pollers' => $pollers,
             'stats' => $this->stats($namespace, $taskQueue, $pollers, $now),
             'current_leases' => $this->currentLeases($namespace, $taskQueue, $now),
+            'repair' => $this->repairStats($namespace, $taskQueue, $now),
         ];
     }
 
@@ -238,6 +240,67 @@ final class TaskQueueVisibility
         });
 
         return array_slice($leases, 0, self::CURRENT_LEASE_LIMIT);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function repairStats(string $namespace, string $taskQueue, Carbon $now): array
+    {
+        $redispatchCutoff = $now->copy()
+            ->subSeconds(TaskRepairPolicy::redispatchAfterSeconds());
+
+        $dispatchFailedCount = $this->baseTaskQuery($namespace, $taskQueue)
+            ->where('workflow_tasks.status', TaskStatus::Ready->value)
+            ->whereNotNull('workflow_tasks.last_dispatch_attempt_at')
+            ->whereNotNull('workflow_tasks.last_dispatch_error')
+            ->where('workflow_tasks.last_dispatch_error', '!=', '')
+            ->where(static function ($query): void {
+                $query->whereNull('workflow_tasks.last_dispatched_at')
+                    ->orWhereColumn('workflow_tasks.last_dispatch_attempt_at', '>', 'workflow_tasks.last_dispatched_at');
+            })
+            ->count();
+
+        $expiredLeaseCount = $this->baseTaskQuery($namespace, $taskQueue)
+            ->where('workflow_tasks.status', TaskStatus::Leased->value)
+            ->whereNotNull('workflow_tasks.lease_expires_at')
+            ->where('workflow_tasks.lease_expires_at', '<=', $now)
+            ->count();
+
+        $dispatchOverdueCount = $this->baseTaskQuery($namespace, $taskQueue)
+            ->where('workflow_tasks.status', TaskStatus::Ready->value)
+            ->where(static function ($query) use ($now): void {
+                $query->whereNull('workflow_tasks.available_at')
+                    ->orWhere('workflow_tasks.available_at', '<=', $now);
+            })
+            ->where(static function ($query) use ($redispatchCutoff): void {
+                $query->where(static function ($dispatched) use ($redispatchCutoff): void {
+                    $dispatched->whereNotNull('workflow_tasks.last_dispatched_at')
+                        ->where('workflow_tasks.last_dispatched_at', '<=', $redispatchCutoff);
+                })->orWhere(static function ($neverDispatched) use ($redispatchCutoff): void {
+                    $neverDispatched->whereNull('workflow_tasks.last_dispatched_at')
+                        ->where('workflow_tasks.created_at', '<=', $redispatchCutoff);
+                });
+            })
+            // Exclude tasks already counted as dispatch_failed
+            ->where(static function ($query): void {
+                $query->whereNull('workflow_tasks.last_dispatch_error')
+                    ->orWhere('workflow_tasks.last_dispatch_error', '');
+            })
+            ->count();
+
+        $totalCandidates = $dispatchFailedCount + $expiredLeaseCount + $dispatchOverdueCount;
+
+        return [
+            'candidates' => $totalCandidates,
+            'dispatch_failed' => $dispatchFailedCount,
+            'expired_leases' => $expiredLeaseCount,
+            'dispatch_overdue' => $dispatchOverdueCount,
+            'needs_attention' => $totalCandidates > 0,
+            'policy' => [
+                'redispatch_after_seconds' => TaskRepairPolicy::redispatchAfterSeconds(),
+            ],
+        ];
     }
 
     private function baseTaskQuery(string $namespace, string $taskQueue): Builder

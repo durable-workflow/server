@@ -8,6 +8,8 @@ use App\Support\WorkerProtocol;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
+use Workflow\V2\Support\TaskRepairCandidates;
+use Workflow\V2\Support\TaskRepairPolicy;
 
 class HealthController
 {
@@ -65,10 +67,22 @@ class HealthController
                     : [],
             ],
             'worker_fleet' => $this->workerFleet->summary($namespace),
+            'task_repair' => $this->taskRepairDiagnostics(),
             'control_plane' => ControlPlaneProtocol::info(),
             'worker_protocol' => WorkerProtocol::info(),
             'package_provenance' => $this->packageProvenance(),
         ], static fn (mixed $v): bool => $v !== null));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function taskRepairDiagnostics(): array
+    {
+        return [
+            'policy' => TaskRepairPolicy::snapshot(),
+            'candidates' => TaskRepairCandidates::snapshot(),
+        ];
     }
 
     /**
