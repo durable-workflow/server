@@ -173,12 +173,20 @@ class WorkerController
             return $worker;
         }
 
+        // Derive build-id from the registration record (the authoritative
+        // source for compatibility routing) rather than from the poll-time
+        // request parameter.  The resolveRegisteredWorker() guard already
+        // rejects mismatches, so by this point the registration is trusted.
+        $registeredBuildId = is_string($worker->build_id) && $worker->build_id !== ''
+            ? $worker->build_id
+            : null;
+
         $task = $this->workflowTaskPoller->poll(
             request: $request,
             namespace: $namespace,
             taskQueue: $validated['task_queue'],
             leaseOwner: $validated['worker_id'],
-            buildId: $validated['build_id'] ?? null,
+            buildId: $registeredBuildId,
             pollRequestId: $validated['poll_request_id'] ?? null,
             historyPageSize: $pageSize,
             acceptHistoryEncoding: $acceptHistoryEncoding,

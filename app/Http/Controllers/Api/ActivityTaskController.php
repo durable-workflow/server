@@ -47,11 +47,18 @@ class ActivityTaskController
             return $worker;
         }
 
+        // Derive build-id from the registration record (the authoritative
+        // source for compatibility routing) rather than from the poll-time
+        // request parameter.
+        $registeredBuildId = is_string($worker->build_id) && $worker->build_id !== ''
+            ? $worker->build_id
+            : null;
+
         $claim = $this->activityTaskPoller->poll(
             namespace: $namespace,
             taskQueue: $validated['task_queue'],
             leaseOwner: $validated['worker_id'],
-            buildId: $validated['build_id'] ?? null,
+            buildId: $registeredBuildId,
             supportedActivityTypes: $this->nonEmptyStringArray($worker->supported_activity_types),
         );
 

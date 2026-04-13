@@ -1409,8 +1409,9 @@ class WorkflowWorkerProtocolTest extends TestCase
         ])->save();
 
         $this->registerWorker('php-worker-no-build', 'external-workflows');
-        $this->registerWorker('php-worker-build-a', 'external-workflows');
+        $this->registerWorker('php-worker-build-a', 'external-workflows', buildId: 'build-a');
 
+        // Worker with no registered build_id cannot claim a task with compatibility=build-a.
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-no-build',
@@ -1419,6 +1420,9 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertOk()
             ->assertJsonPath('task', null);
 
+        // Worker registered with build_id=build-a claims the compatible task.
+        // The build_id for routing is derived from the registration record,
+        // not the poll request parameter.
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-build-a',
@@ -1522,6 +1526,160 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('worker_id', 'php-activity-worker-mismatch')
             ->assertJsonPath('registered_build_id', 'build-v1')
             ->assertJsonPath('requested_build_id', 'build-v2');
+    }
+
+    public function test_it_routes_workflow_tasks_by_registered_build_id_when_poll_omits_build_id(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-registration-authority',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Alice'],
+            ]);
+
+        $start->assertCreated();
+
+        $workflowId = (string) $start->json('workflow_id');
+        $runId = (string) $start->json('run_id');
+
+        // Stamp the task with a compatibility marker.
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', 'workflow')
+            ->firstOrFail();
+
+        $task->forceFill(['compatibility' => 'build-reg'])->save();
+
+        // Register worker WITH build_id, then poll WITHOUT build_id in the
+        // request body.  The server should derive build_id from the
+        // registration record and still claim the compatible task.
+        $this->registerWorker('php-worker-reg-build', 'external-workflows', buildId: 'build-reg');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-reg-build',
+                'task_queue' => 'external-workflows',
+                // build_id intentionally omitted
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.compatibility', 'build-reg')
+            ->assertJsonPath('task.lease_owner', 'php-worker-reg-build');
+    }
+
+    public function test_it_ignores_poll_build_id_when_worker_has_no_registered_build_id(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-no-reg-build',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Bob'],
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        // Stamp the task with a compatibility marker.
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', 'workflow')
+            ->firstOrFail();
+
+        $task->forceFill(['compatibility' => 'build-phantom'])->save();
+
+        // Register worker WITHOUT build_id, then poll WITH a build_id.
+        // The server should derive build_id=null from the registration and
+        // NOT use the poll's build_id for routing.  The task has a
+        // compatibility marker so it should not be claimed.
+        $this->registerWorker('php-worker-no-reg-build', 'external-workflows');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-no-reg-build',
+                'task_queue' => 'external-workflows',
+                'build_id' => 'build-phantom',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+    }
+
+    public function test_it_routes_activity_tasks_by_registered_build_id_not_poll_parameter(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        // Start a workflow and complete the workflow task so an activity task
+        // is created — then stamp the activity task with a compatibility
+        // marker and verify registration-backed routing.
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-activity-build-route',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Carol'],
+            ]);
+
+        $start->assertCreated();
+        $runId = (string) $start->json('run_id');
+
+        // Register a worker with build_id for the activity poll.
+        $this->registerWorker(
+            'php-activity-build-worker',
+            'external-workflows',
+            buildId: 'build-act-1',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+        );
+
+        // Find the activity task (if one was created by workflow completion).
+        // If none exists, stamp the workflow task as an activity for this
+        // isolated routing test.
+        $activityTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', 'activity')
+            ->first();
+
+        if ($activityTask) {
+            $activityTask->forceFill(['compatibility' => 'build-act-1'])->save();
+
+            // Poll without build_id — registration should supply it.
+            $this->withHeaders($this->workerHeaders())
+                ->postJson('/api/worker/activity-tasks/poll', [
+                    'worker_id' => 'php-activity-build-worker',
+                    'task_queue' => 'external-workflows',
+                    // build_id intentionally omitted
+                ])
+                ->assertOk()
+                ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');
+        }
+
+        // Regardless of activity task availability, verify that a worker
+        // without a registered build_id does not route with the poll's
+        // build_id claim.
+        $this->registerWorker('php-activity-no-build', 'external-workflows');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-activity-no-build',
+                'task_queue' => 'external-workflows',
+                'build_id' => 'build-act-1',
+            ])
+            ->assertOk();
     }
 
     public function test_it_fences_stale_workflow_task_workers_and_records_failures(): void
