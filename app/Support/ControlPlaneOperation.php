@@ -62,6 +62,35 @@ final class ControlPlaneOperation
             return new self('terminate', null, rawurldecode($matches[1]));
         }
 
+        if ($request->isMethod('POST') && preg_match('#^/api/workflows/([^/]+)/repair$#', $path, $matches) === 1) {
+            return new self('repair', null, rawurldecode($matches[1]));
+        }
+
+        if ($request->isMethod('POST') && preg_match('#^/api/workflows/([^/]+)/archive$#', $path, $matches) === 1) {
+            return new self('archive', null, rawurldecode($matches[1]));
+        }
+
+        // Run-targeted commands — same operation names, with run_id attached.
+        if ($request->isMethod('POST') && preg_match('#^/api/workflows/([^/]+)/runs/([^/]+)/signal/([^/]+)$#', $path, $matches) === 1) {
+            return new self('signal', rawurldecode($matches[3]), rawurldecode($matches[1]), rawurldecode($matches[2]));
+        }
+
+        if ($request->isMethod('POST') && preg_match('#^/api/workflows/([^/]+)/runs/([^/]+)/query/([^/]+)$#', $path, $matches) === 1) {
+            return new self('query', rawurldecode($matches[3]), rawurldecode($matches[1]), rawurldecode($matches[2]));
+        }
+
+        if ($request->isMethod('POST') && preg_match('#^/api/workflows/([^/]+)/runs/([^/]+)/update/([^/]+)$#', $path, $matches) === 1) {
+            return new self('update', rawurldecode($matches[3]), rawurldecode($matches[1]), rawurldecode($matches[2]));
+        }
+
+        if ($request->isMethod('POST') && preg_match('#^/api/workflows/([^/]+)/runs/([^/]+)/cancel$#', $path, $matches) === 1) {
+            return new self('cancel', null, rawurldecode($matches[1]), rawurldecode($matches[2]));
+        }
+
+        if ($request->isMethod('POST') && preg_match('#^/api/workflows/([^/]+)/runs/([^/]+)/terminate$#', $path, $matches) === 1) {
+            return new self('terminate', null, rawurldecode($matches[1]), rawurldecode($matches[2]));
+        }
+
         return null;
     }
 

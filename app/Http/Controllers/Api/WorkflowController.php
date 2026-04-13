@@ -217,7 +217,10 @@ class WorkflowController
         $run = NamespaceWorkflowScope::currentRun($namespace, $workflowId);
 
         if (! $run) {
-            return ControlPlaneProtocol::jsonForRequest($request, ['message' => 'Workflow not found.'], 404);
+            return ControlPlaneProtocol::jsonForRequest($request, [
+                'message' => 'Workflow not found.',
+                'reason' => 'instance_not_found',
+            ], 404);
         }
 
         return ControlPlaneProtocol::jsonForRequest($request, $this->formatRun(
@@ -421,7 +424,10 @@ class WorkflowController
         $namespace = $request->attributes->get('namespace');
 
         if (! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
-            return ControlPlaneProtocol::jsonForRequest($request, ['message' => 'Workflow not found.'], 404);
+            return ControlPlaneProtocol::jsonForRequest($request, [
+                'message' => 'Workflow not found.',
+                'reason' => 'instance_not_found',
+            ], 404);
         }
 
         $validated = $request->validate([
@@ -458,7 +464,10 @@ class WorkflowController
         $namespace = $request->attributes->get('namespace');
 
         if (! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
-            return ControlPlaneProtocol::jsonForRequest($request, ['message' => 'Workflow not found.'], 404);
+            return ControlPlaneProtocol::jsonForRequest($request, [
+                'message' => 'Workflow not found.',
+                'reason' => 'instance_not_found',
+            ], 404);
         }
 
         $validated = $request->validate([
@@ -495,7 +504,10 @@ class WorkflowController
         $namespace = $request->attributes->get('namespace');
 
         if (! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
-            return ControlPlaneProtocol::jsonForRequest($request, ['message' => 'Workflow not found.'], 404);
+            return ControlPlaneProtocol::jsonForRequest($request, [
+                'message' => 'Workflow not found.',
+                'reason' => 'instance_not_found',
+            ], 404);
         }
 
         $validated = $request->validate([
@@ -529,7 +541,10 @@ class WorkflowController
         $namespace = $request->attributes->get('namespace');
 
         if (! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
-            return ControlPlaneProtocol::jsonForRequest($request, ['message' => 'Workflow not found.'], 404);
+            return ControlPlaneProtocol::jsonForRequest($request, [
+                'message' => 'Workflow not found.',
+                'reason' => 'instance_not_found',
+            ], 404);
         }
 
         $validated = $request->validate([

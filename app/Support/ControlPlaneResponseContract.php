@@ -78,6 +78,16 @@ final class ControlPlaneResponseContract
             'required_fields' => ['workflow_id'],
             'success_fields' => ['outcome'],
         ],
+        'repair' => [
+            'operation_name_field' => null,
+            'required_fields' => ['workflow_id'],
+            'success_fields' => ['outcome'],
+        ],
+        'archive' => [
+            'operation_name_field' => null,
+            'required_fields' => ['workflow_id'],
+            'success_fields' => ['outcome'],
+        ],
     ];
 
     /**

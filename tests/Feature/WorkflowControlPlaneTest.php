@@ -278,6 +278,75 @@ class WorkflowControlPlaneTest extends TestCase
         $this->assertStringContainsString('another namespace', $message);
     }
 
+    public function test_signal_is_scoped_by_namespace(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+        $this->createNamespace('other', 'Other namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-signal-namespace-scoped',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $this->withHeaders($this->apiHeaders(namespace: 'other'))
+            ->postJson('/api/workflows/wf-signal-namespace-scoped/signal/advance')
+            ->assertNotFound()
+            ->assertJsonPath('control_plane.operation', 'signal')
+            ->assertJsonPath('reason', 'instance_not_found');
+    }
+
+    public function test_query_is_scoped_by_namespace(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+        $this->createNamespace('other', 'Other namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-query-namespace-scoped',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $this->withHeaders($this->apiHeaders(namespace: 'other'))
+            ->postJson('/api/workflows/wf-query-namespace-scoped/query/status')
+            ->assertNotFound()
+            ->assertJsonPath('control_plane.operation', 'query')
+            ->assertJsonPath('reason', 'instance_not_found');
+    }
+
+    public function test_update_is_scoped_by_namespace(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+        $this->createNamespace('other', 'Other namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-update-namespace-scoped',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $this->withHeaders($this->apiHeaders(namespace: 'other'))
+            ->postJson('/api/workflows/wf-update-namespace-scoped/update/approve')
+            ->assertNotFound()
+            ->assertJsonPath('control_plane.operation', 'update')
+            ->assertJsonPath('reason', 'instance_not_found');
+    }
+
     public function test_it_cancels_waiting_workflows_through_the_control_plane_api(): void
     {
         Queue::fake();
@@ -419,6 +488,52 @@ class WorkflowControlPlaneTest extends TestCase
 
         $showRun->assertOk()
             ->assertJsonPath('status', 'terminated');
+    }
+
+    public function test_cancel_is_scoped_by_namespace(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+        $this->createNamespace('other', 'Other namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-cancel-namespace-scoped',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $this->withHeaders($this->apiHeaders(namespace: 'other'))
+            ->postJson('/api/workflows/wf-cancel-namespace-scoped/cancel')
+            ->assertNotFound()
+            ->assertJsonPath('control_plane.operation', 'cancel')
+            ->assertJsonPath('reason', 'instance_not_found');
+    }
+
+    public function test_terminate_is_scoped_by_namespace(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+        $this->createNamespace('other', 'Other namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-terminate-namespace-scoped',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $this->withHeaders($this->apiHeaders(namespace: 'other'))
+            ->postJson('/api/workflows/wf-terminate-namespace-scoped/terminate')
+            ->assertNotFound()
+            ->assertJsonPath('control_plane.operation', 'terminate')
+            ->assertJsonPath('reason', 'instance_not_found');
     }
 
     public function test_control_plane_requests_require_an_explicit_v2_header_and_reject_legacy_wait_policy_fields(): void
