@@ -3040,6 +3040,220 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow');
     }
 
+    public function test_fail_workflow_command_accepts_non_retryable_flag(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-fail-non-retryable',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->registerWorker('php-worker-fail-nr', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-fail-nr',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'fail_workflow',
+                        'message' => 'Non-retryable business error',
+                        'exception_class' => 'App\\Exceptions\\BusinessRuleViolation',
+                        'non_retryable' => true,
+                    ],
+                ],
+            ]);
+
+        $complete->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'failed');
+    }
+
+    public function test_fail_workflow_command_works_without_non_retryable_flag(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-fail-default-retryable',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->registerWorker('php-worker-fail-default', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-fail-default',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'fail_workflow',
+                        'message' => 'Something went wrong',
+                        'exception_class' => 'RuntimeException',
+                    ],
+                ],
+            ]);
+
+        $complete->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'failed');
+    }
+
+    public function test_start_child_workflow_command_accepts_parent_close_policy(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-child-with-policy',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->registerWorker('php-worker-child-policy', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-child-policy',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'start_child_workflow',
+                        'workflow_type' => 'tests.external-child-workflow',
+                        'queue' => 'external-workflows',
+                        'parent_close_policy' => 'request_cancel',
+                    ],
+                ],
+            ]);
+
+        $complete->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'waiting');
+    }
+
+    public function test_start_child_workflow_command_rejects_invalid_parent_close_policy(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-child-bad-policy',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->registerWorker('php-worker-child-bad-policy', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-child-bad-policy',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'start_child_workflow',
+                        'workflow_type' => 'tests.external-child-workflow',
+                        'queue' => 'external-workflows',
+                        'parent_close_policy' => 'kill_immediately',
+                    ],
+                ],
+            ]);
+
+        $complete->assertUnprocessable()
+            ->assertJsonValidationErrors(['commands.0.parent_close_policy']);
+    }
+
+    public function test_cluster_info_advertises_parent_close_policy_and_non_retryable_capabilities(): void
+    {
+        $this->createNamespace('default', 'Default namespace');
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/cluster/info');
+
+        $response->assertOk()
+            ->assertJsonPath('capabilities.parent_close_policy', true)
+            ->assertJsonPath('capabilities.non_retryable_failures', true);
+    }
+
     private function configureWorkflowTypes(): void
     {
         config()->set('workflows.v2.types.workflows', [

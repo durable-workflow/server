@@ -50,14 +50,18 @@ class ScheduleController
             'action.workflow_type' => ['required', 'string'],
             'action.task_queue' => ['nullable', 'string'],
             'action.input' => ['nullable', 'array'],
-            'action.workflow_execution_timeout' => ['nullable', 'integer'],
-            'action.workflow_run_timeout' => ['nullable', 'integer'],
+            'action.execution_timeout_seconds' => ['nullable', 'integer', 'min:1'],
+            'action.run_timeout_seconds' => ['nullable', 'integer', 'min:1'],
+            'action.workflow_execution_timeout' => ['nullable', 'integer', 'min:1'],
+            'action.workflow_run_timeout' => ['nullable', 'integer', 'min:1'],
             'overlap_policy' => ['nullable', 'string', 'in:'.implode(',', WorkflowSchedule::OVERLAP_POLICIES)],
             'memo' => ['nullable', 'array'],
             'search_attributes' => ['nullable', 'array'],
             'paused' => ['nullable', 'boolean'],
             'note' => ['nullable', 'string', 'max:1000'],
         ]);
+
+        $validated['action'] = self::normalizeActionTimeouts($validated['action']);
 
         if (isset($validated['memo'])) {
             $memoSize = strlen(json_encode($validated['memo']));
@@ -143,13 +147,19 @@ class ScheduleController
             'action.workflow_type' => ['nullable', 'string'],
             'action.task_queue' => ['nullable', 'string'],
             'action.input' => ['nullable', 'array'],
-            'action.workflow_execution_timeout' => ['nullable', 'integer'],
-            'action.workflow_run_timeout' => ['nullable', 'integer'],
+            'action.execution_timeout_seconds' => ['nullable', 'integer', 'min:1'],
+            'action.run_timeout_seconds' => ['nullable', 'integer', 'min:1'],
+            'action.workflow_execution_timeout' => ['nullable', 'integer', 'min:1'],
+            'action.workflow_run_timeout' => ['nullable', 'integer', 'min:1'],
             'overlap_policy' => ['nullable', 'string', 'in:'.implode(',', WorkflowSchedule::OVERLAP_POLICIES)],
             'memo' => ['nullable', 'array'],
             'search_attributes' => ['nullable', 'array'],
             'note' => ['nullable', 'string', 'max:1000'],
         ]);
+
+        if (isset($validated['action'])) {
+            $validated['action'] = self::normalizeActionTimeouts($validated['action']);
+        }
 
         if (isset($validated['memo'])) {
             $memoSize = strlen(json_encode($validated['memo']));
@@ -315,8 +325,8 @@ class ScheduleController
                 'workflow_type' => $action['workflow_type'],
                 'task_queue' => $action['task_queue'] ?? null,
                 'input' => $action['input'] ?? [],
-                'execution_timeout_seconds' => isset($action['workflow_execution_timeout']) ? (int) $action['workflow_execution_timeout'] : null,
-                'run_timeout_seconds' => isset($action['workflow_run_timeout']) ? (int) $action['workflow_run_timeout'] : null,
+                'execution_timeout_seconds' => isset($action['execution_timeout_seconds']) ? (int) $action['execution_timeout_seconds'] : null,
+                'run_timeout_seconds' => isset($action['run_timeout_seconds']) ? (int) $action['run_timeout_seconds'] : null,
                 'memo' => $schedule->memo,
                 'search_attributes' => $schedule->search_attributes,
                 'duplicate_policy' => $this->overlapEnforcer->duplicateStartPolicy($overlapPolicy),
@@ -423,6 +433,31 @@ class ScheduleController
             'fires_attempted' => count($fireTimes),
             'results' => $results,
         ]);
+    }
+
+    /**
+     * Normalize legacy timeout field names to canonical v2 names in the action payload.
+     *
+     * Accepts both `workflow_execution_timeout`/`workflow_run_timeout` (legacy) and
+     * `execution_timeout_seconds`/`run_timeout_seconds` (canonical). Canonical names
+     * take precedence. Legacy names are removed after migration.
+     *
+     * @param  array<string, mixed>  $action
+     * @return array<string, mixed>
+     */
+    private static function normalizeActionTimeouts(array $action): array
+    {
+        if (! isset($action['execution_timeout_seconds']) && isset($action['workflow_execution_timeout'])) {
+            $action['execution_timeout_seconds'] = (int) $action['workflow_execution_timeout'];
+        }
+
+        if (! isset($action['run_timeout_seconds']) && isset($action['workflow_run_timeout'])) {
+            $action['run_timeout_seconds'] = (int) $action['workflow_run_timeout'];
+        }
+
+        unset($action['workflow_execution_timeout'], $action['workflow_run_timeout']);
+
+        return $action;
     }
 
     /**

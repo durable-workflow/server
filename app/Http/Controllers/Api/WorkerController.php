@@ -317,6 +317,8 @@ class WorkerController
             'commands.*.min_supported' => ['nullable', 'integer'],
             'commands.*.max_supported' => ['nullable', 'integer'],
             'commands.*.attributes' => ['nullable', 'array'],
+            'commands.*.non_retryable' => ['nullable', 'boolean'],
+            'commands.*.parent_close_policy' => ['nullable', 'string'],
         ]);
 
         if ($response = $this->guardWorkflowTaskOwnership(
@@ -638,6 +640,9 @@ class WorkerController
                     'exception_type' => is_string($command['exception_type'] ?? null)
                         ? $command['exception_type']
                         : null,
+                    'non_retryable' => is_bool($command['non_retryable'] ?? null)
+                        ? $command['non_retryable']
+                        : null,
                 ], static fn (mixed $value): bool => $value !== null);
 
                 continue;
@@ -689,12 +694,23 @@ class WorkerController
                     continue;
                 }
 
+                $parentClosePolicy = $this->optionalCommandString($command, 'parent_close_policy', $index, $errors);
+
+                if ($parentClosePolicy !== null && ! in_array($parentClosePolicy, ['abandon', 'request_cancel', 'terminate'], true)) {
+                    $errors["commands.{$index}.parent_close_policy"] = [
+                        'The parent_close_policy must be one of: abandon, request_cancel, terminate.',
+                    ];
+
+                    continue;
+                }
+
                 $normalized[] = array_filter([
                     'type' => $type,
                     'workflow_type' => trim($command['workflow_type']),
                     'arguments' => $this->optionalCommandString($command, 'arguments', $index, $errors),
                     'connection' => $this->optionalCommandString($command, 'connection', $index, $errors),
                     'queue' => $this->optionalCommandString($command, 'queue', $index, $errors),
+                    'parent_close_policy' => $parentClosePolicy,
                 ], static fn (mixed $value): bool => $value !== null);
 
                 continue;

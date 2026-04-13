@@ -64,6 +64,8 @@ class HealthController
                 'continue_as_new' => true,
                 'child_workflows' => true,
                 'activity_timeouts' => true,
+                'parent_close_policy' => true,
+                'non_retryable_failures' => true,
                 'response_compression' => (bool) config('server.compression.enabled', true)
                     ? ['gzip', 'deflate']
                     : [],
