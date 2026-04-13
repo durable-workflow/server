@@ -133,17 +133,51 @@ class ScheduleController
 
         $validated = $request->validate([
             'spec' => ['nullable', 'array'],
+            'spec.cron_expressions' => ['nullable', 'array'],
+            'spec.cron_expressions.*' => ['string'],
+            'spec.intervals' => ['nullable', 'array'],
+            'spec.intervals.*.every' => ['required_with:spec.intervals', 'string', 'max:64'],
+            'spec.intervals.*.offset' => ['nullable', 'string', 'max:64'],
+            'spec.timezone' => ['nullable', 'string', 'max:64'],
             'action' => ['nullable', 'array'],
+            'action.workflow_type' => ['nullable', 'string'],
+            'action.task_queue' => ['nullable', 'string'],
+            'action.input' => ['nullable', 'array'],
+            'action.workflow_execution_timeout' => ['nullable', 'integer'],
+            'action.workflow_run_timeout' => ['nullable', 'integer'],
             'overlap_policy' => ['nullable', 'string', 'in:'.implode(',', WorkflowSchedule::OVERLAP_POLICIES)],
+            'memo' => ['nullable', 'array'],
+            'search_attributes' => ['nullable', 'array'],
             'note' => ['nullable', 'string', 'max:1000'],
         ]);
+
+        if (isset($validated['memo'])) {
+            $memoSize = strlen(json_encode($validated['memo']));
+            $maxMemoBytes = (int) config('server.limits.max_memo_bytes', 256 * 1024);
+
+            if ($memoSize > $maxMemoBytes) {
+                return response()->json([
+                    'message' => sprintf('The memo exceeds the maximum allowed size of %d bytes.', $maxMemoBytes),
+                    'reason' => 'memo_too_large',
+                    'limit' => $maxMemoBytes,
+                ], 422);
+            }
+        }
 
         if (isset($validated['spec'])) {
             $schedule->spec = $validated['spec'];
         }
 
         if (isset($validated['action'])) {
-            $schedule->action = $validated['action'];
+            $schedule->action = array_merge($schedule->action ?? [], $validated['action']);
+        }
+
+        if (array_key_exists('memo', $validated)) {
+            $schedule->memo = $validated['memo'];
+        }
+
+        if (array_key_exists('search_attributes', $validated)) {
+            $schedule->search_attributes = $validated['search_attributes'];
         }
 
         if (isset($validated['overlap_policy'])) {

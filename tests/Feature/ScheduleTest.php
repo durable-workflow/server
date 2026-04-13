@@ -309,6 +309,90 @@ class ScheduleTest extends TestCase
             ->assertNotFound();
     }
 
+    public function test_update_validates_nested_spec_fields(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'validated',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+        ]);
+
+        // Invalid cron expression type
+        $this->withHeaders($this->headers())
+            ->putJson('/api/schedules/validated', [
+                'spec' => ['cron_expressions' => [123]],
+            ])
+            ->assertUnprocessable();
+
+        // Invalid interval missing 'every'
+        $this->withHeaders($this->headers())
+            ->putJson('/api/schedules/validated', [
+                'spec' => ['intervals' => [['offset' => 'PT5M']]],
+            ])
+            ->assertUnprocessable();
+    }
+
+    public function test_update_rejects_oversized_memo(): void
+    {
+        config(['server.limits.max_memo_bytes' => 64]);
+
+        WorkflowSchedule::create([
+            'schedule_id' => 'memo-test',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+        ]);
+
+        $this->withHeaders($this->headers())
+            ->putJson('/api/schedules/memo-test', [
+                'memo' => ['data' => str_repeat('x', 200)],
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('reason', 'memo_too_large');
+    }
+
+    public function test_update_accepts_memo_and_search_attributes(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'fields-test',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+        ]);
+
+        $this->withHeaders($this->headers())
+            ->putJson('/api/schedules/fields-test', [
+                'memo' => ['key' => 'value'],
+                'search_attributes' => ['priority' => 'high'],
+            ])
+            ->assertOk();
+
+        $schedule = WorkflowSchedule::where('schedule_id', 'fields-test')->first();
+        $this->assertEquals(['key' => 'value'], $schedule->memo);
+        $this->assertEquals(['priority' => 'high'], $schedule->search_attributes);
+    }
+
+    public function test_update_merges_action_fields_with_existing(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'merge-test',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'OriginalWorkflow', 'task_queue' => 'original-queue'],
+        ]);
+
+        $this->withHeaders($this->headers())
+            ->putJson('/api/schedules/merge-test', [
+                'action' => ['task_queue' => 'new-queue'],
+            ])
+            ->assertOk();
+
+        $schedule = WorkflowSchedule::where('schedule_id', 'merge-test')->first();
+        $this->assertEquals('OriginalWorkflow', $schedule->action['workflow_type']);
+        $this->assertEquals('new-queue', $schedule->action['task_queue']);
+    }
+
     // ── Delete ───────────────────────────────────────────────────────
 
     public function test_it_deletes_a_schedule(): void

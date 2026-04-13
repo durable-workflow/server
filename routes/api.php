@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\SearchAttributeController;
 use App\Http\Controllers\Api\SystemController;
 use App\Http\Controllers\Api\TaskQueueController;
 use App\Http\Controllers\Api\WorkerController;
+use App\Http\Controllers\Api\WorkerManagementController;
 use App\Http\Controllers\Api\WorkflowController;
 use App\Http\Middleware\Authenticate;
 use Illuminate\Support\Facades\Route;
@@ -86,6 +87,13 @@ Route::middleware(Authenticate::class)->group(function () {
         Route::post('/activity-tasks/{taskId}/complete', [ActivityTaskController::class, 'complete']);
         Route::post('/activity-tasks/{taskId}/fail', [ActivityTaskController::class, 'fail']);
         Route::post('/activity-tasks/{taskId}/heartbeat', [ActivityTaskController::class, 'heartbeat']);
+    });
+
+    // ── Workers (Management) ──────────────────────────────────────────
+    Route::prefix('workers')->group(function () {
+        Route::get('/', [WorkerManagementController::class, 'index']);
+        Route::get('/{workerId}', [WorkerManagementController::class, 'show']);
+        Route::delete('/{workerId}', [WorkerManagementController::class, 'destroy']);
     });
 
     // ── Task Queues ──────────────────────────────────────────────────
