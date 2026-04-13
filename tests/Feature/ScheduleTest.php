@@ -1,0 +1,513 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\WorkflowNamespace;
+use App\Models\WorkflowSchedule;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\TestCase;
+
+class ScheduleTest extends TestCase
+{
+    use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->createNamespace('default');
+    }
+
+    // ── List ─────────────────────────────────────────────────────────
+
+    public function test_it_lists_empty_schedules(): void
+    {
+        $response = $this->withHeaders($this->headers())
+            ->getJson('/api/schedules');
+
+        $response->assertOk()
+            ->assertJsonPath('schedules', [])
+            ->assertJsonPath('next_page_token', null);
+    }
+
+    public function test_it_lists_schedules_in_namespace(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'daily-report',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 9 * * *'], 'timezone' => 'UTC'],
+            'action' => ['workflow_type' => 'DailyReportWorkflow'],
+        ]);
+
+        WorkflowSchedule::create([
+            'schedule_id' => 'hourly-sync',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *'], 'timezone' => 'UTC'],
+            'action' => ['workflow_type' => 'HourlySyncWorkflow'],
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->getJson('/api/schedules');
+
+        $response->assertOk();
+        $this->assertCount(2, $response->json('schedules'));
+    }
+
+    public function test_it_scopes_schedules_to_namespace(): void
+    {
+        $this->createNamespace('other');
+
+        WorkflowSchedule::create([
+            'schedule_id' => 'default-sched',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 9 * * *']],
+            'action' => ['workflow_type' => 'DefaultWorkflow'],
+        ]);
+
+        WorkflowSchedule::create([
+            'schedule_id' => 'other-sched',
+            'namespace' => 'other',
+            'spec' => ['cron_expressions' => ['0 9 * * *']],
+            'action' => ['workflow_type' => 'OtherWorkflow'],
+        ]);
+
+        $defaultResponse = $this->withHeaders($this->headers('default'))
+            ->getJson('/api/schedules');
+
+        $defaultResponse->assertOk();
+        $this->assertCount(1, $defaultResponse->json('schedules'));
+        $this->assertEquals('default-sched', $defaultResponse->json('schedules.0.schedule_id'));
+
+        $otherResponse = $this->withHeaders($this->headers('other'))
+            ->getJson('/api/schedules');
+
+        $otherResponse->assertOk();
+        $this->assertCount(1, $otherResponse->json('schedules'));
+        $this->assertEquals('other-sched', $otherResponse->json('schedules.0.schedule_id'));
+    }
+
+    // ── Create ───────────────────────────────────────────────────────
+
+    public function test_it_creates_a_schedule(): void
+    {
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'schedule_id' => 'nightly-cleanup',
+                'spec' => [
+                    'cron_expressions' => ['0 2 * * *'],
+                    'timezone' => 'UTC',
+                ],
+                'action' => [
+                    'workflow_type' => 'CleanupWorkflow',
+                    'task_queue' => 'maintenance',
+                ],
+                'overlap_policy' => 'skip',
+                'note' => 'Nightly data cleanup',
+            ]);
+
+        $response->assertCreated()
+            ->assertJsonPath('schedule_id', 'nightly-cleanup')
+            ->assertJsonPath('outcome', 'created');
+
+        $this->assertDatabaseHas('workflow_schedules', [
+            'schedule_id' => 'nightly-cleanup',
+            'namespace' => 'default',
+            'overlap_policy' => 'skip',
+            'paused' => false,
+            'note' => 'Nightly data cleanup',
+        ]);
+    }
+
+    public function test_it_generates_schedule_id_when_not_provided(): void
+    {
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'spec' => ['cron_expressions' => ['0 * * * *']],
+                'action' => ['workflow_type' => 'TestWorkflow'],
+            ]);
+
+        $response->assertCreated();
+        $this->assertNotEmpty($response->json('schedule_id'));
+    }
+
+    public function test_it_creates_a_paused_schedule(): void
+    {
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'schedule_id' => 'paused-sched',
+                'spec' => ['cron_expressions' => ['0 * * * *']],
+                'action' => ['workflow_type' => 'TestWorkflow'],
+                'paused' => true,
+            ]);
+
+        $response->assertCreated();
+
+        $this->assertDatabaseHas('workflow_schedules', [
+            'schedule_id' => 'paused-sched',
+            'paused' => true,
+        ]);
+    }
+
+    public function test_it_rejects_duplicate_schedule_ids(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'existing',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'schedule_id' => 'existing',
+                'spec' => ['cron_expressions' => ['0 * * * *']],
+                'action' => ['workflow_type' => 'OtherWorkflow'],
+            ]);
+
+        $response->assertStatus(409)
+            ->assertJsonPath('reason', 'schedule_already_exists');
+    }
+
+    public function test_it_validates_required_fields(): void
+    {
+        $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [])
+            ->assertStatus(422);
+
+        $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'spec' => ['cron_expressions' => ['0 * * * *']],
+            ])
+            ->assertStatus(422);
+    }
+
+    public function test_it_validates_overlap_policy(): void
+    {
+        $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'spec' => ['cron_expressions' => ['0 * * * *']],
+                'action' => ['workflow_type' => 'TestWorkflow'],
+                'overlap_policy' => 'invalid_policy',
+            ])
+            ->assertStatus(422);
+    }
+
+    public function test_it_computes_next_fire_at_on_create(): void
+    {
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'schedule_id' => 'with-next-fire',
+                'spec' => ['cron_expressions' => ['0 * * * *'], 'timezone' => 'UTC'],
+                'action' => ['workflow_type' => 'TestWorkflow'],
+            ]);
+
+        $response->assertCreated();
+
+        $schedule = WorkflowSchedule::where('schedule_id', 'with-next-fire')->first();
+        $this->assertNotNull($schedule->next_fire_at);
+    }
+
+    // ── Show ─────────────────────────────────────────────────────────
+
+    public function test_it_shows_schedule_detail(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'detail-test',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 9 * * *'], 'timezone' => 'America/New_York'],
+            'action' => ['workflow_type' => 'ReportWorkflow', 'task_queue' => 'reports'],
+            'overlap_policy' => 'skip',
+            'note' => 'Daily report',
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->getJson('/api/schedules/detail-test');
+
+        $response->assertOk()
+            ->assertJsonPath('schedule_id', 'detail-test')
+            ->assertJsonPath('spec.cron_expressions.0', '0 9 * * *')
+            ->assertJsonPath('spec.timezone', 'America/New_York')
+            ->assertJsonPath('action.workflow_type', 'ReportWorkflow')
+            ->assertJsonPath('action.task_queue', 'reports')
+            ->assertJsonPath('overlap_policy', 'skip')
+            ->assertJsonPath('state.paused', false)
+            ->assertJsonPath('state.note', 'Daily report')
+            ->assertJsonPath('info.fires_count', 0)
+            ->assertJsonPath('info.failures_count', 0);
+    }
+
+    public function test_it_returns_404_for_nonexistent_schedule(): void
+    {
+        $response = $this->withHeaders($this->headers())
+            ->getJson('/api/schedules/nonexistent');
+
+        $response->assertNotFound()
+            ->assertJsonPath('reason', 'schedule_not_found');
+    }
+
+    // ── Update ───────────────────────────────────────────────────────
+
+    public function test_it_updates_a_schedule(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'updatable',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'OriginalWorkflow'],
+            'overlap_policy' => 'skip',
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->putJson('/api/schedules/updatable', [
+                'spec' => ['cron_expressions' => ['0 */2 * * *'], 'timezone' => 'UTC'],
+                'action' => ['workflow_type' => 'UpdatedWorkflow'],
+                'overlap_policy' => 'allow_all',
+                'note' => 'Updated schedule',
+            ]);
+
+        $response->assertOk()
+            ->assertJsonPath('schedule_id', 'updatable')
+            ->assertJsonPath('outcome', 'updated');
+
+        $schedule = WorkflowSchedule::where('schedule_id', 'updatable')->first();
+        $this->assertEquals(['cron_expressions' => ['0 */2 * * *'], 'timezone' => 'UTC'], $schedule->spec);
+        $this->assertEquals('UpdatedWorkflow', $schedule->action['workflow_type']);
+        $this->assertEquals('allow_all', $schedule->overlap_policy);
+        $this->assertEquals('Updated schedule', $schedule->note);
+    }
+
+    public function test_it_partially_updates_a_schedule(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'partial',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'OriginalWorkflow'],
+            'note' => 'Original note',
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->putJson('/api/schedules/partial', [
+                'note' => 'Updated note only',
+            ]);
+
+        $response->assertOk();
+
+        $schedule = WorkflowSchedule::where('schedule_id', 'partial')->first();
+        $this->assertEquals(['cron_expressions' => ['0 * * * *']], $schedule->spec);
+        $this->assertEquals('OriginalWorkflow', $schedule->action['workflow_type']);
+        $this->assertEquals('Updated note only', $schedule->note);
+    }
+
+    public function test_update_returns_404_for_nonexistent_schedule(): void
+    {
+        $this->withHeaders($this->headers())
+            ->putJson('/api/schedules/nonexistent', ['note' => 'test'])
+            ->assertNotFound();
+    }
+
+    // ── Delete ───────────────────────────────────────────────────────
+
+    public function test_it_deletes_a_schedule(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'deletable',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->deleteJson('/api/schedules/deletable');
+
+        $response->assertOk()
+            ->assertJsonPath('schedule_id', 'deletable')
+            ->assertJsonPath('outcome', 'deleted');
+
+        $this->assertDatabaseMissing('workflow_schedules', [
+            'schedule_id' => 'deletable',
+        ]);
+    }
+
+    public function test_delete_returns_404_for_nonexistent_schedule(): void
+    {
+        $this->withHeaders($this->headers())
+            ->deleteJson('/api/schedules/nonexistent')
+            ->assertNotFound();
+    }
+
+    public function test_delete_is_namespace_scoped(): void
+    {
+        $this->createNamespace('other');
+
+        WorkflowSchedule::create([
+            'schedule_id' => 'scoped',
+            'namespace' => 'other',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+        ]);
+
+        $response = $this->withHeaders($this->headers('default'))
+            ->deleteJson('/api/schedules/scoped');
+
+        $response->assertNotFound();
+
+        $this->assertDatabaseHas('workflow_schedules', [
+            'schedule_id' => 'scoped',
+            'namespace' => 'other',
+        ]);
+    }
+
+    // ── Pause / Resume ──────────────────────────────────────────────
+
+    public function test_it_pauses_a_schedule(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'pausable',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'paused' => false,
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules/pausable/pause', [
+                'note' => 'Paused for maintenance',
+            ]);
+
+        $response->assertOk()
+            ->assertJsonPath('schedule_id', 'pausable')
+            ->assertJsonPath('outcome', 'paused');
+
+        $schedule = WorkflowSchedule::where('schedule_id', 'pausable')->first();
+        $this->assertTrue($schedule->paused);
+        $this->assertEquals('Paused for maintenance', $schedule->note);
+    }
+
+    public function test_it_resumes_a_paused_schedule(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'resumable',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'paused' => true,
+            'note' => 'Was paused',
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules/resumable/resume', [
+                'note' => 'Back to normal',
+            ]);
+
+        $response->assertOk()
+            ->assertJsonPath('schedule_id', 'resumable')
+            ->assertJsonPath('outcome', 'resumed');
+
+        $schedule = WorkflowSchedule::where('schedule_id', 'resumable')->first();
+        $this->assertFalse($schedule->paused);
+        $this->assertEquals('Back to normal', $schedule->note);
+    }
+
+    public function test_pause_returns_404_for_nonexistent_schedule(): void
+    {
+        $this->withHeaders($this->headers())
+            ->postJson('/api/schedules/nonexistent/pause')
+            ->assertNotFound();
+    }
+
+    public function test_resume_returns_404_for_nonexistent_schedule(): void
+    {
+        $this->withHeaders($this->headers())
+            ->postJson('/api/schedules/nonexistent/resume')
+            ->assertNotFound();
+    }
+
+    // ── List item shape ─────────────────────────────────────────────
+
+    public function test_list_item_contains_expected_fields(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'shape-test',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 9 * * *'], 'timezone' => 'UTC'],
+            'action' => ['workflow_type' => 'ShapeWorkflow'],
+            'overlap_policy' => 'skip',
+            'paused' => false,
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->getJson('/api/schedules');
+
+        $response->assertOk();
+
+        $item = $response->json('schedules.0');
+        $this->assertArrayHasKey('schedule_id', $item);
+        $this->assertArrayHasKey('workflow_type', $item);
+        $this->assertArrayHasKey('paused', $item);
+        $this->assertArrayHasKey('next_fire', $item);
+        $this->assertArrayHasKey('last_fire', $item);
+        $this->assertEquals('ShapeWorkflow', $item['workflow_type']);
+        $this->assertFalse($item['paused']);
+    }
+
+    // ── Cron computation ────────────────────────────────────────────
+
+    public function test_cron_computation_for_standard_expressions(): void
+    {
+        $schedule = new WorkflowSchedule([
+            'spec' => ['cron_expressions' => ['0 12 * * *'], 'timezone' => 'UTC'],
+        ]);
+
+        $after = new \DateTimeImmutable('2026-04-13T10:00:00Z');
+        $next = $schedule->computeNextFireAt($after);
+
+        $this->assertNotNull($next);
+        $this->assertEquals('12', $next->format('H'));
+        $this->assertEquals('00', $next->format('i'));
+    }
+
+    public function test_cron_computation_picks_earliest_from_multiple_expressions(): void
+    {
+        $schedule = new WorkflowSchedule([
+            'spec' => [
+                'cron_expressions' => ['0 18 * * *', '0 6 * * *'],
+                'timezone' => 'UTC',
+            ],
+        ]);
+
+        $after = new \DateTimeImmutable('2026-04-13T03:00:00Z');
+        $next = $schedule->computeNextFireAt($after);
+
+        $this->assertNotNull($next);
+        $this->assertEquals('06', $next->format('H'));
+    }
+
+    public function test_cron_computation_returns_null_for_empty_expressions(): void
+    {
+        $schedule = new WorkflowSchedule([
+            'spec' => ['cron_expressions' => []],
+        ]);
+
+        $this->assertNull($schedule->computeNextFireAt());
+    }
+
+    private function createNamespace(string $name): void
+    {
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => $name],
+            [
+                'description' => "{$name} namespace",
+                'retention_days' => 30,
+                'status' => 'active',
+            ],
+        );
+    }
+
+    private function headers(string $namespace = 'default'): array
+    {
+        return [
+            'X-Namespace' => $namespace,
+        ];
+    }
+}
