@@ -6,7 +6,7 @@
     "require": {
         "php": "^8.2",
         "laravel/framework": "^13.0",
-        "laravel-workflow/laravel-workflow": "2.x-dev",
+        "durable-workflow/workflow": "2.x-dev",
         "laravel/tinker": "^3.0"
     },
     "require-dev": {
