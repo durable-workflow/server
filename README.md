@@ -1,6 +1,6 @@
 # Durable Workflow Server
 
-A standalone, language-neutral workflow orchestration server. Write durable workflows in any language. Built on the same engine as the [Durable Workflow](https://github.com/durable-workflow/durable-workflow).
+A standalone, language-neutral workflow orchestration server. Write durable workflows in any language. Built on the same engine as [Durable Workflow](https://github.com/durable-workflow/durable-workflow).
 
 ## Quick Start
 
