@@ -6,6 +6,7 @@ use App\Models\WorkflowSchedule;
 use App\Support\ScheduleOverlapEnforcer;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery\MockInterface;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 
@@ -29,9 +30,7 @@ class ScheduleOverlapEnforcerTest extends TestCase
         $this->assertTrue($enforcer->isBufferPolicy('buffer_all'));
     }
 
-    /**
-     * @dataProvider nonBufferPoliciesProvider
-     */
+    #[DataProvider('nonBufferPoliciesProvider')]
     public function test_non_buffer_policies_are_not_flagged_as_buffer(string $policy): void
     {
         $enforcer = $this->makeEnforcer();
@@ -58,9 +57,7 @@ class ScheduleOverlapEnforcerTest extends TestCase
         $this->assertSame('use-existing', $enforcer->duplicateStartPolicy('skip'));
     }
 
-    /**
-     * @dataProvider nonSkipPoliciesProvider
-     */
+    #[DataProvider('nonSkipPoliciesProvider')]
     public function test_non_skip_policies_map_to_null(string $policy): void
     {
         $enforcer = $this->makeEnforcer();
@@ -123,9 +120,7 @@ class ScheduleOverlapEnforcerTest extends TestCase
 
     // ── No-op for non-enforcement policies ─────────────────────────
 
-    /**
-     * @dataProvider nonEnforcementPoliciesProvider
-     */
+    #[DataProvider('nonEnforcementPoliciesProvider')]
     public function test_non_enforcement_policies_do_not_call_control_plane(string $policy): void
     {
         $controlPlane = $this->mock(WorkflowControlPlane::class, function (MockInterface $mock): void {

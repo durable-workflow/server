@@ -76,6 +76,23 @@ class SearchAttributeController
             ], 409);
         }
 
+        $maxAttributes = (int) config('server.limits.max_search_attributes', 100);
+        $currentCount = SearchAttributeDefinition::query()
+            ->where('namespace', $namespace)
+            ->count();
+
+        if ($currentCount >= $maxAttributes) {
+            return response()->json([
+                'message' => sprintf(
+                    'Namespace [%s] has reached the maximum of %d custom search attributes.',
+                    $namespace,
+                    $maxAttributes,
+                ),
+                'reason' => 'search_attribute_limit_reached',
+                'limit' => $maxAttributes,
+            ], 422);
+        }
+
         $definition = SearchAttributeDefinition::create([
             'namespace' => $namespace,
             'name' => $validated['name'],

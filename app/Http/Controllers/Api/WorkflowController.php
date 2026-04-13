@@ -133,6 +133,17 @@ class WorkflowController
 
         $validated = $validator->validate();
 
+        if (isset($validated['memo'])) {
+            $memoSize = strlen(json_encode($validated['memo']));
+            $maxMemoBytes = (int) config('server.limits.max_memo_bytes', 256 * 1024);
+
+            if ($memoSize > $maxMemoBytes) {
+                throw ValidationException::withMessages([
+                    'memo' => [sprintf('The memo exceeds the maximum allowed size of %d bytes.', $maxMemoBytes)],
+                ]);
+            }
+        }
+
         $workflowId = $validated['workflow_id'] ?? null;
 
         if ($workflowId !== null && $this->workflowIdReservedElsewhere($namespace, $workflowId)) {

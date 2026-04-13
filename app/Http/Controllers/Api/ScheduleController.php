@@ -59,6 +59,19 @@ class ScheduleController
             'note' => ['nullable', 'string', 'max:1000'],
         ]);
 
+        if (isset($validated['memo'])) {
+            $memoSize = strlen(json_encode($validated['memo']));
+            $maxMemoBytes = (int) config('server.limits.max_memo_bytes', 256 * 1024);
+
+            if ($memoSize > $maxMemoBytes) {
+                return response()->json([
+                    'message' => sprintf('The memo exceeds the maximum allowed size of %d bytes.', $maxMemoBytes),
+                    'reason' => 'memo_too_large',
+                    'limit' => $maxMemoBytes,
+                ], 422);
+            }
+        }
+
         $scheduleId = $validated['schedule_id'] ?? Str::ulid()->toBase32();
 
         $existing = WorkflowSchedule::query()

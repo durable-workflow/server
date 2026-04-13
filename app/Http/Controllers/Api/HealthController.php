@@ -68,6 +68,13 @@ class HealthController
             ],
             'worker_fleet' => $this->workerFleet->summary($namespace),
             'task_repair' => $this->taskRepairDiagnostics(),
+            'limits' => [
+                'max_payload_bytes' => (int) config('server.limits.max_payload_bytes', 2 * 1024 * 1024),
+                'max_memo_bytes' => (int) config('server.limits.max_memo_bytes', 256 * 1024),
+                'max_search_attributes' => (int) config('server.limits.max_search_attributes', 100),
+                'max_pending_activities' => (int) config('server.limits.max_pending_activities', 2000),
+                'max_pending_children' => (int) config('server.limits.max_pending_children', 2000),
+            ],
             'control_plane' => ControlPlaneProtocol::info(),
             'worker_protocol' => WorkerProtocol::info(),
             'package_provenance' => $this->packageProvenance(),
