@@ -492,6 +492,132 @@ class ScheduleTest extends TestCase
         $this->assertNull($schedule->computeNextFireAt());
     }
 
+    // ── Interval computation ────────────────────────────────────────
+
+    public function test_interval_computation_for_iso8601_duration(): void
+    {
+        $schedule = new WorkflowSchedule([
+            'spec' => ['intervals' => [['every' => 'PT30M']]],
+        ]);
+
+        $after = new \DateTimeImmutable('2026-04-13T10:10:00Z');
+        $next = $schedule->computeNextFireAt($after);
+
+        $this->assertNotNull($next);
+        // PT30M grid anchored at epoch: next 30-min boundary after 10:10
+        $this->assertEquals('30', $next->format('i'));
+        $this->assertEquals('10', $next->format('H'));
+    }
+
+    public function test_interval_computation_with_offset(): void
+    {
+        $schedule = new WorkflowSchedule([
+            'spec' => ['intervals' => [['every' => 'PT1H', 'offset' => 'PT15M']]],
+        ]);
+
+        $after = new \DateTimeImmutable('2026-04-13T10:20:00Z');
+        $next = $schedule->computeNextFireAt($after);
+
+        $this->assertNotNull($next);
+        // 1h grid offset by 15m: ..., 10:15, 11:15, ...
+        $this->assertEquals('15', $next->format('i'));
+        $this->assertEquals('11', $next->format('H'));
+    }
+
+    public function test_interval_and_cron_pick_earliest(): void
+    {
+        $schedule = new WorkflowSchedule([
+            'spec' => [
+                'cron_expressions' => ['0 23 * * *'],
+                'intervals' => [['every' => 'PT30M']],
+                'timezone' => 'UTC',
+            ],
+        ]);
+
+        $after = new \DateTimeImmutable('2026-04-13T10:10:00Z');
+        $next = $schedule->computeNextFireAt($after);
+
+        $this->assertNotNull($next);
+        // The 30-min interval fires at 10:30, much earlier than the cron at 23:00
+        $this->assertEquals('10', $next->format('H'));
+        $this->assertEquals('30', $next->format('i'));
+    }
+
+    public function test_interval_returns_null_for_missing_every(): void
+    {
+        $schedule = new WorkflowSchedule([
+            'spec' => ['intervals' => [['offset' => 'PT5M']]],
+        ]);
+
+        $this->assertNull($schedule->computeNextFireAt());
+    }
+
+    public function test_interval_returns_null_for_invalid_duration(): void
+    {
+        $schedule = new WorkflowSchedule([
+            'spec' => ['intervals' => [['every' => 'not-a-duration']]],
+        ]);
+
+        $this->assertNull($schedule->computeNextFireAt());
+    }
+
+    public function test_interval_only_schedules_compute_next_fire_at_on_create(): void
+    {
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'schedule_id' => 'interval-sched',
+                'spec' => ['intervals' => [['every' => 'PT1H']]],
+                'action' => ['workflow_type' => 'TestWorkflow'],
+            ]);
+
+        $response->assertCreated();
+
+        $schedule = WorkflowSchedule::where('schedule_id', 'interval-sched')->first();
+        $this->assertNotNull($schedule->next_fire_at);
+    }
+
+    // ── Overlap policy enforcement ──────────────────────────────────
+
+    public function test_trigger_rejects_buffer_policies_with_422(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'buffer-test',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'overlap_policy' => 'buffer_one',
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules/buffer-test/trigger');
+
+        $response->assertStatus(422)
+            ->assertJsonPath('outcome', 'trigger_failed')
+            ->assertJsonPath('schedule_id', 'buffer-test');
+
+        $this->assertStringContainsString('buffer_one', $response->json('reason'));
+    }
+
+    public function test_trigger_accepts_allow_all_policy(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'allow-all-test',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'overlap_policy' => 'allow_all',
+        ]);
+
+        // allow_all should not pass any duplicate_policy, so it starts freely.
+        // This will fail because TestWorkflow isn't a real class, but the
+        // overlap policy enforcement itself should not block it.
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules/allow-all-test/trigger');
+
+        // The 500 means we got past overlap policy and into the start attempt
+        $this->assertNotEquals(422, $response->status());
+    }
+
     private function createNamespace(string $name): void
     {
         WorkflowNamespace::query()->updateOrCreate(

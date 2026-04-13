@@ -50,6 +50,9 @@ class WorkflowSchedule extends Model
 
     /**
      * Compute the next fire time from the schedule spec.
+     *
+     * Evaluates both cron expressions and interval specs and returns the
+     * earliest upcoming fire time across all of them.
      */
     public function computeNextFireAt(?\DateTimeInterface $after = null): ?\DateTimeInterface
     {
@@ -57,13 +60,9 @@ class WorkflowSchedule extends Model
         $spec = $this->spec ?? [];
         $timezone = $spec['timezone'] ?? 'UTC';
 
-        $cronExpressions = $spec['cron_expressions'] ?? [];
-
-        if (empty($cronExpressions)) {
-            return null;
-        }
-
         $earliest = null;
+
+        $cronExpressions = $spec['cron_expressions'] ?? [];
 
         foreach ($cronExpressions as $expression) {
             $next = self::nextCronOccurrence($expression, $after, $timezone);
@@ -72,7 +71,81 @@ class WorkflowSchedule extends Model
             }
         }
 
+        $intervals = $spec['intervals'] ?? [];
+
+        foreach ($intervals as $interval) {
+            $next = $this->nextIntervalOccurrence($interval, $after);
+            if ($next !== null && ($earliest === null || $next < $earliest)) {
+                $earliest = $next;
+            }
+        }
+
         return $earliest;
+    }
+
+    /**
+     * Compute the next interval occurrence after a given time.
+     *
+     * Each interval entry supports:
+     *   - "every": an ISO 8601 duration string (e.g. "PT30M", "PT1H", "P1D")
+     *   - "offset": optional ISO 8601 duration offset from the epoch
+     *
+     * The interval grid is anchored at the Unix epoch (or epoch + offset)
+     * and the next grid point after $after is returned.
+     */
+    private function nextIntervalOccurrence(array $interval, \DateTimeInterface $after): ?\DateTimeInterface
+    {
+        $everySpec = $interval['every'] ?? null;
+
+        if (! is_string($everySpec) || $everySpec === '') {
+            return null;
+        }
+
+        try {
+            $duration = new \DateInterval($everySpec);
+        } catch (\Exception) {
+            return null;
+        }
+
+        $everySeconds = self::dateIntervalToSeconds($duration);
+
+        if ($everySeconds <= 0) {
+            return null;
+        }
+
+        $offsetSeconds = 0;
+        $offsetSpec = $interval['offset'] ?? null;
+
+        if (is_string($offsetSpec) && $offsetSpec !== '') {
+            try {
+                $offsetSeconds = self::dateIntervalToSeconds(new \DateInterval($offsetSpec));
+            } catch (\Exception) {
+                // Ignore invalid offset, default to 0
+            }
+        }
+
+        $afterTimestamp = $after->getTimestamp();
+
+        // Grid: epoch + offset, epoch + offset + every, epoch + offset + 2*every, ...
+        // Find the first grid point > afterTimestamp
+        $elapsed = $afterTimestamp - $offsetSeconds;
+        $periodsPassed = (int) floor($elapsed / $everySeconds);
+        $nextTimestamp = $offsetSeconds + ($periodsPassed + 1) * $everySeconds;
+
+        return \Carbon\Carbon::createFromTimestamp($nextTimestamp, 'UTC');
+    }
+
+    /**
+     * Convert a DateInterval to total seconds (approximate for months/years).
+     */
+    private static function dateIntervalToSeconds(\DateInterval $interval): int
+    {
+        return ($interval->y * 365 * 86400)
+            + ($interval->m * 30 * 86400)
+            + ($interval->d * 86400)
+            + ($interval->h * 3600)
+            + ($interval->i * 60)
+            + $interval->s;
     }
 
     /**

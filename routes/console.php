@@ -45,21 +45,48 @@ Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per
     $this->components->info(sprintf('Evaluating %d due schedule(s)...', $due->count()));
 
     $startService = app(\App\Support\WorkflowStartService::class);
+    $controlPlane = app(\Workflow\V2\Contracts\WorkflowControlPlane::class);
 
     $fired = 0;
     $failed = 0;
+    $skipped = 0;
 
     foreach ($due as $schedule) {
         $action = $schedule->action;
+        $overlapPolicy = $schedule->overlap_policy ?? 'skip';
+
+        if (in_array($overlapPolicy, ['buffer_one', 'buffer_all'], true)) {
+            $this->components->twoColumnDetail(
+                $schedule->schedule_id,
+                sprintf('<fg=yellow>skipped</>: overlap policy [%s] not yet supported', $overlapPolicy),
+            );
+            $skipped++;
+
+            continue;
+        }
 
         try {
+            // Enforce cancel_other / terminate_other before starting new workflow
+            if (in_array($overlapPolicy, ['cancel_other', 'terminate_other'], true)) {
+                $recentActions = $schedule->recent_actions ?? [];
+                $lastAction = end($recentActions) ?: null;
+                $lastWorkflowId = $lastAction['workflow_id'] ?? null;
+
+                if (is_string($lastWorkflowId) && $lastWorkflowId !== '') {
+                    $command = $overlapPolicy === 'cancel_other' ? 'cancel' : 'terminate';
+                    $controlPlane->$command($lastWorkflowId, [
+                        'reason' => sprintf('Schedule overlap policy: %s', $overlapPolicy),
+                    ]);
+                }
+            }
+
             $result = $startService->start([
                 'workflow_type' => $action['workflow_type'],
                 'task_queue' => $action['task_queue'] ?? null,
                 'input' => $action['input'] ?? [],
                 'memo' => $schedule->memo,
                 'search_attributes' => $schedule->search_attributes,
-                'duplicate_policy' => $schedule->overlap_policy === 'skip' ? 'use-existing' : null,
+                'duplicate_policy' => $overlapPolicy === 'skip' ? 'use-existing' : null,
             ]);
 
             $schedule->recordFire($result['workflow_id'], $result['run_id'], $result['outcome'] ?? 'scheduled');
@@ -84,7 +111,7 @@ Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per
         }
     }
 
-    $this->components->info(sprintf('Done: %d fired, %d failed.', $fired, $failed));
+    $this->components->info(sprintf('Done: %d fired, %d failed, %d skipped.', $fired, $failed, $skipped));
 
     return $failed > 0 ? 1 : 0;
 })->purpose('Evaluate due schedules and start their workflows');

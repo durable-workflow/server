@@ -133,16 +133,14 @@ class WorkflowController
 
         $workflowId = $validated['workflow_id'] ?? null;
 
-        if ($workflowId !== null && ($collision = $this->workflowNamespaceCollision($namespace, $workflowId))) {
+        if ($workflowId !== null && $this->workflowIdReservedElsewhere($namespace, $workflowId)) {
             return ControlPlaneProtocol::jsonForRequest($request, [
                 'workflow_id' => $workflowId,
                 'message' => sprintf(
-                    'Workflow [%s] is already reserved in namespace [%s].',
+                    'Workflow [%s] is already reserved in another namespace.',
                     $workflowId,
-                    $collision,
                 ),
                 'reason' => 'workflow_id_reserved_in_namespace',
-                'namespace' => $collision,
             ], 409);
         }
 
@@ -628,17 +626,12 @@ class WorkflowController
         };
     }
 
-    private function workflowNamespaceCollision(string $namespace, string $workflowId): ?string
+    private function workflowIdReservedElsewhere(string $namespace, string $workflowId): bool
     {
-        $binding = WorkflowNamespaceWorkflow::query()
+        return WorkflowNamespaceWorkflow::query()
             ->where('workflow_instance_id', $workflowId)
-            ->first();
-
-        if ($binding === null || $binding->namespace === $namespace) {
-            return null;
-        }
-
-        return $binding->namespace;
+            ->where('namespace', '!=', $namespace)
+            ->exists();
     }
 
     private function rejectLegacyUpdateFields(Request $request): void

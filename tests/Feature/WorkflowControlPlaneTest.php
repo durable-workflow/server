@@ -245,6 +245,38 @@ class WorkflowControlPlaneTest extends TestCase
             ->assertJsonPath('reason', 'instance_not_found');
     }
 
+    public function test_start_rejects_cross_namespace_workflow_id_without_leaking_the_owning_namespace(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+        $this->createNamespace('other', 'Other namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-cross-ns-collision',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $collision = $this->withHeaders($this->apiHeaders(namespace: 'other'))
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-cross-ns-collision',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $collision->assertStatus(409)
+            ->assertJsonPath('workflow_id', 'wf-cross-ns-collision')
+            ->assertJsonPath('reason', 'workflow_id_reserved_in_namespace')
+            ->assertJsonMissingPath('namespace');
+
+        $message = $collision->json('message');
+        $this->assertStringNotContainsString('default', $message);
+        $this->assertStringContainsString('another namespace', $message);
+    }
+
     public function test_it_cancels_waiting_workflows_through_the_control_plane_api(): void
     {
         Queue::fake();

@@ -7,11 +7,13 @@ use App\Support\WorkflowStartService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use Workflow\V2\Contracts\WorkflowControlPlane;
 
 class ScheduleController
 {
     public function __construct(
         private readonly WorkflowStartService $startService,
+        private readonly WorkflowControlPlane $controlPlane,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -41,6 +43,8 @@ class ScheduleController
             'spec.cron_expressions' => ['nullable', 'array'],
             'spec.cron_expressions.*' => ['string'],
             'spec.intervals' => ['nullable', 'array'],
+            'spec.intervals.*.every' => ['required_with:spec.intervals', 'string', 'max:64'],
+            'spec.intervals.*.offset' => ['nullable', 'string', 'max:64'],
             'spec.timezone' => ['nullable', 'string', 'max:64'],
             'action' => ['required', 'array'],
             'action.workflow_type' => ['required', 'string'],
@@ -230,7 +234,20 @@ class ScheduleController
         $action = $schedule->action;
         $overlapPolicy = $validated['overlap_policy'] ?? $schedule->overlap_policy;
 
+        if (in_array($overlapPolicy, ['buffer_one', 'buffer_all'], true)) {
+            return response()->json([
+                'schedule_id' => $scheduleId,
+                'outcome' => 'trigger_failed',
+                'reason' => sprintf(
+                    'Overlap policy [%s] is not yet supported. Use skip, cancel_other, terminate_other, or allow_all.',
+                    $overlapPolicy,
+                ),
+            ], 422);
+        }
+
         try {
+            $this->enforceOverlapPolicy($schedule, $overlapPolicy);
+
             $result = $this->startService->start([
                 'workflow_type' => $action['workflow_type'],
                 'task_queue' => $action['task_queue'] ?? null,
@@ -285,27 +302,14 @@ class ScheduleController
             ], 422);
         }
 
-        // Compute all fire times in the backfill window
+        // Compute all fire times in the backfill window using the schedule's
+        // full spec (cron expressions + interval specs).
         $fireTimes = [];
         $cursor = $startTime;
         $maxBackfillCount = 1000;
 
         while (count($fireTimes) < $maxBackfillCount) {
-            $spec = $schedule->spec ?? [];
-            $cronExpressions = $spec['cron_expressions'] ?? [];
-            $timezone = $spec['timezone'] ?? 'UTC';
-
-            if (empty($cronExpressions)) {
-                break;
-            }
-
-            $nextFire = null;
-            foreach ($cronExpressions as $expression) {
-                $candidate = WorkflowSchedule::nextCronOccurrence($expression, $cursor, $timezone);
-                if ($candidate !== null && ($nextFire === null || $candidate < $nextFire)) {
-                    $nextFire = $candidate;
-                }
-            }
+            $nextFire = $schedule->computeNextFireAt($cursor);
 
             if ($nextFire === null || $nextFire >= $endTime) {
                 break;
@@ -316,6 +320,7 @@ class ScheduleController
         }
 
         $action = $schedule->action;
+        $overlapPolicy = $validated['overlap_policy'] ?? $schedule->overlap_policy;
         $results = [];
 
         foreach ($fireTimes as $fireTime) {
@@ -326,6 +331,7 @@ class ScheduleController
                     'input' => $action['input'] ?? [],
                     'memo' => $schedule->memo,
                     'search_attributes' => $schedule->search_attributes,
+                    'duplicate_policy' => $overlapPolicy === 'skip' ? 'use-existing' : null,
                 ]);
 
                 $schedule->recordFire($result['workflow_id'], $result['run_id'], 'backfilled');
@@ -351,6 +357,31 @@ class ScheduleController
             'outcome' => 'backfill_started',
             'fires_attempted' => count($fireTimes),
             'results' => $results,
+        ]);
+    }
+
+    /**
+     * Enforce cancel_other / terminate_other overlap policies by stopping the
+     * most recently started workflow from this schedule's recent actions.
+     */
+    private function enforceOverlapPolicy(WorkflowSchedule $schedule, string $overlapPolicy): void
+    {
+        if (! in_array($overlapPolicy, ['cancel_other', 'terminate_other'], true)) {
+            return;
+        }
+
+        $recentActions = $schedule->recent_actions ?? [];
+        $lastAction = end($recentActions) ?: null;
+        $workflowId = $lastAction['workflow_id'] ?? null;
+
+        if (! is_string($workflowId) || $workflowId === '') {
+            return;
+        }
+
+        $command = $overlapPolicy === 'cancel_other' ? 'cancel' : 'terminate';
+
+        $this->controlPlane->$command($workflowId, [
+            'reason' => sprintf('Schedule overlap policy: %s', $overlapPolicy),
         ]);
     }
 
