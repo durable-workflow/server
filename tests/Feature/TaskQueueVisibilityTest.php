@@ -4,7 +4,6 @@ namespace Tests\Feature;
 
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
-use App\Models\WorkflowTaskProtocolLease;
 use App\Support\NamespaceWorkflowScope;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
@@ -82,11 +81,6 @@ class TaskQueueVisibilityTest extends TestCase
         $expiredAt = now()->subMinute()->startOfSecond();
 
         WorkflowTask::query()->findOrFail($leasedTaskId)
-            ->forceFill([
-                'lease_expires_at' => $expiredAt,
-            ])->save();
-
-        WorkflowTaskProtocolLease::query()->findOrFail($leasedTaskId)
             ->forceFill([
                 'lease_expires_at' => $expiredAt,
             ])->save();

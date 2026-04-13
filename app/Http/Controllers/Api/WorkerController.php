@@ -7,7 +7,6 @@ use App\Support\NamespaceWorkflowScope;
 use App\Support\StandaloneWorkerFleet;
 use App\Support\WorkflowTaskLeaseRecovery;
 use App\Support\WorkerProtocol;
-use App\Support\WorkflowTaskLeaseRegistry;
 use App\Support\WorkflowTaskPoller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -23,7 +22,6 @@ class WorkerController
 {
     public function __construct(
         private readonly WorkflowTaskPoller $workflowTaskPoller,
-        private readonly WorkflowTaskLeaseRegistry $workflowTaskLeases,
         private readonly WorkflowTaskLeaseRecovery $workflowTaskLeaseRecovery,
         private readonly StandaloneWorkerFleet $workerFleet,
     ) {}
@@ -293,6 +291,11 @@ class WorkerController
             'commands.*.message' => ['nullable', 'string'],
             'commands.*.exception_class' => ['nullable', 'string'],
             'commands.*.exception_type' => ['nullable', 'string'],
+            'commands.*.change_id' => ['nullable', 'string'],
+            'commands.*.version' => ['nullable', 'integer'],
+            'commands.*.min_supported' => ['nullable', 'integer'],
+            'commands.*.max_supported' => ['nullable', 'integer'],
+            'commands.*.attributes' => ['nullable', 'array'],
         ]);
 
         if ($response = $this->guardWorkflowTaskOwnership(
@@ -310,7 +313,6 @@ class WorkerController
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
         $outcome = $bridge->complete($taskId, $commands);
-        $this->reconcileWorkflowTaskLease($taskId, $outcome['reason'] ?? null, clearOnSuccess: true);
 
         return WorkerProtocol::json([
             'task_id' => $taskId,
@@ -353,14 +355,6 @@ class WorkerController
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
         $status = $bridge->heartbeat($taskId);
-
-        // The package's heartbeat() already updates the authoritative
-        // lease_expires_at on the WorkflowTask. The mirror table no longer
-        // needs to track lease expiry since the ownership guard now verifies
-        // directly against the package's table (TD-S006 narrowing).
-        if (($status['renewed'] ?? false) !== true) {
-            $this->reconcileWorkflowTaskLease($taskId, $status['reason'] ?? null);
-        }
 
         return WorkerProtocol::json([
             'task_id' => $taskId,
@@ -407,7 +401,6 @@ class WorkerController
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
         $outcome = $bridge->fail($taskId, $validated['failure']);
-        $this->reconcileWorkflowTaskLease($taskId, $outcome['reason'] ?? null, clearOnSuccess: true);
 
         return WorkerProtocol::json([
             'task_id' => $taskId,
@@ -499,8 +492,6 @@ class WorkerController
         }
 
         if ($task->status !== TaskStatus::Leased) {
-            $this->workflowTaskLeases->syncTaskState($task);
-
             return WorkerProtocol::json([
                 'task_id' => $taskId,
                 'workflow_task_attempt' => $workflowTaskAttempt,
@@ -515,8 +506,6 @@ class WorkerController
         $taskLeaseExpiresAt = $task->lease_expires_at;
 
         if ($taskLeaseOwner === null || $taskLeaseExpiresAt === null) {
-            $this->workflowTaskLeases->syncTaskState($task);
-
             return WorkerProtocol::json([
                 'task_id' => $taskId,
                 'workflow_task_attempt' => $workflowTaskAttempt,
@@ -549,7 +538,12 @@ class WorkerController
             ], 409);
         }
 
-        $packageAttempt = is_int($task->attempt_count) ? (int) $task->attempt_count : null;
+        // Normalize the package's attempt_count the same way the poller
+        // does: treat 0 or null as 1 so the guard matches the protocol
+        // value the worker received in the poll response.
+        $packageAttempt = is_int($task->attempt_count) && $task->attempt_count > 0
+            ? (int) $task->attempt_count
+            : null;
 
         if ($packageAttempt !== null && $packageAttempt !== $workflowTaskAttempt) {
             return WorkerProtocol::json([
@@ -562,26 +556,6 @@ class WorkerController
         }
 
         return null;
-    }
-
-    private function reconcileWorkflowTaskLease(string $taskId, ?string $reason, bool $clearOnSuccess = false): void
-    {
-        if ($clearOnSuccess && $reason === null) {
-            $this->workflowTaskLeases->clearActiveLease($taskId);
-
-            return;
-        }
-
-        if (in_array($reason, [
-            'run_already_closed',
-            'run_closed',
-            'task_not_active',
-            'task_not_found',
-            'task_not_leased',
-            'task_not_workflow',
-        ], true)) {
-            $this->workflowTaskLeases->clearActiveLease($taskId);
-        }
     }
 
     /**
@@ -699,6 +673,73 @@ class WorkerController
                     'arguments' => $this->optionalCommandString($command, 'arguments', $index, $errors),
                     'workflow_type' => $workflowType,
                 ], static fn (mixed $value): bool => $value !== null);
+
+                continue;
+            }
+
+            if ($type === 'record_side_effect') {
+                if (! is_string($command['result'] ?? null)) {
+                    $errors["commands.{$index}.result"] = [
+                        'Record side effect commands require a string result.',
+                    ];
+
+                    continue;
+                }
+
+                $normalized[] = [
+                    'type' => $type,
+                    'result' => $command['result'],
+                ];
+
+                continue;
+            }
+
+            if ($type === 'record_version_marker') {
+                $markerErrors = [];
+
+                if (! is_string($command['change_id'] ?? null) || trim((string) $command['change_id']) === '') {
+                    $markerErrors[] = 'change_id is required';
+                }
+                if (! is_int($command['version'] ?? null)) {
+                    $markerErrors[] = 'version must be an integer';
+                }
+                if (! is_int($command['min_supported'] ?? null)) {
+                    $markerErrors[] = 'min_supported must be an integer';
+                }
+                if (! is_int($command['max_supported'] ?? null)) {
+                    $markerErrors[] = 'max_supported must be an integer';
+                }
+
+                if ($markerErrors !== []) {
+                    $errors["commands.{$index}"] = $markerErrors;
+
+                    continue;
+                }
+
+                $normalized[] = [
+                    'type' => $type,
+                    'change_id' => trim($command['change_id']),
+                    'version' => (int) $command['version'],
+                    'min_supported' => (int) $command['min_supported'],
+                    'max_supported' => (int) $command['max_supported'],
+                ];
+
+                continue;
+            }
+
+            if ($type === 'upsert_search_attributes') {
+                if (! is_array($command['attributes'] ?? null) || $command['attributes'] === []) {
+                    $errors["commands.{$index}.attributes"] = [
+                        'Upsert search attributes commands require a non-empty attributes object.',
+                    ];
+
+                    continue;
+                }
+
+                $normalized[] = [
+                    'type' => $type,
+                    'attributes' => $command['attributes'],
+                ];
 
                 continue;
             }

@@ -154,38 +154,35 @@ final class TaskQueueVisibility
     private function currentLeases(string $namespace, string $taskQueue, Carbon $now): array
     {
         $workflowLeases = $this->baseTaskQuery($namespace, $taskQueue)
-            ->leftJoin('workflow_task_protocol_leases as protocol_leases', 'protocol_leases.task_id', '=', 'workflow_tasks.id')
             ->where('workflow_tasks.task_type', TaskType::Workflow->value)
             ->where('workflow_tasks.status', TaskStatus::Leased->value)
             ->select([
                 'workflow_tasks.id as task_id',
                 'workflow_tasks.workflow_run_id',
                 'workflow_runs.workflow_instance_id',
-                'workflow_tasks.lease_owner as task_lease_owner',
-                'workflow_tasks.lease_expires_at as task_lease_expires_at',
-                'protocol_leases.workflow_task_attempt',
-                'protocol_leases.lease_owner as protocol_lease_owner',
-                'protocol_leases.lease_expires_at as protocol_lease_expires_at',
+                'workflow_tasks.lease_owner',
+                'workflow_tasks.lease_expires_at',
+                'workflow_tasks.attempt_count',
             ])
             ->orderBy('workflow_tasks.lease_expires_at')
             ->orderBy('workflow_tasks.id')
             ->limit(self::CURRENT_LEASE_LIMIT)
             ->get()
             ->map(function ($task) use ($now): array {
-                $leaseOwner = $task->protocol_lease_owner ?: $task->task_lease_owner;
-                $leaseExpiresAt = $task->protocol_lease_expires_at ?? $task->task_lease_expires_at;
-                $leaseExpiresAt = $leaseExpiresAt instanceof Carbon ? $leaseExpiresAt : ($leaseExpiresAt ? Carbon::parse($leaseExpiresAt) : null);
+                $leaseExpiresAt = $task->lease_expires_at instanceof Carbon
+                    ? $task->lease_expires_at
+                    : ($task->lease_expires_at ? Carbon::parse($task->lease_expires_at) : null);
 
                 return [
                     'task_id' => $task->task_id,
                     'task_type' => TaskType::Workflow->value,
                     'workflow_id' => $task->workflow_instance_id,
                     'run_id' => $task->workflow_run_id,
-                    'lease_owner' => $leaseOwner,
+                    'lease_owner' => $task->lease_owner,
                     'lease_expires_at' => $leaseExpiresAt?->toJSON(),
                     'is_expired' => $leaseExpiresAt?->lte($now) ?? false,
-                    'workflow_task_attempt' => is_numeric($task->workflow_task_attempt)
-                        ? (int) $task->workflow_task_attempt
+                    'workflow_task_attempt' => is_int($task->attempt_count)
+                        ? (int) $task->attempt_count
                         : null,
                 ];
             });

@@ -2,7 +2,6 @@
 
 namespace App\Support;
 
-use App\Models\WorkflowTaskProtocolLease;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Throwable;
@@ -18,7 +17,6 @@ final class WorkflowTaskPoller
         private readonly LongPoller $longPoller,
         private readonly WorkflowTaskBridge $bridge,
         private readonly LongPollSignalStore $signals,
-        private readonly WorkflowTaskLeaseRegistry $leases,
         private readonly WorkflowTaskLeaseRecovery $leaseRecovery,
         private readonly WorkflowTaskPollRequestStore $pollRequests,
         private readonly ServerPollingCache $cache,
@@ -160,7 +158,6 @@ final class WorkflowTaskPoller
             taskQueue: $taskQueue,
             buildId: $buildId,
             leaseOwner: $leaseOwner,
-            pollRequestId: $pollRequestId,
             task: $cached['task'],
         )) {
             $refreshedTask = $this->refreshCachedTaskPayload(
@@ -270,7 +267,6 @@ final class WorkflowTaskPoller
                 $taskQueue,
                 $leaseOwner,
                 $buildId,
-                $pollRequestId,
                 $historyPageSize,
                 $acceptHistoryEncoding,
                 $limit,
@@ -282,7 +278,6 @@ final class WorkflowTaskPoller
                     $taskQueue,
                     $leaseOwner,
                     $buildId,
-                    $pollRequestId,
                     $limit,
                     $historyPageSize,
                     $acceptHistoryEncoding,
@@ -308,54 +303,18 @@ final class WorkflowTaskPoller
         string $taskQueue,
         string $leaseOwner,
         ?string $buildId,
-        ?string $pollRequestId,
         int $limit,
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
     ): array {
         $this->applyWorkerCompatibility($namespace, $buildId);
 
-        $task = $this->redeliverActiveLease(
-            namespace: $namespace,
-            taskQueue: $taskQueue,
-            leaseOwner: $leaseOwner,
-            buildId: $buildId,
-            pollRequestId: $pollRequestId,
-            historyPageSize: $historyPageSize,
-            acceptHistoryEncoding: $acceptHistoryEncoding,
-        );
-
-        if (is_array($task)) {
-            return [
-                'task' => $task,
-                'next_probe_at' => null,
-            ];
-        }
-
         $task = $this->claimReadyTask(
             namespace: $namespace,
             taskQueue: $taskQueue,
             leaseOwner: $leaseOwner,
             buildId: $buildId,
-            pollRequestId: $pollRequestId,
             limit: $limit,
-            historyPageSize: $historyPageSize,
-            acceptHistoryEncoding: $acceptHistoryEncoding,
-        );
-
-        if (is_array($task)) {
-            return [
-                'task' => $task,
-                'next_probe_at' => null,
-            ];
-        }
-
-        $task = $this->redeliverActiveLease(
-            namespace: $namespace,
-            taskQueue: $taskQueue,
-            leaseOwner: $leaseOwner,
-            buildId: $buildId,
-            pollRequestId: $pollRequestId,
             historyPageSize: $historyPageSize,
             acceptHistoryEncoding: $acceptHistoryEncoding,
         );
@@ -373,7 +332,6 @@ final class WorkflowTaskPoller
                 taskQueue: $taskQueue,
                 leaseOwner: $leaseOwner,
                 buildId: $buildId,
-                pollRequestId: $pollRequestId,
                 limit: $limit,
                 historyPageSize: $historyPageSize,
                 acceptHistoryEncoding: $acceptHistoryEncoding,
@@ -401,7 +359,6 @@ final class WorkflowTaskPoller
         string $taskQueue,
         string $leaseOwner,
         ?string $buildId,
-        ?string $pollRequestId,
         int $limit,
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
@@ -445,115 +402,20 @@ final class WorkflowTaskPoller
             }
 
             // Source the fencing token from the package's authoritative attempt
-            // counter rather than computing it independently in the mirror table.
-            // The package increments WorkflowTask.attempt_count atomically inside
-            // claimStatus(), so reading it here gives the post-claim value.
-            $packageAttemptCount = WorkflowTask::query()
-                ->whereKey($taskId)
-                ->value('attempt_count');
-
-            $lease = $this->leases->recordClaim(
-                $namespace,
-                $claim,
-                $pollRequestId,
-                is_int($packageAttemptCount) ? (int) $packageAttemptCount : null,
-            );
+            // counter. The package increments WorkflowTask.attempt_count
+            // atomically inside claimStatus().
+            $attempt = $this->packageAttemptCount($taskId);
 
             $history = $this->fetchHistory($taskId, $historyPageSize, $acceptHistoryEncoding);
 
             if (! is_array($history)) {
-                $this->leases->clearActiveLease($taskId);
-
                 continue;
             }
 
-            return $this->taskPayload($claim, $lease, $history, $workflowId);
+            return $this->taskPayload($claim, $attempt, $history, $workflowId);
         }
 
         return null;
-    }
-
-    /**
-     * @return array<string, mixed>|null
-     */
-    private function redeliverActiveLease(
-        string $namespace,
-        string $taskQueue,
-        string $leaseOwner,
-        ?string $buildId,
-        ?string $pollRequestId,
-        ?int $historyPageSize = null,
-        ?string $acceptHistoryEncoding = null,
-    ): ?array {
-        $pollRequestId = $this->nonEmptyString($pollRequestId);
-
-        if ($pollRequestId === null) {
-            return null;
-        }
-
-        $lease = $this->leases->activeLeaseForPollRequest(
-            namespace: $namespace,
-            taskQueue: $taskQueue,
-            buildId: $buildId,
-            leaseOwner: $leaseOwner,
-            pollRequestId: $pollRequestId,
-        );
-
-        if (! $lease instanceof WorkflowTaskProtocolLease) {
-            return null;
-        }
-
-        $task = NamespaceWorkflowScope::task($namespace, $lease->task_id);
-
-        if (! $task instanceof WorkflowTask || $task->task_type !== TaskType::Workflow) {
-            return null;
-        }
-
-        if ($task->status !== TaskStatus::Leased) {
-            $this->leases->syncTaskState($task);
-
-            return null;
-        }
-
-        if ($this->nonEmptyString($task->queue) !== $taskQueue) {
-            return null;
-        }
-
-        if (! $this->matchesCompatibility($buildId, $task->compatibility)) {
-            return null;
-        }
-
-        if ($this->nonEmptyString($task->lease_owner) !== $leaseOwner) {
-            $this->leases->syncTaskState($task);
-
-            return null;
-        }
-
-        if ($task->lease_expires_at === null || $task->lease_expires_at->lte(now())) {
-            return null;
-        }
-
-        $history = $this->fetchHistory($task->id, $historyPageSize, $acceptHistoryEncoding);
-
-        if (! is_array($history)) {
-            $this->leases->clearActiveLease($task->id);
-
-            return null;
-        }
-
-        return $this->taskPayload([
-            'task_id' => $task->id,
-            'workflow_run_id' => $lease->workflow_run_id ?? $task->workflow_run_id,
-            'workflow_instance_id' => $lease->workflow_instance_id ?? ($history['workflow_instance_id'] ?? null),
-            'workflow_type' => $history['workflow_type'] ?? null,
-            'workflow_class' => $history['workflow_class'] ?? null,
-            'payload_codec' => $history['payload_codec'] ?? config('workflows.serializer'),
-            'connection' => $this->nonEmptyString($task->connection),
-            'queue' => $this->nonEmptyString($task->queue),
-            'compatibility' => $this->nonEmptyString($task->compatibility),
-            'lease_owner' => $lease->lease_owner,
-            'lease_expires_at' => $lease->lease_expires_at?->toJSON() ?? $task->lease_expires_at?->toJSON(),
-        ], $lease, $history, $lease->workflow_instance_id);
     }
 
     private function recoverExpiredLeases(
@@ -563,9 +425,6 @@ final class WorkflowTaskPoller
     ): bool {
         $limit = max(1, (int) config('server.polling.expired_workflow_task_recovery_scan_limit', 5));
 
-        // Scan the package's WorkflowTask table directly for expired leases.
-        // This is the source of truth for lease state and does not require a
-        // mirror table row to exist for recovery to work.
         $expiredTasks = NamespaceWorkflowScope::taskQuery($namespace)
             ->where('workflow_tasks.task_type', TaskType::Workflow->value)
             ->where('workflow_tasks.status', TaskStatus::Leased->value)
@@ -669,6 +528,11 @@ final class WorkflowTaskPoller
     }
 
     /**
+     * Verify a cached poll result is still deliverable by checking the
+     * package's WorkflowTask directly. The attempt_count check fences
+     * against reclaimed tasks, replacing the former mirror table's
+     * last_poll_request_id check.
+     *
      * @param  array<string, mixed>|null  $task
      */
     private function cachedTaskStillDeliverable(
@@ -676,7 +540,6 @@ final class WorkflowTaskPoller
         string $taskQueue,
         ?string $buildId,
         string $leaseOwner,
-        string $pollRequestId,
         ?array $task,
     ): bool {
         if ($task === null) {
@@ -689,17 +552,6 @@ final class WorkflowTaskPoller
             return false;
         }
 
-        // The mirror table is checked only for last_poll_request_id, which the
-        // package does not track. All lease-status fields (owner, expiry,
-        // attempt) are verified against the package's WorkflowTask below.
-        $lease = $this->leases->activeLease($namespace, $taskId);
-
-        if ($lease instanceof WorkflowTaskProtocolLease) {
-            if ($this->nonEmptyString($lease->last_poll_request_id) !== $pollRequestId) {
-                return false;
-            }
-        }
-
         $workflowTask = NamespaceWorkflowScope::task($namespace, $taskId);
 
         if (! $workflowTask instanceof WorkflowTask || $workflowTask->task_type !== TaskType::Workflow) {
@@ -707,8 +559,6 @@ final class WorkflowTaskPoller
         }
 
         if ($workflowTask->status !== TaskStatus::Leased) {
-            $this->leases->syncTaskState($workflowTask);
-
             return false;
         }
 
@@ -721,8 +571,6 @@ final class WorkflowTaskPoller
         }
 
         if ($this->nonEmptyString($workflowTask->lease_owner) !== $leaseOwner) {
-            $this->leases->syncTaskState($workflowTask);
-
             return false;
         }
 
@@ -769,14 +617,12 @@ final class WorkflowTaskPoller
 
         $payload = $task;
 
-        // Source workflow_task_attempt from the package's authoritative
-        // counter rather than the mirror table's cached value.
+        // Source workflow_task_attempt from the package's authoritative counter.
         if (is_int($workflowTask->attempt_count) && $workflowTask->attempt_count > 0) {
             $payload['workflow_task_attempt'] = (int) $workflowTask->attempt_count;
         }
 
-        // Resolve workflow_instance_id through the package's run
-        // relationship rather than the mirror table's cached value.
+        // Resolve workflow_instance_id through the package's run relationship.
         $workflowInstanceId = $workflowTask->run?->workflow_instance_id;
 
         if (is_string($workflowInstanceId) && $workflowInstanceId !== '') {
@@ -836,7 +682,7 @@ final class WorkflowTaskPoller
      */
     private function taskPayload(
         array $claim,
-        WorkflowTaskProtocolLease $lease,
+        int $attempt,
         array $history,
         ?string $workflowIdFallback,
     ): array {
@@ -846,7 +692,7 @@ final class WorkflowTaskPoller
                 ?? $claim['workflow_instance_id']
                 ?? $workflowIdFallback,
             'run_id' => $claim['workflow_run_id'],
-            'workflow_task_attempt' => (int) $lease->workflow_task_attempt,
+            'workflow_task_attempt' => $attempt,
             'workflow_type' => $claim['workflow_type'],
             'workflow_class' => $claim['workflow_class'],
             'payload_codec' => $claim['payload_codec'],
@@ -877,6 +723,18 @@ final class WorkflowTaskPoller
         }
 
         return $payload;
+    }
+
+    /**
+     * Read the package's authoritative attempt counter for a workflow task.
+     */
+    private function packageAttemptCount(string $taskId): int
+    {
+        $count = WorkflowTask::query()
+            ->whereKey($taskId)
+            ->value('attempt_count');
+
+        return is_int($count) && $count > 0 ? $count : 1;
     }
 
     private function nonEmptyString(mixed $value): ?string

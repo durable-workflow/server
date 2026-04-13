@@ -5,7 +5,6 @@ namespace Tests\Feature;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Models\WorkflowNamespaceWorkflow;
-use App\Models\WorkflowTaskProtocolLease;
 use App\Support\LongPollSignalStore;
 use App\Support\LongPoller;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -477,7 +476,6 @@ class WorkflowWorkerProtocolTest extends TestCase
         $leaseExpiresAt = now()->addMinutes(5)->toJSON();
         $recordedAt = now()->toJSON();
         $duplicateLeaseExpiresAt = now()->addMinutes(10)->toJSON();
-        $retryLeaseExpiresAt = now()->addMinutes(15)->toJSON();
         $historyPayload = [
             'task_id' => $task->id,
             'workflow_run_id' => $runId,
@@ -514,7 +512,6 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use (
             $leaseExpiresAt,
             $duplicateLeaseExpiresAt,
-            $retryLeaseExpiresAt,
             $recordedAt,
             $runId,
             $task,
@@ -523,20 +520,9 @@ class WorkflowWorkerProtocolTest extends TestCase
             &$claimCalls,
         ): void {
             $mock->shouldReceive('poll')
-                ->times(3)
+                ->times(2)
                 ->with(null, 'external-workflows', 10, null)
                 ->andReturn(
-                    [[
-                        'task_id' => $task->id,
-                        'workflow_run_id' => $runId,
-                        'workflow_instance_id' => $workflowId,
-                        'workflow_type' => 'tests.external-greeting-workflow',
-                        'workflow_class' => ExternalGreetingWorkflow::class,
-                        'connection' => null,
-                        'queue' => 'external-workflows',
-                        'compatibility' => null,
-                        'available_at' => $recordedAt,
-                    ]],
                     [[
                         'task_id' => $task->id,
                         'workflow_run_id' => $runId,
@@ -562,22 +548,18 @@ class WorkflowWorkerProtocolTest extends TestCase
                 );
 
             $mock->shouldReceive('claimStatus')
-                ->times(3)
+                ->times(2)
                 ->andReturnUsing(function (string $claimedTaskId, string $leaseOwner) use (
                     &$claimCalls,
                     $leaseExpiresAt,
                     $duplicateLeaseExpiresAt,
-                    $retryLeaseExpiresAt,
                     $runId,
                     $task,
                     $workflowId,
                 ): array {
                     $claimCalls++;
                     $this->assertSame($task->id, $claimedTaskId);
-                    $this->assertSame(
-                        $claimCalls <= 2 ? 'php-worker-bridge' : 'php-worker-bridge-retry',
-                        $leaseOwner,
-                    );
+                    $this->assertSame('php-worker-bridge', $leaseOwner);
 
                     return [
                         'claimed' => true,
@@ -593,8 +575,7 @@ class WorkflowWorkerProtocolTest extends TestCase
                         'lease_owner' => $leaseOwner,
                         'lease_expires_at' => match ($claimCalls) {
                             1 => $leaseExpiresAt,
-                            2 => $duplicateLeaseExpiresAt,
-                            default => $retryLeaseExpiresAt,
+                            default => $duplicateLeaseExpiresAt,
                         },
                         'reason' => null,
                         'reason_detail' => null,
@@ -609,8 +590,19 @@ class WorkflowWorkerProtocolTest extends TestCase
             ]);
 
             $mock->shouldReceive('historyPayloadPaginated')
-                ->times(3)
-                ->andReturn($paginatedHistoryPayload, $paginatedHistoryPayload, $paginatedHistoryPayload);
+                ->times(2)
+                ->andReturn($paginatedHistoryPayload, $paginatedHistoryPayload);
+
+            $mock->shouldReceive('heartbeat')
+                ->andReturnUsing(function (string $heartbeatTaskId) use ($task, $leaseExpiresAt): array {
+                    return [
+                        'renewed' => true,
+                        'lease_expires_at' => $leaseExpiresAt,
+                        'run_status' => 'pending',
+                        'task_status' => 'leased',
+                        'reason' => null,
+                    ];
+                });
         });
 
         $firstPoll = $this->withHeaders($this->workerHeaders())
@@ -626,9 +618,21 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.workflow_task_attempt', 1)
             ->assertJsonPath('task.lease_owner', 'php-worker-bridge');
 
-        $lease = WorkflowTaskProtocolLease::query()->findOrFail($task->id);
-        $this->assertSame(1, $lease->workflow_task_attempt);
+        // The server sources workflow_task_attempt from the package's
+        // authoritative attempt_count, normalized to >= 1 for the protocol.
+        $firstAttempt = $firstPoll->json('task.workflow_task_attempt');
+        $this->assertGreaterThanOrEqual(1, $firstAttempt);
 
+        // Simulate the DB side-effect that the real bridge's claimStatus()
+        // performs — the mock doesn't touch the DB, so we mirror the claim
+        // state manually so the ownership guard can verify it.
+        $task->forceFill([
+            'lease_owner' => 'php-worker-bridge',
+            'lease_expires_at' => now()->addMinutes(5),
+            'attempt_count' => 1,
+        ])->save();
+
+        // Duplicate polls return the same attempt value for the same lease.
         $duplicatePoll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-bridge',
@@ -637,28 +641,27 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $duplicatePoll->assertOk()
             ->assertJsonPath('task.task_id', $task->id)
-            ->assertJsonPath('task.workflow_task_attempt', 1)
+            ->assertJsonPath('task.workflow_task_attempt', $firstAttempt)
             ->assertJsonPath('task.lease_owner', 'php-worker-bridge');
 
-        $this->assertSame(1, WorkflowTaskProtocolLease::query()->findOrFail($task->id)->workflow_task_attempt);
+        // The ownership guard fences stale workers using the package's
+        // lease_owner and attempt_count directly.
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$task->id}/heartbeat", [
+                'lease_owner' => 'php-worker-bridge',
+                'workflow_task_attempt' => $firstAttempt,
+            ])
+            ->assertOk()
+            ->assertJsonPath('renewed', true);
 
-        $lease->forceFill([
-            'lease_owner' => null,
-            'lease_expires_at' => null,
-        ])->save();
-
-        $retryPoll = $this->withHeaders($this->workerHeaders())
-            ->postJson('/api/worker/workflow-tasks/poll', [
-                'worker_id' => 'php-worker-bridge-retry',
-                'task_queue' => 'external-workflows',
-            ]);
-
-        $retryPoll->assertOk()
-            ->assertJsonPath('task.task_id', $task->id)
-            ->assertJsonPath('task.workflow_task_attempt', 2)
-            ->assertJsonPath('task.lease_owner', 'php-worker-bridge-retry');
-
-        $this->assertSame(2, WorkflowTaskProtocolLease::query()->findOrFail($task->id)->workflow_task_attempt);
+        // Wrong attempt number is fenced.
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$task->id}/heartbeat", [
+                'lease_owner' => 'php-worker-bridge',
+                'workflow_task_attempt' => $firstAttempt + 999,
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'workflow_task_attempt_mismatch');
     }
 
     public function test_it_redelivers_the_same_workflow_task_for_duplicate_poll_request_ids(): void
@@ -724,10 +727,9 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertOk()
             ->assertJsonPath('task', null);
 
-        $lease = WorkflowTaskProtocolLease::query()->findOrFail($taskId);
+        $taskRow = WorkflowTask::query()->findOrFail($taskId);
 
-        $this->assertSame(1, $lease->workflow_task_attempt);
-        $this->assertSame('poll-request-1', $lease->last_poll_request_id);
+        $this->assertSame(1, $taskRow->attempt_count);
     }
 
     public function test_duplicate_poll_request_redelivery_is_scoped_by_task_queue(): void
@@ -841,8 +843,6 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $taskId = (string) $firstPoll->json('task.task_id');
 
-        WorkflowTaskProtocolLease::query()->whereKey($taskId)->delete();
-
         $duplicatePoll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-duplicate-cache',
@@ -854,8 +854,6 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.task_id', $taskId)
             ->assertJsonPath('task.workflow_task_attempt', 1)
             ->assertJsonPath('task.lease_owner', 'php-worker-duplicate-cache');
-
-        $this->assertNull(WorkflowTaskProtocolLease::query()->find($taskId));
     }
 
     public function test_it_replays_cached_duplicate_poll_request_results_after_the_old_short_cache_window_when_the_lease_is_still_active(): void
@@ -889,8 +887,6 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $taskId = (string) $firstPoll->json('task.task_id');
 
-        WorkflowTaskProtocolLease::query()->whereKey($taskId)->delete();
-
         $this->travel(10)->seconds();
 
         try {
@@ -905,8 +901,6 @@ class WorkflowWorkerProtocolTest extends TestCase
                 ->assertJsonPath('task.task_id', $taskId)
                 ->assertJsonPath('task.workflow_task_attempt', 1)
                 ->assertJsonPath('task.lease_owner', 'php-worker-duplicate-cache-late');
-
-            $this->assertNull(WorkflowTaskProtocolLease::query()->find($taskId));
         } finally {
             $this->travelBack();
         }
@@ -1037,7 +1031,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.lease_expires_at', $renewedLeaseExpiresAt);
     }
 
-    public function test_completion_succeeds_when_mirror_row_is_missing(): void
+    public function test_completion_succeeds_for_a_standard_workflow_task(): void
     {
         Queue::fake();
 
@@ -1066,8 +1060,6 @@ class WorkflowWorkerProtocolTest extends TestCase
         $attempt = (int) $poll->json('task.workflow_task_attempt');
         $leaseOwner = (string) $poll->json('task.lease_owner');
 
-        WorkflowTaskProtocolLease::query()->whereKey($taskId)->delete();
-
         $complete = $this->withHeaders($this->workerHeaders())
             ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
                 'lease_owner' => $leaseOwner,
@@ -1087,14 +1079,9 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('workflow_task_attempt', $attempt)
             ->assertJsonPath('recorded', true)
             ->assertJsonPath('run_status', 'completed');
-
-        // The ownership guard now verifies against the package's WorkflowTask
-        // directly, so it does not create a mirror row when one is missing.
-        // The clearActiveLease() cleanup is a no-op when the row doesn't exist.
-        $this->assertNull(WorkflowTaskProtocolLease::query()->find($taskId));
     }
 
-    public function test_heartbeat_succeeds_even_when_mirror_row_is_stale(): void
+    public function test_heartbeat_succeeds_for_a_leased_workflow_task(): void
     {
         Queue::fake();
 
@@ -1123,16 +1110,6 @@ class WorkflowWorkerProtocolTest extends TestCase
         $attempt = (int) $poll->json('task.workflow_task_attempt');
         $leaseOwner = (string) $poll->json('task.lease_owner');
 
-        // Clear the mirror row's lease fields to simulate stale state.
-        // The ownership guard now verifies directly against the package's
-        // WorkflowTask, so a stale mirror should not prevent heartbeat.
-        WorkflowTaskProtocolLease::query()->findOrFail($taskId)
-            ->forceFill([
-                'lease_owner' => null,
-                'lease_expires_at' => null,
-                'last_poll_request_id' => null,
-            ])->save();
-
         $heartbeat = $this->withHeaders($this->workerHeaders())
             ->postJson("/api/worker/workflow-tasks/{$taskId}/heartbeat", [
                 'lease_owner' => $leaseOwner,
@@ -1145,17 +1122,9 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('lease_owner', $leaseOwner)
             ->assertJsonPath('renewed', true)
             ->assertJsonPath('reason', null);
-
-        // The mirror row is NOT reconciled by the heartbeat path anymore —
-        // ownership is verified against the package's WorkflowTask directly.
-        // The mirror's stale lease fields remain unchanged.
-        $lease = WorkflowTaskProtocolLease::query()->findOrFail($taskId);
-        $this->assertNull($lease->lease_owner);
-        $this->assertNull($lease->lease_expires_at);
-        $this->assertNull($lease->last_poll_request_id);
     }
 
-    public function test_it_reports_lease_owner_mismatch_from_the_package_task_row_when_the_mirror_row_is_missing(): void
+    public function test_it_reports_lease_owner_mismatch_when_wrong_worker_sends_heartbeat(): void
     {
         Queue::fake();
 
@@ -1183,8 +1152,6 @@ class WorkflowWorkerProtocolTest extends TestCase
         $taskId = (string) $poll->json('task.task_id');
         $attempt = (int) $poll->json('task.workflow_task_attempt');
 
-        WorkflowTaskProtocolLease::query()->whereKey($taskId)->delete();
-
         $this->withHeaders($this->workerHeaders())
             ->postJson("/api/worker/workflow-tasks/{$taskId}/heartbeat", [
                 'lease_owner' => 'php-worker-wrong-owner',
@@ -1193,8 +1160,6 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertStatus(409)
             ->assertJsonPath('reason', 'lease_owner_mismatch')
             ->assertJsonPath('lease_owner', 'php-worker-mirror-owner');
-
-        $this->assertNull(WorkflowTaskProtocolLease::query()->find($taskId));
     }
 
     public function test_it_drops_claimed_workflow_tasks_when_the_bridge_cannot_build_the_history_payload(): void
@@ -1262,11 +1227,6 @@ class WorkflowWorkerProtocolTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('task', null);
-
-        $lease = WorkflowTaskProtocolLease::query()->findOrFail('wf-task-missing-row');
-        $this->assertSame(1, $lease->workflow_task_attempt);
-        $this->assertNull($lease->lease_owner);
-        $this->assertNull($lease->lease_expires_at);
     }
 
     public function test_it_does_not_fall_back_to_a_local_ready_scan_when_the_workflow_bridge_returns_no_tasks(): void
@@ -1729,14 +1689,11 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('run_status', 'completed');
 
         $task = WorkflowTask::query()->findOrFail($taskId);
-        $lease = WorkflowTaskProtocolLease::query()->findOrFail($taskId);
 
         $this->assertSame(TaskStatus::Completed, $task->status);
-        $this->assertNull($lease->lease_owner);
-        $this->assertNull($lease->lease_expires_at);
     }
 
-    public function test_it_recovers_expired_workflow_task_leases_when_no_mirror_table_row_exists(): void
+    public function test_it_recovers_expired_workflow_task_leases_and_completes_successfully(): void
     {
         Queue::fake();
 
@@ -1769,15 +1726,6 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->forceFill([
                 'lease_expires_at' => $expiredAt,
             ])->save();
-
-        // Delete the mirror table row so recovery must rely on the package's
-        // WorkflowTask table directly.
-        WorkflowTaskProtocolLease::query()->where('task_id', $taskId)->delete();
-
-        $this->assertNull(
-            WorkflowTaskProtocolLease::query()->find($taskId),
-            'Mirror row should be absent before recovery poll.',
-        );
 
         $recoveredPoll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [

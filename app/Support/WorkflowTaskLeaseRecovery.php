@@ -2,7 +2,6 @@
 
 namespace App\Support;
 
-use App\Models\WorkflowTaskProtocolLease;
 use Illuminate\Http\Request;
 use Throwable;
 use Workflow\V2\Enums\TaskStatus;
@@ -15,13 +14,11 @@ final class WorkflowTaskLeaseRecovery
 {
     public function __construct(
         private readonly WorkflowCommandContextFactory $commandContexts,
-        private readonly WorkflowTaskLeaseRegistry $leases,
     ) {}
 
     /**
      * Recover an expired lease using the package's WorkflowTask as the source
-     * of truth for lease state. The mirror table row is used only for metadata
-     * enrichment (attempt counter, cached workflow IDs) when available.
+     * of truth for lease state.
      */
     public function recoverExpiredTaskLease(
         Request $request,
@@ -33,35 +30,18 @@ final class WorkflowTaskLeaseRecovery
         }
 
         if ($task->status !== TaskStatus::Leased) {
-            $this->leases->syncTaskState($task);
-
             return;
         }
 
         if ($task->lease_expires_at === null || $task->lease_expires_at->gt(now())) {
-            $this->leases->syncTaskState($task);
-
             return;
         }
-
-        // The package's WorkflowTask is the source of truth for run identity.
-        // The mirror table is read opportunistically for metadata enrichment
-        // but the package's fields take precedence.
-        $lease = $this->leases->activeLease($namespace, $task->id);
 
         $workflowRunId = $task->workflow_run_id;
 
         $workflowId = is_string($workflowRunId) && $workflowRunId !== ''
             ? WorkflowRun::query()->whereKey($workflowRunId)->value('workflow_instance_id')
             : null;
-
-        // Fall back to the mirror's cached workflow_instance_id only when the
-        // package's join path is unavailable.
-        if ((! is_string($workflowId) || $workflowId === '') && $lease instanceof WorkflowTaskProtocolLease) {
-            $workflowId = is_string($lease->workflow_instance_id) && $lease->workflow_instance_id !== ''
-                ? $lease->workflow_instance_id
-                : null;
-        }
 
         if (! is_string($workflowId) || $workflowId === '' || ! is_string($workflowRunId) || $workflowRunId === '') {
             return;
@@ -71,10 +51,7 @@ final class WorkflowTaskLeaseRecovery
             'trigger' => 'expired_workflow_task_lease',
             'task_id' => $task->id,
             'lease_owner' => $task->lease_owner,
-            // Prefer the package's authoritative attempt counter over the
-            // mirror table's cached value.
-            'workflow_task_attempt' => (is_int($task->attempt_count) ? (int) $task->attempt_count : null)
-                ?? $lease?->workflow_task_attempt,
+            'workflow_task_attempt' => is_int($task->attempt_count) ? (int) $task->attempt_count : null,
         ], static fn (mixed $value): bool => $value !== null && $value !== '');
 
         try {
@@ -87,31 +64,7 @@ final class WorkflowTaskLeaseRecovery
                 ))
                 ->attemptRepair();
         } catch (Throwable) {
-            // Repair is best-effort on the worker fence path. If the run cannot be
-            // selected here, the caller still gets the lease-expired fence response
-            // and the normal repair loop remains available.
+            // Repair is best-effort on the worker fence path.
         }
-    }
-
-    /**
-     * Recover an expired lease from a mirror table row. This delegates to
-     * recoverExpiredTaskLease() after resolving the WorkflowTask from the
-     * package's table. Retained for callers that already hold a lease (e.g.
-     * the ownership guard on complete/heartbeat/fail).
-     */
-    public function recoverExpiredLease(
-        Request $request,
-        string $namespace,
-        WorkflowTaskProtocolLease $lease,
-    ): void {
-        $task = NamespaceWorkflowScope::task($namespace, $lease->task_id);
-
-        if (! $task instanceof WorkflowTask || $task->task_type !== TaskType::Workflow) {
-            $this->leases->clearActiveLease($lease->task_id);
-
-            return;
-        }
-
-        $this->recoverExpiredTaskLease($request, $namespace, $task);
     }
 }
