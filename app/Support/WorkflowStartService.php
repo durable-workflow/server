@@ -75,6 +75,8 @@ final class WorkflowStartService
             'search_attributes' => $this->arrayValue($validated, 'search_attributes'),
             'memo' => $this->arrayValue($validated, 'memo'),
             'duplicate_start_policy' => $this->controlPlaneDuplicatePolicy($validated['duplicate_policy'] ?? null),
+            'execution_timeout_seconds' => $this->intValue($validated, 'execution_timeout_seconds'),
+            'run_timeout_seconds' => $this->intValue($validated, 'run_timeout_seconds'),
             'namespace' => $namespace,
             'command_context' => $commandContext,
         ], static fn (mixed $value): bool => $value !== null));
@@ -105,5 +107,15 @@ final class WorkflowStartService
         $value = $validated[$key] ?? [];
 
         return is_array($value) ? $value : [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     */
+    private function intValue(array $validated, string $key): ?int
+    {
+        $value = $validated[$key] ?? null;
+
+        return is_int($value) ? $value : null;
     }
 }

@@ -311,14 +311,16 @@ class ScheduleController
         try {
             $this->overlapEnforcer->enforce($schedule, $overlapPolicy);
 
-            $result = $this->startService->start([
+            $result = $this->startService->start(array_filter([
                 'workflow_type' => $action['workflow_type'],
                 'task_queue' => $action['task_queue'] ?? null,
                 'input' => $action['input'] ?? [],
+                'execution_timeout_seconds' => isset($action['workflow_execution_timeout']) ? (int) $action['workflow_execution_timeout'] : null,
+                'run_timeout_seconds' => isset($action['workflow_run_timeout']) ? (int) $action['workflow_run_timeout'] : null,
                 'memo' => $schedule->memo,
                 'search_attributes' => $schedule->search_attributes,
                 'duplicate_policy' => $this->overlapEnforcer->duplicateStartPolicy($overlapPolicy),
-            ], $schedule->namespace);
+            ], static fn (mixed $value): bool => $value !== null), $schedule->namespace);
 
             $schedule->recordFire($result['workflow_id'], $result['run_id'], $result['outcome'] ?? 'started');
             $schedule->save();

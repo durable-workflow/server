@@ -42,6 +42,14 @@ final class ControlPlaneRequestContract
                                 'use_existing' => 'use-existing',
                             ],
                         ],
+                        'execution_timeout_seconds' => [
+                            'type' => 'integer',
+                            'min' => 1,
+                        ],
+                        'run_timeout_seconds' => [
+                            'type' => 'integer',
+                            'min' => 1,
+                        ],
                     ],
                     'unsupported_fields' => [
                         'workflow_execution_timeout',

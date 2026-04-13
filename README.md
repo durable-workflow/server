@@ -92,7 +92,9 @@ curl -X POST $SERVER/api/workflows \
     "workflow_id": "order-42",
     "workflow_type": "orders.process",
     "task_queue": "order-workers",
-    "input": ["order-42", {"rush": true}]
+    "input": ["order-42", {"rush": true}],
+    "execution_timeout_seconds": 3600,
+    "run_timeout_seconds": 600
   }'
 ```
 

@@ -195,6 +195,78 @@ class WorkflowStartServiceTest extends TestCase
         ]);
     }
 
+    public function test_it_passes_execution_and_run_timeout_seconds_to_the_control_plane(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $this->mock(WorkflowControlPlane::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('start')
+                ->once()
+                ->with(
+                    'tests.external-greeting-workflow',
+                    'wf-timeout-1',
+                    \Mockery::on(static function (array $options): bool {
+                        return ($options['execution_timeout_seconds'] ?? null) === 300
+                            && ($options['run_timeout_seconds'] ?? null) === 120;
+                    }),
+                )
+                ->andReturn([
+                    'workflow_instance_id' => 'wf-timeout-1',
+                    'workflow_run_id' => 'run-timeout-1',
+                    'workflow_type' => 'tests.external-greeting-workflow',
+                    'outcome' => 'started_new',
+                    'reason' => null,
+                ]);
+        });
+
+        $service = app(WorkflowStartService::class);
+
+        $start = $service->start([
+            'workflow_id' => 'wf-timeout-1',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'execution_timeout_seconds' => 300,
+            'run_timeout_seconds' => 120,
+        ]);
+
+        $this->assertSame('wf-timeout-1', $start['workflow_id']);
+        $this->assertSame('started_new', $start['outcome']);
+    }
+
+    public function test_it_omits_timeout_seconds_from_options_when_not_provided(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $this->mock(WorkflowControlPlane::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('start')
+                ->once()
+                ->with(
+                    'tests.external-greeting-workflow',
+                    null,
+                    \Mockery::on(static function (array $options): bool {
+                        return ! array_key_exists('execution_timeout_seconds', $options)
+                            && ! array_key_exists('run_timeout_seconds', $options);
+                    }),
+                )
+                ->andReturn([
+                    'workflow_instance_id' => 'auto-id',
+                    'workflow_run_id' => 'auto-run',
+                    'workflow_type' => 'tests.external-greeting-workflow',
+                    'outcome' => 'started_new',
+                    'reason' => null,
+                ]);
+        });
+
+        $service = app(WorkflowStartService::class);
+
+        $service->start([
+            'workflow_type' => 'tests.external-greeting-workflow',
+        ]);
+    }
+
     public function test_it_no_longer_translates_the_legacy_underscore_duplicate_policy_alias(): void
     {
         config()->set('workflows.v2.types.workflows', [

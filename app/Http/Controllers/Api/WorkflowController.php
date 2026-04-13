@@ -112,14 +112,16 @@ class WorkflowController
             'memo' => ['nullable', 'array'],
             'search_attributes' => ['nullable', 'array'],
             'duplicate_policy' => ['nullable', 'string', 'in:fail,use-existing'],
+            'execution_timeout_seconds' => ['nullable', 'integer', 'min:1'],
+            'run_timeout_seconds' => ['nullable', 'integer', 'min:1'],
         ], [
             'duplicate_policy.in' => 'The duplicate_policy field only supports fail or use-existing.',
         ]);
 
         $validator->after(function ($validator) use ($request): void {
             foreach ([
-                'workflow_execution_timeout' => 'The workflow_execution_timeout field is not supported by the v2 workflow start API.',
-                'workflow_run_timeout' => 'The workflow_run_timeout field is not supported by the v2 workflow start API.',
+                'workflow_execution_timeout' => 'Use execution_timeout_seconds instead of workflow_execution_timeout.',
+                'workflow_run_timeout' => 'Use run_timeout_seconds instead of workflow_run_timeout.',
                 'workflow_task_timeout' => 'The workflow_task_timeout field is not supported by the v2 workflow start API.',
                 'retry_policy' => 'The retry_policy field is not supported by the v2 workflow start API.',
                 'idempotency_key' => 'The idempotency_key field is not supported by the v2 workflow start API.',

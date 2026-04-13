@@ -643,11 +643,11 @@ class WorkflowControlPlaneTest extends TestCase
             ->assertJsonPath('control_plane.operation', 'start')
             ->assertJsonPath(
                 'errors.workflow_execution_timeout.0',
-                'The workflow_execution_timeout field is not supported by the v2 workflow start API.',
+                'Use execution_timeout_seconds instead of workflow_execution_timeout.',
             )
             ->assertJsonPath(
                 'errors.workflow_run_timeout.0',
-                'The workflow_run_timeout field is not supported by the v2 workflow start API.',
+                'Use run_timeout_seconds instead of workflow_run_timeout.',
             )
             ->assertJsonPath(
                 'errors.workflow_task_timeout.0',
@@ -669,6 +669,78 @@ class WorkflowControlPlaneTest extends TestCase
                 'errors.duplicate_policy.0',
                 'The duplicate_policy field only supports fail or use-existing.',
             );
+    }
+
+    public function test_start_accepts_execution_and_run_timeout_seconds(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-with-timeouts',
+                'workflow_type' => 'tests.await-approval-workflow',
+                'execution_timeout_seconds' => 300,
+                'run_timeout_seconds' => 120,
+            ]);
+
+        $start->assertCreated()
+            ->assertJsonPath('workflow_id', 'wf-with-timeouts')
+            ->assertJsonPath('outcome', 'started_new');
+
+        // Describe should reflect the timeout values from the package
+        $describe = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-with-timeouts');
+
+        $describe->assertOk()
+            ->assertJsonPath('workflow_id', 'wf-with-timeouts')
+            ->assertJsonPath('execution_timeout_seconds', 300)
+            ->assertJsonPath('run_timeout_seconds', 120);
+    }
+
+    public function test_start_rejects_zero_and_negative_timeout_seconds(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_type' => 'tests.await-approval-workflow',
+                'execution_timeout_seconds' => 0,
+                'run_timeout_seconds' => -1,
+            ])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['execution_timeout_seconds', 'run_timeout_seconds']);
+    }
+
+    public function test_start_accepts_only_execution_timeout_without_run_timeout(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-exec-timeout-only',
+                'workflow_type' => 'tests.await-approval-workflow',
+                'execution_timeout_seconds' => 600,
+            ]);
+
+        $start->assertCreated()
+            ->assertJsonPath('workflow_id', 'wf-exec-timeout-only')
+            ->assertJsonPath('outcome', 'started_new');
+
+        $describe = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-exec-timeout-only');
+
+        $describe->assertOk()
+            ->assertJsonPath('execution_timeout_seconds', 600)
+            ->assertJsonPath('run_timeout_seconds', null);
     }
 
     public function test_start_supports_the_canonical_use_existing_duplicate_policy_for_an_active_run(): void
