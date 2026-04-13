@@ -48,6 +48,7 @@ class ServerPollingCacheTest extends TestCase
     {
         config([
             'cache.default' => 'file',
+            'server.polling.cache_path' => storage_path('framework/cache/server-polling/testing'),
         ]);
 
         File::deleteDirectory(storage_path('framework/cache/server-polling/testing'));
