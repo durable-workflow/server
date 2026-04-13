@@ -14,7 +14,8 @@ spec:
       containers:
         - name: migrate
           image: ghcr.io/durable-workflow/server:latest
-          command: ["server-bootstrap"]
+          command: ["server-entrypoint"]
+          args: ["server-bootstrap"]
           envFrom:
             - secretRef:
                 name: durable-workflow-env

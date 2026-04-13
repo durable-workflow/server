@@ -5,6 +5,8 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     libzip-dev \
     unzip \
+    && pecl install redis \
+    && docker-php-ext-enable redis \
     && docker-php-ext-install pdo pdo_mysql pdo_pgsql pcntl zip bcmath \
     && rm -rf /var/lib/apt/lists/*
 
@@ -68,8 +70,9 @@ COPY docker/entrypoint.sh /usr/local/bin/server-entrypoint
 
 RUN chmod +x /usr/local/bin/server-bootstrap /usr/local/bin/server-entrypoint
 
-RUN php artisan config:cache \
-    && php artisan route:cache
+# Route cache is safe at build time (no env dependency).
+# Config cache is deferred to the entrypoint so runtime env vars take effect.
+RUN php artisan route:cache
 
 LABEL org.opencontainers.image.title="Durable Workflow Server" \
       org.opencontainers.image.description="Standalone Durable Workflow server" \

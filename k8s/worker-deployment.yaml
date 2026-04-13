@@ -21,7 +21,8 @@ spec:
       containers:
         - name: worker
           image: ghcr.io/durable-workflow/server:latest
-          command: ["php", "artisan", "queue:work", "--sleep=1", "--tries=3", "--max-time=3600"]
+          command: ["server-entrypoint"]
+          args: ["php", "artisan", "queue:work", "--sleep=1", "--tries=3", "--max-time=3600"]
           envFrom:
             - secretRef:
                 name: durable-workflow-env
