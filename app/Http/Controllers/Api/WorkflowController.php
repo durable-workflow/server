@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 use LogicException;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowRun;
 
 class WorkflowController
@@ -84,6 +85,7 @@ class WorkflowController
                 'status' => $summary->status,
                 'status_bucket' => $summary->status_bucket,
                 'task_queue' => $summary->queue,
+                'is_terminal' => RunStatus::from($summary->status)->isTerminal(),
                 'started_at' => $summary->started_at?->toJSON(),
                 'closed_at' => $summary->closed_at?->toJSON(),
                 'search_attributes' => $summary->search_attributes ?? [],
@@ -591,6 +593,7 @@ class WorkflowController
             'business_key' => $description['business_key'] ?? $run->business_key,
             'status' => $run->status->value,
             'status_bucket' => $runDescription['status_bucket'] ?? null,
+            'is_terminal' => $run->status->isTerminal(),
             'closed_reason' => $runDescription['closed_reason'] ?? null,
             'task_queue' => $run->queue,
             'run_number' => $runDescription['run_number'] ?? (int) $run->run_number,

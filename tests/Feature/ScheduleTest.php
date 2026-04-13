@@ -6,6 +6,8 @@ use App\Models\WorkflowNamespace;
 use App\Models\WorkflowSchedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 
 class ScheduleTest extends TestCase
@@ -581,15 +583,9 @@ class ScheduleTest extends TestCase
 
     public function test_trigger_buffers_when_previous_workflow_is_running(): void
     {
-        $summary = WorkflowRunSummary::forceCreate([
-            'id' => 'run_buf_running_00001',
-            'workflow_instance_id' => 'wf-buffer-running',
-            'run_number' => 1,
-            'class' => 'App\\Workflows\\TestWorkflow',
-            'workflow_type' => 'TestWorkflow',
-            'status' => 'pending',
-            'status_bucket' => 'running',
-        ]);
+        $summary = $this->createWorkflowFixture(
+            'wf-buffer-running', 'run_buf_running_00001', 'pending', 'running',
+        );
 
         WorkflowSchedule::create([
             'schedule_id' => 'buffer-test',
@@ -616,15 +612,9 @@ class ScheduleTest extends TestCase
 
     public function test_trigger_returns_buffer_full_when_buffer_one_is_at_capacity(): void
     {
-        $summary = WorkflowRunSummary::forceCreate([
-            'id' => 'run_buf_full_000000001',
-            'workflow_instance_id' => 'wf-buffer-full',
-            'run_number' => 1,
-            'class' => 'App\\Workflows\\TestWorkflow',
-            'workflow_type' => 'TestWorkflow',
-            'status' => 'pending',
-            'status_bucket' => 'running',
-        ]);
+        $summary = $this->createWorkflowFixture(
+            'wf-buffer-full', 'run_buf_full_000000001', 'pending', 'running',
+        );
 
         WorkflowSchedule::create([
             'schedule_id' => 'buffer-full-test',
@@ -650,15 +640,9 @@ class ScheduleTest extends TestCase
 
     public function test_trigger_fires_buffer_policy_when_previous_workflow_is_completed(): void
     {
-        $summary = WorkflowRunSummary::forceCreate([
-            'id' => 'run_buf_done_000000001',
-            'workflow_instance_id' => 'wf-buffer-done',
-            'run_number' => 1,
-            'class' => 'App\\Workflows\\TestWorkflow',
-            'workflow_type' => 'TestWorkflow',
-            'status' => 'completed',
-            'status_bucket' => 'completed',
-        ]);
+        $summary = $this->createWorkflowFixture(
+            'wf-buffer-done', 'run_buf_done_000000001', 'completed', 'completed',
+        );
 
         WorkflowSchedule::create([
             'schedule_id' => 'buffer-fire-test',
@@ -683,15 +667,9 @@ class ScheduleTest extends TestCase
 
     public function test_trigger_buffer_all_allows_multiple_buffered_actions(): void
     {
-        $summary = WorkflowRunSummary::forceCreate([
-            'id' => 'run_buf_all_0000000001',
-            'workflow_instance_id' => 'wf-buffer-all',
-            'run_number' => 1,
-            'class' => 'App\\Workflows\\TestWorkflow',
-            'workflow_type' => 'TestWorkflow',
-            'status' => 'pending',
-            'status_bucket' => 'running',
-        ]);
+        $summary = $this->createWorkflowFixture(
+            'wf-buffer-all', 'run_buf_all_0000000001', 'pending', 'running',
+        );
 
         WorkflowSchedule::create([
             'schedule_id' => 'buffer-all-test',
@@ -753,5 +731,45 @@ class ScheduleTest extends TestCase
         return [
             'X-Namespace' => $namespace,
         ];
+    }
+
+    /**
+     * Create a WorkflowInstance + WorkflowRun + WorkflowRunSummary triplet
+     * so that WorkflowControlPlane::describe() can resolve the workflow state.
+     */
+    private function createWorkflowFixture(
+        string $instanceId,
+        string $runId,
+        string $status,
+        string $statusBucket,
+    ): WorkflowRunSummary {
+        $instance = WorkflowInstance::forceCreate([
+            'id' => $instanceId,
+            'workflow_class' => 'App\\Workflows\\TestWorkflow',
+            'workflow_type' => 'TestWorkflow',
+            'current_run_id' => $runId,
+            'run_count' => 1,
+        ]);
+
+        $run = WorkflowRun::forceCreate([
+            'id' => $runId,
+            'workflow_instance_id' => $instanceId,
+            'workflow_type' => 'TestWorkflow',
+            'workflow_class' => 'App\\Workflows\\TestWorkflow',
+            'run_number' => 1,
+            'status' => $status,
+            'queue' => 'default',
+            'started_at' => now(),
+        ]);
+
+        return WorkflowRunSummary::forceCreate([
+            'id' => $runId,
+            'workflow_instance_id' => $instanceId,
+            'run_number' => 1,
+            'class' => 'App\\Workflows\\TestWorkflow',
+            'workflow_type' => 'TestWorkflow',
+            'status' => $status,
+            'status_bucket' => $statusBucket,
+        ]);
     }
 }

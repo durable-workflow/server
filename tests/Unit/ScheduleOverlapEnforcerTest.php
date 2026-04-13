@@ -8,7 +8,6 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery\MockInterface;
 use Tests\TestCase;
 use Workflow\V2\Contracts\WorkflowControlPlane;
-use Workflow\V2\Models\WorkflowRunSummary;
 
 class ScheduleOverlapEnforcerTest extends TestCase
 {
@@ -189,46 +188,46 @@ class ScheduleOverlapEnforcerTest extends TestCase
 
     // ── lastFiredWorkflowIsRunning ─────────────────────────────────
 
-    public function test_last_fired_workflow_is_running_returns_true_when_summary_is_running(): void
+    public function test_last_fired_workflow_is_running_returns_true_when_describe_reports_running(): void
     {
-        $summary = WorkflowRunSummary::forceCreate([
-            'id' => 'run_running_00000000001',
-            'workflow_instance_id' => 'wf-running-1',
-            'run_number' => 1,
-            'class' => 'App\\Workflows\\TestWorkflow',
-            'workflow_type' => 'TestWorkflow',
-            'status' => 'pending',
-            'status_bucket' => 'running',
-        ]);
+        $controlPlane = $this->mock(WorkflowControlPlane::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('describe')
+                ->once()
+                ->with('wf-running-1', ['run_id' => 'run-1'])
+                ->andReturn([
+                    'found' => true,
+                    'run' => ['status_bucket' => 'running'],
+                ]);
+        });
 
-        $enforcer = $this->makeEnforcer();
+        $enforcer = new ScheduleOverlapEnforcer($controlPlane);
 
         $schedule = new WorkflowSchedule([
             'recent_actions' => [
-                ['workflow_id' => 'wf-running-1', 'run_id' => $summary->id, 'outcome' => 'started'],
+                ['workflow_id' => 'wf-running-1', 'run_id' => 'run-1', 'outcome' => 'started'],
             ],
         ]);
 
         $this->assertTrue($enforcer->lastFiredWorkflowIsRunning($schedule));
     }
 
-    public function test_last_fired_workflow_is_running_returns_false_when_summary_is_completed(): void
+    public function test_last_fired_workflow_is_running_returns_false_when_describe_reports_completed(): void
     {
-        $summary = WorkflowRunSummary::forceCreate([
-            'id' => 'run_done_000000000001',
-            'workflow_instance_id' => 'wf-done-1',
-            'run_number' => 1,
-            'class' => 'App\\Workflows\\TestWorkflow',
-            'workflow_type' => 'TestWorkflow',
-            'status' => 'completed',
-            'status_bucket' => 'completed',
-        ]);
+        $controlPlane = $this->mock(WorkflowControlPlane::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('describe')
+                ->once()
+                ->with('wf-done-1', ['run_id' => 'run-1'])
+                ->andReturn([
+                    'found' => true,
+                    'run' => ['status_bucket' => 'completed'],
+                ]);
+        });
 
-        $enforcer = $this->makeEnforcer();
+        $enforcer = new ScheduleOverlapEnforcer($controlPlane);
 
         $schedule = new WorkflowSchedule([
             'recent_actions' => [
-                ['workflow_id' => 'wf-done-1', 'run_id' => $summary->id, 'outcome' => 'started'],
+                ['workflow_id' => 'wf-done-1', 'run_id' => 'run-1', 'outcome' => 'started'],
             ],
         ]);
 
@@ -237,16 +236,29 @@ class ScheduleOverlapEnforcerTest extends TestCase
 
     public function test_last_fired_workflow_is_running_returns_false_when_no_recent_actions(): void
     {
-        $enforcer = $this->makeEnforcer();
+        $controlPlane = $this->mock(WorkflowControlPlane::class, function (MockInterface $mock): void {
+            $mock->shouldNotReceive('describe');
+        });
+
+        $enforcer = new ScheduleOverlapEnforcer($controlPlane);
 
         $schedule = new WorkflowSchedule(['recent_actions' => []]);
 
         $this->assertFalse($enforcer->lastFiredWorkflowIsRunning($schedule));
     }
 
-    public function test_last_fired_workflow_is_running_returns_false_when_run_id_not_found(): void
+    public function test_last_fired_workflow_is_running_returns_false_when_workflow_not_found(): void
     {
-        $enforcer = $this->makeEnforcer();
+        $controlPlane = $this->mock(WorkflowControlPlane::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('describe')
+                ->once()
+                ->with('wf-gone', ['run_id' => 'nonexistent-run'])
+                ->andReturn([
+                    'found' => false,
+                ]);
+        });
+
+        $enforcer = new ScheduleOverlapEnforcer($controlPlane);
 
         $schedule = new WorkflowSchedule([
             'recent_actions' => [

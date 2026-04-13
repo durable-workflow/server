@@ -90,6 +90,7 @@ final class ControlPlaneResponseContract
         'business_key',
         'status',
         'status_bucket',
+        'is_terminal',
         'task_queue',
         'run_number',
         'run_count',

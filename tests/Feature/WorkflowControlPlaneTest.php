@@ -168,6 +168,7 @@ class WorkflowControlPlaneTest extends TestCase
             ->assertJsonPath('run_count', 1)
             ->assertJsonPath('is_current_run', true)
             ->assertJsonPath('status_bucket', 'running')
+            ->assertJsonPath('is_terminal', false)
             ->assertJsonPath('wait_kind', 'signal')
             ->assertJsonPath('actions.can_signal', true)
             ->assertJsonPath('actions.can_query', true)
@@ -340,6 +341,7 @@ class WorkflowControlPlaneTest extends TestCase
             ->assertJsonPath('control_plane.run_id', $runId)
             ->assertJsonPath('status', 'cancelled')
             ->assertJsonPath('status_bucket', 'failed')
+            ->assertJsonPath('is_terminal', true)
             ->assertJsonPath('is_current_run', true)
             ->assertJsonPath('actions.can_signal', false)
             ->assertJsonPath('actions.can_query', false)
@@ -788,7 +790,8 @@ class WorkflowControlPlaneTest extends TestCase
         $runningList->assertOk()
             ->assertJsonPath('workflow_count', 1)
             ->assertJsonPath('workflows.0.workflow_id', 'wf-status-bucket-filter')
-            ->assertJsonPath('workflows.0.status_bucket', 'running');
+            ->assertJsonPath('workflows.0.status_bucket', 'running')
+            ->assertJsonPath('workflows.0.is_terminal', false);
 
         // Completed bucket should not include pending workflows
         $completedList = $this->withHeaders($this->apiHeaders())

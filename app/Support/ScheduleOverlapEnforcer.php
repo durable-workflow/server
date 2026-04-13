@@ -4,7 +4,6 @@ namespace App\Support;
 
 use App\Models\WorkflowSchedule;
 use Workflow\V2\Contracts\WorkflowControlPlane;
-use Workflow\V2\Models\WorkflowRunSummary;
 
 final class ScheduleOverlapEnforcer
 {
@@ -28,19 +27,23 @@ final class ScheduleOverlapEnforcer
     {
         $recentActions = $schedule->recent_actions ?? [];
         $lastAction = end($recentActions) ?: null;
+        $workflowId = $lastAction['workflow_id'] ?? null;
         $runId = $lastAction['run_id'] ?? null;
 
-        if (! is_string($runId) || $runId === '') {
+        if (! is_string($workflowId) || $workflowId === '') {
             return false;
         }
 
-        $summary = WorkflowRunSummary::query()->find($runId);
+        $options = is_string($runId) && $runId !== '' ? ['run_id' => $runId] : [];
+        $description = $this->controlPlane->describe($workflowId, $options);
 
-        if (! $summary) {
+        if (! ($description['found'] ?? false)) {
             return false;
         }
 
-        return $summary->status_bucket === 'running';
+        $statusBucket = $description['run']['status_bucket'] ?? null;
+
+        return $statusBucket === 'running';
     }
 
     /**
