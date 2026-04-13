@@ -4,6 +4,24 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Server Mode
+    |--------------------------------------------------------------------------
+    |
+    | In "service" mode (default), the server acts as a task broker: it creates
+    | workflow and activity task rows in the database but does NOT dispatch them
+    | to the Laravel queue for local execution. External workers poll the HTTP
+    | API to claim and execute tasks. Timer tasks are still dispatched locally.
+    |
+    | In "embedded" mode, the server dispatches all tasks to the Laravel queue
+    | for local execution, requiring workflow and activity classes to be
+    | registered in the same process.
+    |
+    */
+
+    'mode' => env('WORKFLOW_SERVER_MODE', 'service'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Server Identity
     |--------------------------------------------------------------------------
     |

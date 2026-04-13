@@ -357,6 +357,14 @@ class WorkflowController
             $queryName,
             [
                 'arguments' => $validated['input'] ?? [],
+                'command_context' => $this->commandContexts->make(
+                    $request,
+                    workflowId: $workflowId,
+                    commandName: 'query',
+                    metadata: array_filter([
+                        'query_name' => $queryName,
+                    ], static fn (mixed $value): bool => $value !== null),
+                ),
                 'strict_configured_type_validation' => true,
             ],
         );

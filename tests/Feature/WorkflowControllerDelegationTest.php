@@ -63,10 +63,24 @@ class WorkflowControllerDelegationTest extends TestCase
 
             $mock->shouldReceive('query')
                 ->once()
-                ->with('wf-delegate', 'currentState', [
-                    'arguments' => ['field' => 'value'],
-                    'strict_configured_type_validation' => true,
-                ])
+                ->withArgs(function (
+                    string $workflowId,
+                    string $queryName,
+                    array $options,
+                ): bool {
+                    $commandContext = $options['command_context'] ?? null;
+                    $attributes = $commandContext->attributes();
+                    $context = $attributes['context'] ?? [];
+
+                    return $workflowId === 'wf-delegate'
+                        && $queryName === 'currentState'
+                        && ($options['arguments'] ?? null) === ['field' => 'value']
+                        && ($attributes['source'] ?? null) === 'control_plane'
+                        && (($context['request']['path'] ?? null) === '/api/workflows/wf-delegate/query/currentState')
+                        && (($context['server']['command'] ?? null) === 'query')
+                        && (($context['server']['metadata']['query_name'] ?? null) === 'currentState')
+                        && ($options['strict_configured_type_validation'] ?? null) === true;
+                })
                 ->andReturn([
                     'success' => true,
                     'workflow_instance_id' => 'wf-delegate',
