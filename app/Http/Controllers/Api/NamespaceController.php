@@ -32,6 +32,13 @@ class NamespaceController
             'retention_days' => ['nullable', 'integer', 'min:1', 'max:365'],
         ]);
 
+        if (WorkflowNamespace::where('name', $validated['name'])->exists()) {
+            return response()->json([
+                'error' => 'Namespace already exists.',
+                'namespace' => $validated['name'],
+            ], 409);
+        }
+
         $namespace = WorkflowNamespace::create([
             'name' => $validated['name'],
             'description' => $validated['description'] ?? null,

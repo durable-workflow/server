@@ -119,7 +119,9 @@ class NamespaceControllerTest extends TestCase
             'name' => 'existing',
         ]);
 
-        $response->assertStatus(500);
+        $response->assertStatus(409)
+            ->assertJsonPath('error', 'Namespace already exists.')
+            ->assertJsonPath('namespace', 'existing');
     }
 
     public function test_it_rejects_retention_days_out_of_range(): void
