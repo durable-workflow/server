@@ -594,6 +594,8 @@ class WorkflowController
                 'can_update' => false,
                 'can_cancel' => false,
                 'can_terminate' => false,
+                'can_repair' => false,
+                'can_archive' => false,
             ];
 
         return [
@@ -611,6 +613,10 @@ class WorkflowController
             'run_count' => $description['run_count'] ?? null,
             'is_current_run' => $runDescription['is_current_run'] ?? null,
             'compatibility' => $runDescription['compatibility'] ?? $run->compatibility,
+            'execution_timeout_seconds' => $description['execution_timeout_seconds'] ?? null,
+            'run_timeout_seconds' => $runDescription['run_timeout_seconds'] ?? null,
+            'execution_deadline_at' => $runDescription['execution_deadline_at'] ?? null,
+            'run_deadline_at' => $runDescription['run_deadline_at'] ?? null,
             'input' => $run->workflowArguments(),
             'output' => $run->workflowOutput(),
             'started_at' => $run->started_at?->toJSON(),

@@ -76,13 +76,29 @@ class WorkflowReadEndpointTest extends TestCase
                 'run_number',
                 'run_count',
                 'is_current_run',
+                'compatibility',
+                'execution_timeout_seconds',
+                'run_timeout_seconds',
+                'execution_deadline_at',
+                'run_deadline_at',
                 'input',
                 'output',
                 'started_at',
                 'closed_at',
+                'last_progress_at',
+                'wait_kind',
+                'wait_reason',
                 'memo',
                 'search_attributes',
-                'actions',
+                'actions' => [
+                    'can_signal',
+                    'can_query',
+                    'can_update',
+                    'can_cancel',
+                    'can_terminate',
+                    'can_repair',
+                    'can_archive',
+                ],
                 'control_plane',
             ]);
     }
@@ -153,7 +169,9 @@ class WorkflowReadEndpointTest extends TestCase
             ->assertJsonPath('actions.can_query', false)
             ->assertJsonPath('actions.can_update', false)
             ->assertJsonPath('actions.can_cancel', false)
-            ->assertJsonPath('actions.can_terminate', false);
+            ->assertJsonPath('actions.can_terminate', false)
+            ->assertJsonPath('actions.can_repair', false)
+            ->assertJsonPath('actions.can_archive', true);
 
         $this->assertNotNull($describe->json('closed_at'));
     }
