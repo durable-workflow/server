@@ -75,7 +75,7 @@ Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per
                 'memo' => $schedule->memo,
                 'search_attributes' => $schedule->search_attributes,
                 'duplicate_policy' => $overlapEnforcer->duplicateStartPolicy($overlapPolicy),
-            ]);
+            ], $schedule->namespace);
 
             $schedule->recordFire($result['workflow_id'], $result['run_id'], $result['outcome'] ?? 'scheduled');
             $schedule->save();

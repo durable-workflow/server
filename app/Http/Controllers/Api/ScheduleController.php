@@ -255,7 +255,7 @@ class ScheduleController
                 'memo' => $schedule->memo,
                 'search_attributes' => $schedule->search_attributes,
                 'duplicate_policy' => $this->overlapEnforcer->duplicateStartPolicy($overlapPolicy),
-            ]);
+            ], $schedule->namespace);
 
             $schedule->recordFire($result['workflow_id'], $result['run_id'], $result['outcome'] ?? 'started');
             $schedule->save();
@@ -332,7 +332,7 @@ class ScheduleController
                     'memo' => $schedule->memo,
                     'search_attributes' => $schedule->search_attributes,
                     'duplicate_policy' => $this->overlapEnforcer->duplicateStartPolicy($overlapPolicy),
-                ]);
+                ], $schedule->namespace);
 
                 $schedule->recordFire($result['workflow_id'], $result['run_id'], 'backfilled');
                 $results[] = [

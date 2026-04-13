@@ -145,7 +145,20 @@ class WorkflowController
         }
 
         try {
-            $start = $this->workflowStartService->start($validated);
+            $start = $this->workflowStartService->start(
+                $validated,
+                $namespace,
+                $this->commandContexts->make(
+                    $request,
+                    workflowId: $workflowId ?? 'pending',
+                    commandName: 'start',
+                    metadata: array_filter([
+                        'workflow_type' => $validated['workflow_type'],
+                        'task_queue' => $validated['task_queue'] ?? null,
+                        'duplicate_policy' => $validated['duplicate_policy'] ?? null,
+                    ], static fn (mixed $value): bool => $value !== null),
+                ),
+            );
         } catch (LogicException $exception) {
             throw ValidationException::withMessages([
                 'workflow_type' => [$exception->getMessage()],

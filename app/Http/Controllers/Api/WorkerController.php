@@ -166,6 +166,7 @@ class WorkerController
             $namespace,
             $validated['worker_id'],
             $validated['task_queue'],
+            $validated['build_id'] ?? null,
         );
 
         if ($worker instanceof JsonResponse) {
@@ -798,6 +799,7 @@ class WorkerController
         string $namespace,
         string $workerId,
         string $taskQueue,
+        ?string $buildId = null,
     ): WorkerRegistration|JsonResponse {
         $worker = WorkerRegistration::query()
             ->where('worker_id', $workerId)
@@ -824,6 +826,25 @@ class WorkerController
                 'worker_id' => $workerId,
                 'registered_task_queue' => $worker->task_queue,
                 'requested_task_queue' => $taskQueue,
+            ], 409);
+        }
+
+        $registeredBuildId = is_string($worker->build_id) && $worker->build_id !== ''
+            ? $worker->build_id
+            : null;
+
+        if ($registeredBuildId !== null && $buildId !== null && $buildId !== $registeredBuildId) {
+            return WorkerProtocol::json([
+                'error' => sprintf(
+                    'Worker [%s] is registered with build_id [%s], but poll requested build_id [%s]. Re-register to update.',
+                    $workerId,
+                    $registeredBuildId,
+                    $buildId,
+                ),
+                'reason' => 'build_id_mismatch',
+                'worker_id' => $workerId,
+                'registered_build_id' => $registeredBuildId,
+                'requested_build_id' => $buildId,
             ], 409);
         }
 

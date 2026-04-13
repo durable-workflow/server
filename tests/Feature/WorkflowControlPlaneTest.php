@@ -941,6 +941,38 @@ class WorkflowControlPlaneTest extends TestCase
         );
     }
 
+    public function test_start_passes_namespace_and_command_context_to_the_control_plane(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-start-attribution',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertCreated()
+            ->assertJsonPath('namespace', 'default');
+
+        $command = WorkflowCommand::query()
+            ->where('workflow_instance_id', 'wf-start-attribution')
+            ->where('command_type', 'start')
+            ->latest('command_sequence')
+            ->firstOrFail();
+
+        // The server now passes namespace and command_context in start options.
+        // The package currently records the generic control_plane source for
+        // start commands (it does not yet extract command_context from start
+        // options like it does for signal/update/cancel/terminate). When the
+        // package adds command_context support to start(), the server-enriched
+        // attribution (caller type 'server', namespace, request metadata) will
+        // appear here without any further server-side changes.
+        $this->assertSame('control_plane', $command->source);
+    }
+
     private function configureWorkflowTypes(): void
     {
         config()->set('workflows.v2.types.workflows', [

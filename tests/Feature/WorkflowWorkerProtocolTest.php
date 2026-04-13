@@ -1432,6 +1432,98 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.lease_owner', 'php-worker-build-a');
     }
 
+    public function test_it_rejects_workflow_task_poll_when_build_id_mismatches_registration(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->registerWorker(
+            'php-worker-build-mismatch',
+            'external-workflows',
+            buildId: 'build-v1',
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-build-mismatch',
+                'task_queue' => 'external-workflows',
+                'build_id' => 'build-v2',
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'build_id_mismatch')
+            ->assertJsonPath('worker_id', 'php-worker-build-mismatch')
+            ->assertJsonPath('registered_build_id', 'build-v1')
+            ->assertJsonPath('requested_build_id', 'build-v2');
+    }
+
+    public function test_it_allows_workflow_task_poll_when_build_id_matches_registration(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->registerWorker(
+            'php-worker-build-match',
+            'external-workflows',
+            buildId: 'build-v1',
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-build-match',
+                'task_queue' => 'external-workflows',
+                'build_id' => 'build-v1',
+            ])
+            ->assertOk();
+    }
+
+    public function test_it_allows_workflow_task_poll_when_worker_has_no_registered_build_id(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->registerWorker('php-worker-no-build', 'external-workflows');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-no-build',
+                'task_queue' => 'external-workflows',
+                'build_id' => 'build-v2',
+            ])
+            ->assertOk();
+    }
+
+    public function test_it_rejects_activity_task_poll_when_build_id_mismatches_registration(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->registerWorker(
+            'php-activity-worker-mismatch',
+            'default',
+            buildId: 'build-v1',
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-activity-worker-mismatch',
+                'task_queue' => 'default',
+                'build_id' => 'build-v2',
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'build_id_mismatch')
+            ->assertJsonPath('worker_id', 'php-activity-worker-mismatch')
+            ->assertJsonPath('registered_build_id', 'build-v1')
+            ->assertJsonPath('requested_build_id', 'build-v2');
+    }
+
     public function test_it_fences_stale_workflow_task_workers_and_records_failures(): void
     {
         Queue::fake();
@@ -2745,17 +2837,19 @@ class WorkflowWorkerProtocolTest extends TestCase
         string $namespace = 'default',
         array $supportedWorkflowTypes = [],
         array $supportedActivityTypes = [],
+        ?string $buildId = null,
     ): void {
         WorkerRegistration::query()->updateOrCreate(
             ['worker_id' => $workerId, 'namespace' => $namespace],
-            [
+            array_filter([
                 'task_queue' => $taskQueue,
                 'runtime' => 'php',
+                'build_id' => $buildId,
                 'supported_workflow_types' => $supportedWorkflowTypes,
                 'supported_activity_types' => $supportedActivityTypes,
                 'last_heartbeat_at' => now(),
                 'status' => 'active',
-            ],
+            ], static fn (mixed $v): bool => $v !== null),
         );
     }
 
