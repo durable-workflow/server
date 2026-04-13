@@ -16,7 +16,7 @@ return new class() extends Migration
             $table->timestamps();
 
             $table->unique('workflow_instance_id');
-            $table->unique(['namespace', 'workflow_instance_id']);
+            $table->unique(['namespace', 'workflow_instance_id'], 'ns_workflow_instance_unique');
             $table->index(['namespace', 'workflow_type']);
         });
     }

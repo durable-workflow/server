@@ -104,14 +104,19 @@ class TransportRepairTest extends TestCase
             ->postJson('/api/system/repair/pass')
             ->assertOk()
             ->assertJsonStructure([
+                'throttled',
                 'selected_existing_task_candidates',
                 'selected_missing_task_candidates',
                 'selected_total_candidates',
                 'repaired_existing_tasks',
                 'repaired_missing_tasks',
                 'dispatched_tasks',
+                'selected_command_contract_candidates',
+                'backfilled_command_contracts',
+                'command_contract_backfill_unavailable',
                 'existing_task_failures',
                 'missing_run_failures',
+                'command_contract_failures',
             ]);
     }
 
@@ -121,13 +126,18 @@ class TransportRepairTest extends TestCase
             ->postJson('/api/system/repair/pass');
 
         $response->assertOk()
+            ->assertJsonPath('throttled', false)
             ->assertJsonPath('selected_total_candidates', 0)
             ->assertJsonPath('repaired_existing_tasks', 0)
             ->assertJsonPath('repaired_missing_tasks', 0)
-            ->assertJsonPath('dispatched_tasks', 0);
+            ->assertJsonPath('dispatched_tasks', 0)
+            ->assertJsonPath('selected_command_contract_candidates', 0)
+            ->assertJsonPath('backfilled_command_contracts', 0)
+            ->assertJsonPath('command_contract_backfill_unavailable', 0);
 
         $this->assertSame([], $response->json('existing_task_failures'));
         $this->assertSame([], $response->json('missing_run_failures'));
+        $this->assertSame([], $response->json('command_contract_failures'));
     }
 
     public function test_system_repair_pass_accepts_run_id_filter(): void

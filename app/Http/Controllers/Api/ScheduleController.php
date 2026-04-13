@@ -3,17 +3,17 @@
 namespace App\Http\Controllers\Api;
 
 use App\Models\WorkflowSchedule;
+use App\Support\ScheduleOverlapEnforcer;
 use App\Support\WorkflowStartService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
-use Workflow\V2\Contracts\WorkflowControlPlane;
 
 class ScheduleController
 {
     public function __construct(
         private readonly WorkflowStartService $startService,
-        private readonly WorkflowControlPlane $controlPlane,
+        private readonly ScheduleOverlapEnforcer $overlapEnforcer,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -234,7 +234,7 @@ class ScheduleController
         $action = $schedule->action;
         $overlapPolicy = $validated['overlap_policy'] ?? $schedule->overlap_policy;
 
-        if (in_array($overlapPolicy, ['buffer_one', 'buffer_all'], true)) {
+        if ($this->overlapEnforcer->isUnsupportedBufferPolicy($overlapPolicy)) {
             return response()->json([
                 'schedule_id' => $scheduleId,
                 'outcome' => 'trigger_failed',
@@ -246,7 +246,7 @@ class ScheduleController
         }
 
         try {
-            $this->enforceOverlapPolicy($schedule, $overlapPolicy);
+            $this->overlapEnforcer->enforce($schedule, $overlapPolicy);
 
             $result = $this->startService->start([
                 'workflow_type' => $action['workflow_type'],
@@ -254,7 +254,7 @@ class ScheduleController
                 'input' => $action['input'] ?? [],
                 'memo' => $schedule->memo,
                 'search_attributes' => $schedule->search_attributes,
-                'duplicate_policy' => $overlapPolicy === 'skip' ? 'use-existing' : null,
+                'duplicate_policy' => $this->overlapEnforcer->duplicateStartPolicy($overlapPolicy),
             ]);
 
             $schedule->recordFire($result['workflow_id'], $result['run_id'], $result['outcome'] ?? 'started');
@@ -331,7 +331,7 @@ class ScheduleController
                     'input' => $action['input'] ?? [],
                     'memo' => $schedule->memo,
                     'search_attributes' => $schedule->search_attributes,
-                    'duplicate_policy' => $overlapPolicy === 'skip' ? 'use-existing' : null,
+                    'duplicate_policy' => $this->overlapEnforcer->duplicateStartPolicy($overlapPolicy),
                 ]);
 
                 $schedule->recordFire($result['workflow_id'], $result['run_id'], 'backfilled');
@@ -357,31 +357,6 @@ class ScheduleController
             'outcome' => 'backfill_started',
             'fires_attempted' => count($fireTimes),
             'results' => $results,
-        ]);
-    }
-
-    /**
-     * Enforce cancel_other / terminate_other overlap policies by stopping the
-     * most recently started workflow from this schedule's recent actions.
-     */
-    private function enforceOverlapPolicy(WorkflowSchedule $schedule, string $overlapPolicy): void
-    {
-        if (! in_array($overlapPolicy, ['cancel_other', 'terminate_other'], true)) {
-            return;
-        }
-
-        $recentActions = $schedule->recent_actions ?? [];
-        $lastAction = end($recentActions) ?: null;
-        $workflowId = $lastAction['workflow_id'] ?? null;
-
-        if (! is_string($workflowId) || $workflowId === '') {
-            return;
-        }
-
-        $command = $overlapPolicy === 'cancel_other' ? 'cancel' : 'terminate';
-
-        $this->controlPlane->$command($workflowId, [
-            'reason' => sprintf('Schedule overlap policy: %s', $overlapPolicy),
         ]);
     }
 
