@@ -97,7 +97,7 @@ Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per
         ->limit($limit)
         ->get();
 
-    if ($due->isEmpty() && $drained === 0) {
+    if ($due->isEmpty() && $drained === 0 && $failed === 0) {
         $this->components->info('No schedules due.');
 
         return 0;
