@@ -107,6 +107,7 @@ final class ActivityTaskPoller
             queue: $taskQueue,
             limit: $limit,
             compatibility: $buildId,
+            namespace: $namespace,
         );
 
         foreach ($readyTasks as $readyTask) {

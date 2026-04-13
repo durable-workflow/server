@@ -15,6 +15,7 @@ use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\HistoryPayloadCompression;
 
@@ -332,7 +333,21 @@ class WorkerController
 
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
-        $outcome = $bridge->complete($taskId, $commands);
+
+        try {
+            $outcome = $bridge->complete($taskId, $commands);
+        } catch (StructuralLimitExceededException $e) {
+            return WorkerProtocol::json([
+                'task_id' => $taskId,
+                'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
+                'outcome' => 'rejected',
+                'error' => $e->getMessage(),
+                'reason' => 'structural_limit_exceeded',
+                'limit_kind' => $e->limitKind->value,
+                'current_value' => $e->currentValue,
+                'configured_limit' => $e->configuredLimit,
+            ], 422);
+        }
 
         return WorkerProtocol::json([
             'task_id' => $taskId,

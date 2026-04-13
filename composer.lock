@@ -1059,7 +1059,7 @@
             "dist": {
                 "type": "path",
                 "url": "../workflow",
-                "reference": "84658c2a2ea1ece6e8ab092faaa5edf389dece6b"
+                "reference": "4b312d8f3ca8782f9943056e6afcb162e8b86a43"
             },
             "require": {
                 "laravel/framework": "^9.0|^10.0|^11.0|^12.0|^13.0",

@@ -530,7 +530,7 @@ class WorkflowWorkerProtocolTest extends TestCase
         ): void {
             $mock->shouldReceive('poll')
                 ->times(2)
-                ->with(null, 'external-workflows', 10, null)
+                ->with(null, 'external-workflows', 10, null, 'default')
                 ->andReturn(
                     [[
                         'task_id' => $task->id,
@@ -1113,6 +1113,69 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('run_status', 'completed');
     }
 
+    public function test_completion_returns_422_when_structural_limit_exceeded(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-structural-limit',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->registerWorker('php-worker-structural-limit', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-structural-limit',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $this->instance(
+            WorkflowTaskBridge::class,
+            \Mockery::mock(WorkflowTaskBridge::class, static function (MockInterface $mock) {
+                $mock->shouldReceive('complete')
+                    ->andThrow(
+                        \Workflow\V2\Exceptions\StructuralLimitExceededException::pendingActivityCount(2000, 2000),
+                    );
+            }),
+        );
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'schedule_activity',
+                        'activity_type' => 'greeting.send',
+                    ],
+                ],
+            ]);
+
+        $complete->assertStatus(422)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('outcome', 'rejected')
+            ->assertJsonPath('reason', 'structural_limit_exceeded')
+            ->assertJsonPath('limit_kind', 'pending_activity_count')
+            ->assertJsonPath('current_value', 2000)
+            ->assertJsonPath('configured_limit', 2000);
+    }
+
     public function test_heartbeat_succeeds_for_a_leased_workflow_task(): void
     {
         Queue::fake();
@@ -1216,7 +1279,7 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use ($recordedAt): void {
             $mock->shouldReceive('poll')
                 ->once()
-                ->with(null, 'external-workflows', 10, null)
+                ->with(null, 'external-workflows', 10, null, 'default')
                 ->andReturn([
                     [
                         'task_id' => 'wf-task-missing-row',
@@ -1287,7 +1350,7 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock): void {
             $mock->shouldReceive('poll')
                 ->once()
-                ->with(null, 'external-workflows', 10, null)
+                ->with(null, 'external-workflows', 10, null, 'default')
                 ->andReturn([]);
         });
 

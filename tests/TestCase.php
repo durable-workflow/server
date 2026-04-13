@@ -3,6 +3,9 @@
 namespace Tests;
 
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 
 abstract class TestCase extends BaseTestCase
 {
@@ -17,6 +20,28 @@ abstract class TestCase extends BaseTestCase
             'server.worker_protocol.version' => '1.0',
             'server.polling.cache_path' => $this->pollingCachePath(),
         ]);
+
+        // Ensure package models created via WorkflowStub (used in tests)
+        // get a default namespace, matching production behavior where
+        // all workflows start through the HTTP API control plane which
+        // always sets namespace.
+        WorkflowInstance::creating(static function ($model): void {
+            if ($model->namespace === null) {
+                $model->namespace = 'default';
+            }
+        });
+
+        WorkflowRun::creating(static function ($model): void {
+            if ($model->namespace === null) {
+                $model->namespace = 'default';
+            }
+        });
+
+        WorkflowTask::creating(static function ($model): void {
+            if ($model->namespace === null) {
+                $model->namespace = 'default';
+            }
+        });
     }
 
     protected function tearDown(): void

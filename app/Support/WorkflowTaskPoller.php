@@ -400,6 +400,7 @@ final class WorkflowTaskPoller
             queue: $taskQueue,
             limit: $limit,
             compatibility: $buildId,
+            namespace: $namespace,
         );
 
         foreach ($readyTasks as $readyTask) {

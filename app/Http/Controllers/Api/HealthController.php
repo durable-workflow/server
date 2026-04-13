@@ -8,6 +8,7 @@ use App\Support\WorkerProtocol;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
+use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
 
@@ -75,6 +76,7 @@ class HealthController
                 'max_pending_activities' => (int) config('server.limits.max_pending_activities', 2000),
                 'max_pending_children' => (int) config('server.limits.max_pending_children', 2000),
             ],
+            'structural_limits' => StructuralLimits::snapshot(),
             'control_plane' => ControlPlaneProtocol::info(),
             'worker_protocol' => WorkerProtocol::info(),
             'package_provenance' => $this->packageProvenance(),

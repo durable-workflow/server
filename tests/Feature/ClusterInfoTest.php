@@ -83,6 +83,49 @@ class ClusterInfoTest extends TestCase
             ->assertSee('WORKFLOW_SERVER_SIGNATURE_KEY is not configured');
     }
 
+    public function test_it_includes_structural_limits_from_the_package(): void
+    {
+        $response = $this->getJson('/api/cluster/info');
+
+        $response->assertOk()
+            ->assertJsonStructure([
+                'structural_limits' => [
+                    'pending_activity_count',
+                    'pending_child_count',
+                    'pending_timer_count',
+                    'pending_signal_count',
+                    'pending_update_count',
+                    'command_batch_size',
+                    'payload_size_bytes',
+                    'memo_size_bytes',
+                    'search_attribute_size_bytes',
+                    'history_transaction_size',
+                    'warning_threshold_percent',
+                ],
+            ]);
+
+        $limits = $response->json('structural_limits');
+
+        $this->assertIsInt($limits['pending_activity_count']);
+        $this->assertIsInt($limits['history_transaction_size']);
+        $this->assertGreaterThan(0, $limits['pending_activity_count']);
+        $this->assertGreaterThan(0, $limits['history_transaction_size']);
+    }
+
+    public function test_structural_limits_reflect_custom_configuration(): void
+    {
+        config([
+            'workflows.v2.structural_limits.pending_activity_count' => 500,
+            'workflows.v2.structural_limits.history_transaction_size' => 1000,
+        ]);
+
+        $response = $this->getJson('/api/cluster/info');
+
+        $response->assertOk()
+            ->assertJsonPath('structural_limits.pending_activity_count', 500)
+            ->assertJsonPath('structural_limits.history_transaction_size', 1000);
+    }
+
     public function test_it_includes_package_provenance_when_the_provenance_file_exists(): void
     {
         $provenancePath = base_path('.package-provenance');
