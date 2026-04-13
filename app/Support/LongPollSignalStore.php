@@ -2,11 +2,11 @@
 
 namespace App\Support;
 
-use App\Models\WorkflowNamespaceWorkflow;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Str;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -198,6 +198,15 @@ final class LongPollSignalStore
 
     private function namespaceForTask(WorkflowTask $task): ?string
     {
+        // Tasks now carry the native namespace column — read it directly
+        // instead of the previous two-step lookup (task → run → instance).
+        $namespace = $task->namespace;
+
+        if (is_string($namespace) && $namespace !== '') {
+            return $namespace;
+        }
+
+        // Fallback for tasks created before the native column was populated.
         if (! is_string($task->workflow_run_id) || $task->workflow_run_id === '') {
             return null;
         }
@@ -213,8 +222,8 @@ final class LongPollSignalStore
 
     private function namespaceForWorkflow(string $workflowId): ?string
     {
-        $namespace = WorkflowNamespaceWorkflow::query()
-            ->where('workflow_instance_id', $workflowId)
+        $namespace = WorkflowInstance::query()
+            ->whereKey($workflowId)
             ->value('namespace');
 
         return is_string($namespace) && $namespace !== ''

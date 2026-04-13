@@ -2,10 +2,8 @@
 
 namespace App\Providers;
 
-use App\Models\WorkflowNamespaceWorkflow;
 use App\Observers\WorkflowHistoryEventObserver;
 use App\Observers\WorkflowLinkObserver;
-use App\Observers\WorkflowNamespaceWorkflowObserver;
 use App\Observers\WorkflowRunLineageEntryObserver;
 use App\Observers\WorkflowTaskObserver;
 use Illuminate\Support\ServiceProvider;
@@ -22,6 +20,5 @@ class AppServiceProvider extends ServiceProvider
         WorkflowRunLineageEntry::observe(WorkflowRunLineageEntryObserver::class);
         WorkflowTask::observe(WorkflowTaskObserver::class);
         WorkflowHistoryEvent::observe(WorkflowHistoryEventObserver::class);
-        WorkflowNamespaceWorkflow::observe(WorkflowNamespaceWorkflowObserver::class);
     }
 }

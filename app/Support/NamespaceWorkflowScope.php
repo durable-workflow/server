@@ -23,13 +23,26 @@ class NamespaceWorkflowScope
             ->whereNull('namespace')
             ->update(['namespace' => $namespace]);
 
-        return WorkflowNamespaceWorkflow::query()->updateOrCreate(
+        // Defense-in-depth: maintain bridge table during transition.
+        // Functional consumers (reads, wake signals) no longer depend on
+        // this table — they use the native namespace column directly.
+        $binding = WorkflowNamespaceWorkflow::query()->updateOrCreate(
             ['workflow_instance_id' => $workflowId],
             [
                 'namespace' => $namespace,
                 'workflow_type' => $workflowType,
             ],
         );
+
+        // Wake long-poll waiters directly instead of relying on the
+        // bridge-table model observer (WorkflowNamespaceWorkflowObserver,
+        // now removed).
+        app(LongPollSignalStore::class)->signalWorkflowTaskQueuesForWorkflow(
+            $workflowId,
+            $namespace,
+        );
+
+        return $binding;
     }
 
     public static function workflowBound(string $namespace, string $workflowId): bool
