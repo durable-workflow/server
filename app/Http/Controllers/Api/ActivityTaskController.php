@@ -9,6 +9,7 @@ use App\Support\WorkerProtocol;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
+use Workflow\V2\Models\ActivityExecution;
 
 class ActivityTaskController
 {
@@ -63,7 +64,7 @@ class ActivityTaskController
         );
 
         return WorkerProtocol::json([
-            'task' => $claim === null ? null : [
+            'task' => $claim === null ? null : array_filter([
                 'task_id' => $claim['task_id'],
                 'workflow_id' => $claim['workflow_instance_id'],
                 'run_id' => $claim['workflow_run_id'],
@@ -79,7 +80,8 @@ class ActivityTaskController
                 'connection' => $claim['connection'],
                 'lease_owner' => $claim['lease_owner'],
                 'lease_expires_at' => $claim['lease_expires_at'],
-            ],
+                'deadlines' => $this->executionDeadlines($claim['activity_execution_id'] ?? null),
+            ], static fn (mixed $v): bool => $v !== null),
         ]);
     }
 
@@ -364,6 +366,32 @@ class ActivityTaskController
      * @param  array<string, mixed>  $validated
      * @return array<string, mixed>
      */
+    /**
+     * @return array<string, string>|null
+     */
+    private function executionDeadlines(?string $executionId): ?array
+    {
+        if ($executionId === null || $executionId === '') {
+            return null;
+        }
+
+        /** @var ActivityExecution|null $execution */
+        $execution = ActivityExecution::query()->find($executionId);
+
+        if (! $execution) {
+            return null;
+        }
+
+        $deadlines = array_filter([
+            'schedule_to_start' => $execution->schedule_deadline_at?->toIso8601String(),
+            'start_to_close' => $execution->close_deadline_at?->toIso8601String(),
+            'schedule_to_close' => $execution->schedule_to_close_deadline_at?->toIso8601String(),
+            'heartbeat' => $execution->heartbeat_deadline_at?->toIso8601String(),
+        ], static fn (mixed $v): bool => $v !== null);
+
+        return $deadlines !== [] ? $deadlines : null;
+    }
+
     private function heartbeatProgress(array $validated): array
     {
         $progress = [];

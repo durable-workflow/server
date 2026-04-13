@@ -118,5 +118,7 @@ Route::middleware(Authenticate::class)->group(function () {
     Route::prefix('system')->group(function () {
         Route::get('/repair', [SystemController::class, 'repairStatus']);
         Route::post('/repair/pass', [SystemController::class, 'repairPass']);
+        Route::get('/activity-timeouts', [SystemController::class, 'activityTimeoutStatus']);
+        Route::post('/activity-timeouts/pass', [SystemController::class, 'activityTimeoutEnforcePass']);
     });
 });

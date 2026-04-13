@@ -268,6 +268,10 @@ curl "$SERVER/api/workflows/order-42/runs/abc123/history" \
 ### System
 - `GET /api/health` — Health check
 - `GET /api/cluster/info` — Server capabilities and version
+- `GET /api/system/repair` — Task repair diagnostics
+- `POST /api/system/repair/pass` — Run task repair sweep
+- `GET /api/system/activity-timeouts` — Expired activity execution diagnostics
+- `POST /api/system/activity-timeouts/pass` — Enforce activity timeouts
 
 ### Namespaces
 - `GET /api/namespaces` — List namespaces
@@ -360,9 +364,14 @@ and `continue_as_new` commands.
 
 Activity task polling returns a leased attempt identity. Clients must echo both
 `activity_attempt_id` and `lease_owner` on activity `complete`, `fail`, and
-`heartbeat` calls. Heartbeats accept `message`, `current`, `total`, `unit`, and
-`details` fields; the server normalizes them to the package heartbeat-progress
-contract before recording the heartbeat.
+`heartbeat` calls. When the activity execution has timeout deadlines configured,
+the poll response includes a `deadlines` object with ISO-8601 timestamps for
+`schedule_to_start`, `start_to_close`, `schedule_to_close`, and/or `heartbeat`.
+Workers should use these deadlines to self-cancel before the server enforces the
+timeout. The server runs `activity:timeout-enforce` periodically to expire
+activities that exceed their deadlines. Heartbeats accept `message`, `current`,
+`total`, `unit`, and `details` fields; the server normalizes them to the package
+heartbeat-progress contract before recording the heartbeat.
 
 ### Schedules
 - `GET /api/schedules` — List schedules

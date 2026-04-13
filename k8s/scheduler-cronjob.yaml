@@ -25,7 +25,7 @@ spec:
           containers:
             - name: scheduler
               image: ghcr.io/durable-workflow/server:latest
-              command: ["php", "artisan", "schedule:evaluate", "--limit=100"]
+              command: ["sh", "-c", "php artisan schedule:evaluate --limit=100 && php artisan activity:timeout-enforce --limit=100"]
               envFrom:
                 - secretRef:
                     name: durable-workflow-env

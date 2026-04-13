@@ -191,3 +191,59 @@ Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per
 
     return $failed > 0 ? 1 : 0;
 })->purpose('Evaluate due schedules and start their workflows');
+
+Artisan::command('activity:timeout-enforce {--limit=100 : Maximum expired executions to process per pass}', function (): int {
+    $limit = max(1, (int) $this->option('limit'));
+
+    $expiredIds = \Workflow\V2\Support\ActivityTimeoutEnforcer::expiredExecutionIds($limit);
+
+    if ($expiredIds === []) {
+        $this->components->info('No expired activity executions.');
+
+        return 0;
+    }
+
+    $this->components->info(sprintf('Enforcing %d expired activity execution(s)...', count($expiredIds)));
+
+    $enforced = 0;
+    $skipped = 0;
+    $failed = 0;
+
+    foreach ($expiredIds as $executionId) {
+        $result = \Workflow\V2\Support\ActivityTimeoutEnforcer::enforce($executionId);
+
+        if ($result['enforced']) {
+            $label = $result['next_task'] !== null ? 'retry scheduled' : 'terminal';
+
+            $this->components->twoColumnDetail(
+                $executionId,
+                sprintf('<fg=green>enforced</> (%s)', $label),
+            );
+
+            $enforced++;
+        } elseif ($result['reason'] !== null && str_contains($result['reason'], 'Exception')) {
+            $this->components->twoColumnDetail(
+                $executionId,
+                sprintf('<fg=red>error</>: %s', $result['reason']),
+            );
+
+            $failed++;
+        } else {
+            $this->components->twoColumnDetail(
+                $executionId,
+                sprintf('<fg=yellow>skipped</>: %s', $result['reason'] ?? 'unknown'),
+            );
+
+            $skipped++;
+        }
+    }
+
+    $this->components->info(sprintf(
+        'Done: %d enforced, %d skipped, %d failed.',
+        $enforced,
+        $skipped,
+        $failed,
+    ));
+
+    return $failed > 0 ? 1 : 0;
+})->purpose('Enforce activity timeout deadlines on expired executions');

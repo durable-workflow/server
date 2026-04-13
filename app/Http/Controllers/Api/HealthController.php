@@ -63,6 +63,7 @@ class HealthController
                 'history_export' => true,
                 'continue_as_new' => true,
                 'child_workflows' => true,
+                'activity_timeouts' => true,
                 'response_compression' => (bool) config('server.compression.enabled', true)
                     ? ['gzip', 'deflate']
                     : [],
