@@ -4,6 +4,7 @@ namespace App\Support;
 
 use App\Models\WorkflowNamespaceWorkflow;
 use Illuminate\Database\Eloquent\Builder;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRun;
@@ -14,6 +15,14 @@ class NamespaceWorkflowScope
 {
     public static function bind(string $namespace, string $workflowId, ?string $workflowType = null): WorkflowNamespaceWorkflow
     {
+        // Backfill the native namespace column on the package's instance
+        // when it was created without one (e.g., insertOrIgnore paths
+        // that bypass model events).
+        WorkflowInstance::query()
+            ->whereKey($workflowId)
+            ->whereNull('namespace')
+            ->update(['namespace' => $namespace]);
+
         return WorkflowNamespaceWorkflow::query()->updateOrCreate(
             ['workflow_instance_id' => $workflowId],
             [
@@ -25,16 +34,16 @@ class NamespaceWorkflowScope
 
     public static function workflowBound(string $namespace, string $workflowId): bool
     {
-        return WorkflowNamespaceWorkflow::query()
+        return WorkflowInstance::query()
+            ->whereKey($workflowId)
             ->where('namespace', $namespace)
-            ->where('workflow_instance_id', $workflowId)
             ->exists();
     }
 
     public static function namespaceForWorkflow(string $workflowId): ?string
     {
-        $namespace = WorkflowNamespaceWorkflow::query()
-            ->where('workflow_instance_id', $workflowId)
+        $namespace = WorkflowInstance::query()
+            ->whereKey($workflowId)
             ->value('namespace');
 
         return is_string($namespace) && $namespace !== ''
@@ -85,11 +94,7 @@ class NamespaceWorkflowScope
     public static function runQuery(string $namespace, string $workflowId): Builder
     {
         return WorkflowRun::query()
-            ->select('workflow_runs.*')
-            ->join('workflow_namespace_workflows as namespace_workflows', function ($join) use ($namespace) {
-                $join->on('namespace_workflows.workflow_instance_id', '=', 'workflow_runs.workflow_instance_id')
-                    ->where('namespace_workflows.namespace', '=', $namespace);
-            })
+            ->where('workflow_runs.namespace', $namespace)
             ->where('workflow_runs.workflow_instance_id', $workflowId);
     }
 
@@ -110,28 +115,20 @@ class NamespaceWorkflowScope
     public static function runSummaryQuery(string $namespace): Builder
     {
         return WorkflowRunSummary::query()
-            ->select('workflow_run_summaries.*')
-            ->join('workflow_namespace_workflows as namespace_workflows', function ($join) use ($namespace) {
-                $join->on('namespace_workflows.workflow_instance_id', '=', 'workflow_run_summaries.workflow_instance_id')
-                    ->where('namespace_workflows.namespace', '=', $namespace);
-            });
+            ->where('workflow_run_summaries.namespace', $namespace);
     }
 
     public static function taskQuery(string $namespace): Builder
     {
         return WorkflowTask::query()
-            ->select('workflow_tasks.*')
-            ->join('workflow_runs', 'workflow_runs.id', '=', 'workflow_tasks.workflow_run_id')
-            ->join('workflow_namespace_workflows as namespace_workflows', function ($join) use ($namespace) {
-                $join->on('namespace_workflows.workflow_instance_id', '=', 'workflow_runs.workflow_instance_id')
-                    ->where('namespace_workflows.namespace', '=', $namespace);
-            });
+            ->where('workflow_tasks.namespace', $namespace);
     }
 
     public static function task(string $namespace, string $taskId): ?WorkflowTask
     {
-        return self::taskQuery($namespace)
-            ->where('workflow_tasks.id', $taskId)
+        return WorkflowTask::query()
+            ->where('namespace', $namespace)
+            ->whereKey($taskId)
             ->first();
     }
 }

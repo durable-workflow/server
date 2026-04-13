@@ -104,6 +104,7 @@ final class TaskQueueVisibility
 
         /** @var WorkflowTask|null $oldestReadyTask */
         $oldestReadyTask = $this->readyTaskQuery($namespace, $taskQueue, $now)
+            ->join('workflow_runs', 'workflow_runs.id', '=', 'workflow_tasks.workflow_run_id')
             ->select('workflow_tasks.*', 'workflow_runs.workflow_instance_id')
             ->orderByRaw('workflow_tasks.available_at is null desc')
             ->orderBy('workflow_tasks.available_at')
@@ -156,6 +157,7 @@ final class TaskQueueVisibility
     private function currentLeases(string $namespace, string $taskQueue, Carbon $now): array
     {
         $workflowLeases = $this->baseTaskQuery($namespace, $taskQueue)
+            ->join('workflow_runs', 'workflow_runs.id', '=', 'workflow_tasks.workflow_run_id')
             ->where('workflow_tasks.task_type', TaskType::Workflow->value)
             ->where('workflow_tasks.status', TaskStatus::Leased->value)
             ->select([
@@ -190,6 +192,7 @@ final class TaskQueueVisibility
             });
 
         $activityLeases = $this->baseTaskQuery($namespace, $taskQueue)
+            ->join('workflow_runs', 'workflow_runs.id', '=', 'workflow_tasks.workflow_run_id')
             ->leftJoin('activity_attempts', function ($join): void {
                 $join->on('activity_attempts.workflow_task_id', '=', 'workflow_tasks.id')
                     ->where('activity_attempts.status', '=', ActivityAttemptStatus::Running->value);

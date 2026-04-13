@@ -15,6 +15,7 @@ use Tests\TestCase;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
@@ -835,6 +836,13 @@ class WorkflowControlPlaneTest extends TestCase
     public function test_it_binds_child_namespaces_from_links_and_fills_workflow_type_from_lineage_projection(): void
     {
         $this->createNamespace('default', 'Default namespace');
+
+        WorkflowInstance::query()->create([
+            'id' => 'wf-lineage-parent',
+            'workflow_class' => InternalParentWorkflow::class,
+            'workflow_type' => 'tests.internal-parent-workflow',
+            'run_count' => 0,
+        ]);
 
         WorkflowNamespaceWorkflow::query()->create([
             'namespace' => 'default',

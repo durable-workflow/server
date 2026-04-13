@@ -5,6 +5,7 @@ namespace Tests;
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 
 abstract class TestCase extends BaseTestCase
@@ -38,6 +39,12 @@ abstract class TestCase extends BaseTestCase
         });
 
         WorkflowTask::creating(static function ($model): void {
+            if ($model->namespace === null) {
+                $model->namespace = 'default';
+            }
+        });
+
+        WorkflowRunSummary::creating(static function ($model): void {
             if ($model->namespace === null) {
                 $model->namespace = 'default';
             }

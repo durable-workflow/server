@@ -7,6 +7,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery\MockInterface;
 use Tests\TestCase;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Models\WorkflowInstance;
 
 class WorkflowControllerDelegationTest extends TestCase
 {
@@ -14,6 +15,13 @@ class WorkflowControllerDelegationTest extends TestCase
 
     public function test_control_plane_command_endpoints_delegate_to_the_gateway(): void
     {
+        WorkflowInstance::query()->create([
+            'id' => 'wf-delegate',
+            'workflow_class' => 'Tests\\Fixtures\\InteractiveCommandWorkflow',
+            'workflow_type' => 'tests.interactive-command-workflow',
+            'run_count' => 0,
+        ]);
+
         WorkflowNamespaceWorkflow::query()->create([
             'namespace' => 'default',
             'workflow_instance_id' => 'wf-delegate',
@@ -261,6 +269,13 @@ class WorkflowControllerDelegationTest extends TestCase
 
     public function test_control_plane_command_endpoints_return_not_found_when_the_gateway_cannot_load_the_workflow(): void
     {
+        WorkflowInstance::query()->create([
+            'id' => 'wf-missing',
+            'workflow_class' => 'Tests\\Fixtures\\InteractiveCommandWorkflow',
+            'workflow_type' => 'tests.interactive-command-workflow',
+            'run_count' => 0,
+        ]);
+
         WorkflowNamespaceWorkflow::query()->create([
             'namespace' => 'default',
             'workflow_instance_id' => 'wf-missing',

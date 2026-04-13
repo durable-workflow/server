@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Models\WorkflowNamespaceWorkflow;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneResponseContract;
 use App\Support\ControlPlaneResultMapper;
@@ -16,6 +15,7 @@ use Illuminate\Validation\ValidationException;
 use LogicException;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 
 class WorkflowController
@@ -747,8 +747,9 @@ class WorkflowController
 
     private function workflowIdReservedElsewhere(string $namespace, string $workflowId): bool
     {
-        return WorkflowNamespaceWorkflow::query()
-            ->where('workflow_instance_id', $workflowId)
+        return WorkflowInstance::query()
+            ->whereKey($workflowId)
+            ->whereNotNull('namespace')
             ->where('namespace', '!=', $namespace)
             ->exists();
     }

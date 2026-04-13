@@ -16,6 +16,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowTask;
 
 class WorkflowWorkerProtocolTest extends TestCase
@@ -1267,6 +1268,13 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $this->configureWorkflowTypes();
         $this->createNamespace('default', 'Default namespace');
+
+        WorkflowInstance::query()->create([
+            'id' => 'wf-bridge-missing-task',
+            'workflow_class' => ExternalGreetingWorkflow::class,
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'run_count' => 0,
+        ]);
 
         WorkflowNamespaceWorkflow::query()->create([
             'namespace' => 'default',
@@ -2809,6 +2817,13 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $this->configureWorkflowTypes();
         $this->createNamespace('default', 'Default namespace');
+
+        WorkflowInstance::query()->create([
+            'id' => 'wf-compress-mock',
+            'workflow_class' => ExternalGreetingWorkflow::class,
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'run_count' => 0,
+        ]);
 
         WorkflowNamespaceWorkflow::query()->create([
             'namespace' => 'default',
