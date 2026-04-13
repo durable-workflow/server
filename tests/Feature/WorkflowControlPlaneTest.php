@@ -732,6 +732,183 @@ class WorkflowControlPlaneTest extends TestCase
         $this->assertSame('tests.internal-child-workflow', $binding->workflow_type);
     }
 
+    public function test_workflow_list_filters_by_status_bucket_not_raw_status(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-status-bucket-filter',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        // Pending/running workflows should appear when filtering by "running" bucket
+        $runningList = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows?status=running');
+
+        $runningList->assertOk()
+            ->assertJsonPath('workflow_count', 1)
+            ->assertJsonPath('workflows.0.workflow_id', 'wf-status-bucket-filter')
+            ->assertJsonPath('workflows.0.status_bucket', 'running');
+
+        // Completed bucket should not include pending workflows
+        $completedList = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows?status=completed');
+
+        $completedList->assertOk()
+            ->assertJsonPath('workflow_count', 0);
+
+        // Failed bucket should not include pending workflows
+        $failedList = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows?status=failed');
+
+        $failedList->assertOk()
+            ->assertJsonPath('workflow_count', 0);
+
+        // Raw status values like "cancelled" or "terminated" are no longer accepted
+        $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows?status=cancelled')
+            ->assertStatus(422);
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows?status=terminated')
+            ->assertStatus(422);
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows?status=pending')
+            ->assertStatus(422);
+    }
+
+    public function test_run_targeted_signal_on_current_run_succeeds(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-run-target-signal',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $signal = $this->withHeaders($this->apiHeaders())
+            ->postJson("/api/workflows/wf-run-target-signal/runs/{$runId}/signal/advance", [
+                'input' => ['Ada'],
+            ]);
+
+        $signal->assertStatus(202)
+            ->assertJsonPath('workflow_id', 'wf-run-target-signal')
+            ->assertJsonPath('signal_name', 'advance')
+            ->assertJsonPath('control_plane.operation', 'signal')
+            ->assertJsonPath('control_plane.operation_name', 'advance');
+    }
+
+    public function test_run_targeted_commands_reject_historical_runs(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-run-target-reject',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+        $fakeHistoricalRunId = 'historical-run-id-does-not-exist';
+
+        $this->runReadyWorkflowTask($runId);
+
+        // Signal against a non-current run should be rejected
+        $signal = $this->withHeaders($this->apiHeaders())
+            ->postJson("/api/workflows/wf-run-target-reject/runs/{$fakeHistoricalRunId}/signal/advance", [
+                'input' => ['Ada'],
+            ]);
+
+        $signal->assertStatus(409)
+            ->assertJsonPath('reason', 'historical_run_command_rejected')
+            ->assertJsonPath('workflow_id', 'wf-run-target-reject')
+            ->assertJsonPath('run_id', $fakeHistoricalRunId)
+            ->assertJsonPath('target_scope', 'run')
+            ->assertJsonPath('control_plane.operation', 'signal')
+            ->assertJsonPath('control_plane.operation_name', 'advance');
+
+        // Cancel against a non-current run should be rejected
+        $cancel = $this->withHeaders($this->apiHeaders())
+            ->postJson("/api/workflows/wf-run-target-reject/runs/{$fakeHistoricalRunId}/cancel", [
+                'reason' => 'test cancel',
+            ]);
+
+        $cancel->assertStatus(409)
+            ->assertJsonPath('reason', 'historical_run_command_rejected')
+            ->assertJsonPath('control_plane.operation', 'cancel');
+
+        // Terminate against a non-current run should be rejected
+        $terminate = $this->withHeaders($this->apiHeaders())
+            ->postJson("/api/workflows/wf-run-target-reject/runs/{$fakeHistoricalRunId}/terminate", [
+                'reason' => 'test terminate',
+            ]);
+
+        $terminate->assertStatus(409)
+            ->assertJsonPath('reason', 'historical_run_command_rejected')
+            ->assertJsonPath('control_plane.operation', 'terminate');
+    }
+
+    public function test_run_targeted_commands_reject_unknown_workflows(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-unknown/runs/some-run-id/signal/advance', [
+                'input' => ['Ada'],
+            ])
+            ->assertNotFound()
+            ->assertJsonPath('reason', 'instance_not_found');
+    }
+
+    public function test_request_contract_includes_status_bucket_vocabulary(): void
+    {
+        $this->createNamespace('default', 'Default namespace');
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/cluster/info');
+
+        $response->assertOk();
+
+        $listOperation = $response->json('control_plane.request_contract.operations.list');
+
+        $this->assertIsArray($listOperation);
+        $this->assertSame(
+            ['running', 'completed', 'failed'],
+            $listOperation['fields']['status']['canonical_values'],
+        );
+        $this->assertSame(
+            'failed',
+            $listOperation['fields']['status']['rejected_aliases']['cancelled'],
+        );
+    }
+
     private function configureWorkflowTypes(): void
     {
         config()->set('workflows.v2.types.workflows', [

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Models\WorkerRegistration;
 use App\Support\ActivityTaskPoller;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerProtocol;
@@ -35,11 +36,22 @@ class ActivityTaskController
             'build_id' => ['nullable', 'string'],
         ]);
 
+        $worker = $this->resolveRegisteredWorker(
+            $namespace,
+            $validated['worker_id'],
+            $validated['task_queue'],
+        );
+
+        if ($worker instanceof JsonResponse) {
+            return $worker;
+        }
+
         $claim = $this->activityTaskPoller->poll(
             namespace: $namespace,
             taskQueue: $validated['task_queue'],
             leaseOwner: $validated['worker_id'],
             buildId: $validated['build_id'] ?? null,
+            supportedActivityTypes: $this->nonEmptyStringArray($worker->supported_activity_types),
         );
 
         return WorkerProtocol::json([
@@ -201,6 +213,62 @@ class ActivityTaskController
             'lease_expires_at' => $status['lease_expires_at'],
             'last_heartbeat_at' => $status['last_heartbeat_at'],
         ], ($status['reason'] ?? null) === 'attempt_not_found' ? 404 : 200);
+    }
+
+    private function resolveRegisteredWorker(
+        string $namespace,
+        string $workerId,
+        string $taskQueue,
+    ): WorkerRegistration|JsonResponse {
+        $worker = WorkerRegistration::query()
+            ->where('worker_id', $workerId)
+            ->where('namespace', $namespace)
+            ->first();
+
+        if (! $worker) {
+            return WorkerProtocol::json([
+                'error' => 'Worker must be registered before polling. Call POST /worker/register first.',
+                'reason' => 'worker_not_registered',
+                'worker_id' => $workerId,
+            ], 412);
+        }
+
+        if ($worker->task_queue !== $taskQueue) {
+            return WorkerProtocol::json([
+                'error' => sprintf(
+                    'Worker [%s] is registered for task queue [%s], not [%s].',
+                    $workerId,
+                    $worker->task_queue,
+                    $taskQueue,
+                ),
+                'reason' => 'task_queue_mismatch',
+                'worker_id' => $workerId,
+                'registered_task_queue' => $worker->task_queue,
+                'requested_task_queue' => $taskQueue,
+            ], 409);
+        }
+
+        return $worker;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function nonEmptyStringArray(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $result = [];
+
+        foreach ($value as $item) {
+            if (is_string($item) && trim($item) !== '') {
+                $result[] = trim($item);
+            }
+        }
+
+        return $result;
     }
 
     private function guardAttemptOwnership(

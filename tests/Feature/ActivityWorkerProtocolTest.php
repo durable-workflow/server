@@ -53,6 +53,8 @@ class ActivityWorkerProtocolTest extends TestCase
             ->assertJsonPath('status', 'waiting')
             ->assertJsonPath('input.0', 'Ada');
 
+        $this->registerWorker('php-worker-1', 'external-activities');
+
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/activity-tasks/poll', [
                 'worker_id' => 'php-worker-1',
@@ -174,6 +176,8 @@ class ActivityWorkerProtocolTest extends TestCase
             ->getJson("/api/workflows/{$workflow->id()}")
             ->assertNotFound();
 
+        $this->registerWorker('php-worker-2', 'external-activities', 'other');
+
         $this->withHeaders($this->workerHeaders(namespace: 'other'))
             ->postJson('/api/worker/activity-tasks/poll', [
                 'worker_id' => 'php-worker-2',
@@ -250,6 +254,8 @@ class ActivityWorkerProtocolTest extends TestCase
                     return null;
                 });
         });
+
+        $this->registerWorker('php-activity-worker-next-probe', 'external-activities');
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/activity-tasks/poll', [
@@ -347,6 +353,8 @@ class ActivityWorkerProtocolTest extends TestCase
                 ]);
         });
 
+        $this->registerWorker('php-activity-worker-bridge', 'external-activities');
+
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/activity-tasks/poll', [
                 'worker_id' => 'php-activity-worker-bridge',
@@ -392,6 +400,8 @@ class ActivityWorkerProtocolTest extends TestCase
                 ->andReturn([]);
         });
 
+        $this->registerWorker('php-activity-worker-bridge-only', 'external-activities');
+
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/activity-tasks/poll', [
                 'worker_id' => 'php-activity-worker-bridge-only',
@@ -399,6 +409,90 @@ class ActivityWorkerProtocolTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('task', null);
+    }
+
+    public function test_unregistered_worker_is_rejected_when_polling_activity_tasks(): void
+    {
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-activity-unregistered',
+                'task_queue' => 'external-activities',
+            ])
+            ->assertStatus(412)
+            ->assertJsonPath('reason', 'worker_not_registered');
+    }
+
+    public function test_worker_with_supported_activity_types_only_receives_matching_tasks(): void
+    {
+        Queue::fake();
+
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-activity-capability-filter');
+        $start = $workflow->start('Ada');
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
+
+        $this->runReadyWorkflowTask($start->runId());
+
+        // Worker registered for a different activity type should not receive this task.
+        $this->registerWorker(
+            'php-activity-wrong-type',
+            'external-activities',
+            supportedActivityTypes: ['some.other-activity'],
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-activity-wrong-type',
+                'task_queue' => 'external-activities',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+
+        // Worker registered for the matching activity type should receive the task.
+        $this->registerWorker(
+            'php-activity-right-type',
+            'external-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-activity-right-type',
+                'task_queue' => 'external-activities',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', $workflow->id())
+            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');
+    }
+
+    private function registerWorker(
+        string $workerId,
+        string $taskQueue,
+        string $namespace = 'default',
+        array $supportedWorkflowTypes = [],
+        array $supportedActivityTypes = [],
+    ): void {
+        \App\Models\WorkerRegistration::query()->updateOrCreate(
+            ['worker_id' => $workerId, 'namespace' => $namespace],
+            [
+                'task_queue' => $taskQueue,
+                'runtime' => 'php',
+                'supported_workflow_types' => $supportedWorkflowTypes,
+                'supported_activity_types' => $supportedActivityTypes,
+                'last_heartbeat_at' => now(),
+                'status' => 'active',
+            ],
+        );
     }
 
     private function workerHeaders(string $namespace = 'default'): array

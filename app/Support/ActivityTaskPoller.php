@@ -19,11 +19,15 @@ final class ActivityTaskPoller
     /**
      * @return array<string, mixed>|null
      */
+    /**
+     * @param  list<string>  $supportedActivityTypes
+     */
     public function poll(
         string $namespace,
         string $taskQueue,
         string $leaseOwner,
         ?string $buildId,
+        array $supportedActivityTypes = [],
     ): ?array {
         $limit = max(10, max(1, (int) config('server.polling.max_tasks_per_poll', 1)) * 10);
         $nextProbeAt = null;
@@ -34,6 +38,7 @@ final class ActivityTaskPoller
                 $taskQueue,
                 $leaseOwner,
                 $buildId,
+                $supportedActivityTypes,
                 $limit,
                 &$nextProbeAt,
             ): ?array {
@@ -43,6 +48,7 @@ final class ActivityTaskPoller
                     $leaseOwner,
                     $buildId,
                     $limit,
+                    $supportedActivityTypes,
                 );
                 $nextProbeAt = $result['next_probe_at'] ?? null;
 
@@ -59,16 +65,20 @@ final class ActivityTaskPoller
     /**
      * @return array{task: array<string, mixed>|null, next_probe_at: \DateTimeInterface|null}
      */
+    /**
+     * @param  list<string>  $supportedActivityTypes
+     */
     private function nextTask(
         string $namespace,
         string $taskQueue,
         string $leaseOwner,
         ?string $buildId,
         int $limit,
+        array $supportedActivityTypes = [],
     ): array {
         $this->applyWorkerCompatibility($namespace, $buildId);
 
-        $task = $this->claimReadyTask($namespace, $taskQueue, $leaseOwner, $buildId, $limit);
+        $task = $this->claimReadyTask($namespace, $taskQueue, $leaseOwner, $buildId, $limit, $supportedActivityTypes);
 
         return [
             'task' => $task,
@@ -81,12 +91,16 @@ final class ActivityTaskPoller
     /**
      * @return array<string, mixed>|null
      */
+    /**
+     * @param  list<string>  $supportedActivityTypes
+     */
     private function claimReadyTask(
         string $namespace,
         string $taskQueue,
         string $leaseOwner,
         ?string $buildId,
         int $limit,
+        array $supportedActivityTypes = [],
     ): ?array {
         $readyTasks = $this->bridge->poll(
             connection: null,
@@ -109,6 +123,10 @@ final class ActivityTaskPoller
             }
 
             if (! $this->matchesCompatibility($buildId, $readyTask['compatibility'] ?? null)) {
+                continue;
+            }
+
+            if (! $this->matchesActivityType($supportedActivityTypes, $readyTask['activity_type'] ?? null)) {
                 continue;
             }
 
@@ -163,6 +181,22 @@ final class ActivityTaskPoller
         }
 
         return $buildId !== null && $compatibility === $buildId;
+    }
+
+    /**
+     * @param  list<string>  $supportedTypes
+     */
+    private function matchesActivityType(array $supportedTypes, mixed $activityType): bool
+    {
+        if ($supportedTypes === []) {
+            return true;
+        }
+
+        if (! is_string($activityType) || trim($activityType) === '') {
+            return true;
+        }
+
+        return in_array($activityType, $supportedTypes, true);
     }
 
     private function nextVisibleReadyAt(string $namespace, string $taskQueue, ?string $buildId): ?\DateTimeInterface

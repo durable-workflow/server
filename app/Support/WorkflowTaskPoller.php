@@ -25,6 +25,9 @@ final class WorkflowTaskPoller
     /**
      * @return array<string, mixed>|null
      */
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     */
     public function poll(
         Request $request,
         string $namespace,
@@ -34,6 +37,7 @@ final class WorkflowTaskPoller
         ?string $pollRequestId,
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
+        array $supportedWorkflowTypes = [],
     ): ?array {
         $pollRequestId = $this->nonEmptyString($pollRequestId);
 
@@ -47,6 +51,7 @@ final class WorkflowTaskPoller
                 pollRequestId: null,
                 historyPageSize: $historyPageSize,
                 acceptHistoryEncoding: $acceptHistoryEncoding,
+                supportedWorkflowTypes: $supportedWorkflowTypes,
             );
         }
 
@@ -59,11 +64,15 @@ final class WorkflowTaskPoller
             pollRequestId: $pollRequestId,
             historyPageSize: $historyPageSize,
             acceptHistoryEncoding: $acceptHistoryEncoding,
+            supportedWorkflowTypes: $supportedWorkflowTypes,
         );
     }
 
     /**
      * @return array<string, mixed>|null
+     */
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
      */
     private function coordinatedPoll(
         Request $request,
@@ -74,6 +83,7 @@ final class WorkflowTaskPoller
         string $pollRequestId,
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
+        array $supportedWorkflowTypes = [],
     ): ?array {
         for ($attempt = 0; $attempt < 3; $attempt++) {
             $cached = $this->cachedPollResult(
@@ -104,6 +114,7 @@ final class WorkflowTaskPoller
                     pollRequestId: $pollRequestId,
                     historyPageSize: $historyPageSize,
                     acceptHistoryEncoding: $acceptHistoryEncoding,
+                    supportedWorkflowTypes: $supportedWorkflowTypes,
                 );
             }
 
@@ -199,6 +210,9 @@ final class WorkflowTaskPoller
     /**
      * @return array<string, mixed>|null
      */
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     */
     private function runCoordinatedPollLeader(
         Request $request,
         string $namespace,
@@ -208,6 +222,7 @@ final class WorkflowTaskPoller
         string $pollRequestId,
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
+        array $supportedWorkflowTypes = [],
     ): ?array {
         try {
             $task = $this->performPoll(
@@ -219,6 +234,7 @@ final class WorkflowTaskPoller
                 pollRequestId: $pollRequestId,
                 historyPageSize: $historyPageSize,
                 acceptHistoryEncoding: $acceptHistoryEncoding,
+                supportedWorkflowTypes: $supportedWorkflowTypes,
             );
         } catch (Throwable $exception) {
             $this->pollRequests->forgetPending(
@@ -247,6 +263,9 @@ final class WorkflowTaskPoller
     /**
      * @return array<string, mixed>|null
      */
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     */
     private function performPoll(
         Request $request,
         string $namespace,
@@ -256,6 +275,7 @@ final class WorkflowTaskPoller
         ?string $pollRequestId,
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
+        array $supportedWorkflowTypes = [],
     ): ?array {
         $limit = max(10, max(1, (int) config('server.polling.max_tasks_per_poll', 1)) * 10);
         $nextProbeAt = null;
@@ -269,6 +289,7 @@ final class WorkflowTaskPoller
                 $buildId,
                 $historyPageSize,
                 $acceptHistoryEncoding,
+                $supportedWorkflowTypes,
                 $limit,
                 &$nextProbeAt,
             ): ?array {
@@ -281,6 +302,7 @@ final class WorkflowTaskPoller
                     $limit,
                     $historyPageSize,
                     $acceptHistoryEncoding,
+                    $supportedWorkflowTypes,
                 );
                 $nextProbeAt = $result['next_probe_at'] ?? null;
 
@@ -297,6 +319,9 @@ final class WorkflowTaskPoller
     /**
      * @return array{task: array<string, mixed>|null, next_probe_at: \DateTimeInterface|null}
      */
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     */
     private function nextTask(
         Request $request,
         string $namespace,
@@ -306,6 +331,7 @@ final class WorkflowTaskPoller
         int $limit,
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
+        array $supportedWorkflowTypes = [],
     ): array {
         $this->applyWorkerCompatibility($namespace, $buildId);
 
@@ -317,6 +343,7 @@ final class WorkflowTaskPoller
             limit: $limit,
             historyPageSize: $historyPageSize,
             acceptHistoryEncoding: $acceptHistoryEncoding,
+            supportedWorkflowTypes: $supportedWorkflowTypes,
         );
 
         if (is_array($task)) {
@@ -335,6 +362,7 @@ final class WorkflowTaskPoller
                 limit: $limit,
                 historyPageSize: $historyPageSize,
                 acceptHistoryEncoding: $acceptHistoryEncoding,
+                supportedWorkflowTypes: $supportedWorkflowTypes,
             );
 
             if (is_array($task)) {
@@ -354,6 +382,9 @@ final class WorkflowTaskPoller
     /**
      * @return array<string, mixed>|null
      */
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     */
     private function claimReadyTask(
         string $namespace,
         string $taskQueue,
@@ -362,6 +393,7 @@ final class WorkflowTaskPoller
         int $limit,
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
+        array $supportedWorkflowTypes = [],
     ): ?array {
         $readyTasks = $this->bridge->poll(
             connection: null,
@@ -384,6 +416,10 @@ final class WorkflowTaskPoller
             }
 
             if (! $this->matchesCompatibility($buildId, $readyTask['compatibility'] ?? null)) {
+                continue;
+            }
+
+            if (! $this->matchesWorkflowType($supportedWorkflowTypes, $readyTask['workflow_type'] ?? null)) {
                 continue;
             }
 
@@ -483,6 +519,22 @@ final class WorkflowTaskPoller
         }
 
         return $buildId !== null && $compatibility === $buildId;
+    }
+
+    /**
+     * @param  list<string>  $supportedTypes
+     */
+    private function matchesWorkflowType(array $supportedTypes, mixed $workflowType): bool
+    {
+        if ($supportedTypes === []) {
+            return true;
+        }
+
+        if (! is_string($workflowType) || trim($workflowType) === '') {
+            return true;
+        }
+
+        return in_array($workflowType, $supportedTypes, true);
     }
 
     private function nextVisibleReadyAt(string $namespace, string $taskQueue, ?string $buildId): ?\DateTimeInterface

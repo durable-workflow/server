@@ -21,6 +21,19 @@ final class ControlPlaneRequestContract
             'schema' => self::SCHEMA,
             'version' => self::VERSION,
             'operations' => [
+                'list' => [
+                    'fields' => [
+                        'status' => [
+                            'canonical_values' => ['running', 'completed', 'failed'],
+                            'rejected_aliases' => [
+                                'cancelled' => 'failed',
+                                'terminated' => 'failed',
+                                'pending' => 'running',
+                                'waiting' => 'running',
+                            ],
+                        ],
+                    ],
+                ],
                 'start' => [
                     'fields' => [
                         'duplicate_policy' => [

@@ -162,6 +162,16 @@ class WorkerController
 
         $acceptHistoryEncoding = $validated['accept_history_encoding'] ?? null;
 
+        $worker = $this->resolveRegisteredWorker(
+            $namespace,
+            $validated['worker_id'],
+            $validated['task_queue'],
+        );
+
+        if ($worker instanceof JsonResponse) {
+            return $worker;
+        }
+
         $task = $this->workflowTaskPoller->poll(
             request: $request,
             namespace: $namespace,
@@ -171,6 +181,7 @@ class WorkerController
             pollRequestId: $validated['poll_request_id'] ?? null,
             historyPageSize: $pageSize,
             acceptHistoryEncoding: $acceptHistoryEncoding,
+            supportedWorkflowTypes: $this->nonEmptyStringArray($worker->supported_workflow_types),
         );
 
         $task = $this->formatTaskHistoryPagination($task);
@@ -775,6 +786,68 @@ class WorkerController
         }
 
         return trim($command[$field]);
+    }
+
+    /**
+     * Resolve a registered worker for the given namespace and task queue.
+     *
+     * Returns the WorkerRegistration on success, or a JsonResponse rejection
+     * when the worker is not registered.
+     */
+    private function resolveRegisteredWorker(
+        string $namespace,
+        string $workerId,
+        string $taskQueue,
+    ): WorkerRegistration|JsonResponse {
+        $worker = WorkerRegistration::query()
+            ->where('worker_id', $workerId)
+            ->where('namespace', $namespace)
+            ->first();
+
+        if (! $worker) {
+            return WorkerProtocol::json([
+                'error' => 'Worker must be registered before polling. Call POST /worker/register first.',
+                'reason' => 'worker_not_registered',
+                'worker_id' => $workerId,
+            ], 412);
+        }
+
+        if ($worker->task_queue !== $taskQueue) {
+            return WorkerProtocol::json([
+                'error' => sprintf(
+                    'Worker [%s] is registered for task queue [%s], not [%s].',
+                    $workerId,
+                    $worker->task_queue,
+                    $taskQueue,
+                ),
+                'reason' => 'task_queue_mismatch',
+                'worker_id' => $workerId,
+                'registered_task_queue' => $worker->task_queue,
+                'requested_task_queue' => $taskQueue,
+            ], 409);
+        }
+
+        return $worker;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function nonEmptyStringArray(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $result = [];
+
+        foreach ($value as $item) {
+            if (is_string($item) && trim($item) !== '') {
+                $result[] = trim($item);
+            }
+        }
+
+        return $result;
     }
 
     private function workflowOutcomeStatus(?string $reason): int

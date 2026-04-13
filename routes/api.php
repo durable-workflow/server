@@ -46,12 +46,19 @@ Route::middleware(Authenticate::class)->group(function () {
         Route::get('/{workflowId}/runs', [WorkflowController::class, 'runs']);
         Route::get('/{workflowId}/runs/{runId}', [WorkflowController::class, 'showRun']);
 
-        // Commands
+        // Commands (instance-targeted — always targets the current run)
         Route::post('/{workflowId}/signal/{signalName}', [WorkflowController::class, 'signal']);
         Route::post('/{workflowId}/query/{queryName}', [WorkflowController::class, 'query']);
         Route::post('/{workflowId}/update/{updateName}', [WorkflowController::class, 'update']);
         Route::post('/{workflowId}/cancel', [WorkflowController::class, 'cancel']);
         Route::post('/{workflowId}/terminate', [WorkflowController::class, 'terminate']);
+
+        // Commands (run-targeted — rejects historical runs explicitly)
+        Route::post('/{workflowId}/runs/{runId}/signal/{signalName}', [WorkflowController::class, 'signalRun']);
+        Route::post('/{workflowId}/runs/{runId}/query/{queryName}', [WorkflowController::class, 'queryRun']);
+        Route::post('/{workflowId}/runs/{runId}/update/{updateName}', [WorkflowController::class, 'updateRun']);
+        Route::post('/{workflowId}/runs/{runId}/cancel', [WorkflowController::class, 'cancelRun']);
+        Route::post('/{workflowId}/runs/{runId}/terminate', [WorkflowController::class, 'terminateRun']);
 
         // History
         Route::get('/{workflowId}/runs/{runId}/history', [HistoryController::class, 'show']);

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkflowNamespaceWorkflow;
 use App\Support\ControlPlaneProtocol;
+use App\Support\ControlPlaneResponseContract;
 use App\Support\ControlPlaneResultMapper;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkflowCommandContextFactory;
@@ -35,7 +36,7 @@ class WorkflowController
 
         $query = $request->validate([
             'workflow_type' => ['nullable', 'string'],
-            'status' => ['nullable', 'string', 'in:running,completed,failed,cancelled,terminated'],
+            'status' => ['nullable', 'string', 'in:running,completed,failed'],
             'query' => ['nullable', 'string'],
             'page_size' => ['nullable', 'integer', 'min:1', 'max:200'],
             'next_page_token' => ['nullable', 'string'],
@@ -51,7 +52,7 @@ class WorkflowController
             )
             ->when(
                 isset($query['status']),
-                static fn ($builder) => $builder->where('workflow_run_summaries.status', $query['status']),
+                static fn ($builder) => $builder->where('workflow_run_summaries.status_bucket', $query['status']),
             )
             ->when(isset($query['query']), function ($builder) use ($query) {
                 $term = trim((string) $query['query']);
@@ -81,6 +82,7 @@ class WorkflowController
                 'workflow_type' => $summary->workflow_type,
                 'business_key' => $summary->business_key,
                 'status' => $summary->status,
+                'status_bucket' => $summary->status_bucket,
                 'task_queue' => $summary->queue,
                 'started_at' => $summary->started_at?->toJSON(),
                 'closed_at' => $summary->closed_at?->toJSON(),
@@ -458,6 +460,98 @@ class WorkflowController
         );
 
         return $this->resultMapper->terminate($workflowId, $result);
+    }
+
+    // ── Run-Targeted Commands ────────────────────────────────────────
+    //
+    // These methods accept an explicit run ID in the URL. When the run
+    // is the current run, the command is forwarded to the instance-targeted
+    // package API. When the run is historical, the request is rejected
+    // with a clear error so callers know the targeting scope.
+
+    public function signalRun(Request $request, string $workflowId, string $runId, string $signalName): JsonResponse
+    {
+        return $this->withCurrentRunGuard($request, $workflowId, $runId, 'signal', $signalName, function () use ($request, $workflowId, $signalName) {
+            return $this->signal($request, $workflowId, $signalName);
+        });
+    }
+
+    public function queryRun(Request $request, string $workflowId, string $runId, string $queryName): JsonResponse
+    {
+        return $this->withCurrentRunGuard($request, $workflowId, $runId, 'query', $queryName, function () use ($request, $workflowId, $queryName) {
+            return $this->query($request, $workflowId, $queryName);
+        });
+    }
+
+    public function updateRun(Request $request, string $workflowId, string $runId, string $updateName): JsonResponse
+    {
+        return $this->withCurrentRunGuard($request, $workflowId, $runId, 'update', $updateName, function () use ($request, $workflowId, $updateName) {
+            return $this->update($request, $workflowId, $updateName);
+        });
+    }
+
+    public function cancelRun(Request $request, string $workflowId, string $runId): JsonResponse
+    {
+        return $this->withCurrentRunGuard($request, $workflowId, $runId, 'cancel', null, function () use ($request, $workflowId) {
+            return $this->cancel($request, $workflowId);
+        });
+    }
+
+    public function terminateRun(Request $request, string $workflowId, string $runId): JsonResponse
+    {
+        return $this->withCurrentRunGuard($request, $workflowId, $runId, 'terminate', null, function () use ($request, $workflowId) {
+            return $this->terminate($request, $workflowId);
+        });
+    }
+
+    private function withCurrentRunGuard(
+        Request $request,
+        string $workflowId,
+        string $runId,
+        string $operation,
+        ?string $operationName,
+        callable $handler,
+    ): JsonResponse {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = $request->attributes->get('namespace');
+
+        if (! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
+            return ControlPlaneProtocol::jsonForRequest($request, [
+                'message' => 'Workflow not found.',
+                'reason' => 'instance_not_found',
+            ], 404);
+        }
+
+        $currentRun = NamespaceWorkflowScope::currentRun($namespace, $workflowId);
+
+        if ($currentRun === null) {
+            return ControlPlaneProtocol::jsonForRequest($request, [
+                'message' => 'Workflow not found.',
+                'reason' => 'instance_not_found',
+            ], 404);
+        }
+
+        if ((string) $currentRun->id !== $runId) {
+            return ControlPlaneProtocol::json(
+                ControlPlaneResponseContract::attach(
+                    operation: $operation,
+                    operationName: $operationName,
+                    payload: [
+                        'message' => 'Commands cannot target historical runs. Use the instance-level endpoint to command the current run, or omit the run ID.',
+                        'workflow_id' => $workflowId,
+                        'run_id' => $runId,
+                        'reason' => 'historical_run_command_rejected',
+                        'target_scope' => 'run',
+                    ],
+                ),
+                409,
+            );
+        }
+
+        return $handler();
     }
 
     /**

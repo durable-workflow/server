@@ -82,6 +82,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('actions.can_cancel', true)
             ->assertJsonPath('actions.can_terminate', true);
 
+        $this->registerWorker('php-worker-1', 'external-workflows');
+
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-1',
@@ -190,6 +192,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('input.0', 'Ada')
             ->assertJsonPath('memo.source', 'remote-client')
             ->assertJsonPath('search_attributes.team', 'remote-worker');
+
+        $this->registerWorker('php-worker-remote', 'external-workflows');
 
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -433,6 +437,8 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $start->assertCreated();
 
+        $this->registerWorker('php-worker-2', 'external-workflows', 'other');
+
         $this->withHeaders($this->workerHeaders(namespace: 'other'))
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-2',
@@ -605,6 +611,8 @@ class WorkflowWorkerProtocolTest extends TestCase
                 });
         });
 
+        $this->registerWorker('php-worker-bridge', 'external-workflows');
+
         $firstPoll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-bridge',
@@ -680,6 +688,9 @@ class WorkflowWorkerProtocolTest extends TestCase
             ]);
 
         $start->assertCreated();
+
+        $this->registerWorker('php-worker-duplicate-poll', 'external-workflows');
+        $this->registerWorker('php-worker-other', 'external-workflows');
 
         $firstPoll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -757,6 +768,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ])
             ->assertCreated();
 
+        $this->registerWorker('php-worker-shared-poll-request', 'external-workflows-a');
+
         $queueAPoll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-shared-poll-request',
@@ -770,6 +783,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.workflow_task_attempt', 1);
 
         $queueATaskId = (string) $queueAPoll->json('task.task_id');
+
+        $this->registerWorker('php-worker-shared-poll-request', 'external-workflows-b');
 
         $queueBPoll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -785,6 +800,8 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $queueBTaskId = (string) $queueBPoll->json('task.task_id');
 
+        $this->registerWorker('php-worker-shared-poll-request', 'external-workflows-a');
+
         $duplicateQueueA = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-shared-poll-request',
@@ -797,6 +814,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.workflow_id', 'wf-duplicate-poll-request-queue-a')
             ->assertJsonPath('task.task_queue', 'external-workflows-a')
             ->assertJsonPath('task.workflow_task_attempt', 1);
+
+        $this->registerWorker('php-worker-shared-poll-request', 'external-workflows-b');
 
         $duplicateQueueB = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -828,6 +847,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ]);
 
         $start->assertCreated();
+
+        $this->registerWorker('php-worker-duplicate-cache', 'external-workflows');
 
         $firstPoll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -872,6 +893,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ]);
 
         $start->assertCreated();
+
+        $this->registerWorker('php-worker-duplicate-cache-late', 'external-workflows');
 
         $firstPoll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -922,6 +945,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ]);
 
         $start->assertCreated();
+
+        $this->registerWorker('php-worker-duplicate-complete', 'external-workflows');
 
         $firstPoll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -983,6 +1008,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ]);
 
         $start->assertCreated();
+
+        $this->registerWorker('php-worker-duplicate-heartbeat', 'external-workflows');
 
         $firstPoll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -1048,6 +1075,8 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $start->assertCreated();
 
+        $this->registerWorker('php-worker-missing-lease-complete', 'external-workflows');
+
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-missing-lease-complete',
@@ -1098,6 +1127,8 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $start->assertCreated();
 
+        $this->registerWorker('php-worker-stale-lease-heartbeat', 'external-workflows');
+
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-stale-lease-heartbeat',
@@ -1140,6 +1171,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ]);
 
         $start->assertCreated();
+
+        $this->registerWorker('php-worker-mirror-owner', 'external-workflows');
 
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -1220,6 +1253,8 @@ class WorkflowWorkerProtocolTest extends TestCase
                 ->andReturn(null);
         });
 
+        $this->registerWorker('php-worker-missing-row', 'external-workflows');
+
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-missing-row',
@@ -1252,6 +1287,8 @@ class WorkflowWorkerProtocolTest extends TestCase
                 ->with(null, 'external-workflows', 10, null)
                 ->andReturn([]);
         });
+
+        $this->registerWorker('php-worker-bridge-only', 'external-workflows');
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -1328,6 +1365,8 @@ class WorkflowWorkerProtocolTest extends TestCase
                 });
         });
 
+        $this->registerWorker('php-worker-next-probe', 'external-workflows');
+
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-next-probe',
@@ -1366,6 +1405,9 @@ class WorkflowWorkerProtocolTest extends TestCase
             'compatibility' => 'build-a',
         ])->save();
 
+        $this->registerWorker('php-worker-no-build', 'external-workflows');
+        $this->registerWorker('php-worker-build-a', 'external-workflows');
+
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-no-build',
@@ -1403,6 +1445,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ]);
 
         $start->assertCreated();
+
+        $this->registerWorker('php-worker-3', 'external-workflows');
 
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -1476,6 +1520,8 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $start->assertCreated();
 
+        $this->registerWorker('php-worker-heartbeat', 'external-workflows');
+
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-heartbeat',
@@ -1532,6 +1578,9 @@ class WorkflowWorkerProtocolTest extends TestCase
             ]);
 
         $start->assertCreated();
+
+        $this->registerWorker('php-worker-expired-poll-lease', 'external-workflows');
+        $this->registerWorker('php-worker-recovered-during-poll', 'external-workflows');
 
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -1606,6 +1655,9 @@ class WorkflowWorkerProtocolTest extends TestCase
             ]);
 
         $start->assertCreated();
+
+        $this->registerWorker('php-worker-expired-lease', 'external-workflows');
+        $this->registerWorker('php-worker-recovered-lease', 'external-workflows');
 
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -1710,6 +1762,9 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $start->assertCreated();
 
+        $this->registerWorker('php-worker-mirror-absent', 'external-workflows');
+        $this->registerWorker('php-worker-recovered-without-mirror', 'external-workflows');
+
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-mirror-absent',
@@ -1784,6 +1839,10 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $workflowId = (string) $start->json('workflow_id');
         $runId = (string) $start->json('run_id');
+
+        $this->registerWorker('php-worker-schedule', 'external-workflows');
+        $this->registerWorker('php-activity-worker', 'external-activities');
+        $this->registerWorker('php-worker-resume', 'external-workflows');
 
         $firstPoll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -1908,6 +1967,8 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $runId = (string) $start->json('run_id');
 
+        $this->registerWorker('php-worker-timer', 'external-workflows');
+
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-timer',
@@ -1970,6 +2031,9 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $parentWorkflowId = (string) $start->json('workflow_id');
         $parentRunId = (string) $start->json('run_id');
+
+        $this->registerWorker('php-worker-parent', 'external-workflows');
+        $this->registerWorker('php-worker-child', 'external-workflows');
 
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -2045,6 +2109,9 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $workflowId = (string) $start->json('workflow_id');
         $originalRunId = (string) $start->json('run_id');
+
+        $this->registerWorker('php-worker-continue', 'external-workflows');
+        $this->registerWorker('php-worker-continued-run', 'external-workflows');
 
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -2124,6 +2191,8 @@ class WorkflowWorkerProtocolTest extends TestCase
         $workflowId = (string) $start->json('workflow_id');
         $runId = (string) $start->json('run_id');
 
+        $this->registerWorker('php-worker-paginated', 'external-workflows');
+
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-paginated',
@@ -2194,6 +2263,8 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $start->assertCreated();
 
+        $this->registerWorker('php-worker-no-pagination', 'external-workflows');
+
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-no-pagination',
@@ -2225,6 +2296,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ]);
 
         $start->assertCreated();
+
+        $this->registerWorker('php-worker-invalid-token', 'external-workflows');
 
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -2264,6 +2337,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ]);
 
         $start->assertCreated();
+
+        $this->registerWorker('php-worker-history-owner', 'external-workflows');
 
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -2306,6 +2381,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ]);
 
         $start->assertCreated();
+
+        $this->registerWorker('php-worker-created-tasks', 'external-workflows');
 
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -2392,6 +2469,8 @@ class WorkflowWorkerProtocolTest extends TestCase
         // The real workflow only has a few history events (below the 50-event
         // compression threshold), so compression should NOT be applied even
         // when requested. This validates the threshold guard works.
+        $this->registerWorker('php-worker-compress', 'external-workflows');
+
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-compress',
@@ -2491,6 +2570,8 @@ class WorkflowWorkerProtocolTest extends TestCase
                 ]);
         });
 
+        $this->registerWorker('php-worker-compress-mock', 'external-workflows');
+
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-compress-mock',
@@ -2514,6 +2595,118 @@ class WorkflowWorkerProtocolTest extends TestCase
         $decoded = json_decode($decompressed, true);
         $this->assertIsArray($decoded);
         $this->assertCount(60, $decoded);
+    }
+
+    public function test_unregistered_worker_is_rejected_with_412(): void
+    {
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-unregistered',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertStatus(412)
+            ->assertJsonPath('reason', 'worker_not_registered');
+    }
+
+    public function test_worker_polling_wrong_task_queue_is_rejected_with_409(): void
+    {
+        $this->createNamespace('default', 'Default namespace');
+        $this->registerWorker('php-worker-wrong-queue', 'external-workflows');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-wrong-queue',
+                'task_queue' => 'different-queue',
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'task_queue_mismatch')
+            ->assertJsonPath('registered_task_queue', 'external-workflows')
+            ->assertJsonPath('requested_task_queue', 'different-queue');
+    }
+
+    public function test_worker_with_supported_workflow_types_only_receives_matching_tasks(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-capability-filter',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        // Worker registered for a different workflow type should not receive this task.
+        $this->registerWorker(
+            'php-worker-wrong-type',
+            'external-workflows',
+            supportedWorkflowTypes: ['some.other-workflow'],
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-wrong-type',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+
+        // Worker registered for the matching workflow type should receive the task.
+        $this->registerWorker(
+            'php-worker-right-type',
+            'external-workflows',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-right-type',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-capability-filter')
+            ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow');
+    }
+
+    public function test_worker_with_empty_supported_workflow_types_receives_all_tasks(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-capability-wildcard',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        // Worker with empty supported types acts as a wildcard — receives all tasks.
+        $this->registerWorker(
+            'php-worker-wildcard',
+            'external-workflows',
+            supportedWorkflowTypes: [],
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-wildcard',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-capability-wildcard')
+            ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow');
     }
 
     private function configureWorkflowTypes(): void
@@ -2541,6 +2734,26 @@ class WorkflowWorkerProtocolTest extends TestCase
             'X-Namespace' => $namespace,
             'X-Durable-Workflow-Control-Plane-Version' => '2',
         ];
+    }
+
+    private function registerWorker(
+        string $workerId,
+        string $taskQueue,
+        string $namespace = 'default',
+        array $supportedWorkflowTypes = [],
+        array $supportedActivityTypes = [],
+    ): void {
+        WorkerRegistration::query()->updateOrCreate(
+            ['worker_id' => $workerId, 'namespace' => $namespace],
+            [
+                'task_queue' => $taskQueue,
+                'runtime' => 'php',
+                'supported_workflow_types' => $supportedWorkflowTypes,
+                'supported_activity_types' => $supportedActivityTypes,
+                'last_heartbeat_at' => now(),
+                'status' => 'active',
+            ],
+        );
     }
 
     private function workerHeaders(string $namespace = 'default'): array
