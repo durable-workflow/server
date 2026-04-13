@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Models\SearchAttributeDefinition;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -9,33 +10,34 @@ class SearchAttributeController
 {
     /**
      * List registered search attribute definitions.
+     *
+     * Returns system attributes (always available) and any custom
+     * attributes registered for the current namespace.
      */
     public function index(Request $request): JsonResponse
     {
         $namespace = $request->attributes->get('namespace');
 
-        // System search attributes are always available
-        $systemAttributes = [
-            'WorkflowType' => 'keyword',
-            'WorkflowId' => 'keyword',
-            'RunId' => 'keyword',
-            'Status' => 'keyword',
-            'StartTime' => 'datetime',
-            'CloseTime' => 'datetime',
-            'TaskQueue' => 'keyword',
-            'BuildId' => 'keyword',
-        ];
-
-        // TODO: Load custom search attributes from namespace config
+        $customAttributes = SearchAttributeDefinition::query()
+            ->where('namespace', $namespace)
+            ->orderBy('name')
+            ->get()
+            ->mapWithKeys(fn (SearchAttributeDefinition $attr) => [
+                $attr->name => $attr->type,
+            ])
+            ->all();
 
         return response()->json([
-            'system_attributes' => $systemAttributes,
-            'custom_attributes' => [],
+            'system_attributes' => SearchAttributeDefinition::SYSTEM_ATTRIBUTES,
+            'custom_attributes' => $customAttributes,
         ]);
     }
 
     /**
      * Register a custom search attribute.
+     *
+     * The name must not collide with a system attribute or an existing
+     * custom attribute in the same namespace.
      */
     public function store(Request $request): JsonResponse
     {
@@ -43,26 +45,87 @@ class SearchAttributeController
 
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:128', 'regex:/^[a-zA-Z][a-zA-Z0-9_]*$/'],
-            'type' => ['required', 'string', 'in:keyword,text,int,double,bool,datetime,keyword_list'],
+            'type' => ['required', 'string', 'in:'.implode(',', SearchAttributeDefinition::ALLOWED_TYPES)],
         ]);
 
-        // TODO: Register custom search attribute for namespace
+        if (array_key_exists($validated['name'], SearchAttributeDefinition::SYSTEM_ATTRIBUTES)) {
+            return response()->json([
+                'message' => sprintf(
+                    'The name [%s] is reserved as a system search attribute.',
+                    $validated['name'],
+                ),
+                'reason' => 'name_reserved',
+            ], 409);
+        }
 
-        return response()->json([
+        $existing = SearchAttributeDefinition::query()
+            ->where('namespace', $namespace)
+            ->where('name', $validated['name'])
+            ->first();
+
+        if ($existing) {
+            return response()->json([
+                'message' => sprintf(
+                    'A custom search attribute [%s] already exists in namespace [%s].',
+                    $validated['name'],
+                    $namespace,
+                ),
+                'reason' => 'attribute_already_exists',
+                'name' => $existing->name,
+                'type' => $existing->type,
+            ], 409);
+        }
+
+        $definition = SearchAttributeDefinition::create([
+            'namespace' => $namespace,
             'name' => $validated['name'],
             'type' => $validated['type'],
+        ]);
+
+        return response()->json([
+            'name' => $definition->name,
+            'type' => $definition->type,
             'outcome' => 'created',
         ], 201);
     }
 
     /**
      * Remove a custom search attribute.
+     *
+     * System attributes cannot be removed. Returns 404 if the attribute
+     * does not exist as a custom attribute in the current namespace.
      */
     public function destroy(Request $request, string $name): JsonResponse
     {
         $namespace = $request->attributes->get('namespace');
 
-        // TODO: Remove custom search attribute
+        if (array_key_exists($name, SearchAttributeDefinition::SYSTEM_ATTRIBUTES)) {
+            return response()->json([
+                'message' => sprintf(
+                    'The system search attribute [%s] cannot be removed.',
+                    $name,
+                ),
+                'reason' => 'system_attribute',
+            ], 409);
+        }
+
+        $definition = SearchAttributeDefinition::query()
+            ->where('namespace', $namespace)
+            ->where('name', $name)
+            ->first();
+
+        if (! $definition) {
+            return response()->json([
+                'message' => sprintf(
+                    'Custom search attribute [%s] not found in namespace [%s].',
+                    $name,
+                    $namespace,
+                ),
+                'reason' => 'attribute_not_found',
+            ], 404);
+        }
+
+        $definition->delete();
 
         return response()->json([
             'name' => $name,
