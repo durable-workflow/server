@@ -3,7 +3,6 @@
 namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
-use App\Models\WorkflowNamespaceWorkflow;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Queue;
@@ -874,14 +873,14 @@ class WorkflowControlPlaneTest extends TestCase
         $parentRunId = (string) $start->json('run_id');
         $this->runReadyWorkflowTask($parentRunId);
 
-        $childBinding = WorkflowNamespaceWorkflow::query()
+        $childInstance = WorkflowInstance::query()
             ->where('namespace', 'default')
             ->where('workflow_type', 'tests.internal-child-workflow')
             ->first();
 
-        $this->assertNotNull($childBinding);
+        $this->assertNotNull($childInstance);
 
-        $childWorkflowId = (string) $childBinding->workflow_instance_id;
+        $childWorkflowId = (string) $childInstance->id;
 
         $showChild = $this->withHeaders($this->apiHeaders())
             ->getJson("/api/workflows/{$childWorkflowId}");
@@ -905,22 +904,36 @@ class WorkflowControlPlaneTest extends TestCase
             ->assertJsonPath('output.child.workflow_id', $childWorkflowId);
     }
 
-    public function test_it_binds_child_namespaces_from_links_and_fills_workflow_type_from_lineage_projection(): void
+    public function test_it_propagates_namespace_to_child_instances_from_links_and_lineage(): void
     {
         $this->createNamespace('default', 'Default namespace');
+        $this->createNamespace('production', 'Production namespace');
 
         WorkflowInstance::query()->create([
             'id' => 'wf-lineage-parent',
             'workflow_class' => InternalParentWorkflow::class,
             'workflow_type' => 'tests.internal-parent-workflow',
+            'namespace' => 'production',
             'run_count' => 0,
         ]);
 
-        WorkflowNamespaceWorkflow::query()->create([
-            'namespace' => 'default',
-            'workflow_instance_id' => 'wf-lineage-parent',
-            'workflow_type' => 'tests.internal-parent-workflow',
+        // The child instance is created by the package with the test-default
+        // namespace ('default' via the TestCase creating callback). The link
+        // observer should overwrite it with the parent's namespace.
+        WorkflowInstance::query()->create([
+            'id' => 'wf-lineage-child',
+            'workflow_class' => InternalChildWorkflow::class,
+            'workflow_type' => 'tests.internal-child-workflow',
+            'run_count' => 0,
         ]);
+
+        $this->assertSame(
+            'default',
+            WorkflowInstance::query()->whereKey('wf-lineage-child')->value('namespace'),
+        );
+
+        // Simulate: clear the child's namespace so bind() has something to backfill.
+        WorkflowInstance::query()->whereKey('wf-lineage-child')->update(['namespace' => null]);
 
         WorkflowLink::query()->create([
             'id' => (string) Str::ulid(),
@@ -932,14 +945,14 @@ class WorkflowControlPlaneTest extends TestCase
             'is_primary_parent' => true,
         ]);
 
-        $binding = WorkflowNamespaceWorkflow::query()
-            ->where('namespace', 'default')
-            ->where('workflow_instance_id', 'wf-lineage-child')
-            ->first();
+        // After the link observer fires, bind() backfills the parent's
+        // namespace onto the child instance via the native column.
+        $this->assertSame(
+            'production',
+            WorkflowInstance::query()->whereKey('wf-lineage-child')->value('namespace'),
+        );
 
-        $this->assertNotNull($binding);
-        $this->assertNull($binding->workflow_type);
-
+        // The lineage entry observer is idempotent — namespace already set.
         WorkflowRunLineageEntry::query()->create([
             'id' => '01ARZ3NDEKTSV4RRFFQ69G5FAV:child:lineage',
             'workflow_run_id' => '01ARZ3NDEKTSV4RRFFQ69G5FAV',
@@ -956,11 +969,10 @@ class WorkflowControlPlaneTest extends TestCase
             'linked_at' => now(),
         ]);
 
-        $binding = $binding->fresh();
-
-        $this->assertNotNull($binding);
-        $this->assertSame('default', $binding->namespace);
-        $this->assertSame('tests.internal-child-workflow', $binding->workflow_type);
+        $this->assertSame(
+            'production',
+            WorkflowInstance::query()->whereKey('wf-lineage-child')->value('namespace'),
+        );
     }
 
     public function test_workflow_list_filters_by_status_bucket_not_raw_status(): void

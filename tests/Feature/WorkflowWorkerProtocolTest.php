@@ -4,7 +4,6 @@ namespace Tests\Feature;
 
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
-use App\Models\WorkflowNamespaceWorkflow;
 use App\Support\LongPollSignalStore;
 use App\Support\LongPoller;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -1273,13 +1272,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             'id' => 'wf-bridge-missing-task',
             'workflow_class' => ExternalGreetingWorkflow::class,
             'workflow_type' => 'tests.external-greeting-workflow',
-            'run_count' => 0,
-        ]);
-
-        WorkflowNamespaceWorkflow::query()->create([
             'namespace' => 'default',
-            'workflow_instance_id' => 'wf-bridge-missing-task',
-            'workflow_type' => 'tests.external-greeting-workflow',
+            'run_count' => 0,
         ]);
 
         $recordedAt = now()->toJSON();
@@ -2386,14 +2380,14 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('recorded', true)
             ->assertJsonPath('run_status', 'waiting');
 
-        $childBinding = WorkflowNamespaceWorkflow::query()
+        $childInstance = WorkflowInstance::query()
             ->where('namespace', 'default')
             ->where('workflow_type', 'tests.external-child-workflow')
             ->first();
 
-        $this->assertNotNull($childBinding);
+        $this->assertNotNull($childInstance);
 
-        $childWorkflowId = (string) $childBinding->workflow_instance_id;
+        $childWorkflowId = (string) $childInstance->id;
 
         $this->withHeaders($this->apiHeaders())
             ->getJson("/api/workflows/{$childWorkflowId}")
@@ -2822,13 +2816,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             'id' => 'wf-compress-mock',
             'workflow_class' => ExternalGreetingWorkflow::class,
             'workflow_type' => 'tests.external-greeting-workflow',
-            'run_count' => 0,
-        ]);
-
-        WorkflowNamespaceWorkflow::query()->create([
             'namespace' => 'default',
-            'workflow_instance_id' => 'wf-compress-mock',
-            'workflow_type' => 'tests.external-greeting-workflow',
+            'run_count' => 0,
         ]);
 
         $recordedAt = now()->toJSON();

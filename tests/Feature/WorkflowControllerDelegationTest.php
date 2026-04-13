@@ -2,7 +2,6 @@
 
 namespace Tests\Feature;
 
-use App\Models\WorkflowNamespaceWorkflow;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery\MockInterface;
 use Tests\TestCase;
@@ -19,13 +18,8 @@ class WorkflowControllerDelegationTest extends TestCase
             'id' => 'wf-delegate',
             'workflow_class' => 'Tests\\Fixtures\\InteractiveCommandWorkflow',
             'workflow_type' => 'tests.interactive-command-workflow',
-            'run_count' => 0,
-        ]);
-
-        WorkflowNamespaceWorkflow::query()->create([
             'namespace' => 'default',
-            'workflow_instance_id' => 'wf-delegate',
-            'workflow_type' => 'tests.interactive-command-workflow',
+            'run_count' => 0,
         ]);
 
         $this->mock(WorkflowControlPlane::class, function (MockInterface $mock): void {
@@ -287,13 +281,8 @@ class WorkflowControllerDelegationTest extends TestCase
             'id' => 'wf-missing',
             'workflow_class' => 'Tests\\Fixtures\\InteractiveCommandWorkflow',
             'workflow_type' => 'tests.interactive-command-workflow',
-            'run_count' => 0,
-        ]);
-
-        WorkflowNamespaceWorkflow::query()->create([
             'namespace' => 'default',
-            'workflow_instance_id' => 'wf-missing',
-            'workflow_type' => 'tests.interactive-command-workflow',
+            'run_count' => 0,
         ]);
 
         $this->mock(WorkflowControlPlane::class, function (MockInterface $mock): void {

@@ -2,7 +2,6 @@
 
 namespace App\Support;
 
-use App\Models\WorkflowNamespaceWorkflow;
 use Illuminate\Database\Eloquent\Builder;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
@@ -13,7 +12,7 @@ use Workflow\V2\Models\WorkflowTask;
 
 class NamespaceWorkflowScope
 {
-    public static function bind(string $namespace, string $workflowId, ?string $workflowType = null): WorkflowNamespaceWorkflow
+    public static function bind(string $namespace, string $workflowId, ?string $workflowType = null): void
     {
         // Backfill the native namespace column on the package's instance
         // when it was created without one (e.g., insertOrIgnore paths
@@ -23,26 +22,11 @@ class NamespaceWorkflowScope
             ->whereNull('namespace')
             ->update(['namespace' => $namespace]);
 
-        // Defense-in-depth: maintain bridge table during transition.
-        // Functional consumers (reads, wake signals) no longer depend on
-        // this table — they use the native namespace column directly.
-        $binding = WorkflowNamespaceWorkflow::query()->updateOrCreate(
-            ['workflow_instance_id' => $workflowId],
-            [
-                'namespace' => $namespace,
-                'workflow_type' => $workflowType,
-            ],
-        );
-
-        // Wake long-poll waiters directly instead of relying on the
-        // bridge-table model observer (WorkflowNamespaceWorkflowObserver,
-        // now removed).
+        // Wake long-poll waiters so new tasks are picked up promptly.
         app(LongPollSignalStore::class)->signalWorkflowTaskQueuesForWorkflow(
             $workflowId,
             $namespace,
         );
-
-        return $binding;
     }
 
     public static function workflowBound(string $namespace, string $workflowId): bool
@@ -64,10 +48,10 @@ class NamespaceWorkflowScope
             : null;
     }
 
-    public static function bindLinkedChildWorkflow(WorkflowLink $link): ?WorkflowNamespaceWorkflow
+    public static function bindLinkedChildWorkflow(WorkflowLink $link): void
     {
         if ($link->link_type !== 'child_workflow') {
-            return null;
+            return;
         }
 
         $namespace = self::namespaceForWorkflow((string) $link->parent_workflow_instance_id);
@@ -76,16 +60,16 @@ class NamespaceWorkflowScope
             : null;
 
         if ($namespace === null || $childWorkflowId === null || $childWorkflowId === '') {
-            return null;
+            return;
         }
 
-        return self::bind($namespace, $childWorkflowId);
+        self::bind($namespace, $childWorkflowId);
     }
 
-    public static function bindChildWorkflowLineage(WorkflowRunLineageEntry $entry): ?WorkflowNamespaceWorkflow
+    public static function bindChildWorkflowLineage(WorkflowRunLineageEntry $entry): void
     {
         if ($entry->direction !== 'child' || $entry->link_type !== 'child_workflow') {
-            return null;
+            return;
         }
 
         $namespace = self::namespaceForWorkflow((string) $entry->workflow_instance_id);
@@ -94,14 +78,10 @@ class NamespaceWorkflowScope
             : null;
 
         if ($namespace === null || $childWorkflowId === null || $childWorkflowId === '') {
-            return null;
+            return;
         }
 
-        $workflowType = is_string($entry->related_workflow_type ?? null)
-            ? $entry->related_workflow_type
-            : null;
-
-        return self::bind($namespace, $childWorkflowId, $workflowType);
+        self::bind($namespace, $childWorkflowId);
     }
 
     public static function runQuery(string $namespace, string $workflowId): Builder
