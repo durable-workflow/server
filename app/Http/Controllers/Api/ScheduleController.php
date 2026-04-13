@@ -234,15 +234,31 @@ class ScheduleController
         $action = $schedule->action;
         $overlapPolicy = $validated['overlap_policy'] ?? $schedule->overlap_policy;
 
-        if ($this->overlapEnforcer->isUnsupportedBufferPolicy($overlapPolicy)) {
-            return response()->json([
-                'schedule_id' => $scheduleId,
-                'outcome' => 'trigger_failed',
-                'reason' => sprintf(
-                    'Overlap policy [%s] is not yet supported. Use skip, cancel_other, terminate_other, or allow_all.',
-                    $overlapPolicy,
-                ),
-            ], 422);
+        // Buffer policies: check if the previous workflow is still running
+        if ($this->overlapEnforcer->isBufferPolicy($overlapPolicy)) {
+            if ($this->overlapEnforcer->lastFiredWorkflowIsRunning($schedule)) {
+                if ($schedule->isAtBufferCapacity($overlapPolicy)) {
+                    return response()->json([
+                        'schedule_id' => $scheduleId,
+                        'outcome' => 'buffer_full',
+                        'reason' => sprintf(
+                            'Previous workflow is still running and buffer is at capacity (%s).',
+                            $overlapPolicy,
+                        ),
+                    ]);
+                }
+
+                $schedule->bufferAction();
+                $schedule->save();
+
+                return response()->json([
+                    'schedule_id' => $scheduleId,
+                    'outcome' => 'buffered',
+                    'buffer_depth' => count($schedule->buffered_actions ?? []),
+                ]);
+            }
+
+            // Previous workflow is not running — fire normally (fall through)
         }
 
         try {

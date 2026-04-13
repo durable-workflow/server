@@ -1422,12 +1422,12 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         // Worker registered with build_id=build-a claims the compatible task.
         // The build_id for routing is derived from the registration record,
-        // not the poll request parameter.
+        // not the poll request parameter — so build_id is intentionally
+        // omitted from the poll body.
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-build-a',
                 'task_queue' => 'external-workflows',
-                'build_id' => 'build-a',
             ])
             ->assertOk()
             ->assertJsonPath('task.workflow_id', $workflowId)

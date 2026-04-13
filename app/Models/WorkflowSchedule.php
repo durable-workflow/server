@@ -23,6 +23,7 @@ class WorkflowSchedule extends Model
         'fires_count',
         'failures_count',
         'recent_actions',
+        'buffered_actions',
     ];
 
     protected function casts(): array
@@ -33,6 +34,7 @@ class WorkflowSchedule extends Model
             'memo' => 'array',
             'search_attributes' => 'array',
             'recent_actions' => 'array',
+            'buffered_actions' => 'array',
             'paused' => 'boolean',
             'last_fired_at' => 'datetime',
             'next_fire_at' => 'datetime',
@@ -280,12 +282,61 @@ class WorkflowSchedule extends Model
                 'fires_count' => $this->fires_count,
                 'failures_count' => $this->failures_count,
                 'recent_actions' => $this->recent_actions ?? [],
+                'buffered_actions' => $this->buffered_actions ?? [],
             ],
             'memo' => $this->memo,
             'search_attributes' => $this->search_attributes,
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),
         ];
+    }
+
+    /**
+     * Add a fire to the buffer queue.
+     */
+    public function bufferAction(): void
+    {
+        $buffer = $this->buffered_actions ?? [];
+        $buffer[] = [
+            'buffered_at' => now()->toIso8601String(),
+        ];
+        $this->buffered_actions = array_values($buffer);
+    }
+
+    /**
+     * Remove and return the next buffered action.
+     */
+    public function drainBuffer(): ?array
+    {
+        $buffer = $this->buffered_actions ?? [];
+
+        if (empty($buffer)) {
+            return null;
+        }
+
+        $next = array_shift($buffer);
+        $this->buffered_actions = empty($buffer) ? null : array_values($buffer);
+
+        return $next;
+    }
+
+    public function hasBufferedActions(): bool
+    {
+        return ! empty($this->buffered_actions);
+    }
+
+    /**
+     * Whether the buffer is at capacity for the given overlap policy.
+     *
+     * buffer_one allows at most 1 buffered action; buffer_all is unbounded.
+     */
+    public function isAtBufferCapacity(string $overlapPolicy): bool
+    {
+        if ($overlapPolicy !== 'buffer_one') {
+            return false;
+        }
+
+        return count($this->buffered_actions ?? []) >= 1;
     }
 
     /**

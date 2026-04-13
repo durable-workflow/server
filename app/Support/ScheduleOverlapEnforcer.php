@@ -4,6 +4,7 @@ namespace App\Support;
 
 use App\Models\WorkflowSchedule;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Models\WorkflowRunSummary;
 
 final class ScheduleOverlapEnforcer
 {
@@ -12,11 +13,34 @@ final class ScheduleOverlapEnforcer
     ) {}
 
     /**
-     * Whether the overlap policy is a buffer policy that is not yet supported.
+     * Whether the overlap policy is a buffer policy (buffer_one or buffer_all).
      */
-    public function isUnsupportedBufferPolicy(string $overlapPolicy): bool
+    public function isBufferPolicy(string $overlapPolicy): bool
     {
         return in_array($overlapPolicy, ['buffer_one', 'buffer_all'], true);
+    }
+
+    /**
+     * Check whether the most recently fired workflow from this schedule is
+     * still in a running state.
+     */
+    public function lastFiredWorkflowIsRunning(WorkflowSchedule $schedule): bool
+    {
+        $recentActions = $schedule->recent_actions ?? [];
+        $lastAction = end($recentActions) ?: null;
+        $runId = $lastAction['run_id'] ?? null;
+
+        if (! is_string($runId) || $runId === '') {
+            return false;
+        }
+
+        $summary = WorkflowRunSummary::query()->find($runId);
+
+        if (! $summary) {
+            return false;
+        }
+
+        return $summary->status_bucket === 'running';
     }
 
     /**

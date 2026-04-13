@@ -6,6 +6,7 @@ use App\Models\WorkflowNamespace;
 use App\Models\WorkflowSchedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
+use Workflow\V2\Models\WorkflowRunSummary;
 
 class ScheduleTest extends TestCase
 {
@@ -578,24 +579,141 @@ class ScheduleTest extends TestCase
 
     // ── Overlap policy enforcement ──────────────────────────────────
 
-    public function test_trigger_rejects_buffer_policies_with_422(): void
+    public function test_trigger_buffers_when_previous_workflow_is_running(): void
     {
+        $summary = WorkflowRunSummary::forceCreate([
+            'id' => 'run_buf_running_00001',
+            'workflow_instance_id' => 'wf-buffer-running',
+            'run_number' => 1,
+            'class' => 'App\\Workflows\\TestWorkflow',
+            'workflow_type' => 'TestWorkflow',
+            'status' => 'pending',
+            'status_bucket' => 'running',
+        ]);
+
         WorkflowSchedule::create([
             'schedule_id' => 'buffer-test',
             'namespace' => 'default',
             'spec' => ['cron_expressions' => ['0 * * * *']],
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'buffer_one',
+            'recent_actions' => [
+                ['workflow_id' => 'wf-buffer-running', 'run_id' => $summary->id, 'outcome' => 'started'],
+            ],
         ]);
 
         $response = $this->withHeaders($this->headers())
             ->postJson('/api/schedules/buffer-test/trigger');
 
-        $response->assertStatus(422)
-            ->assertJsonPath('outcome', 'trigger_failed')
-            ->assertJsonPath('schedule_id', 'buffer-test');
+        $response->assertOk()
+            ->assertJsonPath('outcome', 'buffered')
+            ->assertJsonPath('schedule_id', 'buffer-test')
+            ->assertJsonPath('buffer_depth', 1);
 
-        $this->assertStringContainsString('buffer_one', $response->json('reason'));
+        $schedule = WorkflowSchedule::where('schedule_id', 'buffer-test')->first();
+        $this->assertCount(1, $schedule->buffered_actions);
+    }
+
+    public function test_trigger_returns_buffer_full_when_buffer_one_is_at_capacity(): void
+    {
+        $summary = WorkflowRunSummary::forceCreate([
+            'id' => 'run_buf_full_000000001',
+            'workflow_instance_id' => 'wf-buffer-full',
+            'run_number' => 1,
+            'class' => 'App\\Workflows\\TestWorkflow',
+            'workflow_type' => 'TestWorkflow',
+            'status' => 'pending',
+            'status_bucket' => 'running',
+        ]);
+
+        WorkflowSchedule::create([
+            'schedule_id' => 'buffer-full-test',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'overlap_policy' => 'buffer_one',
+            'recent_actions' => [
+                ['workflow_id' => 'wf-buffer-full', 'run_id' => $summary->id, 'outcome' => 'started'],
+            ],
+            'buffered_actions' => [
+                ['buffered_at' => now()->toIso8601String()],
+            ],
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules/buffer-full-test/trigger');
+
+        $response->assertOk()
+            ->assertJsonPath('outcome', 'buffer_full')
+            ->assertJsonPath('schedule_id', 'buffer-full-test');
+    }
+
+    public function test_trigger_fires_buffer_policy_when_previous_workflow_is_completed(): void
+    {
+        $summary = WorkflowRunSummary::forceCreate([
+            'id' => 'run_buf_done_000000001',
+            'workflow_instance_id' => 'wf-buffer-done',
+            'run_number' => 1,
+            'class' => 'App\\Workflows\\TestWorkflow',
+            'workflow_type' => 'TestWorkflow',
+            'status' => 'completed',
+            'status_bucket' => 'completed',
+        ]);
+
+        WorkflowSchedule::create([
+            'schedule_id' => 'buffer-fire-test',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'overlap_policy' => 'buffer_one',
+            'recent_actions' => [
+                ['workflow_id' => 'wf-buffer-done', 'run_id' => $summary->id, 'outcome' => 'started'],
+            ],
+        ]);
+
+        // Previous workflow is completed, so trigger should attempt to fire.
+        // It will fail because TestWorkflow isn't a real class, but we should
+        // get past the buffer check (not a 422 or buffered response).
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules/buffer-fire-test/trigger');
+
+        $this->assertNotEquals('buffered', $response->json('outcome'));
+        $this->assertNotEquals('buffer_full', $response->json('outcome'));
+    }
+
+    public function test_trigger_buffer_all_allows_multiple_buffered_actions(): void
+    {
+        $summary = WorkflowRunSummary::forceCreate([
+            'id' => 'run_buf_all_0000000001',
+            'workflow_instance_id' => 'wf-buffer-all',
+            'run_number' => 1,
+            'class' => 'App\\Workflows\\TestWorkflow',
+            'workflow_type' => 'TestWorkflow',
+            'status' => 'pending',
+            'status_bucket' => 'running',
+        ]);
+
+        WorkflowSchedule::create([
+            'schedule_id' => 'buffer-all-test',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'overlap_policy' => 'buffer_all',
+            'recent_actions' => [
+                ['workflow_id' => 'wf-buffer-all', 'run_id' => $summary->id, 'outcome' => 'started'],
+            ],
+            'buffered_actions' => [
+                ['buffered_at' => now()->subMinutes(5)->toIso8601String()],
+            ],
+        ]);
+
+        // buffer_all should accept another buffer even when one is already present
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules/buffer-all-test/trigger');
+
+        $response->assertOk()
+            ->assertJsonPath('outcome', 'buffered')
+            ->assertJsonPath('buffer_depth', 2);
     }
 
     public function test_trigger_accepts_allow_all_policy(): void

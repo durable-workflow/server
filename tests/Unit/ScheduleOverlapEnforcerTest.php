@@ -4,39 +4,43 @@ namespace Tests\Unit;
 
 use App\Models\WorkflowSchedule;
 use App\Support\ScheduleOverlapEnforcer;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery\MockInterface;
 use Tests\TestCase;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Models\WorkflowRunSummary;
 
 class ScheduleOverlapEnforcerTest extends TestCase
 {
+    use RefreshDatabase;
+
     // ── Buffer policy detection ────────────────────────────────────
 
-    public function test_buffer_one_is_unsupported(): void
+    public function test_buffer_one_is_buffer_policy(): void
     {
         $enforcer = $this->makeEnforcer();
 
-        $this->assertTrue($enforcer->isUnsupportedBufferPolicy('buffer_one'));
+        $this->assertTrue($enforcer->isBufferPolicy('buffer_one'));
     }
 
-    public function test_buffer_all_is_unsupported(): void
+    public function test_buffer_all_is_buffer_policy(): void
     {
         $enforcer = $this->makeEnforcer();
 
-        $this->assertTrue($enforcer->isUnsupportedBufferPolicy('buffer_all'));
+        $this->assertTrue($enforcer->isBufferPolicy('buffer_all'));
     }
 
     /**
-     * @dataProvider supportedPoliciesProvider
+     * @dataProvider nonBufferPoliciesProvider
      */
-    public function test_supported_policies_are_not_flagged_as_unsupported_buffer(string $policy): void
+    public function test_non_buffer_policies_are_not_flagged_as_buffer(string $policy): void
     {
         $enforcer = $this->makeEnforcer();
 
-        $this->assertFalse($enforcer->isUnsupportedBufferPolicy($policy));
+        $this->assertFalse($enforcer->isBufferPolicy($policy));
     }
 
-    public static function supportedPoliciesProvider(): array
+    public static function nonBufferPoliciesProvider(): array
     {
         return [
             'skip' => ['skip'],
@@ -181,6 +185,76 @@ class ScheduleOverlapEnforcerTest extends TestCase
         ]);
 
         $enforcer->enforce($schedule, 'cancel_other');
+    }
+
+    // ── lastFiredWorkflowIsRunning ─────────────────────────────────
+
+    public function test_last_fired_workflow_is_running_returns_true_when_summary_is_running(): void
+    {
+        $summary = WorkflowRunSummary::forceCreate([
+            'id' => 'run_running_00000000001',
+            'workflow_instance_id' => 'wf-running-1',
+            'run_number' => 1,
+            'class' => 'App\\Workflows\\TestWorkflow',
+            'workflow_type' => 'TestWorkflow',
+            'status' => 'pending',
+            'status_bucket' => 'running',
+        ]);
+
+        $enforcer = $this->makeEnforcer();
+
+        $schedule = new WorkflowSchedule([
+            'recent_actions' => [
+                ['workflow_id' => 'wf-running-1', 'run_id' => $summary->id, 'outcome' => 'started'],
+            ],
+        ]);
+
+        $this->assertTrue($enforcer->lastFiredWorkflowIsRunning($schedule));
+    }
+
+    public function test_last_fired_workflow_is_running_returns_false_when_summary_is_completed(): void
+    {
+        $summary = WorkflowRunSummary::forceCreate([
+            'id' => 'run_done_000000000001',
+            'workflow_instance_id' => 'wf-done-1',
+            'run_number' => 1,
+            'class' => 'App\\Workflows\\TestWorkflow',
+            'workflow_type' => 'TestWorkflow',
+            'status' => 'completed',
+            'status_bucket' => 'completed',
+        ]);
+
+        $enforcer = $this->makeEnforcer();
+
+        $schedule = new WorkflowSchedule([
+            'recent_actions' => [
+                ['workflow_id' => 'wf-done-1', 'run_id' => $summary->id, 'outcome' => 'started'],
+            ],
+        ]);
+
+        $this->assertFalse($enforcer->lastFiredWorkflowIsRunning($schedule));
+    }
+
+    public function test_last_fired_workflow_is_running_returns_false_when_no_recent_actions(): void
+    {
+        $enforcer = $this->makeEnforcer();
+
+        $schedule = new WorkflowSchedule(['recent_actions' => []]);
+
+        $this->assertFalse($enforcer->lastFiredWorkflowIsRunning($schedule));
+    }
+
+    public function test_last_fired_workflow_is_running_returns_false_when_run_id_not_found(): void
+    {
+        $enforcer = $this->makeEnforcer();
+
+        $schedule = new WorkflowSchedule([
+            'recent_actions' => [
+                ['workflow_id' => 'wf-gone', 'run_id' => 'nonexistent-run', 'outcome' => 'started'],
+            ],
+        ]);
+
+        $this->assertFalse($enforcer->lastFiredWorkflowIsRunning($schedule));
     }
 
     private function makeEnforcer(): ScheduleOverlapEnforcer

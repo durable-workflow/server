@@ -28,6 +28,67 @@ Artisan::command('server:bootstrap {--force : Run bootstrap commands without a p
 Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per evaluation}', function (): int {
     $limit = (int) $this->option('limit');
 
+    $startService = app(\App\Support\WorkflowStartService::class);
+    $overlapEnforcer = app(\App\Support\ScheduleOverlapEnforcer::class);
+
+    $fired = 0;
+    $failed = 0;
+    $buffered = 0;
+    $drained = 0;
+
+    // ── Phase 1: Drain buffered actions for schedules whose previous workflow finished ──
+
+    $withBuffer = \App\Models\WorkflowSchedule::query()
+        ->where('paused', false)
+        ->whereNotNull('buffered_actions')
+        ->get()
+        ->filter(fn (\App\Models\WorkflowSchedule $s): bool => $s->hasBufferedActions());
+
+    foreach ($withBuffer as $schedule) {
+        if ($overlapEnforcer->lastFiredWorkflowIsRunning($schedule)) {
+            continue;
+        }
+
+        $action = $schedule->action;
+        $drainedAction = $schedule->drainBuffer();
+
+        if ($drainedAction === null) {
+            continue;
+        }
+
+        try {
+            $result = $startService->start([
+                'workflow_type' => $action['workflow_type'],
+                'task_queue' => $action['task_queue'] ?? null,
+                'input' => $action['input'] ?? [],
+                'memo' => $schedule->memo,
+                'search_attributes' => $schedule->search_attributes,
+            ], $schedule->namespace);
+
+            $schedule->recordFire($result['workflow_id'], $result['run_id'], $result['outcome'] ?? 'drained');
+            $schedule->save();
+
+            $this->components->twoColumnDetail(
+                $schedule->schedule_id,
+                sprintf('<fg=cyan>drained</> → %s', $result['workflow_id']),
+            );
+
+            $drained++;
+        } catch (\Throwable $e) {
+            $schedule->recordFailure($e->getMessage());
+            $schedule->save();
+
+            $this->components->twoColumnDetail(
+                $schedule->schedule_id,
+                sprintf('<fg=red>drain failed</>: %s', $e->getMessage()),
+            );
+
+            $failed++;
+        }
+    }
+
+    // ── Phase 2: Evaluate due schedules ────────────────────────────────
+
     $due = \App\Models\WorkflowSchedule::query()
         ->where('paused', false)
         ->whereNotNull('next_fire_at')
@@ -36,33 +97,49 @@ Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per
         ->limit($limit)
         ->get();
 
-    if ($due->isEmpty()) {
+    if ($due->isEmpty() && $drained === 0) {
         $this->components->info('No schedules due.');
 
         return 0;
     }
 
-    $this->components->info(sprintf('Evaluating %d due schedule(s)...', $due->count()));
-
-    $startService = app(\App\Support\WorkflowStartService::class);
-    $overlapEnforcer = app(\App\Support\ScheduleOverlapEnforcer::class);
-
-    $fired = 0;
-    $failed = 0;
-    $skipped = 0;
+    if ($due->isNotEmpty()) {
+        $this->components->info(sprintf('Evaluating %d due schedule(s)...', $due->count()));
+    }
 
     foreach ($due as $schedule) {
         $action = $schedule->action;
         $overlapPolicy = $schedule->overlap_policy ?? 'skip';
 
-        if ($overlapEnforcer->isUnsupportedBufferPolicy($overlapPolicy)) {
-            $this->components->twoColumnDetail(
-                $schedule->schedule_id,
-                sprintf('<fg=yellow>skipped</>: overlap policy [%s] not yet supported', $overlapPolicy),
-            );
-            $skipped++;
+        // Buffer policies: check if the previous workflow is still running
+        if ($overlapEnforcer->isBufferPolicy($overlapPolicy)) {
+            if ($overlapEnforcer->lastFiredWorkflowIsRunning($schedule)) {
+                if ($schedule->isAtBufferCapacity($overlapPolicy)) {
+                    $this->components->twoColumnDetail(
+                        $schedule->schedule_id,
+                        sprintf('<fg=yellow>skipped</>: buffer at capacity (%s)', $overlapPolicy),
+                    );
 
-            continue;
+                    // Advance next_fire_at so we don't re-evaluate this fire
+                    $schedule->next_fire_at = $schedule->computeNextFireAt();
+                    $schedule->save();
+                } else {
+                    $schedule->bufferAction();
+                    $schedule->next_fire_at = $schedule->computeNextFireAt();
+                    $schedule->save();
+
+                    $this->components->twoColumnDetail(
+                        $schedule->schedule_id,
+                        sprintf('<fg=cyan>buffered</> (%s, %d in buffer)', $overlapPolicy, count($schedule->buffered_actions ?? [])),
+                    );
+
+                    $buffered++;
+                }
+
+                continue;
+            }
+
+            // Previous workflow is not running — fire normally (fall through)
         }
 
         try {
@@ -99,7 +176,18 @@ Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per
         }
     }
 
-    $this->components->info(sprintf('Done: %d fired, %d failed, %d skipped.', $fired, $failed, $skipped));
+    $parts = [sprintf('%d fired', $fired)];
+
+    if ($drained > 0) {
+        $parts[] = sprintf('%d drained', $drained);
+    }
+    if ($buffered > 0) {
+        $parts[] = sprintf('%d buffered', $buffered);
+    }
+
+    $parts[] = sprintf('%d failed', $failed);
+
+    $this->components->info(sprintf('Done: %s.', implode(', ', $parts)));
 
     return $failed > 0 ? 1 : 0;
 })->purpose('Evaluate due schedules and start their workflows');
