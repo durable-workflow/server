@@ -486,6 +486,77 @@ class WorkflowController
         return $this->resultMapper->terminate($workflowId, $result);
     }
 
+    public function repair(Request $request, string $workflowId): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = $request->attributes->get('namespace');
+
+        if (! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
+            return ControlPlaneProtocol::jsonForRequest($request, ['message' => 'Workflow not found.'], 404);
+        }
+
+        $validated = $request->validate([
+            'request_id' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $result = $this->workflowControlPlane->repair(
+            $workflowId,
+            [
+                'command_context' => $this->commandContexts->make(
+                    $request,
+                    workflowId: $workflowId,
+                    commandName: 'repair',
+                    metadata: array_filter([
+                        'request_id' => $validated['request_id'] ?? null,
+                    ], static fn (mixed $value): bool => $value !== null),
+                ),
+                'strict_configured_type_validation' => true,
+            ],
+        );
+
+        return $this->resultMapper->repair($workflowId, $result);
+    }
+
+    public function archive(Request $request, string $workflowId): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = $request->attributes->get('namespace');
+
+        if (! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
+            return ControlPlaneProtocol::jsonForRequest($request, ['message' => 'Workflow not found.'], 404);
+        }
+
+        $validated = $request->validate([
+            'reason' => ['nullable', 'string', 'max:1000'],
+            'request_id' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $result = $this->workflowControlPlane->archive(
+            $workflowId,
+            [
+                'reason' => $validated['reason'] ?? null,
+                'command_context' => $this->commandContexts->make(
+                    $request,
+                    workflowId: $workflowId,
+                    commandName: 'archive',
+                    metadata: array_filter([
+                        'request_id' => $validated['request_id'] ?? null,
+                        'reason' => $validated['reason'] ?? null,
+                    ], static fn (mixed $value): bool => $value !== null),
+                ),
+                'strict_configured_type_validation' => true,
+            ],
+        );
+
+        return $this->resultMapper->archive($workflowId, $result);
+    }
+
     // ── Run-Targeted Commands ────────────────────────────────────────
     //
     // These methods accept an explicit run ID in the URL. When the run

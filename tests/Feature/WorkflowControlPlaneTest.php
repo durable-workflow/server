@@ -642,6 +642,8 @@ class WorkflowControlPlaneTest extends TestCase
             ['/api/workflows/wf-control-plane-broken-type-map/update/approve', ['input' => [true, 'api']]],
             ['/api/workflows/wf-control-plane-broken-type-map/cancel', ['reason' => 'operator cancel']],
             ['/api/workflows/wf-control-plane-broken-type-map/terminate', ['reason' => 'operator terminate']],
+            ['/api/workflows/wf-control-plane-broken-type-map/repair', []],
+            ['/api/workflows/wf-control-plane-broken-type-map/archive', ['reason' => 'operator archive']],
         ] as [$path, $payload]) {
             $this->withHeaders($this->apiHeaders())
                 ->postJson($path, $payload)
@@ -661,7 +663,7 @@ class WorkflowControlPlaneTest extends TestCase
 
         $this->assertSame(0, WorkflowCommand::query()
             ->where('workflow_instance_id', 'wf-control-plane-broken-type-map')
-            ->whereIn('command_type', ['signal', 'update', 'cancel', 'terminate'])
+            ->whereIn('command_type', ['signal', 'update', 'cancel', 'terminate', 'repair', 'archive'])
             ->count());
     }
 
@@ -920,6 +922,266 @@ class WorkflowControlPlaneTest extends TestCase
             ])
             ->assertNotFound()
             ->assertJsonPath('reason', 'instance_not_found');
+    }
+
+    public function test_it_repairs_a_running_workflow_through_the_control_plane_api(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-control-plane-repair',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $repair = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-control-plane-repair/repair', [
+                'request_id' => 'repair-request-1',
+            ]);
+
+        $repair->assertOk()
+            ->assertHeader('X-Durable-Workflow-Control-Plane-Version', '2')
+            ->assertJsonPath('workflow_id', 'wf-control-plane-repair')
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('command_source', 'control_plane')
+            ->assertJsonPath('control_plane.operation', 'repair');
+
+        $command = WorkflowCommand::query()
+            ->where('workflow_instance_id', 'wf-control-plane-repair')
+            ->where('command_type', 'repair')
+            ->latest('command_sequence')
+            ->firstOrFail();
+
+        $this->assertSame('control_plane', $command->source);
+    }
+
+    public function test_repair_returns_not_found_for_unknown_workflow(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-nonexistent/repair')
+            ->assertNotFound()
+            ->assertJsonPath('message', 'Workflow not found.');
+    }
+
+    public function test_repair_is_scoped_by_namespace(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+        $this->createNamespace('other', 'Other namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-repair-namespace-scoped',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $this->withHeaders($this->apiHeaders(namespace: 'other'))
+            ->postJson('/api/workflows/wf-repair-namespace-scoped/repair')
+            ->assertNotFound()
+            ->assertJsonPath('control_plane.operation', 'repair')
+            ->assertJsonPath('reason', 'instance_not_found');
+    }
+
+    public function test_it_archives_a_terminal_workflow_through_the_control_plane_api(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-control-plane-archive',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        // Cancel the workflow so it becomes terminal.
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-control-plane-archive/cancel', [
+                'reason' => 'cancel for archive test',
+            ])
+            ->assertOk();
+
+        $archive = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-control-plane-archive/archive', [
+                'reason' => 'retention policy cleanup',
+                'request_id' => 'archive-request-1',
+            ]);
+
+        $archive->assertOk()
+            ->assertHeader('X-Durable-Workflow-Control-Plane-Version', '2')
+            ->assertJsonPath('workflow_id', 'wf-control-plane-archive')
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('command_source', 'control_plane')
+            ->assertJsonPath('control_plane.operation', 'archive')
+            ->assertJsonPath('outcome', 'archived');
+
+        $command = WorkflowCommand::query()
+            ->where('workflow_instance_id', 'wf-control-plane-archive')
+            ->where('command_type', 'archive')
+            ->latest('command_sequence')
+            ->firstOrFail();
+
+        $this->assertSame('control_plane', $command->source);
+
+        $archiveRequested = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'ArchiveRequested')
+            ->firstOrFail();
+
+        $this->assertSame('retention policy cleanup', $archiveRequested->payload['reason'] ?? null);
+
+        $archived = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'WorkflowArchived')
+            ->firstOrFail();
+
+        $this->assertSame('retention policy cleanup', $archived->payload['reason'] ?? null);
+
+        // Verify describe shows can_archive: false after archiving (already archived).
+        $describe = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-control-plane-archive');
+
+        $describe->assertOk()
+            ->assertJsonPath('status', 'cancelled')
+            ->assertJsonPath('is_terminal', true);
+    }
+
+    public function test_archive_rejects_a_running_workflow(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-archive-running-rejected',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $archive = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-archive-running-rejected/archive', [
+                'reason' => 'premature archive attempt',
+            ]);
+
+        $archive->assertStatus(409)
+            ->assertHeader('X-Durable-Workflow-Control-Plane-Version', '2')
+            ->assertJsonPath('workflow_id', 'wf-archive-running-rejected')
+            ->assertJsonPath('control_plane.operation', 'archive')
+            ->assertJsonPath('reason', 'run_not_closed');
+    }
+
+    public function test_archive_returns_not_found_for_unknown_workflow(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-nonexistent/archive')
+            ->assertNotFound()
+            ->assertJsonPath('message', 'Workflow not found.');
+    }
+
+    public function test_archive_is_scoped_by_namespace(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+        $this->createNamespace('other', 'Other namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-archive-namespace-scoped',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $this->withHeaders($this->apiHeaders(namespace: 'other'))
+            ->postJson('/api/workflows/wf-archive-namespace-scoped/archive')
+            ->assertNotFound()
+            ->assertJsonPath('control_plane.operation', 'archive')
+            ->assertJsonPath('reason', 'instance_not_found');
+    }
+
+    public function test_archive_is_idempotent_for_already_archived_workflows(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-archive-idempotent',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        // Terminate the workflow so it becomes terminal.
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-archive-idempotent/terminate', [
+                'reason' => 'terminate for archive test',
+            ])
+            ->assertOk();
+
+        // First archive.
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-archive-idempotent/archive', [
+                'reason' => 'first archive',
+            ])
+            ->assertOk()
+            ->assertJsonPath('outcome', 'archived');
+
+        // Second archive is idempotent.
+        $secondArchive = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-archive-idempotent/archive', [
+                'reason' => 'second archive',
+            ]);
+
+        $secondArchive->assertOk()
+            ->assertJsonPath('workflow_id', 'wf-archive-idempotent')
+            ->assertJsonPath('outcome', 'archive_not_needed')
+            ->assertJsonPath('command_status', 'accepted');
     }
 
     public function test_request_contract_includes_status_bucket_vocabulary(): void

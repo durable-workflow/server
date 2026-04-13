@@ -104,6 +104,38 @@ final class ControlPlaneResultMapper
 
     /**
      * @param  array<string, mixed>  $result
+     */
+    public function repair(string $workflowId, array $result): JsonResponse
+    {
+        return $this->commandResponse(
+            operation: 'repair',
+            operationName: null,
+            workflowId: $workflowId,
+            result: $result,
+            defaultStatus: 200,
+            fallbackFields: [],
+            projectCommandReason: true,
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
+     */
+    public function archive(string $workflowId, array $result): JsonResponse
+    {
+        return $this->commandResponse(
+            operation: 'archive',
+            operationName: null,
+            workflowId: $workflowId,
+            result: $result,
+            defaultStatus: 200,
+            fallbackFields: [],
+            projectCommandReason: true,
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $result
      * @param  array<string, string>  $fallbackFields
      */
     private function commandResponse(

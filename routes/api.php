@@ -53,6 +53,8 @@ Route::middleware(Authenticate::class)->group(function () {
         Route::post('/{workflowId}/update/{updateName}', [WorkflowController::class, 'update']);
         Route::post('/{workflowId}/cancel', [WorkflowController::class, 'cancel']);
         Route::post('/{workflowId}/terminate', [WorkflowController::class, 'terminate']);
+        Route::post('/{workflowId}/repair', [WorkflowController::class, 'repair']);
+        Route::post('/{workflowId}/archive', [WorkflowController::class, 'archive']);
 
         // Commands (run-targeted — rejects historical runs explicitly)
         Route::post('/{workflowId}/runs/{runId}/signal/{signalName}', [WorkflowController::class, 'signalRun']);
