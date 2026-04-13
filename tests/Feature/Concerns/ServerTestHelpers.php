@@ -36,7 +36,7 @@ trait ServerTestHelpers
     {
         return [
             'X-Namespace' => $namespace,
-            'X-Durable-Workflow-Protocol-Version' => '1',
+            'X-Durable-Workflow-Protocol-Version' => '1.0',
         ];
     }
 

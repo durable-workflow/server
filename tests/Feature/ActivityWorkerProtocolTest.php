@@ -62,8 +62,8 @@ class ActivityWorkerProtocolTest extends TestCase
             ]);
 
         $poll->assertOk()
-            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1')
-            ->assertJsonPath('protocol_version', '1')
+            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1.0')
+            ->assertJsonPath('protocol_version', '1.0')
             ->assertJsonPath('server_capabilities.supported_workflow_task_commands.4', 'start_timer')
             ->assertJsonPath('task.workflow_id', $workflow->id())
             ->assertJsonPath('task.run_id', $start->runId())
@@ -500,7 +500,7 @@ class ActivityWorkerProtocolTest extends TestCase
         return [
             'X-Namespace' => $namespace,
             'X-Durable-Workflow-Control-Plane-Version' => '2',
-            'X-Durable-Workflow-Protocol-Version' => '1',
+            'X-Durable-Workflow-Protocol-Version' => '1.0',
         ];
     }
 

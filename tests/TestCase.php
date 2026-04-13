@@ -14,7 +14,7 @@ abstract class TestCase extends BaseTestCase
             'server.auth.driver' => 'none',
             'server.polling.timeout' => 0,
             'server.polling.interval_ms' => 1,
-            'server.worker_protocol.version' => '1',
+            'server.worker_protocol.version' => '1.0',
         ]);
     }
 }

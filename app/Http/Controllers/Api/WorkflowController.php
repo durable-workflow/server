@@ -86,7 +86,7 @@ class WorkflowController
                 'task_queue' => $summary->queue,
                 'started_at' => $summary->started_at?->toJSON(),
                 'closed_at' => $summary->closed_at?->toJSON(),
-                'search_attributes' => $summary->visibility_labels ?? [],
+                'search_attributes' => $summary->search_attributes ?? [],
             ])->all(),
             'workflow_count' => $page->count(),
             'next_page_token' => $hasMore ? $this->encodePageToken($offset + $pageSize) : null,
@@ -592,7 +592,7 @@ class WorkflowController
             'wait_kind' => $runDescription['wait_kind'] ?? null,
             'wait_reason' => $runDescription['wait_reason'] ?? null,
             'memo' => $run->memo ?? [],
-            'search_attributes' => $run->visibility_labels ?? [],
+            'search_attributes' => $run->search_attributes ?? [],
             'actions' => $actions,
         ];
     }

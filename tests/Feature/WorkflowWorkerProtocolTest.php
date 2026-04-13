@@ -91,8 +91,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ]);
 
         $poll->assertOk()
-            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1')
-            ->assertJsonPath('protocol_version', '1')
+            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1.0')
+            ->assertJsonPath('protocol_version', '1.0')
             ->assertJsonPath('server_capabilities.supported_workflow_task_commands.3', 'schedule_activity')
             ->assertJsonPath('task.workflow_id', $workflowId)
             ->assertJsonPath('task.run_id', $runId)
@@ -260,9 +260,9 @@ class WorkflowWorkerProtocolTest extends TestCase
             'task_queue' => 'external-workflows',
             'runtime' => 'php',
         ])->assertStatus(400)
-            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1')
+            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1.0')
             ->assertJsonPath('reason', 'missing_protocol_version')
-            ->assertJsonPath('supported_version', '1');
+            ->assertJsonPath('supported_version', '1.0');
 
         $register = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
@@ -273,8 +273,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ]);
 
         $register->assertCreated()
-            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1')
-            ->assertJsonPath('protocol_version', '1')
+            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1.0')
+            ->assertJsonPath('protocol_version', '1.0')
             ->assertJsonPath('worker_id', 'php-worker-register')
             ->assertJsonPath('registered', true)
             ->assertJsonPath('server_capabilities.long_poll_timeout', 0)
@@ -286,6 +286,9 @@ class WorkflowWorkerProtocolTest extends TestCase
                     'schedule_activity',
                     'start_timer',
                     'start_child_workflow',
+                    'record_side_effect',
+                    'record_version_marker',
+                    'upsert_search_attributes',
                 ],
             ]);
 
@@ -330,8 +333,8 @@ class WorkflowWorkerProtocolTest extends TestCase
             ]);
 
         $heartbeat->assertOk()
-            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1')
-            ->assertJsonPath('protocol_version', '1')
+            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1.0')
+            ->assertJsonPath('protocol_version', '1.0')
             ->assertJsonPath('worker_id', 'php-worker-register')
             ->assertJsonPath('acknowledged', true)
             ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
@@ -341,7 +344,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             'X-Namespace' => 'default',
         ])->getJson('/api/cluster/info')
             ->assertOk()
-            ->assertJsonPath('worker_protocol.version', '1')
+            ->assertJsonPath('worker_protocol.version', '1.0')
             ->assertJsonPath('worker_fleet.active_workers', 1)
             ->assertJsonPath('worker_fleet.build_ids.0', 'build-register')
             ->assertJsonPath(
@@ -358,7 +361,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             'runtime' => 'php',
         ])->assertStatus(400)
             ->assertJsonPath('reason', 'unsupported_protocol_version')
-            ->assertJsonPath('supported_version', '1');
+            ->assertJsonPath('supported_version', '1.0');
     }
 
     public function test_worker_heartbeat_is_scoped_to_the_resolved_namespace(): void
@@ -2760,7 +2763,7 @@ class WorkflowWorkerProtocolTest extends TestCase
     {
         return [
             'X-Namespace' => $namespace,
-            'X-Durable-Workflow-Protocol-Version' => '1',
+            'X-Durable-Workflow-Protocol-Version' => '1.0',
         ];
     }
 }

@@ -53,7 +53,7 @@ final class WorkflowStartService
             'business_key' => isset($validated['business_key']) && is_string($validated['business_key'])
                 ? $validated['business_key']
                 : null,
-            'labels' => $this->arrayValue($validated, 'search_attributes'),
+            'search_attributes' => $this->arrayValue($validated, 'search_attributes'),
             'memo' => $this->arrayValue($validated, 'memo'),
             'duplicate_start_policy' => $this->controlPlaneDuplicatePolicy($validated['duplicate_policy'] ?? null),
         ], static fn (mixed $value): bool => $value !== null));

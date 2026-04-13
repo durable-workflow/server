@@ -8,7 +8,7 @@ use Workflow\V2\Support\WorkerProtocolVersion;
 
 class WorkerProtocol
 {
-    public const VERSION = '1';
+    public const VERSION = '1.0';
 
     public const HEADER = 'X-Durable-Workflow-Protocol-Version';
 
@@ -22,6 +22,9 @@ class WorkerProtocol
         'schedule_activity',
         'start_timer',
         'start_child_workflow',
+        'record_side_effect',
+        'record_version_marker',
+        'upsert_search_attributes',
     ];
 
     public static function requestVersion(Request $request): ?string

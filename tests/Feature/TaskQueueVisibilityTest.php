@@ -230,7 +230,7 @@ class TaskQueueVisibilityTest extends TestCase
     {
         return [
             'X-Namespace' => 'default',
-            'X-Durable-Workflow-Protocol-Version' => '1',
+            'X-Durable-Workflow-Protocol-Version' => '1.0',
         ];
     }
 

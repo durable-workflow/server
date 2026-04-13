@@ -29,7 +29,7 @@ class WorkflowStartServiceTest extends TestCase
                             return false;
                         }
 
-                        if (($options['labels'] ?? null) !== ['tenant' => 'acme']) {
+                        if (($options['search_attributes'] ?? null) !== ['tenant' => 'acme']) {
                             return false;
                         }
 
