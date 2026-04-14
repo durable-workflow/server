@@ -75,7 +75,9 @@ class ActivityTaskController
                 'activity_type' => $claim['activity_type'],
                 'activity_class' => $claim['activity_class'],
                 'payload_codec' => $claim['payload_codec'],
-                'arguments' => $claim['arguments'],
+                'arguments' => $claim['arguments'] !== null
+                    ? ['codec' => $claim['payload_codec'] ?? 'json', 'blob' => $claim['arguments']]
+                    : null,
                 'retry_policy' => $claim['retry_policy'],
                 'task_queue' => $claim['queue'],
                 'connection' => $claim['connection'],

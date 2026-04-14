@@ -70,6 +70,7 @@ class HealthController
                 'non_retryable_failures' => true,
                 'history_retention' => true,
                 'payload_codec_envelope' => true,
+                'payload_codec_envelope_responses' => true,
                 'payload_codecs' => \Workflow\Serializers\CodecRegistry::names(),
                 'response_compression' => (bool) config('server.compression.enabled', true)
                     ? ['gzip', 'deflate']

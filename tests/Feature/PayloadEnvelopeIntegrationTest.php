@@ -546,6 +546,122 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $this->assertContains('json', $startFields['payload_codec']['canonical_values']);
     }
 
+    public function test_activity_poll_returns_arguments_as_codec_envelope(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-activity-envelope',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'input' => ['Ada'],
+            ])
+            ->assertCreated();
+
+        $runId = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-activity-envelope')
+            ->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $this->registerWorker('py-worker-envelope', 'external-activities');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'py-worker-envelope',
+                'task_queue' => 'external-activities',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.arguments.codec', 'json')
+            ->assertJsonStructure(['task' => ['arguments' => ['codec', 'blob']]]);
+
+        $blob = $poll->json('task.arguments.blob');
+        $this->assertIsString($blob);
+        $this->assertSame(['Ada'], json_decode($blob, true));
+    }
+
+    public function test_describe_response_includes_input_and_output_envelopes(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-envelope-describe',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'input' => ['Ada'],
+            ])
+            ->assertCreated();
+
+        $describe = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-envelope-describe');
+
+        $describe->assertOk()
+            ->assertJsonPath('input.0', 'Ada')
+            ->assertJsonPath('input_envelope.codec', 'json')
+            ->assertJsonStructure(['input_envelope' => ['codec', 'blob']]);
+
+        $blob = $describe->json('input_envelope.blob');
+        $this->assertIsString($blob);
+        $this->assertSame(['Ada'], json_decode($blob, true));
+
+        $this->assertNull($describe->json('output_envelope'));
+    }
+
+    public function test_show_run_includes_output_envelope_when_completed(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-envelope-output',
+                'workflow_type' => 'tests.interactive-command-workflow',
+                'input' => ['Ada'],
+            ])
+            ->assertCreated();
+
+        $runId = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-envelope-output')
+            ->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-envelope-output/signal/advance', [
+                'input' => ['finish'],
+            ])
+            ->assertStatus(202);
+
+        $this->runReadyWorkflowTask($runId);
+
+        $showRun = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/wf-envelope-output/runs/{$runId}");
+
+        $showRun->assertOk()
+            ->assertJsonPath('payload_codec', 'json');
+
+        if ($showRun->json('output') !== null) {
+            $showRun->assertJsonStructure(['output_envelope' => ['codec', 'blob']]);
+            $this->assertSame('json', $showRun->json('output_envelope.codec'));
+        }
+    }
+
+    public function test_cluster_info_advertises_envelope_response_capability(): void
+    {
+        $this->createNamespace('default');
+
+        $info = $this->getJson('/api/cluster/info');
+
+        $info->assertOk()
+            ->assertJsonPath('capabilities.payload_codec_envelope_responses', true);
+    }
+
     private function configureWorkflowTypes(): void
     {
         config()->set('workflows.v2.types.workflows', [

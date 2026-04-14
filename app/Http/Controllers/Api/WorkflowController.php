@@ -718,6 +718,8 @@ class WorkflowController
             'run_deadline_at' => $runDescription['run_deadline_at'] ?? null,
             'input' => $run->workflowArguments(),
             'output' => $run->workflowOutput(),
+            'input_envelope' => $run->argumentsEnvelope(),
+            'output_envelope' => $run->outputEnvelope(),
             'started_at' => $run->started_at?->toJSON(),
             'closed_at' => $run->closed_at?->toJSON(),
             'last_progress_at' => $runDescription['last_progress_at'] ?? $run->last_progress_at?->toJSON(),

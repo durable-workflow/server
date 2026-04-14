@@ -2208,9 +2208,10 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.run_id', $runId)
             ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');
 
+        $activityPoll->assertJsonPath('task.arguments.codec', 'json');
         $this->assertSame(
             ['Ada'],
-            Serializer::unserialize((string) $activityPoll->json('task.arguments')),
+            Serializer::unserialize((string) $activityPoll->json('task.arguments.blob')),
         );
 
         $completeActivity = $this->withHeaders($this->workerHeaders())
