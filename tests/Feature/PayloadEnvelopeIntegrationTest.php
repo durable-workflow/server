@@ -652,6 +652,79 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         }
     }
 
+    public function test_query_result_includes_envelope(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-envelope-query-result',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ])
+            ->assertCreated();
+
+        $runId = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-envelope-query-result')
+            ->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $query = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-envelope-query-result/query/events-starting-with', [
+                'input' => ['start'],
+            ]);
+
+        $query->assertOk()
+            ->assertJsonPath('result', 1)
+            ->assertJsonStructure(['result_envelope' => ['codec', 'blob']]);
+
+        $this->assertSame('json', $query->json('result_envelope.codec'));
+
+        $blob = $query->json('result_envelope.blob');
+        $this->assertIsString($blob);
+        $this->assertSame(1, json_decode($blob, true));
+    }
+
+    public function test_update_result_includes_envelope(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-envelope-update-result',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ])
+            ->assertCreated();
+
+        $runId = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-envelope-update-result')
+            ->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $update = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-envelope-update-result/update/approve', [
+                'input' => [true, 'envelope-result-test'],
+                'wait_for' => 'completed',
+            ]);
+
+        $update->assertOk()
+            ->assertJsonPath('update_name', 'approve')
+            ->assertJsonPath('result.approved', true)
+            ->assertJsonStructure(['result_envelope' => ['codec', 'blob']]);
+
+        $this->assertSame('json', $update->json('result_envelope.codec'));
+
+        $blob = $update->json('result_envelope.blob');
+        $this->assertIsString($blob);
+        $decoded = json_decode($blob, true);
+        $this->assertSame(true, $decoded['approved']);
+    }
+
     public function test_cluster_info_advertises_envelope_response_capability(): void
     {
         $this->createNamespace('default');

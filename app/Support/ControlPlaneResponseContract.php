@@ -122,6 +122,7 @@ final class ControlPlaneResponseContract
         'rejection_reason',
         'validation_errors',
         'result',
+        'result_envelope',
         'update_id',
         'update_status',
         'wait_for',
