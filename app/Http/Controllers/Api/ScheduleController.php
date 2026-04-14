@@ -280,11 +280,12 @@ class ScheduleController
 
         $occurrences = ScheduleManager::backfill($schedule, $startTime, $endTime, $overlap);
 
-        $results = array_map(static fn (array $row): array => [
+        $results = array_map(static fn (array $row): array => array_filter([
             'fire_time' => $row['cron_time'],
             'workflow_id' => $row['instance_id'],
-            'outcome' => $row['instance_id'] !== null ? 'started' : 'skipped',
-        ], $occurrences);
+            'outcome' => isset($row['error']) ? 'failed' : ($row['instance_id'] !== null ? 'started' : 'skipped'),
+            'reason' => $row['error'] ?? null,
+        ], static fn (mixed $v): bool => $v !== null), $occurrences);
 
         return response()->json([
             'schedule_id' => $scheduleId,

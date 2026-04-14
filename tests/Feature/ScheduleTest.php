@@ -686,6 +686,7 @@ class ScheduleTest extends TestCase
             'spec' => ['cron_expressions' => ['0 * * * *']],
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'buffer_one',
+            'latest_workflow_instance_id' => 'wf-buffer-running',
             'recent_actions' => [
                 ['workflow_id' => 'wf-buffer-running', 'run_id' => $summary->id, 'outcome' => 'started'],
             ],
@@ -715,6 +716,7 @@ class ScheduleTest extends TestCase
             'spec' => ['cron_expressions' => ['0 * * * *']],
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'buffer_one',
+            'latest_workflow_instance_id' => 'wf-buffer-full',
             'recent_actions' => [
                 ['workflow_id' => 'wf-buffer-full', 'run_id' => $summary->id, 'outcome' => 'started'],
             ],
@@ -770,6 +772,7 @@ class ScheduleTest extends TestCase
             'spec' => ['cron_expressions' => ['0 * * * *']],
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'buffer_all',
+            'latest_workflow_instance_id' => 'wf-buffer-all',
             'recent_actions' => [
                 ['workflow_id' => 'wf-buffer-all', 'run_id' => $summary->id, 'outcome' => 'started'],
             ],

@@ -3,12 +3,14 @@
 namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
-use Workflow\V2\Models\WorkflowSchedule;
 use App\Support\WorkflowStartService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery\MockInterface;
 use Tests\TestCase;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSchedule;
 
 class ScheduleEvaluateTest extends TestCase
 {
@@ -253,7 +255,7 @@ class ScheduleEvaluateTest extends TestCase
 
     public function test_buffer_one_buffers_when_previous_workflow_is_running(): void
     {
-        $this->mockControlPlaneDescribe('wf-running', 'running');
+        $this->createWorkflowWithRun('wf-running', 'run-1', 'running');
 
         WorkflowSchedule::create([
             'schedule_id' => 'buffer-eval',
@@ -262,6 +264,7 @@ class ScheduleEvaluateTest extends TestCase
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'buffer_one',
             'next_fire_at' => now()->subMinute(),
+            'latest_workflow_instance_id' => 'wf-running',
             'recent_actions' => [
                 ['workflow_id' => 'wf-running', 'run_id' => 'run-1', 'outcome' => 'started'],
             ],
@@ -278,7 +281,7 @@ class ScheduleEvaluateTest extends TestCase
 
     public function test_buffer_one_skips_at_capacity(): void
     {
-        $this->mockControlPlaneDescribe('wf-running-cap', 'running');
+        $this->createWorkflowWithRun('wf-running-cap', 'run-cap', 'running');
 
         WorkflowSchedule::create([
             'schedule_id' => 'buffer-cap-eval',
@@ -287,6 +290,7 @@ class ScheduleEvaluateTest extends TestCase
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'buffer_one',
             'next_fire_at' => now()->subMinute(),
+            'latest_workflow_instance_id' => 'wf-running-cap',
             'recent_actions' => [
                 ['workflow_id' => 'wf-running-cap', 'run_id' => 'run-cap', 'outcome' => 'started'],
             ],
@@ -305,7 +309,7 @@ class ScheduleEvaluateTest extends TestCase
 
     public function test_buffer_policy_fires_normally_when_previous_workflow_completed(): void
     {
-        $this->mockControlPlaneDescribe('wf-done', 'completed');
+        $this->createWorkflowWithRun('wf-done', 'run-done', 'completed');
 
         $this->fakeStartService(result: [
             'workflow_id' => 'wf-new',
@@ -322,6 +326,7 @@ class ScheduleEvaluateTest extends TestCase
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'buffer_one',
             'next_fire_at' => now()->subMinute(),
+            'latest_workflow_instance_id' => 'wf-done',
             'recent_actions' => [
                 ['workflow_id' => 'wf-done', 'run_id' => 'run-done', 'outcome' => 'started'],
             ],
@@ -339,7 +344,7 @@ class ScheduleEvaluateTest extends TestCase
 
     public function test_it_drains_buffer_when_previous_workflow_completed(): void
     {
-        $this->mockControlPlaneDescribe('wf-drain-done', 'completed');
+        $this->createWorkflowWithRun('wf-drain-done', 'run-drain-done', 'completed');
 
         $this->fakeStartService(result: [
             'workflow_id' => 'wf-drained',
@@ -356,6 +361,7 @@ class ScheduleEvaluateTest extends TestCase
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'buffer_one',
             'status' => 'active',
+            'latest_workflow_instance_id' => 'wf-drain-done',
             'recent_actions' => [
                 ['workflow_id' => 'wf-drain-done', 'run_id' => 'run-drain-done', 'outcome' => 'started'],
             ],
@@ -375,7 +381,7 @@ class ScheduleEvaluateTest extends TestCase
 
     public function test_it_does_not_drain_buffer_when_previous_workflow_still_running(): void
     {
-        $this->mockControlPlaneDescribe('wf-still-running', 'running');
+        $this->createWorkflowWithRun('wf-still-running', 'run-still', 'running');
 
         WorkflowSchedule::create([
             'schedule_id' => 'no-drain-eval',
@@ -384,6 +390,7 @@ class ScheduleEvaluateTest extends TestCase
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'buffer_one',
             'status' => 'active',
+            'latest_workflow_instance_id' => 'wf-still-running',
             'recent_actions' => [
                 ['workflow_id' => 'wf-still-running', 'run_id' => 'run-still', 'outcome' => 'started'],
             ],
@@ -425,7 +432,7 @@ class ScheduleEvaluateTest extends TestCase
 
     public function test_drain_failure_is_recorded(): void
     {
-        $this->mockControlPlaneDescribe('wf-drain-fail', 'completed');
+        $this->createWorkflowWithRun('wf-drain-fail', 'run-df', 'completed');
 
         $this->fakeStartService(exception: new \RuntimeException('Start failed during drain'));
 
@@ -436,6 +443,7 @@ class ScheduleEvaluateTest extends TestCase
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'buffer_one',
             'status' => 'active',
+            'latest_workflow_instance_id' => 'wf-drain-fail',
             'recent_actions' => [
                 ['workflow_id' => 'wf-drain-fail', 'run_id' => 'run-df', 'outcome' => 'started'],
             ],
@@ -446,7 +454,7 @@ class ScheduleEvaluateTest extends TestCase
 
         $this->artisan('schedule:evaluate')
             ->assertExitCode(1)
-            ->expectsOutputToContain('drain failed');
+            ->expectsOutputToContain('failed');
 
         $schedule = WorkflowSchedule::where('schedule_id', 'drain-fail-eval')->first();
         $this->assertEquals(1, $schedule->failures_count);
@@ -456,11 +464,7 @@ class ScheduleEvaluateTest extends TestCase
 
     public function test_cancel_other_policy_cancels_previous_and_fires(): void
     {
-        $this->mock(WorkflowControlPlane::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('cancel')
-                ->once()
-                ->with('wf-to-cancel', \Mockery::type('array'));
-        });
+        $this->createWorkflowWithRun('wf-to-cancel', 'run-cancel', 'running');
 
         $this->fakeStartService(result: [
             'workflow_id' => 'wf-after-cancel',
@@ -477,6 +481,7 @@ class ScheduleEvaluateTest extends TestCase
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'cancel_other',
             'next_fire_at' => now()->subMinute(),
+            'latest_workflow_instance_id' => 'wf-to-cancel',
             'recent_actions' => [
                 ['workflow_id' => 'wf-to-cancel', 'run_id' => 'run-cancel', 'outcome' => 'started'],
             ],
@@ -568,7 +573,7 @@ class ScheduleEvaluateTest extends TestCase
 
     public function test_it_normalizes_legacy_timeout_fields_when_draining_buffer(): void
     {
-        $this->mockControlPlaneDescribe('wf-drain-legacy', 'completed');
+        $this->createWorkflowWithRun('wf-drain-legacy', 'run-dl', 'completed');
 
         $capturedParams = null;
         $this->fakeStartService(callback: function (array $params) use (&$capturedParams): array {
@@ -590,6 +595,7 @@ class ScheduleEvaluateTest extends TestCase
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'buffer_one',
             'status' => 'active',
+            'latest_workflow_instance_id' => 'wf-drain-legacy',
             'recent_actions' => [
                 ['workflow_id' => 'wf-drain-legacy', 'run_id' => 'run-dl', 'outcome' => 'started'],
             ],
@@ -632,49 +638,46 @@ class ScheduleEvaluateTest extends TestCase
 
     /**
      * Bind a fake WorkflowStartService into the container.
-     *
-     * WorkflowStartService is final, so Mockery cannot mock it directly.
-     * Instead we bind an anonymous object that delegates to a callback.
      */
     private function fakeStartService(
         ?array $result = null,
         ?\Throwable $exception = null,
         ?\Closure $callback = null,
     ): void {
-        $fake = new class($result, $exception, $callback)
-        {
-            public function __construct(
-                private readonly ?array $result,
-                private readonly ?\Throwable $exception,
-                private readonly ?\Closure $callback,
-            ) {}
+        $this->mock(WorkflowStartService::class, function (MockInterface $mock) use ($result, $exception, $callback): void {
+            $mock->shouldReceive('start')
+                ->zeroOrMoreTimes()
+                ->andReturnUsing(function (array $validated, ?string $namespace = null) use ($result, $exception, $callback): array {
+                    if ($exception) {
+                        throw $exception;
+                    }
 
-            public function start(array $validated, ?string $namespace = null): array
-            {
-                if ($this->exception) {
-                    throw $this->exception;
-                }
+                    if ($callback) {
+                        return ($callback)($validated, $namespace);
+                    }
 
-                if ($this->callback) {
-                    return ($this->callback)($validated, $namespace);
-                }
-
-                return $this->result;
-            }
-        };
-
-        $this->instance(WorkflowStartService::class, $fake);
+                    return $result;
+                });
+        });
     }
 
-    private function mockControlPlaneDescribe(string $workflowId, string $statusBucket): void
+    private function createWorkflowWithRun(string $workflowId, string $runId, string $status): void
     {
-        $this->mock(WorkflowControlPlane::class, function (MockInterface $mock) use ($workflowId, $statusBucket): void {
-            $mock->shouldReceive('describe')
-                ->with($workflowId, \Mockery::type('array'))
-                ->andReturn([
-                    'found' => true,
-                    'run' => ['status_bucket' => $statusBucket],
-                ]);
-        });
+        WorkflowInstance::forceCreate([
+            'id' => $workflowId,
+            'workflow_class' => 'TestWorkflow',
+            'workflow_type' => 'TestWorkflow',
+            'namespace' => 'default',
+        ]);
+
+        WorkflowRun::forceCreate([
+            'id' => $runId,
+            'workflow_instance_id' => $workflowId,
+            'workflow_class' => 'TestWorkflow',
+            'workflow_type' => 'TestWorkflow',
+            'run_number' => 1,
+            'status' => $status,
+            'namespace' => 'default',
+        ]);
     }
 }

@@ -38,15 +38,32 @@ Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per
 
     $fired = 0;
     $skipped = 0;
+    $failed = 0;
 
     foreach ($results as $row) {
-        if ($row['instance_id'] !== null) {
+        $outcome = $row['outcome'] ?? null;
+
+        if (isset($row['error'])) {
+            $this->components->twoColumnDetail(
+                $row['schedule_id'],
+                sprintf('<fg=red>failed</> — %s', $row['error']),
+            );
+
+            $failed++;
+        } elseif ($row['instance_id'] !== null) {
             $this->components->twoColumnDetail(
                 $row['schedule_id'],
                 sprintf('<fg=green>fired</> → %s', $row['instance_id']),
             );
 
             $fired++;
+        } elseif ($outcome === 'buffered' || $outcome === 'buffer_full') {
+            $this->components->twoColumnDetail(
+                $row['schedule_id'],
+                sprintf('<fg=cyan>%s</>', $outcome),
+            );
+
+            $skipped++;
         } else {
             $this->components->twoColumnDetail(
                 $row['schedule_id'],
@@ -57,9 +74,9 @@ Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per
         }
     }
 
-    $this->components->info(sprintf('Done: %d fired, %d skipped.', $fired, $skipped));
+    $this->components->info(sprintf('Done: %d fired, %d skipped, %d failed.', $fired, $skipped, $failed));
 
-    return 0;
+    return $failed > 0 ? 1 : 0;
 })->purpose('Evaluate due schedules and start their workflows');
 
 Artisan::command('activity:timeout-enforce {--limit=100 : Maximum expired executions to process per pass}', function (): int {

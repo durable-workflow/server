@@ -747,7 +747,6 @@ final class WorkflowTaskPoller
             'run_id' => $claim['workflow_run_id'],
             'workflow_task_attempt' => $attempt,
             'workflow_type' => $claim['workflow_type'],
-            'workflow_class' => $claim['workflow_class'],
             'payload_codec' => $claim['payload_codec'],
             'arguments' => ($history['arguments'] ?? null) !== null
                 ? ['codec' => $claim['payload_codec'] ?? 'json', 'blob' => $history['arguments']]

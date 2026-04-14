@@ -7,7 +7,7 @@ use Workflow\V2\CommandContext;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
 
-final class WorkflowStartService
+class WorkflowStartService
 {
     public function __construct(
         private readonly WorkflowControlPlane $controlPlane,

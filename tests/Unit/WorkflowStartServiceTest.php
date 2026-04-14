@@ -82,6 +82,7 @@ class WorkflowStartServiceTest extends TestCase
 
     public function test_it_rejects_invalid_configured_dotted_workflow_type_mappings_before_control_plane_start(): void
     {
+        config()->set('server.mode', 'embedded');
         config()->set('workflows.v2.types.workflows', [
             'tests.external-greeting-workflow' => 'App\\Missing\\Workflow',
         ]);

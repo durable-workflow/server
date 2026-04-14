@@ -21,6 +21,10 @@ final class ConfiguredWorkflowTypeValidator
 
     public function validationMessage(string $workflowType): ?string
     {
+        if (config('server.mode') === 'service') {
+            return null;
+        }
+
         if (class_exists($workflowType) && is_subclass_of($workflowType, Workflow::class)) {
             return null;
         }

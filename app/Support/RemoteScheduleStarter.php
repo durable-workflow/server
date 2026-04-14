@@ -21,12 +21,14 @@ final class RemoteScheduleStarter implements ScheduleWorkflowStarter
         WorkflowSchedule $schedule,
         ?DateTimeInterface $occurrenceTime,
         string $outcome,
+        ?string $effectiveOverlapPolicy = null,
     ): ScheduleStartResult {
         $action = WorkflowSchedule::normalizeActionTimeouts(
             is_array($schedule->action) ? $schedule->action : [],
         );
 
-        $duplicatePolicy = ($schedule->overlap_policy ?? 'skip') === 'skip'
+        $policy = $effectiveOverlapPolicy ?? $schedule->overlap_policy ?? 'skip';
+        $duplicatePolicy = $policy === 'skip'
             ? 'use-existing'
             : null;
 

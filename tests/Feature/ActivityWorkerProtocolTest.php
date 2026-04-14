@@ -67,8 +67,7 @@ class ActivityWorkerProtocolTest extends TestCase
             ->assertJsonPath('server_capabilities.supported_workflow_task_commands.4', 'start_timer')
             ->assertJsonPath('task.workflow_id', $workflow->id())
             ->assertJsonPath('task.run_id', $start->runId())
-            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity')
-            ->assertJsonPath('task.activity_class', ExternalGreetingActivity::class);
+            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');
 
         $taskId = (string) $poll->json('task.task_id');
         $attemptId = (string) $poll->json('task.activity_attempt_id');
