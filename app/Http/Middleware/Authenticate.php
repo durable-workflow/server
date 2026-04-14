@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use Closure;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -24,7 +25,7 @@ class Authenticate
             return $this->authenticateSignature($request, $next);
         }
 
-        abort(500, "Unknown auth driver: {$driver}");
+        return self::error(500, 'server_error', "Unknown auth driver: {$driver}");
     }
 
     protected function authenticateToken(Request $request, Closure $next): Response
@@ -32,13 +33,13 @@ class Authenticate
         $token = config('server.auth.token');
 
         if (! is_string($token) || $token === '') {
-            abort(500, 'Auth driver is set to "token" but WORKFLOW_SERVER_AUTH_TOKEN is not configured.');
+            return self::error(500, 'server_error', 'Auth driver is set to "token" but WORKFLOW_SERVER_AUTH_TOKEN is not configured.');
         }
 
         $provided = $request->bearerToken();
 
         if (! $provided || ! hash_equals($token, $provided)) {
-            abort(401, 'Invalid or missing authentication token.');
+            return self::error(401, 'unauthorized', 'Invalid or missing authentication token.');
         }
 
         return $next($request);
@@ -49,21 +50,26 @@ class Authenticate
         $key = config('server.auth.signature_key');
 
         if (! is_string($key) || $key === '') {
-            abort(500, 'Auth driver is set to "signature" but WORKFLOW_SERVER_SIGNATURE_KEY is not configured.');
+            return self::error(500, 'server_error', 'Auth driver is set to "signature" but WORKFLOW_SERVER_SIGNATURE_KEY is not configured.');
         }
 
         $signature = $request->header('X-Signature');
 
         if (! $signature) {
-            abort(401, 'Missing request signature.');
+            return self::error(401, 'unauthorized', 'Missing request signature.');
         }
 
         $expected = hash_hmac('sha256', $request->getContent(), $key);
 
         if (! hash_equals($expected, $signature)) {
-            abort(401, 'Invalid request signature.');
+            return self::error(401, 'unauthorized', 'Invalid request signature.');
         }
 
         return $next($request);
+    }
+
+    private static function error(int $status, string $error, string $message): JsonResponse
+    {
+        return new JsonResponse(['error' => $error, 'message' => $message], $status);
     }
 }

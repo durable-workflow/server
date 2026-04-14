@@ -66,7 +66,7 @@ class HistoryController
                 'sequence' => $event->sequence,
                 'event_type' => $event->event_type?->value ?? $event->event_type,
                 'timestamp' => $event->recorded_at?->toJSON(),
-                'details' => $event->payload ?? [],
+                'payload' => $event->payload ?? [],
             ])->all(),
             'next_page_token' => $hasMore && $lastSequence !== null
                 ? self::encodePageToken((int) $lastSequence)

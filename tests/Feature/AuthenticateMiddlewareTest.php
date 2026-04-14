@@ -59,7 +59,8 @@ class AuthenticateMiddlewareTest extends TestCase
         config(['server.auth.driver' => 'token', 'server.auth.token' => 'test-secret-token']);
 
         $this->getJson('/api/cluster/info')
-            ->assertUnauthorized();
+            ->assertUnauthorized()
+            ->assertJson(['error' => 'unauthorized']);
     }
 
     public function test_token_driver_rejects_wrong_token(): void
@@ -68,7 +69,8 @@ class AuthenticateMiddlewareTest extends TestCase
 
         $this->withHeaders(['Authorization' => 'Bearer wrong-token'])
             ->getJson('/api/cluster/info')
-            ->assertUnauthorized();
+            ->assertUnauthorized()
+            ->assertJson(['error' => 'unauthorized']);
     }
 
     public function test_token_driver_rejects_empty_authorization_header(): void
@@ -161,6 +163,36 @@ class AuthenticateMiddlewareTest extends TestCase
         $this->withHeaders(['X-Signature' => 'anything'])
             ->getJson('/api/cluster/info')
             ->assertStatus(500);
+    }
+
+    // ── JSON error body without Accept header ─────────────────────────
+
+    public function test_token_rejection_returns_json_without_accept_header(): void
+    {
+        config(['server.auth.driver' => 'token', 'server.auth.token' => 'test-secret-token']);
+
+        $response = $this->get('/api/cluster/info');
+
+        $response->assertUnauthorized();
+        $response->assertHeader('content-type', 'application/json');
+        $response->assertJson([
+            'error' => 'unauthorized',
+            'message' => 'Invalid or missing authentication token.',
+        ]);
+    }
+
+    public function test_signature_rejection_returns_json_without_accept_header(): void
+    {
+        config(['server.auth.driver' => 'signature', 'server.auth.signature_key' => 'test-key']);
+
+        $response = $this->get('/api/cluster/info');
+
+        $response->assertUnauthorized();
+        $response->assertHeader('content-type', 'application/json');
+        $response->assertJson([
+            'error' => 'unauthorized',
+            'message' => 'Missing request signature.',
+        ]);
     }
 
     // ── Unknown driver ──────────────────────────────────────────────
