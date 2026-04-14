@@ -314,11 +314,15 @@ class WorkflowController
             'request_id' => ['nullable', 'string', 'max:255'],
         ]);
 
+        $envelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input');
+
         $result = $this->workflowControlPlane->signal(
             $workflowId,
             $signalName,
             [
                 'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input'),
+                'payload_codec' => $envelope['codec'],
+                'payload_blob' => $envelope['blob'],
                 'command_context' => $this->commandContexts->make(
                     $request,
                     workflowId: $workflowId,

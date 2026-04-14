@@ -12,6 +12,7 @@ use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 
 class PayloadEnvelopeIntegrationTest extends TestCase
@@ -723,6 +724,46 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $this->assertIsString($blob);
         $decoded = json_decode($blob, true);
         $this->assertSame(true, $decoded['approved']);
+    }
+
+    public function test_signal_with_json_envelope_stores_codec_on_signal_model(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-signal-codec-store',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ])
+            ->assertCreated();
+
+        $runId = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-signal-codec-store')
+            ->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-signal-codec-store/signal/advance', [
+                'input' => [
+                    'codec' => 'json',
+                    'blob' => '["EnvelopeCodecUser"]',
+                ],
+            ])
+            ->assertStatus(202);
+
+        $signal = WorkflowSignal::query()
+            ->where('workflow_run_id', $runId)
+            ->where('signal_name', 'advance')
+            ->first();
+
+        $this->assertNotNull($signal);
+        $this->assertSame('json', $signal->payload_codec);
+
+        $decoded = json_decode($signal->arguments, true);
+        $this->assertSame(['EnvelopeCodecUser'], $decoded);
     }
 
     public function test_cluster_info_advertises_envelope_response_capability(): void
