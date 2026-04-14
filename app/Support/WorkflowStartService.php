@@ -64,8 +64,18 @@ final class WorkflowStartService
         ?string $namespace = null,
         ?CommandContext $commandContext = null,
     ): array {
+        $envelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null);
+
+        // Back-compat: when the client sends no input (or an empty array),
+        // fall back to the configured default codec and emit a serialized
+        // empty-arg list so the run's `arguments` column stays non-null
+        // (matching pre-#164 behavior that legacy tests assert against).
+        $arguments = $envelope['blob'] ?? Serializer::serialize([]);
+        $payloadCodec = $envelope['codec'];
+
         $result = $this->controlPlane->start($workflowType, $workflowId, array_filter([
-            'arguments' => Serializer::serialize(array_values($this->arrayValue($validated, 'input'))),
+            'arguments' => $arguments,
+            'payload_codec' => $payloadCodec,
             'queue' => isset($validated['task_queue']) && is_string($validated['task_queue'])
                 ? $validated['task_queue']
                 : null,
