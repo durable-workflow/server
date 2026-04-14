@@ -116,12 +116,14 @@ class ActivityTaskController
 
         /** @var ActivityTaskBridgeContract $bridge */
         $bridge = app(ActivityTaskBridgeContract::class);
+        $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
+            $validated['result'] ?? null,
+            'result',
+        );
         $outcome = $bridge->complete(
             $validated['activity_attempt_id'],
-            PayloadEnvelopeResolver::resolveCommandPayload(
-                $validated['result'] ?? null,
-                'result',
-            ),
+            $resolved['payload'],
+            $resolved['codec'],
         );
 
         return WorkerProtocol::json([
