@@ -36,13 +36,13 @@ package remote or ref during image builds.
 composer global require durable-workflow/cli
 
 # Start a workflow
-durable-workflow workflow start --type=my-workflow --input='{"name":"world"}'
+dw workflow start --type=my-workflow --input='{"name":"world"}'
 
 # List workflows
-durable-workflow workflow list
+dw workflow list
 
 # Check server health
-durable-workflow server health
+dw server health
 ```
 
 ## Getting Started: End-to-End Workflow
