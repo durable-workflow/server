@@ -6,6 +6,7 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneResponseContract;
 use App\Support\ControlPlaneResultMapper;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\PayloadEnvelopeResolver;
 use App\Support\WorkflowCommandContextFactory;
 use App\Support\WorkflowStartService;
 use Illuminate\Http\JsonResponse;
@@ -316,7 +317,7 @@ class WorkflowController
             $workflowId,
             $signalName,
             [
-                'arguments' => $validated['input'] ?? [],
+                'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input'),
                 'command_context' => $this->commandContexts->make(
                     $request,
                     workflowId: $workflowId,
@@ -356,7 +357,7 @@ class WorkflowController
             $workflowId,
             $queryName,
             [
-                'arguments' => $validated['input'] ?? [],
+                'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input'),
                 'command_context' => $this->commandContexts->make(
                     $request,
                     workflowId: $workflowId,
@@ -400,7 +401,7 @@ class WorkflowController
             $workflowId,
             $updateName,
             [
-                'arguments' => $validated['input'] ?? [],
+                'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input'),
                 'command_context' => $this->commandContexts->make(
                     $request,
                     workflowId: $workflowId,

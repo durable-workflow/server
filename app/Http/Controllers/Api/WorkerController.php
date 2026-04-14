@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkerRegistration;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\PayloadEnvelopeResolver;
 use App\Support\StandaloneWorkerFleet;
 use App\Support\WorkflowTaskLeaseRecovery;
 use App\Support\WorkerProtocol;
@@ -304,7 +305,7 @@ class WorkerController
             'commands.*.type' => ['required', 'string'],
             'commands.*.result' => ['nullable'],
             'commands.*.activity_type' => ['nullable', 'string'],
-            'commands.*.arguments' => ['nullable', 'string'],
+            'commands.*.arguments' => ['nullable'],
             'commands.*.connection' => ['nullable', 'string'],
             'commands.*.queue' => ['nullable', 'string'],
             'commands.*.workflow_type' => ['nullable', 'string'],
@@ -616,7 +617,10 @@ class WorkerController
             if ($type === 'complete_workflow') {
                 $normalized[] = [
                     'type' => $type,
-                    'result' => $command['result'] ?? null,
+                    'result' => PayloadEnvelopeResolver::resolveCommandPayload(
+                        $command['result'] ?? null,
+                        "commands.{$index}.result",
+                    ),
                 ];
 
                 continue;
@@ -660,7 +664,7 @@ class WorkerController
                 $normalized[] = array_filter([
                     'type' => $type,
                     'activity_type' => trim($command['activity_type']),
-                    'arguments' => $this->optionalCommandString($command, 'arguments', $index, $errors),
+                    'arguments' => $this->resolveCommandArguments($command, $index, $errors),
                     'connection' => $this->optionalCommandString($command, 'connection', $index, $errors),
                     'queue' => $this->optionalCommandString($command, 'queue', $index, $errors),
                 ], static fn (mixed $value): bool => $value !== null);
@@ -707,7 +711,7 @@ class WorkerController
                 $normalized[] = array_filter([
                     'type' => $type,
                     'workflow_type' => trim($command['workflow_type']),
-                    'arguments' => $this->optionalCommandString($command, 'arguments', $index, $errors),
+                    'arguments' => $this->resolveCommandArguments($command, $index, $errors),
                     'connection' => $this->optionalCommandString($command, 'connection', $index, $errors),
                     'queue' => $this->optionalCommandString($command, 'queue', $index, $errors),
                     'parent_close_policy' => $parentClosePolicy,
@@ -721,7 +725,7 @@ class WorkerController
 
                 $normalized[] = array_filter([
                     'type' => $type,
-                    'arguments' => $this->optionalCommandString($command, 'arguments', $index, $errors),
+                    'arguments' => $this->resolveCommandArguments($command, $index, $errors),
                     'workflow_type' => $workflowType,
                 ], static fn (mixed $value): bool => $value !== null);
 
@@ -805,6 +809,41 @@ class WorkerController
         }
 
         return $normalized;
+    }
+
+    /**
+     * @param  array<string, mixed>  $command
+     * @param  array<string, list<string>>  $errors
+     */
+    private function resolveCommandArguments(array $command, int $index, array &$errors): ?string
+    {
+        if (! array_key_exists('arguments', $command) || $command['arguments'] === null) {
+            return null;
+        }
+
+        $value = $command['arguments'];
+
+        if (is_string($value)) {
+            return $value !== '' ? $value : null;
+        }
+
+        if (is_array($value)) {
+            try {
+                return PayloadEnvelopeResolver::resolveCommandPayload($value, "commands.{$index}.arguments");
+            } catch (ValidationException $e) {
+                foreach ($e->errors() as $field => $messages) {
+                    $errors[$field] = $messages;
+                }
+
+                return null;
+            }
+        }
+
+        $errors["commands.{$index}.arguments"] = [
+            'Workflow task command field [arguments] must be a string or a payload envelope when provided.',
+        ];
+
+        return null;
     }
 
     /**

@@ -67,6 +67,7 @@ class HealthController
                 'parent_close_policy' => true,
                 'non_retryable_failures' => true,
                 'history_retention' => true,
+                'payload_codec_envelope' => true,
                 'response_compression' => (bool) config('server.compression.enabled', true)
                     ? ['gzip', 'deflate']
                     : [],

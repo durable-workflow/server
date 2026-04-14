@@ -26,6 +26,85 @@ use Workflow\Serializers\Serializer;
 final class PayloadEnvelopeResolver
 {
     /**
+     * Resolve a payload field to a PHP array of arguments.
+     *
+     * Used for control-plane surfaces (signal, query, update) where the
+     * package API expects a PHP array, not a codec-tagged blob. Accepts
+     * either a plain array of positional arguments or a {codec, blob}
+     * envelope — when an envelope is received, the blob is decoded using
+     * the declared codec. Only the "json" codec is supported for array
+     * surfaces; other codecs cannot be losslessly represented as PHP arrays.
+     *
+     * @param  mixed  $input  the `input` field from a validated request
+     * @return array<int|string, mixed>  arguments (positional or named)
+     */
+    public static function resolveToArray($input, string $field = 'input'): array
+    {
+        if ($input === null || $input === []) {
+            return [];
+        }
+
+        if (! is_array($input)) {
+            throw ValidationException::withMessages([
+                $field => [sprintf('The %s field must be an array or an envelope object.', $field)],
+            ]);
+        }
+
+        if (! self::looksLikeEnvelope($input)) {
+            return $input;
+        }
+
+        $envelope = self::resolveExplicitEnvelope($input, $field);
+
+        if ($envelope['codec'] !== 'json') {
+            throw ValidationException::withMessages([
+                $field . '.codec' => [sprintf(
+                    'Only the "json" codec is supported for %s on this surface. Got "%s".',
+                    $field,
+                    $envelope['codec'],
+                )],
+            ]);
+        }
+
+        $decoded = json_decode($envelope['blob'], true);
+
+        if (! is_array($decoded)) {
+            throw ValidationException::withMessages([
+                $field . '.blob' => [sprintf('The %s envelope blob must decode to an array.', $field)],
+            ]);
+        }
+
+        return array_values($decoded);
+    }
+
+    /**
+     * Resolve a worker-protocol command payload field (result or arguments)
+     * that may be either a raw value or a {codec, blob} envelope.
+     *
+     * When an envelope is detected, the blob string is returned directly
+     * (the bridge stores codec-tagged serialized payloads). When a raw
+     * non-envelope value is received, it is returned as-is for backwards
+     * compatibility with PHP workers that send pre-serialized strings.
+     *
+     * @param  mixed  $value  the command field value (result, arguments, etc.)
+     * @return mixed  the resolved payload — either the blob string or the raw value
+     */
+    public static function resolveCommandPayload($value, string $field = 'result'): mixed
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (is_array($value) && self::looksLikeEnvelope($value)) {
+            $envelope = self::resolveExplicitEnvelope($value, $field);
+
+            return $envelope['blob'];
+        }
+
+        return $value;
+    }
+
+    /**
      * @param  mixed  $input    the `input` field from a validated request (array or null)
      * @return array{codec: string|null, blob: string|null}
      *         codec/blob are null when the client sent no input — callers

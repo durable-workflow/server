@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Models\WorkerRegistration;
 use App\Support\ActivityTaskPoller;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\PayloadEnvelopeResolver;
 use App\Support\WorkerProtocol;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -115,7 +116,10 @@ class ActivityTaskController
         $bridge = app(ActivityTaskBridgeContract::class);
         $outcome = $bridge->complete(
             $validated['activity_attempt_id'],
-            $validated['result'] ?? null,
+            PayloadEnvelopeResolver::resolveCommandPayload(
+                $validated['result'] ?? null,
+                'result',
+            ),
         );
 
         return WorkerProtocol::json([
