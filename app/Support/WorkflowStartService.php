@@ -85,6 +85,7 @@ final class WorkflowStartService
                 : null,
             'search_attributes' => $this->arrayValue($validated, 'search_attributes'),
             'memo' => $this->arrayValue($validated, 'memo'),
+            'labels' => $this->arrayValue($validated, 'visibility_labels') ?: null,
             'duplicate_start_policy' => $this->controlPlaneDuplicatePolicy($validated['duplicate_policy'] ?? null),
             'execution_timeout_seconds' => $this->intValue($validated, 'execution_timeout_seconds'),
             'run_timeout_seconds' => $this->intValue($validated, 'run_timeout_seconds'),

@@ -38,6 +38,7 @@ final class RemoteScheduleStarter implements ScheduleWorkflowStarter
             'run_timeout_seconds' => isset($action['run_timeout_seconds']) ? (int) $action['run_timeout_seconds'] : null,
             'memo' => is_array($schedule->memo) ? $schedule->memo : null,
             'search_attributes' => is_array($schedule->search_attributes) ? $schedule->search_attributes : null,
+            'visibility_labels' => is_array($schedule->visibility_labels) ? $schedule->visibility_labels : null,
             'duplicate_policy' => $duplicatePolicy,
         ], static fn (mixed $v): bool => $v !== null);
 

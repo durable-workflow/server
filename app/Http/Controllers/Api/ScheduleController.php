@@ -128,19 +128,8 @@ class ScheduleController
             searchAttributes: array_key_exists('search_attributes', $validated)
                 ? ($validated['search_attributes'] ?? [])
                 : null,
+            maxRuns: isset($validated['max_runs']) ? (int) $validated['max_runs'] : null,
         );
-
-        if (isset($validated['max_runs'])) {
-            $schedule->refresh();
-            $schedule->max_runs = $validated['max_runs'];
-
-            if ($schedule->remaining_actions === null
-                || $validated['max_runs'] > (int) $schedule->fires_count) {
-                $schedule->remaining_actions = $validated['max_runs'] - (int) $schedule->fires_count;
-            }
-
-            $schedule->save();
-        }
 
         return response()->json([
             'schedule_id' => $scheduleId,
