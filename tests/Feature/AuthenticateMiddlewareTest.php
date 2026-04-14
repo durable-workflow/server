@@ -60,7 +60,7 @@ class AuthenticateMiddlewareTest extends TestCase
 
         $this->getJson('/api/cluster/info')
             ->assertUnauthorized()
-            ->assertJson(['error' => 'unauthorized']);
+            ->assertJson(['reason' => 'unauthorized']);
     }
 
     public function test_token_driver_rejects_wrong_token(): void
@@ -70,7 +70,7 @@ class AuthenticateMiddlewareTest extends TestCase
         $this->withHeaders(['Authorization' => 'Bearer wrong-token'])
             ->getJson('/api/cluster/info')
             ->assertUnauthorized()
-            ->assertJson(['error' => 'unauthorized']);
+            ->assertJson(['reason' => 'unauthorized']);
     }
 
     public function test_token_driver_rejects_empty_authorization_header(): void
@@ -176,7 +176,7 @@ class AuthenticateMiddlewareTest extends TestCase
         $response->assertUnauthorized();
         $response->assertHeader('content-type', 'application/json');
         $response->assertJson([
-            'error' => 'unauthorized',
+            'reason' => 'unauthorized',
             'message' => 'Invalid or missing authentication token.',
         ]);
     }
@@ -190,7 +190,7 @@ class AuthenticateMiddlewareTest extends TestCase
         $response->assertUnauthorized();
         $response->assertHeader('content-type', 'application/json');
         $response->assertJson([
-            'error' => 'unauthorized',
+            'reason' => 'unauthorized',
             'message' => 'Missing request signature.',
         ]);
     }
@@ -213,6 +213,35 @@ class AuthenticateMiddlewareTest extends TestCase
 
         $this->getJson('/api/health')
             ->assertOk();
+    }
+
+    // ── Control-plane protocol enrichment on auth errors ─────────────
+
+    public function test_auth_error_on_workflow_endpoint_includes_control_plane_header_and_metadata(): void
+    {
+        config(['server.auth.driver' => 'token', 'server.auth.token' => 'secret']);
+
+        $this->withHeaders([
+            'X-Namespace' => 'default',
+            'X-Durable-Workflow-Control-Plane-Version' => '2',
+        ])->postJson('/api/workflows/wf-auth-test/signal/my-signal', [
+            'input' => ['test'],
+        ])->assertUnauthorized()
+            ->assertHeader('X-Durable-Workflow-Control-Plane-Version', '2')
+            ->assertJsonPath('reason', 'unauthorized')
+            ->assertJsonPath('control_plane.operation', 'signal')
+            ->assertJsonPath('control_plane.operation_name', 'my-signal')
+            ->assertJsonPath('control_plane.workflow_id', 'wf-auth-test');
+    }
+
+    public function test_auth_error_on_non_workflow_endpoint_includes_control_plane_header(): void
+    {
+        config(['server.auth.driver' => 'token', 'server.auth.token' => 'secret']);
+
+        $this->getJson('/api/cluster/info')
+            ->assertUnauthorized()
+            ->assertHeader('X-Durable-Workflow-Control-Plane-Version', '2')
+            ->assertJsonPath('reason', 'unauthorized');
     }
 
     // ── Auth applies across endpoint types ──────────────────────────
