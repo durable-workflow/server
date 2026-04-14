@@ -3231,6 +3231,268 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonValidationErrors(['commands.0.parent_close_policy']);
     }
 
+    // ── Workflow task failure reporting ──────────────────────────────
+
+    public function test_fail_workflow_task_succeeds_for_a_leased_task(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-fail-task-happy',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->registerWorker('php-worker-fail-happy', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-fail-happy',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $this->instance(
+            WorkflowTaskBridge::class,
+            \Mockery::mock(WorkflowTaskBridge::class, static function (MockInterface $mock) {
+                $mock->shouldReceive('fail')
+                    ->once()
+                    ->andReturn([
+                        'recorded' => true,
+                        'task_id' => 'ignored',
+                        'reason' => null,
+                    ]);
+            }),
+        );
+
+        $fail = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/fail", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'failure' => [
+                    'message' => 'Non-determinism detected: unexpected history event.',
+                    'type' => 'NonDeterminismError',
+                    'stack_trace' => 'at Replay::apply(Replay.php:42)',
+                ],
+            ]);
+
+        $fail->assertOk()
+            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1.0')
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('outcome', 'failed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('reason', null);
+    }
+
+    public function test_fail_workflow_task_rejects_wrong_lease_owner(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-fail-task-lease-mismatch',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->registerWorker('php-worker-fail-lease', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-fail-lease',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $fail = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/fail", [
+                'lease_owner' => 'wrong-owner-id',
+                'workflow_task_attempt' => $attempt,
+                'failure' => [
+                    'message' => 'Some failure.',
+                ],
+            ]);
+
+        $fail->assertStatus(409)
+            ->assertJsonPath('reason', 'lease_owner_mismatch');
+    }
+
+    public function test_fail_workflow_task_returns_404_for_nonexistent_task(): void
+    {
+        $this->createNamespace('default', 'Default namespace');
+        $this->registerWorker('php-worker-fail-404', 'external-workflows');
+
+        $fail = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/nonexistent-task-id/fail', [
+                'lease_owner' => 'some-owner',
+                'workflow_task_attempt' => 1,
+                'failure' => [
+                    'message' => 'Task failure.',
+                ],
+            ]);
+
+        $fail->assertStatus(404)
+            ->assertJsonPath('reason', 'task_not_found');
+    }
+
+    public function test_fail_workflow_task_validates_required_fields(): void
+    {
+        $this->createNamespace('default', 'Default namespace');
+        $this->registerWorker('php-worker-fail-validation', 'external-workflows');
+
+        $fail = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/some-task/fail', []);
+
+        $fail->assertStatus(422)
+            ->assertJsonValidationErrors(['lease_owner', 'workflow_task_attempt', 'failure']);
+    }
+
+    public function test_fail_workflow_task_validates_failure_message_is_required(): void
+    {
+        $this->createNamespace('default', 'Default namespace');
+        $this->registerWorker('php-worker-fail-msg-validation', 'external-workflows');
+
+        $fail = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/some-task/fail', [
+                'lease_owner' => 'owner',
+                'workflow_task_attempt' => 1,
+                'failure' => [
+                    'type' => 'SomeError',
+                ],
+            ]);
+
+        $fail->assertStatus(422)
+            ->assertJsonValidationErrors(['failure.message']);
+    }
+
+    public function test_fail_workflow_task_is_scoped_by_namespace(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+        $this->createNamespace('isolated', 'Isolated namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-fail-ns-scoped',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->registerWorker('php-worker-fail-ns', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-fail-ns',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $fail = $this->withHeaders($this->workerHeaders('isolated'))
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/fail", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'failure' => [
+                    'message' => 'Should not reach bridge.',
+                ],
+            ]);
+
+        $fail->assertStatus(404)
+            ->assertJsonPath('reason', 'task_not_found');
+    }
+
+    public function test_fail_workflow_task_records_bridge_failure_reason(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-fail-task-bridge-reason',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->registerWorker('php-worker-fail-reason', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-fail-reason',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $this->instance(
+            WorkflowTaskBridge::class,
+            \Mockery::mock(WorkflowTaskBridge::class, static function (MockInterface $mock) {
+                $mock->shouldReceive('fail')
+                    ->once()
+                    ->andReturn([
+                        'recorded' => false,
+                        'task_id' => 'ignored',
+                        'reason' => 'task_not_found',
+                    ]);
+            }),
+        );
+
+        $fail = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/fail", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'failure' => [
+                    'message' => 'Replay error.',
+                ],
+            ]);
+
+        $fail->assertStatus(404)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('outcome', 'failed')
+            ->assertJsonPath('recorded', false)
+            ->assertJsonPath('reason', 'task_not_found');
+    }
+
     public function test_cluster_info_advertises_parent_close_policy_and_non_retryable_capabilities(): void
     {
         $this->createNamespace('default', 'Default namespace');

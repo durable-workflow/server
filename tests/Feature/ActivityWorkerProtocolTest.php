@@ -475,6 +475,187 @@ class ActivityWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');
     }
 
+    // ── Activity task failure reporting ──────────────────────────────
+
+    public function test_fail_activity_task_succeeds_for_a_leased_task(): void
+    {
+        Queue::fake();
+
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-activity-fail-happy');
+        $start = $workflow->start('Ada');
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
+
+        $this->runReadyWorkflowTask($start->runId());
+
+        $this->registerWorker('php-worker-fail-activity', 'external-activities');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-worker-fail-activity',
+                'task_queue' => 'external-activities',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attemptId = (string) $poll->json('task.activity_attempt_id');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $this->instance(
+            ActivityTaskBridgeContract::class,
+            \Mockery::mock(ActivityTaskBridgeContract::class, static function (MockInterface $mock) {
+                $mock->shouldReceive('status')
+                    ->andReturnUsing(static fn (string $id) => [
+                        'reason' => null,
+                        'workflow_task_id' => WorkflowTask::query()
+                            ->where('task_type', 'activity')
+                            ->orderByDesc('id')
+                            ->value('id'),
+                        'lease_owner' => 'php-worker-fail-activity',
+                    ]);
+
+                $mock->shouldReceive('fail')
+                    ->once()
+                    ->andReturn([
+                        'recorded' => true,
+                        'task_id' => 'ignored',
+                        'reason' => null,
+                        'next_task_id' => null,
+                    ]);
+            }),
+        );
+
+        $fail = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/activity-tasks/{$taskId}/fail", [
+                'activity_attempt_id' => $attemptId,
+                'lease_owner' => $leaseOwner,
+                'failure' => [
+                    'message' => 'Connection timeout calling external service.',
+                    'type' => 'TimeoutException',
+                    'stack_trace' => 'at HttpClient::send(Client.php:120)',
+                    'non_retryable' => false,
+                ],
+            ]);
+
+        $fail->assertOk()
+            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1.0')
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('activity_attempt_id', $attemptId)
+            ->assertJsonPath('outcome', 'failed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('reason', null);
+    }
+
+    public function test_fail_activity_task_returns_404_for_nonexistent_task(): void
+    {
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $this->registerWorker('php-worker-fail-404', 'external-activities');
+
+        $fail = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/nonexistent-task-id/fail', [
+                'activity_attempt_id' => 'nonexistent-attempt',
+                'lease_owner' => 'php-worker-fail-404',
+                'failure' => [
+                    'message' => 'Should 404.',
+                ],
+            ]);
+
+        $fail->assertStatus(404)
+            ->assertJsonPath('reason', 'task_not_found');
+    }
+
+    public function test_fail_activity_task_validates_required_fields(): void
+    {
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $fail = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/some-task/fail', []);
+
+        $fail->assertStatus(422)
+            ->assertJsonValidationErrors(['activity_attempt_id', 'lease_owner', 'failure']);
+    }
+
+    public function test_fail_activity_task_validates_failure_message_is_required(): void
+    {
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $fail = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/some-task/fail', [
+                'activity_attempt_id' => 'attempt-1',
+                'lease_owner' => 'worker-1',
+                'failure' => [
+                    'type' => 'SomeError',
+                ],
+            ]);
+
+        $fail->assertStatus(422)
+            ->assertJsonValidationErrors(['failure.message']);
+    }
+
+    public function test_fail_activity_task_is_scoped_by_namespace(): void
+    {
+        Queue::fake();
+
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'isolated'],
+            ['description' => 'Isolated namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-activity-fail-ns');
+        $start = $workflow->start('Ada');
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
+
+        $this->runReadyWorkflowTask($start->runId());
+
+        $this->registerWorker('php-worker-fail-ns', 'external-activities');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-worker-fail-ns',
+                'task_queue' => 'external-activities',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attemptId = (string) $poll->json('task.activity_attempt_id');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $fail = $this->withHeaders($this->workerHeaders('isolated'))
+            ->postJson("/api/worker/activity-tasks/{$taskId}/fail", [
+                'activity_attempt_id' => $attemptId,
+                'lease_owner' => $leaseOwner,
+                'failure' => [
+                    'message' => 'Should not reach bridge.',
+                ],
+            ]);
+
+        $fail->assertStatus(404)
+            ->assertJsonPath('reason', 'task_not_found');
+    }
+
     private function registerWorker(
         string $workerId,
         string $taskQueue,
