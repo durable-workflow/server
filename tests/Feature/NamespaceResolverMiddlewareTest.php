@@ -42,17 +42,17 @@ class NamespaceResolverMiddlewareTest extends TestCase
         $this->assertEquals('sched-prod', $schedules[0]['schedule_id']);
     }
 
-    public function test_x_namespace_header_is_case_sensitive(): void
+    public function test_x_namespace_header_is_normalized_to_lowercase(): void
     {
         $this->createScheduleInNamespace('sched-default', 'default');
 
-        // 'Default' (capitalized) is not the same as 'default'
+        // 'Default' is normalized to 'default' by the middleware
         $response = $this->withHeaders(['X-Namespace' => 'Default'])
             ->getJson('/api/schedules');
 
         $response->assertOk();
-        // Should see no schedules because 'Default' != 'default'
-        $this->assertCount(0, $response->json('schedules'));
+        $this->assertCount(1, $response->json('schedules'));
+        $this->assertEquals('sched-default', $response->json('schedules.0.schedule_id'));
     }
 
     // ── Query parameter fallback ────────────────────────────────────

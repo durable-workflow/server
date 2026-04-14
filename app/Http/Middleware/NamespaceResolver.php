@@ -15,7 +15,7 @@ class NamespaceResolver
             $request->query('namespace', config('server.default_namespace'))
         );
 
-        $request->attributes->set('namespace', $namespace);
+        $request->attributes->set('namespace', strtolower((string) $namespace));
 
         return $next($request);
     }
