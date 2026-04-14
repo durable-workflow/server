@@ -3,7 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
-use App\Models\WorkflowSchedule;
+use Workflow\V2\Models\WorkflowSchedule;
 use App\Support\ScheduleOverlapEnforcer;
 use App\Support\WorkflowStartService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -38,7 +38,7 @@ class ScheduleEvaluateTest extends TestCase
             'namespace' => 'default',
             'spec' => ['cron_expressions' => ['* * * * *']],
             'action' => ['workflow_type' => 'TestWorkflow'],
-            'paused' => true,
+            'status' => 'paused',
             'next_fire_at' => now()->subMinute(),
         ]);
 
@@ -356,7 +356,7 @@ class ScheduleEvaluateTest extends TestCase
             'spec' => ['cron_expressions' => ['0 0 1 1 *']],
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'buffer_one',
-            'paused' => false,
+            'status' => 'active',
             'recent_actions' => [
                 ['workflow_id' => 'wf-drain-done', 'run_id' => 'run-drain-done', 'outcome' => 'started'],
             ],
@@ -384,7 +384,7 @@ class ScheduleEvaluateTest extends TestCase
             'spec' => ['cron_expressions' => ['0 0 1 1 *']],
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'buffer_one',
-            'paused' => false,
+            'status' => 'active',
             'recent_actions' => [
                 ['workflow_id' => 'wf-still-running', 'run_id' => 'run-still', 'outcome' => 'started'],
             ],
@@ -408,7 +408,7 @@ class ScheduleEvaluateTest extends TestCase
             'spec' => ['cron_expressions' => ['0 0 1 1 *']],
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'buffer_one',
-            'paused' => true,
+            'status' => 'paused',
             'recent_actions' => [
                 ['workflow_id' => 'wf-paused-drain', 'run_id' => 'run-pd', 'outcome' => 'started'],
             ],
@@ -436,7 +436,7 @@ class ScheduleEvaluateTest extends TestCase
             'spec' => ['cron_expressions' => ['0 0 1 1 *']],
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'buffer_one',
-            'paused' => false,
+            'status' => 'active',
             'recent_actions' => [
                 ['workflow_id' => 'wf-drain-fail', 'run_id' => 'run-df', 'outcome' => 'started'],
             ],
@@ -590,7 +590,7 @@ class ScheduleEvaluateTest extends TestCase
             'spec' => ['cron_expressions' => ['0 0 1 1 *']],
             'action' => ['workflow_type' => 'TestWorkflow'],
             'overlap_policy' => 'buffer_one',
-            'paused' => false,
+            'status' => 'active',
             'recent_actions' => [
                 ['workflow_id' => 'wf-drain-legacy', 'run_id' => 'run-dl', 'outcome' => 'started'],
             ],

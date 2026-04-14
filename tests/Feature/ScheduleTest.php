@@ -3,7 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
-use App\Models\WorkflowSchedule;
+use Workflow\V2\Models\WorkflowSchedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowInstance;
@@ -116,7 +116,7 @@ class ScheduleTest extends TestCase
             'schedule_id' => 'nightly-cleanup',
             'namespace' => 'default',
             'overlap_policy' => 'skip',
-            'paused' => false,
+            'status' => 'active',
             'note' => 'Nightly data cleanup',
         ]);
     }
@@ -147,7 +147,7 @@ class ScheduleTest extends TestCase
 
         $this->assertDatabaseHas('workflow_schedules', [
             'schedule_id' => 'paused-sched',
-            'paused' => true,
+            'status' => 'paused',
         ]);
     }
 
@@ -454,7 +454,7 @@ class ScheduleTest extends TestCase
             'namespace' => 'default',
             'spec' => ['cron_expressions' => ['0 * * * *']],
             'action' => ['workflow_type' => 'TestWorkflow'],
-            'paused' => false,
+            'status' => 'active',
         ]);
 
         $response = $this->withHeaders($this->headers())
@@ -467,7 +467,7 @@ class ScheduleTest extends TestCase
             ->assertJsonPath('outcome', 'paused');
 
         $schedule = WorkflowSchedule::where('schedule_id', 'pausable')->first();
-        $this->assertTrue($schedule->paused);
+        $this->assertTrue($schedule->isPaused());
         $this->assertEquals('Paused for maintenance', $schedule->note);
     }
 
@@ -478,7 +478,7 @@ class ScheduleTest extends TestCase
             'namespace' => 'default',
             'spec' => ['cron_expressions' => ['0 * * * *']],
             'action' => ['workflow_type' => 'TestWorkflow'],
-            'paused' => true,
+            'status' => 'paused',
             'note' => 'Was paused',
         ]);
 
@@ -492,7 +492,7 @@ class ScheduleTest extends TestCase
             ->assertJsonPath('outcome', 'resumed');
 
         $schedule = WorkflowSchedule::where('schedule_id', 'resumable')->first();
-        $this->assertFalse($schedule->paused);
+        $this->assertFalse($schedule->isPaused());
         $this->assertEquals('Back to normal', $schedule->note);
     }
 
@@ -520,7 +520,7 @@ class ScheduleTest extends TestCase
             'spec' => ['cron_expressions' => ['0 9 * * *'], 'timezone' => 'UTC'],
             'action' => ['workflow_type' => 'ShapeWorkflow'],
             'overlap_policy' => 'skip',
-            'paused' => false,
+            'status' => 'active',
         ]);
 
         $response = $this->withHeaders($this->headers())

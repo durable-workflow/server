@@ -38,18 +38,18 @@ Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per
 
     // ── Phase 1: Drain buffered actions for schedules whose previous workflow finished ──
 
-    $withBuffer = \App\Models\WorkflowSchedule::query()
-        ->where('paused', false)
+    $withBuffer = \Workflow\V2\Models\WorkflowSchedule::query()
+        ->where('status', 'active')
         ->whereNotNull('buffered_actions')
         ->get()
-        ->filter(fn (\App\Models\WorkflowSchedule $s): bool => $s->hasBufferedActions());
+        ->filter(fn (\Workflow\V2\Models\WorkflowSchedule $s): bool => $s->hasBufferedActions());
 
     foreach ($withBuffer as $schedule) {
         if ($overlapEnforcer->lastFiredWorkflowIsRunning($schedule)) {
             continue;
         }
 
-        $action = $schedule->action;
+        $action = \Workflow\V2\Models\WorkflowSchedule::normalizeActionTimeouts($schedule->action ?? []);
         $drainedAction = $schedule->drainBuffer();
 
         if ($drainedAction === null) {
@@ -91,8 +91,8 @@ Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per
 
     // ── Phase 2: Evaluate due schedules ────────────────────────────────
 
-    $due = \App\Models\WorkflowSchedule::query()
-        ->where('paused', false)
+    $due = \Workflow\V2\Models\WorkflowSchedule::query()
+        ->where('status', 'active')
         ->whereNotNull('next_fire_at')
         ->where('next_fire_at', '<=', now())
         ->orderBy('next_fire_at')
@@ -110,7 +110,7 @@ Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per
     }
 
     foreach ($due as $schedule) {
-        $action = $schedule->action;
+        $action = \Workflow\V2\Models\WorkflowSchedule::normalizeActionTimeouts($schedule->action ?? []);
         $overlapPolicy = $schedule->overlap_policy ?? 'skip';
 
         // Buffer policies: check if the previous workflow is still running

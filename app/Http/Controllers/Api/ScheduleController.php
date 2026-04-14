@@ -2,12 +2,13 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Models\WorkflowSchedule;
 use App\Support\ScheduleOverlapEnforcer;
 use App\Support\WorkflowStartService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use Workflow\V2\Enums\ScheduleStatus;
+use Workflow\V2\Models\WorkflowSchedule;
 
 class ScheduleController
 {
@@ -95,13 +96,16 @@ class ScheduleController
             ], 409);
         }
 
+        $isPaused = $validated['paused'] ?? false;
+
         $schedule = WorkflowSchedule::create([
             'schedule_id' => $scheduleId,
             'namespace' => $namespace,
             'spec' => $validated['spec'],
             'action' => $validated['action'],
             'overlap_policy' => $validated['overlap_policy'] ?? 'skip',
-            'paused' => $validated['paused'] ?? false,
+            'status' => $isPaused ? ScheduleStatus::Paused : ScheduleStatus::Active,
+            'paused_at' => $isPaused ? now() : null,
             'note' => $validated['note'] ?? null,
             'memo' => $validated['memo'] ?? null,
             'search_attributes' => $validated['search_attributes'] ?? null,
@@ -235,7 +239,8 @@ class ScheduleController
             'note' => ['nullable', 'string', 'max:1000'],
         ]);
 
-        $schedule->paused = true;
+        $schedule->status = ScheduleStatus::Paused;
+        $schedule->paused_at = now();
 
         if (array_key_exists('note', $validated) && $validated['note'] !== null) {
             $schedule->note = $validated['note'];
@@ -261,7 +266,8 @@ class ScheduleController
             'note' => ['nullable', 'string', 'max:1000'],
         ]);
 
-        $schedule->paused = false;
+        $schedule->status = ScheduleStatus::Active;
+        $schedule->paused_at = null;
 
         if (array_key_exists('note', $validated) && $validated['note'] !== null) {
             $schedule->note = $validated['note'];
@@ -288,7 +294,7 @@ class ScheduleController
             'overlap_policy' => ['nullable', 'string', 'in:'.implode(',', WorkflowSchedule::OVERLAP_POLICIES)],
         ]);
 
-        $action = $schedule->action;
+        $action = WorkflowSchedule::normalizeActionTimeouts($schedule->action ?? []);
         $overlapPolicy = $validated['overlap_policy'] ?? $schedule->overlap_policy;
 
         // Buffer policies: check if the previous workflow is still running
@@ -394,7 +400,7 @@ class ScheduleController
             $cursor = $nextFire;
         }
 
-        $action = $schedule->action;
+        $action = WorkflowSchedule::normalizeActionTimeouts($schedule->action ?? []);
         $overlapPolicy = $validated['overlap_policy'] ?? $schedule->overlap_policy;
         $results = [];
 

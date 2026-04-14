@@ -2,7 +2,7 @@
 
 namespace App\Support;
 
-use App\Models\WorkflowSchedule;
+use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 
 final class ScheduleOverlapEnforcer

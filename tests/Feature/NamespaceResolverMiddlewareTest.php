@@ -3,7 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
-use App\Models\WorkflowSchedule;
+use Workflow\V2\Models\WorkflowSchedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 

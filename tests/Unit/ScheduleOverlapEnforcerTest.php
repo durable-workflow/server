@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Models\WorkflowSchedule;
+use Workflow\V2\Models\WorkflowSchedule;
 use App\Support\ScheduleOverlapEnforcer;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery\MockInterface;
