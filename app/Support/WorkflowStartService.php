@@ -72,7 +72,7 @@ class WorkflowStartService
         // empty-arg list so the run's `arguments` column stays non-null
         // (matching pre-#164 behavior that legacy tests assert against).
         $arguments = $envelope['blob'] ?? Serializer::serialize([]);
-        $payloadCodec = $envelope['codec'];
+        $payloadCodec = $envelope['codec'] ?? 'json';
 
         $result = $this->controlPlane->start($workflowType, $workflowId, array_filter([
             'arguments' => $arguments,
