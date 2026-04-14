@@ -106,7 +106,7 @@ services:
         WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-v2}
         WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
     command: >-
-      sh -c 'while true; do php artisan schedule:evaluate --limit=100; php artisan activity:timeout-enforce --limit=100; sleep 10; done'
+      sh -c 'while true; do php artisan schedule:evaluate --limit=100; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done'
     environment:
       APP_NAME: "Durable Workflow Server"
       APP_ENV: local

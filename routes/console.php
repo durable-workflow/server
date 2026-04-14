@@ -251,3 +251,113 @@ Artisan::command('activity:timeout-enforce {--limit=100 : Maximum expired execut
 
     return $failed > 0 ? 1 : 0;
 })->purpose('Enforce activity timeout deadlines on expired executions');
+
+Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per pass} {--namespace= : Prune only this namespace}', function (): int {
+    $limit = max(1, (int) $this->option('limit'));
+    $namespaceFilter = $this->option('namespace');
+
+    $namespaces = $namespaceFilter
+        ? \App\Models\WorkflowNamespace::query()->where('name', $namespaceFilter)->get()
+        : \App\Models\WorkflowNamespace::all();
+
+    if ($namespaces->isEmpty()) {
+        $this->components->info('No namespaces found.');
+
+        return 0;
+    }
+
+    $totalPruned = 0;
+    $totalSkipped = 0;
+    $totalFailed = 0;
+
+    foreach ($namespaces as $ns) {
+        $retentionDays = $ns->retention_days ?? (int) config('server.history.retention_days', 30);
+        $cutoff = now()->subDays($retentionDays);
+
+        $expiredRunIds = \App\Support\NamespaceWorkflowScope::runSummaryQuery($ns->name)
+            ->whereIn('workflow_run_summaries.status_bucket', ['completed', 'failed'])
+            ->whereNotNull('workflow_run_summaries.closed_at')
+            ->where('workflow_run_summaries.closed_at', '<', $cutoff)
+            ->orderBy('workflow_run_summaries.closed_at')
+            ->limit($limit)
+            ->pluck('workflow_run_summaries.id')
+            ->all();
+
+        if ($expiredRunIds === []) {
+            continue;
+        }
+
+        $this->components->info(sprintf(
+            'Namespace [%s]: %d expired run(s) past %d-day retention...',
+            $ns->name,
+            count($expiredRunIds),
+            $retentionDays,
+        ));
+
+        foreach ($expiredRunIds as $runId) {
+            try {
+                $summary = \Workflow\V2\Models\WorkflowRunSummary::query()
+                    ->where('id', $runId)
+                    ->where('namespace', $ns->name)
+                    ->first();
+
+                if (! $summary) {
+                    $totalSkipped++;
+
+                    continue;
+                }
+
+                $status = is_string($summary->status)
+                    ? \Workflow\V2\Enums\RunStatus::tryFrom($summary->status)
+                    : null;
+
+                if ($status === null || ! $status->isTerminal()) {
+                    $totalSkipped++;
+
+                    continue;
+                }
+
+                $historyDeleted = \Workflow\V2\Models\WorkflowHistoryEvent::query()
+                    ->where('workflow_run_id', $runId)
+                    ->delete();
+
+                $tasksDeleted = \Workflow\V2\Models\WorkflowTask::query()
+                    ->where('workflow_run_id', $runId)
+                    ->delete();
+
+                \Workflow\V2\Models\WorkflowRunSummary::query()
+                    ->where('id', $runId)
+                    ->delete();
+
+                $this->components->twoColumnDetail(
+                    $runId,
+                    sprintf('<fg=green>pruned</> (%d events, %d tasks)', $historyDeleted, $tasksDeleted),
+                );
+
+                $totalPruned++;
+            } catch (\Throwable $e) {
+                $this->components->twoColumnDetail(
+                    $runId,
+                    sprintf('<fg=red>error</>: %s', $e->getMessage()),
+                );
+
+                $totalFailed++;
+            }
+        }
+    }
+
+    if ($totalPruned === 0 && $totalSkipped === 0 && $totalFailed === 0) {
+        $this->components->info('No expired runs to prune.');
+
+        return 0;
+    }
+
+    $this->components->info(sprintf(
+        'Done: %d pruned, %d skipped, %d failed.',
+        $totalPruned,
+        $totalSkipped,
+        $totalFailed,
+    ));
+
+    return $totalFailed > 0 ? 1 : 0;
+})->purpose('Prune history and task data for closed runs past the retention window');

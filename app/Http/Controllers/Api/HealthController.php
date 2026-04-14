@@ -66,6 +66,7 @@ class HealthController
                 'activity_timeouts' => true,
                 'parent_close_policy' => true,
                 'non_retryable_failures' => true,
+                'history_retention' => true,
                 'response_compression' => (bool) config('server.compression.enabled', true)
                     ? ['gzip', 'deflate']
                     : [],

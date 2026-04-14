@@ -2,9 +2,15 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
+use App\Support\NamespaceWorkflowScope;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
@@ -124,5 +130,157 @@ class SystemController
             'failed' => $failed,
             'results' => $results,
         ], $hasFailures ? 207 : 200);
+    }
+
+    public function retentionStatus(Request $request): JsonResponse
+    {
+        $namespace = $request->attributes->get('namespace');
+        $limit = min(100, max(1, (int) ($request->query('limit') ?? 100)));
+
+        $ns = WorkflowNamespace::query()->where('name', $namespace)->first();
+        $retentionDays = $ns?->retention_days ?? (int) config('server.history.retention_days', 30);
+        $cutoff = now()->subDays($retentionDays);
+
+        $expiredRunIds = NamespaceWorkflowScope::runSummaryQuery($namespace)
+            ->whereIn('workflow_run_summaries.status_bucket', ['completed', 'failed'])
+            ->whereNotNull('workflow_run_summaries.closed_at')
+            ->where('workflow_run_summaries.closed_at', '<', $cutoff)
+            ->orderBy('workflow_run_summaries.closed_at')
+            ->limit($limit)
+            ->pluck('workflow_run_summaries.id')
+            ->all();
+
+        return ControlPlaneProtocol::json([
+            'namespace' => $namespace,
+            'retention_days' => $retentionDays,
+            'cutoff' => $cutoff->toIso8601String(),
+            'expired_run_count' => count($expiredRunIds),
+            'expired_run_ids' => $expiredRunIds,
+            'scan_limit' => $limit,
+            'scan_pressure' => count($expiredRunIds) >= $limit,
+        ]);
+    }
+
+    public function retentionEnforcePass(Request $request): JsonResponse
+    {
+        $namespace = $request->attributes->get('namespace');
+        $limit = min(100, max(1, (int) ($request->input('limit') ?? 100)));
+
+        $runIds = is_array($request->input('run_ids'))
+            ? array_values(array_filter(array_map(
+                static fn (mixed $v): string => is_scalar($v) ? trim((string) $v) : '',
+                $request->input('run_ids'),
+            )))
+            : [];
+
+        if ($runIds === []) {
+            $ns = WorkflowNamespace::query()->where('name', $namespace)->first();
+            $retentionDays = $ns?->retention_days ?? (int) config('server.history.retention_days', 30);
+            $cutoff = now()->subDays($retentionDays);
+
+            $runIds = NamespaceWorkflowScope::runSummaryQuery($namespace)
+                ->whereIn('workflow_run_summaries.status_bucket', ['completed', 'failed'])
+                ->whereNotNull('workflow_run_summaries.closed_at')
+                ->where('workflow_run_summaries.closed_at', '<', $cutoff)
+                ->orderBy('workflow_run_summaries.closed_at')
+                ->limit($limit)
+                ->pluck('workflow_run_summaries.id')
+                ->all();
+        }
+
+        if ($runIds === []) {
+            return ControlPlaneProtocol::json([
+                'processed' => 0,
+                'pruned' => 0,
+                'skipped' => 0,
+                'failed' => 0,
+                'results' => [],
+            ]);
+        }
+
+        $results = [];
+        $pruned = 0;
+        $skipped = 0;
+        $failed = 0;
+
+        foreach ($runIds as $runId) {
+            try {
+                $result = $this->pruneRun($namespace, $runId);
+
+                if ($result['pruned']) {
+                    $pruned++;
+                    $results[] = [
+                        'run_id' => $runId,
+                        'outcome' => 'pruned',
+                        'history_events_deleted' => $result['history_events_deleted'],
+                        'tasks_deleted' => $result['tasks_deleted'],
+                    ];
+                } else {
+                    $skipped++;
+                    $results[] = [
+                        'run_id' => $runId,
+                        'outcome' => 'skipped',
+                        'reason' => $result['reason'],
+                    ];
+                }
+            } catch (\Throwable $e) {
+                $failed++;
+                $results[] = [
+                    'run_id' => $runId,
+                    'outcome' => 'error',
+                    'reason' => $e->getMessage(),
+                ];
+            }
+        }
+
+        $hasFailures = $failed > 0;
+
+        return ControlPlaneProtocol::json([
+            'processed' => count($runIds),
+            'pruned' => $pruned,
+            'skipped' => $skipped,
+            'failed' => $failed,
+            'results' => $results,
+        ], $hasFailures ? 207 : 200);
+    }
+
+    /**
+     * @return array{pruned: bool, reason: string|null, history_events_deleted: int, tasks_deleted: int}
+     */
+    private function pruneRun(string $namespace, string $runId): array
+    {
+        $summary = WorkflowRunSummary::query()
+            ->where('id', $runId)
+            ->where('namespace', $namespace)
+            ->first();
+
+        if (! $summary) {
+            return ['pruned' => false, 'reason' => 'run_not_found', 'history_events_deleted' => 0, 'tasks_deleted' => 0];
+        }
+
+        $status = is_string($summary->status) ? RunStatus::tryFrom($summary->status) : null;
+
+        if ($status === null || ! $status->isTerminal()) {
+            return ['pruned' => false, 'reason' => 'run_not_terminal', 'history_events_deleted' => 0, 'tasks_deleted' => 0];
+        }
+
+        $historyDeleted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
+
+        $tasksDeleted = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
+
+        WorkflowRunSummary::query()
+            ->where('id', $runId)
+            ->delete();
+
+        return [
+            'pruned' => true,
+            'reason' => null,
+            'history_events_deleted' => $historyDeleted,
+            'tasks_deleted' => $tasksDeleted,
+        ];
     }
 }
