@@ -23,9 +23,10 @@ class ScheduleController
 
         $schedules = WorkflowSchedule::query()
             ->where('namespace', $namespace)
+            ->whereNot('status', ScheduleStatus::Deleted)
             ->orderBy('created_at', 'desc')
             ->get()
-            ->map(fn (WorkflowSchedule $s) => $s->toListItem())
+            ->map(fn (WorkflowSchedule $s) => $this->formatListItem($s))
             ->all();
 
         return response()->json([
@@ -56,6 +57,8 @@ class ScheduleController
             'action.workflow_execution_timeout' => ['nullable', 'integer', 'min:1'],
             'action.workflow_run_timeout' => ['nullable', 'integer', 'min:1'],
             'overlap_policy' => ['nullable', 'string', 'in:'.implode(',', WorkflowSchedule::OVERLAP_POLICIES)],
+            'jitter_seconds' => ['nullable', 'integer', 'min:0', 'max:3600'],
+            'max_runs' => ['nullable', 'integer', 'min:1'],
             'memo' => ['nullable', 'array'],
             'search_attributes' => ['nullable', 'array'],
             'paused' => ['nullable', 'boolean'],
@@ -82,6 +85,7 @@ class ScheduleController
         $existing = WorkflowSchedule::query()
             ->where('namespace', $namespace)
             ->where('schedule_id', $scheduleId)
+            ->whereNot('status', ScheduleStatus::Deleted)
             ->first();
 
         if ($existing) {
@@ -97,6 +101,7 @@ class ScheduleController
         }
 
         $isPaused = $validated['paused'] ?? false;
+        $maxRuns = $validated['max_runs'] ?? null;
 
         $schedule = WorkflowSchedule::create([
             'schedule_id' => $scheduleId,
@@ -106,12 +111,17 @@ class ScheduleController
             'overlap_policy' => $validated['overlap_policy'] ?? 'skip',
             'status' => $isPaused ? ScheduleStatus::Paused : ScheduleStatus::Active,
             'paused_at' => $isPaused ? now() : null,
+            'jitter_seconds' => $validated['jitter_seconds'] ?? 0,
+            'max_runs' => $maxRuns,
+            'remaining_actions' => $maxRuns,
+            'fires_count' => 0,
+            'failures_count' => 0,
             'note' => $validated['note'] ?? null,
             'memo' => $validated['memo'] ?? null,
             'search_attributes' => $validated['search_attributes'] ?? null,
         ]);
 
-        $schedule->next_fire_at = $schedule->computeNextFireAt();
+        $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
         $schedule->save();
 
         return response()->json([
@@ -128,7 +138,7 @@ class ScheduleController
             return $schedule;
         }
 
-        return response()->json($schedule->toDetail());
+        return response()->json($this->formatDetail($schedule));
     }
 
     public function update(Request $request, string $scheduleId): JsonResponse
@@ -156,6 +166,8 @@ class ScheduleController
             'action.workflow_execution_timeout' => ['nullable', 'integer', 'min:1'],
             'action.workflow_run_timeout' => ['nullable', 'integer', 'min:1'],
             'overlap_policy' => ['nullable', 'string', 'in:'.implode(',', WorkflowSchedule::OVERLAP_POLICIES)],
+            'jitter_seconds' => ['nullable', 'integer', 'min:0', 'max:3600'],
+            'max_runs' => ['nullable', 'integer', 'min:1'],
             'memo' => ['nullable', 'array'],
             'search_attributes' => ['nullable', 'array'],
             'note' => ['nullable', 'string', 'max:1000'],
@@ -198,11 +210,22 @@ class ScheduleController
             $schedule->overlap_policy = $validated['overlap_policy'];
         }
 
+        if (isset($validated['jitter_seconds'])) {
+            $schedule->jitter_seconds = $validated['jitter_seconds'];
+        }
+
+        if (isset($validated['max_runs'])) {
+            $schedule->max_runs = $validated['max_runs'];
+            if ($schedule->remaining_actions === null || $validated['max_runs'] > (int) $schedule->fires_count) {
+                $schedule->remaining_actions = $validated['max_runs'] - (int) $schedule->fires_count;
+            }
+        }
+
         if (array_key_exists('note', $validated)) {
             $schedule->note = $validated['note'];
         }
 
-        $schedule->next_fire_at = $schedule->computeNextFireAt();
+        $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
         $schedule->save();
 
         return response()->json([
@@ -219,7 +242,11 @@ class ScheduleController
             return $schedule;
         }
 
-        $schedule->delete();
+        $schedule->forceFill([
+            'status' => ScheduleStatus::Deleted,
+            'deleted_at' => now(),
+            'next_fire_at' => null,
+        ])->save();
 
         return response()->json([
             'schedule_id' => $scheduleId,
@@ -273,7 +300,7 @@ class ScheduleController
             $schedule->note = $validated['note'];
         }
 
-        $schedule->next_fire_at = $schedule->computeNextFireAt();
+        $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
         $schedule->save();
 
         return response()->json([
@@ -294,13 +321,22 @@ class ScheduleController
             'overlap_policy' => ['nullable', 'string', 'in:'.implode(',', WorkflowSchedule::OVERLAP_POLICIES)],
         ]);
 
+        if ($schedule->remaining_actions !== null && $schedule->remaining_actions <= 0) {
+            return response()->json([
+                'schedule_id' => $scheduleId,
+                'outcome' => 'skipped',
+                'reason' => 'remaining_actions_exhausted',
+            ]);
+        }
+
         $action = WorkflowSchedule::normalizeActionTimeouts($schedule->action ?? []);
         $overlapPolicy = $validated['overlap_policy'] ?? $schedule->overlap_policy;
 
-        // Buffer policies: check if the previous workflow is still running
         if ($this->overlapEnforcer->isBufferPolicy($overlapPolicy)) {
             if ($this->overlapEnforcer->lastFiredWorkflowIsRunning($schedule)) {
                 if ($schedule->isAtBufferCapacity($overlapPolicy)) {
+                    $this->recordSkip($schedule, 'buffer_full');
+
                     return response()->json([
                         'schedule_id' => $scheduleId,
                         'outcome' => 'buffer_full',
@@ -320,8 +356,6 @@ class ScheduleController
                     'buffer_depth' => count($schedule->buffered_actions ?? []),
                 ]);
             }
-
-            // Previous workflow is not running — fire normally (fall through)
         }
 
         try {
@@ -339,7 +373,21 @@ class ScheduleController
             ], static fn (mixed $value): bool => $value !== null), $schedule->namespace);
 
             $schedule->recordFire($result['workflow_id'], $result['run_id'], $result['outcome'] ?? 'started');
+            $schedule->latest_workflow_instance_id = $result['workflow_id'];
+
+            if ($schedule->remaining_actions !== null) {
+                $schedule->remaining_actions = max(0, (int) $schedule->remaining_actions - 1);
+            }
+
             $schedule->save();
+
+            if ($schedule->remaining_actions !== null && $schedule->remaining_actions <= 0) {
+                $schedule->forceFill([
+                    'status' => ScheduleStatus::Deleted,
+                    'deleted_at' => now(),
+                    'next_fire_at' => null,
+                ])->save();
+            }
 
             return response()->json([
                 'schedule_id' => $scheduleId,
@@ -453,6 +501,7 @@ class ScheduleController
         $schedule = WorkflowSchedule::query()
             ->where('namespace', $namespace)
             ->where('schedule_id', $scheduleId)
+            ->whereNot('status', ScheduleStatus::Deleted)
             ->first();
 
         if (! $schedule) {
@@ -467,5 +516,46 @@ class ScheduleController
         }
 
         return $schedule;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function formatListItem(WorkflowSchedule $schedule): array
+    {
+        return array_merge($schedule->toListItem(), array_filter([
+            'fires_count' => (int) $schedule->fires_count,
+            'jitter_seconds' => (int) $schedule->jitter_seconds > 0 ? (int) $schedule->jitter_seconds : null,
+            'max_runs' => $schedule->max_runs !== null ? (int) $schedule->max_runs : null,
+            'remaining_actions' => $schedule->remaining_actions !== null ? (int) $schedule->remaining_actions : null,
+        ], static fn (mixed $v): bool => $v !== null));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function formatDetail(WorkflowSchedule $schedule): array
+    {
+        $detail = $schedule->toDetail();
+
+        $detail['jitter_seconds'] = (int) $schedule->jitter_seconds;
+        $detail['max_runs'] = $schedule->max_runs !== null ? (int) $schedule->max_runs : null;
+        $detail['remaining_actions'] = $schedule->remaining_actions !== null ? (int) $schedule->remaining_actions : null;
+        $detail['latest_workflow_instance_id'] = $schedule->latest_workflow_instance_id;
+
+        $detail['info']['skipped_trigger_count'] = (int) ($schedule->skipped_trigger_count ?? 0);
+        $detail['info']['last_skip_reason'] = $schedule->last_skip_reason;
+        $detail['info']['last_skipped_at'] = $schedule->last_skipped_at?->toIso8601String();
+
+        return $detail;
+    }
+
+    private function recordSkip(WorkflowSchedule $schedule, string $reason): void
+    {
+        $schedule->forceFill([
+            'last_skip_reason' => $reason,
+            'last_skipped_at' => now(),
+            'skipped_trigger_count' => ($schedule->skipped_trigger_count ?? 0) + 1,
+        ])->save();
     }
 }

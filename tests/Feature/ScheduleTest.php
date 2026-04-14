@@ -411,9 +411,18 @@ class ScheduleTest extends TestCase
             ->assertJsonPath('schedule_id', 'deletable')
             ->assertJsonPath('outcome', 'deleted');
 
-        $this->assertDatabaseMissing('workflow_schedules', [
+        $this->assertDatabaseHas('workflow_schedules', [
             'schedule_id' => 'deletable',
+            'status' => 'deleted',
         ]);
+
+        $this->assertNotNull(
+            WorkflowSchedule::where('schedule_id', 'deletable')->value('deleted_at'),
+        );
+
+        $this->assertNull(
+            WorkflowSchedule::where('schedule_id', 'deletable')->value('next_fire_at'),
+        );
     }
 
     public function test_delete_returns_404_for_nonexistent_schedule(): void
@@ -796,6 +805,277 @@ class ScheduleTest extends TestCase
 
         // The 500 means we got past overlap policy and into the start attempt
         $this->assertNotEquals(422, $response->status());
+    }
+
+    // ── Jitter ───────────────────────────────────────────────────────
+
+    public function test_it_creates_a_schedule_with_jitter(): void
+    {
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'schedule_id' => 'jitter-sched',
+                'spec' => ['cron_expressions' => ['0 * * * *']],
+                'action' => ['workflow_type' => 'TestWorkflow'],
+                'jitter_seconds' => 120,
+            ]);
+
+        $response->assertCreated();
+
+        $schedule = WorkflowSchedule::where('schedule_id', 'jitter-sched')->first();
+        $this->assertEquals(120, $schedule->jitter_seconds);
+    }
+
+    public function test_it_rejects_jitter_out_of_range(): void
+    {
+        $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'spec' => ['cron_expressions' => ['0 * * * *']],
+                'action' => ['workflow_type' => 'TestWorkflow'],
+                'jitter_seconds' => 5000,
+            ])
+            ->assertUnprocessable();
+
+        $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'spec' => ['cron_expressions' => ['0 * * * *']],
+                'action' => ['workflow_type' => 'TestWorkflow'],
+                'jitter_seconds' => -1,
+            ])
+            ->assertUnprocessable();
+    }
+
+    public function test_it_updates_jitter(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'jitter-update',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'jitter_seconds' => 0,
+        ]);
+
+        $this->withHeaders($this->headers())
+            ->putJson('/api/schedules/jitter-update', [
+                'jitter_seconds' => 300,
+            ])
+            ->assertOk();
+
+        $schedule = WorkflowSchedule::where('schedule_id', 'jitter-update')->first();
+        $this->assertEquals(300, $schedule->jitter_seconds);
+    }
+
+    public function test_detail_includes_jitter(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'jitter-detail',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'jitter_seconds' => 60,
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->getJson('/api/schedules/jitter-detail');
+
+        $response->assertOk()
+            ->assertJsonPath('jitter_seconds', 60);
+    }
+
+    public function test_list_includes_jitter_when_nonzero(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'jitter-list',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'jitter_seconds' => 30,
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->getJson('/api/schedules');
+
+        $response->assertOk();
+        $this->assertEquals(30, $response->json('schedules.0.jitter_seconds'));
+    }
+
+    // ── Max runs / remaining actions ────────────────────────────────
+
+    public function test_it_creates_a_schedule_with_max_runs(): void
+    {
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'schedule_id' => 'max-runs-sched',
+                'spec' => ['cron_expressions' => ['0 * * * *']],
+                'action' => ['workflow_type' => 'TestWorkflow'],
+                'max_runs' => 5,
+            ]);
+
+        $response->assertCreated();
+
+        $schedule = WorkflowSchedule::where('schedule_id', 'max-runs-sched')->first();
+        $this->assertEquals(5, $schedule->max_runs);
+        $this->assertEquals(5, $schedule->remaining_actions);
+    }
+
+    public function test_it_rejects_max_runs_below_one(): void
+    {
+        $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'spec' => ['cron_expressions' => ['0 * * * *']],
+                'action' => ['workflow_type' => 'TestWorkflow'],
+                'max_runs' => 0,
+            ])
+            ->assertUnprocessable();
+    }
+
+    public function test_it_updates_max_runs_and_recomputes_remaining(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'max-runs-update',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'max_runs' => 10,
+            'remaining_actions' => 7,
+            'fires_count' => 3,
+        ]);
+
+        $this->withHeaders($this->headers())
+            ->putJson('/api/schedules/max-runs-update', [
+                'max_runs' => 20,
+            ])
+            ->assertOk();
+
+        $schedule = WorkflowSchedule::where('schedule_id', 'max-runs-update')->first();
+        $this->assertEquals(20, $schedule->max_runs);
+        $this->assertEquals(17, $schedule->remaining_actions);
+    }
+
+    public function test_detail_includes_max_runs_and_remaining(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'max-runs-detail',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'max_runs' => 10,
+            'remaining_actions' => 8,
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->getJson('/api/schedules/max-runs-detail');
+
+        $response->assertOk()
+            ->assertJsonPath('max_runs', 10)
+            ->assertJsonPath('remaining_actions', 8);
+    }
+
+    public function test_trigger_skips_when_remaining_actions_exhausted(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'exhausted',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'max_runs' => 3,
+            'remaining_actions' => 0,
+            'fires_count' => 3,
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules/exhausted/trigger');
+
+        $response->assertOk()
+            ->assertJsonPath('outcome', 'skipped')
+            ->assertJsonPath('reason', 'remaining_actions_exhausted');
+    }
+
+    // ── Soft delete visibility ──────────────────────────────────────
+
+    public function test_deleted_schedules_are_hidden_from_list(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'visible',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'status' => 'active',
+        ]);
+
+        WorkflowSchedule::create([
+            'schedule_id' => 'soft-deleted',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'status' => 'deleted',
+            'deleted_at' => now(),
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->getJson('/api/schedules');
+
+        $response->assertOk();
+        $this->assertCount(1, $response->json('schedules'));
+        $this->assertEquals('visible', $response->json('schedules.0.schedule_id'));
+    }
+
+    public function test_deleted_schedule_returns_404_on_show(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'gone',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'status' => 'deleted',
+            'deleted_at' => now(),
+        ]);
+
+        $this->withHeaders($this->headers())
+            ->getJson('/api/schedules/gone')
+            ->assertNotFound();
+    }
+
+    // ── Skip tracking ───────────────────────────────────────────────
+
+    public function test_detail_includes_skip_tracking_info(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'skip-info',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'skipped_trigger_count' => 3,
+            'last_skip_reason' => 'buffer_full',
+            'last_skipped_at' => now(),
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->getJson('/api/schedules/skip-info');
+
+        $response->assertOk()
+            ->assertJsonPath('info.skipped_trigger_count', 3)
+            ->assertJsonPath('info.last_skip_reason', 'buffer_full');
+
+        $this->assertNotNull($response->json('info.last_skipped_at'));
+    }
+
+    // ── latest_workflow_instance_id tracking ─────────────────────────
+
+    public function test_detail_includes_latest_workflow_instance_id(): void
+    {
+        WorkflowSchedule::create([
+            'schedule_id' => 'instance-track',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'latest_workflow_instance_id' => 'wf-abc-123',
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->getJson('/api/schedules/instance-track');
+
+        $response->assertOk()
+            ->assertJsonPath('latest_workflow_instance_id', 'wf-abc-123');
     }
 
     private function createNamespace(string $name): void

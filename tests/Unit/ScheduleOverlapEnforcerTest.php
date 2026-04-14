@@ -188,7 +188,7 @@ class ScheduleOverlapEnforcerTest extends TestCase
         $controlPlane = $this->mock(WorkflowControlPlane::class, function (MockInterface $mock): void {
             $mock->shouldReceive('describe')
                 ->once()
-                ->with('wf-running-1', ['run_id' => 'run-1'])
+                ->with('wf-running-1', [])
                 ->andReturn([
                     'found' => true,
                     'run' => ['status_bucket' => 'running'],
@@ -211,7 +211,7 @@ class ScheduleOverlapEnforcerTest extends TestCase
         $controlPlane = $this->mock(WorkflowControlPlane::class, function (MockInterface $mock): void {
             $mock->shouldReceive('describe')
                 ->once()
-                ->with('wf-done-1', ['run_id' => 'run-1'])
+                ->with('wf-done-1', [])
                 ->andReturn([
                     'found' => true,
                     'run' => ['status_bucket' => 'completed'],
@@ -247,7 +247,7 @@ class ScheduleOverlapEnforcerTest extends TestCase
         $controlPlane = $this->mock(WorkflowControlPlane::class, function (MockInterface $mock): void {
             $mock->shouldReceive('describe')
                 ->once()
-                ->with('wf-gone', ['run_id' => 'nonexistent-run'])
+                ->with('wf-gone', [])
                 ->andReturn([
                     'found' => false,
                 ]);

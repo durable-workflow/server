@@ -21,21 +21,18 @@ final class ScheduleOverlapEnforcer
 
     /**
      * Check whether the most recently fired workflow from this schedule is
-     * still in a running state.
+     * still in a running state. Prefers the dedicated latest_workflow_instance_id
+     * column, falling back to the recent_actions ring.
      */
     public function lastFiredWorkflowIsRunning(WorkflowSchedule $schedule): bool
     {
-        $recentActions = $schedule->recent_actions ?? [];
-        $lastAction = end($recentActions) ?: null;
-        $workflowId = $lastAction['workflow_id'] ?? null;
-        $runId = $lastAction['run_id'] ?? null;
+        $workflowId = $this->resolveLatestWorkflowId($schedule);
 
-        if (! is_string($workflowId) || $workflowId === '') {
+        if ($workflowId === null) {
             return false;
         }
 
-        $options = is_string($runId) && $runId !== '' ? ['run_id' => $runId] : [];
-        $description = $this->controlPlane->describe($workflowId, $options);
+        $description = $this->controlPlane->describe($workflowId, []);
 
         if (! ($description['found'] ?? false)) {
             return false;
@@ -48,7 +45,7 @@ final class ScheduleOverlapEnforcer
 
     /**
      * Enforce cancel_other / terminate_other by stopping the most recently
-     * started workflow from the schedule's recent actions.
+     * started workflow from the schedule.
      */
     public function enforce(WorkflowSchedule $schedule, string $overlapPolicy): void
     {
@@ -56,11 +53,9 @@ final class ScheduleOverlapEnforcer
             return;
         }
 
-        $recentActions = $schedule->recent_actions ?? [];
-        $lastAction = end($recentActions) ?: null;
-        $workflowId = $lastAction['workflow_id'] ?? null;
+        $workflowId = $this->resolveLatestWorkflowId($schedule);
 
-        if (! is_string($workflowId) || $workflowId === '') {
+        if ($workflowId === null) {
             return;
         }
 
@@ -69,6 +64,21 @@ final class ScheduleOverlapEnforcer
         $this->controlPlane->$command($workflowId, [
             'reason' => sprintf('Schedule overlap policy: %s', $overlapPolicy),
         ]);
+    }
+
+    private function resolveLatestWorkflowId(WorkflowSchedule $schedule): ?string
+    {
+        $instanceId = $schedule->latest_workflow_instance_id;
+
+        if (is_string($instanceId) && $instanceId !== '') {
+            return $instanceId;
+        }
+
+        $recentActions = $schedule->recent_actions ?? [];
+        $lastAction = end($recentActions) ?: null;
+        $workflowId = $lastAction['workflow_id'] ?? null;
+
+        return is_string($workflowId) && $workflowId !== '' ? $workflowId : null;
     }
 
     /**

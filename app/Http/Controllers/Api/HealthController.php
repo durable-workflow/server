@@ -59,6 +59,8 @@ class HealthController
                 'queries' => true,
                 'updates' => true,
                 'schedules' => true,
+                'schedule_jitter' => true,
+                'schedule_max_runs' => true,
                 'search_attributes' => true,
                 'history_export' => true,
                 'continue_as_new' => true,
