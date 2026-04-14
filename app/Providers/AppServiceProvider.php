@@ -6,9 +6,11 @@ use App\Observers\WorkflowHistoryEventObserver;
 use App\Observers\WorkflowLinkObserver;
 use App\Observers\WorkflowRunLineageEntryObserver;
 use App\Observers\WorkflowTaskObserver;
+use App\Support\RemoteScheduleStarter;
 use App\Support\ServiceModeBusDispatcher;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
 use Illuminate\Support\ServiceProvider;
+use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
@@ -16,6 +18,11 @@ use Workflow\V2\Models\WorkflowTask;
 
 class AppServiceProvider extends ServiceProvider
 {
+    public function register(): void
+    {
+        $this->app->singleton(ScheduleWorkflowStarter::class, RemoteScheduleStarter::class);
+    }
+
     public function boot(): void
     {
         if (config('server.mode') === 'service') {
