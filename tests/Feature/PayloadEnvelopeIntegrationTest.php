@@ -461,6 +461,91 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ->assertJsonPath('result.name', 'PlainUser');
     }
 
+    public function test_start_response_includes_payload_codec(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-codec-start',
+                'workflow_type' => 'tests.interactive-command-workflow',
+                'input' => ['hello'],
+            ]);
+
+        $start->assertCreated()
+            ->assertJsonPath('payload_codec', 'json');
+    }
+
+    public function test_describe_response_includes_payload_codec(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-codec-describe',
+                'workflow_type' => 'tests.interactive-command-workflow',
+                'input' => ['hello'],
+            ])
+            ->assertCreated();
+
+        $describe = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-codec-describe');
+
+        $describe->assertOk()
+            ->assertJsonPath('payload_codec', 'json');
+    }
+
+    public function test_show_run_response_includes_payload_codec(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-codec-run',
+                'workflow_type' => 'tests.interactive-command-workflow',
+                'input' => ['hello'],
+            ]);
+
+        $start->assertCreated();
+        $runId = $start->json('run_id');
+
+        $showRun = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/wf-codec-run/runs/{$runId}");
+
+        $showRun->assertOk()
+            ->assertJsonPath('payload_codec', 'json');
+    }
+
+    public function test_cluster_info_advertises_available_payload_codecs(): void
+    {
+        $this->createNamespace('default');
+
+        $info = $this->getJson('/api/cluster/info');
+
+        $info->assertOk()
+            ->assertJsonPath('capabilities.payload_codecs', ['json', 'workflow-serializer-y', 'workflow-serializer-base64']);
+    }
+
+    public function test_control_plane_request_contract_advertises_payload_codec_field(): void
+    {
+        $this->createNamespace('default');
+
+        $info = $this->getJson('/api/cluster/info');
+
+        $info->assertOk();
+
+        $startFields = $info->json('control_plane.request_contract.operations.start.fields');
+        $this->assertArrayHasKey('payload_codec', $startFields);
+        $this->assertSame('string', $startFields['payload_codec']['type']);
+        $this->assertContains('json', $startFields['payload_codec']['canonical_values']);
+    }
+
     private function configureWorkflowTypes(): void
     {
         config()->set('workflows.v2.types.workflows', [

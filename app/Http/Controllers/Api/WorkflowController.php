@@ -198,6 +198,7 @@ class WorkflowController
             'namespace' => $namespace,
             'status' => $run?->status?->value,
             'business_key' => $run?->business_key,
+            'payload_codec' => $run?->payload_codec,
             'outcome' => $start['outcome'],
         ], $this->startStatusCode($start['outcome']));
     }
@@ -710,6 +711,7 @@ class WorkflowController
             'run_count' => $description['run_count'] ?? null,
             'is_current_run' => $runDescription['is_current_run'] ?? null,
             'compatibility' => $runDescription['compatibility'] ?? $run->compatibility,
+            'payload_codec' => $run->payload_codec,
             'execution_timeout_seconds' => $description['execution_timeout_seconds'] ?? null,
             'run_timeout_seconds' => $runDescription['run_timeout_seconds'] ?? null,
             'execution_deadline_at' => $runDescription['execution_deadline_at'] ?? null,

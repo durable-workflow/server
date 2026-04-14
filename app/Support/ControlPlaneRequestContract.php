@@ -2,6 +2,8 @@
 
 namespace App\Support;
 
+use Workflow\Serializers\CodecRegistry;
+
 final class ControlPlaneRequestContract
 {
     public const SCHEMA = 'durable-workflow.v2.control-plane-request.contract';
@@ -49,6 +51,11 @@ final class ControlPlaneRequestContract
                         'run_timeout_seconds' => [
                             'type' => 'integer',
                             'min' => 1,
+                        ],
+                        'payload_codec' => [
+                            'type' => 'string',
+                            'canonical_values' => CodecRegistry::names(),
+                            'description' => 'Codec used for serializing workflow payloads. Inferred from input envelope when omitted.',
                         ],
                     ],
                     'unsupported_fields' => [

@@ -77,6 +77,7 @@ class WorkflowReadEndpointTest extends TestCase
                 'run_count',
                 'is_current_run',
                 'compatibility',
+                'payload_codec',
                 'execution_timeout_seconds',
                 'run_timeout_seconds',
                 'execution_deadline_at',
