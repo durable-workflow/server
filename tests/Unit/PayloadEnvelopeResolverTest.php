@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
-use App\Support\PayloadEnvelopeResolver;
+use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
 

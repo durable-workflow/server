@@ -6,7 +6,6 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneResponseContract;
 use App\Support\ControlPlaneResultMapper;
 use App\Support\NamespaceWorkflowScope;
-use App\Support\PayloadEnvelopeResolver;
 use App\Support\WorkflowCommandContextFactory;
 use App\Support\WorkflowStartService;
 use Illuminate\Http\JsonResponse;
@@ -18,6 +17,7 @@ use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\PayloadEnvelopeResolver;
 
 class WorkflowController
 {

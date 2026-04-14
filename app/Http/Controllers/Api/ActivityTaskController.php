@@ -5,12 +5,12 @@ namespace App\Http\Controllers\Api;
 use App\Models\WorkerRegistration;
 use App\Support\ActivityTaskPoller;
 use App\Support\NamespaceWorkflowScope;
-use App\Support\PayloadEnvelopeResolver;
 use App\Support\WorkerProtocol;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Support\PayloadEnvelopeResolver;
 
 class ActivityTaskController
 {
