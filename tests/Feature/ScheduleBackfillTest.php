@@ -383,6 +383,99 @@ class ScheduleBackfillTest extends TestCase
         $this->assertContains('failed', $outcomes);
     }
 
+    // ── Timeout threading ────────────────────────────────────────────
+
+    public function test_backfill_threads_canonical_timeout_fields(): void
+    {
+        $capturedOptions = [];
+
+        $this->mock(WorkflowControlPlane::class, function (MockInterface $mock) use (&$capturedOptions): void {
+            $mock->shouldReceive('start')
+                ->andReturnUsing(function (string $type, ?string $workflowId, array $options) use (&$capturedOptions): array {
+                    $capturedOptions[] = $options;
+
+                    return [
+                        'started' => true,
+                        'workflow_instance_id' => 'wf-bf-to-1',
+                        'workflow_run_id' => 'run-bf-to-1',
+                        'workflow_type' => $type,
+                        'outcome' => 'started_new',
+                        'task_id' => null,
+                        'reason' => null,
+                    ];
+                });
+        });
+
+        $this->createSchedule('backfill-timeout', [
+            'action' => [
+                'workflow_type' => 'TestWorkflow',
+                'execution_timeout_seconds' => 300,
+                'run_timeout_seconds' => 120,
+            ],
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules/backfill-timeout/backfill', [
+                'start_time' => '2026-04-10T00:00:00Z',
+                'end_time' => '2026-04-10T02:00:00Z',
+            ]);
+
+        $response->assertOk()
+            ->assertJsonPath('outcome', 'backfill_started');
+
+        $this->assertNotEmpty($capturedOptions);
+        $this->assertEquals(300, $capturedOptions[0]['execution_timeout_seconds']);
+        $this->assertEquals(120, $capturedOptions[0]['run_timeout_seconds']);
+    }
+
+    public function test_backfill_normalizes_legacy_timeout_fields(): void
+    {
+        $capturedOptions = [];
+
+        $this->mock(WorkflowControlPlane::class, function (MockInterface $mock) use (&$capturedOptions): void {
+            $mock->shouldReceive('start')
+                ->andReturnUsing(function (string $type, ?string $workflowId, array $options) use (&$capturedOptions): array {
+                    $capturedOptions[] = $options;
+
+                    return [
+                        'started' => true,
+                        'workflow_instance_id' => 'wf-bf-legacy-1',
+                        'workflow_run_id' => 'run-bf-legacy-1',
+                        'workflow_type' => $type,
+                        'outcome' => 'started_new',
+                        'task_id' => null,
+                        'reason' => null,
+                    ];
+                });
+        });
+
+        $schedule = $this->createSchedule('backfill-legacy-to');
+
+        // Write raw legacy JSON directly to simulate pre-existing row
+        \Illuminate\Support\Facades\DB::table('workflow_schedules')
+            ->where('id', $schedule->id)
+            ->update(['action' => json_encode([
+                'workflow_type' => 'TestWorkflow',
+                'workflow_execution_timeout' => 300,
+                'workflow_run_timeout' => 120,
+            ])]);
+
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules/backfill-legacy-to/backfill', [
+                'start_time' => '2026-04-10T00:00:00Z',
+                'end_time' => '2026-04-10T02:00:00Z',
+            ]);
+
+        $response->assertOk()
+            ->assertJsonPath('outcome', 'backfill_started');
+
+        $this->assertNotEmpty($capturedOptions);
+        $this->assertEquals(300, $capturedOptions[0]['execution_timeout_seconds']);
+        $this->assertEquals(120, $capturedOptions[0]['run_timeout_seconds']);
+        $this->assertArrayNotHasKey('workflow_execution_timeout', $capturedOptions[0]);
+        $this->assertArrayNotHasKey('workflow_run_timeout', $capturedOptions[0]);
+    }
+
     // ── Auth ────────────────────────────────────────────────────────
 
     public function test_backfill_requires_authentication(): void

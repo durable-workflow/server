@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 
 class WorkflowSchedule extends Model
@@ -30,7 +31,6 @@ class WorkflowSchedule extends Model
     {
         return [
             'spec' => 'array',
-            'action' => 'array',
             'memo' => 'array',
             'search_attributes' => 'array',
             'recent_actions' => 'array',
@@ -39,6 +39,37 @@ class WorkflowSchedule extends Model
             'last_fired_at' => 'datetime',
             'next_fire_at' => 'datetime',
         ];
+    }
+
+    protected function action(): Attribute
+    {
+        return Attribute::make(
+            get: function (mixed $value) {
+                $decoded = is_string($value) ? (json_decode($value, true) ?? []) : ($value ?? []);
+
+                return self::normalizeActionTimeouts($decoded);
+            },
+            set: fn (mixed $value) => is_string($value) ? $value : json_encode($value),
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $action
+     * @return array<string, mixed>
+     */
+    public static function normalizeActionTimeouts(array $action): array
+    {
+        if (! isset($action['execution_timeout_seconds']) && isset($action['workflow_execution_timeout'])) {
+            $action['execution_timeout_seconds'] = (int) $action['workflow_execution_timeout'];
+        }
+
+        if (! isset($action['run_timeout_seconds']) && isset($action['workflow_run_timeout'])) {
+            $action['run_timeout_seconds'] = (int) $action['workflow_run_timeout'];
+        }
+
+        unset($action['workflow_execution_timeout'], $action['workflow_run_timeout']);
+
+        return $action;
     }
 
     public const OVERLAP_POLICIES = [

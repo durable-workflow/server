@@ -521,6 +521,102 @@ class ScheduleEvaluateTest extends TestCase
         $this->assertEquals('production', $capturedNamespace);
     }
 
+    // ── Legacy timeout normalization ───────────────────────────────
+
+    public function test_it_normalizes_legacy_timeout_fields_when_firing(): void
+    {
+        $capturedParams = null;
+        $this->fakeStartService(callback: function (array $params) use (&$capturedParams): array {
+            $capturedParams = $params;
+
+            return [
+                'workflow_id' => 'wf-legacy-timeout',
+                'run_id' => 'run-legacy-timeout',
+                'workflow_type' => 'TestWorkflow',
+                'outcome' => 'started_new',
+                'reason' => null,
+            ];
+        });
+
+        // Simulate a pre-existing schedule row with legacy field names
+        $schedule = WorkflowSchedule::create([
+            'schedule_id' => 'legacy-timeout-sched',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['* * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow', 'workflow_execution_timeout' => 300, 'workflow_run_timeout' => 120],
+            'next_fire_at' => now()->subMinute(),
+        ]);
+
+        // Bypass the model accessor to write raw legacy JSON
+        \Illuminate\Support\Facades\DB::table('workflow_schedules')
+            ->where('id', $schedule->id)
+            ->update(['action' => json_encode([
+                'workflow_type' => 'TestWorkflow',
+                'workflow_execution_timeout' => 300,
+                'workflow_run_timeout' => 120,
+            ])]);
+
+        $this->artisan('schedule:evaluate')
+            ->assertExitCode(0)
+            ->expectsOutputToContain('fired');
+
+        $this->assertNotNull($capturedParams);
+        $this->assertEquals(300, $capturedParams['execution_timeout_seconds']);
+        $this->assertEquals(120, $capturedParams['run_timeout_seconds']);
+        $this->assertArrayNotHasKey('workflow_execution_timeout', $capturedParams);
+        $this->assertArrayNotHasKey('workflow_run_timeout', $capturedParams);
+    }
+
+    public function test_it_normalizes_legacy_timeout_fields_when_draining_buffer(): void
+    {
+        $this->mockControlPlaneDescribe('wf-drain-legacy', 'completed');
+
+        $capturedParams = null;
+        $this->fakeStartService(callback: function (array $params) use (&$capturedParams): array {
+            $capturedParams = $params;
+
+            return [
+                'workflow_id' => 'wf-drained-legacy',
+                'run_id' => 'run-drained-legacy',
+                'workflow_type' => 'TestWorkflow',
+                'outcome' => 'drained',
+                'reason' => null,
+            ];
+        });
+
+        $schedule = WorkflowSchedule::create([
+            'schedule_id' => 'drain-legacy-timeout',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 0 1 1 *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'overlap_policy' => 'buffer_one',
+            'paused' => false,
+            'recent_actions' => [
+                ['workflow_id' => 'wf-drain-legacy', 'run_id' => 'run-dl', 'outcome' => 'started'],
+            ],
+            'buffered_actions' => [
+                ['buffered_at' => now()->subMinutes(10)->toIso8601String()],
+            ],
+        ]);
+
+        // Write raw legacy JSON directly
+        \Illuminate\Support\Facades\DB::table('workflow_schedules')
+            ->where('id', $schedule->id)
+            ->update(['action' => json_encode([
+                'workflow_type' => 'TestWorkflow',
+                'workflow_execution_timeout' => 600,
+                'workflow_run_timeout' => 180,
+            ])]);
+
+        $this->artisan('schedule:evaluate')
+            ->assertExitCode(0)
+            ->expectsOutputToContain('drained');
+
+        $this->assertNotNull($capturedParams);
+        $this->assertEquals(600, $capturedParams['execution_timeout_seconds']);
+        $this->assertEquals(180, $capturedParams['run_timeout_seconds']);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     private function createNamespace(string $name): void
