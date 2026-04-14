@@ -154,6 +154,7 @@ class ActivityTaskController
             'failure.type' => ['nullable', 'string'],
             'failure.stack_trace' => ['nullable', 'string'],
             'failure.non_retryable' => ['nullable', 'boolean'],
+            'failure.details' => ['nullable'],
         ]);
 
         if ($response = $this->guardAttemptOwnership(
@@ -167,7 +168,11 @@ class ActivityTaskController
 
         /** @var ActivityTaskBridgeContract $bridge */
         $bridge = app(ActivityTaskBridgeContract::class);
-        $outcome = $bridge->fail($validated['activity_attempt_id'], $validated['failure']);
+        $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
+            $validated['failure']['details'] ?? null,
+            'failure.details',
+        );
+        $outcome = $bridge->fail($validated['activity_attempt_id'], $validated['failure'], $resolved['codec']);
 
         return WorkerProtocol::json([
             'task_id' => $taskId,

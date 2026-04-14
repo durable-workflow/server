@@ -551,6 +551,82 @@ class ActivityWorkerProtocolTest extends TestCase
             ->assertJsonPath('reason', null);
     }
 
+    public function test_fail_activity_task_threads_codec_from_details_envelope(): void
+    {
+        Queue::fake();
+
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-activity-fail-codec');
+        $start = $workflow->start('Ada');
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
+
+        $this->runReadyWorkflowTask($start->runId());
+
+        $this->registerWorker('php-worker-fail-codec', 'external-activities');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-worker-fail-codec',
+                'task_queue' => 'external-activities',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attemptId = (string) $poll->json('task.activity_attempt_id');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $this->instance(
+            ActivityTaskBridgeContract::class,
+            \Mockery::mock(ActivityTaskBridgeContract::class, static function (MockInterface $mock) {
+                $mock->shouldReceive('status')
+                    ->andReturnUsing(static fn (string $id) => [
+                        'reason' => null,
+                        'workflow_task_id' => WorkflowTask::query()
+                            ->where('task_type', 'activity')
+                            ->orderByDesc('id')
+                            ->value('id'),
+                        'lease_owner' => 'php-worker-fail-codec',
+                    ]);
+
+                $mock->shouldReceive('fail')
+                    ->once()
+                    ->withArgs(function (string $attemptId, array $failure, ?string $codec) {
+                        return $codec === 'json';
+                    })
+                    ->andReturn([
+                        'recorded' => true,
+                        'task_id' => 'ignored',
+                        'reason' => null,
+                        'next_task_id' => null,
+                    ]);
+            }),
+        );
+
+        $fail = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/activity-tasks/{$taskId}/fail", [
+                'activity_attempt_id' => $attemptId,
+                'lease_owner' => $leaseOwner,
+                'failure' => [
+                    'message' => 'Connection timeout.',
+                    'type' => 'TimeoutException',
+                    'details' => [
+                        'codec' => 'json',
+                        'blob' => '{"retry_after":30}',
+                    ],
+                ],
+            ]);
+
+        $fail->assertOk()
+            ->assertJsonPath('outcome', 'failed')
+            ->assertJsonPath('recorded', true);
+    }
+
     public function test_fail_activity_task_returns_404_for_nonexistent_task(): void
     {
         WorkflowNamespace::query()->updateOrCreate(
