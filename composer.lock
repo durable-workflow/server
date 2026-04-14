@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "b264e36e1b5b12dafcc2d7ad6c399b23",
+    "content-hash": "c20b83eab4aed47943d28f2cca01a6b8",
     "packages": [
         {
             "name": "brick/math",
@@ -440,6 +440,109 @@
                 }
             ],
             "time": "2025-10-31T18:51:33+00:00"
+        },
+        {
+            "name": "durable-workflow/workflow",
+            "version": "dev-v2",
+            "dist": {
+                "type": "path",
+                "url": "../workflow",
+                "reference": "c8c0765a571e343b92edd290416480c5ae8132e1"
+            },
+            "require": {
+                "laravel/framework": "^9.0|^10.0|^11.0|^12.0|^13.0",
+                "php": "^8.1",
+                "react/promise": "^2.9|^3.0"
+            },
+            "replace": {
+                "laravel-workflow/laravel-workflow": "self.version"
+            },
+            "require-dev": {
+                "orchestra/testbench": "^8.0",
+                "phpstan/phpstan": "^2.0",
+                "symplify/easy-coding-standard": "^11.0"
+            },
+            "type": "library",
+            "extra": {
+                "laravel": {
+                    "providers": [
+                        "Workflow\\Providers\\WorkflowServiceProvider"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Workflow\\": "src/"
+                },
+                "files": [
+                    "src/functions.php",
+                    "src/V2/functions.php"
+                ]
+            },
+            "autoload-dev": {
+                "psr-4": {
+                    "Tests\\": "tests/",
+                    "Workbench\\App\\": "workbench/app/",
+                    "Workbench\\Database\\Factories\\": "workbench/database/factories/",
+                    "Workbench\\Database\\Seeders\\": "workbench/database/seeders/"
+                }
+            },
+            "scripts": {
+                "ecs": [
+                    "vendor/bin/ecs check --fix"
+                ],
+                "stan": [
+                    "vendor/bin/phpstan analyse src tests"
+                ],
+                "feature": [
+                    "Composer\\Config::disableProcessTimeout",
+                    "phpunit --testdox --testsuite feature"
+                ],
+                "unit": [
+                    "phpunit --testdox --testsuite unit"
+                ],
+                "test": [
+                    "phpunit --testdox"
+                ],
+                "coverage": [
+                    "XDEBUG_MODE=coverage phpunit --testdox --testsuite unit --coverage-clover coverage.xml"
+                ],
+                "post-autoload-dump": [
+                    "@clear",
+                    "@prepare"
+                ],
+                "clear": [
+                    "@php vendor/bin/testbench package:purge-skeleton --ansi"
+                ],
+                "prepare": [
+                    "@php vendor/bin/testbench package:discover --ansi"
+                ],
+                "build": [
+                    "@php vendor/bin/testbench workbench:build --ansi"
+                ],
+                "serve": [
+                    "Composer\\Config::disableProcessTimeout",
+                    "@build",
+                    "@php vendor/bin/testbench serve --ansi"
+                ],
+                "lint": [
+                    "@php vendor/bin/phpstan analyse --verbose --ansi"
+                ]
+            },
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Durable Workflow",
+                    "email": "support@durable-workflow.com"
+                }
+            ],
+            "description": "Durable workflow engine that allows users to write long running persistent distributed workflows (orchestrations) in PHP powered by Laravel queues.",
+            "transport-options": {
+                "symlink": false,
+                "relative": true
+            }
         },
         {
             "name": "egulias/email-validator",
@@ -1052,106 +1155,6 @@
                 }
             ],
             "time": "2025-08-22T14:27:06+00:00"
-        },
-        {
-            "name": "laravel-workflow/laravel-workflow",
-            "version": "2.x-dev",
-            "dist": {
-                "type": "path",
-                "url": "../workflow",
-                "reference": "4b312d8f3ca8782f9943056e6afcb162e8b86a43"
-            },
-            "require": {
-                "laravel/framework": "^9.0|^10.0|^11.0|^12.0|^13.0",
-                "php": "^8.1",
-                "react/promise": "^2.9|^3.0"
-            },
-            "require-dev": {
-                "orchestra/testbench": "^8.0",
-                "phpstan/phpstan": "^2.0",
-                "symplify/easy-coding-standard": "^11.0"
-            },
-            "type": "library",
-            "extra": {
-                "laravel": {
-                    "providers": [
-                        "Workflow\\Providers\\WorkflowServiceProvider"
-                    ]
-                }
-            },
-            "autoload": {
-                "psr-4": {
-                    "Workflow\\": "src/"
-                },
-                "files": [
-                    "src/functions.php",
-                    "src/V2/functions.php"
-                ]
-            },
-            "autoload-dev": {
-                "psr-4": {
-                    "Tests\\": "tests/",
-                    "Workbench\\App\\": "workbench/app/",
-                    "Workbench\\Database\\Factories\\": "workbench/database/factories/",
-                    "Workbench\\Database\\Seeders\\": "workbench/database/seeders/"
-                }
-            },
-            "scripts": {
-                "ecs": [
-                    "vendor/bin/ecs check --fix"
-                ],
-                "stan": [
-                    "vendor/bin/phpstan analyse src tests"
-                ],
-                "feature": [
-                    "Composer\\Config::disableProcessTimeout",
-                    "phpunit --testdox --testsuite feature"
-                ],
-                "unit": [
-                    "phpunit --testdox --testsuite unit"
-                ],
-                "test": [
-                    "phpunit --testdox"
-                ],
-                "coverage": [
-                    "XDEBUG_MODE=coverage phpunit --testdox --testsuite unit --coverage-clover coverage.xml"
-                ],
-                "post-autoload-dump": [
-                    "@clear",
-                    "@prepare"
-                ],
-                "clear": [
-                    "@php vendor/bin/testbench package:purge-skeleton --ansi"
-                ],
-                "prepare": [
-                    "@php vendor/bin/testbench package:discover --ansi"
-                ],
-                "build": [
-                    "@php vendor/bin/testbench workbench:build --ansi"
-                ],
-                "serve": [
-                    "Composer\\Config::disableProcessTimeout",
-                    "@build",
-                    "@php vendor/bin/testbench serve --ansi"
-                ],
-                "lint": [
-                    "@php vendor/bin/phpstan analyse --verbose --ansi"
-                ]
-            },
-            "license": [
-                "MIT"
-            ],
-            "authors": [
-                {
-                    "name": "Durable Workflow",
-                    "email": "support@durable-workflow.com"
-                }
-            ],
-            "description": "Durable workflow engine that allows users to write long running persistent distributed workflows (orchestrations) in PHP powered by Laravel queues.",
-            "transport-options": {
-                "symlink": false,
-                "relative": true
-            }
         },
         {
             "name": "laravel/framework",
@@ -8398,7 +8401,7 @@
     "aliases": [],
     "minimum-stability": "dev",
     "stability-flags": {
-        "laravel-workflow/laravel-workflow": 20
+        "durable-workflow/workflow": 20
     },
     "prefer-stable": true,
     "prefer-lowest": false,

@@ -6,7 +6,7 @@
     "require": {
         "php": "^8.2",
         "laravel/framework": "^13.0",
-        "durable-workflow/workflow": "2.x-dev",
+        "durable-workflow/workflow": "dev-v2",
         "laravel/tinker": "^3.0"
     },
     "require-dev": {
@@ -34,7 +34,10 @@
             "type": "path",
             "url": "../workflow",
             "options": {
-                "symlink": false
+                "symlink": false,
+                "versions": {
+                    "durable-workflow/workflow": "dev-v2"
+                }
             }
         }
     ],

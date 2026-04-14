@@ -3,11 +3,18 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Casts\Attribute;
+use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 
 class WorkflowSchedule extends Model
 {
+    use HasUlids;
+
+    public $incrementing = false;
+
     protected $table = 'workflow_schedules';
+
+    protected $keyType = 'string';
 
     protected $fillable = [
         'schedule_id',
@@ -39,6 +46,34 @@ class WorkflowSchedule extends Model
             'last_fired_at' => 'datetime',
             'next_fire_at' => 'datetime',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::saving(function (self $schedule): void {
+            $schedule->syncPackageColumns();
+        });
+    }
+
+    private function syncPackageColumns(): void
+    {
+        $action = is_string($this->attributes['action'] ?? null)
+            ? json_decode($this->attributes['action'], true) ?? []
+            : ($this->attributes['action'] ?? []);
+
+        $this->attributes['workflow_type'] = $action['workflow_type'] ?? $this->attributes['workflow_type'] ?? 'unknown';
+        $this->attributes['workflow_class'] = $this->attributes['workflow_class'] ?? $this->attributes['workflow_type'] ?? 'unknown';
+
+        $spec = is_string($this->attributes['spec'] ?? null)
+            ? json_decode($this->attributes['spec'], true) ?? []
+            : ($this->attributes['spec'] ?? []);
+
+        $cronExpressions = $spec['cron_expressions'] ?? [];
+        $this->attributes['cron_expression'] = $this->attributes['cron_expression']
+            ?? (! empty($cronExpressions) ? implode('; ', $cronExpressions) : '* * * * *');
+        $this->attributes['timezone'] = $spec['timezone'] ?? $this->attributes['timezone'] ?? 'UTC';
+
+        $this->attributes['status'] = $this->paused ? 'paused' : ($this->attributes['status'] ?? 'active');
     }
 
     protected function action(): Attribute
