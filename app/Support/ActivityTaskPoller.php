@@ -2,7 +2,6 @@
 
 namespace App\Support;
 
-use Illuminate\Support\Carbon;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -16,9 +15,6 @@ final class ActivityTaskPoller
         private readonly LongPollSignalStore $signals,
     ) {}
 
-    /**
-     * @return array<string, mixed>|null
-     */
     /**
      * @param  list<string>  $supportedActivityTypes
      */
@@ -63,9 +59,6 @@ final class ActivityTaskPoller
     }
 
     /**
-     * @return array{task: array<string, mixed>|null, next_probe_at: \DateTimeInterface|null}
-     */
-    /**
      * @param  list<string>  $supportedActivityTypes
      */
     private function nextTask(
@@ -89,9 +82,11 @@ final class ActivityTaskPoller
     }
 
     /**
-     * @return array<string, mixed>|null
-     */
-    /**
+     * Claim the first available activity task by delegating filtering to the
+     * bridge's poll query and claim validation to ActivityTaskClaimer (via
+     * bridge->claimStatus). The poller no longer reimplements availability,
+     * compatibility, or activity-type checks — those live in the package.
+     *
      * @param  list<string>  $supportedActivityTypes
      */
     private function claimReadyTask(
@@ -108,29 +103,10 @@ final class ActivityTaskPoller
             limit: $limit,
             compatibility: $buildId,
             namespace: $namespace,
+            activityTypes: $supportedActivityTypes,
         );
 
         foreach ($readyTasks as $readyTask) {
-            if ($this->availableAtIsFuture($readyTask['available_at'] ?? null)) {
-                continue;
-            }
-
-            $workflowId = is_string($readyTask['workflow_instance_id'] ?? null)
-                ? $readyTask['workflow_instance_id']
-                : null;
-
-            if ($workflowId === null || ! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
-                continue;
-            }
-
-            if (! $this->matchesCompatibility($buildId, $readyTask['compatibility'] ?? null)) {
-                continue;
-            }
-
-            if (! $this->matchesActivityType($supportedActivityTypes, $readyTask['activity_type'] ?? null)) {
-                continue;
-            }
-
             $taskId = is_string($readyTask['task_id'] ?? null)
                 ? $readyTask['task_id']
                 : null;
@@ -156,48 +132,6 @@ final class ActivityTaskPoller
             'workflows.v2.compatibility.current' => $buildId,
             'workflows.v2.compatibility.supported' => $buildId === null ? [] : [$buildId],
         ]);
-    }
-
-    private function availableAtIsFuture(mixed $availableAt): bool
-    {
-        if ($availableAt instanceof \DateTimeInterface) {
-            return $availableAt > now();
-        }
-
-        if (! is_string($availableAt) || trim($availableAt) === '') {
-            return false;
-        }
-
-        try {
-            return now()->lt(Carbon::parse($availableAt));
-        } catch (\Throwable) {
-            return false;
-        }
-    }
-
-    private function matchesCompatibility(?string $buildId, mixed $compatibility): bool
-    {
-        if (! is_string($compatibility) || trim($compatibility) === '') {
-            return true;
-        }
-
-        return $buildId !== null && $compatibility === $buildId;
-    }
-
-    /**
-     * @param  list<string>  $supportedTypes
-     */
-    private function matchesActivityType(array $supportedTypes, mixed $activityType): bool
-    {
-        if ($supportedTypes === []) {
-            return true;
-        }
-
-        if (! is_string($activityType) || trim($activityType) === '') {
-            return true;
-        }
-
-        return in_array($activityType, $supportedTypes, true);
     }
 
     private function nextVisibleReadyAt(string $namespace, string $taskQueue, ?string $buildId): ?\DateTimeInterface
