@@ -117,7 +117,7 @@ curl -X POST $SERVER/api/worker/register \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
-  -H "X-Durable-Workflow-Protocol-Version: 1" \
+  -H "X-Durable-Workflow-Protocol-Version: 1.0" \
   -d '{
     "worker_id": "worker-1",
     "task_queue": "order-workers",
@@ -135,7 +135,7 @@ curl -X POST $SERVER/api/worker/workflow-tasks/poll \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
-  -H "X-Durable-Workflow-Protocol-Version: 1" \
+  -H "X-Durable-Workflow-Protocol-Version: 1.0" \
   -d '{
     "worker_id": "worker-1",
     "task_queue": "order-workers"
@@ -172,7 +172,7 @@ curl -X POST $SERVER/api/worker/workflow-tasks/task-xyz/complete \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
-  -H "X-Durable-Workflow-Protocol-Version: 1" \
+  -H "X-Durable-Workflow-Protocol-Version: 1.0" \
   -d '{
     "lease_owner": "worker-1",
     "workflow_task_attempt": 1,
@@ -194,7 +194,7 @@ curl -X POST $SERVER/api/worker/workflow-tasks/task-xyz/complete \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
-  -H "X-Durable-Workflow-Protocol-Version: 1" \
+  -H "X-Durable-Workflow-Protocol-Version: 1.0" \
   -d '{
     "lease_owner": "worker-1",
     "workflow_task_attempt": 1,
@@ -217,7 +217,7 @@ curl -X POST $SERVER/api/worker/activity-tasks/poll \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
-  -H "X-Durable-Workflow-Protocol-Version: 1" \
+  -H "X-Durable-Workflow-Protocol-Version: 1.0" \
   -d '{"worker_id": "worker-1", "task_queue": "order-workers"}'
 
 # Complete (use task_id and activity_attempt_id from the poll response)
@@ -225,7 +225,7 @@ curl -X POST $SERVER/api/worker/activity-tasks/TASK_ID/complete \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
-  -H "X-Durable-Workflow-Protocol-Version: 1" \
+  -H "X-Durable-Workflow-Protocol-Version: 1.0" \
   -d '{
     "activity_attempt_id": "ATTEMPT_ID",
     "lease_owner": "worker-1",
@@ -338,7 +338,7 @@ unknown request-contract schema or version instead of silently guessing.
 - `POST /api/worker/activity-tasks/{id}/fail` — Fail activity task
 - `POST /api/worker/activity-tasks/{id}/heartbeat` — Activity heartbeat
 
-Worker-plane requests must send `X-Durable-Workflow-Protocol-Version: 1`, and
+Worker-plane requests must send `X-Durable-Workflow-Protocol-Version: 1.0`, and
 worker-plane responses always echo the same header plus `protocol_version: "1"`.
 Worker registration, poll, heartbeat, complete, and fail responses all include
 `server_capabilities.supported_workflow_task_commands` so SDK workers can
