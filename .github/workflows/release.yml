@@ -69,4 +69,4 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: false
           build-args: |
-            WORKFLOW_PACKAGE_COMMIT=ca81d859f104a9e85ca58ca9d864ffecc255381e
+            WORKFLOW_PACKAGE_REF=2.0.0
