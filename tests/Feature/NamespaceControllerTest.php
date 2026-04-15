@@ -77,6 +77,47 @@ class NamespaceControllerTest extends TestCase
             ->assertJsonPath('retention_days', config('server.history.retention_days'));
     }
 
+    public function test_it_normalizes_mixed_case_namespace_names_to_lowercase(): void
+    {
+        $response = $this->postJson('/api/namespaces', [
+            'name' => 'Production',
+            'description' => 'Mixed case input',
+        ]);
+
+        $response->assertCreated()
+            ->assertJsonPath('name', 'production');
+
+        $this->assertDatabaseHas('workflow_namespaces', [
+            'name' => 'production',
+        ]);
+
+        $stored = WorkflowNamespace::first();
+        $this->assertSame('production', $stored->name);
+    }
+
+    public function test_mixed_case_duplicate_is_rejected(): void
+    {
+        $this->postJson('/api/namespaces', ['name' => 'production']);
+
+        $response = $this->postJson('/api/namespaces', ['name' => 'Production']);
+
+        $response->assertStatus(409);
+    }
+
+    public function test_show_resolves_mixed_case_namespace_parameter(): void
+    {
+        WorkflowNamespace::create([
+            'name' => 'production',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        $response = $this->getJson('/api/namespaces/Production');
+
+        $response->assertOk()
+            ->assertJsonPath('name', 'production');
+    }
+
     public function test_it_rejects_namespace_creation_without_a_name(): void
     {
         $response = $this->postJson('/api/namespaces', [

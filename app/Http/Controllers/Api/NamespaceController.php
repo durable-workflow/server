@@ -32,6 +32,8 @@ class NamespaceController
             'retention_days' => ['nullable', 'integer', 'min:1', 'max:365'],
         ]);
 
+        $validated['name'] = strtolower($validated['name']);
+
         if (WorkflowNamespace::where('name', $validated['name'])->exists()) {
             return response()->json([
                 'error' => 'Namespace already exists.',
@@ -57,7 +59,7 @@ class NamespaceController
 
     public function show(string $namespace): JsonResponse
     {
-        $ns = WorkflowNamespace::where('name', $namespace)->firstOrFail();
+        $ns = WorkflowNamespace::where('name', strtolower($namespace))->firstOrFail();
 
         return response()->json([
             'name' => $ns->name,
@@ -71,7 +73,7 @@ class NamespaceController
 
     public function update(Request $request, string $namespace): JsonResponse
     {
-        $ns = WorkflowNamespace::where('name', $namespace)->firstOrFail();
+        $ns = WorkflowNamespace::where('name', strtolower($namespace))->firstOrFail();
 
         $validated = $request->validate([
             'description' => ['nullable', 'string', 'max:1000'],

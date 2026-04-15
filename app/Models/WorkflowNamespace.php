@@ -14,4 +14,9 @@ class WorkflowNamespace extends Model
         'retention_days',
         'status',
     ];
+
+    public function setNameAttribute(string $value): void
+    {
+        $this->attributes['name'] = strtolower($value);
+    }
 }
