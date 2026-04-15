@@ -403,8 +403,28 @@ final class WorkflowTaskPoller
             namespace: $namespace,
         );
 
+        \Log::info('[WorkflowTaskPoller] claimReadyTask called', [
+            'namespace' => $namespace,
+            'taskQueue' => $taskQueue,
+            'leaseOwner' => $leaseOwner,
+            'buildId' => $buildId,
+            'supportedWorkflowTypes' => $supportedWorkflowTypes,
+            'readyTasksCount' => count($readyTasks),
+        ]);
+
         foreach ($readyTasks as $readyTask) {
+            \Log::debug('[WorkflowTaskPoller] Checking task', [
+                'taskId' => $readyTask['task_id'] ?? null,
+                'workflowType' => $readyTask['workflow_type'] ?? null,
+                'compatibility' => $readyTask['compatibility'] ?? null,
+                'availableAt' => $readyTask['available_at'] ?? null,
+            ]);
+
             if ($this->availableAtIsFuture($readyTask['available_at'] ?? null)) {
+                \Log::debug('[WorkflowTaskPoller] Skipping task: available_at is in the future', [
+                    'taskId' => $readyTask['task_id'] ?? null,
+                    'availableAt' => $readyTask['available_at'] ?? null,
+                ]);
                 continue;
             }
 
@@ -413,14 +433,29 @@ final class WorkflowTaskPoller
                 : null;
 
             if ($workflowId === null || ! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
+                \Log::debug('[WorkflowTaskPoller] Skipping task: workflow not bound to namespace', [
+                    'taskId' => $readyTask['task_id'] ?? null,
+                    'workflowId' => $workflowId,
+                    'namespace' => $namespace,
+                ]);
                 continue;
             }
 
             if (! $this->matchesCompatibility($buildId, $readyTask['compatibility'] ?? null)) {
+                \Log::debug('[WorkflowTaskPoller] Skipping task: build_id mismatch', [
+                    'taskId' => $readyTask['task_id'] ?? null,
+                    'workerBuildId' => $buildId,
+                    'taskCompatibility' => $readyTask['compatibility'] ?? null,
+                ]);
                 continue;
             }
 
             if (! $this->matchesWorkflowType($supportedWorkflowTypes, $readyTask['workflow_type'] ?? null)) {
+                \Log::debug('[WorkflowTaskPoller] Skipping task: workflow type not supported', [
+                    'taskId' => $readyTask['task_id'] ?? null,
+                    'taskWorkflowType' => $readyTask['workflow_type'] ?? null,
+                    'supportedWorkflowTypes' => $supportedWorkflowTypes,
+                ]);
                 continue;
             }
 
@@ -429,14 +464,30 @@ final class WorkflowTaskPoller
                 : null;
 
             if ($taskId === null) {
+                \Log::debug('[WorkflowTaskPoller] Skipping task: task_id is null');
                 continue;
             }
+
+            \Log::debug('[WorkflowTaskPoller] Task passed all checks, attempting to claim', [
+                'taskId' => $taskId,
+                'leaseOwner' => $leaseOwner,
+            ]);
 
             $claim = $this->bridge->claimStatus($taskId, $leaseOwner);
 
             if (($claim['claimed'] ?? false) !== true) {
+                \Log::debug('[WorkflowTaskPoller] Skipping task: claim failed', [
+                    'taskId' => $taskId,
+                    'claimResult' => $claim,
+                ]);
                 continue;
             }
+
+            \Log::info('[WorkflowTaskPoller] Task claimed successfully', [
+                'taskId' => $taskId,
+                'leaseOwner' => $leaseOwner,
+                'workflowType' => $readyTask['workflow_type'] ?? null,
+            ]);
 
             // Source the fencing token from the package's authoritative attempt
             // counter. The package increments WorkflowTask.attempt_count
@@ -446,12 +497,22 @@ final class WorkflowTaskPoller
             $history = $this->fetchHistory($taskId, $historyPageSize, $acceptHistoryEncoding);
 
             if (! is_array($history)) {
+                \Log::warning('[WorkflowTaskPoller] Task claimed but history fetch failed', [
+                    'taskId' => $taskId,
+                ]);
                 continue;
             }
+
+            \Log::info('[WorkflowTaskPoller] Returning task to worker', [
+                'taskId' => $taskId,
+                'workflowType' => $readyTask['workflow_type'] ?? null,
+                'historyEventsCount' => count($history['history_events'] ?? []),
+            ]);
 
             return $this->taskPayload($claim, $attempt, $history, $workflowId);
         }
 
+        \Log::debug('[WorkflowTaskPoller] No tasks claimed (examined all ready tasks)');
         return null;
     }
 
