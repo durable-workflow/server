@@ -46,7 +46,7 @@ class HealthController
 
         return response()->json(array_filter([
             'server_id' => config('server.server_id'),
-            'version' => config('app.version', '0.1.0'),
+            'version' => env('APP_VERSION', '2.0.0'),
             'default_namespace' => config('server.default_namespace'),
             'supported_sdk_versions' => [
                 'php' => '>=1.0',
