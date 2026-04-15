@@ -478,18 +478,19 @@ $worker->registerActivity(MyActivity::class);
 $worker->run();
 ```
 
-### Python (future SDK)
+### Python
 ```python
-from durable_workflow import Client, Worker
+from durable_workflow import Client, Worker, workflow, activity
 
-client = Client("http://localhost:8080", token="YOUR_TOKEN")
+client = Client("http://localhost:8080", token="YOUR_TOKEN", namespace="default")
 
-worker = Worker(client, task_queue="default")
-worker.register_workflow(MyWorkflow)
-worker.register_activity(my_activity)
-worker.run()
+worker = Worker(
+    client,
+    task_queue="default",
+    workflows=[MyWorkflow],
+    activities=[my_activity],
+)
+await worker.run()
 ```
-
-## License
 
 MIT
