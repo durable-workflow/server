@@ -57,6 +57,13 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
+      # Workflow package versioning strategy:
+      # - During alpha/beta: use branch 'v2' (automatic pickup of latest changes)
+      # - For stable releases: use tag '2.0.0' (pinned, reproducible builds)
+      #
+      # Alpha/beta tags (2.0.0-alpha.1, 2.0.0-beta.1) are for visibility/changelog only.
+      # The branch approach ensures all server releases automatically get latest workflow v2.
+      # When releasing stable 2.0.0, change WORKFLOW_PACKAGE_REF to '2.0.0'.
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -69,4 +76,4 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: false
           build-args: |
-            WORKFLOW_PACKAGE_REF=2.0.0-alpha.1
+            WORKFLOW_PACKAGE_REF=v2
