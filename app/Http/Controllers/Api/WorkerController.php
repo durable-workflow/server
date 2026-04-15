@@ -17,6 +17,7 @@ use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\HistoryPayloadCompression;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
+use Workflow\V2\Support\WorkflowTaskOwnership;
 
 class WorkerController
 {
@@ -24,6 +25,7 @@ class WorkerController
         private readonly WorkflowTaskPoller $workflowTaskPoller,
         private readonly WorkflowTaskLeaseRecovery $workflowTaskLeaseRecovery,
         private readonly StandaloneWorkerFleet $workerFleet,
+        private readonly WorkflowTaskOwnership $taskOwnership,
     ) {}
 
     /**
@@ -505,12 +507,11 @@ class WorkerController
     }
 
     /**
-     * Verify workflow task ownership using the bridge status() contract.
+     * Guard workflow task ownership and lease validity.
      *
-     * Namespace scoping uses NamespaceWorkflowScope to verify the task
-     * belongs to this namespace. Lease and ownership validation delegates
-     * to bridge->status(), aligning the architectural pattern with the
-     * activity fail path (TD-S029).
+     * Delegates validation to WorkflowTaskOwnership (package-level guard).
+     * Converts structured outcomes to HTTP responses and dispatches recovery
+     * for expired leases.
      */
     private function guardWorkflowTaskOwnership(
         Request $request,
@@ -519,52 +520,21 @@ class WorkerController
         int $workflowTaskAttempt,
         string $leaseOwner,
     ): ?JsonResponse {
-        // Namespace scoping — verify the task belongs to this namespace.
-        $namespacedTask = NamespaceWorkflowScope::task($namespace, $taskId);
+        $result = $this->taskOwnership->guard(
+            fn (string $ns, string $id) => NamespaceWorkflowScope::task($ns, $id),
+            $namespace,
+            $taskId,
+            $workflowTaskAttempt,
+            $leaseOwner,
+        );
 
-        if (! $namespacedTask instanceof WorkflowTask) {
-            return WorkerProtocol::json([
-                'task_id' => $taskId,
-                'workflow_task_attempt' => $workflowTaskAttempt,
-                'error' => 'Workflow task not found.',
-                'reason' => 'task_not_found',
-            ], 404);
+        if ($result['valid']) {
+            return null;
         }
 
-        // Delegate lease and ownership validation to the bridge.
-        /** @var WorkflowTaskBridge $bridge */
-        $bridge = app(WorkflowTaskBridge::class);
-        $status = $bridge->status($taskId);
-
-        if (($status['reason'] ?? null) !== null) {
-            return WorkerProtocol::json([
-                'task_id' => $taskId,
-                'workflow_task_attempt' => $workflowTaskAttempt,
-                'error' => 'Workflow task not found.',
-                'reason' => 'task_not_found',
-            ], 404);
-        }
-
-        if ($status['task_status'] !== TaskStatus::Leased->value) {
-            return WorkerProtocol::json([
-                'task_id' => $taskId,
-                'workflow_task_attempt' => $workflowTaskAttempt,
-                'error' => 'Workflow task is not currently leased.',
-                'reason' => 'task_not_leased',
-            ], 409);
-        }
-
-        if ($status['lease_owner'] === null || $status['lease_expires_at'] === null) {
-            return WorkerProtocol::json([
-                'task_id' => $taskId,
-                'workflow_task_attempt' => $workflowTaskAttempt,
-                'error' => 'Workflow task is not currently leased.',
-                'reason' => 'task_not_leased',
-            ], 409);
-        }
-
-        if ($status['lease_expired']) {
-            $this->workflowTaskLeaseRecovery->recoverExpiredTaskLease($request, $namespace, $namespacedTask);
+        // Handle expired lease recovery
+        if ($result['reason'] === 'lease_expired' && $result['task'] instanceof WorkflowTask) {
+            $this->workflowTaskLeaseRecovery->recoverExpiredTaskLease($request, $namespace, $result['task']);
 
             return WorkerProtocol::json([
                 'task_id' => $taskId,
@@ -572,32 +542,50 @@ class WorkerController
                 'error' => 'Workflow task lease has expired and is waiting for recovery.',
                 'reason' => 'lease_expired',
                 'task_status' => 'leased',
-                'lease_owner' => $status['lease_owner'],
-                'lease_expires_at' => $status['lease_expires_at'],
+                'lease_owner' => $result['status']['lease_owner'] ?? null,
+                'lease_expires_at' => $result['status']['lease_expires_at'] ?? null,
             ], 409);
         }
 
-        if ($status['lease_owner'] !== $leaseOwner) {
-            return WorkerProtocol::json([
+        // Convert package-level outcomes to HTTP responses
+        return match ($result['reason']) {
+            'task_not_found' => WorkerProtocol::json([
+                'task_id' => $taskId,
+                'workflow_task_attempt' => $workflowTaskAttempt,
+                'error' => 'Workflow task not found.',
+                'reason' => 'task_not_found',
+            ], 404),
+
+            'task_not_leased' => WorkerProtocol::json([
+                'task_id' => $taskId,
+                'workflow_task_attempt' => $workflowTaskAttempt,
+                'error' => 'Workflow task is not currently leased.',
+                'reason' => 'task_not_leased',
+            ], 409),
+
+            'lease_owner_mismatch' => WorkerProtocol::json([
                 'task_id' => $taskId,
                 'workflow_task_attempt' => $workflowTaskAttempt,
                 'error' => 'Workflow task lease is owned by another worker.',
                 'reason' => 'lease_owner_mismatch',
-                'lease_owner' => $status['lease_owner'],
-            ], 409);
-        }
+                'lease_owner' => $result['status']['lease_owner'] ?? null,
+            ], 409),
 
-        if ($status['attempt_count'] !== null && $status['attempt_count'] !== $workflowTaskAttempt) {
-            return WorkerProtocol::json([
+            'workflow_task_attempt_mismatch' => WorkerProtocol::json([
                 'task_id' => $taskId,
                 'workflow_task_attempt' => $workflowTaskAttempt,
                 'error' => 'Workflow task lease attempt does not match the current claim.',
                 'reason' => 'workflow_task_attempt_mismatch',
-                'current_attempt' => $status['attempt_count'],
-            ], 409);
-        }
+                'current_attempt' => $result['status']['attempt_count'] ?? null,
+            ], 409),
 
-        return null;
+            default => WorkerProtocol::json([
+                'task_id' => $taskId,
+                'workflow_task_attempt' => $workflowTaskAttempt,
+                'error' => 'Workflow task validation failed.',
+                'reason' => $result['reason'] ?? 'unknown',
+            ], 409),
+        };
     }
 
     /**
