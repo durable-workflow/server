@@ -4,13 +4,22 @@ namespace App\Support;
 
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Str;
+use Workflow\V2\Contracts\LongPollWakeStore;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
-final class LongPollSignalStore
+/**
+ * Server implementation of long-poll wake signal store.
+ *
+ * Implements the workflow package's LongPollWakeStore contract, enabling
+ * cross-node coordination when the cache backend is shared (Redis, database, etc.).
+ *
+ * @see \Workflow\V2\Contracts\LongPollWakeStore
+ */
+final class LongPollSignalStore implements LongPollWakeStore
 {
     private const CACHE_PREFIX = 'server:long-poll-signal:';
 

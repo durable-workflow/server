@@ -25,6 +25,9 @@ final class ServerPollingCache
 
         $store = $this->cache->store();
 
+        // If the default cache driver is 'file', use a dedicated polling cache directory
+        // to avoid polluting the main cache. For shared backends (Redis, database, etc.),
+        // use the default store directly to enable cross-node wake signal coordination.
         if ($store instanceof LaravelCacheRepository && $store->getStore() instanceof FileStore) {
             $path = $this->cachePath();
 
