@@ -7,6 +7,7 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\NamespaceWorkflowScope;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -144,6 +145,7 @@ class SystemController
         $expiredRunIds = NamespaceWorkflowScope::runSummaryQuery($namespace)
             ->whereIn('workflow_run_summaries.status_bucket', ['completed', 'failed'])
             ->whereNotNull('workflow_run_summaries.closed_at')
+            ->whereNull('workflow_run_summaries.archived_at')
             ->where('workflow_run_summaries.closed_at', '<', $cutoff)
             ->orderBy('workflow_run_summaries.closed_at')
             ->limit($limit)
@@ -181,6 +183,7 @@ class SystemController
             $runIds = NamespaceWorkflowScope::runSummaryQuery($namespace)
                 ->whereIn('workflow_run_summaries.status_bucket', ['completed', 'failed'])
                 ->whereNotNull('workflow_run_summaries.closed_at')
+                ->whereNull('workflow_run_summaries.archived_at')
                 ->where('workflow_run_summaries.closed_at', '<', $cutoff)
                 ->orderBy('workflow_run_summaries.closed_at')
                 ->limit($limit)
@@ -263,6 +266,53 @@ class SystemController
         if ($status === null || ! $status->isTerminal()) {
             return ['pruned' => false, 'reason' => 'run_not_terminal', 'history_events_deleted' => 0, 'tasks_deleted' => 0];
         }
+
+        if ($summary->archived_at !== null) {
+            return ['pruned' => false, 'reason' => 'run_archived', 'history_events_deleted' => 0, 'tasks_deleted' => 0];
+        }
+
+        // Audit log before deletion
+        Log::info('retention_prune_run', [
+            'namespace' => $namespace,
+            'run_id' => $runId,
+            'workflow_instance_id' => $summary->workflow_instance_id,
+            'workflow_type' => $summary->workflow_type,
+            'status' => $summary->status,
+            'closed_at' => $summary->closed_at?->toIso8601String(),
+        ]);
+
+        // Delete related records first
+        \Workflow\V2\Models\ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
+
+        \Workflow\V2\Models\WorkflowCommand::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
+
+        \Workflow\V2\Models\WorkflowFailure::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
+
+        \Workflow\V2\Models\WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
+
+        \Workflow\V2\Models\WorkflowRunWait::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
+
+        \Workflow\V2\Models\WorkflowTimer::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
+
+        \Workflow\V2\Models\WorkflowRunLineageEntry::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
+
+        \Workflow\V2\Models\WorkflowUpdate::query()
+            ->where('workflow_run_id', $runId)
+            ->delete();
 
         $historyDeleted = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $runId)
