@@ -1,0 +1,445 @@
+name: Polyglot Validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  polyglot:
+    name: Test PHP ↔ Python cross-language execution
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout server
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Generate APP_KEY
+        id: app-key
+        run: |
+          KEY=$(openssl rand -base64 32)
+          echo "key=base64:$KEY" >> $GITHUB_OUTPUT
+
+      - name: Start server stack
+        env:
+          APP_KEY: ${{ steps.app-key.outputs.key }}
+          WORKFLOW_SERVER_AUTH_TOKEN: test-token-123
+          APP_VERSION: 2.0.0
+        run: |
+          docker compose up -d --wait
+          sleep 5
+
+          # Verify server is healthy
+          curl -f http://localhost:8080/api/health || exit 1
+          echo "✓ Server is healthy"
+
+      - name: Set up PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: redis, pdo_mysql
+          coverage: none
+
+      - name: Install workflow package for PHP worker
+        run: |
+          mkdir -p /tmp/php-worker
+          cd /tmp/php-worker
+          composer init --name=test/polyglot-php --no-interaction
+          composer config minimum-stability dev
+          composer config prefer-stable true
+          composer require durable-workflow/workflow:dev-v2
+
+      - name: Copy PHP worker script
+        run: |
+          cat > /tmp/php-worker/worker.php << 'EOF'
+<?php
+
+require_once __DIR__ . '/vendor/autoload.php';
+
+use Workflow\V2\Activity;
+use Workflow\V2\Workflow;
+
+class PhpWorkflowCallsPythonActivity extends Workflow
+{
+    public function handle(array $input)
+    {
+        $result = \Workflow\V2\activity(PythonActivityForPhp::class, $input);
+        return ['php_workflow_result' => $result, 'input_received' => $input];
+    }
+}
+
+class PythonActivityForPhp extends Activity
+{
+    public function handle(array $input)
+    {
+        return [
+            'python_activity_executed' => true,
+            'input' => $input,
+            'type_checks' => [
+                'string' => is_string($input['string'] ?? null),
+                'int' => is_int($input['int'] ?? null),
+                'float' => is_float($input['float'] ?? null),
+                'bool' => is_bool($input['bool'] ?? null),
+                'null' => ($input['null'] ?? 'not_null') === null,
+                'array' => is_array($input['array'] ?? null),
+                'map' => is_array($input['map'] ?? null),
+            ],
+            'php_version' => PHP_VERSION,
+        ];
+    }
+}
+
+class PhpWorkflowCallsPhpActivity extends Workflow
+{
+    public function handle(array $input)
+    {
+        $result = \Workflow\V2\activity(PhpActivityForPhp::class, $input);
+        return ['php_to_php_result' => $result];
+    }
+}
+
+class PhpActivityForPhp extends Activity
+{
+    public function handle(array $input)
+    {
+        return ['php_activity' => 'success', 'data' => $input];
+    }
+}
+
+class PhpActivityThatFails extends Activity
+{
+    public function handle(array $input)
+    {
+        throw new \RuntimeException('PHP activity intentional failure: ' . ($input['message'] ?? 'test'));
+    }
+}
+
+class PhpWorkflowExpectsFailure extends Workflow
+{
+    public function handle(array $input)
+    {
+        try {
+            \Workflow\V2\activity(PhpActivityThatFails::class, $input);
+            return ['error' => 'Activity should have failed'];
+        } catch (\Throwable $e) {
+            return [
+                'caught_exception' => true,
+                'exception_type' => get_class($e),
+                'exception_message' => $e->getMessage(),
+            ];
+        }
+    }
+}
+
+$client = new \Workflow\V2\WorkflowClient(
+    'http://localhost:8080',
+    'test-token-123',
+    'default'
+);
+
+$worker = new \Workflow\V2\Worker(
+    $client,
+    taskQueue: 'polyglot-test',
+    workflows: [
+        PhpWorkflowCallsPythonActivity::class,
+        PhpWorkflowCallsPhpActivity::class,
+        PhpWorkflowExpectsFailure::class,
+    ],
+    activities: [
+        PythonActivityForPhp::class,
+        PhpActivityForPhp::class,
+        PhpActivityThatFails::class,
+    ]
+);
+
+echo "PHP worker starting\n";
+$worker->run();
+EOF
+
+      - name: Start PHP worker in background
+        run: |
+          cd /tmp/php-worker
+          php worker.php > /tmp/php-worker.log 2>&1 &
+          echo $! > /tmp/php-worker.pid
+          echo "✓ PHP worker started (PID: $(cat /tmp/php-worker.pid))"
+          sleep 2
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Python SDK
+        run: |
+          pip install durable-workflow httpx
+
+      - name: Copy Python worker script
+        run: |
+          cat > /tmp/python-worker.py << 'EOF'
+#!/usr/bin/env python3
+
+import asyncio
+import os
+import sys
+
+from durable_workflow import Client, Worker, workflow, activity
+
+
+@workflow.defn(name="PythonWorkflowCallsPhpActivity")
+class PythonWorkflowCallsPhpActivity:
+    def run(self, ctx, *args):
+        input_data = args[0] if args else {}
+        result = yield ctx.schedule_activity("PhpActivityForPython", [input_data])
+        return {"python_workflow_result": result, "input_received": input_data}
+
+
+@workflow.defn(name="PythonWorkflowCallsPythonActivity")
+class PythonWorkflowCallsPythonActivity:
+    def run(self, ctx, *args):
+        input_data = args[0] if args else {}
+        result = yield ctx.schedule_activity("python_activity_for_python", [input_data])
+        return {"python_to_python_result": result}
+
+
+@workflow.defn(name="PythonWorkflowExpectsFailure")
+class PythonWorkflowExpectsFailure:
+    def run(self, ctx, *args):
+        input_data = args[0] if args else {}
+        try:
+            yield ctx.schedule_activity("python_activity_that_fails", [input_data])
+            return {"error": "Activity should have failed"}
+        except Exception as e:
+            return {
+                "caught_exception": True,
+                "exception_type": type(e).__name__,
+                "exception_message": str(e),
+            }
+
+
+@activity.defn(name="PhpActivityForPython")
+def php_activity_for_python(input_data: dict) -> dict:
+    return {
+        "php_activity_executed": True,
+        "input": input_data,
+        "type_checks": {
+            "string": isinstance(input_data.get("string"), str),
+            "int": isinstance(input_data.get("int"), int),
+            "float": isinstance(input_data.get("float"), float),
+            "bool": isinstance(input_data.get("bool"), bool),
+            "null": input_data.get("null") is None,
+            "array": isinstance(input_data.get("array"), list),
+            "map": isinstance(input_data.get("map"), dict),
+        },
+        "python_version": sys.version,
+    }
+
+
+@activity.defn(name="python_activity_for_python")
+def python_activity_for_python(input_data: dict) -> dict:
+    return {"python_activity": "success", "data": input_data}
+
+
+@activity.defn(name="python_activity_that_fails")
+def python_activity_that_fails(input_data: dict) -> dict:
+    message = input_data.get("message", "test")
+    raise RuntimeError(f"Python activity intentional failure: {message}")
+
+
+async def main():
+    client = Client("http://localhost:8080", token="test-token-123", namespace="default")
+
+    worker = Worker(
+        client,
+        task_queue="polyglot-test",
+        workflows=[
+            PythonWorkflowCallsPhpActivity,
+            PythonWorkflowCallsPythonActivity,
+            PythonWorkflowExpectsFailure,
+        ],
+        activities=[
+            php_activity_for_python,
+            python_activity_for_python,
+            python_activity_that_fails,
+        ],
+        worker_id="python-polyglot-worker",
+    )
+
+    print("Python worker starting")
+    await worker.run()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+EOF
+          chmod +x /tmp/python-worker.py
+
+      - name: Start Python worker in background
+        run: |
+          python /tmp/python-worker.py > /tmp/python-worker.log 2>&1 &
+          echo $! > /tmp/python-worker.pid
+          echo "✓ Python worker started (PID: $(cat /tmp/python-worker.pid))"
+          sleep 2
+
+      - name: Create test orchestrator
+        run: |
+          cat > /tmp/test-orchestrator.py << 'EOFTEST'
+#!/usr/bin/env python3
+
+import asyncio
+import os
+import sys
+import time
+
+from durable_workflow import Client
+
+
+async def start_workflow_and_wait(client, workflow_type, workflow_id, input_data, timeout=30):
+    print(f"Starting {workflow_type}...")
+
+    handle = await client.start_workflow(
+        workflow_type=workflow_type,
+        workflow_id=workflow_id,
+        task_queue="polyglot-test",
+        input=input_data,
+    )
+
+    result = await client.get_result(handle, timeout=timeout)
+    print(f"  ✓ Completed")
+    return result
+
+
+async def main():
+    client = Client("http://localhost:8080", token="test-token-123", namespace="default")
+
+    # Wait for server
+    for i in range(30):
+        try:
+            await client._client.get("/cluster/info")
+            break
+        except:
+            time.sleep(1)
+
+    # Wait for workers to register
+    await asyncio.sleep(5)
+
+    tests_passed = 0
+    tests_total = 0
+
+    # Test 1: PHP → Python
+    print("\n=== Test 1: PHP → Python ===")
+    tests_total += 1
+    try:
+        result = await start_workflow_and_wait(
+            client, "PhpWorkflowCallsPythonActivity", "php-to-python",
+            {"string": "hello", "int": 42, "float": 3.14, "bool": True, "null": None, "array": [1,2,3], "map": {"k":"v"}}
+        )
+        if result.get("php_workflow_result", {}).get("python_activity_executed"):
+            print("  ✓ PASS")
+            tests_passed += 1
+        else:
+            print("  ✗ FAIL")
+    except Exception as e:
+        print(f"  ✗ FAIL: {e}")
+
+    # Test 2: Python → PHP
+    print("\n=== Test 2: Python → PHP ===")
+    tests_total += 1
+    try:
+        result = await start_workflow_and_wait(
+            client, "PythonWorkflowCallsPhpActivity", "python-to-php",
+            {"string": "world", "int": 99, "float": 2.71, "bool": False, "null": None, "array": ["a","b"], "map": {"foo":"bar"}}
+        )
+        if result.get("python_workflow_result", {}).get("php_activity_executed"):
+            print("  ✓ PASS")
+            tests_passed += 1
+        else:
+            print("  ✗ FAIL")
+    except Exception as e:
+        print(f"  ✗ FAIL: {e}")
+
+    # Test 3: PHP → PHP
+    print("\n=== Test 3: PHP → PHP ===")
+    tests_total += 1
+    try:
+        result = await start_workflow_and_wait(
+            client, "PhpWorkflowCallsPhpActivity", "php-to-php",
+            {"test": "php-to-php"}
+        )
+        if result.get("php_to_php_result", {}).get("php_activity") == "success":
+            print("  ✓ PASS")
+            tests_passed += 1
+        else:
+            print("  ✗ FAIL")
+    except Exception as e:
+        print(f"  ✗ FAIL: {e}")
+
+    # Test 4: Python → Python
+    print("\n=== Test 4: Python → Python ===")
+    tests_total += 1
+    try:
+        result = await start_workflow_and_wait(
+            client, "PythonWorkflowCallsPythonActivity", "python-to-python",
+            {"test": "python-to-python"}
+        )
+        if result.get("python_to_python_result", {}).get("python_activity") == "success":
+            print("  ✓ PASS")
+            tests_passed += 1
+        else:
+            print("  ✗ FAIL")
+    except Exception as e:
+        print(f"  ✗ FAIL: {e}")
+
+    print(f"\n=== Summary: {tests_passed}/{tests_total} tests passed ===")
+
+    await client.close()
+    sys.exit(0 if tests_passed == tests_total else 1)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+EOFTEST
+          chmod +x /tmp/test-orchestrator.py
+
+      - name: Run polyglot tests
+        run: |
+          python /tmp/test-orchestrator.py
+
+      - name: Show PHP worker log on failure
+        if: failure()
+        run: |
+          echo "=== PHP Worker Log ==="
+          cat /tmp/php-worker.log || echo "No PHP worker log"
+
+      - name: Show Python worker log on failure
+        if: failure()
+        run: |
+          echo "=== Python Worker Log ==="
+          cat /tmp/python-worker.log || echo "No Python worker log"
+
+      - name: Show server logs on failure
+        if: failure()
+        run: |
+          echo "=== Server Logs ==="
+          docker compose logs server
+
+      - name: Stop workers
+        if: always()
+        run: |
+          if [ -f /tmp/php-worker.pid ]; then
+            kill $(cat /tmp/php-worker.pid) 2>/dev/null || true
+          fi
+          if [ -f /tmp/python-worker.pid ]; then
+            kill $(cat /tmp/python-worker.pid) 2>/dev/null || true
+          fi
+
+      - name: Stop server
+        if: always()
+        run: docker compose down -v
