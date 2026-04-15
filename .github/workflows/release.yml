@@ -69,4 +69,4 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: false
           build-args: |
-            WORKFLOW_PACKAGE_REF=2.0.0
+            WORKFLOW_PACKAGE_REF=2.0.0-alpha.1
