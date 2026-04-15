@@ -57,13 +57,26 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
-      # Workflow package versioning strategy:
-      # - During alpha/beta: use branch 'v2' (automatic pickup of latest changes)
-      # - For stable releases: use tag '2.0.0' (pinned, reproducible builds)
-      #
-      # Alpha/beta tags (2.0.0-alpha.1, 2.0.0-beta.1) are for visibility/changelog only.
-      # The branch approach ensures all server releases automatically get latest workflow v2.
-      # When releasing stable 2.0.0, change WORKFLOW_PACKAGE_REF to '2.0.0'.
+      # Automatically detect the latest workflow package pre-release tag
+      # This allows you to tag workflow releases (2.0.0-alpha.2, etc) and have
+      # server builds automatically pick them up without manual workflow edits.
+      - name: Get latest workflow package version
+        id: workflow
+        run: |
+          # Fetch latest pre-release tag from workflow repo (2.0.0-alpha.x, 2.0.0-beta.x)
+          LATEST_TAG=$(git ls-remote --tags --sort=v:refname https://github.com/durable-workflow/workflow.git \
+            | grep -E 'refs/tags/2\.0\.0-(alpha|beta)\.' \
+            | tail -1 \
+            | sed 's/.*refs\/tags\///')
+
+          # Fallback to v2 branch if no pre-release tags exist
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v2"
+          fi
+
+          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "Using workflow package version: $LATEST_TAG"
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -76,4 +89,4 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: false
           build-args: |
-            WORKFLOW_PACKAGE_REF=v2
+            WORKFLOW_PACKAGE_REF=${{ steps.workflow.outputs.tag }}
