@@ -586,16 +586,28 @@ final class WorkflowTaskPoller
     /**
      * @param  list<string>  $supportedTypes
      */
+    /**
+     * Check if a task's workflow type matches the worker's supported types.
+     *
+     * - If worker supports all types (empty list), match any task
+     * - If worker supports specific types, only match tasks with those types
+     * - Tasks with missing/empty workflow_type only match "all types" workers
+     *
+     * @param  list<string>  $supportedTypes
+     */
     private function matchesWorkflowType(array $supportedTypes, mixed $workflowType): bool
     {
+        // Worker supports all workflow types
         if ($supportedTypes === []) {
             return true;
         }
 
+        // Task has no workflow type - only matches workers that accept all types
         if (! is_string($workflowType) || trim($workflowType) === '') {
-            return true;
+            return false;
         }
 
+        // Check if task's workflow type is in worker's supported list
         return in_array($workflowType, $supportedTypes, true);
     }
 
