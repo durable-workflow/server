@@ -445,6 +445,7 @@ class WorkerController
             'outcome' => 'failed',
             'recorded' => $outcome['recorded'],
             'reason' => $outcome['reason'],
+            'next_task_id' => $outcome['next_task_id'] ?? null,
         ], $this->workflowOutcomeStatus($outcome['reason']));
     }
 
