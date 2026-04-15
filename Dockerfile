@@ -67,6 +67,7 @@ COPY --from=vendor /app /app
 COPY --from=workflow-source /workflow/.package-provenance /app/.package-provenance
 COPY docker/bootstrap.sh /usr/local/bin/server-bootstrap
 COPY docker/entrypoint.sh /usr/local/bin/server-entrypoint
+COPY docker/php-custom.ini /usr/local/etc/php/conf.d/99-custom.ini
 
 RUN chmod +x /usr/local/bin/server-bootstrap /usr/local/bin/server-entrypoint
 

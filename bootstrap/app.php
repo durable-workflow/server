@@ -22,6 +22,7 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
         $middleware->api(append: [
             \App\Http\Middleware\CompressResponse::class,
+            \App\Http\Middleware\RemoveServerHeader::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
