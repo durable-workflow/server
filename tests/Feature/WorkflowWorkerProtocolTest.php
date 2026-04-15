@@ -612,6 +612,11 @@ class WorkflowWorkerProtocolTest extends TestCase
                         'reason' => null,
                     ];
                 });
+
+            $mock->shouldReceive('status')
+                ->andReturnUsing(function (string $taskId) {
+                    return app()->make(\Workflow\V2\Support\DefaultWorkflowTaskBridge::class)->status($taskId);
+                });
         });
 
         $this->registerWorker('php-worker-bridge', 'external-workflows');
@@ -1151,6 +1156,11 @@ class WorkflowWorkerProtocolTest extends TestCase
                     ->andThrow(
                         \Workflow\V2\Exceptions\StructuralLimitExceededException::pendingActivityCount(2000, 2000),
                     );
+
+                $mock->shouldReceive('status')
+                ->andReturnUsing(function (string $taskId) {
+                    return app()->make(\Workflow\V2\Support\DefaultWorkflowTaskBridge::class)->status($taskId);
+                });
             }),
         );
 
@@ -3275,6 +3285,11 @@ class WorkflowWorkerProtocolTest extends TestCase
                         'task_id' => 'ignored',
                         'reason' => null,
                     ]);
+
+                $mock->shouldReceive('status')
+                ->andReturnUsing(function (string $taskId) {
+                    return app()->make(\Workflow\V2\Support\DefaultWorkflowTaskBridge::class)->status($taskId);
+                });
             }),
         );
 
@@ -3475,6 +3490,11 @@ class WorkflowWorkerProtocolTest extends TestCase
                         'task_id' => 'ignored',
                         'reason' => 'task_not_found',
                     ]);
+
+                $mock->shouldReceive('status')
+                ->andReturnUsing(function (string $taskId) {
+                    return app()->make(\Workflow\V2\Support\DefaultWorkflowTaskBridge::class)->status($taskId);
+                });
             }),
         );
 
