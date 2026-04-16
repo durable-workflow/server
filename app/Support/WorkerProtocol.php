@@ -54,6 +54,12 @@ class WorkerProtocol
                 'error' => 'Missing worker protocol version header.',
                 'reason' => 'missing_protocol_version',
                 'supported_version' => $supported,
+                'requested_version' => null,
+                'remediation' => sprintf(
+                    'Send the %s: %s header on worker protocol requests.',
+                    self::HEADER,
+                    $supported,
+                ),
             ], 400);
         }
 
@@ -61,6 +67,14 @@ class WorkerProtocol
             'error' => 'Unsupported worker protocol version.',
             'reason' => 'unsupported_protocol_version',
             'supported_version' => $supported,
+            'requested_version' => $version,
+            'remediation' => sprintf(
+                'Worker requested protocol version %s; this server only supports %s. Upgrade the worker to a release that targets worker-protocol %s, or connect to a server that supports %s.',
+                $version,
+                $supported,
+                $supported,
+                $version,
+            ),
         ], 400);
     }
 

@@ -262,7 +262,9 @@ class WorkflowWorkerProtocolTest extends TestCase
         ])->assertStatus(400)
             ->assertHeader('X-Durable-Workflow-Protocol-Version', '1.0')
             ->assertJsonPath('reason', 'missing_protocol_version')
-            ->assertJsonPath('supported_version', '1.0');
+            ->assertJsonPath('supported_version', '1.0')
+            ->assertJsonPath('requested_version', null)
+            ->assertJsonStructure(['remediation']);
 
         $register = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/register', [
@@ -361,7 +363,9 @@ class WorkflowWorkerProtocolTest extends TestCase
             'runtime' => 'php',
         ])->assertStatus(400)
             ->assertJsonPath('reason', 'unsupported_protocol_version')
-            ->assertJsonPath('supported_version', '1.0');
+            ->assertJsonPath('supported_version', '1.0')
+            ->assertJsonPath('requested_version', '999')
+            ->assertJsonStructure(['remediation']);
     }
 
     public function test_worker_heartbeat_is_scoped_to_the_resolved_namespace(): void

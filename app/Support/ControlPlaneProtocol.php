@@ -37,6 +37,12 @@ class ControlPlaneProtocol
                 'message' => 'Missing control-plane version header.',
                 'reason' => 'missing_control_plane_version',
                 'supported_version' => self::VERSION,
+                'requested_version' => null,
+                'remediation' => sprintf(
+                    'Send the %s: %s header on control-plane requests.',
+                    self::HEADER,
+                    self::VERSION,
+                ),
             ], 400);
         }
 
@@ -44,6 +50,14 @@ class ControlPlaneProtocol
             'message' => 'Unsupported control-plane version.',
             'reason' => 'unsupported_control_plane_version',
             'supported_version' => self::VERSION,
+            'requested_version' => $version,
+            'remediation' => sprintf(
+                'Client requested control-plane version %s; this server only supports %s. Upgrade the client to a release that targets control-plane %s, or connect to a server that supports %s.',
+                $version,
+                self::VERSION,
+                self::VERSION,
+                $version,
+            ),
         ], 400);
     }
 

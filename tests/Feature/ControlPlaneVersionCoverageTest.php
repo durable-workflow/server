@@ -96,6 +96,8 @@ class ControlPlaneVersionCoverageTest extends TestCase
         $response->assertStatus(400);
         $response->assertJsonPath('reason', 'missing_control_plane_version');
         $response->assertJsonPath('supported_version', ControlPlaneProtocol::VERSION);
+        $response->assertJsonPath('requested_version', null);
+        $response->assertJsonStructure(['remediation']);
     }
 
     /**
@@ -113,6 +115,8 @@ class ControlPlaneVersionCoverageTest extends TestCase
         $response->assertStatus(400);
         $response->assertJsonPath('reason', 'unsupported_control_plane_version');
         $response->assertJsonPath('supported_version', ControlPlaneProtocol::VERSION);
+        $response->assertJsonPath('requested_version', '999');
+        $response->assertJsonStructure(['remediation']);
     }
 
     /**
