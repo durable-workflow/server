@@ -447,7 +447,7 @@
             "dist": {
                 "type": "path",
                 "url": "../workflow",
-                "reference": "c8c0765a571e343b92edd290416480c5ae8132e1"
+                "reference": "b38634ebc74deeb474c2c96090f3e1ae9083349b"
             },
             "require": {
                 "laravel/framework": "^9.0|^10.0|^11.0|^12.0|^13.0",
