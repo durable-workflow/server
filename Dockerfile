@@ -82,7 +82,14 @@ LABEL org.opencontainers.image.title="Durable Workflow Server" \
 
 EXPOSE 8080
 
+# Default to 4 CLI server worker processes so long-poll requests do not
+# block the rest of the API surface. `php artisan serve` only honours
+# PHP_CLI_SERVER_WORKERS when `--no-reload` is set (otherwise it warns
+# and falls back to a single server thread), so both must be present
+# together.
+ENV PHP_CLI_SERVER_WORKERS=4
+
 ENTRYPOINT ["server-entrypoint"]
 
 # Default: run the API server. Override CMD for workers.
-CMD ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8080"]
+CMD ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8080", "--no-reload"]

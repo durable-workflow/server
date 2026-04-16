@@ -493,6 +493,28 @@ kubectl apply -f k8s/worker-deployment.yaml
 
 All configuration is via environment variables. See [.env.example](.env.example) for the full list.
 
+### HTTP concurrency (PHP_CLI_SERVER_WORKERS)
+
+The image's default CMD runs `php artisan serve --no-reload` with
+`PHP_CLI_SERVER_WORKERS=4`. The `--no-reload` flag is required for
+Laravel's built-in server to honour the worker count — without it the
+server logs `Unable to respect the PHP_CLI_SERVER_WORKERS environment
+variable without the --no-reload flag` and falls back to a single
+thread, which will block every other request while one worker holds a
+long-poll connection open.
+
+Raise the worker count for polyglot or multi-worker deployments:
+
+```bash
+docker run --rm -p 8080:8080 -e PHP_CLI_SERVER_WORKERS=16 \
+  --env-file .env durable-workflow-server
+```
+
+For production workloads the `php artisan serve` built-in server is a
+reasonable default but not the ceiling — FrankenPHP, RoadRunner, or an
+nginx/php-fpm pair are all valid replacements and only require
+overriding the container's `CMD`.
+
 ## Writing Workers
 
 Workers in any language connect to the server via HTTP. The protocol is simple:
