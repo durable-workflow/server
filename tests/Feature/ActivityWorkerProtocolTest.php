@@ -307,7 +307,7 @@ class ActivityWorkerProtocolTest extends TestCase
         ): void {
             $mock->shouldReceive('poll')
                 ->once()
-                ->with(null, 'external-activities', 10, null, 'default')
+                ->with(null, 'external-activities', 10, null, 'default', [])
                 ->andReturn([
                     [
                         'task_id' => $task->id,
@@ -395,7 +395,7 @@ class ActivityWorkerProtocolTest extends TestCase
         $this->mock(ActivityTaskBridgeContract::class, function (MockInterface $mock): void {
             $mock->shouldReceive('poll')
                 ->once()
-                ->with(null, 'external-activities', 10, null, 'default')
+                ->with(null, 'external-activities', 10, null, 'default', [])
                 ->andReturn([]);
         });
 

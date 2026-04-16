@@ -7,7 +7,7 @@ use Workflow\UpdateMethod;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Workflow;
-use function Workflow\V2\awaitSignal;
+use function Workflow\V2\signal;
 
 #[Type('tests.interactive-command-workflow')]
 #[Signal('advance', [
@@ -35,13 +35,13 @@ class InteractiveCommandWorkflow extends Workflow
         $this->stage = 'waiting-for-advance';
         $this->events[] = 'started';
 
-        $name = awaitSignal('advance');
+        $name = signal('advance');
 
         $this->name = $name;
         $this->stage = 'waiting-for-finish';
         $this->events[] = sprintf('signal:%s', $name);
 
-        awaitSignal('finish');
+        signal('finish');
 
         $this->stage = 'completed';
         $this->events[] = 'finish';
