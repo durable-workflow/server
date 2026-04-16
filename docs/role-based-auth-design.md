@@ -1,12 +1,14 @@
 # Role-Based Auth Design (Issue #209 Phase 1)
 
+Status: implemented in the server route/middleware layer.
+
 ## Problem
 Current flat auth: any valid token grants access to all endpoints. Workers can call terminate, operators can poll tasks.
 
-## Phase 1 Solution: Role-Aware Token Auth
+## Phase 1 Solution: Role-Aware Auth
 
 ### Roles
-- **worker**: Can only access `/worker/*` endpoints (task polling, completion)
+- **worker**: Can access `/worker/*` endpoints (task polling, completion) and `/cluster/info`
 - **operator**: Can access workflow control plane (start, signal, query, terminate, etc.)
 - **admin**: Can access system operations, namespace provisioning, worker management
 
@@ -24,9 +26,15 @@ Current flat auth: any valid token grants access to all endpoints. Workers can c
         'operator' => env('WORKFLOW_SERVER_OPERATOR_TOKEN'),
         'admin' => env('WORKFLOW_SERVER_ADMIN_TOKEN'),
     ],
+
+    'role_signature_keys' => [
+        'worker' => env('WORKFLOW_SERVER_WORKER_SIGNATURE_KEY'),
+        'operator' => env('WORKFLOW_SERVER_OPERATOR_SIGNATURE_KEY'),
+        'admin' => env('WORKFLOW_SERVER_ADMIN_SIGNATURE_KEY'),
+    ],
     
-    // Backward compatibility: if role_tokens not configured,
-    // grant 'admin' to main token
+    // Backward compatibility: if role credentials are not configured,
+    // the legacy credential keeps full access
     'backward_compatible' => env('WORKFLOW_SERVER_AUTH_BACKWARD_COMPATIBLE', true),
 ],
 ```
@@ -34,7 +42,8 @@ Current flat auth: any valid token grants access to all endpoints. Workers can c
 **2. Modified Authenticate Middleware**
 - After validating token/signature, determine role
 - Store role in `$request->attributes->set('auth.role', $role)`
-- If backward compatible mode + main token → grant 'admin'
+- If backward compatible mode + main token → keep full access while no role
+  credentials are configured, then treat it as admin-scoped during migration
 
 **3. New RequireRole Middleware**
 ```php
@@ -55,6 +64,9 @@ class RequireRole
 
 **4. Route Protection** (`routes/api.php`)
 ```php
+// Discovery - all authenticated roles
+Route::get('/cluster/info')->middleware('role:worker,operator,admin');
+
 // Worker plane - worker role only
 Route::prefix('worker')->middleware('role:worker')->group(...);
 
@@ -70,6 +82,7 @@ Route::delete('/workers/{workerId}')->middleware('role:admin');
 
 **Worker Plane** (role: worker)
 - All `/worker/*` endpoints
+- `GET /cluster/info`
 
 **Operator Plane** (role: operator, admin)
 - Workflows: list, show, start, signal, query, update, cancel, terminate, repair, archive
@@ -88,8 +101,16 @@ Route::delete('/workers/{workerId}')->middleware('role:admin');
 ### Backward Compatibility
 
 If `role_tokens` not configured, fall back to:
-- Main `auth.token` grants 'admin' role
+- Main `auth.token` keeps full API access
 - Maintains current behavior for existing deployments
+
+If any role token is configured, the main `auth.token` is still accepted when
+`backward_compatible` is true, but it is admin-scoped rather than full-access.
+This lets operators migrate gradually without leaving worker-plane access on
+the legacy credential.
+
+Signature auth follows the same rule using `role_signature_keys` and the legacy
+`signature_key`.
 
 ### Testing
 1. Unit test role determination logic
@@ -101,7 +122,7 @@ If `role_tokens` not configured, fall back to:
 **Existing deployments (no change needed):**
 ```env
 WORKFLOW_SERVER_AUTH_TOKEN=secret123
-# → Grants 'admin' role (backward compatible)
+# → Full API access when role credentials are absent
 ```
 
 **New deployments (role separation):**
@@ -112,4 +133,3 @@ WORKFLOW_SERVER_ADMIN_TOKEN=admin-secret
 ```
 
 Workers use `worker-secret`, operators use `operator-secret`, etc.
-

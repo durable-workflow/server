@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\WorkerController;
 use App\Http\Controllers\Api\WorkerManagementController;
 use App\Http\Controllers\Api\WorkflowController;
 use App\Http\Middleware\Authenticate;
+use App\Http\Middleware\RequireRole;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -28,20 +29,24 @@ use Illuminate\Support\Facades\Route;
 Route::get('/health', [HealthController::class, 'check']);
 
 Route::middleware(Authenticate::class)->group(function () {
+    $admin = RequireRole::class.':admin';
+    $operator = RequireRole::class.':operator,admin';
+    $worker = RequireRole::class.':worker';
+    $authenticated = RequireRole::class.':worker,operator,admin';
 
     // ── System ───────────────────────────────────────────────────────
-    Route::get('/cluster/info', [HealthController::class, 'clusterInfo']);
+    Route::get('/cluster/info', [HealthController::class, 'clusterInfo'])->middleware($authenticated);
 
     // ── Namespaces ───────────────────────────────────────────────────
-    Route::prefix('namespaces')->group(function () {
-        Route::get('/', [NamespaceController::class, 'index']);
-        Route::post('/', [NamespaceController::class, 'store']);
-        Route::get('/{namespace}', [NamespaceController::class, 'show']);
-        Route::put('/{namespace}', [NamespaceController::class, 'update']);
+    Route::prefix('namespaces')->group(function () use ($admin, $operator) {
+        Route::get('/', [NamespaceController::class, 'index'])->middleware($operator);
+        Route::post('/', [NamespaceController::class, 'store'])->middleware($admin);
+        Route::get('/{namespace}', [NamespaceController::class, 'show'])->middleware($operator);
+        Route::put('/{namespace}', [NamespaceController::class, 'update'])->middleware($admin);
     });
 
     // ── Workflows ────────────────────────────────────────────────────
-    Route::prefix('workflows')->group(function () {
+    Route::prefix('workflows')->middleware($operator)->group(function () {
         Route::get('/', [WorkflowController::class, 'index']);
         Route::post('/', [WorkflowController::class, 'start']);
         Route::get('/{workflowId}', [WorkflowController::class, 'show']);
@@ -70,7 +75,7 @@ Route::middleware(Authenticate::class)->group(function () {
     });
 
     // ── Worker Task Polling ──────────────────────────────────────────
-    Route::prefix('worker')->group(function () {
+    Route::prefix('worker')->middleware($worker)->group(function () {
         // Registration
         Route::post('/register', [WorkerController::class, 'register']);
         Route::post('/heartbeat', [WorkerController::class, 'heartbeat']);
@@ -90,20 +95,20 @@ Route::middleware(Authenticate::class)->group(function () {
     });
 
     // ── Workers (Management) ──────────────────────────────────────────
-    Route::prefix('workers')->group(function () {
-        Route::get('/', [WorkerManagementController::class, 'index']);
-        Route::get('/{workerId}', [WorkerManagementController::class, 'show']);
-        Route::delete('/{workerId}', [WorkerManagementController::class, 'destroy']);
+    Route::prefix('workers')->group(function () use ($admin, $operator) {
+        Route::get('/', [WorkerManagementController::class, 'index'])->middleware($operator);
+        Route::get('/{workerId}', [WorkerManagementController::class, 'show'])->middleware($operator);
+        Route::delete('/{workerId}', [WorkerManagementController::class, 'destroy'])->middleware($admin);
     });
 
     // ── Task Queues ──────────────────────────────────────────────────
-    Route::prefix('task-queues')->group(function () {
+    Route::prefix('task-queues')->middleware($operator)->group(function () {
         Route::get('/', [TaskQueueController::class, 'index']);
         Route::get('/{taskQueue}', [TaskQueueController::class, 'show']);
     });
 
     // ── Schedules ────────────────────────────────────────────────────
-    Route::prefix('schedules')->group(function () {
+    Route::prefix('schedules')->middleware($operator)->group(function () {
         Route::get('/', [ScheduleController::class, 'index']);
         Route::post('/', [ScheduleController::class, 'store']);
         Route::get('/{scheduleId}', [ScheduleController::class, 'show']);
@@ -116,14 +121,14 @@ Route::middleware(Authenticate::class)->group(function () {
     });
 
     // ── Search Attributes ────────────────────────────────────────────
-    Route::prefix('search-attributes')->group(function () {
+    Route::prefix('search-attributes')->middleware($operator)->group(function () {
         Route::get('/', [SearchAttributeController::class, 'index']);
         Route::post('/', [SearchAttributeController::class, 'store']);
         Route::delete('/{name}', [SearchAttributeController::class, 'destroy']);
     });
 
     // ── System / Operations ─────────────────────────────────────────
-    Route::prefix('system')->group(function () {
+    Route::prefix('system')->middleware($admin)->group(function () {
         Route::get('/repair', [SystemController::class, 'repairStatus']);
         Route::post('/repair/pass', [SystemController::class, 'repairPass']);
         Route::get('/activity-timeouts', [SystemController::class, 'activityTimeoutStatus']);

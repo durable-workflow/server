@@ -51,11 +51,14 @@ This walkthrough shows the full lifecycle using `curl` — start the server,
 create a workflow, poll for tasks, and complete them. Any HTTP client in any
 language follows the same steps.
 
-Set a token for convenience (or set `WORKFLOW_SERVER_AUTH_DRIVER=none` in
-`.env` to skip auth during development):
+Set role tokens for convenience (or set `WORKFLOW_SERVER_AUTH_DRIVER=none` in
+`.env` to skip auth during development). If you only configure the legacy
+`WORKFLOW_SERVER_AUTH_TOKEN`, use the same value for each variable below.
 
 ```bash
-export TOKEN="your-token-here"
+export ADMIN_TOKEN="your-admin-token"
+export OPERATOR_TOKEN="your-operator-token"
+export WORKER_TOKEN="your-worker-token"
 export SERVER="http://localhost:8080"
 ```
 
@@ -75,7 +78,7 @@ The bootstrap seeds a `default` namespace. To create a dedicated one:
 
 ```bash
 curl -X POST $SERVER/api/namespaces \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name":"my-app","description":"My application namespace","retention_days":30}'
 ```
@@ -84,7 +87,7 @@ curl -X POST $SERVER/api/namespaces \
 
 ```bash
 curl -X POST $SERVER/api/workflows \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $OPERATOR_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
   -H "X-Durable-Workflow-Control-Plane-Version: 2" \
@@ -114,7 +117,7 @@ Before polling, register the worker with the server:
 
 ```bash
 curl -X POST $SERVER/api/worker/register \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $WORKER_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
   -H "X-Durable-Workflow-Protocol-Version: 1.0" \
@@ -132,7 +135,7 @@ the timeout expires:
 
 ```bash
 curl -X POST $SERVER/api/worker/workflow-tasks/poll \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $WORKER_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
   -H "X-Durable-Workflow-Protocol-Version: 1.0" \
@@ -169,7 +172,7 @@ Replay history, execute logic, and return commands. To schedule an activity:
 
 ```bash
 curl -X POST $SERVER/api/worker/workflow-tasks/task-xyz/complete \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $WORKER_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
   -H "X-Durable-Workflow-Protocol-Version: 1.0" \
@@ -191,7 +194,7 @@ To complete the workflow (terminal command):
 
 ```bash
 curl -X POST $SERVER/api/worker/workflow-tasks/task-xyz/complete \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $WORKER_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
   -H "X-Durable-Workflow-Protocol-Version: 1.0" \
@@ -214,7 +217,7 @@ If the workflow scheduled activities, poll for them on the same (or different) q
 ```bash
 # Poll
 curl -X POST $SERVER/api/worker/activity-tasks/poll \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $WORKER_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
   -H "X-Durable-Workflow-Protocol-Version: 1.0" \
@@ -222,7 +225,7 @@ curl -X POST $SERVER/api/worker/activity-tasks/poll \
 
 # Complete (use task_id and activity_attempt_id from the poll response)
 curl -X POST $SERVER/api/worker/activity-tasks/TASK_ID/complete \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $WORKER_TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
   -H "X-Durable-Workflow-Protocol-Version: 1.0" \
@@ -237,7 +240,7 @@ curl -X POST $SERVER/api/worker/activity-tasks/TASK_ID/complete \
 
 ```bash
 curl $SERVER/api/workflows/order-42 \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $OPERATOR_TOKEN" \
   -H "X-Namespace: default" \
   -H "X-Durable-Workflow-Control-Plane-Version: 2"
 ```
@@ -246,7 +249,7 @@ curl $SERVER/api/workflows/order-42 \
 
 ```bash
 curl "$SERVER/api/workflows/order-42/runs/abc123/history" \
-  -H "Authorization: Bearer $TOKEN" \
+  -H "Authorization: Bearer $OPERATOR_TOKEN" \
   -H "X-Namespace: default" \
   -H "X-Durable-Workflow-Control-Plane-Version: 2"
 ```
@@ -400,15 +403,50 @@ heartbeat-progress contract before recording the heartbeat.
 Set the `X-Namespace` header to target a specific namespace (defaults to `default`).
 
 ### Token Authentication
-```bash
-curl -H "Authorization: Bearer YOUR_TOKEN" http://localhost:8080/api/workflows
+
+For production, prefer role-scoped tokens:
+
+```env
+WORKFLOW_SERVER_AUTH_DRIVER=token
+WORKFLOW_SERVER_WORKER_TOKEN=worker-secret
+WORKFLOW_SERVER_OPERATOR_TOKEN=operator-secret
+WORKFLOW_SERVER_ADMIN_TOKEN=admin-secret
 ```
 
+`worker` tokens can call `/api/worker/*` and `/api/cluster/info`. `operator`
+tokens can call workflow, history, schedule, search-attribute, task-queue,
+worker-read, and namespace-read endpoints. `admin` tokens can call admin
+operations such as `/api/system/*`, namespace creation/update, and worker
+deletion, and can also use operator endpoints.
+
+```bash
+curl -H "Authorization: Bearer operator-secret" http://localhost:8080/api/workflows
+```
+
+Existing deployments can keep `WORKFLOW_SERVER_AUTH_TOKEN`. When no role tokens
+are configured, that legacy token keeps full API access. Once any role token is
+configured, the legacy token is treated as an admin token and no longer grants
+worker-plane access. Set `WORKFLOW_SERVER_AUTH_BACKWARD_COMPATIBLE=false` to
+require role-scoped credentials only.
+
 ### Signature Authentication
+
+Signature auth supports the same role split with role-scoped HMAC keys:
+
+```env
+WORKFLOW_SERVER_AUTH_DRIVER=signature
+WORKFLOW_SERVER_WORKER_SIGNATURE_KEY=worker-hmac-key
+WORKFLOW_SERVER_OPERATOR_SIGNATURE_KEY=operator-hmac-key
+WORKFLOW_SERVER_ADMIN_SIGNATURE_KEY=admin-hmac-key
+```
+
 ```bash
 # HMAC-SHA256 of the request body
 curl -H "X-Signature: COMPUTED_SIGNATURE" http://localhost:8080/api/workflows
 ```
+
+The legacy `WORKFLOW_SERVER_SIGNATURE_KEY` follows the same compatibility rule
+as the legacy bearer token.
 
 Set `WORKFLOW_SERVER_AUTH_DRIVER=none` to disable authentication (development only).
 
@@ -470,7 +508,7 @@ Workers in any language connect to the server via HTTP. The protocol is simple:
 use DurableWorkflow\Client;
 use DurableWorkflow\Worker;
 
-$client = new Client('http://localhost:8080', token: 'YOUR_TOKEN');
+$client = new Client('http://localhost:8080', token: 'WORKER_TOKEN');
 
 $worker = new Worker($client, taskQueue: 'default');
 $worker->registerWorkflow(MyWorkflow::class);
@@ -482,7 +520,7 @@ $worker->run();
 ```python
 from durable_workflow import Client, Worker, workflow, activity
 
-client = Client("http://localhost:8080", token="YOUR_TOKEN", namespace="default")
+client = Client("http://localhost:8080", token="WORKER_TOKEN", namespace="default")
 
 worker = Worker(
     client,

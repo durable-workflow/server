@@ -38,8 +38,10 @@ final class WorkflowCommandContextFactory
     {
         $authDriver = (string) config('server.auth.driver', 'none');
         $authConfigured = match ($authDriver) {
-            'token' => (string) config('server.auth.token', '') !== '',
-            'signature' => (string) config('server.auth.signature_key', '') !== '',
+            'token' => $this->hasConfiguredCredential('server.auth.token')
+                || $this->hasConfiguredCredential('server.auth.role_tokens'),
+            'signature' => $this->hasConfiguredCredential('server.auth.signature_key')
+                || $this->hasConfiguredCredential('server.auth.role_signature_keys'),
             default => false,
         };
 
@@ -71,7 +73,29 @@ final class WorkflowCommandContextFactory
         return array_filter([
             'status' => $this->forwardedAttributionValue($request, 'auth_status') ?? $defaultStatus,
             'method' => $this->forwardedAttributionValue($request, 'auth_method') ?? $defaultMethod,
+            'role' => $request->attributes->get(\App\Http\Middleware\Authenticate::ATTRIBUTE_ROLE),
         ], static fn (mixed $value): bool => $value !== null && $value !== '');
+    }
+
+    private function hasConfiguredCredential(string $key): bool
+    {
+        $value = config($key);
+
+        if (is_string($value)) {
+            return $value !== '';
+        }
+
+        if (! is_array($value)) {
+            return false;
+        }
+
+        foreach ($value as $item) {
+            if (is_string($item) && $item !== '') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

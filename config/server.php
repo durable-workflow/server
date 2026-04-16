@@ -51,7 +51,9 @@ return [
     |
     | Controls how the server authenticates incoming API requests.
     |
-    | Supported drivers: "none", "token", "signature"
+    | Supported drivers: "none", "token", "signature". Role-scoped tokens
+    | and signature keys separate worker, operator, and admin access while
+    | preserving the legacy single credential when role credentials are absent.
     |
     */
 
@@ -59,6 +61,17 @@ return [
         'driver' => env('WORKFLOW_SERVER_AUTH_DRIVER', 'token'),
         'token' => env('WORKFLOW_SERVER_AUTH_TOKEN'),
         'signature_key' => env('WORKFLOW_SERVER_SIGNATURE_KEY'),
+        'role_tokens' => [
+            'worker' => env('WORKFLOW_SERVER_WORKER_TOKEN'),
+            'operator' => env('WORKFLOW_SERVER_OPERATOR_TOKEN'),
+            'admin' => env('WORKFLOW_SERVER_ADMIN_TOKEN'),
+        ],
+        'role_signature_keys' => [
+            'worker' => env('WORKFLOW_SERVER_WORKER_SIGNATURE_KEY'),
+            'operator' => env('WORKFLOW_SERVER_OPERATOR_SIGNATURE_KEY'),
+            'admin' => env('WORKFLOW_SERVER_ADMIN_SIGNATURE_KEY'),
+        ],
+        'backward_compatible' => (bool) env('WORKFLOW_SERVER_AUTH_BACKWARD_COMPATIBLE', true),
     ],
 
     /*
