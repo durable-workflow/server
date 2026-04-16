@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Models\SearchAttributeDefinition;
+use App\Support\ControlPlaneProtocol;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -16,6 +17,10 @@ class SearchAttributeController
      */
     public function index(Request $request): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $namespace = $request->attributes->get('namespace');
 
         $customAttributes = SearchAttributeDefinition::query()
@@ -41,6 +46,10 @@ class SearchAttributeController
      */
     public function store(Request $request): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $namespace = $request->attributes->get('namespace');
 
         $validated = $request->validate([
@@ -114,6 +123,10 @@ class SearchAttributeController
      */
     public function destroy(Request $request, string $name): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $namespace = $request->attributes->get('namespace');
 
         if (array_key_exists($name, SearchAttributeDefinition::SYSTEM_ATTRIBUTES)) {

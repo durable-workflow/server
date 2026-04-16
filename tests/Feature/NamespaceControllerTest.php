@@ -3,12 +3,22 @@
 namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
+use App\Support\ControlPlaneProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 class NamespaceControllerTest extends TestCase
 {
     use RefreshDatabase;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->withHeaders([
+            'X-Durable-Workflow-Control-Plane-Version' => ControlPlaneProtocol::VERSION,
+        ]);
+    }
 
     public function test_it_lists_namespaces(): void
     {

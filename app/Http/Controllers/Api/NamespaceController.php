@@ -3,13 +3,18 @@
 namespace App\Http\Controllers\Api;
 
 use App\Models\WorkflowNamespace;
+use App\Support\ControlPlaneProtocol;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class NamespaceController
 {
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $namespaces = WorkflowNamespace::all();
 
         return response()->json([
@@ -26,6 +31,10 @@ class NamespaceController
 
     public function store(Request $request): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:128', 'regex:/^[a-zA-Z0-9._-]+$/'],
             'description' => ['nullable', 'string', 'max:1000'],
@@ -57,8 +66,12 @@ class NamespaceController
         ], 201);
     }
 
-    public function show(string $namespace): JsonResponse
+    public function show(Request $request, string $namespace): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $ns = WorkflowNamespace::where('name', strtolower($namespace))->firstOrFail();
 
         return response()->json([
@@ -73,6 +86,10 @@ class NamespaceController
 
     public function update(Request $request, string $namespace): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $ns = WorkflowNamespace::where('name', strtolower($namespace))->firstOrFail();
 
         $validated = $request->validate([

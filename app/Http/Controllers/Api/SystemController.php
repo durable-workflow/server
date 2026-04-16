@@ -21,6 +21,10 @@ class SystemController
 {
     public function repairPass(Request $request): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $runIds = is_array($request->input('run_ids'))
             ? array_values(array_filter(array_map(
                 static fn (mixed $v): string => is_scalar($v) ? trim((string) $v) : '',
@@ -44,16 +48,24 @@ class SystemController
         return ControlPlaneProtocol::json($report, $hasFailures ? 207 : 200);
     }
 
-    public function repairStatus(): JsonResponse
+    public function repairStatus(Request $request): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         return ControlPlaneProtocol::json([
             'policy' => TaskRepairPolicy::snapshot(),
             'candidates' => TaskRepairCandidates::snapshot(),
         ]);
     }
 
-    public function activityTimeoutStatus(): JsonResponse
+    public function activityTimeoutStatus(Request $request): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $limit = 100;
         $expiredIds = ActivityTimeoutEnforcer::expiredExecutionIds($limit);
 
@@ -67,6 +79,10 @@ class SystemController
 
     public function activityTimeoutEnforcePass(Request $request): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $limit = min(100, max(1, (int) ($request->input('limit') ?? 100)));
 
         $executionIds = is_array($request->input('execution_ids'))
@@ -135,6 +151,10 @@ class SystemController
 
     public function retentionStatus(Request $request): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $namespace = $request->attributes->get('namespace');
         $limit = min(100, max(1, (int) ($request->query('limit') ?? 100)));
 
@@ -165,6 +185,10 @@ class SystemController
 
     public function retentionEnforcePass(Request $request): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $namespace = $request->attributes->get('namespace');
         $limit = min(100, max(1, (int) ($request->input('limit') ?? 100)));
 

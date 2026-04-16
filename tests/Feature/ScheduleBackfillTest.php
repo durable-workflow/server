@@ -519,6 +519,7 @@ class ScheduleBackfillTest extends TestCase
     {
         return [
             'X-Namespace' => $namespace,
+            'X-Durable-Workflow-Control-Plane-Version' => \App\Support\ControlPlaneProtocol::VERSION,
         ];
     }
 }

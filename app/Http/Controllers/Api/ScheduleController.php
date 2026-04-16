@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Support\ControlPlaneProtocol;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -14,6 +15,10 @@ class ScheduleController
 {
     public function index(Request $request): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $namespace = $request->attributes->get('namespace');
 
         $schedules = WorkflowSchedule::query()
@@ -32,6 +37,10 @@ class ScheduleController
 
     public function store(Request $request): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $namespace = $request->attributes->get('namespace');
 
         $validated = $request->validate($this->storeRules());
@@ -88,6 +97,10 @@ class ScheduleController
 
     public function show(Request $request, string $scheduleId): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $schedule = $this->findOrFail($request, $scheduleId);
 
         if ($schedule instanceof JsonResponse) {
@@ -99,6 +112,10 @@ class ScheduleController
 
     public function update(Request $request, string $scheduleId): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $schedule = $this->findOrFail($request, $scheduleId);
 
         if ($schedule instanceof JsonResponse) {
@@ -139,6 +156,10 @@ class ScheduleController
 
     public function destroy(Request $request, string $scheduleId): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $schedule = $this->findOrFail($request, $scheduleId);
 
         if ($schedule instanceof JsonResponse) {
@@ -155,6 +176,10 @@ class ScheduleController
 
     public function pause(Request $request, string $scheduleId): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $schedule = $this->findOrFail($request, $scheduleId);
 
         if ($schedule instanceof JsonResponse) {
@@ -175,6 +200,10 @@ class ScheduleController
 
     public function resume(Request $request, string $scheduleId): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $schedule = $this->findOrFail($request, $scheduleId);
 
         if ($schedule instanceof JsonResponse) {
@@ -201,6 +230,10 @@ class ScheduleController
 
     public function trigger(Request $request, string $scheduleId): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $schedule = $this->findOrFail($request, $scheduleId);
 
         if ($schedule instanceof JsonResponse) {
@@ -252,6 +285,10 @@ class ScheduleController
 
     public function backfill(Request $request, string $scheduleId): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $schedule = $this->findOrFail($request, $scheduleId);
 
         if ($schedule instanceof JsonResponse) {

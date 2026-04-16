@@ -16,6 +16,10 @@ class TaskQueueController
 
     public function index(Request $request): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $namespace = (string) $request->attributes->get('namespace');
 
         return ControlPlaneProtocol::json(
@@ -30,6 +34,10 @@ class TaskQueueController
 
     public function show(Request $request, string $taskQueue): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $namespace = (string) $request->attributes->get('namespace');
 
         return ControlPlaneProtocol::json(

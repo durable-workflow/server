@@ -11,6 +11,10 @@ class WorkerManagementController
 {
     public function index(Request $request): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $namespace = $request->attributes->get('namespace');
 
         $query = WorkerRegistration::query()
@@ -55,6 +59,10 @@ class WorkerManagementController
 
     public function show(Request $request, string $workerId): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $namespace = $request->attributes->get('namespace');
 
         $worker = WorkerRegistration::query()
@@ -97,6 +105,10 @@ class WorkerManagementController
 
     public function destroy(Request $request, string $workerId): JsonResponse
     {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
         $namespace = $request->attributes->get('namespace');
 
         $worker = WorkerRegistration::query()
