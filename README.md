@@ -80,6 +80,7 @@ The bootstrap seeds a `default` namespace. To create a dedicated one:
 curl -X POST $SERVER/api/namespaces \
   -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
+  -H "X-Durable-Workflow-Control-Plane-Version: 2" \
   -d '{"name":"my-app","description":"My application namespace","retention_days":30}'
 ```
 
@@ -300,13 +301,19 @@ curl "$SERVER/api/workflows/order-42/runs/abc123/history" \
 - `GET /api/workflows/{id}/runs/{runId}/history` — Get event history
 - `GET /api/workflows/{id}/runs/{runId}/history/export` — Export replay bundle
 
-Workflow and history control-plane requests must send
-`X-Durable-Workflow-Control-Plane-Version: 2`. Requests without that header or
+Every non-health, non-discovery control-plane endpoint must send
+`X-Durable-Workflow-Control-Plane-Version: 2` on the request. That
+covers namespace, schedule, search-attribute, task-queue, worker-management,
+system, workflow, and history endpoints. Requests without that header or
 with legacy `wait_policy` fields are rejected. Workflow and history responses
 always return the same header. The v2 canonical workflow command fields are
 `workflow_id`, `command_status`, `outcome`, plus `signal_name`, `query_name`,
 or `update_name` where applicable and, for updates, `wait_for`,
 `wait_timed_out`, and `wait_timeout_seconds`.
+
+Only `GET /api/health` and `GET /api/cluster/info` are exempt — those two
+endpoints are intentionally version-free so clients can probe liveness and
+discover the supported control-plane version before adopting it.
 
 Workflow control-plane responses also publish a nested, independently versioned
 `control_plane.contract` boundary with:
@@ -426,7 +433,9 @@ operations such as `/api/system/*`, namespace creation/update, and worker
 deletion, and can also use operator endpoints.
 
 ```bash
-curl -H "Authorization: Bearer operator-secret" http://localhost:8080/api/workflows
+curl -H "Authorization: Bearer operator-secret" \
+     -H "X-Durable-Workflow-Control-Plane-Version: 2" \
+     http://localhost:8080/api/workflows
 ```
 
 Existing deployments can keep `WORKFLOW_SERVER_AUTH_TOKEN`. When no role tokens
@@ -448,7 +457,9 @@ WORKFLOW_SERVER_ADMIN_SIGNATURE_KEY=admin-hmac-key
 
 ```bash
 # HMAC-SHA256 of the request body
-curl -H "X-Signature: COMPUTED_SIGNATURE" http://localhost:8080/api/workflows
+curl -H "X-Signature: COMPUTED_SIGNATURE" \
+     -H "X-Durable-Workflow-Control-Plane-Version: 2" \
+     http://localhost:8080/api/workflows
 ```
 
 The legacy `WORKFLOW_SERVER_SIGNATURE_KEY` follows the same compatibility rule
