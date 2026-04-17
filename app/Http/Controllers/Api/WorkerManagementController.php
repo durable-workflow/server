@@ -71,7 +71,7 @@ class WorkerManagementController
             ->first();
 
         if (! $worker) {
-            return response()->json([
+            return ControlPlaneProtocol::json([
                 'message' => sprintf(
                     'Worker [%s] not found in namespace [%s].',
                     $workerId,
@@ -117,7 +117,7 @@ class WorkerManagementController
             ->first();
 
         if (! $worker) {
-            return response()->json([
+            return ControlPlaneProtocol::json([
                 'message' => sprintf(
                     'Worker [%s] not found in namespace [%s].',
                     $workerId,

@@ -32,7 +32,7 @@ class SearchAttributeController
             ])
             ->all();
 
-        return response()->json([
+        return ControlPlaneProtocol::json([
             'system_attributes' => SearchAttributeDefinition::SYSTEM_ATTRIBUTES,
             'custom_attributes' => $customAttributes,
         ]);
@@ -58,7 +58,7 @@ class SearchAttributeController
         ]);
 
         if (array_key_exists($validated['name'], SearchAttributeDefinition::SYSTEM_ATTRIBUTES)) {
-            return response()->json([
+            return ControlPlaneProtocol::json([
                 'message' => sprintf(
                     'The name [%s] is reserved as a system search attribute.',
                     $validated['name'],
@@ -73,7 +73,7 @@ class SearchAttributeController
             ->first();
 
         if ($existing) {
-            return response()->json([
+            return ControlPlaneProtocol::json([
                 'message' => sprintf(
                     'A custom search attribute [%s] already exists in namespace [%s].',
                     $validated['name'],
@@ -91,7 +91,7 @@ class SearchAttributeController
             ->count();
 
         if ($currentCount >= $maxAttributes) {
-            return response()->json([
+            return ControlPlaneProtocol::json([
                 'message' => sprintf(
                     'Namespace [%s] has reached the maximum of %d custom search attributes.',
                     $namespace,
@@ -108,7 +108,7 @@ class SearchAttributeController
             'type' => $validated['type'],
         ]);
 
-        return response()->json([
+        return ControlPlaneProtocol::json([
             'name' => $definition->name,
             'type' => $definition->type,
             'outcome' => 'created',
@@ -130,7 +130,7 @@ class SearchAttributeController
         $namespace = $request->attributes->get('namespace');
 
         if (array_key_exists($name, SearchAttributeDefinition::SYSTEM_ATTRIBUTES)) {
-            return response()->json([
+            return ControlPlaneProtocol::json([
                 'message' => sprintf(
                     'The system search attribute [%s] cannot be removed.',
                     $name,
@@ -145,7 +145,7 @@ class SearchAttributeController
             ->first();
 
         if (! $definition) {
-            return response()->json([
+            return ControlPlaneProtocol::json([
                 'message' => sprintf(
                     'Custom search attribute [%s] not found in namespace [%s].',
                     $name,
@@ -157,7 +157,7 @@ class SearchAttributeController
 
         $definition->delete();
 
-        return response()->json([
+        return ControlPlaneProtocol::json([
             'name' => $name,
             'outcome' => 'deleted',
         ]);

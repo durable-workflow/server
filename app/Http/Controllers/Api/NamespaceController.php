@@ -17,7 +17,7 @@ class NamespaceController
 
         $namespaces = WorkflowNamespace::all();
 
-        return response()->json([
+        return ControlPlaneProtocol::json([
             'namespaces' => $namespaces->map(fn (WorkflowNamespace $ns) => [
                 'name' => $ns->name,
                 'description' => $ns->description,
@@ -44,7 +44,7 @@ class NamespaceController
         $validated['name'] = strtolower($validated['name']);
 
         if (WorkflowNamespace::where('name', $validated['name'])->exists()) {
-            return response()->json([
+            return ControlPlaneProtocol::json([
                 'error' => 'Namespace already exists.',
                 'namespace' => $validated['name'],
             ], 409);
@@ -57,7 +57,7 @@ class NamespaceController
             'status' => 'active',
         ]);
 
-        return response()->json([
+        return ControlPlaneProtocol::json([
             'name' => $namespace->name,
             'description' => $namespace->description,
             'retention_days' => $namespace->retention_days,
@@ -74,7 +74,7 @@ class NamespaceController
 
         $ns = WorkflowNamespace::where('name', strtolower($namespace))->firstOrFail();
 
-        return response()->json([
+        return ControlPlaneProtocol::json([
             'name' => $ns->name,
             'description' => $ns->description,
             'retention_days' => $ns->retention_days,
@@ -99,7 +99,7 @@ class NamespaceController
 
         $ns->update(array_filter($validated, fn ($v) => $v !== null));
 
-        return response()->json([
+        return ControlPlaneProtocol::json([
             'name' => $ns->name,
             'description' => $ns->description,
             'retention_days' => $ns->retention_days,

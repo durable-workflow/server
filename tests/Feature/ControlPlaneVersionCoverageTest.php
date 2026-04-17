@@ -120,6 +120,62 @@ class ControlPlaneVersionCoverageTest extends TestCase
     }
 
     /**
+     * Response-side contract: rejection payloads themselves must advertise the
+     * supported control-plane version so clients can key retry/upgrade logic
+     * off a single header regardless of whether the request was accepted.
+     *
+     * @dataProvider controlPlaneEndpointProvider
+     *
+     * @param  array<string, mixed>  $body
+     */
+    public function test_endpoint_rejection_response_carries_version_header(string $method, string $path, array $body = []): void
+    {
+        $response = $this->sendJson($method, $path, $body, [
+            'X-Namespace' => 'default',
+        ]);
+
+        $response->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION);
+    }
+
+    /**
+     * @return array<string, array{method: string, path: string, expected: int, body?: array<string, mixed>}>
+     */
+    public static function controlPlaneSuccessEndpointProvider(): array
+    {
+        return [
+            // 200-series responses produced without workflow fixtures. These
+            // cover the "successful response" path — the one that used to
+            // return through response()->json(...) and silently omit the
+            // control-plane version header.
+            'namespaces.index' => ['method' => 'get', 'path' => '/api/namespaces', 'expected' => 200],
+            'namespaces.show' => ['method' => 'get', 'path' => '/api/namespaces/default', 'expected' => 200],
+            'schedules.index' => ['method' => 'get', 'path' => '/api/schedules', 'expected' => 200],
+            'search-attributes.index' => ['method' => 'get', 'path' => '/api/search-attributes', 'expected' => 200],
+            'workers.index' => ['method' => 'get', 'path' => '/api/workers', 'expected' => 200],
+            // 404-style responses from controllers that previously returned
+            // through response()->json(...) on the not-found path.
+            'schedules.show_missing' => ['method' => 'get', 'path' => '/api/schedules/does-not-exist', 'expected' => 404],
+            'workers.show_missing' => ['method' => 'get', 'path' => '/api/workers/does-not-exist', 'expected' => 404],
+        ];
+    }
+
+    /**
+     * @dataProvider controlPlaneSuccessEndpointProvider
+     *
+     * @param  array<string, mixed>  $body
+     */
+    public function test_endpoint_successful_response_carries_version_header(string $method, string $path, int $expected, array $body = []): void
+    {
+        $response = $this->sendJson($method, $path, $body, [
+            'X-Namespace' => 'default',
+            'X-Durable-Workflow-Control-Plane-Version' => ControlPlaneProtocol::VERSION,
+        ]);
+
+        $response->assertStatus($expected);
+        $response->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION);
+    }
+
+    /**
      * @param  array<string, mixed>  $body
      * @param  array<string, string>  $headers
      */

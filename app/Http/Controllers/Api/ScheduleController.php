@@ -29,7 +29,7 @@ class ScheduleController
             ->map(fn (WorkflowSchedule $s) => $this->formatListItem($s))
             ->all();
 
-        return response()->json([
+        return ControlPlaneProtocol::json([
             'schedules' => $schedules,
             'next_page_token' => null,
         ]);
@@ -58,7 +58,7 @@ class ScheduleController
             ->first();
 
         if ($existing) {
-            return response()->json([
+            return ControlPlaneProtocol::json([
                 'message' => sprintf(
                     'Schedule [%s] already exists in namespace [%s].',
                     $scheduleId,
@@ -89,7 +89,7 @@ class ScheduleController
             ScheduleManager::pause($schedule);
         }
 
-        return response()->json([
+        return ControlPlaneProtocol::json([
             'schedule_id' => $scheduleId,
             'outcome' => 'created',
         ], 201);
@@ -107,7 +107,7 @@ class ScheduleController
             return $schedule;
         }
 
-        return response()->json($this->formatDetail($schedule));
+        return ControlPlaneProtocol::json($this->formatDetail($schedule));
     }
 
     public function update(Request $request, string $scheduleId): JsonResponse
@@ -148,7 +148,7 @@ class ScheduleController
             maxRuns: isset($validated['max_runs']) ? (int) $validated['max_runs'] : null,
         );
 
-        return response()->json([
+        return ControlPlaneProtocol::json([
             'schedule_id' => $scheduleId,
             'outcome' => 'updated',
         ]);
@@ -168,7 +168,7 @@ class ScheduleController
 
         ScheduleManager::delete($schedule);
 
-        return response()->json([
+        return ControlPlaneProtocol::json([
             'schedule_id' => $scheduleId,
             'outcome' => 'deleted',
         ]);
@@ -192,7 +192,7 @@ class ScheduleController
 
         ScheduleManager::pause($schedule, $validated['note'] ?? null);
 
-        return response()->json([
+        return ControlPlaneProtocol::json([
             'schedule_id' => $scheduleId,
             'outcome' => 'paused',
         ]);
@@ -222,7 +222,7 @@ class ScheduleController
             $schedule->save();
         }
 
-        return response()->json([
+        return ControlPlaneProtocol::json([
             'schedule_id' => $scheduleId,
             'outcome' => 'resumed',
         ]);
@@ -251,7 +251,7 @@ class ScheduleController
         try {
             $result = ScheduleManager::triggerDetailed($schedule, $overlap);
         } catch (\Throwable $e) {
-            return response()->json([
+            return ControlPlaneProtocol::json([
                 'schedule_id' => $scheduleId,
                 'outcome' => 'trigger_failed',
                 'reason' => $e->getMessage(),
@@ -259,23 +259,23 @@ class ScheduleController
         }
 
         return match ($result->outcome) {
-            'triggered' => response()->json([
+            'triggered' => ControlPlaneProtocol::json([
                 'schedule_id' => $scheduleId,
                 'outcome' => 'triggered',
                 'workflow_id' => $result->instanceId,
                 'run_id' => $result->runId,
             ]),
-            'buffered' => response()->json([
+            'buffered' => ControlPlaneProtocol::json([
                 'schedule_id' => $scheduleId,
                 'outcome' => 'buffered',
                 'buffer_depth' => count($schedule->fresh()->buffered_actions ?? []),
             ]),
-            'buffer_full' => response()->json([
+            'buffer_full' => ControlPlaneProtocol::json([
                 'schedule_id' => $scheduleId,
                 'outcome' => 'buffer_full',
                 'reason' => 'Previous workflow is still running and buffer is at capacity.',
             ]),
-            default => response()->json([
+            default => ControlPlaneProtocol::json([
                 'schedule_id' => $scheduleId,
                 'outcome' => 'skipped',
                 'reason' => $result->reason,
@@ -305,7 +305,7 @@ class ScheduleController
         $endTime = new \DateTimeImmutable($validated['end_time']);
 
         if ($endTime <= $startTime) {
-            return response()->json([
+            return ControlPlaneProtocol::json([
                 'message' => 'end_time must be after start_time.',
                 'reason' => 'invalid_time_range',
             ], 422);
@@ -324,7 +324,7 @@ class ScheduleController
             'reason' => $row['error'] ?? null,
         ], static fn (mixed $v): bool => $v !== null), $occurrences);
 
-        return response()->json([
+        return ControlPlaneProtocol::json([
             'schedule_id' => $scheduleId,
             'outcome' => 'backfill_started',
             'fires_attempted' => count($results),
@@ -346,7 +346,7 @@ class ScheduleController
             ->first();
 
         if (! $schedule) {
-            return response()->json([
+            return ControlPlaneProtocol::json([
                 'message' => sprintf(
                     'Schedule [%s] not found in namespace [%s].',
                     $scheduleId,
@@ -401,7 +401,7 @@ class ScheduleController
         $maxMemoBytes = (int) config('server.limits.max_memo_bytes', 256 * 1024);
 
         if ($memoSize > $maxMemoBytes) {
-            return response()->json([
+            return ControlPlaneProtocol::json([
                 'message' => sprintf('The memo exceeds the maximum allowed size of %d bytes.', $maxMemoBytes),
                 'reason' => 'memo_too_large',
                 'limit' => $maxMemoBytes,
