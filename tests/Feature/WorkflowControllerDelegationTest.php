@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Mockery\MockInterface;
+use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Models\WorkflowInstance;
@@ -11,6 +12,14 @@ use Workflow\V2\Models\WorkflowInstance;
 class WorkflowControllerDelegationTest extends TestCase
 {
     use RefreshDatabase;
+    use ServerTestHelpers;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->createNamespace('default');
+    }
 
     public function test_control_plane_command_endpoints_delegate_to_the_gateway(): void
     {

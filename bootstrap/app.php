@@ -18,7 +18,6 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->api(prepend: [
             \App\Http\Middleware\EnforcePayloadLimits::class,
-            \App\Http\Middleware\NamespaceResolver::class,
         ]);
         $middleware->api(append: [
             \App\Http\Middleware\CompressResponse::class,

@@ -401,6 +401,12 @@ heartbeat-progress contract before recording the heartbeat.
 ## Authentication
 
 Set the `X-Namespace` header to target a specific namespace (defaults to `default`).
+Requests that name a namespace which is not registered receive a `404` with
+`reason: "namespace_not_found"`; register the namespace via
+`POST /api/namespaces` before directing traffic to it. The namespace
+administration endpoints (`/api/namespaces/**`), cluster discovery
+(`/api/cluster/info`), and the unauthenticated `/api/health` probe are exempt
+from this check.
 
 ### Token Authentication
 

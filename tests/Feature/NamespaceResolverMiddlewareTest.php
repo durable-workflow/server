@@ -154,6 +154,114 @@ class NamespaceResolverMiddlewareTest extends TestCase
         $this->assertGreaterThanOrEqual(2, count($response->json('namespaces')));
     }
 
+    // ── Unknown namespaces are rejected ────────────────────────────
+
+    public function test_unknown_namespace_in_header_returns_404(): void
+    {
+        $response = $this->withHeaders($this->controlPlaneHeaders(['X-Namespace' => 'nope-not-here']))
+            ->getJson('/api/schedules');
+
+        $response->assertStatus(404);
+        $response->assertJson([
+            'reason' => 'namespace_not_found',
+            'namespace' => 'nope-not-here',
+        ]);
+        $this->assertStringContainsString('does not exist', $response->json('message'));
+        $this->assertNotEmpty($response->json('remediation'));
+    }
+
+    public function test_unknown_namespace_in_query_parameter_returns_404(): void
+    {
+        $response = $this->withHeaders($this->controlPlaneHeaders())
+            ->getJson('/api/schedules?namespace=also-missing');
+
+        $response->assertStatus(404);
+        $response->assertJson([
+            'reason' => 'namespace_not_found',
+            'namespace' => 'also-missing',
+        ]);
+    }
+
+    public function test_unknown_default_namespace_from_config_returns_404(): void
+    {
+        config(['server.default_namespace' => 'never-seeded']);
+
+        $response = $this->withHeaders($this->controlPlaneHeaders())
+            ->getJson('/api/schedules');
+
+        $response->assertStatus(404);
+        $response->assertJson([
+            'reason' => 'namespace_not_found',
+            'namespace' => 'never-seeded',
+        ]);
+    }
+
+    public function test_unknown_namespace_is_rejected_for_worker_endpoints(): void
+    {
+        $response = $this->withHeaders([
+            'X-Namespace' => 'ghost-namespace',
+            'X-Durable-Workflow-Protocol-Version' => '1.0',
+        ])->postJson('/api/worker/register', [
+            'worker_id' => 'w-1',
+            'task_queue' => 'default',
+            'supported_workflow_types' => [],
+            'supported_activity_types' => [],
+        ]);
+
+        $response->assertStatus(404);
+        $response->assertJson([
+            'reason' => 'namespace_not_found',
+            'namespace' => 'ghost-namespace',
+        ]);
+    }
+
+    // ── Exempt paths still accept unknown namespaces ───────────────
+
+    public function test_namespace_crud_list_is_exempt_from_validation(): void
+    {
+        // An unknown X-Namespace header must not block the caller from
+        // managing namespaces — they may be about to create it.
+        $response = $this->withHeaders($this->controlPlaneHeaders(['X-Namespace' => 'does-not-exist']))
+            ->getJson('/api/namespaces');
+
+        $response->assertOk();
+    }
+
+    public function test_namespace_crud_show_is_exempt_from_middleware_validation(): void
+    {
+        // The namespace being shown is resolved from the path, not the header —
+        // the middleware should not reject the request just because the
+        // X-Namespace header refers to a different unknown namespace.
+        $response = $this->withHeaders($this->controlPlaneHeaders(['X-Namespace' => 'unknown-namespace']))
+            ->getJson('/api/namespaces/production');
+
+        $response->assertOk();
+        $this->assertEquals('production', $response->json('name'));
+    }
+
+    public function test_namespace_crud_store_is_exempt_from_validation(): void
+    {
+        $response = $this->withHeaders($this->controlPlaneHeaders(['X-Namespace' => 'not-yet-created']))
+            ->postJson('/api/namespaces', [
+                'name' => 'new-ns',
+                'description' => 'Freshly minted',
+                'retention_days' => 7,
+            ]);
+
+        $response->assertCreated();
+        $this->assertDatabaseHas('workflow_namespaces', [
+            'name' => 'new-ns',
+        ]);
+    }
+
+    public function test_cluster_info_endpoint_is_exempt_from_validation(): void
+    {
+        $response = $this->withHeaders($this->controlPlaneHeaders(['X-Namespace' => 'unknown']))
+            ->getJson('/api/cluster/info');
+
+        $response->assertOk();
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────
 
     /**

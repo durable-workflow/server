@@ -14,6 +14,13 @@ class TransportRepairTest extends TestCase
     use RefreshDatabase;
     use ServerTestHelpers;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->createNamespace('default');
+    }
+
     // ── Cluster Info Repair Diagnostics ─────────────────────────────
 
     public function test_cluster_info_includes_task_repair_diagnostics(): void

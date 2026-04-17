@@ -591,6 +591,8 @@ class WorkflowControlPlaneTest extends TestCase
             'server.auth.token' => 'server-token',
         ]);
 
+        $this->createNamespace('default', 'Default namespace');
+
         $this->withHeaders([
             'Authorization' => 'Bearer server-token',
             'X-Namespace' => 'default',

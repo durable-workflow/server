@@ -23,6 +23,13 @@ class ActivityTimeoutTest extends TestCase
     use RefreshDatabase;
     use ServerTestHelpers;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->createNamespace('default');
+    }
+
     // ── Activity Timeout Status Endpoint ────────────────────────────
 
     public function test_activity_timeout_status_returns_empty_when_no_expired(): void

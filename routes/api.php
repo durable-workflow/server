@@ -28,7 +28,7 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('/health', [HealthController::class, 'check']);
 
-Route::middleware(Authenticate::class)->group(function () {
+Route::middleware([Authenticate::class, \App\Http\Middleware\NamespaceResolver::class])->group(function () {
     $admin = RequireRole::class.':admin';
     $operator = RequireRole::class.':operator,admin';
     $worker = RequireRole::class.':worker';

@@ -372,6 +372,7 @@ class WorkflowWorkerProtocolTest extends TestCase
     {
         $this->createNamespace('default', 'Default namespace');
         $this->createNamespace('other', 'Other namespace');
+        $this->createNamespace('missing', 'Namespace with no matching worker');
 
         $otherHeartbeatAt = now()->subHours(2)->startOfSecond();
         $defaultHeartbeatAt = now()->subHour()->startOfSecond();
