@@ -152,6 +152,73 @@ class RoleAuthorizationTest extends TestCase
             ->assertJsonPath('role', 'admin');
     }
 
+    // ── TD-S049: namespace existence must not leak through role-gated endpoints ──
+
+    public function test_wrong_role_token_cannot_observe_namespace_existence_through_workflows(): void
+    {
+        $this->configureRoleTokens();
+
+        // A worker-role token hitting an operator-gated endpoint gets 403 whether
+        // the namespace exists or not — the namespace check must not run before
+        // the role check.
+        $this->withHeaders($this->controlHeaders('worker-token', 'default'))
+            ->getJson('/api/workflows')
+            ->assertForbidden()
+            ->assertJsonPath('reason', 'forbidden')
+            ->assertJsonMissing(['reason' => 'namespace_not_found']);
+
+        $this->withHeaders($this->controlHeaders('worker-token', 'ghost-namespace'))
+            ->getJson('/api/workflows')
+            ->assertForbidden()
+            ->assertJsonPath('reason', 'forbidden')
+            ->assertJsonMissing(['reason' => 'namespace_not_found']);
+    }
+
+    public function test_wrong_role_token_cannot_observe_namespace_existence_through_worker_register(): void
+    {
+        $this->configureRoleTokens();
+
+        // An operator-role token hitting a worker-gated endpoint gets 403 whether
+        // the namespace exists or not.
+        $this->withHeaders($this->workerHeadersFor('operator-token', 'default'))
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'w-probe',
+                'task_queue' => 'default',
+                'runtime' => 'python',
+            ])
+            ->assertForbidden()
+            ->assertJsonPath('reason', 'forbidden')
+            ->assertJsonMissing(['reason' => 'namespace_not_found']);
+
+        $this->withHeaders($this->workerHeadersFor('operator-token', 'ghost-namespace'))
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'w-probe',
+                'task_queue' => 'default',
+                'runtime' => 'python',
+            ])
+            ->assertForbidden()
+            ->assertJsonPath('reason', 'forbidden')
+            ->assertJsonMissing(['reason' => 'namespace_not_found']);
+    }
+
+    public function test_wrong_role_token_cannot_observe_namespace_existence_through_system_routes(): void
+    {
+        $this->configureRoleTokens();
+
+        // An operator token hitting admin-only /system/* gets 403 for any namespace.
+        $this->withHeaders($this->controlHeaders('operator-token', 'default'))
+            ->getJson('/api/system/retention')
+            ->assertForbidden()
+            ->assertJsonPath('reason', 'forbidden')
+            ->assertJsonMissing(['reason' => 'namespace_not_found']);
+
+        $this->withHeaders($this->controlHeaders('operator-token', 'ghost-namespace'))
+            ->getJson('/api/system/retention')
+            ->assertForbidden()
+            ->assertJsonPath('reason', 'forbidden')
+            ->assertJsonMissing(['reason' => 'namespace_not_found']);
+    }
+
     public function test_signature_role_keys_enforce_role_boundaries_without_legacy_key(): void
     {
         config([
@@ -195,9 +262,17 @@ class RoleAuthorizationTest extends TestCase
      */
     private function workerHeaders(string $token): array
     {
+        return $this->workerHeadersFor($token, 'default');
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function workerHeadersFor(string $token, string $namespace): array
+    {
         return [
             'Authorization' => "Bearer {$token}",
-            'X-Namespace' => 'default',
+            'X-Namespace' => $namespace,
             'X-Durable-Workflow-Protocol-Version' => '1.0',
         ];
     }
@@ -205,11 +280,11 @@ class RoleAuthorizationTest extends TestCase
     /**
      * @return array<string, string>
      */
-    private function controlHeaders(string $token): array
+    private function controlHeaders(string $token, string $namespace = 'default'): array
     {
         return [
             'Authorization' => "Bearer {$token}",
-            'X-Namespace' => 'default',
+            'X-Namespace' => $namespace,
             'X-Durable-Workflow-Control-Plane-Version' => '2',
         ];
     }

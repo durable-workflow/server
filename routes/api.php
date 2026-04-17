@@ -28,25 +28,29 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('/health', [HealthController::class, 'check']);
 
-Route::middleware([Authenticate::class, \App\Http\Middleware\NamespaceResolver::class])->group(function () {
+// NamespaceResolver is intentionally applied AFTER route-level RequireRole,
+// so wrong-role tokens cannot observe namespace existence via a 404/403
+// difference on role-gated endpoints (TD-S049).
+Route::middleware([Authenticate::class])->group(function () {
     $admin = RequireRole::class.':admin';
     $operator = RequireRole::class.':operator,admin';
     $worker = RequireRole::class.':worker';
     $authenticated = RequireRole::class.':worker,operator,admin';
+    $ns = \App\Http\Middleware\NamespaceResolver::class;
 
     // ── System ───────────────────────────────────────────────────────
-    Route::get('/cluster/info', [HealthController::class, 'clusterInfo'])->middleware($authenticated);
+    Route::get('/cluster/info', [HealthController::class, 'clusterInfo'])->middleware([$authenticated, $ns]);
 
     // ── Namespaces ───────────────────────────────────────────────────
-    Route::prefix('namespaces')->group(function () use ($admin, $operator) {
-        Route::get('/', [NamespaceController::class, 'index'])->middleware($operator);
-        Route::post('/', [NamespaceController::class, 'store'])->middleware($admin);
-        Route::get('/{namespace}', [NamespaceController::class, 'show'])->middleware($operator);
-        Route::put('/{namespace}', [NamespaceController::class, 'update'])->middleware($admin);
+    Route::prefix('namespaces')->group(function () use ($admin, $operator, $ns) {
+        Route::get('/', [NamespaceController::class, 'index'])->middleware([$operator, $ns]);
+        Route::post('/', [NamespaceController::class, 'store'])->middleware([$admin, $ns]);
+        Route::get('/{namespace}', [NamespaceController::class, 'show'])->middleware([$operator, $ns]);
+        Route::put('/{namespace}', [NamespaceController::class, 'update'])->middleware([$admin, $ns]);
     });
 
     // ── Workflows ────────────────────────────────────────────────────
-    Route::prefix('workflows')->middleware($operator)->group(function () {
+    Route::prefix('workflows')->middleware([$operator, $ns])->group(function () {
         Route::get('/', [WorkflowController::class, 'index']);
         Route::post('/', [WorkflowController::class, 'start']);
         Route::get('/{workflowId}', [WorkflowController::class, 'show']);
@@ -75,7 +79,7 @@ Route::middleware([Authenticate::class, \App\Http\Middleware\NamespaceResolver::
     });
 
     // ── Worker Task Polling ──────────────────────────────────────────
-    Route::prefix('worker')->middleware($worker)->group(function () {
+    Route::prefix('worker')->middleware([$worker, $ns])->group(function () {
         // Registration
         Route::post('/register', [WorkerController::class, 'register']);
         Route::post('/heartbeat', [WorkerController::class, 'heartbeat']);
@@ -95,20 +99,20 @@ Route::middleware([Authenticate::class, \App\Http\Middleware\NamespaceResolver::
     });
 
     // ── Workers (Management) ──────────────────────────────────────────
-    Route::prefix('workers')->group(function () use ($admin, $operator) {
-        Route::get('/', [WorkerManagementController::class, 'index'])->middleware($operator);
-        Route::get('/{workerId}', [WorkerManagementController::class, 'show'])->middleware($operator);
-        Route::delete('/{workerId}', [WorkerManagementController::class, 'destroy'])->middleware($admin);
+    Route::prefix('workers')->group(function () use ($admin, $operator, $ns) {
+        Route::get('/', [WorkerManagementController::class, 'index'])->middleware([$operator, $ns]);
+        Route::get('/{workerId}', [WorkerManagementController::class, 'show'])->middleware([$operator, $ns]);
+        Route::delete('/{workerId}', [WorkerManagementController::class, 'destroy'])->middleware([$admin, $ns]);
     });
 
     // ── Task Queues ──────────────────────────────────────────────────
-    Route::prefix('task-queues')->middleware($operator)->group(function () {
+    Route::prefix('task-queues')->middleware([$operator, $ns])->group(function () {
         Route::get('/', [TaskQueueController::class, 'index']);
         Route::get('/{taskQueue}', [TaskQueueController::class, 'show']);
     });
 
     // ── Schedules ────────────────────────────────────────────────────
-    Route::prefix('schedules')->middleware($operator)->group(function () {
+    Route::prefix('schedules')->middleware([$operator, $ns])->group(function () {
         Route::get('/', [ScheduleController::class, 'index']);
         Route::post('/', [ScheduleController::class, 'store']);
         Route::get('/{scheduleId}', [ScheduleController::class, 'show']);
@@ -121,14 +125,14 @@ Route::middleware([Authenticate::class, \App\Http\Middleware\NamespaceResolver::
     });
 
     // ── Search Attributes ────────────────────────────────────────────
-    Route::prefix('search-attributes')->middleware($operator)->group(function () {
+    Route::prefix('search-attributes')->middleware([$operator, $ns])->group(function () {
         Route::get('/', [SearchAttributeController::class, 'index']);
         Route::post('/', [SearchAttributeController::class, 'store']);
         Route::delete('/{name}', [SearchAttributeController::class, 'destroy']);
     });
 
     // ── System / Operations ─────────────────────────────────────────
-    Route::prefix('system')->middleware($admin)->group(function () {
+    Route::prefix('system')->middleware([$admin, $ns])->group(function () {
         Route::get('/repair', [SystemController::class, 'repairStatus']);
         Route::post('/repair/pass', [SystemController::class, 'repairPass']);
         Route::get('/activity-timeouts', [SystemController::class, 'activityTimeoutStatus']);
