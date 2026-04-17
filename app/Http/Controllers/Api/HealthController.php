@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
 use App\Support\StandaloneWorkerFleet;
 use App\Support\WorkerProtocol;
@@ -80,7 +81,8 @@ class HealthController
             'default_namespace' => config('server.default_namespace'),
             'supported_sdk_versions' => [
                 'php' => '>=1.0',
-                'python' => '>=0.1',
+                'python' => '>=0.2,<1.0',
+                'cli' => '>=0.1,<1.0',
             ],
             'capabilities' => $capabilities,
             'worker_fleet' => $this->workerFleet->summary($namespace),
@@ -93,6 +95,7 @@ class HealthController
                 'max_pending_children' => (int) config('server.limits.max_pending_children', 2000),
             ],
             'structural_limits' => StructuralLimits::snapshot(),
+            'client_compatibility' => ClientCompatibility::info(),
             'control_plane' => ControlPlaneProtocol::info(),
             'worker_protocol' => WorkerProtocol::info(),
         ];

@@ -336,6 +336,13 @@ values, rejected aliases, and removed fields such as start
 `duplicate_policy` and update `wait_for`. Clients should reject missing or
 unknown request-contract schema or version instead of silently guessing.
 
+`GET /api/cluster/info` also includes `client_compatibility`, whose
+`authority` is `protocol_manifests`. The top-level server `version` is build
+identity only; CLI and SDK compatibility must be decided from
+`control_plane.version`, `control_plane.request_contract`, and, for workers,
+`worker_protocol.version`. Unknown, missing, or undiscoverable protocol
+manifests should fail closed.
+
 ### Worker Protocol
 - `POST /api/worker/register` — Register a worker
 - `POST /api/worker/heartbeat` — Worker heartbeat

@@ -7,6 +7,7 @@ use LogicException;
 use Mockery\MockInterface;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Contracts\WorkflowControlPlane;
@@ -46,7 +47,13 @@ class WorkflowStartServiceTest extends TestCase
                             return false;
                         }
 
-                        return Serializer::unserialize((string) ($options['arguments'] ?? '')) === ['Ada'];
+                        $codec = (string) ($options['payload_codec'] ?? '');
+
+                        if ($codec !== CodecRegistry::defaultCodec()) {
+                            return false;
+                        }
+
+                        return Serializer::unserializeWithCodec($codec, (string) ($options['arguments'] ?? '')) === ['Ada'];
                     }),
                 )
                 ->andReturn([
