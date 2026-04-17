@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "08b4e2001f3f5213cd9caf64475d6404",
+    "content-hash": "0f292a1e2955c8debd5e33f7e366a6e3",
     "packages": [
         {
             "name": "apache/avro",
@@ -509,9 +509,10 @@
             "dist": {
                 "type": "path",
                 "url": "../workflow",
-                "reference": "b38634ebc74deeb474c2c96090f3e1ae9083349b"
+                "reference": "a1bc7f57a7c52c8e3a21cb6655b39f37e37fb566"
             },
             "require": {
+                "apache/avro": "^1.12",
                 "laravel/framework": "^9.0|^10.0|^11.0|^12.0|^13.0",
                 "php": "^8.1",
                 "react/promise": "^2.9|^3.0"
@@ -8474,5 +8475,5 @@
     "platform-overrides": {
         "php": "8.3.30"
     },
-    "plugin-api-version": "2.9.0"
+    "plugin-api-version": "2.6.0"
 }
