@@ -8,6 +8,7 @@ use App\Observers\WorkflowRunLineageEntryObserver;
 use App\Observers\WorkflowTaskObserver;
 use App\Support\RemoteScheduleStarter;
 use App\Support\ServiceModeBusDispatcher;
+use App\Support\WorkflowPackageApiFloor;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
 use Illuminate\Support\ServiceProvider;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
@@ -25,6 +26,12 @@ class AppServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        // Assert the installed workflow package meets the API floor this
+        // server depends on. A stale cached install can otherwise produce
+        // hard-to-diagnose fatals on /api/cluster/info or queue capability
+        // failures in service mode.
+        WorkflowPackageApiFloor::assert();
+
         if (config('server.mode') === 'service') {
             $inner = $this->app->make(BusDispatcher::class);
             $this->app->instance(BusDispatcher::class, new ServiceModeBusDispatcher($inner));
