@@ -589,6 +589,31 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $this->assertArrayHasKey('payload_codec', $startFields);
         $this->assertSame('string', $startFields['payload_codec']['type']);
         $this->assertContains('json', $startFields['payload_codec']['canonical_values']);
+        $this->assertContains('avro', $startFields['payload_codec']['canonical_values']);
+    }
+
+    public function test_control_plane_request_contract_omits_engine_specific_codecs_from_canonical_values(): void
+    {
+        $this->createNamespace('default');
+
+        $info = $this->getJson('/api/cluster/info');
+
+        $info->assertOk();
+
+        $startFields = $info->json('control_plane.request_contract.operations.start.fields');
+        $canonical = $startFields['payload_codec']['canonical_values'];
+
+        $this->assertNotContains('workflow-serializer-y', $canonical);
+        $this->assertNotContains('workflow-serializer-base64', $canonical);
+
+        // Engine-specific codecs, when present, are exposed under an
+        // explicitly engine-scoped key so polyglot clients can choose whether
+        // to opt into a codec they know how to decode.
+        $engineSpecific = $startFields['payload_codec']['engine_specific_values'] ?? null;
+        $this->assertIsArray($engineSpecific);
+        $this->assertArrayHasKey('php', $engineSpecific);
+        $this->assertContains('workflow-serializer-y', $engineSpecific['php']);
+        $this->assertContains('workflow-serializer-base64', $engineSpecific['php']);
     }
 
     public function test_activity_poll_returns_arguments_as_codec_envelope(): void

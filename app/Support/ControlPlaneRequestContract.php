@@ -52,11 +52,21 @@ final class ControlPlaneRequestContract
                             'type' => 'integer',
                             'min' => 1,
                         ],
-                        'payload_codec' => [
+                        'payload_codec' => array_filter([
                             'type' => 'string',
-                            'canonical_values' => CodecRegistry::names(),
+                            // Only language-neutral codecs are advertised to
+                            // polyglot clients. Engine-specific codecs (e.g.
+                            // PHP SerializableClosure) remain supported for
+                            // decoding legacy rows and round-tripping
+                            // pre-serialized blobs, but they are exposed
+                            // separately so non-PHP SDKs do not offer them
+                            // as generic start choices.
+                            'canonical_values' => CodecRegistry::universal(),
+                            'engine_specific_values' => CodecRegistry::engineSpecific() !== []
+                                ? CodecRegistry::engineSpecific()
+                                : null,
                             'description' => 'Codec used for serializing workflow payloads. Inferred from input envelope when omitted.',
-                        ],
+                        ], static fn (mixed $v): bool => $v !== null),
                     ],
                     'unsupported_fields' => [
                         'workflow_execution_timeout',
