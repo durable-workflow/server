@@ -325,6 +325,21 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         $complete->assertOk()
             ->assertJsonPath('outcome', 'completed');
+
+        $resumePoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'worker-1',
+                'task_queue' => 'ext-q',
+            ]);
+
+        $resumePoll->assertOk();
+
+        $completedEvent = collect($resumePoll->json('task.history_events'))
+            ->firstWhere('event_type', 'ActivityCompleted');
+
+        $this->assertIsArray($completedEvent);
+        $this->assertSame('json', $completedEvent['payload']['payload_codec'] ?? null);
+        $this->assertSame('"Hello Ada from activity"', $completedEvent['payload']['result'] ?? null);
     }
 
     public function test_cluster_info_advertises_payload_codec_envelope_capability(): void

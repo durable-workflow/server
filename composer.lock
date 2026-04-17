@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "0f292a1e2955c8debd5e33f7e366a6e3",
+    "content-hash": "a4cbafffdae4b78f25232557d4b0a787",
     "packages": [
         {
             "name": "apache/avro",
@@ -508,8 +508,8 @@
             "version": "dev-v2",
             "dist": {
                 "type": "path",
-                "url": "../workflow",
-                "reference": "a1bc7f57a7c52c8e3a21cb6655b39f37e37fb566"
+                "url": "/workflow",
+                "reference": "caf9627a303150b9288fc85e9c0d3a1e9a19c71c"
             },
             "require": {
                 "apache/avro": "^1.12",
@@ -604,7 +604,7 @@
             "description": "Durable workflow engine that allows users to write long running persistent distributed workflows (orchestrations) in PHP powered by Laravel queues.",
             "transport-options": {
                 "symlink": false,
-                "relative": true
+                "relative": false
             }
         },
         {

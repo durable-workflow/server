@@ -34,7 +34,13 @@
         {
             "name": "workflow",
             "type": "path",
-            "url": "/workflow"
+            "url": "/workflow",
+            "options": {
+                "symlink": false,
+                "versions": {
+                    "durable-workflow/workflow": "dev-v2"
+                }
+            }
         },
         {
             "type": "path",
