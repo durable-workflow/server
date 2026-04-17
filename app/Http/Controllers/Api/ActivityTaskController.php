@@ -8,6 +8,7 @@ use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerProtocol;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
@@ -75,7 +76,7 @@ class ActivityTaskController
                 'activity_type' => $claim['activity_type'],
                 'payload_codec' => $claim['payload_codec'],
                 'arguments' => $claim['arguments'] !== null
-                    ? ['codec' => $claim['payload_codec'] ?? 'json', 'blob' => $claim['arguments']]
+                    ? ['codec' => $claim['payload_codec'] ?? CodecRegistry::defaultCodec(), 'blob' => $claim['arguments']]
                     : null,
                 'retry_policy' => $claim['retry_policy'],
                 'task_queue' => $claim['queue'],

@@ -5,6 +5,7 @@ namespace App\Support;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Throwable;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
@@ -826,7 +827,7 @@ final class WorkflowTaskPoller
             'workflow_type' => $claim['workflow_type'],
             'payload_codec' => $claim['payload_codec'],
             'arguments' => ($history['arguments'] ?? null) !== null
-                ? ['codec' => $claim['payload_codec'] ?? 'json', 'blob' => $history['arguments']]
+                ? ['codec' => $claim['payload_codec'] ?? CodecRegistry::defaultCodec(), 'blob' => $history['arguments']]
                 : null,
             'run_status' => $history['run_status'] ?? null,
             'last_history_sequence' => $history['last_history_sequence'] ?? 0,

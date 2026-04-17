@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Contracts\WorkflowControlPlane;
@@ -67,17 +68,12 @@ class WorkflowStartService
     ): array {
         $envelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null);
 
-        // Back-compat: when the client sends no input (or an empty array),
-        // emit a JSON-encoded empty arg list so the run's `arguments` column
-        // stays non-null (matching pre-#164 behavior that legacy tests assert
-        // against). We pin the codec to "json" rather than the configured
-        // default so the bytes always match the label — the same intentional
-        // JSON shape used for plain-array starts in PayloadEnvelopeResolver.
-        // Avro and other typed codecs require an explicit envelope from the
-        // caller (issue #331 threads non-JSON codecs through the rest of the
-        // payload surfaces).
-        $arguments = $envelope['blob'] ?? Serializer::serializeWithCodec('json', []);
-        $payloadCodec = $envelope['codec'] ?? 'json';
+        // When the client sends no input (or an empty array), emit a
+        // default-codec-encoded empty arg list so the run's `arguments`
+        // column stays non-null. The default codec is Avro (#334).
+        $defaultCodec = CodecRegistry::defaultCodec();
+        $arguments = $envelope['blob'] ?? Serializer::serializeWithCodec($defaultCodec, []);
+        $payloadCodec = $envelope['codec'] ?? $defaultCodec;
 
         $result = $this->controlPlane->start($workflowType, $workflowId, array_filter([
             'arguments' => $arguments,
