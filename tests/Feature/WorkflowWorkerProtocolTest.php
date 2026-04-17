@@ -117,7 +117,7 @@ class WorkflowWorkerProtocolTest extends TestCase
                 'commands' => [
                     [
                         'type' => 'complete_workflow',
-                        'result' => Serializer::serializeWithCodec('json', [
+                        'result' => Serializer::serializeWithCodec((string) config('workflows.serializer'), [
                             'greeting' => 'Hello, Ada!',
                             'workflow_id' => $workflowId,
                         ]),
@@ -222,7 +222,7 @@ class WorkflowWorkerProtocolTest extends TestCase
                 'commands' => [
                     [
                         'type' => 'complete_workflow',
-                        'result' => Serializer::serializeWithCodec('json', [
+                        'result' => Serializer::serializeWithCodec((string) config('workflows.serializer'), [
                             'greeting' => 'Hello from remote worker, Ada!',
                             'workflow_id' => $workflowId,
                         ]),
@@ -2195,7 +2195,10 @@ class WorkflowWorkerProtocolTest extends TestCase
                     [
                         'type' => 'schedule_activity',
                         'activity_type' => 'tests.external-greeting-activity',
-                        'arguments' => Serializer::serializeWithCodec('json', ['Ada']),
+                        'arguments' => Serializer::serializeWithCodec(
+                            (string) config('workflows.serializer'),
+                            ['Ada'],
+                        ),
                         'queue' => 'external-activities',
                     ],
                 ],
@@ -2223,10 +2226,13 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.run_id', $runId)
             ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');
 
-        $activityPoll->assertJsonPath('task.arguments.codec', 'json');
+        $activityPoll->assertJsonPath('task.arguments.codec', (string) config('workflows.serializer'));
         $this->assertSame(
             ['Ada'],
-            Serializer::unserialize((string) $activityPoll->json('task.arguments.blob')),
+            Serializer::unserializeWithCodec(
+                (string) $activityPoll->json('task.arguments.codec'),
+                (string) $activityPoll->json('task.arguments.blob'),
+            ),
         );
 
         $completeActivity = $this->withHeaders($this->workerHeaders())
@@ -2263,7 +2269,7 @@ class WorkflowWorkerProtocolTest extends TestCase
                 'commands' => [
                     [
                         'type' => 'complete_workflow',
-                        'result' => Serializer::serializeWithCodec('json', [
+                        'result' => Serializer::serializeWithCodec((string) config('workflows.serializer'), [
                             'greeting' => 'Hello, Ada!',
                             'workflow_id' => $workflowId,
                         ]),
@@ -2465,7 +2471,10 @@ class WorkflowWorkerProtocolTest extends TestCase
                     [
                         'type' => 'continue_as_new',
                         'workflow_type' => 'tests.external-greeting-workflow',
-                        'arguments' => Serializer::serializeWithCodec('json', ['Ada v2']),
+                        'arguments' => Serializer::serializeWithCodec(
+                            (string) config('workflows.serializer'),
+                            ['Ada v2'],
+                        ),
                     ],
                 ],
             ]);
