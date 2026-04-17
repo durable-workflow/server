@@ -54,9 +54,44 @@ class ClusterInfoTest extends TestCase
 
     public function test_it_omits_package_provenance_when_the_provenance_file_does_not_exist(): void
     {
+        config(['server.expose_package_provenance' => true]);
+
         $this->getJson('/api/cluster/info')
             ->assertOk()
             ->assertJsonMissing(['package_provenance']);
+    }
+
+    public function test_it_omits_package_provenance_by_default_even_when_file_exists(): void
+    {
+        $provenancePath = base_path('.package-provenance');
+        $existed = is_file($provenancePath);
+
+        try {
+            file_put_contents($provenancePath, implode("\n", [
+                'https://github.com/durable-workflow/workflow.git',
+                'v2',
+                'abc123def456',
+            ]));
+
+            $this->getJson('/api/cluster/info')
+                ->assertOk()
+                ->assertJsonMissing(['package_provenance']);
+        } finally {
+            if (! $existed) {
+                @unlink($provenancePath);
+            }
+        }
+    }
+
+    public function test_it_advertises_only_universal_payload_codecs_publicly(): void
+    {
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+
+        $this->assertSame(['json'], $response->json('capabilities.payload_codecs'));
+        $this->assertSame(
+            ['workflow-serializer-y', 'workflow-serializer-base64'],
+            $response->json('capabilities.payload_codecs_engine_specific.php'),
+        );
     }
 
     public function test_it_rejects_requests_when_token_auth_is_enabled_but_token_is_not_configured(): void
@@ -126,10 +161,12 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('structural_limits.history_transaction_size', 1000);
     }
 
-    public function test_it_includes_package_provenance_when_the_provenance_file_exists(): void
+    public function test_it_includes_package_provenance_when_exposure_is_enabled_and_file_exists(): void
     {
         $provenancePath = base_path('.package-provenance');
         $existed = is_file($provenancePath);
+
+        config(['server.expose_package_provenance' => true]);
 
         try {
             file_put_contents($provenancePath, implode("\n", [

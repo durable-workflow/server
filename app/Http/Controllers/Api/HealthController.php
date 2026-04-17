@@ -44,7 +44,37 @@ class HealthController
     {
         $namespace = (string) ($request->attributes->get('namespace') ?: config('server.default_namespace'));
 
-        return response()->json(array_filter([
+        $capabilities = [
+            'workflow_tasks' => true,
+            'activity_tasks' => true,
+            'signals' => true,
+            'queries' => true,
+            'updates' => true,
+            'schedules' => true,
+            'schedule_jitter' => true,
+            'schedule_max_runs' => true,
+            'search_attributes' => true,
+            'history_export' => true,
+            'continue_as_new' => true,
+            'child_workflows' => true,
+            'activity_timeouts' => true,
+            'parent_close_policy' => true,
+            'non_retryable_failures' => true,
+            'history_retention' => true,
+            'payload_codec_envelope' => true,
+            'payload_codec_envelope_responses' => true,
+            'payload_codecs' => \Workflow\Serializers\CodecRegistry::universal(),
+            'response_compression' => (bool) config('server.compression.enabled', true)
+                ? ['gzip', 'deflate']
+                : [],
+        ];
+
+        $engineSpecificCodecs = \Workflow\Serializers\CodecRegistry::engineSpecific();
+        if ($engineSpecificCodecs !== []) {
+            $capabilities['payload_codecs_engine_specific'] = $engineSpecificCodecs;
+        }
+
+        $response = [
             'server_id' => config('server.server_id'),
             'version' => env('APP_VERSION', '2.0.0'),
             'default_namespace' => config('server.default_namespace'),
@@ -52,30 +82,7 @@ class HealthController
                 'php' => '>=1.0',
                 'python' => '>=0.1',
             ],
-            'capabilities' => [
-                'workflow_tasks' => true,
-                'activity_tasks' => true,
-                'signals' => true,
-                'queries' => true,
-                'updates' => true,
-                'schedules' => true,
-                'schedule_jitter' => true,
-                'schedule_max_runs' => true,
-                'search_attributes' => true,
-                'history_export' => true,
-                'continue_as_new' => true,
-                'child_workflows' => true,
-                'activity_timeouts' => true,
-                'parent_close_policy' => true,
-                'non_retryable_failures' => true,
-                'history_retention' => true,
-                'payload_codec_envelope' => true,
-                'payload_codec_envelope_responses' => true,
-                'payload_codecs' => \Workflow\Serializers\CodecRegistry::names(),
-                'response_compression' => (bool) config('server.compression.enabled', true)
-                    ? ['gzip', 'deflate']
-                    : [],
-            ],
+            'capabilities' => $capabilities,
             'worker_fleet' => $this->workerFleet->summary($namespace),
             'task_repair' => $this->taskRepairDiagnostics(),
             'limits' => [
@@ -88,8 +95,27 @@ class HealthController
             'structural_limits' => StructuralLimits::snapshot(),
             'control_plane' => ControlPlaneProtocol::info(),
             'worker_protocol' => WorkerProtocol::info(),
-            'package_provenance' => $this->packageProvenance(),
-        ], static fn (mixed $v): bool => $v !== null));
+        ];
+
+        if ($this->shouldExposePackageProvenance($request)) {
+            $provenance = $this->packageProvenance();
+            if ($provenance !== null) {
+                $response['package_provenance'] = $provenance;
+            }
+        }
+
+        return response()->json($response);
+    }
+
+    private function shouldExposePackageProvenance(Request $request): bool
+    {
+        if (! (bool) config('server.expose_package_provenance', false)) {
+            return false;
+        }
+
+        $role = $request->attributes->get(\App\Http\Middleware\Authenticate::ATTRIBUTE_ROLE);
+
+        return $role === null || $role === 'admin';
     }
 
     /**

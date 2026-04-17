@@ -215,6 +215,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Package Provenance Exposure
+    |--------------------------------------------------------------------------
+    |
+    | When enabled, /api/cluster/info includes a `package_provenance` object
+    | describing the PHP workflow package's source repository, ref, and commit
+    | hash. This leaks PHP implementation identity to polyglot clients and is
+    | OFF by default. Enable only for admin diagnostics; the field is still
+    | restricted to authenticated admin callers when exposure is on.
+    |
+    */
+
+    'expose_package_provenance' => (bool) env('WORKFLOW_SERVER_EXPOSE_PACKAGE_PROVENANCE', false),
+
+    /*
+    |--------------------------------------------------------------------------
     | Payload Limits
     |--------------------------------------------------------------------------
     */

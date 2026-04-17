@@ -530,7 +530,11 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $info = $this->getJson('/api/cluster/info');
 
         $info->assertOk()
-            ->assertJsonPath('capabilities.payload_codecs', ['json', 'workflow-serializer-y', 'workflow-serializer-base64']);
+            ->assertJsonPath('capabilities.payload_codecs', ['json'])
+            ->assertJsonPath('capabilities.payload_codecs_engine_specific.php', [
+                'workflow-serializer-y',
+                'workflow-serializer-base64',
+            ]);
     }
 
     public function test_control_plane_request_contract_advertises_payload_codec_field(): void
