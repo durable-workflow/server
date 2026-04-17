@@ -22,6 +22,27 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Task Dispatch Mode Override
+    |--------------------------------------------------------------------------
+    |
+    | Captures an explicit operator choice for workflows.v2.task_dispatch_mode
+    | at config load time. In service mode the server defaults this key to
+    | "poll" so external workers claim tasks over HTTP; this override records
+    | whether the operator asked for something else (typically "queue") so the
+    | default is only applied when no explicit choice exists.
+    |
+    | Reading env() directly from the AppServiceProvider is unsafe after
+    | `php artisan config:cache`: dotenv is no longer loaded at runtime, so a
+    | WORKFLOW_V2_TASK_DISPATCH_MODE value that lived in .env would be
+    | interpreted as "not set" and silently rewritten to "poll". Capturing the
+    | env here makes the override part of the cached config.
+    |
+    */
+
+    'task_dispatch_mode_override' => env('WORKFLOW_V2_TASK_DISPATCH_MODE'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Server Identity
     |--------------------------------------------------------------------------
     |

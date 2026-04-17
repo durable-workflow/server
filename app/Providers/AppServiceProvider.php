@@ -39,7 +39,12 @@ class AppServiceProvider extends ServiceProvider
             // every activity completion and workflow task, producing the
             // 500 → stale_attempt 409 retry pattern). Operators can still opt
             // out by setting WORKFLOW_V2_TASK_DISPATCH_MODE explicitly.
-            if (env('WORKFLOW_V2_TASK_DISPATCH_MODE') === null) {
+            //
+            // The operator override is captured into server.task_dispatch_mode_override
+            // at config-load time so `php artisan config:cache` bakes it in
+            // (env() returns null at runtime once config is cached and dotenv
+            // is no longer loaded).
+            if (config('server.task_dispatch_mode_override') === null) {
                 config(['workflows.v2.task_dispatch_mode' => 'poll']);
             }
         }
