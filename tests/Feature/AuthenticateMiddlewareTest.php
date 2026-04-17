@@ -262,10 +262,11 @@ class AuthenticateMiddlewareTest extends TestCase
     {
         config(['server.auth.driver' => 'token', 'server.auth.token' => 'secret']);
 
-        $this->getJson('/api/namespaces')
+        $this->withHeaders($this->controlPlaneHeaders())
+            ->getJson('/api/namespaces')
             ->assertUnauthorized();
 
-        $this->withHeaders(['Authorization' => 'Bearer secret'])
+        $this->withHeaders($this->controlPlaneHeaders(['Authorization' => 'Bearer secret']))
             ->getJson('/api/namespaces')
             ->assertOk();
     }
@@ -274,12 +275,24 @@ class AuthenticateMiddlewareTest extends TestCase
     {
         config(['server.auth.driver' => 'token', 'server.auth.token' => 'secret']);
 
-        $this->withHeaders(['X-Namespace' => 'default'])
+        $this->withHeaders($this->controlPlaneHeaders(['X-Namespace' => 'default']))
             ->getJson('/api/schedules')
             ->assertUnauthorized();
 
-        $this->withHeaders(['Authorization' => 'Bearer secret', 'X-Namespace' => 'default'])
+        $this->withHeaders($this->controlPlaneHeaders([
+            'Authorization' => 'Bearer secret',
+            'X-Namespace' => 'default',
+        ]))
             ->getJson('/api/schedules')
             ->assertOk();
+    }
+
+    /**
+     * @param  array<string, string>  $extra
+     * @return array<string, string>
+     */
+    private function controlPlaneHeaders(array $extra = []): array
+    {
+        return ['X-Durable-Workflow-Control-Plane-Version' => '2'] + $extra;
     }
 }

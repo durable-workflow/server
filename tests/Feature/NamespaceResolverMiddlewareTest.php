@@ -33,7 +33,7 @@ class NamespaceResolverMiddlewareTest extends TestCase
         $this->createScheduleInNamespace('sched-prod', 'production');
         $this->createScheduleInNamespace('sched-default', 'default');
 
-        $response = $this->withHeaders(['X-Namespace' => 'production'])
+        $response = $this->withHeaders($this->controlPlaneHeaders(['X-Namespace' => 'production']))
             ->getJson('/api/schedules');
 
         $response->assertOk();
@@ -47,7 +47,7 @@ class NamespaceResolverMiddlewareTest extends TestCase
         $this->createScheduleInNamespace('sched-default', 'default');
 
         // 'Default' is normalized to 'default' by the middleware
-        $response = $this->withHeaders(['X-Namespace' => 'Default'])
+        $response = $this->withHeaders($this->controlPlaneHeaders(['X-Namespace' => 'Default']))
             ->getJson('/api/schedules');
 
         $response->assertOk();
@@ -62,7 +62,8 @@ class NamespaceResolverMiddlewareTest extends TestCase
         $this->createScheduleInNamespace('sched-prod', 'production');
         $this->createScheduleInNamespace('sched-default', 'default');
 
-        $response = $this->getJson('/api/schedules?namespace=production');
+        $response = $this->withHeaders($this->controlPlaneHeaders())
+            ->getJson('/api/schedules?namespace=production');
 
         $response->assertOk();
         $schedules = $response->json('schedules');
@@ -78,7 +79,7 @@ class NamespaceResolverMiddlewareTest extends TestCase
         $this->createScheduleInNamespace('sched-default', 'default');
 
         // Header says 'default', query says 'production' — header wins
-        $response = $this->withHeaders(['X-Namespace' => 'default'])
+        $response = $this->withHeaders($this->controlPlaneHeaders(['X-Namespace' => 'default']))
             ->getJson('/api/schedules?namespace=production');
 
         $response->assertOk();
@@ -97,7 +98,8 @@ class NamespaceResolverMiddlewareTest extends TestCase
         $this->createScheduleInNamespace('sched-prod', 'production');
 
         // No X-Namespace header, no ?namespace= query
-        $response = $this->getJson('/api/schedules');
+        $response = $this->withHeaders($this->controlPlaneHeaders())
+            ->getJson('/api/schedules');
 
         $response->assertOk();
         $schedules = $response->json('schedules');
@@ -112,7 +114,8 @@ class NamespaceResolverMiddlewareTest extends TestCase
         $this->createScheduleInNamespace('sched-default', 'default');
         $this->createScheduleInNamespace('sched-prod', 'production');
 
-        $response = $this->getJson('/api/schedules');
+        $response = $this->withHeaders($this->controlPlaneHeaders())
+            ->getJson('/api/schedules');
 
         $response->assertOk();
         $schedules = $response->json('schedules');
@@ -124,7 +127,7 @@ class NamespaceResolverMiddlewareTest extends TestCase
 
     public function test_namespace_resolves_for_create_operations(): void
     {
-        $response = $this->withHeaders(['X-Namespace' => 'production'])
+        $response = $this->withHeaders($this->controlPlaneHeaders(['X-Namespace' => 'production']))
             ->postJson('/api/schedules', [
                 'schedule_id' => 'created-in-prod',
                 'spec' => ['cron_expressions' => ['0 * * * *']],
@@ -143,7 +146,7 @@ class NamespaceResolverMiddlewareTest extends TestCase
     {
         // Namespace CRUD endpoints don't filter by resolved namespace,
         // but the resolver still sets the attribute for consistency
-        $response = $this->withHeaders(['X-Namespace' => 'production'])
+        $response = $this->withHeaders($this->controlPlaneHeaders(['X-Namespace' => 'production']))
             ->getJson('/api/namespaces');
 
         $response->assertOk();
@@ -152,6 +155,15 @@ class NamespaceResolverMiddlewareTest extends TestCase
     }
 
     // ── Helpers ─────────────────────────────────────────────────────
+
+    /**
+     * @param  array<string, string>  $extra
+     * @return array<string, string>
+     */
+    private function controlPlaneHeaders(array $extra = []): array
+    {
+        return ['X-Durable-Workflow-Control-Plane-Version' => '2'] + $extra;
+    }
 
     private function createScheduleInNamespace(string $scheduleId, string $namespace): void
     {
