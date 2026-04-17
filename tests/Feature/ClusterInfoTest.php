@@ -9,6 +9,41 @@ class ClusterInfoTest extends TestCase
 {
     use RefreshDatabase;
 
+    private ?string $provenanceFixturePath = null;
+
+    protected function tearDown(): void
+    {
+        if ($this->provenanceFixturePath !== null && is_file($this->provenanceFixturePath)) {
+            @unlink($this->provenanceFixturePath);
+        }
+
+        $this->provenanceFixturePath = null;
+
+        parent::tearDown();
+    }
+
+    /**
+     * Allocate a per-test provenance fixture outside the repo root, point
+     * server.package_provenance_path at it, and write the supplied lines.
+     * tearDown() removes the fixture.
+     *
+     * @param array<int, string> $lines
+     */
+    private function useProvenanceFixture(array $lines): string
+    {
+        $path = tempnam(sys_get_temp_dir(), 'dw-provenance-');
+
+        if ($path === false) {
+            $this->fail('Could not allocate a tempfile for the provenance fixture.');
+        }
+
+        file_put_contents($path, implode("\n", $lines));
+
+        config(['server.package_provenance_path' => $path]);
+
+        return $this->provenanceFixturePath = $path;
+    }
+
     public function test_it_publishes_a_versioned_control_plane_request_contract_manifest(): void
     {
         $this->getJson('/api/cluster/info')
@@ -54,7 +89,13 @@ class ClusterInfoTest extends TestCase
 
     public function test_it_omits_package_provenance_when_the_provenance_file_does_not_exist(): void
     {
-        config(['server.expose_package_provenance' => true]);
+        // Point at a guaranteed-missing location so the controller exercises
+        // the "file not present" branch regardless of repo-root state.
+        $missingPath = sys_get_temp_dir().'/dw-provenance-missing-'.bin2hex(random_bytes(6));
+        config([
+            'server.expose_package_provenance' => true,
+            'server.package_provenance_path' => $missingPath,
+        ]);
 
         $this->getJson('/api/cluster/info')
             ->assertOk()
@@ -63,24 +104,15 @@ class ClusterInfoTest extends TestCase
 
     public function test_it_omits_package_provenance_by_default_even_when_file_exists(): void
     {
-        $provenancePath = base_path('.package-provenance');
-        $existed = is_file($provenancePath);
+        $this->useProvenanceFixture([
+            'https://github.com/durable-workflow/workflow.git',
+            'v2',
+            'abc123def456',
+        ]);
 
-        try {
-            file_put_contents($provenancePath, implode("\n", [
-                'https://github.com/durable-workflow/workflow.git',
-                'v2',
-                'abc123def456',
-            ]));
-
-            $this->getJson('/api/cluster/info')
-                ->assertOk()
-                ->assertJsonMissing(['package_provenance']);
-        } finally {
-            if (! $existed) {
-                @unlink($provenancePath);
-            }
-        }
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonMissing(['package_provenance']);
     }
 
     public function test_it_advertises_only_universal_payload_codecs_publicly(): void
@@ -163,28 +195,55 @@ class ClusterInfoTest extends TestCase
 
     public function test_it_includes_package_provenance_when_exposure_is_enabled_and_file_exists(): void
     {
-        $provenancePath = base_path('.package-provenance');
-        $existed = is_file($provenancePath);
-
         config(['server.expose_package_provenance' => true]);
 
-        try {
-            file_put_contents($provenancePath, implode("\n", [
-                'https://github.com/durable-workflow/workflow.git',
-                'v2',
-                'abc123def456',
-            ]));
+        $this->useProvenanceFixture([
+            'https://github.com/durable-workflow/workflow.git',
+            'v2',
+            'abc123def456',
+        ]);
 
-            $response = $this->getJson('/api/cluster/info');
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('package_provenance.source', 'https://github.com/durable-workflow/workflow.git')
+            ->assertJsonPath('package_provenance.ref', 'v2')
+            ->assertJsonPath('package_provenance.commit', 'abc123def456');
+    }
 
-            $response->assertOk()
-                ->assertJsonPath('package_provenance.source', 'https://github.com/durable-workflow/workflow.git')
-                ->assertJsonPath('package_provenance.ref', 'v2')
-                ->assertJsonPath('package_provenance.commit', 'abc123def456');
-        } finally {
-            if (! $existed) {
-                @unlink($provenancePath);
-            }
+    public function test_tests_do_not_mutate_the_repo_root_provenance_file(): void
+    {
+        // TD-S041 regression: verify the test fixture never touches
+        // base_path('.package-provenance'). Capture its state, run a full
+        // provenance-exposing flow, then confirm the repo-root file is
+        // unchanged (present-with-same-contents, or still absent).
+        $repoProvenance = base_path('.package-provenance');
+        $existedBefore = is_file($repoProvenance);
+        $beforeContents = $existedBefore ? file_get_contents($repoProvenance) : null;
+
+        config(['server.expose_package_provenance' => true]);
+        $this->useProvenanceFixture([
+            'https://github.com/durable-workflow/workflow.git',
+            'v2',
+            'deadbeef12345',
+        ]);
+
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('package_provenance.commit', 'deadbeef12345');
+
+        $existedAfter = is_file($repoProvenance);
+        $this->assertSame(
+            $existedBefore,
+            $existedAfter,
+            'Provenance tests must not change whether the repo-root .package-provenance file exists.',
+        );
+
+        if ($existedBefore) {
+            $this->assertSame(
+                $beforeContents,
+                file_get_contents($repoProvenance),
+                'Provenance tests must not overwrite the repo-root .package-provenance file.',
+            );
         }
     }
 }

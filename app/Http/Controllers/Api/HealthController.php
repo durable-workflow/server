@@ -138,7 +138,7 @@ class HealthController
             return $this->cachedProvenance !== [] ? $this->cachedProvenance : null;
         }
 
-        $path = base_path('.package-provenance');
+        $path = (string) config('server.package_provenance_path', base_path('.package-provenance'));
 
         if (! is_file($path)) {
             $this->cachedProvenance = [];

@@ -251,6 +251,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Package Provenance Path
+    |--------------------------------------------------------------------------
+    |
+    | Absolute path to the provenance file that records the workflow package
+    | source, ref, and resolved commit. Docker builds write this file to
+    | `/app/.package-provenance` (see Dockerfile); a Laravel-native install
+    | does not produce one. Tests override this key to isolate fixtures from
+    | any real provenance file at the repo root.
+    |
+    */
+
+    'package_provenance_path' => env('WORKFLOW_SERVER_PACKAGE_PROVENANCE_PATH', base_path('.package-provenance')),
+
+    /*
+    |--------------------------------------------------------------------------
     | Payload Limits
     |--------------------------------------------------------------------------
     */
