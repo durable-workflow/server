@@ -12,6 +12,7 @@ use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -476,16 +477,15 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ]);
 
         $start->assertCreated()
-            ->assertJsonPath('payload_codec', 'json');
+            ->assertJsonPath('payload_codec', 'avro');
     }
 
     /**
      * Regression for TD-S047: when the request omits `input`, the run row's
-     * arguments blob is encoded with the JSON codec and labeled "json" — so
-     * the codec tag always matches the bytes. Before this fix the no-input
-     * fallback wrote `Serializer::serialize([])` (which routed to whatever
-     * codec was configured as default — Avro after #330) but stamped the row
-     * with `payload_codec = "json"`, leaving Avro bytes labeled JSON.
+     * arguments blob is encoded with the default codec (Avro) and labeled
+     * "avro" — so the codec tag always matches the bytes. The no-input
+     * fallback now correctly uses `CodecRegistry::defaultCodec()` and stamps
+     * the row with the matching `payload_codec`.
      */
     public function test_no_input_start_labels_payload_codec_consistently_under_avro_default(): void
     {
@@ -501,22 +501,22 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ]);
 
         $start->assertCreated()
-            ->assertJsonPath('payload_codec', 'json');
+            ->assertJsonPath('payload_codec', 'avro');
 
         $runId = $start->json('run_id');
 
         // Round-trip the stored arguments with the labeled codec — this would
-        // throw if the bytes were Avro-encoded but tagged "json".
+        // throw if the bytes were Avro-encoded but tagged differently.
         $describe = $this->withHeaders($this->apiHeaders())
             ->getJson("/api/workflows/wf-codec-start-noinput-avro-default/runs/{$runId}");
 
         $describe->assertOk()
-            ->assertJsonPath('payload_codec', 'json')
-            ->assertJsonPath('input_envelope.codec', 'json');
+            ->assertJsonPath('payload_codec', 'avro')
+            ->assertJsonPath('input_envelope.codec', 'avro');
 
         $blob = $describe->json('input_envelope.blob');
         $this->assertIsString($blob);
-        $this->assertSame([], json_decode($blob, true));
+        $this->assertSame([], Serializer::unserializeWithCodec('avro', $blob));
     }
 
     public function test_describe_response_includes_payload_codec(): void
@@ -537,7 +537,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ->getJson('/api/workflows/wf-codec-describe');
 
         $describe->assertOk()
-            ->assertJsonPath('payload_codec', 'json');
+            ->assertJsonPath('payload_codec', 'avro');
     }
 
     public function test_show_run_response_includes_payload_codec(): void
@@ -560,7 +560,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ->getJson("/api/workflows/wf-codec-run/runs/{$runId}");
 
         $showRun->assertOk()
-            ->assertJsonPath('payload_codec', 'json');
+            ->assertJsonPath('payload_codec', 'avro');
     }
 
     public function test_cluster_info_advertises_available_payload_codecs(): void
@@ -645,12 +645,12 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ]);
 
         $poll->assertOk()
-            ->assertJsonPath('task.arguments.codec', 'json')
+            ->assertJsonPath('task.arguments.codec', 'avro')
             ->assertJsonStructure(['task' => ['arguments' => ['codec', 'blob']]]);
 
         $blob = $poll->json('task.arguments.blob');
         $this->assertIsString($blob);
-        $this->assertSame(['Ada'], json_decode($blob, true));
+        $this->assertSame(['Ada'], Serializer::unserializeWithCodec('avro', $blob));
     }
 
     public function test_describe_response_includes_input_and_output_envelopes(): void
@@ -672,12 +672,12 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         $describe->assertOk()
             ->assertJsonPath('input.0', 'Ada')
-            ->assertJsonPath('input_envelope.codec', 'json')
+            ->assertJsonPath('input_envelope.codec', 'avro')
             ->assertJsonStructure(['input_envelope' => ['codec', 'blob']]);
 
         $blob = $describe->json('input_envelope.blob');
         $this->assertIsString($blob);
-        $this->assertSame(['Ada'], json_decode($blob, true));
+        $this->assertSame(['Ada'], Serializer::unserializeWithCodec('avro', $blob));
 
         $this->assertNull($describe->json('output_envelope'));
     }
@@ -714,11 +714,11 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ->getJson("/api/workflows/wf-envelope-output/runs/{$runId}");
 
         $showRun->assertOk()
-            ->assertJsonPath('payload_codec', 'json');
+            ->assertJsonPath('payload_codec', 'avro');
 
         if ($showRun->json('output') !== null) {
             $showRun->assertJsonStructure(['output_envelope' => ['codec', 'blob']]);
-            $this->assertSame('json', $showRun->json('output_envelope.codec'));
+            $this->assertSame('avro', $showRun->json('output_envelope.codec'));
         }
     }
 
@@ -750,11 +750,11 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ->assertJsonPath('result', 1)
             ->assertJsonStructure(['result_envelope' => ['codec', 'blob']]);
 
-        $this->assertSame('json', $query->json('result_envelope.codec'));
+        $this->assertSame('avro', $query->json('result_envelope.codec'));
 
         $blob = $query->json('result_envelope.blob');
         $this->assertIsString($blob);
-        $this->assertSame(1, json_decode($blob, true));
+        $this->assertSame(1, Serializer::unserializeWithCodec('avro', $blob));
     }
 
     public function test_update_result_includes_envelope(): void
@@ -787,11 +787,11 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ->assertJsonPath('result.approved', true)
             ->assertJsonStructure(['result_envelope' => ['codec', 'blob']]);
 
-        $this->assertSame('json', $update->json('result_envelope.codec'));
+        $this->assertSame('avro', $update->json('result_envelope.codec'));
 
         $blob = $update->json('result_envelope.blob');
         $this->assertIsString($blob);
-        $decoded = json_decode($blob, true);
+        $decoded = Serializer::unserializeWithCodec('avro', $blob);
         $this->assertSame(true, $decoded['approved']);
     }
 
