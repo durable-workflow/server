@@ -68,10 +68,15 @@ class WorkflowStartService
         $envelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null);
 
         // Back-compat: when the client sends no input (or an empty array),
-        // fall back to the configured default codec and emit a serialized
-        // empty-arg list so the run's `arguments` column stays non-null
-        // (matching pre-#164 behavior that legacy tests assert against).
-        $arguments = $envelope['blob'] ?? Serializer::serialize([]);
+        // emit a JSON-encoded empty arg list so the run's `arguments` column
+        // stays non-null (matching pre-#164 behavior that legacy tests assert
+        // against). We pin the codec to "json" rather than the configured
+        // default so the bytes always match the label — the same intentional
+        // JSON shape used for plain-array starts in PayloadEnvelopeResolver.
+        // Avro and other typed codecs require an explicit envelope from the
+        // caller (issue #331 threads non-JSON codecs through the rest of the
+        // payload surfaces).
+        $arguments = $envelope['blob'] ?? Serializer::serializeWithCodec('json', []);
         $payloadCodec = $envelope['codec'] ?? 'json';
 
         $result = $this->controlPlane->start($workflowType, $workflowId, array_filter([

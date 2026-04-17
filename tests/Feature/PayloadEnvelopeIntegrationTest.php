@@ -479,6 +479,46 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ->assertJsonPath('payload_codec', 'json');
     }
 
+    /**
+     * Regression for TD-S047: when the request omits `input`, the run row's
+     * arguments blob is encoded with the JSON codec and labeled "json" — so
+     * the codec tag always matches the bytes. Before this fix the no-input
+     * fallback wrote `Serializer::serialize([])` (which routed to whatever
+     * codec was configured as default — Avro after #330) but stamped the row
+     * with `payload_codec = "json"`, leaving Avro bytes labeled JSON.
+     */
+    public function test_no_input_start_labels_payload_codec_consistently_under_avro_default(): void
+    {
+        Queue::fake();
+        config()->set('workflows.serializer', 'avro');
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-codec-start-noinput-avro-default',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ]);
+
+        $start->assertCreated()
+            ->assertJsonPath('payload_codec', 'json');
+
+        $runId = $start->json('run_id');
+
+        // Round-trip the stored arguments with the labeled codec — this would
+        // throw if the bytes were Avro-encoded but tagged "json".
+        $describe = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/wf-codec-start-noinput-avro-default/runs/{$runId}");
+
+        $describe->assertOk()
+            ->assertJsonPath('payload_codec', 'json')
+            ->assertJsonPath('input_envelope.codec', 'json');
+
+        $blob = $describe->json('input_envelope.blob');
+        $this->assertIsString($blob);
+        $this->assertSame([], json_decode($blob, true));
+    }
+
     public function test_describe_response_includes_payload_codec(): void
     {
         Queue::fake();
@@ -530,7 +570,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $info = $this->getJson('/api/cluster/info');
 
         $info->assertOk()
-            ->assertJsonPath('capabilities.payload_codecs', ['json'])
+            ->assertJsonPath('capabilities.payload_codecs', ['json', 'avro'])
             ->assertJsonPath('capabilities.payload_codecs_engine_specific.php', [
                 'workflow-serializer-y',
                 'workflow-serializer-base64',
