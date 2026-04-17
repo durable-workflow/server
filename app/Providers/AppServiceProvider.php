@@ -28,6 +28,20 @@ class AppServiceProvider extends ServiceProvider
         if (config('server.mode') === 'service') {
             $inner = $this->app->make(BusDispatcher::class);
             $this->app->instance(BusDispatcher::class, new ServiceModeBusDispatcher($inner));
+
+            // In service mode the standalone server does not dispatch workflow
+            // or activity jobs onto the Laravel queue — external workers poll
+            // HTTP for ready tasks instead. Defaulting task_dispatch_mode=poll
+            // keeps Workflow\V2\Support\TaskDispatcher from running the queue
+            // capability check, which would otherwise throw
+            // UnsupportedBackendCapabilitiesException on backends the server
+            // never actually hands a job to (and the same check happens on
+            // every activity completion and workflow task, producing the
+            // 500 → stale_attempt 409 retry pattern). Operators can still opt
+            // out by setting WORKFLOW_V2_TASK_DISPATCH_MODE explicitly.
+            if (env('WORKFLOW_V2_TASK_DISPATCH_MODE') === null) {
+                config(['workflows.v2.task_dispatch_mode' => 'poll']);
+            }
         }
 
         WorkflowLink::observe(WorkflowLinkObserver::class);
