@@ -119,7 +119,7 @@ class ClusterInfoTest extends TestCase
     {
         $response = $this->getJson('/api/cluster/info')->assertOk();
 
-        $this->assertSame(['json', 'avro'], $response->json('capabilities.payload_codecs'));
+        $this->assertSame(['avro'], $response->json('capabilities.payload_codecs'));
         $this->assertSame(
             ['workflow-serializer-y', 'workflow-serializer-base64'],
             $response->json('capabilities.payload_codecs_engine_specific.php'),

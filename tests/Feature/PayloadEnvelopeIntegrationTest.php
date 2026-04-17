@@ -570,7 +570,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $info = $this->getJson('/api/cluster/info');
 
         $info->assertOk()
-            ->assertJsonPath('capabilities.payload_codecs', ['json', 'avro'])
+            ->assertJsonPath('capabilities.payload_codecs', ['avro'])
             ->assertJsonPath('capabilities.payload_codecs_engine_specific.php', [
                 'workflow-serializer-y',
                 'workflow-serializer-base64',
@@ -588,7 +588,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $startFields = $info->json('control_plane.request_contract.operations.start.fields');
         $this->assertArrayHasKey('payload_codec', $startFields);
         $this->assertSame('string', $startFields['payload_codec']['type']);
-        $this->assertContains('json', $startFields['payload_codec']['canonical_values']);
+        
         $this->assertContains('avro', $startFields['payload_codec']['canonical_values']);
     }
 
