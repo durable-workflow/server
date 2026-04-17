@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Support\ControlPlaneProtocol;
+use App\Support\WorkflowCommandContextFactory;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -13,6 +14,10 @@ use Workflow\V2\Support\ScheduleManager;
 
 class ScheduleController
 {
+    public function __construct(
+        private readonly WorkflowCommandContextFactory $commandContexts,
+    ) {}
+
     public function index(Request $request): JsonResponse
     {
         if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
@@ -72,6 +77,8 @@ class ScheduleController
         $overlapPolicy = ScheduleOverlapPolicy::tryFrom($validated['overlap_policy'] ?? 'skip')
             ?? ScheduleOverlapPolicy::Skip;
 
+        $context = $this->commandContexts->make($request, $scheduleId, 'schedule.create');
+
         $schedule = ScheduleManager::createFromSpec(
             scheduleId: $scheduleId,
             spec: $validated['spec'],
@@ -83,10 +90,14 @@ class ScheduleController
             maxRuns: $validated['max_runs'] ?? null,
             note: $validated['note'] ?? null,
             namespace: $namespace,
+            context: $context,
         );
 
         if (! empty($validated['paused'])) {
-            ScheduleManager::pause($schedule);
+            ScheduleManager::pause(
+                $schedule,
+                context: $this->commandContexts->make($request, $scheduleId, 'schedule.pause'),
+            );
         }
 
         return ControlPlaneProtocol::json([
@@ -146,6 +157,7 @@ class ScheduleController
                 ? ($validated['search_attributes'] ?? [])
                 : null,
             maxRuns: isset($validated['max_runs']) ? (int) $validated['max_runs'] : null,
+            context: $this->commandContexts->make($request, $scheduleId, 'schedule.update'),
         );
 
         return ControlPlaneProtocol::json([
@@ -166,7 +178,10 @@ class ScheduleController
             return $schedule;
         }
 
-        ScheduleManager::delete($schedule);
+        ScheduleManager::delete(
+            $schedule,
+            $this->commandContexts->make($request, $scheduleId, 'schedule.delete'),
+        );
 
         return ControlPlaneProtocol::json([
             'schedule_id' => $scheduleId,
@@ -190,7 +205,11 @@ class ScheduleController
             'note' => ['nullable', 'string', 'max:1000'],
         ]);
 
-        ScheduleManager::pause($schedule, $validated['note'] ?? null);
+        ScheduleManager::pause(
+            $schedule,
+            $validated['note'] ?? null,
+            $this->commandContexts->make($request, $scheduleId, 'schedule.pause'),
+        );
 
         return ControlPlaneProtocol::json([
             'schedule_id' => $scheduleId,
@@ -214,7 +233,10 @@ class ScheduleController
             'note' => ['nullable', 'string', 'max:1000'],
         ]);
 
-        ScheduleManager::resume($schedule);
+        ScheduleManager::resume(
+            $schedule,
+            $this->commandContexts->make($request, $scheduleId, 'schedule.resume'),
+        );
 
         if (array_key_exists('note', $validated) && $validated['note'] !== null) {
             $schedule->refresh();
@@ -249,7 +271,11 @@ class ScheduleController
             : null;
 
         try {
-            $result = ScheduleManager::triggerDetailed($schedule, $overlap);
+            $result = ScheduleManager::triggerDetailed(
+                $schedule,
+                $overlap,
+                $this->commandContexts->make($request, $scheduleId, 'schedule.trigger'),
+            );
         } catch (\Throwable $e) {
             return ControlPlaneProtocol::json([
                 'schedule_id' => $scheduleId,
@@ -315,7 +341,13 @@ class ScheduleController
             ? ScheduleOverlapPolicy::tryFrom($validated['overlap_policy'])
             : null;
 
-        $occurrences = ScheduleManager::backfill($schedule, $startTime, $endTime, $overlap);
+        $occurrences = ScheduleManager::backfill(
+            $schedule,
+            $startTime,
+            $endTime,
+            $overlap,
+            $this->commandContexts->make($request, $scheduleId, 'schedule.backfill'),
+        );
 
         $results = array_map(static fn (array $row): array => array_filter([
             'fire_time' => $row['cron_time'],
