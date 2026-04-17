@@ -5,7 +5,10 @@ namespace Tests\Unit\Support;
 use App\Support\WorkflowPackageApiFloor;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
+use ReflectionMethod;
+use Tests\Fixtures\StaleBackendCapabilities;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\V2\Support\BackendCapabilities;
 
 /**
  * Pins the API floor contract the server relies on from
@@ -43,5 +46,43 @@ class WorkflowPackageApiFloorTest extends TestCase
     public function test_backend_capabilities_class_exists(): void
     {
         $this->assertTrue(class_exists(WorkflowPackageApiFloor::POLL_MODE_DEMOTION_CLASS));
+    }
+
+    public function test_poll_mode_demotion_check_accepts_current_workflow_package(): void
+    {
+        $confirms = $this->invokeConfirmsPollModeDemotion(BackendCapabilities::class, 'queue');
+
+        $this->assertTrue(
+            $confirms,
+            'BackendCapabilities::queue() in the currently resolved workflow package does not '
+            .'contain the poll-mode demotion keywords. If this fails, either the package is stale '
+            .'or the method body was refactored in a way that no longer matches the floor check.'
+        );
+    }
+
+    public function test_poll_mode_demotion_check_rejects_stale_fixture(): void
+    {
+        // StaleBackendCapabilities::queue() reproduces the pre-f666b25 body
+        // (no task_dispatch_mode read, no 'info' demotion). The functional
+        // check must reject it so an old workflow install cannot silently
+        // satisfy the API floor.
+        $confirms = $this->invokeConfirmsPollModeDemotion(StaleBackendCapabilities::class, 'queue');
+
+        $this->assertFalse(
+            $confirms,
+            'Stale fixture was accepted by the poll-mode demotion check — the check is no longer '
+            .'specific enough to catch pre-f666b25 installs.'
+        );
+    }
+
+    private function invokeConfirmsPollModeDemotion(string $class, string $method): bool
+    {
+        $reflection = new ReflectionMethod(WorkflowPackageApiFloor::class, 'confirmsPollModeDemotion');
+        $reflection->setAccessible(true);
+
+        /** @var bool $result */
+        $result = $reflection->invoke(null, $class, $method);
+
+        return $result;
     }
 }

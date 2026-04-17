@@ -4,6 +4,7 @@ namespace App\Support;
 
 use ReflectionClass;
 use ReflectionException;
+use ReflectionMethod;
 use RuntimeException;
 
 /**
@@ -52,6 +53,13 @@ final class WorkflowPackageApiFloor
     public const POLL_MODE_DEMOTION_CLASS = \Workflow\V2\Support\BackendCapabilities::class;
 
     /**
+     * Method on {@see self::POLL_MODE_DEMOTION_CLASS} whose body is inspected
+     * for the poll-mode demotion keywords. Kept as a constant so regression
+     * tests can point the floor at fixture implementations.
+     */
+    private const POLL_MODE_DEMOTION_METHOD = 'queue';
+
+    /**
      * Assert every required API is present. Throws with a single
      * aggregated diagnostic when the installed workflow package is too old.
      */
@@ -67,6 +75,12 @@ final class WorkflowPackageApiFloor
 
         if (! class_exists(self::POLL_MODE_DEMOTION_CLASS)) {
             $missing[] = self::POLL_MODE_DEMOTION_CLASS;
+        } elseif (! self::confirmsPollModeDemotion(self::POLL_MODE_DEMOTION_CLASS, self::POLL_MODE_DEMOTION_METHOD)) {
+            $missing[] = sprintf(
+                '%s::%s() lacks poll-mode queue capability demotion',
+                self::POLL_MODE_DEMOTION_CLASS,
+                self::POLL_MODE_DEMOTION_METHOD,
+            );
         }
 
         if ($missing === []) {
@@ -96,5 +110,53 @@ final class WorkflowPackageApiFloor
         }
 
         return $methodReflection->isPublic() && $methodReflection->isStatic();
+    }
+
+    /**
+     * Prove the installed BackendCapabilities::queue() contains the
+     * poll-mode demotion logic from workflow@f666b25.
+     *
+     * A method-existence check is insufficient because `queue()` predates
+     * the demotion. Instead, inspect the method's declared source and
+     * require the three co-located keywords that exist only once the
+     * demotion is in place: the config key `workflows.v2.task_dispatch_mode`
+     * (read via `task_dispatch_mode`), the demoted severity `'info'`, and
+     * the issue code `queue_sync_unsupported`. A stale package flagged the
+     * two issue codes as `'error'` unconditionally and never referenced
+     * `task_dispatch_mode`, so the three-way coincidence is specific to
+     * the post-f666b25 snapshot.
+     *
+     * Source-level inspection is used instead of invoking `queue()` because
+     * the method reads Laravel config at call time; the API floor runs in
+     * service-provider boot where the config facade is available but the
+     * broader container (cache store, DB connection) may not yet be ready,
+     * and the existing call path threads `assert()` from boot — we do not
+     * want to accidentally touch those services here.
+     */
+    private static function confirmsPollModeDemotion(string $class, string $method): bool
+    {
+        try {
+            $reflection = new ReflectionMethod($class, $method);
+        } catch (ReflectionException) {
+            return false;
+        }
+
+        $file = $reflection->getFileName();
+        if (! is_string($file) || ! is_readable($file)) {
+            return false;
+        }
+
+        $lines = @file($file);
+        if (! is_array($lines)) {
+            return false;
+        }
+
+        $start = max(0, $reflection->getStartLine() - 1);
+        $end = $reflection->getEndLine();
+        $body = implode('', array_slice($lines, $start, max(0, $end - $start)));
+
+        return str_contains($body, 'task_dispatch_mode')
+            && str_contains($body, "'info'")
+            && str_contains($body, 'queue_sync_unsupported');
     }
 }
