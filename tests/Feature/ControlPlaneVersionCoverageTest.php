@@ -176,6 +176,59 @@ class ControlPlaneVersionCoverageTest extends TestCase
     }
 
     /**
+     * TD-S050: on namespace-validated routes, a missing or unsupported
+     * control-plane version header must win over a namespace_not_found
+     * error when both conditions apply. The version-check middleware runs
+     * ahead of NamespaceResolver, so clients learn about the protocol skew
+     * first and can upgrade without chasing a red-herring 404.
+     *
+     * @return array<string, array{method: string, path: string, body?: array<string, mixed>}>
+     */
+    public static function namespaceValidatedEndpointProvider(): array
+    {
+        $all = self::controlPlaneEndpointProvider();
+
+        // NamespaceResolver exempts the /api/namespaces/* endpoints — those
+        // do not validate the target namespace's existence, so the ordering
+        // bug never surfaces there. Everything else is namespace-validated.
+        return array_filter($all, static fn (string $key): bool => ! str_starts_with($key, 'namespaces.'), ARRAY_FILTER_USE_KEY);
+    }
+
+    /**
+     * @dataProvider namespaceValidatedEndpointProvider
+     *
+     * @param  array<string, mixed>  $body
+     */
+    public function test_missing_version_header_beats_unknown_namespace(string $method, string $path, array $body = []): void
+    {
+        $response = $this->sendJson($method, $path, $body, [
+            'X-Namespace' => 'ghost-namespace',
+        ]);
+
+        $response->assertStatus(400);
+        $response->assertJsonPath('reason', 'missing_control_plane_version');
+        $response->assertJsonPath('supported_version', ControlPlaneProtocol::VERSION);
+    }
+
+    /**
+     * @dataProvider namespaceValidatedEndpointProvider
+     *
+     * @param  array<string, mixed>  $body
+     */
+    public function test_unsupported_version_header_beats_unknown_namespace(string $method, string $path, array $body = []): void
+    {
+        $response = $this->sendJson($method, $path, $body, [
+            'X-Namespace' => 'ghost-namespace',
+            'X-Durable-Workflow-Control-Plane-Version' => '999',
+        ]);
+
+        $response->assertStatus(400);
+        $response->assertJsonPath('reason', 'unsupported_control_plane_version');
+        $response->assertJsonPath('requested_version', '999');
+        $response->assertJsonPath('supported_version', ControlPlaneProtocol::VERSION);
+    }
+
+    /**
      * @param  array<string, mixed>  $body
      * @param  array<string, string>  $headers
      */
