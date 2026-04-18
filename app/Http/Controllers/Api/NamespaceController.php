@@ -45,7 +45,7 @@ class NamespaceController
 
         if (WorkflowNamespace::where('name', $validated['name'])->exists()) {
             return ControlPlaneProtocol::json([
-                'error' => 'Namespace already exists.',
+                'message' => 'Namespace already exists.',
                 'reason' => 'namespace_already_exists',
                 'namespace' => $validated['name'],
             ], 409);

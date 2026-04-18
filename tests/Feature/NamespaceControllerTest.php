@@ -171,7 +171,7 @@ class NamespaceControllerTest extends TestCase
         ]);
 
         $response->assertStatus(409)
-            ->assertJsonPath('error', 'Namespace already exists.')
+            ->assertJsonPath('message', 'Namespace already exists.')
             ->assertJsonPath('namespace', 'existing');
     }
 
