@@ -457,6 +457,83 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $this->assertNotSame($parentWorkflowId, $childPoll->json('task.workflow_id'));
     }
 
+    public function test_start_timer_completion_uses_worker_protocol_contract(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-timer-contract',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $workflowId = (string) $start->json('workflow_id');
+        $runId = (string) $start->json('run_id');
+
+        $this->registerWorker(
+            workerId: 'worker-timer-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-timer-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow')
+            ->assertJsonPath('task.lease_owner', 'worker-timer-contract');
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-timer-contract',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [
+                [
+                    'type' => 'start_timer',
+                    'delay_seconds' => 30,
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('run_status', 'waiting')
+            ->assertJsonPath('reason', null)
+            ->assertJsonStructure(['created_task_ids']);
+
+        $this->assertNotEmpty($complete->json('created_task_ids'));
+
+        $history = $this->getJson(
+            "/api/workflows/{$workflowId}/runs/{$runId}/history",
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $history->assertOk()
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertHeaderMissing(WorkerProtocol::HEADER);
+
+        $eventTypes = array_column($history->json('events'), 'event_type');
+
+        $this->assertContains('TimerScheduled', $eventTypes);
+    }
+
     public function test_workflow_task_history_page_compression_uses_worker_protocol_contract(): void
     {
         Queue::fake();
