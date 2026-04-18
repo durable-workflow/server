@@ -2206,6 +2206,15 @@ class WorkflowWorkerProtocolTest extends TestCase
                             ['Ada'],
                         ),
                         'queue' => 'external-activities',
+                        'retry_policy' => [
+                            'max_attempts' => 4,
+                            'backoff_seconds' => [1, 3, 9],
+                            'non_retryable_error_types' => ['ValidationError'],
+                        ],
+                        'start_to_close_timeout' => 30,
+                        'schedule_to_start_timeout' => 45,
+                        'schedule_to_close_timeout' => 120,
+                        'heartbeat_timeout' => 10,
                     ],
                 ],
             ]);
@@ -2230,7 +2239,21 @@ class WorkflowWorkerProtocolTest extends TestCase
         $activityPoll->assertOk()
             ->assertJsonPath('task.workflow_id', $workflowId)
             ->assertJsonPath('task.run_id', $runId)
-            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');
+            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity')
+            ->assertJsonPath('task.retry_policy.max_attempts', 4)
+            ->assertJsonPath('task.retry_policy.backoff_seconds', [1, 3, 9])
+            ->assertJsonPath('task.retry_policy.non_retryable_error_types', ['ValidationError'])
+            ->assertJsonPath('task.retry_policy.start_to_close_timeout', 30)
+            ->assertJsonPath('task.retry_policy.schedule_to_start_timeout', 45)
+            ->assertJsonPath('task.retry_policy.schedule_to_close_timeout', 120)
+            ->assertJsonPath('task.retry_policy.heartbeat_timeout', 10);
+
+        $deadlines = $activityPoll->json('task.deadlines');
+        $this->assertIsArray($deadlines);
+        $this->assertArrayHasKey('schedule_to_start', $deadlines);
+        $this->assertArrayHasKey('start_to_close', $deadlines);
+        $this->assertArrayHasKey('schedule_to_close', $deadlines);
+        $this->assertArrayHasKey('heartbeat', $deadlines);
 
         $activityPoll->assertJsonPath('task.arguments.codec', (string) config('workflows.serializer'));
         $this->assertSame(

@@ -242,7 +242,8 @@ class ActivityTimeoutTest extends TestCase
     {
         $this->getJson('/api/cluster/info')
             ->assertOk()
-            ->assertJsonPath('capabilities.activity_timeouts', true);
+            ->assertJsonPath('capabilities.activity_timeouts', true)
+            ->assertJsonPath('capabilities.activity_retry_policy', true);
     }
 
     // ── Auth ────────────────────────────────────────────────────────

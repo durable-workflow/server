@@ -57,6 +57,7 @@ class HealthController
             'continue_as_new' => true,
             'child_workflows' => true,
             'activity_timeouts' => true,
+            'activity_retry_policy' => true,
             'parent_close_policy' => true,
             'non_retryable_failures' => true,
             'history_retention' => true,
