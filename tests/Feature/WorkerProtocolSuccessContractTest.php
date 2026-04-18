@@ -302,6 +302,85 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonStructure(['next_task_id']);
     }
 
+    /**
+     * @return array<string, array{command: string, expectedOutcome: string, expectedHeartbeatReason: string}>
+     */
+    public static function terminalActivityHeartbeatProvider(): array
+    {
+        return [
+            'cancelled run' => [
+                'command' => 'cancel',
+                'expectedOutcome' => 'cancelled',
+                'expectedHeartbeatReason' => 'run_cancelled',
+            ],
+            'terminated run' => [
+                'command' => 'terminate',
+                'expectedOutcome' => 'terminated',
+                'expectedHeartbeatReason' => 'run_terminated',
+            ],
+        ];
+    }
+
+    #[DataProvider('terminalActivityHeartbeatProvider')]
+    public function test_leased_activity_task_heartbeat_reports_terminal_run_state(
+        string $command,
+        string $expectedOutcome,
+        string $expectedHeartbeatReason,
+    ): void {
+        Queue::fake();
+
+        $workflowId = sprintf('wf-activity-%s-heartbeat-contract', $command);
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, $workflowId);
+        $start = $workflow->start('Ada');
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
+
+        $this->runReadyWorkflowTask($start->runId());
+
+        $this->registerWorker(
+            workerId: "activity-worker-{$command}-heartbeat",
+            taskQueue: 'external-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+        );
+
+        $poll = $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => "activity-worker-{$command}-heartbeat",
+            'task_queue' => 'external-activities',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.lease_owner', "activity-worker-{$command}-heartbeat");
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attemptId = (string) $poll->json('task.activity_attempt_id');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $controlPlane = $this->postJson("/api/workflows/{$workflowId}/{$command}", [
+            'reason' => "operator {$command}",
+        ], $this->apiHeaders());
+
+        $controlPlane->assertOk()
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('workflow_id', $workflowId)
+            ->assertJsonPath('outcome', $expectedOutcome);
+
+        $heartbeat = $this->postJson("/api/worker/activity-tasks/{$taskId}/heartbeat", [
+            'activity_attempt_id' => $attemptId,
+            'lease_owner' => $leaseOwner,
+            'message' => 'checking for cancellation',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($heartbeat)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('activity_attempt_id', $attemptId)
+            ->assertJsonPath('lease_owner', $leaseOwner)
+            ->assertJsonPath('cancel_requested', true)
+            ->assertJsonPath('can_continue', false)
+            ->assertJsonPath('reason', $expectedHeartbeatReason)
+            ->assertJsonPath('heartbeat_recorded', false);
+    }
+
     public function test_leased_workflow_task_failure_response_uses_worker_protocol_contract(): void
     {
         Queue::fake();
