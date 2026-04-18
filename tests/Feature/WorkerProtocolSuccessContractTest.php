@@ -457,6 +457,130 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $this->assertNotSame($parentWorkflowId, $childPoll->json('task.workflow_id'));
     }
 
+    public function test_schedule_activity_completion_uses_worker_protocol_contract(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-activity-contract',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $workflowId = (string) $start->json('workflow_id');
+        $runId = (string) $start->json('run_id');
+
+        $this->registerWorker(
+            workerId: 'worker-activity-scheduler-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+        $this->registerWorker(
+            workerId: 'activity-worker-scheduled-contract',
+            taskQueue: 'contract-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-activity-scheduler-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow')
+            ->assertJsonPath('task.lease_owner', 'worker-activity-scheduler-contract');
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $codec = (string) config('workflows.serializer');
+
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-activity-scheduler-contract',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [
+                [
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'tests.external-greeting-activity',
+                    'arguments' => Serializer::serializeWithCodec($codec, ['Ada']),
+                    'queue' => 'contract-activities',
+                    'retry_policy' => [
+                        'max_attempts' => 4,
+                        'backoff_seconds' => [1, 3, 9],
+                        'non_retryable_error_types' => ['ValidationError'],
+                    ],
+                    'start_to_close_timeout' => 30,
+                    'schedule_to_start_timeout' => 45,
+                    'schedule_to_close_timeout' => 120,
+                    'heartbeat_timeout' => 10,
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('run_status', 'waiting')
+            ->assertJsonPath('reason', null)
+            ->assertJsonStructure(['created_task_ids']);
+
+        $this->assertNotEmpty($complete->json('created_task_ids'));
+
+        $activityPoll = $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'activity-worker-scheduled-contract',
+            'task_queue' => 'contract-activities',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($activityPoll)
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity')
+            ->assertJsonPath('task.task_queue', 'contract-activities')
+            ->assertJsonPath('task.lease_owner', 'activity-worker-scheduled-contract')
+            ->assertJsonPath('task.arguments.codec', $codec)
+            ->assertJsonPath('task.retry_policy.max_attempts', 4)
+            ->assertJsonPath('task.retry_policy.backoff_seconds', [1, 3, 9])
+            ->assertJsonPath('task.retry_policy.non_retryable_error_types', ['ValidationError'])
+            ->assertJsonPath('task.retry_policy.start_to_close_timeout', 30)
+            ->assertJsonPath('task.retry_policy.schedule_to_start_timeout', 45)
+            ->assertJsonPath('task.retry_policy.schedule_to_close_timeout', 120)
+            ->assertJsonPath('task.retry_policy.heartbeat_timeout', 10)
+            ->assertJsonMissingPath('task.activity_class');
+
+        $this->assertSame(
+            ['Ada'],
+            Serializer::unserializeWithCodec(
+                (string) $activityPoll->json('task.arguments.codec'),
+                (string) $activityPoll->json('task.arguments.blob'),
+            ),
+        );
+
+        $history = $this->getJson(
+            "/api/workflows/{$workflowId}/runs/{$runId}/history",
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $history->assertOk()
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertHeaderMissing(WorkerProtocol::HEADER);
+
+        $eventTypes = array_column($history->json('events'), 'event_type');
+
+        $this->assertContains('ActivityScheduled', $eventTypes);
+        $this->assertContains('ActivityStarted', $eventTypes);
+    }
+
     public function test_start_timer_completion_uses_worker_protocol_contract(): void
     {
         Queue::fake();
