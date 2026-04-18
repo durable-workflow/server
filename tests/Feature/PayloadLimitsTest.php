@@ -3,8 +3,11 @@
 namespace Tests\Feature;
 
 use App\Models\SearchAttributeDefinition;
+use App\Support\ControlPlaneProtocol;
+use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Feature\Concerns\ServerTestHelpers;
+use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 
 class PayloadLimitsTest extends TestCase
@@ -72,8 +75,29 @@ class PayloadLimitsTest extends TestCase
             'description' => str_repeat('x', 200),
         ], $this->apiHeaders())
             ->assertStatus(413)
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertHeaderMissing(WorkerProtocol::HEADER)
             ->assertJsonPath('reason', 'payload_too_large')
             ->assertJsonStructure(['message', 'reason', 'limit']);
+    }
+
+    public function test_worker_requests_exceeding_payload_limit_use_worker_protocol_contract(): void
+    {
+        config(['server.limits.max_payload_bytes' => 100]);
+
+        $this->postJson('/api/worker/register', [
+            'worker_id' => 'large-worker-payload',
+            'task_queue' => 'default',
+            'runtime' => 'python',
+            'metadata' => ['description' => str_repeat('x', 200)],
+        ], $this->workerHeaders())
+            ->assertStatus(413)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('reason', 'payload_too_large')
+            ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
+            ->assertJsonMissingPath('control_plane');
     }
 
     public function test_get_requests_are_not_affected_by_payload_limit(): void
@@ -89,7 +113,7 @@ class PayloadLimitsTest extends TestCase
         config(['server.limits.max_memo_bytes' => 50]);
 
         $this->configureWorkflowTypes([
-            \Tests\Fixtures\ExternalGreetingWorkflow::class,
+            ExternalGreetingWorkflow::class,
         ]);
 
         $this->postJson('/api/workflows', [
@@ -103,7 +127,7 @@ class PayloadLimitsTest extends TestCase
     public function test_workflow_start_accepts_memo_within_limit(): void
     {
         $this->configureWorkflowTypes([
-            \Tests\Fixtures\ExternalGreetingWorkflow::class,
+            ExternalGreetingWorkflow::class,
         ]);
 
         $this->postJson('/api/workflows', [

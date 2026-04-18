@@ -2,7 +2,10 @@
 
 namespace App\Http\Middleware;
 
+use App\Support\ControlPlaneProtocol;
+use App\Support\WorkerProtocol;
 use Closure;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -15,29 +18,33 @@ class EnforcePayloadLimits
         $contentLength = $request->header('Content-Length');
 
         if ($contentLength !== null && (int) $contentLength > $maxBytes) {
-            return response()->json([
-                'message' => sprintf(
-                    'Request payload exceeds the maximum allowed size of %d bytes.',
-                    $maxBytes,
-                ),
-                'reason' => 'payload_too_large',
-                'limit' => $maxBytes,
-            ], 413);
+            return $this->tooLarge($request, $maxBytes);
         }
 
         $bodySize = strlen($request->getContent());
 
         if ($bodySize > $maxBytes) {
-            return response()->json([
-                'message' => sprintf(
-                    'Request payload exceeds the maximum allowed size of %d bytes.',
-                    $maxBytes,
-                ),
-                'reason' => 'payload_too_large',
-                'limit' => $maxBytes,
-            ], 413);
+            return $this->tooLarge($request, $maxBytes);
         }
 
         return $next($request);
+    }
+
+    private function tooLarge(Request $request, int $maxBytes): JsonResponse
+    {
+        $payload = [
+            'message' => sprintf(
+                'Request payload exceeds the maximum allowed size of %d bytes.',
+                $maxBytes,
+            ),
+            'reason' => 'payload_too_large',
+            'limit' => $maxBytes,
+        ];
+
+        if (WorkerProtocol::isWorkerPlaneRequest($request)) {
+            return WorkerProtocol::json($payload, 413);
+        }
+
+        return ControlPlaneProtocol::jsonForRequest($request, $payload, 413);
     }
 }
