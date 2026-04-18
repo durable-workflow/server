@@ -3,7 +3,10 @@
 namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
+use App\Support\ControlPlaneProtocol;
+use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
 class WorkerProtocolContractTest extends TestCase
@@ -27,18 +30,116 @@ class WorkerProtocolContractTest extends TestCase
     public function test_worker_validation_errors_use_worker_protocol_contract_even_with_control_plane_header(): void
     {
         $this->withHeaders($this->workerHeaders() + [
-            'X-Durable-Workflow-Control-Plane-Version' => '2',
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
         ])->postJson('/api/worker/register', [
             'worker_id' => 'py-worker-invalid',
         ])->assertStatus(422)
-            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1.0')
-            ->assertHeaderMissing('X-Durable-Workflow-Control-Plane-Version')
-            ->assertJsonPath('protocol_version', '1.0')
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
             ->assertJsonPath('reason', 'validation_failed')
             ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
             ->assertJsonPath('validation_errors.task_queue.0', 'The task queue field is required.')
             ->assertJsonPath('validation_errors.runtime.0', 'The runtime field is required.')
             ->assertJsonMissingPath('control_plane');
+    }
+
+    /**
+     * @return array<string, array{path: string, body: array<string, mixed>, errorFields: list<string>}>
+     */
+    public static function workerValidationEndpointProvider(): array
+    {
+        return [
+            'worker.register' => [
+                'path' => '/api/worker/register',
+                'body' => ['worker_id' => 'py-worker-invalid'],
+                'errorFields' => ['task_queue', 'runtime'],
+            ],
+            'worker.heartbeat' => [
+                'path' => '/api/worker/heartbeat',
+                'body' => [],
+                'errorFields' => ['worker_id'],
+            ],
+            'workflow-tasks.poll' => [
+                'path' => '/api/worker/workflow-tasks/poll',
+                'body' => [],
+                'errorFields' => ['worker_id', 'task_queue'],
+            ],
+            'workflow-tasks.history' => [
+                'path' => '/api/worker/workflow-tasks/task-1/history',
+                'body' => [],
+                'errorFields' => ['lease_owner', 'workflow_task_attempt', 'next_history_page_token'],
+            ],
+            'workflow-tasks.heartbeat' => [
+                'path' => '/api/worker/workflow-tasks/task-1/heartbeat',
+                'body' => [],
+                'errorFields' => ['lease_owner', 'workflow_task_attempt'],
+            ],
+            'workflow-tasks.complete' => [
+                'path' => '/api/worker/workflow-tasks/task-1/complete',
+                'body' => [],
+                'errorFields' => ['lease_owner', 'workflow_task_attempt', 'commands'],
+            ],
+            'workflow-tasks.fail' => [
+                'path' => '/api/worker/workflow-tasks/task-1/fail',
+                'body' => [],
+                'errorFields' => ['lease_owner', 'workflow_task_attempt', 'failure'],
+            ],
+            'activity-tasks.poll' => [
+                'path' => '/api/worker/activity-tasks/poll',
+                'body' => [],
+                'errorFields' => ['worker_id', 'task_queue'],
+            ],
+            'activity-tasks.complete' => [
+                'path' => '/api/worker/activity-tasks/task-1/complete',
+                'body' => [],
+                'errorFields' => ['activity_attempt_id', 'lease_owner'],
+            ],
+            'activity-tasks.fail' => [
+                'path' => '/api/worker/activity-tasks/task-1/fail',
+                'body' => [],
+                'errorFields' => ['activity_attempt_id', 'lease_owner', 'failure'],
+            ],
+            'activity-tasks.heartbeat' => [
+                'path' => '/api/worker/activity-tasks/task-1/heartbeat',
+                'body' => [],
+                'errorFields' => ['activity_attempt_id', 'lease_owner'],
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $body
+     * @param  list<string>  $errorFields
+     */
+    #[DataProvider('workerValidationEndpointProvider')]
+    public function test_worker_validation_errors_use_worker_protocol_contract_across_endpoints(
+        string $path,
+        array $body,
+        array $errorFields,
+    ): void {
+        $response = $this->withHeaders($this->workerHeaders() + [
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ])->postJson($path, $body);
+
+        $response->assertStatus(422)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('reason', 'validation_failed')
+            ->assertJsonPath('message', static fn (mixed $message): bool => is_string($message) && $message !== '')
+            ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
+            ->assertJsonMissingPath('control_plane');
+
+        foreach ($errorFields as $field) {
+            $response->assertJsonPath(
+                "errors.{$field}.0",
+                static fn (mixed $message): bool => is_string($message) && $message !== '',
+            )->assertJsonPath(
+                "validation_errors.{$field}.0",
+                static fn (mixed $message): bool => is_string($message) && $message !== '',
+            );
+        }
     }
 
     public function test_worker_authentication_errors_use_worker_protocol_contract(): void
@@ -99,7 +200,7 @@ class WorkerProtocolContractTest extends TestCase
     {
         $headers = [
             'X-Namespace' => 'default',
-            'X-Durable-Workflow-Protocol-Version' => '1.0',
+            WorkerProtocol::HEADER => WorkerProtocol::VERSION,
         ];
 
         if ($withAuthorization) {
