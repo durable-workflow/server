@@ -277,6 +277,98 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('task.lease_owner', 'worker-matching-workflow-type');
     }
 
+    public function test_continue_as_new_completion_uses_worker_protocol_contract(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-continue-contract',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $workflowId = (string) $start->json('workflow_id');
+        $originalRunId = (string) $start->json('run_id');
+
+        $this->registerWorker(
+            workerId: 'worker-continue-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+        $this->registerWorker(
+            workerId: 'worker-continued-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-continue-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $originalRunId)
+            ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow')
+            ->assertJsonPath('task.lease_owner', 'worker-continue-contract');
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-continue-contract',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [
+                [
+                    'type' => 'continue_as_new',
+                    'workflow_type' => 'tests.external-greeting-workflow',
+                    'arguments' => Serializer::serializeWithCodec('json', ['Ada v2']),
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_id', $originalRunId)
+            ->assertJsonPath('run_status', 'completed')
+            ->assertJsonPath('reason', null)
+            ->assertJsonStructure(['created_task_ids']);
+
+        $runs = $this->getJson("/api/workflows/{$workflowId}/runs", $this->controlPlaneHeadersWithWorkerProtocol());
+
+        $runs->assertOk()
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertHeaderMissing(WorkerProtocol::HEADER)
+            ->assertJsonCount(2, 'runs')
+            ->assertJsonPath('runs.0.run_id', $originalRunId)
+            ->assertJsonPath('runs.0.status', 'completed')
+            ->assertJsonPath('runs.1.run_number', 2)
+            ->assertJsonPath('runs.1.status', 'pending');
+
+        $continuedRunId = (string) $runs->json('runs.1.run_id');
+
+        $continuedPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-continued-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($continuedPoll)
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $continuedRunId)
+            ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow')
+            ->assertJsonPath('task.lease_owner', 'worker-continued-contract');
+    }
+
     public function test_workflow_task_history_page_compression_uses_worker_protocol_contract(): void
     {
         Queue::fake();
