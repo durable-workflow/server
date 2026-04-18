@@ -27,7 +27,7 @@ class ControlPlaneSemanticErrorContractTest extends TestCase
     {
         $response = $this->postJson('/api/namespaces', [
             'name' => 'Default',
-        ], $this->apiHeaders());
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
 
         $this->assertControlPlaneSemanticError($response, 409, 'namespace_already_exists');
         $response->assertJsonPath('namespace', 'default');
@@ -41,7 +41,7 @@ class ControlPlaneSemanticErrorContractTest extends TestCase
             'schedule_id' => 'existing-schedule',
             'spec' => ['cron_expressions' => ['0 * * * *']],
             'action' => ['workflow_type' => 'AnotherWorkflow'],
-        ], $this->apiHeaders());
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
 
         $this->assertControlPlaneSemanticError($response, 409, 'schedule_already_exists');
         $response->assertJsonPath('schedule_id', 'existing-schedule');
@@ -54,7 +54,7 @@ class ControlPlaneSemanticErrorContractTest extends TestCase
         $response = $this->postJson('/api/schedules/backfill-contract/backfill', [
             'start_time' => '2026-04-18T10:00:00Z',
             'end_time' => '2026-04-18T09:00:00Z',
-        ], $this->apiHeaders());
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
 
         $this->assertControlPlaneSemanticError($response, 422, 'invalid_time_range');
     }
@@ -68,7 +68,7 @@ class ControlPlaneSemanticErrorContractTest extends TestCase
             'spec' => ['cron_expressions' => ['0 * * * *']],
             'action' => ['workflow_type' => 'MemoWorkflow'],
             'memo' => ['data' => str_repeat('x', 100)],
-        ], $this->apiHeaders());
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
 
         $this->assertControlPlaneSemanticError($response, 422, 'memo_too_large');
         $response->assertJsonPath('limit', 50);
@@ -85,20 +85,24 @@ class ControlPlaneSemanticErrorContractTest extends TestCase
         $reserved = $this->postJson('/api/search-attributes', [
             'name' => 'WorkflowId',
             'type' => 'keyword',
-        ], $this->apiHeaders());
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
 
         $this->assertControlPlaneSemanticError($reserved, 409, 'name_reserved');
 
         $duplicate = $this->postJson('/api/search-attributes', [
             'name' => 'Priority',
             'type' => 'keyword',
-        ], $this->apiHeaders());
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
 
         $this->assertControlPlaneSemanticError($duplicate, 409, 'attribute_already_exists');
         $duplicate->assertJsonPath('name', 'Priority')
             ->assertJsonPath('type', 'int');
 
-        $systemDelete = $this->deleteJson('/api/search-attributes/WorkflowId', [], $this->apiHeaders());
+        $systemDelete = $this->deleteJson(
+            '/api/search-attributes/WorkflowId',
+            [],
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
 
         $this->assertControlPlaneSemanticError($systemDelete, 409, 'system_attribute');
 
@@ -107,7 +111,7 @@ class ControlPlaneSemanticErrorContractTest extends TestCase
         $limit = $this->postJson('/api/search-attributes', [
             'name' => 'Region',
             'type' => 'keyword',
-        ], $this->apiHeaders());
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
 
         $this->assertControlPlaneSemanticError($limit, 422, 'search_attribute_limit_reached');
         $limit->assertJsonPath('limit', 1);

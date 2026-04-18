@@ -126,11 +126,13 @@ class ControlPlaneValidationContractTest extends TestCase
         string $errorField,
         ?string $controlOperation,
     ): void {
-        $response = $this->sendJson($method, $path, $body, $this->apiHeaders());
+        $response = $this->sendJson($method, $path, $body, $this->controlPlaneHeadersWithWorkerProtocol());
 
         $response->assertStatus(422)
             ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
             ->assertHeaderMissing(WorkerProtocol::HEADER)
+            ->assertJsonMissingPath('protocol_version')
+            ->assertJsonMissingPath('server_capabilities')
             ->assertJsonPath(
                 "errors.{$errorField}.0",
                 static fn (mixed $message): bool => is_string($message) && $message !== '',

@@ -184,12 +184,14 @@ class ControlPlaneOperationalSuccessContractTest extends TestCase
         array $body,
         array $structure,
     ): void {
-        $response = $this->sendJson($method, $path, $body, $this->apiHeaders());
+        $response = $this->sendJson($method, $path, $body, $this->controlPlaneHeadersWithWorkerProtocol());
 
         $response->assertOk()
             ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
             ->assertHeaderMissing(WorkerProtocol::HEADER)
             ->assertJsonMissingPath('protocol_version')
+            ->assertJsonMissingPath('server_capabilities')
+            ->assertJsonMissingPath('control_plane')
             ->assertJsonStructure($structure);
     }
 

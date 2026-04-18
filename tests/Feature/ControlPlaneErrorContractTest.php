@@ -101,22 +101,30 @@ class ControlPlaneErrorContractTest extends TestCase
         array $body,
         string $reason,
     ): void {
-        $response = $this->sendJson($method, $path, $body, $this->apiHeaders());
+        $response = $this->sendJson($method, $path, $body, $this->controlPlaneHeadersWithWorkerProtocol());
 
         $response->assertNotFound()
             ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
             ->assertHeaderMissing(WorkerProtocol::HEADER)
+            ->assertJsonMissingPath('protocol_version')
+            ->assertJsonMissingPath('server_capabilities')
             ->assertJsonPath('reason', $reason)
             ->assertJsonPath('message', static fn (mixed $message): bool => is_string($message) && $message !== '');
     }
 
     public function test_namespace_duplicate_errors_are_machine_readable_and_versioned(): void
     {
-        $response = $this->postJson('/api/namespaces', ['name' => 'Default'], $this->apiHeaders());
+        $response = $this->postJson(
+            '/api/namespaces',
+            ['name' => 'Default'],
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
 
         $response->assertStatus(409)
             ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
             ->assertHeaderMissing(WorkerProtocol::HEADER)
+            ->assertJsonMissingPath('protocol_version')
+            ->assertJsonMissingPath('server_capabilities')
             ->assertJsonPath('reason', 'namespace_already_exists')
             ->assertJsonPath('namespace', 'default');
     }

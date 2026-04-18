@@ -6,6 +6,7 @@ namespace Tests\Feature\Concerns;
 
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
+use App\Support\WorkerProtocol;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkflowExecutor;
@@ -37,6 +38,19 @@ trait ServerTestHelpers
         return [
             'X-Namespace' => $namespace,
             'X-Durable-Workflow-Protocol-Version' => '1.0',
+        ];
+    }
+
+    /**
+     * Include worker-plane metadata on control-plane requests to lock route
+     * precedence for mixed clients and prevent response-envelope drift.
+     *
+     * @return array<string, string>
+     */
+    protected function controlPlaneHeadersWithWorkerProtocol(string $namespace = 'default'): array
+    {
+        return $this->apiHeaders($namespace) + [
+            WorkerProtocol::HEADER => WorkerProtocol::VERSION,
         ];
     }
 

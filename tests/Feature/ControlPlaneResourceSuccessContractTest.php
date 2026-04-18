@@ -276,7 +276,7 @@ class ControlPlaneResourceSuccessContractTest extends TestCase
     ): void {
         $this->prepareResourceCase($case);
 
-        $response = $this->sendJson($method, $path, $body, $this->apiHeaders());
+        $response = $this->sendJson($method, $path, $body, $this->controlPlaneHeadersWithWorkerProtocol());
 
         $response->assertStatus($status)
             ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
