@@ -1191,7 +1191,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
     }
 
     /**
-     * @return array<string, array{command: string, expectedOutcome: string}>
+     * @return array<string, array{command: string, expectedOutcome: string, expectedStopReason: string}>
      */
     public static function terminalWorkflowTaskProvider(): array
     {
@@ -1199,10 +1199,12 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'cancelled run' => [
                 'command' => 'cancel',
                 'expectedOutcome' => 'cancelled',
+                'expectedStopReason' => 'run_cancelled',
             ],
             'terminated run' => [
                 'command' => 'terminate',
                 'expectedOutcome' => 'terminated',
+                'expectedStopReason' => 'run_terminated',
             ],
         ];
     }
@@ -1211,6 +1213,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
     public function test_leased_workflow_task_reports_terminal_run_state(
         string $command,
         string $expectedOutcome,
+        string $expectedStopReason,
     ): void {
         Queue::fake();
 
@@ -1265,7 +1268,14 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'next_history_page_token' => base64_encode('0'),
         ], $this->workerProtocolHeaders());
 
-        $this->assertTerminalWorkflowTaskOutcome($history, $expectedOutcome, $taskId, $attempt, $workerId)
+        $this->assertTerminalWorkflowTaskOutcome(
+            $history,
+            $expectedOutcome,
+            $expectedStopReason,
+            $taskId,
+            $attempt,
+            $workerId,
+        )
             ->assertJsonMissingPath('outcome');
 
         $heartbeat = $this->postJson("/api/worker/workflow-tasks/{$taskId}/heartbeat", [
@@ -1273,7 +1283,14 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'workflow_task_attempt' => $attempt,
         ], $this->workerProtocolHeaders());
 
-        $this->assertTerminalWorkflowTaskOutcome($heartbeat, $expectedOutcome, $taskId, $attempt, $workerId)
+        $this->assertTerminalWorkflowTaskOutcome(
+            $heartbeat,
+            $expectedOutcome,
+            $expectedStopReason,
+            $taskId,
+            $attempt,
+            $workerId,
+        )
             ->assertJsonMissingPath('outcome');
 
         $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
@@ -1287,7 +1304,14 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ],
         ], $this->workerProtocolHeaders());
 
-        $this->assertTerminalWorkflowTaskOutcome($complete, $expectedOutcome, $taskId, $attempt, $workerId)
+        $this->assertTerminalWorkflowTaskOutcome(
+            $complete,
+            $expectedOutcome,
+            $expectedStopReason,
+            $taskId,
+            $attempt,
+            $workerId,
+        )
             ->assertJsonMissingPath('outcome');
 
         $fail = $this->postJson("/api/worker/workflow-tasks/{$taskId}/fail", [
@@ -1299,7 +1323,14 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ],
         ], $this->workerProtocolHeaders());
 
-        $this->assertTerminalWorkflowTaskOutcome($fail, $expectedOutcome, $taskId, $attempt, $workerId)
+        $this->assertTerminalWorkflowTaskOutcome(
+            $fail,
+            $expectedOutcome,
+            $expectedStopReason,
+            $taskId,
+            $attempt,
+            $workerId,
+        )
             ->assertJsonMissingPath('outcome');
     }
 
@@ -1448,6 +1479,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
     private function assertTerminalWorkflowTaskOutcome(
         TestResponse $response,
         string $runStatus,
+        string $stopReason,
         string $taskId,
         int $attempt,
         string $leaseOwner,
@@ -1459,7 +1491,10 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('lease_owner', $leaseOwner)
             ->assertJsonPath('run_status', $runStatus)
             ->assertJsonPath('task_status', 'cancelled')
-            ->assertJsonPath('reason', 'run_closed');
+            ->assertJsonPath('reason', 'run_closed')
+            ->assertJsonPath('stop_reason', $stopReason)
+            ->assertJsonPath('cancel_requested', true)
+            ->assertJsonPath('can_continue', false);
     }
 
     /**

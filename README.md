@@ -397,7 +397,11 @@ must echo both `workflow_task_attempt` and `lease_owner` on workflow-task
 `heartbeat`, `complete`, and `fail` calls. Workflow-task completion supports
 non-terminal commands such as `schedule_activity`, `start_timer`, and
 `start_child_workflow`, plus terminal `complete_workflow`, `fail_workflow`,
-and `continue_as_new` commands.
+and `continue_as_new` commands. If a cancel or terminate command closes the run
+while a workflow task is leased, the next workflow-task `history`, `heartbeat`,
+`complete`, or `fail` response returns the worker envelope with
+`reason: "run_closed"`, `can_continue: false`, `cancel_requested: true`, and a
+concrete `stop_reason` such as `run_cancelled` or `run_terminated`.
 
 Activity task polling returns a leased attempt identity. Clients must echo both
 `activity_attempt_id` and `lease_owner` on activity `complete`, `fail`, and

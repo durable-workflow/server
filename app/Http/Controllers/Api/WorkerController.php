@@ -621,6 +621,9 @@ class WorkerController
                 'workflow_task_attempt' => $workflowTaskAttempt,
                 'error' => 'Workflow run is already closed.',
                 'reason' => 'run_closed',
+                'stop_reason' => $this->workflowTaskStopReason($result['status']['run_status'] ?? null),
+                'cancel_requested' => $this->workflowTaskCancelRequested($result['status']['run_status'] ?? null),
+                'can_continue' => false,
                 'run_status' => $result['status']['run_status'] ?? null,
                 'task_status' => $result['status']['task_status'] ?? null,
                 'lease_owner' => $result['status']['lease_owner'] ?? null,
@@ -724,6 +727,23 @@ class WorkerController
             null => 200,
             'task_not_found' => 404,
             default => 409,
+        };
+    }
+
+    private function workflowTaskCancelRequested(mixed $runStatus): bool
+    {
+        return is_string($runStatus)
+            && in_array($runStatus, ['cancelled', 'terminated'], true);
+    }
+
+    private function workflowTaskStopReason(mixed $runStatus): string
+    {
+        return match ($runStatus) {
+            'cancelled' => 'run_cancelled',
+            'terminated' => 'run_terminated',
+            'completed' => 'run_completed',
+            'failed' => 'run_failed',
+            default => 'run_closed',
         };
     }
 }
