@@ -75,17 +75,63 @@ class CompressResponse
             return null;
         }
 
-        $accept = strtolower($accept);
+        $accepted = $this->acceptedEncodings($accept);
 
-        if (str_contains($accept, 'gzip')) {
+        if (($accepted['gzip'] ?? 0.0) > 0.0 && ($accepted['gzip'] ?? 0.0) >= ($accepted['deflate'] ?? 0.0)) {
             return 'gzip';
         }
 
-        if (str_contains($accept, 'deflate')) {
+        if (($accepted['deflate'] ?? 0.0) > 0.0) {
             return 'deflate';
         }
 
         return null;
+    }
+
+    /**
+     * @return array{gzip?: float, deflate?: float}
+     */
+    private function acceptedEncodings(string $accept): array
+    {
+        $accepted = [];
+        $wildcardQ = null;
+
+        foreach (explode(',', strtolower($accept)) as $part) {
+            $segments = array_map('trim', explode(';', $part));
+            $encoding = array_shift($segments);
+
+            if (! is_string($encoding) || $encoding === '') {
+                continue;
+            }
+
+            $q = 1.0;
+
+            foreach ($segments as $segment) {
+                if (! str_starts_with($segment, 'q=')) {
+                    continue;
+                }
+
+                $value = substr($segment, 2);
+                $q = is_numeric($value) ? max(0.0, min(1.0, (float) $value)) : 0.0;
+            }
+
+            if ($encoding === '*') {
+                $wildcardQ = $q;
+
+                continue;
+            }
+
+            if ($encoding === 'gzip' || $encoding === 'deflate') {
+                $accepted[$encoding] = max($accepted[$encoding] ?? 0.0, $q);
+            }
+        }
+
+        if ($wildcardQ !== null) {
+            $accepted['gzip'] ??= $wildcardQ;
+            $accepted['deflate'] ??= $wildcardQ;
+        }
+
+        return $accepted;
     }
 
     private function compress(string $content, string $encoding): ?string

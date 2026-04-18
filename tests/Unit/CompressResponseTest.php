@@ -14,7 +14,7 @@ class CompressResponseTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $this->middleware = new CompressResponse();
+        $this->middleware = new CompressResponse;
     }
 
     public function test_it_compresses_large_json_responses_with_gzip(): void
@@ -94,6 +94,29 @@ class CompressResponseTest extends TestCase
         });
 
         $this->assertSame('gzip', $response->headers->get('Content-Encoding'));
+    }
+
+    public function test_it_honors_accept_encoding_quality_values(): void
+    {
+        $request = $this->makeRequest('gzip;q=0, deflate;q=1');
+
+        $response = $this->middleware->handle($request, function () {
+            return new JsonResponse($this->largePayload());
+        });
+
+        $this->assertSame('deflate', $response->headers->get('Content-Encoding'));
+    }
+
+    public function test_it_does_not_compress_when_supported_encodings_are_refused(): void
+    {
+        $request = $this->makeRequest('gzip;q=0, deflate;q=0');
+
+        $response = $this->middleware->handle($request, function () {
+            return new JsonResponse($this->largePayload());
+        });
+
+        $this->assertFalse($response->headers->has('Content-Encoding'));
+        $this->assertJson($response->getContent());
     }
 
     public function test_it_does_not_double_compress(): void
