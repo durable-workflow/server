@@ -16,6 +16,7 @@ use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
@@ -215,7 +216,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'commands' => [
                 [
                     'type' => 'complete_workflow',
-                    'result' => Serializer::serializeWithCodec('json', [
+                    'result' => Serializer::serializeWithCodec('avro', [
                         'greeting' => 'Hello, Ada!',
                     ]),
                 ],
@@ -462,6 +463,122 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $this->assertSame($resultBlob, $events[2]->payload['result']);
     }
 
+    public function test_update_backed_workflow_task_fail_can_close_accepted_update(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.interactive-command-workflow' => InteractiveCommandWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-update-fail-contract',
+            'workflow_type' => 'tests.interactive-command-workflow',
+            'task_queue' => 'contract-queue',
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $signal = $this->postJson('/api/workflows/wf-worker-update-fail-contract/signal/advance', [
+            'input' => ['Ada'],
+            'request_id' => 'signal-update-fail-1',
+        ], $this->apiHeaders());
+
+        $signal->assertAccepted();
+
+        $this->runReadyWorkflowTask($runId);
+
+        $update = $this->postJson('/api/workflows/wf-worker-update-fail-contract/update/approve', [
+            'input' => [false, 'worker-fail'],
+            'request_id' => 'update-fail-1',
+            'wait_for' => 'accepted',
+        ], $this->apiHeaders());
+
+        $update->assertAccepted()
+            ->assertJsonPath('update_status', 'accepted');
+
+        $updateId = (string) $update->json('update_id');
+
+        $this->registerWorker(
+            workerId: 'worker-update-fail-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.interactive-command-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-update-fail-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_update_id', $updateId);
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-update-fail-contract',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [
+                [
+                    'type' => 'fail_update',
+                    'update_id' => $updateId,
+                    'message' => 'approval denied by worker',
+                    'exception_class' => 'App\\Workflow\\ApprovalDenied',
+                    'exception_type' => 'approval_denied',
+                    'non_retryable' => true,
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('run_status', 'waiting')
+            ->assertJsonPath('created_task_ids', []);
+
+        /** @var WorkflowUpdate $closedUpdate */
+        $closedUpdate = WorkflowUpdate::query()->findOrFail($updateId);
+
+        $this->assertSame('failed', $closedUpdate->status->value);
+        $this->assertSame('update_failed', $closedUpdate->outcome->value);
+        $this->assertSame('approval denied by worker', $closedUpdate->failure_message);
+        $this->assertNotNull($closedUpdate->failure_id);
+        $this->assertNotNull($closedUpdate->closed_at);
+
+        /** @var WorkflowFailure $failure */
+        $failure = WorkflowFailure::query()->findOrFail($closedUpdate->failure_id);
+
+        $this->assertSame('workflow_command', $failure->source_kind);
+        $this->assertSame('update', $failure->propagation_kind);
+        $this->assertTrue($failure->non_retryable);
+        $this->assertSame('App\\Workflow\\ApprovalDenied', $failure->exception_class);
+        $this->assertSame('approval denied by worker', $failure->message);
+
+        $events = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->whereIn('event_type', ['UpdateAccepted', 'UpdateCompleted'])
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(2, $events);
+        $this->assertSame('UpdateAccepted', $events[0]->event_type->value);
+        $this->assertSame('UpdateCompleted', $events[1]->event_type->value);
+        $this->assertSame($updateId, $events[1]->payload['update_id']);
+        $this->assertSame($failure->id, $events[1]->payload['failure_id']);
+        $this->assertSame('approval_denied', $events[1]->payload['exception_type']);
+        $this->assertSame('App\\Workflow\\ApprovalDenied', $events[1]->payload['exception_class']);
+        $this->assertSame('approval denied by worker', $events[1]->payload['message']);
+        $this->assertTrue($events[1]->payload['non_retryable']);
+    }
+
     public function test_continue_as_new_completion_uses_worker_protocol_contract(): void
     {
         Queue::fake();
@@ -514,7 +631,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
                 [
                     'type' => 'continue_as_new',
                     'workflow_type' => 'tests.external-greeting-workflow',
-                    'arguments' => Serializer::serializeWithCodec('json', ['Ada v2']),
+                    'arguments' => Serializer::serializeWithCodec('avro', ['Ada v2']),
                 ],
             ],
         ], $this->workerProtocolHeaders());
@@ -608,7 +725,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
                     'workflow_type' => 'tests.external-child-workflow',
                     'queue' => 'contract-queue',
                     'parent_close_policy' => 'request_cancel',
-                    'arguments' => Serializer::serializeWithCodec('json', ['child-input']),
+                    'arguments' => Serializer::serializeWithCodec('avro', ['child-input']),
                     'retry_policy' => [
                         'max_attempts' => 3,
                         'backoff_seconds' => [1, 5],
@@ -886,7 +1003,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
 
         $taskId = (string) $poll->json('task.task_id');
         $attempt = (int) $poll->json('task.workflow_task_attempt');
-        $sideEffectResult = Serializer::serializeWithCodec('json', ['seed' => 123, 'source' => 'worker']);
+        $sideEffectResult = Serializer::serializeWithCodec('avro', ['seed' => 123, 'source' => 'worker']);
 
         $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
             'lease_owner' => 'worker-marker-contract',
@@ -1159,7 +1276,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $complete = $this->postJson("/api/worker/activity-tasks/{$taskId}/complete", [
             'activity_attempt_id' => $attemptId,
             'lease_owner' => $leaseOwner,
-            'result' => Serializer::serializeWithCodec('json', 'Hello, Ada!'),
+            'result' => Serializer::serializeWithCodec('avro', 'Hello, Ada!'),
         ], $this->workerProtocolHeaders());
 
         $this->assertWorkerProtocolSuccess($complete)
@@ -1353,7 +1470,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ? $this->postJson("/api/worker/activity-tasks/{$claim['task_id']}/complete", [
                 'activity_attempt_id' => $claim['activity_attempt_id'],
                 'lease_owner' => $claim['lease_owner'],
-                'result' => Serializer::serializeWithCodec('json', 'too late'),
+                'result' => Serializer::serializeWithCodec('avro', 'too late'),
             ], $this->workerProtocolHeaders())
             : $this->postJson("/api/worker/activity-tasks/{$claim['task_id']}/fail", [
                 'activity_attempt_id' => $claim['activity_attempt_id'],
@@ -1361,7 +1478,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
                 'failure' => [
                     'message' => 'too late',
                     'type' => 'ExternalError',
-                    'details' => Serializer::serializeWithCodec('json', ['phase' => 'late']),
+                    'details' => Serializer::serializeWithCodec('avro', ['phase' => 'late']),
                 ],
             ], $this->workerProtocolHeaders());
 
@@ -1484,7 +1601,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             'commands' => [
                 [
                     'type' => 'complete_workflow',
-                    'result' => Serializer::serializeWithCodec('json', ['ignored' => true]),
+                    'result' => Serializer::serializeWithCodec('avro', ['ignored' => true]),
                 ],
             ],
         ], $this->workerProtocolHeaders());
@@ -1616,7 +1733,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
                 'type' => 'TimeoutException',
                 'stack_trace' => 'at HttpClient::send(Client.php:120)',
                 'non_retryable' => false,
-                'details' => Serializer::serializeWithCodec('json', ['retry_after' => 30]),
+                'details' => Serializer::serializeWithCodec('avro', ['retry_after' => 30]),
             ],
         ], $this->workerProtocolHeaders());
 

@@ -2,9 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
-use App\Support\LongPollSignalStore;
 use App\Support\LongPoller;
+use App\Support\LongPollSignalStore;
 use App\Support\NamespaceWorkflowScope;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
@@ -12,6 +13,7 @@ use Mockery\MockInterface;
 use Tests\Fixtures\ExternalGreetingActivity;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
@@ -597,9 +599,9 @@ class ActivityWorkerProtocolTest extends TestCase
                 $mock->shouldReceive('fail')
                     ->once()
                     ->withArgs(function (string $attemptId, array $failure, ?string $codec) {
-                        return $codec === 'json'
-                            && ($failure['details'] ?? null) === '{"retry_after":30}'
-                            && ($failure['details_payload_codec'] ?? null) === 'json';
+                        return $codec === 'avro'
+                            && ($failure['details'] ?? null) === Serializer::serializeWithCodec('avro', ['retry_after' => 30])
+                            && ($failure['details_payload_codec'] ?? null) === 'avro';
                     })
                     ->andReturn([
                         'recorded' => true,
@@ -618,8 +620,8 @@ class ActivityWorkerProtocolTest extends TestCase
                     'message' => 'Connection timeout.',
                     'type' => 'TimeoutException',
                     'details' => [
-                        'codec' => 'json',
-                        'blob' => '{"retry_after":30}',
+                        'codec' => 'avro',
+                        'blob' => Serializer::serializeWithCodec('avro', ['retry_after' => 30]),
                     ],
                 ],
             ]);
@@ -740,7 +742,7 @@ class ActivityWorkerProtocolTest extends TestCase
         array $supportedWorkflowTypes = [],
         array $supportedActivityTypes = [],
     ): void {
-        \App\Models\WorkerRegistration::query()->updateOrCreate(
+        WorkerRegistration::query()->updateOrCreate(
             ['worker_id' => $workerId, 'namespace' => $namespace],
             [
                 'task_queue' => $taskQueue,

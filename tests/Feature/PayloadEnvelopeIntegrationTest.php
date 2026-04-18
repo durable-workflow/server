@@ -8,13 +8,14 @@ use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
-use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\Fixtures\ExternalGreetingWorkflow;
+use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
-use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\WorkflowExecutor;
 
 class PayloadEnvelopeIntegrationTest extends TestCase
 {
@@ -29,7 +30,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         ]);
     }
 
-    public function test_signal_accepts_json_envelope_input(): void
+    public function test_signal_accepts_avro_envelope_input(): void
     {
         Queue::fake();
         $this->configureWorkflowTypes();
@@ -50,10 +51,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         $signal = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows/wf-envelope-signal/signal/advance', [
-                'input' => [
-                    'codec' => 'json',
-                    'blob' => '["EnvelopeUser"]',
-                ],
+                'input' => $this->avroEnvelope(['EnvelopeUser']),
             ]);
 
         $signal->assertStatus(202)
@@ -69,7 +67,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ->assertJsonPath('result.stage', 'waiting-for-finish');
     }
 
-    public function test_signal_rejects_non_json_envelope(): void
+    public function test_signal_rejects_undecodable_envelope(): void
     {
         Queue::fake();
         $this->configureWorkflowTypes();
@@ -99,7 +97,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $signal->assertStatus(422);
     }
 
-    public function test_query_accepts_json_envelope_input(): void
+    public function test_query_accepts_avro_envelope_input(): void
     {
         Queue::fake();
         $this->configureWorkflowTypes();
@@ -120,17 +118,14 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         $query = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows/wf-envelope-query/query/events-starting-with', [
-                'input' => [
-                    'codec' => 'json',
-                    'blob' => '["start"]',
-                ],
+                'input' => $this->avroEnvelope(['start']),
             ]);
 
         $query->assertOk()
             ->assertJsonPath('result', 1);
     }
 
-    public function test_update_accepts_json_envelope_input(): void
+    public function test_update_accepts_avro_envelope_input(): void
     {
         Queue::fake();
         $this->configureWorkflowTypes();
@@ -151,10 +146,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         $update = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows/wf-envelope-update/update/approve', [
-                'input' => [
-                    'codec' => 'json',
-                    'blob' => '[true,"envelope-api"]',
-                ],
+                'input' => $this->avroEnvelope([true, 'envelope-api']),
                 'wait_for' => 'completed',
             ]);
 
@@ -199,10 +191,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
                 'commands' => [
                     [
                         'type' => 'complete_workflow',
-                        'result' => [
-                            'codec' => 'json',
-                            'blob' => '{"greeting":"Hello Ada"}',
-                        ],
+                        'result' => $this->avroEnvelope(['greeting' => 'Hello Ada']),
                     ],
                 ],
             ]);
@@ -246,10 +235,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
                     [
                         'type' => 'schedule_activity',
                         'activity_type' => 'tests.greeting-activity',
-                        'arguments' => [
-                            'codec' => 'json',
-                            'blob' => '["Hello","Ada"]',
-                        ],
+                        'arguments' => $this->avroEnvelope(['Hello', 'Ada']),
                     ],
                 ],
             ]);
@@ -317,10 +303,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ->postJson("/api/worker/activity-tasks/{$activityTaskId}/complete", [
                 'activity_attempt_id' => $attemptId,
                 'lease_owner' => 'worker-1',
-                'result' => [
-                    'codec' => 'json',
-                    'blob' => '"Hello Ada from activity"',
-                ],
+                'result' => $this->avroEnvelope('Hello Ada from activity'),
             ]);
 
         $complete->assertOk()
@@ -338,8 +321,11 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ->firstWhere('event_type', 'ActivityCompleted');
 
         $this->assertIsArray($completedEvent);
-        $this->assertSame('json', $completedEvent['payload']['payload_codec'] ?? null);
-        $this->assertSame('"Hello Ada from activity"', $completedEvent['payload']['result'] ?? null);
+        $this->assertSame('avro', $completedEvent['payload']['payload_codec'] ?? null);
+        $this->assertSame(
+            'Hello Ada from activity',
+            Serializer::unserializeWithCodec('avro', (string) ($completedEvent['payload']['result'] ?? '')),
+        );
     }
 
     public function test_cluster_info_advertises_payload_codec_envelope_capability(): void
@@ -386,10 +372,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
                     [
                         'type' => 'start_child_workflow',
                         'workflow_type' => 'tests.external-greeting-workflow',
-                        'arguments' => [
-                            'codec' => 'json',
-                            'blob' => '["child-arg"]',
-                        ],
+                        'arguments' => $this->avroEnvelope(['child-arg']),
                     ],
                 ],
             ]);
@@ -431,10 +414,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
                 'commands' => [
                     [
                         'type' => 'continue_as_new',
-                        'arguments' => [
-                            'codec' => 'json',
-                            'blob' => '["new-generation"]',
-                        ],
+                        'arguments' => $this->avroEnvelope(['new-generation']),
                     ],
                 ],
             ]);
@@ -603,7 +583,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $startFields = $info->json('control_plane.request_contract.operations.start.fields');
         $this->assertArrayHasKey('payload_codec', $startFields);
         $this->assertSame('string', $startFields['payload_codec']['type']);
-        
+
         $this->assertContains('avro', $startFields['payload_codec']['canonical_values']);
     }
 
@@ -810,7 +790,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $this->assertSame(true, $decoded['approved']);
     }
 
-    public function test_signal_with_json_envelope_stores_codec_on_signal_model(): void
+    public function test_signal_with_avro_envelope_stores_codec_on_signal_model(): void
     {
         Queue::fake();
         $this->configureWorkflowTypes();
@@ -831,10 +811,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows/wf-signal-codec-store/signal/advance', [
-                'input' => [
-                    'codec' => 'json',
-                    'blob' => '["EnvelopeCodecUser"]',
-                ],
+                'input' => $this->avroEnvelope(['EnvelopeCodecUser']),
             ])
             ->assertStatus(202);
 
@@ -844,9 +821,9 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ->first();
 
         $this->assertNotNull($signal);
-        $this->assertSame('json', $signal->payload_codec);
+        $this->assertSame('avro', $signal->payload_codec);
 
-        $decoded = json_decode($signal->arguments, true);
+        $decoded = Serializer::unserializeWithCodec('avro', (string) $signal->arguments);
         $this->assertSame(['EnvelopeCodecUser'], $decoded);
     }
 
@@ -896,6 +873,17 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         ];
     }
 
+    /**
+     * @return array{codec: string, blob: string}
+     */
+    private function avroEnvelope(mixed $payload): array
+    {
+        return [
+            'codec' => 'avro',
+            'blob' => Serializer::serializeWithCodec('avro', $payload),
+        ];
+    }
+
     private function registerWorker(string $workerId, string $taskQueue): void
     {
         WorkerRegistration::query()->updateOrCreate(
@@ -922,7 +910,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         $this->assertIsString($taskId);
 
-        $job = new \Workflow\V2\Jobs\RunWorkflowTask($taskId);
-        $job->handle(app(\Workflow\V2\Support\WorkflowExecutor::class));
+        $job = new RunWorkflowTask($taskId);
+        $job->handle(app(WorkflowExecutor::class));
     }
 }

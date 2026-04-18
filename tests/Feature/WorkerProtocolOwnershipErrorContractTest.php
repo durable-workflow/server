@@ -114,7 +114,7 @@ class WorkerProtocolOwnershipErrorContractTest extends TestCase
             'commands' => [
                 [
                     'type' => 'complete_workflow',
-                    'result' => Serializer::serializeWithCodec('json', ['ok' => true]),
+                    'result' => Serializer::serializeWithCodec('avro', ['ok' => true]),
                 ],
             ],
         ], $this->mixedWorkerHeaders());
@@ -189,7 +189,7 @@ class WorkerProtocolOwnershipErrorContractTest extends TestCase
         $taskMismatch = $this->postJson("/api/worker/activity-tasks/{$workflowTaskId}/complete", [
             'activity_attempt_id' => $attemptId,
             'lease_owner' => 'activity-owner-worker',
-            'result' => Serializer::serializeWithCodec('json', 'Hello, Ada!'),
+            'result' => Serializer::serializeWithCodec('avro', 'Hello, Ada!'),
         ], $this->mixedWorkerHeaders());
 
         $this->assertWorkerProtocolError($taskMismatch, 409, 'task_mismatch')
@@ -210,7 +210,7 @@ class WorkerProtocolOwnershipErrorContractTest extends TestCase
         $complete = $this->postJson("/api/worker/activity-tasks/{$taskId}/complete", [
             'activity_attempt_id' => $attemptId,
             'lease_owner' => 'wrong-activity-worker',
-            'result' => Serializer::serializeWithCodec('json', 'Hello, Ada!'),
+            'result' => Serializer::serializeWithCodec('avro', 'Hello, Ada!'),
         ], $this->mixedWorkerHeaders());
 
         $this->assertWorkerProtocolError($complete, 409, 'lease_owner_mismatch')
@@ -280,7 +280,7 @@ class WorkerProtocolOwnershipErrorContractTest extends TestCase
                     'commands' => [
                         [
                             'type' => 'complete_workflow',
-                            'result' => Serializer::serializeWithCodec('json', ['ok' => true]),
+                            'result' => Serializer::serializeWithCodec('avro', ['ok' => true]),
                         ],
                     ],
                 ],
@@ -325,7 +325,7 @@ class WorkerProtocolOwnershipErrorContractTest extends TestCase
                 'body' => [
                     'activity_attempt_id' => 'missing-attempt',
                     'lease_owner' => 'missing-worker',
-                    'result' => Serializer::serializeWithCodec('json', 'ok'),
+                    'result' => Serializer::serializeWithCodec('avro', 'ok'),
                 ],
                 'status' => 404,
                 'reason' => 'task_not_found',
@@ -438,7 +438,7 @@ class WorkerProtocolOwnershipErrorContractTest extends TestCase
             'commands' => [
                 [
                     'type' => 'complete_workflow',
-                    'result' => Serializer::serializeWithCodec('json', ['ok' => true]),
+                    'result' => Serializer::serializeWithCodec('avro', ['ok' => true]),
                 ],
             ],
         ], $this->mixedWorkerHeaders());

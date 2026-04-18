@@ -4,9 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
-use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Illuminate\Validation\ValidationException;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Support\PayloadEnvelopeResolver;
 
 class PayloadEnvelopeResolverTest extends TestCase
 {
@@ -31,17 +32,17 @@ class PayloadEnvelopeResolverTest extends TestCase
         $this->assertSame($input, PayloadEnvelopeResolver::resolveToArray($input));
     }
 
-    public function test_resolve_to_array_decodes_json_envelope(): void
+    public function test_resolve_to_array_decodes_avro_envelope(): void
     {
         $result = PayloadEnvelopeResolver::resolveToArray([
-            'codec' => 'json',
-            'blob' => '["hello","world"]',
+            'codec' => 'avro',
+            'blob' => Serializer::serializeWithCodec('avro', ['hello', 'world']),
         ]);
 
         $this->assertSame(['hello', 'world'], $result);
     }
 
-    public function test_resolve_to_array_rejects_non_json_codec(): void
+    public function test_resolve_to_array_rejects_undecodable_envelope(): void
     {
         $this->expectException(ValidationException::class);
 
@@ -56,8 +57,8 @@ class PayloadEnvelopeResolverTest extends TestCase
         $this->expectException(ValidationException::class);
 
         PayloadEnvelopeResolver::resolveToArray([
-            'codec' => 'json',
-            'blob' => '"just-a-string"',
+            'codec' => 'avro',
+            'blob' => Serializer::serializeWithCodec('avro', 'just-a-string'),
         ]);
     }
 
@@ -86,15 +87,17 @@ class PayloadEnvelopeResolverTest extends TestCase
 
     public function test_resolve_command_payload_extracts_blob_from_envelope(): void
     {
+        $blob = Serializer::serializeWithCodec('avro', ['result' => 'ok']);
+
         $result = PayloadEnvelopeResolver::resolveCommandPayload([
-            'codec' => 'json',
-            'blob' => '{"result":"ok"}',
+            'codec' => 'avro',
+            'blob' => $blob,
         ]);
 
-        $this->assertSame('{"result":"ok"}', $result);
+        $this->assertSame($blob, $result);
     }
 
-    public function test_resolve_command_payload_accepts_non_json_codec(): void
+    public function test_resolve_command_payload_accepts_legacy_codec(): void
     {
         $result = PayloadEnvelopeResolver::resolveCommandPayload([
             'codec' => 'workflow-serializer-y',

@@ -295,6 +295,8 @@ class WorkflowWorkerProtocolTest extends TestCase
                     'schedule_activity',
                     'start_timer',
                     'start_child_workflow',
+                    'complete_update',
+                    'fail_update',
                     'record_side_effect',
                     'record_version_marker',
                     'upsert_search_attributes',
@@ -993,7 +995,7 @@ class WorkflowWorkerProtocolTest extends TestCase
                 'commands' => [
                     [
                         'type' => 'complete_workflow',
-                        'result' => Serializer::serializeWithCodec('json', [
+                        'result' => Serializer::serializeWithCodec('avro', [
                             'greeting' => 'Hello, Ada!',
                         ]),
                     ],
@@ -1118,7 +1120,7 @@ class WorkflowWorkerProtocolTest extends TestCase
                 'commands' => [
                     [
                         'type' => 'complete_workflow',
-                        'result' => Serializer::serializeWithCodec('json', [
+                        'result' => Serializer::serializeWithCodec('avro', [
                             'greeting' => 'Hello, Ada!',
                         ]),
                     ],
@@ -1972,7 +1974,7 @@ class WorkflowWorkerProtocolTest extends TestCase
                 'commands' => [
                     [
                         'type' => 'complete_workflow',
-                        'result' => Serializer::serializeWithCodec('json', ['late' => 'stale-worker']),
+                        'result' => Serializer::serializeWithCodec('avro', ['late' => 'stale-worker']),
                     ],
                 ],
             ])
@@ -2060,7 +2062,7 @@ class WorkflowWorkerProtocolTest extends TestCase
                 'commands' => [
                     [
                         'type' => 'complete_workflow',
-                        'result' => Serializer::serializeWithCodec('json', ['late' => 'stale-worker']),
+                        'result' => Serializer::serializeWithCodec('avro', ['late' => 'stale-worker']),
                     ],
                 ],
             ])
@@ -2075,7 +2077,7 @@ class WorkflowWorkerProtocolTest extends TestCase
                 'commands' => [
                     [
                         'type' => 'complete_workflow',
-                        'result' => Serializer::serializeWithCodec('json', ['late' => true]),
+                        'result' => Serializer::serializeWithCodec('avro', ['late' => true]),
                     ],
                 ],
             ])
@@ -2154,7 +2156,7 @@ class WorkflowWorkerProtocolTest extends TestCase
                 'commands' => [
                     [
                         'type' => 'complete_workflow',
-                        'result' => Serializer::serializeWithCodec('json', ['recovered' => true]),
+                        'result' => Serializer::serializeWithCodec('avro', ['recovered' => true]),
                     ],
                 ],
             ])
@@ -2401,8 +2403,11 @@ class WorkflowWorkerProtocolTest extends TestCase
                     'stack_trace' => 'at activity_worker.py:42',
                     'non_retryable' => true,
                     'details' => [
-                        'codec' => 'json',
-                        'blob' => '{"stage":"inventory","retry_after":30}',
+                        'codec' => 'avro',
+                        'blob' => Serializer::serializeWithCodec('avro', [
+                            'stage' => 'inventory',
+                            'retry_after' => 30,
+                        ]),
                     ],
                 ],
             ]);
@@ -2431,7 +2436,7 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->assertSame('Inventory service timed out.', $activityFailed['payload']['message'] ?? null);
         $this->assertTrue($activityFailed['payload']['non_retryable'] ?? false);
         $this->assertSame(
-            'json',
+            'avro',
             $activityFailed['payload']['exception']['details_payload_codec'] ?? null,
         );
 
@@ -2942,7 +2947,7 @@ class WorkflowWorkerProtocolTest extends TestCase
                 'commands' => [
                     [
                         'type' => 'complete_workflow',
-                        'result' => Serializer::serializeWithCodec('json', ['greeting' => 'Hello, Ada!']),
+                        'result' => Serializer::serializeWithCodec('avro', ['greeting' => 'Hello, Ada!']),
                     ],
                 ],
             ]);
