@@ -75,7 +75,10 @@ jobs:
 
       - name: Install Python SDK
         run: |
-          pip install durable-workflow
+          # Version-manifest validation tracks the source contract shared by
+          # server main and sdk-python main. Published PyPI artifacts may lag
+          # this compatibility behavior.
+          pip install "durable-workflow @ git+https://github.com/durable-workflow/sdk-python.git@main"
 
       - name: Test Python SDK with compatible server (should succeed)
         run: |
