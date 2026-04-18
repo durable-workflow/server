@@ -6,9 +6,9 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
-use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\HistoryPayloadCompression;
 
@@ -426,6 +426,7 @@ final class WorkflowTaskPoller
                     'taskId' => $readyTask['task_id'] ?? null,
                     'availableAt' => $readyTask['available_at'] ?? null,
                 ]);
+
                 continue;
             }
 
@@ -439,6 +440,7 @@ final class WorkflowTaskPoller
                     'workflowId' => $workflowId,
                     'namespace' => $namespace,
                 ]);
+
                 continue;
             }
 
@@ -448,6 +450,7 @@ final class WorkflowTaskPoller
                     'workerBuildId' => $buildId,
                     'taskCompatibility' => $readyTask['compatibility'] ?? null,
                 ]);
+
                 continue;
             }
 
@@ -457,6 +460,7 @@ final class WorkflowTaskPoller
                     'taskWorkflowType' => $readyTask['workflow_type'] ?? null,
                     'supportedWorkflowTypes' => $supportedWorkflowTypes,
                 ]);
+
                 continue;
             }
 
@@ -466,6 +470,7 @@ final class WorkflowTaskPoller
 
             if ($taskId === null) {
                 \Log::debug('[WorkflowTaskPoller] Skipping task: task_id is null');
+
                 continue;
             }
 
@@ -481,6 +486,7 @@ final class WorkflowTaskPoller
                     'taskId' => $taskId,
                     'claimResult' => $claim,
                 ]);
+
                 continue;
             }
 
@@ -501,6 +507,7 @@ final class WorkflowTaskPoller
                 \Log::warning('[WorkflowTaskPoller] Task claimed but history fetch failed', [
                     'taskId' => $taskId,
                 ]);
+
                 continue;
             }
 
@@ -514,6 +521,7 @@ final class WorkflowTaskPoller
         }
 
         \Log::debug('[WorkflowTaskPoller] No tasks claimed (examined all ready tasks)');
+
         return null;
     }
 
@@ -570,7 +578,7 @@ final class WorkflowTaskPoller
 
         try {
             return now()->lt(Carbon::parse($availableAt));
-        } catch (\Throwable) {
+        } catch (Throwable) {
             return false;
         }
     }
@@ -839,6 +847,8 @@ final class WorkflowTaskPoller
             'lease_expires_at' => $claim['lease_expires_at'],
         ];
 
+        $payload = array_merge($payload, $this->workflowTaskResumeContext((string) $claim['task_id']));
+
         // Include pagination metadata when history was fetched via
         // historyPayloadPaginated() so the controller can build page tokens.
         if (array_key_exists('has_more', $history)) {
@@ -855,6 +865,56 @@ final class WorkflowTaskPoller
         }
 
         return $payload;
+    }
+
+    /**
+     * Expose only stable resume-source fields from the package task payload.
+     *
+     * These fields tell external workers whether a leased workflow task is
+     * applying an accepted update, signal, child resolution, or timer-backed
+     * wait without leaking arbitrary internal payload values.
+     *
+     * @return array<string, mixed>
+     */
+    private function workflowTaskResumeContext(string $taskId): array
+    {
+        $context = [
+            'workflow_wait_kind' => null,
+            'open_wait_id' => null,
+            'resume_source_kind' => null,
+            'resume_source_id' => null,
+            'workflow_update_id' => null,
+            'workflow_signal_id' => null,
+            'workflow_command_id' => null,
+            'child_call_id' => null,
+            'child_workflow_run_id' => null,
+            'workflow_sequence' => null,
+            'workflow_event_type' => null,
+            'timer_id' => null,
+            'condition_wait_id' => null,
+        ];
+
+        /** @var WorkflowTask|null $task */
+        $task = WorkflowTask::query()->find($taskId);
+        $payload = $task?->payload;
+
+        if (! is_array($payload)) {
+            return $context;
+        }
+
+        foreach ($context as $field => $_) {
+            $value = $payload[$field] ?? null;
+
+            if ($field === 'workflow_sequence') {
+                $context[$field] = is_int($value) ? $value : null;
+
+                continue;
+            }
+
+            $context[$field] = $this->nonEmptyString($value);
+        }
+
+        return $context;
     }
 
     /**

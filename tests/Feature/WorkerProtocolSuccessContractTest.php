@@ -12,6 +12,7 @@ use Mockery\MockInterface;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
+use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
@@ -275,6 +276,81 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('task.workflow_id', 'wf-worker-type-filter-contract')
             ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow')
             ->assertJsonPath('task.lease_owner', 'worker-matching-workflow-type');
+    }
+
+    public function test_update_backed_workflow_task_poll_exposes_resume_context(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.interactive-command-workflow' => InteractiveCommandWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-update-context-contract',
+            'workflow_type' => 'tests.interactive-command-workflow',
+            'task_queue' => 'contract-queue',
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $signal = $this->postJson('/api/workflows/wf-worker-update-context-contract/signal/advance', [
+            'input' => ['Ada'],
+            'request_id' => 'signal-update-context-1',
+        ], $this->apiHeaders());
+
+        $signal->assertAccepted();
+
+        $this->runReadyWorkflowTask($runId);
+
+        $update = $this->postJson('/api/workflows/wf-worker-update-context-contract/update/approve', [
+            'input' => [true, 'worker-context'],
+            'request_id' => 'update-context-1',
+            'wait_for' => 'accepted',
+        ], $this->apiHeaders());
+
+        $update->assertAccepted()
+            ->assertJsonPath('update_name', 'approve')
+            ->assertJsonPath('update_status', 'accepted')
+            ->assertJsonPath('wait_for', 'accepted');
+
+        $updateId = (string) $update->json('update_id');
+        $commandId = (string) $update->json('command_id');
+
+        $this->registerWorker(
+            workerId: 'worker-update-context-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.interactive-command-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-update-context-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_id', 'wf-worker-update-context-contract')
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.workflow_type', 'tests.interactive-command-workflow')
+            ->assertJsonPath('task.workflow_task_attempt', 1)
+            ->assertJsonPath('task.lease_owner', 'worker-update-context-contract')
+            ->assertJsonPath('task.workflow_wait_kind', 'update')
+            ->assertJsonPath('task.open_wait_id', "update:{$updateId}")
+            ->assertJsonPath('task.resume_source_kind', 'workflow_update')
+            ->assertJsonPath('task.resume_source_id', $updateId)
+            ->assertJsonPath('task.workflow_update_id', $updateId)
+            ->assertJsonPath('task.workflow_command_id', $commandId)
+            ->assertJsonPath('task.workflow_signal_id', null)
+            ->assertJsonPath('task.child_call_id', null)
+            ->assertJsonPath('task.timer_id', null);
+
+        $eventTypes = array_column((array) $poll->json('task.history_events'), 'event_type');
+
+        $this->assertContains('UpdateAccepted', $eventTypes);
     }
 
     public function test_continue_as_new_completion_uses_worker_protocol_contract(): void
