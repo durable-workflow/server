@@ -100,6 +100,60 @@ class PayloadLimitsTest extends TestCase
             ->assertJsonMissingPath('control_plane');
     }
 
+    public function test_control_plane_non_json_request_bodies_use_control_plane_contract(): void
+    {
+        $body = '<workflow><type>Demo</type></workflow>';
+
+        $this->withHeaders($this->apiHeaders())->call(
+            'POST',
+            '/api/workflows',
+            [],
+            [],
+            [],
+            [
+                'CONTENT_TYPE' => 'application/xml',
+                'CONTENT_LENGTH' => strlen($body),
+            ],
+            $body,
+        )
+            ->assertStatus(415)
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertHeaderMissing(WorkerProtocol::HEADER)
+            ->assertJsonPath('reason', 'unsupported_media_type')
+            ->assertJsonPath('message', 'Request bodies must use a JSON media type.')
+            ->assertJsonPath('accepted_content_types.0', 'application/json')
+            ->assertJsonPath('control_plane.operation', 'start')
+            ->assertJsonMissingPath('protocol_version')
+            ->assertJsonMissingPath('server_capabilities');
+    }
+
+    public function test_worker_non_json_request_bodies_use_worker_protocol_contract(): void
+    {
+        $body = '<worker><id>xml-worker</id></worker>';
+
+        $this->withHeaders($this->workerHeaders())->call(
+            'POST',
+            '/api/worker/register',
+            [],
+            [],
+            [],
+            [
+                'CONTENT_TYPE' => 'application/xml',
+                'CONTENT_LENGTH' => strlen($body),
+            ],
+            $body,
+        )
+            ->assertStatus(415)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('reason', 'unsupported_media_type')
+            ->assertJsonPath('message', 'Request bodies must use a JSON media type.')
+            ->assertJsonPath('accepted_content_types.0', 'application/json')
+            ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
+            ->assertJsonMissingPath('control_plane');
+    }
+
     public function test_get_requests_are_not_affected_by_payload_limit(): void
     {
         $this->getJson('/api/health')

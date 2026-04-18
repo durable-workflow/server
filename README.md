@@ -305,8 +305,11 @@ Every non-health, non-discovery control-plane endpoint must send
 `X-Durable-Workflow-Control-Plane-Version: 2` on the request. That
 covers namespace, schedule, search-attribute, task-queue, worker-management,
 system, workflow, and history endpoints. Requests without that header or
-with legacy `wait_policy` fields are rejected. Workflow and history responses
-always return the same header. The v2 canonical workflow command fields are
+with legacy `wait_policy` fields are rejected. Mutating requests with bodies
+must use `Content-Type: application/json` or another `application/*+json` media
+type; XML, form, and other body formats return a versioned 415 response before
+controller work. Workflow and history responses always return the same header.
+The v2 canonical workflow command fields are
 `workflow_id`, `command_status`, `outcome`, plus `signal_name`, `query_name`,
 or `update_name` where applicable and, for updates, `wait_for`,
 `wait_timed_out`, and `wait_timeout_seconds`.
@@ -362,7 +365,10 @@ manifests should fail closed.
 - `POST /api/worker/activity-tasks/{id}/heartbeat` — Activity heartbeat
 
 Worker-plane requests must send `X-Durable-Workflow-Protocol-Version: 1.0`, and
-worker-plane responses always echo the same header plus `protocol_version: "1"`.
+worker-plane responses always echo the same header plus `protocol_version: "1.0"`.
+Worker requests with bodies follow the same JSON media-type requirement as the
+control plane and return a worker-protocol 415 response for XML, form, or other
+non-JSON body formats.
 Worker registration, poll, heartbeat, complete, and fail responses all include
 `server_capabilities.supported_workflow_task_commands` so SDK workers can
 negotiate whether the server only supports terminal workflow-task commands or
