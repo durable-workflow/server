@@ -7,6 +7,7 @@ use App\Support\ControlPlaneResponseContract;
 use App\Support\ControlPlaneResultMapper;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkflowCommandContextFactory;
+use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowStartService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -26,6 +27,7 @@ class WorkflowController
         private readonly WorkflowControlPlane $workflowControlPlane,
         private readonly WorkflowCommandContextFactory $commandContexts,
         private readonly ControlPlaneResultMapper $resultMapper,
+        private readonly WorkflowQueryTaskBroker $queryTasks,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -362,6 +364,18 @@ class WorkflowController
         $validated = $request->validate([
             'input' => ['nullable', 'array'],
         ]);
+
+        $run = NamespaceWorkflowScope::currentRun($namespace, $workflowId);
+        $queryEnvelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input');
+
+        if ($run instanceof WorkflowRun && $this->queryTasks->hasWorkerFor($namespace, $run)) {
+            return $this->resultMapper->query(
+                $workflowId,
+                $queryName,
+                $this->queryTasks->query($namespace, $run, $queryName, $queryEnvelope),
+                $this->controlPlaneRunId($request),
+            );
+        }
 
         $result = $this->workflowControlPlane->query(
             $workflowId,

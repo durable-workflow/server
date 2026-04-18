@@ -106,6 +106,11 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::post('/workflow-tasks/{taskId}/complete', [WorkerController::class, 'completeWorkflowTask']);
         Route::post('/workflow-tasks/{taskId}/fail', [WorkerController::class, 'failWorkflowTask']);
 
+        // Query tasks (ephemeral worker-routed workflow queries)
+        Route::post('/query-tasks/poll', [WorkerController::class, 'pollQueryTasks']);
+        Route::post('/query-tasks/{queryTaskId}/complete', [WorkerController::class, 'completeQueryTask']);
+        Route::post('/query-tasks/{queryTaskId}/fail', [WorkerController::class, 'failQueryTask']);
+
         // Activity tasks (long-poll)
         Route::post('/activity-tasks/poll', [ActivityTaskController::class, 'poll']);
         Route::post('/activity-tasks/{taskId}/complete', [ActivityTaskController::class, 'complete']);

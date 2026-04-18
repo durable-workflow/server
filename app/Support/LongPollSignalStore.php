@@ -17,7 +17,7 @@ use Workflow\V2\Models\WorkflowTask;
  * Implements the workflow package's LongPollWakeStore contract, enabling
  * cross-node coordination when the cache backend is shared (Redis, database, etc.).
  *
- * @see \Workflow\V2\Contracts\LongPollWakeStore
+ * @see LongPollWakeStore
  */
 final class LongPollSignalStore implements LongPollWakeStore
 {
@@ -95,6 +95,35 @@ final class LongPollSignalStore implements LongPollWakeStore
             $this->queueChannel('activity-tasks', null, $connection, $queue),
             $this->queueChannel('activity-tasks', $namespace, $connection, $queue),
         ]);
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function queryTaskPollChannels(string $namespace, ?string $queue): array
+    {
+        return $this->normalizeChannels([
+            $this->queueChannel('query-tasks', null, null, $queue),
+            $this->queueChannel('query-tasks', $namespace, null, $queue),
+        ]);
+    }
+
+    public function signalQueryTaskQueue(string $namespace, ?string $queue): void
+    {
+        $this->signal(
+            $this->queueChannel('query-tasks', null, null, $queue),
+            $this->queueChannel('query-tasks', $namespace, null, $queue),
+        );
+    }
+
+    public function queryTaskResultChannel(string $queryTaskId): string
+    {
+        return sprintf('query-task-result:%s', $queryTaskId);
+    }
+
+    public function signalQueryTaskResult(string $queryTaskId): void
+    {
+        $this->signal($this->queryTaskResultChannel($queryTaskId));
     }
 
     public function historyRunChannel(string $runId): string

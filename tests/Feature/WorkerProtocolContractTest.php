@@ -145,6 +145,21 @@ class WorkerProtocolContractTest extends TestCase
                 'body' => [],
                 'errorFields' => ['lease_owner', 'workflow_task_attempt', 'failure'],
             ],
+            'query-tasks.poll' => [
+                'path' => '/api/worker/query-tasks/poll',
+                'body' => [],
+                'errorFields' => ['worker_id', 'task_queue'],
+            ],
+            'query-tasks.complete' => [
+                'path' => '/api/worker/query-tasks/task-1/complete',
+                'body' => [],
+                'errorFields' => ['lease_owner', 'query_task_attempt'],
+            ],
+            'query-tasks.fail' => [
+                'path' => '/api/worker/query-tasks/task-1/fail',
+                'body' => [],
+                'errorFields' => ['lease_owner', 'query_task_attempt', 'failure'],
+            ],
             'activity-tasks.poll' => [
                 'path' => '/api/worker/activity-tasks/poll',
                 'body' => [],

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Models\WorkerRegistration;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerProtocol;
+use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowTaskLeaseRecovery;
 use App\Support\WorkflowTaskPoller;
 use Illuminate\Http\JsonResponse;
@@ -25,6 +26,7 @@ class WorkerController
         private readonly WorkflowTaskPoller $workflowTaskPoller,
         private readonly WorkflowTaskLeaseRecovery $workflowTaskLeaseRecovery,
         private readonly WorkflowTaskOwnership $taskOwnership,
+        private readonly WorkflowQueryTaskBroker $queryTasks,
     ) {}
 
     /**
@@ -486,6 +488,98 @@ class WorkerController
             'reason' => $outcome['reason'],
             'next_task_id' => $outcome['next_task_id'] ?? null,
         ], $this->workflowOutcomeStatus($outcome['reason']));
+    }
+
+    public function pollQueryTasks(Request $request): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = $request->attributes->get('namespace');
+
+        $validated = $request->validate([
+            'worker_id' => ['required', 'string'],
+            'task_queue' => ['required', 'string'],
+        ]);
+
+        $worker = $this->resolveRegisteredWorker(
+            $namespace,
+            $validated['worker_id'],
+            $validated['task_queue'],
+        );
+
+        if ($worker instanceof JsonResponse) {
+            return $worker;
+        }
+
+        return WorkerProtocol::json([
+            'task' => $this->queryTasks->poll($namespace, $worker),
+        ]);
+    }
+
+    public function completeQueryTask(Request $request, string $queryTaskId): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = $request->attributes->get('namespace');
+
+        $validated = $request->validate([
+            'lease_owner' => ['required', 'string'],
+            'query_task_attempt' => ['required', 'integer', 'min:1'],
+            'result' => ['nullable'],
+            'result_envelope' => ['nullable', 'array'],
+            'result_envelope.codec' => ['required_with:result_envelope', 'string', 'max:64'],
+            'result_envelope.blob' => ['required_with:result_envelope', 'string'],
+        ]);
+
+        $outcome = $this->queryTasks->complete(
+            $namespace,
+            $queryTaskId,
+            $validated['lease_owner'],
+            (int) $validated['query_task_attempt'],
+            $validated['result'] ?? null,
+            $validated['result_envelope'] ?? null,
+        );
+
+        return WorkerProtocol::json(
+            array_filter($outcome, static fn (mixed $value): bool => $value !== null),
+            (int) ($outcome['status'] ?? 200),
+        );
+    }
+
+    public function failQueryTask(Request $request, string $queryTaskId): JsonResponse
+    {
+        if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = $request->attributes->get('namespace');
+
+        $validated = $request->validate([
+            'lease_owner' => ['required', 'string'],
+            'query_task_attempt' => ['required', 'integer', 'min:1'],
+            'failure' => ['required', 'array'],
+            'failure.message' => ['required', 'string'],
+            'failure.reason' => ['nullable', 'string'],
+            'failure.type' => ['nullable', 'string'],
+            'failure.stack_trace' => ['nullable', 'string'],
+        ]);
+
+        $outcome = $this->queryTasks->fail(
+            $namespace,
+            $queryTaskId,
+            $validated['lease_owner'],
+            (int) $validated['query_task_attempt'],
+            $validated['failure'],
+        );
+
+        return WorkerProtocol::json(
+            array_filter($outcome, static fn (mixed $value): bool => $value !== null),
+            (int) ($outcome['status'] ?? 200),
+        );
     }
 
     /**

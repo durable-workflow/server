@@ -184,6 +184,26 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Query Task Transport
+    |--------------------------------------------------------------------------
+    |
+    | Python and other external runtimes cannot be replayed in-process by the
+    | PHP server. Control-plane queries for those workflows are forwarded as
+    | ephemeral worker-plane query tasks and wait for the worker response.
+    |
+    */
+
+    'query_tasks' => [
+        'timeout' => (int) env(
+            'WORKFLOW_SERVER_QUERY_TASK_TIMEOUT',
+            env('WORKFLOW_SERVER_WORKER_POLL_TIMEOUT', WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT),
+        ),
+        'lease_timeout' => (int) env('WORKFLOW_SERVER_QUERY_TASK_LEASE_TIMEOUT', env('WORKFLOW_TASK_TIMEOUT', 60)),
+        'ttl_seconds' => (int) env('WORKFLOW_SERVER_QUERY_TASK_TTL_SECONDS', 180),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Task Lease
     |--------------------------------------------------------------------------
     |

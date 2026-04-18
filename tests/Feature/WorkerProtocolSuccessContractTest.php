@@ -95,6 +95,17 @@ class WorkerProtocolSuccessContractTest extends TestCase
                 'structure' => ['task', 'protocol_version', 'server_capabilities'],
                 'paths' => ['task' => null],
             ],
+            'query-tasks.poll_empty' => [
+                'case' => 'query-tasks.poll_empty',
+                'path' => '/api/worker/query-tasks/poll',
+                'body' => [
+                    'worker_id' => 'worker-success',
+                    'task_queue' => 'contract-queue',
+                ],
+                'status' => 200,
+                'structure' => ['task', 'protocol_version', 'server_capabilities'],
+                'paths' => ['task' => null],
+            ],
         ];
     }
 
@@ -127,6 +138,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('server_capabilities.child_workflow_retry_policy', true)
             ->assertJsonPath('server_capabilities.child_workflow_timeouts', true)
             ->assertJsonPath('server_capabilities.parent_close_policy', true)
+            ->assertJsonPath('server_capabilities.query_tasks', true)
             ->assertJsonPath('server_capabilities.non_retryable_failures', true)
             ->assertJsonMissingPath('control_plane')
             ->assertJsonStructure($structure);
@@ -1930,6 +1942,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('server_capabilities.child_workflow_retry_policy', true)
             ->assertJsonPath('server_capabilities.child_workflow_timeouts', true)
             ->assertJsonPath('server_capabilities.parent_close_policy', true)
+            ->assertJsonPath('server_capabilities.query_tasks', true)
             ->assertJsonPath('server_capabilities.non_retryable_failures', true)
             ->assertJsonMissingPath('control_plane');
 

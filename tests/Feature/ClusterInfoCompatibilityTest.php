@@ -127,6 +127,7 @@ class ClusterInfoCompatibilityTest extends TestCase
             WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
             $response->json('worker_protocol.server_capabilities.history_page_size_max'),
         );
+        $this->assertTrue($response->json('worker_protocol.server_capabilities.query_tasks'));
         $this->assertSame(
             WorkerProtocolVersion::supportedHistoryEncodings(),
             $response->json('worker_protocol.server_capabilities.history_compression.supported_encodings'),
