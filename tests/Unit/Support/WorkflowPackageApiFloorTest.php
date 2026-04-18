@@ -9,6 +9,7 @@ use ReflectionMethod;
 use Tests\Fixtures\StaleBackendCapabilities;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Support\BackendCapabilities;
+use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
 
 /**
  * Pins the API floor contract the server relies on from
@@ -48,6 +49,18 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertTrue(class_exists(WorkflowPackageApiFloor::POLL_MODE_DEMOTION_CLASS));
     }
 
+    public function test_child_workflow_namespace_projection_is_public_instance_api(): void
+    {
+        $reflection = new ReflectionClass(ChildWorkflowNamespaceProjection::class);
+
+        foreach (['projectLink', 'projectLineageEntry'] as $methodName) {
+            $method = $reflection->getMethod($methodName);
+
+            $this->assertTrue($method->isPublic());
+            $this->assertFalse($method->isStatic());
+        }
+    }
+
     public function test_poll_mode_demotion_check_accepts_current_workflow_package(): void
     {
         $confirms = $this->invokeConfirmsPollModeDemotion(BackendCapabilities::class, 'queue');
@@ -78,7 +91,6 @@ class WorkflowPackageApiFloorTest extends TestCase
     private function invokeConfirmsPollModeDemotion(string $class, string $method): bool
     {
         $reflection = new ReflectionMethod(WorkflowPackageApiFloor::class, 'confirmsPollModeDemotion');
-        $reflection->setAccessible(true);
 
         /** @var bool $result */
         $result = $reflection->invoke(null, $class, $method);

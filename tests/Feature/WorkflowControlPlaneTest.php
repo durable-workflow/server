@@ -920,8 +920,8 @@ class WorkflowControlPlaneTest extends TestCase
         ]);
 
         // The child instance is created by the package with the test-default
-        // namespace ('default' via the TestCase creating callback). The link
-        // observer should overwrite it with the parent's namespace.
+        // namespace ('default' via the TestCase creating callback). Clear it
+        // to exercise the package-owned link projection contract.
         WorkflowInstance::query()->create([
             'id' => 'wf-lineage-child',
             'workflow_class' => InternalChildWorkflow::class,
@@ -934,7 +934,8 @@ class WorkflowControlPlaneTest extends TestCase
             WorkflowInstance::query()->whereKey('wf-lineage-child')->value('namespace'),
         );
 
-        // Simulate: clear the child's namespace so bind() has something to backfill.
+        // Simulate a legacy/projection-rebuild row where the child namespace
+        // has not been stamped yet.
         WorkflowInstance::query()->whereKey('wf-lineage-child')->update(['namespace' => null]);
 
         WorkflowLink::query()->create([
@@ -947,14 +948,14 @@ class WorkflowControlPlaneTest extends TestCase
             'is_primary_parent' => true,
         ]);
 
-        // After the link observer fires, bind() backfills the parent's
-        // namespace onto the child instance via the native column.
+        // The package-owned link projection backfills the parent's namespace
+        // onto the child instance via the native column.
         $this->assertSame(
             'production',
             WorkflowInstance::query()->whereKey('wf-lineage-child')->value('namespace'),
         );
 
-        // The lineage entry observer is idempotent — namespace already set.
+        // The package-owned lineage projection is idempotent once namespace is set.
         WorkflowRunLineageEntry::query()->create([
             'id' => '01ARZ3NDEKTSV4RRFFQ69G5FAV:child:lineage',
             'workflow_run_id' => '01ARZ3NDEKTSV4RRFFQ69G5FAV',

@@ -14,8 +14,10 @@ use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
 class WorkflowWorkerProtocolTest extends TestCase
@@ -2410,6 +2412,19 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->assertNotNull($childInstance);
 
         $childWorkflowId = (string) $childInstance->id;
+        $childRun = WorkflowRun::query()
+            ->where('workflow_instance_id', $childWorkflowId)
+            ->first();
+
+        $this->assertNotNull($childRun);
+        $this->assertSame('default', $childRun->namespace);
+        $this->assertSame(
+            'default',
+            WorkflowTask::query()
+                ->where('workflow_run_id', $childRun->id)
+                ->where('task_type', TaskType::Workflow->value)
+                ->value('namespace'),
+        );
 
         $this->withHeaders($this->apiHeaders())
             ->getJson("/api/workflows/{$childWorkflowId}")

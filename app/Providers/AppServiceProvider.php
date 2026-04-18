@@ -3,8 +3,6 @@
 namespace App\Providers;
 
 use App\Observers\WorkflowHistoryEventObserver;
-use App\Observers\WorkflowLinkObserver;
-use App\Observers\WorkflowRunLineageEntryObserver;
 use App\Observers\WorkflowTaskObserver;
 use App\Support\RemoteScheduleStarter;
 use App\Support\ServiceModeBusDispatcher;
@@ -13,8 +11,6 @@ use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
 use Illuminate\Support\ServiceProvider;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Models\WorkflowLink;
-use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowTask;
 
 class AppServiceProvider extends ServiceProvider
@@ -56,8 +52,6 @@ class AppServiceProvider extends ServiceProvider
             }
         }
 
-        WorkflowLink::observe(WorkflowLinkObserver::class);
-        WorkflowRunLineageEntry::observe(WorkflowRunLineageEntryObserver::class);
         WorkflowTask::observe(WorkflowTaskObserver::class);
         WorkflowHistoryEvent::observe(WorkflowHistoryEventObserver::class);
     }

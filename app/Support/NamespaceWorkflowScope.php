@@ -4,8 +4,6 @@ namespace App\Support;
 
 use Illuminate\Database\Eloquent\Builder;
 use Workflow\V2\Models\WorkflowInstance;
-use Workflow\V2\Models\WorkflowLink;
-use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
@@ -46,42 +44,6 @@ class NamespaceWorkflowScope
         return is_string($namespace) && $namespace !== ''
             ? $namespace
             : null;
-    }
-
-    public static function bindLinkedChildWorkflow(WorkflowLink $link): void
-    {
-        if ($link->link_type !== 'child_workflow') {
-            return;
-        }
-
-        $namespace = self::namespaceForWorkflow((string) $link->parent_workflow_instance_id);
-        $childWorkflowId = is_string($link->child_workflow_instance_id ?? null)
-            ? $link->child_workflow_instance_id
-            : null;
-
-        if ($namespace === null || $childWorkflowId === null || $childWorkflowId === '') {
-            return;
-        }
-
-        self::bind($namespace, $childWorkflowId);
-    }
-
-    public static function bindChildWorkflowLineage(WorkflowRunLineageEntry $entry): void
-    {
-        if ($entry->direction !== 'child' || $entry->link_type !== 'child_workflow') {
-            return;
-        }
-
-        $namespace = self::namespaceForWorkflow((string) $entry->workflow_instance_id);
-        $childWorkflowId = is_string($entry->related_workflow_instance_id ?? null)
-            ? $entry->related_workflow_instance_id
-            : null;
-
-        if ($namespace === null || $childWorkflowId === null || $childWorkflowId === '') {
-            return;
-        }
-
-        self::bind($namespace, $childWorkflowId);
     }
 
     public static function runQuery(string $namespace, string $workflowId): Builder

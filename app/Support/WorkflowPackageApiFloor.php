@@ -41,6 +41,17 @@ final class WorkflowPackageApiFloor
     ];
 
     /**
+     * Public instance methods the server depends on through package-registered
+     * model observers.
+     */
+    private const REQUIRED_INSTANCE_APIS = [
+        // Package-owned child namespace projection lets the server remove its
+        // local WorkflowLink / WorkflowRunLineageEntry observer glue.
+        [\Workflow\V2\Support\ChildWorkflowNamespaceProjection::class, 'projectLink'],
+        [\Workflow\V2\Support\ChildWorkflowNamespaceProjection::class, 'projectLineageEntry'],
+    ];
+
+    /**
      * Poll-mode queue capability demotion — commit f666b25. Detected
      * functionally because it is expressed as data in
      * BackendCapabilities::snapshot(), not a new method signature.
@@ -73,6 +84,12 @@ final class WorkflowPackageApiFloor
             }
         }
 
+        foreach (self::REQUIRED_INSTANCE_APIS as [$class, $method]) {
+            if (! self::hasInstanceMethod($class, $method)) {
+                $missing[] = sprintf('%s::%s()', $class, $method);
+            }
+        }
+
         if (! class_exists(self::POLL_MODE_DEMOTION_CLASS)) {
             $missing[] = self::POLL_MODE_DEMOTION_CLASS;
         } elseif (! self::confirmsPollModeDemotion(self::POLL_MODE_DEMOTION_CLASS, self::POLL_MODE_DEMOTION_METHOD)) {
@@ -91,7 +108,8 @@ final class WorkflowPackageApiFloor
             "Installed durable-workflow/workflow package is older than the server's API floor. "
             ."Missing: %s. Re-run `composer update durable-workflow/workflow` against a v2 snapshot that "
             .'includes CodecRegistry::universal(), CodecRegistry::engineSpecific(), and the '
-            .'poll-mode queue capability demotion (see repos/workflow commits 8e132d0 and f666b25).',
+            .'poll-mode queue capability demotion, plus ChildWorkflowNamespaceProjection for package-owned '
+            .'child namespace propagation (see repos/workflow commits 8e132d0 and f666b25, or newer).',
             implode(', ', $missing),
         ));
     }
@@ -110,6 +128,22 @@ final class WorkflowPackageApiFloor
         }
 
         return $methodReflection->isPublic() && $methodReflection->isStatic();
+    }
+
+    private static function hasInstanceMethod(string $class, string $method): bool
+    {
+        if (! class_exists($class)) {
+            return false;
+        }
+
+        try {
+            $reflection = new ReflectionClass($class);
+            $methodReflection = $reflection->getMethod($method);
+        } catch (ReflectionException) {
+            return false;
+        }
+
+        return $methodReflection->isPublic() && ! $methodReflection->isStatic();
     }
 
     /**
