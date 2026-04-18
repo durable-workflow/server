@@ -372,7 +372,11 @@ non-JSON body formats.
 Worker registration, poll, heartbeat, complete, and fail responses all include
 `server_capabilities.supported_workflow_task_commands` so SDK workers can
 negotiate whether the server only supports terminal workflow-task commands or
-the expanded non-terminal command set.
+the expanded non-terminal command set. The same `server_capabilities` object
+also advertises command-option support for activity retry policies, activity
+timeouts, child workflow retry policies, child workflow timeouts, parent-close
+policy, and non-retryable failures. SDK workers can therefore negotiate worker
+behavior from either `GET /api/cluster/info` or any worker-plane response.
 
 Long-poll wake-ups use short-lived cache-backed signal keys plus periodic
 reprobes. Multi-node deployments therefore need a shared cache backend for
@@ -383,8 +387,10 @@ interval.
 Within worker protocol version `1`, `worker_protocol.version`,
 `server_capabilities.long_poll_timeout`, and
 `server_capabilities.supported_workflow_task_commands` are stable contract
-fields. Adding new workflow-task commands is additive; removing or renaming a
-command requires a protocol version bump.
+fields. The command-option booleans under `server_capabilities` are additive
+worker capability fields. Adding new workflow-task commands or optional
+capability booleans is additive; removing or renaming a command or capability
+requires a protocol version bump.
 
 Workflow task polling returns a leased task plus `workflow_task_attempt`. Clients
 must echo both `workflow_task_attempt` and `lease_owner` on workflow-task

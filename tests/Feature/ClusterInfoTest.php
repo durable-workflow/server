@@ -77,6 +77,18 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('worker_protocol.server_capabilities.response_compression', ['gzip', 'deflate']);
     }
 
+    public function test_it_advertises_worker_command_option_capabilities_in_worker_protocol(): void
+    {
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('worker_protocol.server_capabilities.activity_retry_policy', true)
+            ->assertJsonPath('worker_protocol.server_capabilities.activity_timeouts', true)
+            ->assertJsonPath('worker_protocol.server_capabilities.child_workflow_retry_policy', true)
+            ->assertJsonPath('worker_protocol.server_capabilities.child_workflow_timeouts', true)
+            ->assertJsonPath('worker_protocol.server_capabilities.parent_close_policy', true)
+            ->assertJsonPath('worker_protocol.server_capabilities.non_retryable_failures', true);
+    }
+
     public function test_it_advertises_empty_compression_when_disabled(): void
     {
         config(['server.compression.enabled' => false]);

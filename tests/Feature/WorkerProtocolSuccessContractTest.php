@@ -118,6 +118,12 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
             ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
             ->assertJsonPath('server_capabilities.supported_workflow_task_commands.0', 'complete_workflow')
+            ->assertJsonPath('server_capabilities.activity_retry_policy', true)
+            ->assertJsonPath('server_capabilities.activity_timeouts', true)
+            ->assertJsonPath('server_capabilities.child_workflow_retry_policy', true)
+            ->assertJsonPath('server_capabilities.child_workflow_timeouts', true)
+            ->assertJsonPath('server_capabilities.parent_close_policy', true)
+            ->assertJsonPath('server_capabilities.non_retryable_failures', true)
             ->assertJsonMissingPath('control_plane')
             ->assertJsonStructure($structure);
 
@@ -909,6 +915,12 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
             ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
             ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
+            ->assertJsonPath('server_capabilities.activity_retry_policy', true)
+            ->assertJsonPath('server_capabilities.activity_timeouts', true)
+            ->assertJsonPath('server_capabilities.child_workflow_retry_policy', true)
+            ->assertJsonPath('server_capabilities.child_workflow_timeouts', true)
+            ->assertJsonPath('server_capabilities.parent_close_policy', true)
+            ->assertJsonPath('server_capabilities.non_retryable_failures', true)
             ->assertJsonMissingPath('control_plane');
 
         return $response;

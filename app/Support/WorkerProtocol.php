@@ -98,6 +98,12 @@ class WorkerProtocol
      *     workflow_task_poll_request_idempotency: bool,
      *     history_page_size_default: int,
      *     history_page_size_max: int,
+     *     activity_retry_policy: bool,
+     *     activity_timeouts: bool,
+     *     child_workflow_retry_policy: bool,
+     *     child_workflow_timeouts: bool,
+     *     parent_close_policy: bool,
+     *     non_retryable_failures: bool,
      *     response_compression: list<string>,
      *     history_compression: array{supported_encodings: list<string>, compression_threshold: int},
      * }
@@ -110,6 +116,12 @@ class WorkerProtocol
             'workflow_task_poll_request_idempotency' => true,
             'history_page_size_default' => (int) config('server.worker_protocol.history_page_size_default', 500),
             'history_page_size_max' => (int) config('server.worker_protocol.history_page_size_max', 1000),
+            'activity_retry_policy' => true,
+            'activity_timeouts' => true,
+            'child_workflow_retry_policy' => true,
+            'child_workflow_timeouts' => true,
+            'parent_close_policy' => true,
+            'non_retryable_failures' => true,
             'response_compression' => (bool) config('server.compression.enabled', true)
                 ? ['gzip', 'deflate']
                 : [],
