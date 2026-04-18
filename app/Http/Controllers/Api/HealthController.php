@@ -2,23 +2,21 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Http\Middleware\Authenticate;
 use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
-use App\Support\StandaloneWorkerFleet;
 use App\Support\WorkerProtocol;
-use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Workflow\Serializers\CodecRegistry;
+use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
 
 class HealthController
 {
-    public function __construct(
-        private readonly StandaloneWorkerFleet $workerFleet,
-    ) {}
-
     private ?array $cachedProvenance = null;
 
     public function check(): JsonResponse
@@ -64,13 +62,13 @@ class HealthController
             'history_retention' => true,
             'payload_codec_envelope' => true,
             'payload_codec_envelope_responses' => true,
-            'payload_codecs' => \Workflow\Serializers\CodecRegistry::universal(),
+            'payload_codecs' => CodecRegistry::universal(),
             'response_compression' => (bool) config('server.compression.enabled', true)
                 ? ['gzip', 'deflate']
                 : [],
         ];
 
-        $engineSpecificCodecs = \Workflow\Serializers\CodecRegistry::engineSpecific();
+        $engineSpecificCodecs = CodecRegistry::engineSpecific();
         if ($engineSpecificCodecs !== []) {
             $capabilities['payload_codecs_engine_specific'] = $engineSpecificCodecs;
         }
@@ -85,7 +83,7 @@ class HealthController
                 'cli' => '>=0.1,<1.0',
             ],
             'capabilities' => $capabilities,
-            'worker_fleet' => $this->workerFleet->summary($namespace),
+            'worker_fleet' => StandaloneWorkerVisibility::fleetSummary($namespace),
             'task_repair' => $this->taskRepairDiagnostics(),
             'limits' => [
                 'max_payload_bytes' => (int) config('server.limits.max_payload_bytes', 2 * 1024 * 1024),
@@ -116,7 +114,7 @@ class HealthController
             return false;
         }
 
-        $role = $request->attributes->get(\App\Http\Middleware\Authenticate::ATTRIBUTE_ROLE);
+        $role = $request->attributes->get(Authenticate::ATTRIBUTE_ROLE);
 
         return $role === null || $role === 'admin';
     }

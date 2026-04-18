@@ -2,18 +2,14 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneProtocol;
-use App\Support\TaskQueuePollers;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Workflow\V2\Support\OperatorQueueVisibility;
+use Workflow\V2\Support\StandaloneWorkerVisibility;
 
 class TaskQueueController
 {
-    public function __construct(
-        private readonly TaskQueuePollers $pollers,
-    ) {}
-
     public function index(Request $request): JsonResponse
     {
         if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
@@ -23,11 +19,11 @@ class TaskQueueController
         $namespace = (string) $request->attributes->get('namespace');
 
         return ControlPlaneProtocol::json(
-            OperatorQueueVisibility::forNamespace(
+            StandaloneWorkerVisibility::queueSnapshot(
                 $namespace,
-                $this->pollers->forNamespace($namespace),
+                WorkerRegistration::class,
                 now(),
-                $this->pollers->staleAfterSeconds(),
+                $this->workerStaleAfterSeconds(),
             )->toArray(),
         );
     }
@@ -41,13 +37,24 @@ class TaskQueueController
         $namespace = (string) $request->attributes->get('namespace');
 
         return ControlPlaneProtocol::json(
-            OperatorQueueVisibility::forQueue(
+            StandaloneWorkerVisibility::queueDetail(
                 $namespace,
                 $taskQueue,
-                $this->pollers->forQueue($namespace, $taskQueue),
+                WorkerRegistration::class,
                 now(),
-                $this->pollers->staleAfterSeconds(),
+                $this->workerStaleAfterSeconds(),
             )->toArray(),
+        );
+    }
+
+    private function workerStaleAfterSeconds(): int
+    {
+        $configured = config('server.workers.stale_after_seconds');
+        $pollingTimeout = config('server.polling.timeout');
+
+        return StandaloneWorkerVisibility::staleAfterSeconds(
+            is_numeric($configured) ? (int) $configured : null,
+            is_numeric($pollingTimeout) ? (int) $pollingTimeout : null,
         );
     }
 }

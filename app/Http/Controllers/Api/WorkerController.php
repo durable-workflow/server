@@ -4,18 +4,17 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkerRegistration;
 use App\Support\NamespaceWorkflowScope;
-use App\Support\StandaloneWorkerFleet;
-use App\Support\WorkflowTaskLeaseRecovery;
 use App\Support\WorkerProtocol;
+use App\Support\WorkflowTaskLeaseRecovery;
 use App\Support\WorkflowTaskPoller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
-use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\HistoryPayloadCompression;
+use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowTaskOwnership;
 
@@ -24,7 +23,6 @@ class WorkerController
     public function __construct(
         private readonly WorkflowTaskPoller $workflowTaskPoller,
         private readonly WorkflowTaskLeaseRecovery $workflowTaskLeaseRecovery,
-        private readonly StandaloneWorkerFleet $workerFleet,
         private readonly WorkflowTaskOwnership $taskOwnership,
     ) {}
 
@@ -78,7 +76,7 @@ class WorkerController
             ]
         );
 
-        $this->workerFleet->record(
+        StandaloneWorkerVisibility::recordCompatibility(
             namespace: $namespace,
             workerId: $workerId,
             taskQueue: $validated['task_queue'],
@@ -120,7 +118,7 @@ class WorkerController
             'status' => 'active',
         ]);
 
-        $this->workerFleet->record(
+        StandaloneWorkerVisibility::recordCompatibility(
             namespace: $worker->namespace,
             workerId: $worker->worker_id,
             taskQueue: $worker->task_queue,
