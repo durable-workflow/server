@@ -897,6 +897,8 @@ final class WorkflowTaskPoller
             'workflow_event_type' => null,
             'timer_id' => null,
             'condition_wait_id' => null,
+            'condition_key' => null,
+            'condition_definition_fingerprint' => null,
         ];
 
         /** @var WorkflowTask|null $task */

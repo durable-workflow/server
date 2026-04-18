@@ -6,11 +6,13 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\TestResponse;
 use Mockery\MockInterface;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
+use Tests\Fixtures\ConditionTimeoutWorkflow;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
@@ -1349,6 +1351,97 @@ class WorkerProtocolSuccessContractTest extends TestCase
             $timerFired['payload']['sequence'] ?? null,
             $resumePoll->json('task.workflow_sequence'),
         );
+    }
+
+    public function test_condition_timeout_resume_task_exposes_worker_protocol_context(): void
+    {
+        Queue::fake();
+        Carbon::setTestNow(Carbon::parse('2026-04-18 12:00:00'));
+
+        try {
+            $this->configureWorkflowTypes([
+                'tests.condition-timeout-workflow' => ConditionTimeoutWorkflow::class,
+            ]);
+
+            $start = $this->postJson('/api/workflows', [
+                'workflow_id' => 'wf-worker-condition-timeout-contract',
+                'workflow_type' => 'tests.condition-timeout-workflow',
+                'task_queue' => 'contract-queue',
+            ], $this->apiHeaders());
+
+            $start->assertCreated();
+
+            $workflowId = (string) $start->json('workflow_id');
+            $runId = (string) $start->json('run_id');
+
+            $this->runReadyWorkflowTask($runId);
+
+            /** @var WorkflowTask $timerTask */
+            $timerTask = WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', 'timer')
+                ->where('status', 'ready')
+                ->firstOrFail();
+
+            $timerPayload = is_array($timerTask->payload) ? $timerTask->payload : [];
+            $timerId = $timerPayload['timer_id'] ?? null;
+            $conditionWaitId = $timerPayload['condition_wait_id'] ?? null;
+            $conditionKey = $timerPayload['condition_key'] ?? null;
+            $conditionDefinitionFingerprint = $timerPayload['condition_definition_fingerprint'] ?? null;
+
+            $this->assertIsString($timerId);
+            $this->assertIsString($conditionWaitId);
+            $this->assertSame('approval.ready', $conditionKey);
+            $this->assertIsString($conditionDefinitionFingerprint);
+
+            Carbon::setTestNow(Carbon::parse('2026-04-18 12:00:05'));
+
+            $this->app->call([new RunTimerTask((string) $timerTask->id), 'handle']);
+
+            $this->registerWorker(
+                workerId: 'worker-condition-timeout-contract',
+                taskQueue: 'contract-queue',
+                supportedWorkflowTypes: ['tests.condition-timeout-workflow'],
+            );
+
+            $resumePoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'worker-condition-timeout-contract',
+                'task_queue' => 'contract-queue',
+            ], $this->workerProtocolHeaders());
+
+            $this->assertWorkerProtocolSuccess($resumePoll)
+                ->assertJsonPath('task.workflow_id', $workflowId)
+                ->assertJsonPath('task.run_id', $runId)
+                ->assertJsonPath('task.workflow_type', 'tests.condition-timeout-workflow')
+                ->assertJsonPath('task.lease_owner', 'worker-condition-timeout-contract')
+                ->assertJsonPath('task.workflow_wait_kind', 'condition')
+                ->assertJsonPath('task.open_wait_id', $conditionWaitId)
+                ->assertJsonPath('task.resume_source_kind', 'timer')
+                ->assertJsonPath('task.resume_source_id', $timerId)
+                ->assertJsonPath('task.timer_id', $timerId)
+                ->assertJsonPath('task.condition_wait_id', $conditionWaitId)
+                ->assertJsonPath('task.condition_key', 'approval.ready')
+                ->assertJsonPath('task.condition_definition_fingerprint', $conditionDefinitionFingerprint)
+                ->assertJsonPath('task.workflow_event_type', 'TimerFired');
+
+            $resumeEvents = collect((array) $resumePoll->json('task.history_events'));
+            $timerFired = $resumeEvents->firstWhere('event_type', 'TimerFired');
+
+            $this->assertIsArray($timerFired);
+            $this->assertSame($timerId, $timerFired['payload']['timer_id'] ?? null);
+            $this->assertSame($conditionWaitId, $timerFired['payload']['condition_wait_id'] ?? null);
+            $this->assertSame('approval.ready', $timerFired['payload']['condition_key'] ?? null);
+            $this->assertSame(
+                $conditionDefinitionFingerprint,
+                $timerFired['payload']['condition_definition_fingerprint'] ?? null,
+            );
+            $this->assertSame(
+                $timerFired['payload']['sequence'] ?? null,
+                $resumePoll->json('task.workflow_sequence'),
+            );
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_marker_and_search_attribute_commands_use_worker_protocol_contract(): void
