@@ -759,6 +759,164 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $this->assertNotSame($parentWorkflowId, $childPoll->json('task.workflow_id'));
     }
 
+    public function test_child_workflow_completion_resume_uses_worker_protocol_contract(): void
+    {
+        Queue::fake();
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-child-resume-contract',
+            'workflow_type' => 'remote.parent-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $parentWorkflowId = (string) $start->json('workflow_id');
+        $parentRunId = (string) $start->json('run_id');
+
+        $this->registerWorker(
+            workerId: 'worker-child-resume-parent',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['remote.parent-workflow'],
+        );
+        $this->registerWorker(
+            workerId: 'worker-child-resume-child',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['remote.child-workflow'],
+        );
+        $this->registerWorker(
+            workerId: 'worker-child-resume-parent-again',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['remote.parent-workflow'],
+        );
+
+        $parentPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-child-resume-parent',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($parentPoll)
+            ->assertJsonPath('task.workflow_id', $parentWorkflowId)
+            ->assertJsonPath('task.run_id', $parentRunId)
+            ->assertJsonPath('task.workflow_type', 'remote.parent-workflow')
+            ->assertJsonPath('task.lease_owner', 'worker-child-resume-parent');
+
+        $startChild = $this->postJson(
+            sprintf('/api/worker/workflow-tasks/%s/complete', $parentPoll->json('task.task_id')),
+            [
+                'lease_owner' => $parentPoll->json('task.lease_owner'),
+                'workflow_task_attempt' => $parentPoll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'start_child_workflow',
+                        'workflow_type' => 'remote.child-workflow',
+                        'queue' => 'contract-queue',
+                        'arguments' => Serializer::serializeWithCodec('avro', ['child-input']),
+                    ],
+                ],
+            ],
+            $this->workerProtocolHeaders(),
+        );
+
+        $this->assertWorkerProtocolSuccess($startChild)
+            ->assertJsonPath('task_id', $parentPoll->json('task.task_id'))
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'waiting');
+
+        $childPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-child-resume-child',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($childPoll)
+            ->assertJsonPath('task.workflow_type', 'remote.child-workflow')
+            ->assertJsonPath('task.lease_owner', 'worker-child-resume-child');
+
+        $childRunId = (string) $childPoll->json('task.run_id');
+
+        $completeChild = $this->postJson(
+            sprintf('/api/worker/workflow-tasks/%s/complete', $childPoll->json('task.task_id')),
+            [
+                'lease_owner' => $childPoll->json('task.lease_owner'),
+                'workflow_task_attempt' => $childPoll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serializeWithCodec('avro', [
+                            'child_result' => 'ok',
+                        ]),
+                    ],
+                ],
+            ],
+            $this->workerProtocolHeaders(),
+        );
+
+        $this->assertWorkerProtocolSuccess($completeChild)
+            ->assertJsonPath('task_id', $childPoll->json('task.task_id'))
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_id', $childRunId)
+            ->assertJsonPath('run_status', 'completed');
+
+        $parentResumePoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-child-resume-parent-again',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($parentResumePoll)
+            ->assertJsonPath('task.workflow_id', $parentWorkflowId)
+            ->assertJsonPath('task.run_id', $parentRunId)
+            ->assertJsonPath('task.workflow_type', 'remote.parent-workflow')
+            ->assertJsonPath('task.lease_owner', 'worker-child-resume-parent-again')
+            ->assertJsonPath('task.workflow_wait_kind', 'child')
+            ->assertJsonPath('task.resume_source_kind', 'child_workflow_run')
+            ->assertJsonPath('task.resume_source_id', $childRunId)
+            ->assertJsonPath('task.child_workflow_run_id', $childRunId)
+            ->assertJsonPath('task.workflow_sequence', 3)
+            ->assertJsonPath('task.workflow_event_type', 'ChildRunCompleted');
+
+        $childCallId = $parentResumePoll->json('task.child_call_id');
+
+        $this->assertIsString($childCallId);
+        $this->assertNotSame('', $childCallId);
+        $parentResumePoll->assertJsonPath('task.open_wait_id', sprintf('child:%s', $childCallId));
+
+        $resumeEvents = collect((array) $parentResumePoll->json('task.history_events'));
+        $childCompleted = $resumeEvents->firstWhere('event_type', 'ChildRunCompleted');
+
+        $this->assertIsArray($childCompleted);
+        $this->assertSame($childCallId, $childCompleted['payload']['child_call_id'] ?? null);
+        $this->assertSame($childRunId, $childCompleted['payload']['child_workflow_run_id'] ?? null);
+        $this->assertSame('completed', $childCompleted['payload']['child_status'] ?? null);
+
+        $completeParent = $this->postJson(
+            sprintf('/api/worker/workflow-tasks/%s/complete', $parentResumePoll->json('task.task_id')),
+            [
+                'lease_owner' => $parentResumePoll->json('task.lease_owner'),
+                'workflow_task_attempt' => $parentResumePoll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serializeWithCodec('avro', [
+                            'child_run_id' => $childRunId,
+                            'child_call_id' => $childCallId,
+                        ]),
+                    ],
+                ],
+            ],
+            $this->workerProtocolHeaders(),
+        );
+
+        $this->assertWorkerProtocolSuccess($completeParent)
+            ->assertJsonPath('task_id', $parentResumePoll->json('task.task_id'))
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_id', $parentRunId)
+            ->assertJsonPath('run_status', 'completed');
+    }
+
     public function test_schedule_activity_completion_uses_worker_protocol_contract(): void
     {
         Queue::fake();
