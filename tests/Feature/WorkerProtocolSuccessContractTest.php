@@ -534,6 +534,144 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $this->assertContains('TimerScheduled', $eventTypes);
     }
 
+    public function test_marker_and_search_attribute_commands_use_worker_protocol_contract(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-marker-contract',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+            'search_attributes' => [
+                'obsolete' => 'remove-me',
+                'tenant' => 'acme',
+            ],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $workflowId = (string) $start->json('workflow_id');
+        $runId = (string) $start->json('run_id');
+
+        $this->registerWorker(
+            workerId: 'worker-marker-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-marker-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow')
+            ->assertJsonPath('task.lease_owner', 'worker-marker-contract');
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $sideEffectResult = Serializer::serializeWithCodec('json', ['seed' => 123, 'source' => 'worker']);
+
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-marker-contract',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [
+                [
+                    'type' => 'record_side_effect',
+                    'result' => $sideEffectResult,
+                ],
+                [
+                    'type' => 'upsert_search_attributes',
+                    'attributes' => [
+                        'obsolete' => null,
+                        'phase' => 'worker-contract',
+                        'priority' => 3,
+                    ],
+                ],
+                [
+                    'type' => 'record_version_marker',
+                    'change_id' => 'worker-contract-marker',
+                    'version' => 2,
+                    'min_supported' => 1,
+                    'max_supported' => 2,
+                ],
+                [
+                    'type' => 'complete_workflow',
+                    'result' => Serializer::serializeWithCodec((string) config('workflows.serializer'), [
+                        'status' => 'done',
+                    ]),
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('run_status', 'completed')
+            ->assertJsonPath('reason', null)
+            ->assertJsonPath('created_task_ids', []);
+
+        $showRun = $this->getJson(
+            "/api/workflows/{$workflowId}/runs/{$runId}",
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $showRun->assertOk()
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertHeaderMissing(WorkerProtocol::HEADER)
+            ->assertJsonPath('status', 'completed')
+            ->assertJsonPath('search_attributes', [
+                'phase' => 'worker-contract',
+                'priority' => '3',
+                'tenant' => 'acme',
+            ]);
+
+        $history = $this->getJson(
+            "/api/workflows/{$workflowId}/runs/{$runId}/history",
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $history->assertOk()
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertHeaderMissing(WorkerProtocol::HEADER);
+
+        $events = collect($history->json('events'))->keyBy('event_type');
+
+        $this->assertSame($sideEffectResult, $events->get('SideEffectRecorded')['payload']['result'] ?? null);
+        $this->assertSame(
+            [
+                'obsolete' => null,
+                'phase' => 'worker-contract',
+                'priority' => '3',
+            ],
+            $events->get('SearchAttributesUpserted')['payload']['attributes'] ?? null,
+        );
+        $this->assertSame(
+            [
+                'phase' => 'worker-contract',
+                'priority' => '3',
+                'tenant' => 'acme',
+            ],
+            $events->get('SearchAttributesUpserted')['payload']['merged'] ?? null,
+        );
+        $this->assertSame(
+            'worker-contract-marker',
+            $events->get('VersionMarkerRecorded')['payload']['change_id'] ?? null,
+        );
+        $this->assertSame(2, $events->get('VersionMarkerRecorded')['payload']['version'] ?? null);
+        $this->assertTrue($events->has('WorkflowCompleted'));
+    }
+
     public function test_workflow_task_history_page_compression_uses_worker_protocol_contract(): void
     {
         Queue::fake();
