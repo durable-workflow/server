@@ -581,6 +581,17 @@ class WorkerController
                 'current_attempt' => $result['status']['attempt_count'] ?? null,
             ], 409),
 
+            'run_closed' => WorkerProtocol::json([
+                'task_id' => $taskId,
+                'workflow_task_attempt' => $workflowTaskAttempt,
+                'error' => 'Workflow run is already closed.',
+                'reason' => 'run_closed',
+                'run_status' => $result['status']['run_status'] ?? null,
+                'task_status' => $result['status']['task_status'] ?? null,
+                'lease_owner' => $result['status']['lease_owner'] ?? null,
+                'lease_expires_at' => $result['status']['lease_expires_at'] ?? null,
+            ], 409),
+
             default => WorkerProtocol::json([
                 'task_id' => $taskId,
                 'workflow_task_attempt' => $workflowTaskAttempt,

@@ -52,6 +52,14 @@ class SystemController
             runIds: $runIds,
             instanceId: $instanceId,
         );
+        $report = array_replace([
+            'selected_command_contract_candidates' => 0,
+            'backfilled_command_contracts' => 0,
+            'command_contract_backfill_unavailable' => 0,
+            'command_contract_failures' => [],
+            'existing_task_failures' => [],
+            'missing_run_failures' => [],
+        ], $report);
 
         $hasFailures = $report['existing_task_failures'] !== []
             || $report['missing_run_failures'] !== []

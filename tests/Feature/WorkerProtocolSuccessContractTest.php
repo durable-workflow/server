@@ -381,6 +381,111 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('heartbeat_recorded', false);
     }
 
+    /**
+     * @return array<string, array{command: string, expectedOutcome: string}>
+     */
+    public static function terminalWorkflowTaskProvider(): array
+    {
+        return [
+            'cancelled run' => [
+                'command' => 'cancel',
+                'expectedOutcome' => 'cancelled',
+            ],
+            'terminated run' => [
+                'command' => 'terminate',
+                'expectedOutcome' => 'terminated',
+            ],
+        ];
+    }
+
+    #[DataProvider('terminalWorkflowTaskProvider')]
+    public function test_leased_workflow_task_reports_terminal_run_state(
+        string $command,
+        string $expectedOutcome,
+    ): void {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $workflowId = sprintf('wf-worker-%s-terminal-contract', $command);
+        $workerId = sprintf('worker-%s-terminal-lifecycle', $command);
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => $workflowId,
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->registerWorker(
+            workerId: $workerId,
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.lease_owner', $workerId);
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $controlPlane = $this->postJson("/api/workflows/{$workflowId}/{$command}", [
+            'reason' => "operator {$command}",
+        ], $this->apiHeaders());
+
+        $controlPlane->assertOk()
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('workflow_id', $workflowId)
+            ->assertJsonPath('outcome', $expectedOutcome);
+
+        $heartbeat = $this->postJson("/api/worker/workflow-tasks/{$taskId}/heartbeat", [
+            'lease_owner' => $workerId,
+            'workflow_task_attempt' => $attempt,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($heartbeat, 409)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('error', 'Workflow run is already closed.')
+            ->assertJsonPath('lease_owner', $workerId)
+            ->assertJsonPath('run_status', $expectedOutcome)
+            ->assertJsonPath('task_status', 'cancelled')
+            ->assertJsonPath('reason', 'run_closed');
+
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => $workerId,
+            'workflow_task_attempt' => $attempt,
+            'commands' => [
+                [
+                    'type' => 'complete_workflow',
+                    'result' => Serializer::serializeWithCodec('json', ['ignored' => true]),
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete, 409)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('error', 'Workflow run is already closed.')
+            ->assertJsonPath('lease_owner', $workerId)
+            ->assertJsonPath('run_status', $expectedOutcome)
+            ->assertJsonPath('task_status', 'cancelled')
+            ->assertJsonPath('reason', 'run_closed')
+            ->assertJsonMissingPath('outcome');
+    }
+
     public function test_leased_workflow_task_failure_response_uses_worker_protocol_contract(): void
     {
         Queue::fake();
