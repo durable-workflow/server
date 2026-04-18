@@ -3,7 +3,6 @@
 use App\Http\Middleware\CompressResponse;
 use App\Http\Middleware\EnforcePayloadLimits;
 use App\Http\Middleware\RemoveServerHeader;
-use App\Support\ControlPlaneOperation;
 use App\Support\ControlPlaneProtocol;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Application;
@@ -54,28 +53,34 @@ return Application::configure(basePath: dirname(__DIR__))
         });
 
         $exceptions->render(function (HttpExceptionInterface $exception, Request $request) {
-            if (ControlPlaneProtocol::requestVersion($request) !== ControlPlaneProtocol::VERSION) {
-                return null;
-            }
-
-            if (ControlPlaneOperation::fromRequest($request) === null) {
-                return null;
-            }
-
             $status = $exception->getStatusCode();
             $message = trim($exception->getMessage()) !== ''
                 ? $exception->getMessage()
                 : (Response::$statusTexts[$status] ?? "HTTP {$status}");
+            $reason = match ($status) {
+                401 => 'unauthorized',
+                403 => 'forbidden',
+                404 => 'not_found',
+                405 => 'method_not_allowed',
+                default => null,
+            };
+
+            if (WorkerProtocol::isWorkerPlaneRequest($request)
+                && WorkerProtocol::requestVersion($request) === (string) config('server.worker_protocol.version', WorkerProtocol::VERSION)
+            ) {
+                return WorkerProtocol::json(array_filter([
+                    'message' => $message,
+                    'reason' => $reason,
+                ], static fn (mixed $value): bool => $value !== null), $status);
+            }
+
+            if (ControlPlaneProtocol::requestVersion($request) !== ControlPlaneProtocol::VERSION) {
+                return null;
+            }
 
             $payload = array_filter([
                 'message' => $message,
-                'reason' => match ($status) {
-                    401 => 'unauthorized',
-                    403 => 'forbidden',
-                    404 => 'not_found',
-                    405 => 'method_not_allowed',
-                    default => null,
-                },
+                'reason' => $reason,
             ], static fn (mixed $value): bool => $value !== null);
 
             return ControlPlaneProtocol::jsonForRequest($request, $payload, $status);
