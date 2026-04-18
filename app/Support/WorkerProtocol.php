@@ -40,6 +40,11 @@ class WorkerProtocol
         return $version === '' ? null : $version;
     }
 
+    public static function isWorkerPlaneRequest(Request $request): bool
+    {
+        return $request->is('api/worker') || $request->is('api/worker/*');
+    }
+
     public static function rejectUnsupported(Request $request): ?JsonResponse
     {
         $version = self::requestVersion($request);

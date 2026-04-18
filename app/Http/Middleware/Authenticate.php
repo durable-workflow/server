@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Support\ControlPlaneProtocol;
+use App\Support\WorkerProtocol;
 use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -169,6 +170,13 @@ class Authenticate
 
     private static function error(Request $request, int $status, string $reason, string $message): JsonResponse
     {
+        if (WorkerProtocol::isWorkerPlaneRequest($request)) {
+            return WorkerProtocol::json([
+                'reason' => $reason,
+                'message' => $message,
+            ], $status);
+        }
+
         return ControlPlaneProtocol::jsonForRequest($request, [
             'reason' => $reason,
             'message' => $message,

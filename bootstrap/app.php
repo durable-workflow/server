@@ -1,6 +1,11 @@
 <?php
 
+use App\Http\Middleware\CompressResponse;
+use App\Http\Middleware\EnforcePayloadLimits;
+use App\Http\Middleware\RemoveServerHeader;
+use App\Support\ControlPlaneOperation;
 use App\Support\ControlPlaneProtocol;
+use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
@@ -17,15 +22,26 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware) {
         $middleware->api(prepend: [
-            \App\Http\Middleware\EnforcePayloadLimits::class,
+            EnforcePayloadLimits::class,
         ]);
         $middleware->api(append: [
-            \App\Http\Middleware\CompressResponse::class,
-            \App\Http\Middleware\RemoveServerHeader::class,
+            CompressResponse::class,
+            RemoveServerHeader::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
         $exceptions->render(function (ValidationException $exception, Request $request) {
+            if (WorkerProtocol::isWorkerPlaneRequest($request)
+                && WorkerProtocol::requestVersion($request) === (string) config('server.worker_protocol.version', WorkerProtocol::VERSION)
+            ) {
+                return WorkerProtocol::json([
+                    'message' => $exception->getMessage(),
+                    'reason' => 'validation_failed',
+                    'errors' => $exception->errors(),
+                    'validation_errors' => $exception->errors(),
+                ], 422);
+            }
+
             if (ControlPlaneProtocol::requestVersion($request) !== ControlPlaneProtocol::VERSION) {
                 return null;
             }
@@ -42,7 +58,7 @@ return Application::configure(basePath: dirname(__DIR__))
                 return null;
             }
 
-            if (\App\Support\ControlPlaneOperation::fromRequest($request) === null) {
+            if (ControlPlaneOperation::fromRequest($request) === null) {
                 return null;
             }
 

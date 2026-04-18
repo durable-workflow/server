@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Support\ControlPlaneProtocol;
+use App\Support\WorkerProtocol;
 use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -64,6 +65,13 @@ class RequireRole
      */
     private static function error(Request $request, int $status, string $reason, string $message, array $extra = []): JsonResponse
     {
+        if (WorkerProtocol::isWorkerPlaneRequest($request)) {
+            return WorkerProtocol::json(array_filter([
+                'reason' => $reason,
+                'message' => $message,
+            ] + $extra, static fn (mixed $value): bool => $value !== null), $status);
+        }
+
         return ControlPlaneProtocol::jsonForRequest($request, array_filter([
             'reason' => $reason,
             'message' => $message,
