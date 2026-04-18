@@ -369,6 +369,94 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('task.lease_owner', 'worker-continued-contract');
     }
 
+    public function test_start_child_workflow_completion_uses_worker_protocol_contract(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-child-contract',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $parentWorkflowId = (string) $start->json('workflow_id');
+        $parentRunId = (string) $start->json('run_id');
+
+        $this->registerWorker(
+            workerId: 'worker-child-parent-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+        $this->registerWorker(
+            workerId: 'worker-child-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-child-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-child-parent-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_id', $parentWorkflowId)
+            ->assertJsonPath('task.run_id', $parentRunId)
+            ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow')
+            ->assertJsonPath('task.lease_owner', 'worker-child-parent-contract');
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-child-parent-contract',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [
+                [
+                    'type' => 'start_child_workflow',
+                    'workflow_type' => 'tests.external-child-workflow',
+                    'queue' => 'contract-queue',
+                    'parent_close_policy' => 'request_cancel',
+                    'arguments' => Serializer::serializeWithCodec('json', ['child-input']),
+                    'retry_policy' => [
+                        'max_attempts' => 3,
+                        'backoff_seconds' => [1, 5],
+                        'non_retryable_error_types' => ['ValidationError'],
+                    ],
+                    'execution_timeout_seconds' => 600,
+                    'run_timeout_seconds' => 120,
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_id', $parentRunId)
+            ->assertJsonPath('run_status', 'waiting')
+            ->assertJsonPath('reason', null)
+            ->assertJsonStructure(['created_task_ids']);
+
+        $childPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-child-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($childPoll)
+            ->assertJsonPath('task.workflow_type', 'tests.external-child-workflow')
+            ->assertJsonPath('task.lease_owner', 'worker-child-contract');
+
+        $this->assertNotSame($parentWorkflowId, $childPoll->json('task.workflow_id'));
+    }
+
     public function test_workflow_task_history_page_compression_uses_worker_protocol_contract(): void
     {
         Queue::fake();
