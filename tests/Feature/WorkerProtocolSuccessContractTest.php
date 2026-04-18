@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Support\ControlPlaneProtocol;
+use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
@@ -12,6 +13,7 @@ use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\WorkflowStub;
 
 class WorkerProtocolSuccessContractTest extends TestCase
 {
@@ -216,6 +218,88 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('run_id', $runId)
             ->assertJsonPath('run_status', 'completed')
             ->assertJsonStructure(['created_task_ids']);
+    }
+
+    public function test_leased_activity_task_success_responses_use_worker_protocol_contract(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(
+            ExternalGreetingWorkflow::class,
+            'wf-activity-success-contract',
+        );
+        $start = $workflow->start('Ada');
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
+
+        $this->runReadyWorkflowTask($start->runId());
+
+        $this->registerWorker(
+            workerId: 'activity-worker-success-lifecycle',
+            taskQueue: 'external-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+        );
+
+        $poll = $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'activity-worker-success-lifecycle',
+            'task_queue' => 'external-activities',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_id', 'wf-activity-success-contract')
+            ->assertJsonPath('task.run_id', $start->runId())
+            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity')
+            ->assertJsonPath('task.attempt_number', 1)
+            ->assertJsonPath('task.task_queue', 'external-activities')
+            ->assertJsonPath('task.lease_owner', 'activity-worker-success-lifecycle')
+            ->assertJsonPath('task.arguments.codec', (string) config('workflows.serializer'))
+            ->assertJsonMissingPath('task.activity_class');
+
+        $this->assertSame(
+            ['Ada'],
+            Serializer::unserializeWithCodec(
+                (string) $poll->json('task.arguments.codec'),
+                (string) $poll->json('task.arguments.blob'),
+            ),
+        );
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attemptId = (string) $poll->json('task.activity_attempt_id');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $heartbeat = $this->postJson("/api/worker/activity-tasks/{$taskId}/heartbeat", [
+            'activity_attempt_id' => $attemptId,
+            'lease_owner' => $leaseOwner,
+            'message' => 'half done',
+            'current' => 1,
+            'total' => 2,
+            'unit' => 'step',
+            'details' => ['phase' => 'contract'],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($heartbeat)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('activity_attempt_id', $attemptId)
+            ->assertJsonPath('lease_owner', $leaseOwner)
+            ->assertJsonPath('cancel_requested', false)
+            ->assertJsonPath('can_continue', true)
+            ->assertJsonPath('reason', null)
+            ->assertJsonPath('heartbeat_recorded', true)
+            ->assertJsonStructure(['lease_expires_at', 'last_heartbeat_at']);
+
+        $complete = $this->postJson("/api/worker/activity-tasks/{$taskId}/complete", [
+            'activity_attempt_id' => $attemptId,
+            'lease_owner' => $leaseOwner,
+            'result' => Serializer::serializeWithCodec('json', 'Hello, Ada!'),
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('activity_attempt_id', $attemptId)
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('reason', null)
+            ->assertJsonStructure(['next_task_id']);
     }
 
     private function prepareWorkerCase(string $case): void
