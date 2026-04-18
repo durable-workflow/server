@@ -226,6 +226,36 @@ class ControlPlaneResourceSuccessContractTest extends TestCase
                 'structure' => ['schedule_id', 'outcome'],
                 'paths' => ['schedule_id' => 'contract-schedule', 'outcome' => 'resumed'],
             ],
+            'schedules.trigger_skipped' => [
+                'case' => 'schedules.trigger_skipped',
+                'method' => 'post',
+                'path' => '/api/schedules/contract-trigger/trigger',
+                'body' => [],
+                'status' => 200,
+                'structure' => ['schedule_id', 'outcome', 'reason'],
+                'paths' => [
+                    'schedule_id' => 'contract-trigger',
+                    'outcome' => 'skipped',
+                    'reason' => 'remaining_actions_exhausted',
+                ],
+            ],
+            'schedules.backfill_empty' => [
+                'case' => 'schedules.backfill_empty',
+                'method' => 'post',
+                'path' => '/api/schedules/contract-backfill/backfill',
+                'body' => [
+                    'start_time' => '2026-04-10T00:30:00Z',
+                    'end_time' => '2026-04-10T00:45:00Z',
+                ],
+                'status' => 200,
+                'structure' => ['schedule_id', 'outcome', 'fires_attempted', 'results'],
+                'paths' => [
+                    'schedule_id' => 'contract-backfill',
+                    'outcome' => 'backfill_started',
+                    'fires_attempted' => 0,
+                    'results' => [],
+                ],
+            ],
         ];
     }
 
@@ -279,6 +309,33 @@ class ControlPlaneResourceSuccessContractTest extends TestCase
                 'namespace' => 'default',
                 'name' => 'Obsolete',
                 'type' => 'keyword',
+            ]);
+
+            return;
+        }
+
+        if ($case === 'schedules.trigger_skipped') {
+            WorkflowSchedule::create([
+                'schedule_id' => 'contract-trigger',
+                'namespace' => 'default',
+                'spec' => ['cron_expressions' => ['0 * * * *'], 'timezone' => 'UTC'],
+                'action' => ['workflow_type' => 'ContractWorkflow', 'task_queue' => 'contract-queue'],
+                'overlap_policy' => 'skip',
+                'status' => 'active',
+                'remaining_actions' => 0,
+            ]);
+
+            return;
+        }
+
+        if ($case === 'schedules.backfill_empty') {
+            WorkflowSchedule::create([
+                'schedule_id' => 'contract-backfill',
+                'namespace' => 'default',
+                'spec' => ['cron_expressions' => ['0 0 * * *'], 'timezone' => 'UTC'],
+                'action' => ['workflow_type' => 'ContractWorkflow', 'task_queue' => 'contract-queue'],
+                'overlap_policy' => 'skip',
+                'status' => 'active',
             ]);
 
             return;
