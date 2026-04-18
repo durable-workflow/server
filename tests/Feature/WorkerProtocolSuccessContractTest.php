@@ -8,11 +8,14 @@ use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\TestResponse;
+use Mockery\MockInterface;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\WorkflowStub;
 
 class WorkerProtocolSuccessContractTest extends TestCase
@@ -218,6 +221,114 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('run_id', $runId)
             ->assertJsonPath('run_status', 'completed')
             ->assertJsonStructure(['created_task_ids']);
+    }
+
+    public function test_workflow_task_history_page_compression_uses_worker_protocol_contract(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-history-page-compression-contract',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->registerWorker(
+            workerId: 'worker-history-compression',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-history-compression',
+            'task_queue' => 'contract-queue',
+            'history_page_size' => 1,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_id', 'wf-history-page-compression-contract')
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.lease_owner', 'worker-history-compression');
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $nextHistoryPageToken = $poll->json('task.next_history_page_token');
+
+        $this->assertIsString($nextHistoryPageToken);
+
+        $recordedAt = now()->toJSON();
+        $events = [];
+
+        for ($sequence = 2; $sequence <= 61; $sequence++) {
+            $events[] = [
+                'id' => "history-contract-{$sequence}",
+                'sequence' => $sequence,
+                'event_type' => 'MarkerRecorded',
+                'payload' => ['sequence' => $sequence],
+                'workflow_task_id' => $taskId,
+                'workflow_command_id' => null,
+                'recorded_at' => $recordedAt,
+            ];
+        }
+
+        $defaultBridge = app()->make(DefaultWorkflowTaskBridge::class);
+
+        $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use ($defaultBridge, $events, $taskId): void {
+            $mock->shouldReceive('status')
+                ->andReturnUsing(static fn (string $taskId): array => $defaultBridge->status($taskId));
+
+            $mock->shouldReceive('historyPayloadPaginated')
+                ->once()
+                ->with($taskId, 1, 100)
+                ->andReturn([
+                    'last_history_sequence' => 61,
+                    'after_sequence' => 1,
+                    'page_size' => 100,
+                    'has_more' => false,
+                    'next_after_sequence' => null,
+                    'history_events' => $events,
+                ]);
+        });
+
+        $history = $this->postJson("/api/worker/workflow-tasks/{$taskId}/history", [
+            'lease_owner' => 'worker-history-compression',
+            'workflow_task_attempt' => $attempt,
+            'next_history_page_token' => $nextHistoryPageToken,
+            'history_page_size' => 100,
+            'accept_history_encoding' => 'gzip',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($history)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('history_events', [])
+            ->assertJsonPath('history_events_encoding', 'gzip')
+            ->assertJsonPath('total_history_events', 61)
+            ->assertJsonPath('next_history_page_token', null);
+
+        $compressed = base64_decode((string) $history->json('history_events_compressed'), true);
+
+        $this->assertNotFalse($compressed);
+
+        $decompressed = gzdecode($compressed);
+
+        $this->assertNotFalse($decompressed);
+
+        $decoded = json_decode($decompressed, true);
+
+        $this->assertIsArray($decoded);
+        $this->assertCount(60, $decoded);
+        $this->assertSame(2, $decoded[0]['sequence']);
+        $this->assertSame(61, $decoded[59]['sequence']);
     }
 
     public function test_leased_activity_task_success_responses_use_worker_protocol_contract(): void
