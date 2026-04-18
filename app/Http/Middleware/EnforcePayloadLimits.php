@@ -28,9 +28,14 @@ class EnforcePayloadLimits
         }
 
         if ($this->methodCanHaveBody($request)
-            && $this->hasBody($contentLength, $bodySize)
-            && ! $this->usesJsonMediaType($request)) {
-            return $this->unsupportedMediaType($request);
+            && $this->hasBody($contentLength, $bodySize)) {
+            if (! $this->usesJsonMediaType($request)) {
+                return $this->unsupportedMediaType($request);
+            }
+
+            if (! $this->hasValidJsonBody($request->getContent())) {
+                return $this->malformedJson($request);
+            }
         }
 
         return $next($request);
@@ -94,5 +99,27 @@ class EnforcePayloadLimits
         }
 
         return ControlPlaneProtocol::jsonForRequest($request, $payload, 415);
+    }
+
+    private function hasValidJsonBody(string $body): bool
+    {
+        json_decode($body);
+
+        return json_last_error() === JSON_ERROR_NONE;
+    }
+
+    private function malformedJson(Request $request): JsonResponse
+    {
+        $payload = [
+            'message' => 'Request bodies must contain valid JSON.',
+            'reason' => 'malformed_json',
+            'json_error' => json_last_error_msg(),
+        ];
+
+        if (WorkerProtocol::isWorkerPlaneRequest($request)) {
+            return WorkerProtocol::json($payload, 400);
+        }
+
+        return ControlPlaneProtocol::jsonForRequest($request, $payload, 400);
     }
 }

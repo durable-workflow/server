@@ -154,6 +154,60 @@ class PayloadLimitsTest extends TestCase
             ->assertJsonMissingPath('control_plane');
     }
 
+    public function test_control_plane_malformed_json_request_bodies_use_control_plane_contract(): void
+    {
+        $body = '{"workflow_id":"bad-json",';
+
+        $this->withHeaders($this->controlPlaneHeadersWithWorkerProtocol())->call(
+            'POST',
+            '/api/workflows',
+            [],
+            [],
+            [],
+            [
+                'CONTENT_TYPE' => 'application/json',
+                'CONTENT_LENGTH' => strlen($body),
+            ],
+            $body,
+        )
+            ->assertStatus(400)
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertHeaderMissing(WorkerProtocol::HEADER)
+            ->assertJsonPath('reason', 'malformed_json')
+            ->assertJsonPath('message', 'Request bodies must contain valid JSON.')
+            ->assertJsonPath('json_error', static fn (mixed $error): bool => is_string($error) && $error !== '')
+            ->assertJsonPath('control_plane.operation', 'start')
+            ->assertJsonMissingPath('protocol_version')
+            ->assertJsonMissingPath('server_capabilities');
+    }
+
+    public function test_worker_malformed_json_request_bodies_use_worker_protocol_contract(): void
+    {
+        $body = '{"worker_id":"bad-json",';
+
+        $this->withHeaders($this->workerHeaders())->call(
+            'POST',
+            '/api/worker/register',
+            [],
+            [],
+            [],
+            [
+                'CONTENT_TYPE' => 'application/json',
+                'CONTENT_LENGTH' => strlen($body),
+            ],
+            $body,
+        )
+            ->assertStatus(400)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('reason', 'malformed_json')
+            ->assertJsonPath('message', 'Request bodies must contain valid JSON.')
+            ->assertJsonPath('json_error', static fn (mixed $error): bool => is_string($error) && $error !== '')
+            ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
+            ->assertJsonMissingPath('control_plane');
+    }
+
     public function test_get_requests_are_not_affected_by_payload_limit(): void
     {
         $this->getJson('/api/health')
