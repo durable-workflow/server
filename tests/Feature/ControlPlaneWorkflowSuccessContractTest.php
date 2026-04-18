@@ -128,6 +128,30 @@ class ControlPlaneWorkflowSuccessContractTest extends TestCase
                 ],
                 'next_page_token',
             ]);
+
+        $export = $this->getJson(
+            "/api/workflows/wf-contract-read/runs/{$runId}/history/export",
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $export->assertOk()
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertHeaderMissing(WorkerProtocol::HEADER)
+            ->assertJsonMissingPath('control_plane')
+            ->assertJsonMissingPath('protocol_version')
+            ->assertJsonPath('schema', 'durable-workflow.v2.history-export')
+            ->assertJsonPath('schema_version', 1)
+            ->assertJsonPath('workflow.instance_id', 'wf-contract-read')
+            ->assertJsonPath('workflow.run_id', $runId)
+            ->assertJsonStructure([
+                'schema',
+                'schema_version',
+                'exported_at',
+                'workflow',
+                'history_events',
+                'codec_schemas',
+                'integrity',
+            ]);
     }
 
     public function test_workflow_command_success_responses_use_control_plane_contract(): void
