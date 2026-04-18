@@ -39,7 +39,7 @@ class HistoryController
         $run = NamespaceWorkflowScope::run($namespace, $workflowId, $runId);
 
         if (! $run) {
-            return ControlPlaneProtocol::json(['message' => 'Workflow run not found.'], 404);
+            return $this->runNotFound($workflowId, $runId);
         }
 
         $pageSize = $validated['page_size'] ?? 100;
@@ -91,7 +91,7 @@ class HistoryController
         $run = NamespaceWorkflowScope::run($namespace, $workflowId, $runId);
 
         if (! $run) {
-            return ControlPlaneProtocol::json(['message' => 'Workflow run not found.'], 404);
+            return $this->runNotFound($workflowId, $runId);
         }
 
         /** @var OperatorObservabilityRepository $repository */
@@ -160,5 +160,15 @@ class HistoryController
         );
 
         return $hints[0];
+    }
+
+    private function runNotFound(string $workflowId, string $runId): JsonResponse
+    {
+        return ControlPlaneProtocol::json([
+            'message' => 'Workflow run not found.',
+            'reason' => 'run_not_found',
+            'workflow_id' => $workflowId,
+            'run_id' => $runId,
+        ], 404);
     }
 }

@@ -46,6 +46,7 @@ class NamespaceController
         if (WorkflowNamespace::where('name', $validated['name'])->exists()) {
             return ControlPlaneProtocol::json([
                 'error' => 'Namespace already exists.',
+                'reason' => 'namespace_already_exists',
                 'namespace' => $validated['name'],
             ], 409);
         }
@@ -72,7 +73,11 @@ class NamespaceController
             return $response;
         }
 
-        $ns = WorkflowNamespace::where('name', strtolower($namespace))->firstOrFail();
+        $ns = WorkflowNamespace::where('name', strtolower($namespace))->first();
+
+        if (! $ns) {
+            return $this->namespaceNotFound($namespace);
+        }
 
         return ControlPlaneProtocol::json([
             'name' => $ns->name,
@@ -90,7 +95,11 @@ class NamespaceController
             return $response;
         }
 
-        $ns = WorkflowNamespace::where('name', strtolower($namespace))->firstOrFail();
+        $ns = WorkflowNamespace::where('name', strtolower($namespace))->first();
+
+        if (! $ns) {
+            return $this->namespaceNotFound($namespace);
+        }
 
         $validated = $request->validate([
             'description' => ['nullable', 'string', 'max:1000'],
@@ -106,5 +115,16 @@ class NamespaceController
             'status' => $ns->status,
             'updated_at' => $ns->updated_at?->toIso8601String(),
         ]);
+    }
+
+    private function namespaceNotFound(string $namespace): JsonResponse
+    {
+        $normalized = strtolower($namespace);
+
+        return ControlPlaneProtocol::json([
+            'message' => sprintf('Namespace [%s] not found.', $normalized),
+            'reason' => 'namespace_not_found',
+            'namespace' => $normalized,
+        ], 404);
     }
 }
