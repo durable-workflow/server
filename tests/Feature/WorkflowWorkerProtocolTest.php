@@ -4,8 +4,8 @@ namespace Tests\Feature;
 
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
-use App\Support\LongPollSignalStore;
 use App\Support\LongPoller;
+use App\Support\LongPollSignalStore;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Mockery\MockInterface;
@@ -15,10 +15,12 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 
 class WorkflowWorkerProtocolTest extends TestCase
 {
@@ -610,7 +612,7 @@ class WorkflowWorkerProtocolTest extends TestCase
                 ->andReturn($paginatedHistoryPayload, $paginatedHistoryPayload);
 
             $mock->shouldReceive('heartbeat')
-                ->andReturnUsing(function (string $heartbeatTaskId) use ($task, $leaseExpiresAt): array {
+                ->andReturnUsing(function (string $heartbeatTaskId) use ($leaseExpiresAt): array {
                     return [
                         'renewed' => true,
                         'lease_expires_at' => $leaseExpiresAt,
@@ -622,7 +624,7 @@ class WorkflowWorkerProtocolTest extends TestCase
 
             $mock->shouldReceive('status')
                 ->andReturnUsing(function (string $taskId) {
-                    return app()->make(\Workflow\V2\Support\DefaultWorkflowTaskBridge::class)->status($taskId);
+                    return app()->make(DefaultWorkflowTaskBridge::class)->status($taskId);
                 });
         });
 
@@ -1161,13 +1163,13 @@ class WorkflowWorkerProtocolTest extends TestCase
             \Mockery::mock(WorkflowTaskBridge::class, static function (MockInterface $mock) {
                 $mock->shouldReceive('complete')
                     ->andThrow(
-                        \Workflow\V2\Exceptions\StructuralLimitExceededException::pendingActivityCount(2000, 2000),
+                        StructuralLimitExceededException::pendingActivityCount(2000, 2000),
                     );
 
                 $mock->shouldReceive('status')
-                ->andReturnUsing(function (string $taskId) {
-                    return app()->make(\Workflow\V2\Support\DefaultWorkflowTaskBridge::class)->status($taskId);
-                });
+                    ->andReturnUsing(function (string $taskId) {
+                        return app()->make(DefaultWorkflowTaskBridge::class)->status($taskId);
+                    });
             }),
         );
 
@@ -2290,6 +2292,157 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('output.greeting', 'Hello, Ada!');
     }
 
+    public function test_it_resumes_external_workflows_after_activity_worker_failures(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-external-worker-activity-fails',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $workflowId = (string) $start->json('workflow_id');
+        $runId = (string) $start->json('run_id');
+
+        $this->registerWorker('php-worker-schedule-failing-activity', 'external-workflows');
+        $this->registerWorker('php-activity-worker-fails-activity', 'external-activities');
+        $this->registerWorker('php-worker-resume-after-activity-failure', 'external-workflows');
+
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-schedule-failing-activity',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId);
+
+        $scheduleActivity = $this->withHeaders($this->workerHeaders())
+            ->postJson(sprintf('/api/worker/workflow-tasks/%s/complete', $firstPoll->json('task.task_id')), [
+                'lease_owner' => $firstPoll->json('task.lease_owner'),
+                'workflow_task_attempt' => $firstPoll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'schedule_activity',
+                        'activity_type' => 'tests.external-greeting-activity',
+                        'arguments' => Serializer::serializeWithCodec(
+                            (string) config('workflows.serializer'),
+                            ['Ada'],
+                        ),
+                        'queue' => 'external-activities',
+                    ],
+                ],
+            ]);
+
+        $scheduleActivity->assertOk()
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'waiting');
+
+        $this->assertIsString($scheduleActivity->json('created_task_ids.0'));
+
+        $activityPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-activity-worker-fails-activity',
+                'task_queue' => 'external-activities',
+            ]);
+
+        $activityPoll->assertOk()
+            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1.0')
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity')
+            ->assertJsonPath('task.arguments.codec', (string) config('workflows.serializer'));
+
+        $failActivity = $this->withHeaders($this->workerHeaders())
+            ->postJson(sprintf('/api/worker/activity-tasks/%s/fail', $activityPoll->json('task.task_id')), [
+                'activity_attempt_id' => $activityPoll->json('task.activity_attempt_id'),
+                'lease_owner' => $activityPoll->json('task.lease_owner'),
+                'failure' => [
+                    'message' => 'Inventory service timed out.',
+                    'type' => 'TimeoutException',
+                    'stack_trace' => 'at activity_worker.py:42',
+                    'non_retryable' => true,
+                    'details' => [
+                        'codec' => 'json',
+                        'blob' => '{"stage":"inventory","retry_after":30}',
+                    ],
+                ],
+            ]);
+
+        $failActivity->assertOk()
+            ->assertJsonPath('outcome', 'failed')
+            ->assertJsonPath('recorded', true);
+
+        $this->assertIsString($failActivity->json('next_task_id'));
+
+        $resumePoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-resume-after-activity-failure',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $resumePoll->assertOk()
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.lease_owner', 'php-worker-resume-after-activity-failure');
+
+        $resumeEvents = collect((array) $resumePoll->json('task.history_events'));
+        $activityFailed = $resumeEvents->firstWhere('event_type', 'ActivityFailed');
+
+        $this->assertIsArray($activityFailed);
+        $this->assertSame('Inventory service timed out.', $activityFailed['payload']['message'] ?? null);
+        $this->assertTrue($activityFailed['payload']['non_retryable'] ?? false);
+        $this->assertSame(
+            'json',
+            $activityFailed['payload']['exception']['details_payload_codec'] ?? null,
+        );
+
+        $completeWorkflow = $this->withHeaders($this->workerHeaders())
+            ->postJson(sprintf('/api/worker/workflow-tasks/%s/complete', $resumePoll->json('task.task_id')), [
+                'lease_owner' => $resumePoll->json('task.lease_owner'),
+                'workflow_task_attempt' => $resumePoll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'fail_workflow',
+                        'message' => 'Activity failure propagated to workflow.',
+                        'exception_class' => 'ExternalActivityFailure',
+                        'non_retryable' => true,
+                    ],
+                ],
+            ]);
+
+        $completeWorkflow->assertOk()
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'failed');
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}/runs/{$runId}")
+            ->assertOk()
+            ->assertJsonPath('status', 'failed')
+            ->assertJsonPath('status_bucket', 'failed');
+
+        $history = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/{$workflowId}/runs/{$runId}/history");
+
+        $history->assertOk();
+
+        $historyEventTypes = array_column($history->json('events'), 'event_type');
+
+        $this->assertContains('ActivityFailed', $historyEventTypes);
+        $this->assertContains('WorkflowFailed', $historyEventTypes);
+    }
+
     public function test_it_starts_timers_from_non_terminal_workflow_task_commands(): void
     {
         Queue::fake();
@@ -3316,9 +3469,9 @@ class WorkflowWorkerProtocolTest extends TestCase
                     ]);
 
                 $mock->shouldReceive('status')
-                ->andReturnUsing(function (string $taskId) {
-                    return app()->make(\Workflow\V2\Support\DefaultWorkflowTaskBridge::class)->status($taskId);
-                });
+                    ->andReturnUsing(function (string $taskId) {
+                        return app()->make(DefaultWorkflowTaskBridge::class)->status($taskId);
+                    });
             }),
         );
 
@@ -3521,9 +3674,9 @@ class WorkflowWorkerProtocolTest extends TestCase
                     ]);
 
                 $mock->shouldReceive('status')
-                ->andReturnUsing(function (string $taskId) {
-                    return app()->make(\Workflow\V2\Support\DefaultWorkflowTaskBridge::class)->status($taskId);
-                });
+                    ->andReturnUsing(function (string $taskId) {
+                        return app()->make(DefaultWorkflowTaskBridge::class)->status($taskId);
+                    });
             }),
         );
 
