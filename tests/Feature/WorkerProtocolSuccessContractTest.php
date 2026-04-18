@@ -5,9 +5,13 @@ namespace Tests\Feature;
 use App\Support\ControlPlaneProtocol;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
+use Illuminate\Testing\TestResponse;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
+use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 
 class WorkerProtocolSuccessContractTest extends TestCase
 {
@@ -117,6 +121,103 @@ class WorkerProtocolSuccessContractTest extends TestCase
         }
     }
 
+    public function test_leased_workflow_task_success_responses_use_worker_protocol_contract(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-success-contract',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->registerWorker(
+            workerId: 'worker-success-lifecycle',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-success-lifecycle',
+            'task_queue' => 'contract-queue',
+            'history_page_size' => 1,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_id', 'wf-worker-success-contract')
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow')
+            ->assertJsonPath('task.workflow_task_attempt', 1)
+            ->assertJsonPath('task.lease_owner', 'worker-success-lifecycle');
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $nextHistoryPageToken = $poll->json('task.next_history_page_token');
+
+        $this->assertIsString($nextHistoryPageToken);
+
+        $history = $this->postJson("/api/worker/workflow-tasks/{$taskId}/history", [
+            'lease_owner' => 'worker-success-lifecycle',
+            'workflow_task_attempt' => $attempt,
+            'next_history_page_token' => $nextHistoryPageToken,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($history)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonStructure([
+                'history_events',
+                'total_history_events',
+                'next_history_page_token',
+            ]);
+
+        $this->assertNotEmpty($history->json('history_events'));
+
+        $heartbeat = $this->postJson("/api/worker/workflow-tasks/{$taskId}/heartbeat", [
+            'lease_owner' => 'worker-success-lifecycle',
+            'workflow_task_attempt' => $attempt,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($heartbeat)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('lease_owner', 'worker-success-lifecycle')
+            ->assertJsonPath('renewed', true)
+            ->assertJsonPath('task_status', 'leased')
+            ->assertJsonPath('reason', null);
+
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-success-lifecycle',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [
+                [
+                    'type' => 'complete_workflow',
+                    'result' => Serializer::serializeWithCodec('json', [
+                        'greeting' => 'Hello, Ada!',
+                    ]),
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('run_status', 'completed')
+            ->assertJsonStructure(['created_task_ids']);
+    }
+
     private function prepareWorkerCase(string $case): void
     {
         if ($case === 'worker.register') {
@@ -129,6 +230,18 @@ class WorkerProtocolSuccessContractTest extends TestCase
             supportedWorkflowTypes: ['ContractWorkflow'],
             supportedActivityTypes: ['ContractActivity'],
         );
+    }
+
+    private function assertWorkerProtocolSuccess(TestResponse $response, int $status = 200): TestResponse
+    {
+        $response->assertStatus($status)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
+            ->assertJsonMissingPath('control_plane');
+
+        return $response;
     }
 
     /**
