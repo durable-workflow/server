@@ -3,7 +3,9 @@
 namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
+use App\Support\ControlPlaneProtocol;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
@@ -52,7 +54,11 @@ class ActivityCompletionIdempotencyTest extends TestCase
 
         $this->registerWorker('php-worker-complete-idem', 'external-activities');
 
-        $poll = $this->withHeaders($this->workerHeaders())
+        $workerHeaders = $this->workerHeaders() + [
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ];
+
+        $poll = $this->withHeaders($workerHeaders)
             ->postJson('/api/worker/activity-tasks/poll', [
                 'worker_id' => 'php-worker-complete-idem',
                 'task_queue' => 'external-activities',
@@ -69,7 +75,7 @@ class ActivityCompletionIdempotencyTest extends TestCase
 
         // First complete call — service mode must not throw from the post-commit
         // dispatch path even though the underlying queue driver is sync.
-        $complete = $this->withHeaders($this->workerHeaders())
+        $complete = $this->withHeaders($workerHeaders)
             ->postJson("/api/worker/activity-tasks/{$taskId}/complete", [
                 'activity_attempt_id' => $attemptId,
                 'lease_owner' => $leaseOwner,
@@ -77,12 +83,17 @@ class ActivityCompletionIdempotencyTest extends TestCase
             ]);
 
         $complete->assertOk()
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
+            ->assertJsonMissingPath('control_plane')
             ->assertJsonPath('outcome', 'completed')
             ->assertJsonPath('recorded', true);
 
         // Idempotent retry — if the SDK retries after a transient disconnect,
         // it should see stale_attempt, not a 500.
-        $retry = $this->withHeaders($this->workerHeaders())
+        $retry = $this->withHeaders($workerHeaders)
             ->postJson("/api/worker/activity-tasks/{$taskId}/complete", [
                 'activity_attempt_id' => $attemptId,
                 'lease_owner' => $leaseOwner,
@@ -90,6 +101,11 @@ class ActivityCompletionIdempotencyTest extends TestCase
             ]);
 
         $retry->assertStatus(409)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
+            ->assertJsonMissingPath('control_plane')
             ->assertJsonPath('outcome', 'completed')
             ->assertJsonPath('recorded', false)
             ->assertJsonPath('reason', 'stale_attempt');
