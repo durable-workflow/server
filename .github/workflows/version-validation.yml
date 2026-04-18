@@ -80,40 +80,40 @@ jobs:
       - name: Test Python SDK with compatible server (should succeed)
         run: |
           cat > /tmp/test_worker.py << 'EOF'
-import asyncio
-from durable_workflow import Client, Worker, workflow, activity
+          import asyncio
+          from durable_workflow import Client, Worker, workflow, activity
 
-@activity.defn(name="test_activity")
-def test_activity() -> str:
-    return "ok"
+          @activity.defn(name="test_activity")
+          def test_activity() -> str:
+              return "ok"
 
-@workflow.defn(name="test_workflow")
-class TestWorkflow:
-    def run(self, ctx):
-        return "ok"
+          @workflow.defn(name="test_workflow")
+          class TestWorkflow:
+              def run(self, ctx):
+                  return "ok"
 
-async def main():
-    client = Client("http://localhost:8080", token="test-token-123", namespace="default")
+          async def main():
+              client = Client("http://localhost:8080", token="test-token-123", namespace="default")
 
-    # This should succeed because server is 2.0.0
-    worker = Worker(
-        client,
-        task_queue="test-queue",
-        workflows=[TestWorkflow],
-        activities=[test_activity],
-        worker_id="test-worker-compat",
-    )
+              # This should succeed because server is 2.0.0
+              worker = Worker(
+                  client,
+                  task_queue="test-queue",
+                  workflows=[TestWorkflow],
+                  activities=[test_activity],
+                  worker_id="test-worker-compat",
+              )
 
-    # Worker registration validates version in _register()
-    # We'll just call _register() directly to test validation
-    try:
-        await worker._register()
-        print("✅ Python SDK successfully connected to compatible server")
-    finally:
-        await client.close()
+              # Worker registration validates version in _register()
+              # We'll just call _register() directly to test validation
+              try:
+                  await worker._register()
+                  print("✅ Python SDK successfully connected to compatible server")
+              finally:
+                  await client.close()
 
-asyncio.run(main())
-EOF
+          asyncio.run(main())
+          EOF
           python /tmp/test_worker.py
 
       - name: Stop server
@@ -123,17 +123,17 @@ EOF
       - name: Create docker-compose override for version 3.0.0
         run: |
           cat > docker-compose.override.yml << 'EOF'
-services:
-  bootstrap:
-    environment:
-      APP_VERSION: "3.0.0"
-  server:
-    environment:
-      APP_VERSION: "3.0.0"
-  worker:
-    environment:
-      APP_VERSION: "3.0.0"
-EOF
+          services:
+            bootstrap:
+              environment:
+                APP_VERSION: "3.0.0"
+            server:
+              environment:
+                APP_VERSION: "3.0.0"
+            worker:
+              environment:
+                APP_VERSION: "3.0.0"
+          EOF
 
       - name: Start server (version 3.0.0)
         env:
@@ -185,53 +185,53 @@ EOF
       - name: Test Python SDK with incompatible server (should fail with clear error)
         run: |
           cat > /tmp/test_worker_incompatible.py << 'EOF'
-import asyncio
-from durable_workflow import Client, Worker, workflow, activity
+          import asyncio
+          from durable_workflow import Client, Worker, workflow, activity
 
-@activity.defn(name="test_activity")
-def test_activity() -> str:
-    return "ok"
+          @activity.defn(name="test_activity")
+          def test_activity() -> str:
+              return "ok"
 
-@workflow.defn(name="test_workflow")
-class TestWorkflow:
-    def run(self, ctx):
-        return "ok"
+          @workflow.defn(name="test_workflow")
+          class TestWorkflow:
+              def run(self, ctx):
+                  return "ok"
 
-async def main():
-    client = Client("http://localhost:8080", token="test-token-123", namespace="default")
+          async def main():
+              client = Client("http://localhost:8080", token="test-token-123", namespace="default")
 
-    worker = Worker(
-        client,
-        task_queue="test-queue",
-        workflows=[TestWorkflow],
-        activities=[test_activity],
-        worker_id="test-worker-incompat",
-    )
+              worker = Worker(
+                  client,
+                  task_queue="test-queue",
+                  workflows=[TestWorkflow],
+                  activities=[test_activity],
+                  worker_id="test-worker-incompat",
+              )
 
-    # This should fail because server is 3.0.0
-    try:
-        await worker._register()
-        print("❌ ERROR: Worker registration should have failed with incompatible server")
-        await client.close()
-        exit(1)
-    except RuntimeError as e:
-        error_msg = str(e)
-        print(f"Worker registration error: {error_msg}")
+              # This should fail because server is 3.0.0
+              try:
+                  await worker._register()
+                  print("❌ ERROR: Worker registration should have failed with incompatible server")
+                  await client.close()
+                  exit(1)
+              except RuntimeError as e:
+                  error_msg = str(e)
+                  print(f"Worker registration error: {error_msg}")
 
-        # Check for expected error message
-        if "incompatible" in error_msg and "sdk-python 0.1.x" in error_msg and "server 2.x" in error_msg:
-            print("✅ Python SDK failed with correct error message")
-        else:
-            print(f"❌ ERROR: Python SDK error message doesn't match expected format")
-            print(f"Expected: 'incompatible', 'sdk-python 0.1.x', 'server 2.x'")
-            print(f"Got: {error_msg}")
-            await client.close()
-            exit(1)
-    finally:
-        await client.close()
+                  # Check for expected error message
+                  if "incompatible" in error_msg and "sdk-python 0.1.x" in error_msg and "server 2.x" in error_msg:
+                      print("✅ Python SDK failed with correct error message")
+                  else:
+                      print(f"❌ ERROR: Python SDK error message doesn't match expected format")
+                      print(f"Expected: 'incompatible', 'sdk-python 0.1.x', 'server 2.x'")
+                      print(f"Got: {error_msg}")
+                      await client.close()
+                      exit(1)
+              finally:
+                  await client.close()
 
-asyncio.run(main())
-EOF
+          asyncio.run(main())
+          EOF
           python /tmp/test_worker_incompatible.py
 
       - name: Stop server
@@ -241,17 +241,17 @@ EOF
       - name: Create docker-compose override with no version
         run: |
           cat > docker-compose.override.yml << 'EOF'
-services:
-  bootstrap:
-    environment:
-      APP_VERSION: "unknown"
-  server:
-    environment:
-      APP_VERSION: "unknown"
-  worker:
-    environment:
-      APP_VERSION: "unknown"
-EOF
+          services:
+            bootstrap:
+              environment:
+                APP_VERSION: "unknown"
+            server:
+              environment:
+                APP_VERSION: "unknown"
+            worker:
+              environment:
+                APP_VERSION: "unknown"
+          EOF
 
       - name: Start server (version unknown)
         env:
@@ -274,38 +274,38 @@ EOF
       - name: Test Python SDK with unparseable version (should skip validation)
         run: |
           cat > /tmp/test_worker_unknown.py << 'EOF'
-import asyncio
-from durable_workflow import Client, Worker, workflow, activity
+          import asyncio
+          from durable_workflow import Client, Worker, workflow, activity
 
-@activity.defn(name="test_activity")
-def test_activity() -> str:
-    return "ok"
+          @activity.defn(name="test_activity")
+          def test_activity() -> str:
+              return "ok"
 
-@workflow.defn(name="test_workflow")
-class TestWorkflow:
-    def run(self, ctx):
-        return "ok"
+          @workflow.defn(name="test_workflow")
+          class TestWorkflow:
+              def run(self, ctx):
+                  return "ok"
 
-async def main():
-    client = Client("http://localhost:8080", token="test-token-123", namespace="default")
+          async def main():
+              client = Client("http://localhost:8080", token="test-token-123", namespace="default")
 
-    worker = Worker(
-        client,
-        task_queue="test-queue",
-        workflows=[TestWorkflow],
-        activities=[test_activity],
-        worker_id="test-worker-unknown",
-    )
+              worker = Worker(
+                  client,
+                  task_queue="test-queue",
+                  workflows=[TestWorkflow],
+                  activities=[test_activity],
+                  worker_id="test-worker-unknown",
+              )
 
-    # Should succeed because validation is skipped for unparseable versions
-    try:
-        await worker._register()
-        print("✅ Python SDK skipped validation for unparseable version")
-    finally:
-        await client.close()
+              # Should succeed because validation is skipped for unparseable versions
+              try:
+                  await worker._register()
+                  print("✅ Python SDK skipped validation for unparseable version")
+              finally:
+                  await client.close()
 
-asyncio.run(main())
-EOF
+          asyncio.run(main())
+          EOF
           python /tmp/test_worker_unknown.py
 
       - name: Stop server
