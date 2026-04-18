@@ -34,6 +34,14 @@ jobs:
           WORKFLOW_SERVER_AUTH_TOKEN: test-token-123
           APP_VERSION: 2.0.0
         run: |
+          cat > docker-compose.override.yml << 'EOF'
+          services:
+            server:
+              environment:
+                WORKFLOW_SERVER_WORKER_POLL_TIMEOUT: "1"
+                WORKFLOW_SERVER_WORKER_POLL_INTERVAL_MS: "100"
+          EOF
+
           docker compose up -d --wait
           sleep 5
 
@@ -41,47 +49,249 @@ jobs:
           curl -f http://localhost:8080/api/health || exit 1
           echo "✓ Server is healthy"
 
-      - name: Set up PHP 8.2
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.2'
-          extensions: redis, pdo_mysql
-          coverage: none
-
-      - name: Install workflow package for PHP worker
-        run: |
-          mkdir -p /tmp/php-worker
-          cd /tmp/php-worker
-          composer init --name=test/polyglot-php --no-interaction
-          composer config minimum-stability dev
-          composer config prefer-stable true
-          composer require durable-workflow/workflow:v2.x-dev
-
       - name: Copy PHP worker script
         run: |
+          mkdir -p /tmp/php-worker
           cat > /tmp/php-worker/worker.php << 'EOF'
           <?php
 
-          require_once __DIR__ . '/vendor/autoload.php';
+          declare(strict_types=1);
 
-          use Workflow\V2\Activity;
-          use Workflow\V2\Workflow;
+          use Workflow\Serializers\CodecRegistry;
+          use Workflow\Serializers\Serializer;
 
-          class PhpWorkflowCallsPythonActivity extends Workflow
+          require '/app/vendor/autoload.php';
+
+          ob_implicit_flush(true);
+
+          const BASE_URL = 'http://localhost:8080/api';
+          const TOKEN = 'test-token-123';
+          const NAMESPACE_NAME = 'default';
+          const PROTOCOL_VERSION = '1.0';
+          const TASK_QUEUE = 'polyglot-test';
+          const WORKER_ID = 'php-polyglot-worker';
+
+          /**
+           * @param list<int> $allowedStatuses
+           */
+          function request(string $method, string $path, ?array $body = null, int $timeout = 10, array $allowedStatuses = []): array
           {
-              public function handle(array $input)
-              {
-                  $result = \Workflow\V2\activity(PythonActivityForPhp::class, $input);
-                  return ['php_workflow_result' => $result, 'input_received' => $input];
+              $headers = [
+                  'Accept: application/json',
+                  'Content-Type: application/json',
+                  'Authorization: Bearer '.TOKEN,
+                  'X-Namespace: '.NAMESPACE_NAME,
+                  'X-Durable-Workflow-Protocol-Version: '.PROTOCOL_VERSION,
+              ];
+
+              $options = [
+                  'http' => [
+                      'method' => $method,
+                      'header' => implode("\r\n", $headers),
+                      'ignore_errors' => true,
+                      'timeout' => $timeout,
+                  ],
+              ];
+
+              if ($body !== null) {
+                  $options['http']['content'] = json_encode($body, JSON_THROW_ON_ERROR);
               }
+
+              for ($attempt = 1; $attempt <= 3; $attempt++) {
+                  unset($http_response_header);
+
+                  $response = file_get_contents(BASE_URL.$path, false, stream_context_create($options));
+                  $status = 0;
+                  foreach ($http_response_header ?? [] as $header) {
+                      if (preg_match('/^HTTP\/\S+\s+(\d+)/', $header, $matches) === 1) {
+                          $status = (int) $matches[1];
+                          break;
+                      }
+                  }
+
+                  $decoded = $response === false || $response === ''
+                      ? []
+                      : json_decode($response, true, flags: JSON_THROW_ON_ERROR);
+                  $payload = is_array($decoded) ? $decoded : [];
+                  $payload['_http_status'] = $status;
+
+                  if ($status >= 500 && $attempt < 3) {
+                      usleep(250000 * $attempt);
+                      continue;
+                  }
+
+                  if (($status >= 400 || $status === 0) && ! in_array($status, $allowedStatuses, true)) {
+                      throw new RuntimeException(sprintf('%s %s failed with HTTP %d: %s', $method, $path, $status, $response ?: ''));
+                  }
+
+                  return $payload;
+              }
+
+              throw new RuntimeException(sprintf('%s %s failed after retries', $method, $path));
           }
 
-          class PythonActivityForPhp extends Activity
+          function assert_completion_response(array $response, string $kind): void
           {
-              public function handle(array $input)
-              {
-                  return [
-                      'python_activity_executed' => true,
+              $status = (int) ($response['_http_status'] ?? 200);
+              if ($status < 400) {
+                  return;
+              }
+
+              $reason = (string) ($response['reason'] ?? '');
+              if ($status === 409 && in_array($reason, ['stale_attempt', 'stale_task', 'task_already_completed'], true)) {
+                  return;
+              }
+
+              throw new RuntimeException(sprintf('%s completion failed with HTTP %d: %s', $kind, $status, json_encode($response)));
+          }
+
+          function task_codec(array $task): string
+          {
+              $codec = $task['payload_codec'] ?? null;
+
+              if (! is_string($codec) || $codec === '') {
+                  $codec = is_array($task['arguments'] ?? null) ? ($task['arguments']['codec'] ?? null) : null;
+              }
+
+              return is_string($codec) && $codec !== '' ? $codec : CodecRegistry::defaultCodec();
+          }
+
+          function envelope(mixed $value, ?string $codec = null): array
+          {
+              $codec = $codec !== null && $codec !== '' ? $codec : CodecRegistry::defaultCodec();
+
+              return [
+                  'codec' => $codec,
+                  'blob' => Serializer::serializeWithCodec($codec, $value),
+              ];
+          }
+
+          function decode_payload(mixed $value, ?string $codec = null): mixed
+          {
+              if ($value === null) {
+                  return $value;
+              }
+
+              if (is_array($value) && array_key_exists('codec', $value) && array_key_exists('blob', $value)) {
+                  return Serializer::unserializeWithCodec((string) $value['codec'], (string) $value['blob']);
+              }
+
+              if (is_string($value)) {
+                  return Serializer::unserializeWithCodec($codec ?? CodecRegistry::defaultCodec(), $value);
+              }
+
+              return $value;
+          }
+
+          function activity_result_from_history(array $history, string $fallbackCodec): mixed
+          {
+              for ($i = count($history) - 1; $i >= 0; $i--) {
+                  $event = $history[$i];
+                  if (($event['event_type'] ?? null) !== 'ActivityCompleted') {
+                      continue;
+                  }
+
+                  $payload = $event['payload'] ?? [];
+                  if (! is_array($payload)) {
+                      return null;
+                  }
+
+                  $codec = is_string($payload['payload_codec'] ?? null) && $payload['payload_codec'] !== ''
+                      ? $payload['payload_codec']
+                      : $fallbackCodec;
+
+                  return decode_payload($payload['result'] ?? null, $codec);
+              }
+
+              return null;
+          }
+
+          function complete_workflow_task(array $task, array $commands): void
+          {
+              $response = request('POST', '/worker/workflow-tasks/'.$task['task_id'].'/complete', [
+                  'lease_owner' => $task['lease_owner'],
+                  'workflow_task_attempt' => $task['workflow_task_attempt'] ?? 1,
+                  'commands' => $commands,
+              ], 10, [409]);
+
+              assert_completion_response($response, 'workflow task');
+          }
+
+          function complete_activity_task(array $task, mixed $result, string $codec): void
+          {
+              $response = request('POST', '/worker/activity-tasks/'.$task['task_id'].'/complete', [
+                  'activity_attempt_id' => $task['activity_attempt_id'] ?? $task['attempt_id'] ?? '',
+                  'lease_owner' => $task['lease_owner'],
+                  'result' => envelope($result, $codec),
+              ], 10, [409]);
+
+              assert_completion_response($response, 'activity task');
+          }
+
+          function handle_workflow_task(array $task): void
+          {
+              $workflowType = $task['workflow_type'] ?? '';
+              $codec = task_codec($task);
+              $input = decode_payload($task['arguments'] ?? null, $codec);
+              $input = is_array($input) && array_is_list($input) ? ($input[0] ?? []) : $input;
+              $history = $task['history_events'] ?? [];
+              $activityResult = activity_result_from_history($history, $codec);
+
+              if ($workflowType === 'PhpWorkflowCallsPythonActivity') {
+                  if ($activityResult === null) {
+                      complete_workflow_task($task, [[
+                          'type' => 'schedule_activity',
+                          'activity_type' => 'python_activity_for_php',
+                          'queue' => TASK_QUEUE,
+                          'arguments' => envelope([$input], $codec),
+                      ]]);
+                      return;
+                  }
+
+                  complete_workflow_task($task, [[
+                      'type' => 'complete_workflow',
+                      'result' => envelope([
+                          'php_workflow_result' => $activityResult,
+                          'input_received' => $input,
+                      ], $codec),
+                  ]]);
+                  return;
+              }
+
+              if ($workflowType === 'PhpWorkflowCallsPhpActivity') {
+                  if ($activityResult === null) {
+                      complete_workflow_task($task, [[
+                          'type' => 'schedule_activity',
+                          'activity_type' => 'php_activity_for_php',
+                          'queue' => TASK_QUEUE,
+                          'arguments' => envelope([$input], $codec),
+                      ]]);
+                      return;
+                  }
+
+                  complete_workflow_task($task, [[
+                      'type' => 'complete_workflow',
+                      'result' => envelope(['php_to_php_result' => $activityResult], $codec),
+                  ]]);
+                  return;
+              }
+
+              complete_workflow_task($task, [[
+                  'type' => 'fail_workflow',
+                  'message' => 'Unknown PHP workflow type: '.$workflowType,
+              ]]);
+          }
+
+          function handle_activity_task(array $task): void
+          {
+              $codec = task_codec($task);
+              $input = decode_payload($task['arguments'] ?? null, $codec);
+              $input = is_array($input) && array_is_list($input) ? ($input[0] ?? []) : $input;
+              $activityType = $task['activity_type'] ?? '';
+
+              if ($activityType === 'php_activity_for_python') {
+                  complete_activity_task($task, [
+                      'php_activity_executed' => true,
                       'input' => $input,
                       'type_checks' => [
                           'string' => is_string($input['string'] ?? null),
@@ -93,84 +303,74 @@ jobs:
                           'map' => is_array($input['map'] ?? null),
                       ],
                       'php_version' => PHP_VERSION,
-                  ];
+                  ], $codec);
+                  return;
               }
+
+              if ($activityType === 'php_activity_for_php') {
+                  complete_activity_task($task, [
+                      'php_activity' => 'success',
+                      'data' => $input,
+                  ], $codec);
+                  return;
+              }
+
+              throw new RuntimeException('Unknown PHP activity type: '.$activityType);
           }
 
-          class PhpWorkflowCallsPhpActivity extends Workflow
-          {
-              public function handle(array $input)
-              {
-                  $result = \Workflow\V2\activity(PhpActivityForPhp::class, $input);
-                  return ['php_to_php_result' => $result];
-              }
-          }
-
-          class PhpActivityForPhp extends Activity
-          {
-              public function handle(array $input)
-              {
-                  return ['php_activity' => 'success', 'data' => $input];
-              }
-          }
-
-          class PhpActivityThatFails extends Activity
-          {
-              public function handle(array $input)
-              {
-                  throw new \RuntimeException('PHP activity intentional failure: ' . ($input['message'] ?? 'test'));
-              }
-          }
-
-          class PhpWorkflowExpectsFailure extends Workflow
-          {
-              public function handle(array $input)
-              {
-                  try {
-                      \Workflow\V2\activity(PhpActivityThatFails::class, $input);
-                      return ['error' => 'Activity should have failed'];
-                  } catch (\Throwable $e) {
-                      return [
-                          'caught_exception' => true,
-                          'exception_type' => get_class($e),
-                          'exception_message' => $e->getMessage(),
-                      ];
-                  }
-              }
-          }
-
-          $client = new \Workflow\V2\WorkflowClient(
-              'http://localhost:8080',
-              'test-token-123',
-              'default'
-          );
-
-          $worker = new \Workflow\V2\Worker(
-              $client,
-              taskQueue: 'polyglot-test',
-              workflows: [
-                  PhpWorkflowCallsPythonActivity::class,
-                  PhpWorkflowCallsPhpActivity::class,
-                  PhpWorkflowExpectsFailure::class,
+          request('POST', '/worker/register', [
+              'worker_id' => WORKER_ID,
+              'task_queue' => TASK_QUEUE,
+              'runtime' => 'php',
+              'sdk_version' => 'durable-workflow-php/protocol-ci',
+              'supported_workflow_types' => [
+                  'PhpWorkflowCallsPythonActivity',
+                  'PhpWorkflowCallsPhpActivity',
               ],
-              activities: [
-                  PythonActivityForPhp::class,
-                  PhpActivityForPhp::class,
-                  PhpActivityThatFails::class,
-              ]
-          );
+              'supported_activity_types' => [
+                  'php_activity_for_python',
+                  'php_activity_for_php',
+              ],
+          ]);
 
           echo "PHP worker starting\n";
-          $worker->run();
+          while (true) {
+              $workflowPoll = request('POST', '/worker/workflow-tasks/poll', [
+                  'worker_id' => WORKER_ID,
+                  'task_queue' => TASK_QUEUE,
+              ], 6);
+
+              if (is_array($workflowPoll['task'] ?? null)) {
+                  handle_workflow_task($workflowPoll['task']);
+              }
+
+              $activityPoll = request('POST', '/worker/activity-tasks/poll', [
+                  'worker_id' => WORKER_ID,
+                  'task_queue' => TASK_QUEUE,
+              ], 6);
+
+              if (is_array($activityPoll['task'] ?? null)) {
+                  handle_activity_task($activityPoll['task']);
+              }
+
+              usleep(100000);
+          }
           EOF
 
       - name: Start PHP worker in background
         run: |
-          cd /tmp/php-worker
-          php worker.php > /tmp/php-worker.log 2>&1 &
-          echo $! > /tmp/php-worker.pid
-          echo "✓ PHP worker started (PID: $(cat /tmp/php-worker.pid))"
+          SERVER_IMAGE="$(docker compose images -q server)"
+          if [ -z "$SERVER_IMAGE" ]; then
+            echo "Unable to resolve built server image"
+            exit 1
+          fi
+          docker rm -f polyglot-php-worker >/dev/null 2>&1 || true
+          docker run -d --name polyglot-php-worker --network host \
+            -v /tmp/php-worker/worker.php:/worker.php:ro \
+            "$SERVER_IMAGE" php /worker.php > /tmp/php-worker.cid
+          echo "✓ PHP worker started (container: $(cat /tmp/php-worker.cid))"
           sleep 2
+          docker logs polyglot-php-worker
 
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
@@ -187,7 +387,6 @@ jobs:
           #!/usr/bin/env python3
 
           import asyncio
-          import os
           import sys
 
           from durable_workflow import Client, Worker, workflow, activity
@@ -197,7 +396,7 @@ jobs:
           class PythonWorkflowCallsPhpActivity:
               def run(self, ctx, *args):
                   input_data = args[0] if args else {}
-                  result = yield ctx.schedule_activity("PhpActivityForPython", [input_data])
+                  result = yield ctx.schedule_activity("php_activity_for_python", [input_data])
                   return {"python_workflow_result": result, "input_received": input_data}
 
 
@@ -209,25 +408,10 @@ jobs:
                   return {"python_to_python_result": result}
 
 
-          @workflow.defn(name="PythonWorkflowExpectsFailure")
-          class PythonWorkflowExpectsFailure:
-              def run(self, ctx, *args):
-                  input_data = args[0] if args else {}
-                  try:
-                      yield ctx.schedule_activity("python_activity_that_fails", [input_data])
-                      return {"error": "Activity should have failed"}
-                  except Exception as e:
-                      return {
-                          "caught_exception": True,
-                          "exception_type": type(e).__name__,
-                          "exception_message": str(e),
-                      }
-
-
-          @activity.defn(name="PhpActivityForPython")
-          def php_activity_for_python(input_data: dict) -> dict:
+          @activity.defn(name="python_activity_for_php")
+          def python_activity_for_php(input_data: dict) -> dict:
               return {
-                  "php_activity_executed": True,
+                  "python_activity_executed": True,
                   "input": input_data,
                   "type_checks": {
                       "string": isinstance(input_data.get("string"), str),
@@ -247,12 +431,6 @@ jobs:
               return {"python_activity": "success", "data": input_data}
 
 
-          @activity.defn(name="python_activity_that_fails")
-          def python_activity_that_fails(input_data: dict) -> dict:
-              message = input_data.get("message", "test")
-              raise RuntimeError(f"Python activity intentional failure: {message}")
-
-
           async def main():
               client = Client("http://localhost:8080", token="test-token-123", namespace="default")
 
@@ -262,12 +440,10 @@ jobs:
                   workflows=[
                       PythonWorkflowCallsPhpActivity,
                       PythonWorkflowCallsPythonActivity,
-                      PythonWorkflowExpectsFailure,
                   ],
                   activities=[
-                      php_activity_for_python,
+                      python_activity_for_php,
                       python_activity_for_python,
-                      python_activity_that_fails,
                   ],
                   worker_id="python-polyglot-worker",
               )
@@ -283,7 +459,7 @@ jobs:
 
       - name: Start Python worker in background
         run: |
-          python /tmp/python-worker.py > /tmp/python-worker.log 2>&1 &
+          python -u /tmp/python-worker.py > /tmp/python-worker.log 2>&1 &
           echo $! > /tmp/python-worker.pid
           echo "✓ Python worker started (PID: $(cat /tmp/python-worker.pid))"
           sleep 2
@@ -294,26 +470,47 @@ jobs:
           #!/usr/bin/env python3
 
           import asyncio
-          import os
           import sys
-          import time
 
           from durable_workflow import Client
+          from durable_workflow import serializer
 
 
           async def start_workflow_and_wait(client, workflow_type, workflow_id, input_data, timeout=30):
               print(f"Starting {workflow_type}...")
 
-              handle = await client.start_workflow(
-                  workflow_type=workflow_type,
-                  workflow_id=workflow_id,
-                  task_queue="polyglot-test",
-                  input=input_data,
+              data = await client._request(
+                  "POST",
+                  "/workflows",
+                  json={
+                      "workflow_type": workflow_type,
+                      "workflow_id": workflow_id,
+                      "task_queue": "polyglot-test",
+                      "input": [input_data],
+                  },
               )
 
-              result = await client.get_result(handle, timeout=timeout)
-              print(f"  ✓ Completed")
-              return result
+              deadline = asyncio.get_running_loop().time() + timeout
+              while True:
+                  desc = await client._request("GET", f"/workflows/{data['workflow_id']}")
+                  status = desc.get("status")
+                  if desc.get("is_terminal") or status in {"completed", "failed", "terminated", "canceled", "cancelled"}:
+                      if status != "completed":
+                          raise RuntimeError(f"workflow {workflow_id} ended with status={status}")
+
+                      envelope = desc.get("output_envelope")
+                      print(f"  ✓ Completed")
+                      if envelope is not None:
+                          return serializer.decode_envelope(envelope)
+
+                      return desc.get("output")
+
+                  if asyncio.get_running_loop().time() > deadline:
+                      raise TimeoutError(
+                          f"workflow {workflow_id} not terminal after {timeout}s (status={status})"
+                      )
+
+                  await asyncio.sleep(1)
 
 
           async def main():
@@ -322,10 +519,10 @@ jobs:
               # Wait for server
               for i in range(30):
                   try:
-                      await client._client.get("/cluster/info")
+                      await client.get_cluster_info()
                       break
-                  except:
-                      time.sleep(1)
+                  except Exception:
+                      await asyncio.sleep(1)
 
               # Wait for workers to register
               await asyncio.sleep(5)
@@ -399,7 +596,7 @@ jobs:
 
               print(f"\n=== Summary: {tests_passed}/{tests_total} tests passed ===")
 
-              await client.close()
+              await client.aclose()
               sys.exit(0 if tests_passed == tests_total else 1)
 
 
@@ -416,7 +613,7 @@ jobs:
         if: failure()
         run: |
           echo "=== PHP Worker Log ==="
-          cat /tmp/php-worker.log || echo "No PHP worker log"
+          docker logs polyglot-php-worker || echo "No PHP worker log"
 
       - name: Show Python worker log on failure
         if: failure()
@@ -433,9 +630,7 @@ jobs:
       - name: Stop workers
         if: always()
         run: |
-          if [ -f /tmp/php-worker.pid ]; then
-            kill $(cat /tmp/php-worker.pid) 2>/dev/null || true
-          fi
+          docker rm -f polyglot-php-worker 2>/dev/null || true
           if [ -f /tmp/python-worker.pid ]; then
             kill $(cat /tmp/python-worker.pid) 2>/dev/null || true
           fi

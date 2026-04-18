@@ -110,7 +110,7 @@ jobs:
                   await worker._register()
                   print("✅ Python SDK successfully connected to compatible server")
               finally:
-                  await client.close()
+                  await client.aclose()
 
           asyncio.run(main())
           EOF
@@ -119,7 +119,8 @@ jobs:
       - name: Stop server
         run: docker compose down -v
 
-      # Test 2: Incompatible version (3.0.0) - CLI failure
+      # Test 2: Top-level APP_VERSION is build identity only. Protocol
+      # manifests remain authoritative for client compatibility.
       - name: Create docker-compose override for version 3.0.0
         run: |
           cat > docker-compose.override.yml << 'EOF'
@@ -131,6 +132,9 @@ jobs:
               environment:
                 APP_VERSION: "3.0.0"
             worker:
+              environment:
+                APP_VERSION: "3.0.0"
+            scheduler:
               environment:
                 APP_VERSION: "3.0.0"
           EOF
@@ -151,38 +155,100 @@ jobs:
             exit 1
           fi
 
-      - name: Test CLI with incompatible server (should fail with clear error)
+      - name: Test CLI with informational top-level version (should succeed)
         env:
           DURABLE_WORKFLOW_SERVER_URL: http://localhost:8080
           DURABLE_WORKFLOW_AUTH_TOKEN: test-token-123
           DURABLE_WORKFLOW_NAMESPACE: default
         run: |
-          # CLI should fail with version incompatibility error
-          set +e
-          OUTPUT=$(dw server:info 2>&1)
-          EXIT_CODE=$?
-          set -e
+          dw server:info || exit 1
+          echo "✅ CLI accepted compatible protocol manifests despite APP_VERSION=3.0.0"
 
-          echo "CLI output: $OUTPUT"
-          echo "CLI exit code: $EXIT_CODE"
+      - name: Test Python SDK with informational top-level version (should succeed)
+        run: |
+          cat > /tmp/test_worker_app_version.py << 'EOF'
+          import asyncio
+          from durable_workflow import Client, Worker, workflow, activity
 
-          # Should fail (non-zero exit code)
-          if [ $EXIT_CODE -eq 0 ]; then
-            echo "❌ ERROR: CLI should have failed with incompatible server"
+          @activity.defn(name="test_activity")
+          def test_activity() -> str:
+              return "ok"
+
+          @workflow.defn(name="test_workflow")
+          class TestWorkflow:
+              def run(self, ctx):
+                  return "ok"
+
+          async def main():
+              client = Client("http://localhost:8080", token="test-token-123", namespace="default")
+
+              worker = Worker(
+                  client,
+                  task_queue="test-queue",
+                  workflows=[TestWorkflow],
+                  activities=[test_activity],
+                  worker_id="test-worker-incompat",
+              )
+
+              try:
+                  await worker._register()
+                  print("✅ Python SDK accepted compatible protocol manifests despite APP_VERSION=3.0.0")
+              finally:
+                  await client.aclose()
+
+          asyncio.run(main())
+          EOF
+          python /tmp/test_worker_app_version.py
+
+      - name: Stop server
+        run: docker compose down -v
+
+      # Test 3: Incompatible worker protocol manifest. The CLI only uses the
+      # control plane and should still succeed; the Python worker validates the
+      # worker protocol and must fail closed.
+      - name: Create docker-compose override with incompatible worker protocol
+        run: |
+          cat > docker-compose.override.yml << 'EOF'
+          services:
+            bootstrap:
+              environment:
+                WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION: "2.0"
+            server:
+              environment:
+                WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION: "2.0"
+            worker:
+              environment:
+                WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION: "2.0"
+            scheduler:
+              environment:
+                WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION: "2.0"
+          EOF
+
+      - name: Start server (worker protocol 2.0)
+        env:
+          APP_KEY: ${{ steps.app-key.outputs.key }}
+          WORKFLOW_SERVER_AUTH_TOKEN: test-token-123
+        run: |
+          docker compose up -d --wait
+          sleep 5
+
+          VERSION=$(curl -fsS -H "Authorization: Bearer ${WORKFLOW_SERVER_AUTH_TOKEN}" http://localhost:8080/api/cluster/info | jq -r '.worker_protocol.version')
+          echo "Worker protocol version: $VERSION"
+          if [ "$VERSION" != "2.0" ]; then
+            echo "ERROR: Expected worker protocol 2.0, got $VERSION"
             exit 1
           fi
 
-          # Error message should mention version incompatibility
-          if echo "$OUTPUT" | grep -q "incompatible.*server.*2\.x"; then
-            echo "✅ CLI failed with correct error message"
-          else
-            echo "❌ ERROR: CLI error message doesn't mention version incompatibility"
-            echo "Expected: 'incompatible' and 'server 2.x'"
-            echo "Got: $OUTPUT"
-            exit 1
-          fi
+      - name: Test CLI with incompatible worker protocol (should succeed)
+        env:
+          DURABLE_WORKFLOW_SERVER_URL: http://localhost:8080
+          DURABLE_WORKFLOW_AUTH_TOKEN: test-token-123
+          DURABLE_WORKFLOW_NAMESPACE: default
+        run: |
+          dw server:info || exit 1
+          echo "✅ CLI ignored worker-protocol-only incompatibility"
 
-      - name: Test Python SDK with incompatible server (should fail with clear error)
+      - name: Test Python SDK with incompatible worker protocol (should fail with clear error)
         run: |
           cat > /tmp/test_worker_incompatible.py << 'EOF'
           import asyncio
@@ -208,27 +274,25 @@ jobs:
                   worker_id="test-worker-incompat",
               )
 
-              # This should fail because server is 3.0.0
               try:
                   await worker._register()
-                  print("❌ ERROR: Worker registration should have failed with incompatible server")
-                  await client.close()
+                  print("❌ ERROR: Worker registration should have failed with incompatible worker protocol")
+                  await client.aclose()
                   exit(1)
               except RuntimeError as e:
                   error_msg = str(e)
                   print(f"Worker registration error: {error_msg}")
 
-                  # Check for expected error message
-                  if "incompatible" in error_msg and "sdk-python 0.1.x" in error_msg and "server 2.x" in error_msg:
-                      print("✅ Python SDK failed with correct error message")
+                  if "unsupported worker_protocol.version" in error_msg and "sdk-python 0.2.x" in error_msg:
+                      print("✅ Python SDK failed with correct worker protocol error message")
                   else:
-                      print(f"❌ ERROR: Python SDK error message doesn't match expected format")
-                      print(f"Expected: 'incompatible', 'sdk-python 0.1.x', 'server 2.x'")
+                      print("❌ ERROR: Python SDK error message doesn't match expected format")
+                      print("Expected: 'unsupported worker_protocol.version' and 'sdk-python 0.2.x'")
                       print(f"Got: {error_msg}")
-                      await client.close()
+                      await client.aclose()
                       exit(1)
               finally:
-                  await client.close()
+                  await client.aclose()
 
           asyncio.run(main())
           EOF
@@ -237,7 +301,7 @@ jobs:
       - name: Stop server
         run: docker compose down -v
 
-      # Test 3: Missing version (should skip validation)
+      # Test 4: Unknown top-level version remains informational.
       - name: Create docker-compose override with no version
         run: |
           cat > docker-compose.override.yml << 'EOF'
@@ -251,6 +315,9 @@ jobs:
             worker:
               environment:
                 APP_VERSION: "unknown"
+            scheduler:
+              environment:
+                APP_VERSION: "unknown"
           EOF
 
       - name: Start server (version unknown)
@@ -261,17 +328,16 @@ jobs:
           docker compose up -d --wait
           sleep 5
 
-      - name: Test CLI with unparseable version (should skip validation)
+      - name: Test CLI with unknown top-level version (should succeed)
         env:
           DURABLE_WORKFLOW_SERVER_URL: http://localhost:8080
           DURABLE_WORKFLOW_AUTH_TOKEN: test-token-123
           DURABLE_WORKFLOW_NAMESPACE: default
         run: |
-          # CLI should skip validation and connect successfully
           dw server:info || exit 1
-          echo "✅ CLI skipped validation for unparseable version"
+          echo "✅ CLI accepted compatible protocol manifests despite APP_VERSION=unknown"
 
-      - name: Test Python SDK with unparseable version (should skip validation)
+      - name: Test Python SDK with unknown top-level version (should succeed)
         run: |
           cat > /tmp/test_worker_unknown.py << 'EOF'
           import asyncio
@@ -297,12 +363,12 @@ jobs:
                   worker_id="test-worker-unknown",
               )
 
-              # Should succeed because validation is skipped for unparseable versions
+              # Should succeed because protocol manifests are valid.
               try:
                   await worker._register()
-                  print("✅ Python SDK skipped validation for unparseable version")
+                  print("✅ Python SDK accepted compatible protocol manifests despite APP_VERSION=unknown")
               finally:
-                  await client.close()
+                  await client.aclose()
 
           asyncio.run(main())
           EOF
