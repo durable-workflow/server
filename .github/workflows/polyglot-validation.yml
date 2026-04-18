@@ -55,7 +55,7 @@ jobs:
           composer init --name=test/polyglot-php --no-interaction
           composer config minimum-stability dev
           composer config prefer-stable true
-          composer require durable-workflow/workflow:dev-v2
+          composer require durable-workflow/workflow:v2.x-dev
 
       - name: Copy PHP worker script
         run: |

@@ -42,7 +42,7 @@ jobs:
           curl -f http://localhost:8080/api/health || exit 1
 
           # Verify version endpoint returns 2.0.0
-          VERSION=$(curl -s http://localhost:8080/api/cluster/info | jq -r '.version')
+          VERSION=$(curl -fsS -H "Authorization: Bearer ${WORKFLOW_SERVER_AUTH_TOKEN}" http://localhost:8080/api/cluster/info | jq -r '.version')
           echo "Server version: $VERSION"
           if [ "$VERSION" != "2.0.0" ]; then
             echo "ERROR: Expected version 2.0.0, got $VERSION"
@@ -144,7 +144,7 @@ jobs:
           sleep 5
 
           # Verify server reports version 3.0.0
-          VERSION=$(curl -s http://localhost:8080/api/cluster/info | jq -r '.version')
+          VERSION=$(curl -fsS -H "Authorization: Bearer ${WORKFLOW_SERVER_AUTH_TOKEN}" http://localhost:8080/api/cluster/info | jq -r '.version')
           echo "Server version: $VERSION"
           if [ "$VERSION" != "3.0.0" ]; then
             echo "ERROR: Expected version 3.0.0, got $VERSION"
