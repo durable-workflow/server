@@ -47,6 +47,7 @@ return Application::configure(basePath: dirname(__DIR__))
 
             return ControlPlaneProtocol::jsonForRequest($request, [
                 'message' => $exception->getMessage(),
+                'reason' => 'validation_failed',
                 'errors' => $exception->errors(),
                 'validation_errors' => $exception->errors(),
             ], 422);

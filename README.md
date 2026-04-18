@@ -313,6 +313,12 @@ The v2 canonical workflow command fields are
 `workflow_id`, `command_status`, `outcome`, plus `signal_name`, `query_name`,
 or `update_name` where applicable and, for updates, `wait_for`,
 `wait_timed_out`, and `wait_timeout_seconds`.
+Validation failures return HTTP 422 with `reason: validation_failed` plus both
+`errors` and `validation_errors`; workflow operation routes also project that
+reason and validation detail into the nested `control_plane` metadata. Current
+run-targeted command routes project the URL `run_id` in the response and
+`control_plane.run_id` so clients can distinguish instance-level commands from
+explicit selected-run commands.
 
 Only `GET /api/health` and `GET /api/cluster/info` are exempt — those two
 endpoints are intentionally version-free so clients can probe liveness and

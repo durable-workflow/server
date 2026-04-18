@@ -189,12 +189,27 @@ class ControlPlaneWorkflowSuccessContractTest extends TestCase
             ->assertJsonPath('result.approved', true)
             ->assertJsonMissingPath('update');
 
+        $runTargetedQuery = $this->postJson(
+            "/api/workflows/wf-contract-commands/runs/{$interactiveRunId}/query/currentState",
+            [],
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $this->assertControlPlaneSuccess($runTargetedQuery, 200, 'query', 'currentState');
+        $runTargetedQuery->assertJsonPath('workflow_id', 'wf-contract-commands')
+            ->assertJsonPath('run_id', $interactiveRunId)
+            ->assertJsonPath('control_plane.run_id', $interactiveRunId)
+            ->assertJsonPath('query_name', 'currentState')
+            ->assertJsonPath('result.approved', true);
+
         $runTargetedSignal = $this->postJson("/api/workflows/wf-contract-commands/runs/{$interactiveRunId}/signal/finish", [
             'request_id' => 'finish-contract-1',
         ], $this->controlPlaneHeadersWithWorkerProtocol());
 
         $this->assertControlPlaneSuccess($runTargetedSignal, 202, 'signal', 'finish');
         $runTargetedSignal->assertJsonPath('workflow_id', 'wf-contract-commands')
+            ->assertJsonPath('run_id', $interactiveRunId)
+            ->assertJsonPath('control_plane.run_id', $interactiveRunId)
             ->assertJsonPath('signal_name', 'finish')
             ->assertJsonPath('outcome', 'signal_received');
 

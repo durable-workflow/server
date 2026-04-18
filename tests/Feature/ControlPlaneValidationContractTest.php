@@ -133,6 +133,7 @@ class ControlPlaneValidationContractTest extends TestCase
             ->assertHeaderMissing(WorkerProtocol::HEADER)
             ->assertJsonMissingPath('protocol_version')
             ->assertJsonMissingPath('server_capabilities')
+            ->assertJsonPath('reason', 'validation_failed')
             ->assertJsonPath(
                 "errors.{$errorField}.0",
                 static fn (mixed $message): bool => is_string($message) && $message !== '',
@@ -151,6 +152,7 @@ class ControlPlaneValidationContractTest extends TestCase
         $response->assertJsonPath('control_plane.schema', 'durable-workflow.v2.control-plane-response')
             ->assertJsonPath('control_plane.version', 1)
             ->assertJsonPath('control_plane.operation', $controlOperation)
+            ->assertJsonPath('control_plane.reason', 'validation_failed')
             ->assertJsonPath('control_plane.contract.schema', 'durable-workflow.v2.control-plane-response.contract')
             ->assertJsonPath('control_plane.validation_errors.'.$errorField.'.0', fn (mixed $message): bool => is_string($message) && $message !== '');
     }

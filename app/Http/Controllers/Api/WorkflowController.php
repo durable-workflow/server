@@ -336,7 +336,12 @@ class WorkflowController
             ],
         );
 
-        return $this->resultMapper->signal($workflowId, $signalName, $result);
+        return $this->resultMapper->signal(
+            $workflowId,
+            $signalName,
+            $result,
+            $this->controlPlaneRunId($request),
+        );
     }
 
     public function query(Request $request, string $workflowId, string $queryName): JsonResponse
@@ -375,7 +380,12 @@ class WorkflowController
             ],
         );
 
-        return $this->resultMapper->query($workflowId, $queryName, $result);
+        return $this->resultMapper->query(
+            $workflowId,
+            $queryName,
+            $result,
+            $this->controlPlaneRunId($request),
+        );
     }
 
     public function update(Request $request, string $workflowId, string $updateName): JsonResponse
@@ -428,6 +438,7 @@ class WorkflowController
             updateName: $updateName,
             waitFor: $validated['wait_for'] ?? 'accepted',
             result: $result,
+            runId: $this->controlPlaneRunId($request),
         );
     }
 
@@ -468,7 +479,11 @@ class WorkflowController
             ],
         );
 
-        return $this->resultMapper->cancel($workflowId, $result);
+        return $this->resultMapper->cancel(
+            $workflowId,
+            $result,
+            $this->controlPlaneRunId($request),
+        );
     }
 
     public function terminate(Request $request, string $workflowId): JsonResponse
@@ -508,7 +523,11 @@ class WorkflowController
             ],
         );
 
-        return $this->resultMapper->terminate($workflowId, $result);
+        return $this->resultMapper->terminate(
+            $workflowId,
+            $result,
+            $this->controlPlaneRunId($request),
+        );
     }
 
     public function repair(Request $request, string $workflowId): JsonResponse
@@ -677,7 +696,13 @@ class WorkflowController
             );
         }
 
-        return $handler();
+        $request->attributes->set('control_plane_run_id', $runId);
+
+        try {
+            return $handler();
+        } finally {
+            $request->attributes->remove('control_plane_run_id');
+        }
     }
 
     /**
@@ -753,6 +778,15 @@ class WorkflowController
     private function encodePageToken(int $offset): string
     {
         return base64_encode((string) $offset);
+    }
+
+    private function controlPlaneRunId(Request $request): ?string
+    {
+        $runId = $request->attributes->get('control_plane_run_id');
+
+        return is_string($runId) && trim($runId) !== ''
+            ? $runId
+            : null;
     }
 
     private function runNotFound(Request $request, string $workflowId, string $runId): JsonResponse

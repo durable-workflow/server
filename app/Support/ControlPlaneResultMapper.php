@@ -9,12 +9,13 @@ final class ControlPlaneResultMapper
     /**
      * @param  array<string, mixed>  $result
      */
-    public function signal(string $workflowId, string $signalName, array $result): JsonResponse
+    public function signal(string $workflowId, string $signalName, array $result, ?string $runId = null): JsonResponse
     {
         return $this->commandResponse(
             operation: 'signal',
             operationName: $signalName,
             workflowId: $workflowId,
+            runId: $runId,
             result: $result,
             defaultStatus: 202,
             fallbackFields: [
@@ -27,12 +28,13 @@ final class ControlPlaneResultMapper
     /**
      * @param  array<string, mixed>  $result
      */
-    public function query(string $workflowId, string $queryName, array $result): JsonResponse
+    public function query(string $workflowId, string $queryName, array $result, ?string $runId = null): JsonResponse
     {
         return $this->commandResponse(
             operation: 'query',
             operationName: $queryName,
             workflowId: $workflowId,
+            runId: $runId,
             result: $result,
             defaultStatus: 200,
             fallbackFields: [
@@ -50,6 +52,7 @@ final class ControlPlaneResultMapper
         string $updateName,
         ?string $waitFor,
         array $result,
+        ?string $runId = null,
     ): JsonResponse {
         $fallbackFields = [
             'update_name' => $updateName,
@@ -63,6 +66,7 @@ final class ControlPlaneResultMapper
             operation: 'update',
             operationName: $updateName,
             workflowId: $workflowId,
+            runId: $runId,
             result: $result,
             defaultStatus: 200,
             fallbackFields: $fallbackFields,
@@ -73,12 +77,13 @@ final class ControlPlaneResultMapper
     /**
      * @param  array<string, mixed>  $result
      */
-    public function cancel(string $workflowId, array $result): JsonResponse
+    public function cancel(string $workflowId, array $result, ?string $runId = null): JsonResponse
     {
         return $this->commandResponse(
             operation: 'cancel',
             operationName: null,
             workflowId: $workflowId,
+            runId: $runId,
             result: $result,
             defaultStatus: 200,
             fallbackFields: [],
@@ -89,12 +94,13 @@ final class ControlPlaneResultMapper
     /**
      * @param  array<string, mixed>  $result
      */
-    public function terminate(string $workflowId, array $result): JsonResponse
+    public function terminate(string $workflowId, array $result, ?string $runId = null): JsonResponse
     {
         return $this->commandResponse(
             operation: 'terminate',
             operationName: null,
             workflowId: $workflowId,
+            runId: $runId,
             result: $result,
             defaultStatus: 200,
             fallbackFields: [],
@@ -111,6 +117,7 @@ final class ControlPlaneResultMapper
             operation: 'repair',
             operationName: null,
             workflowId: $workflowId,
+            runId: null,
             result: $result,
             defaultStatus: 200,
             fallbackFields: [],
@@ -127,6 +134,7 @@ final class ControlPlaneResultMapper
             operation: 'archive',
             operationName: null,
             workflowId: $workflowId,
+            runId: null,
             result: $result,
             defaultStatus: 200,
             fallbackFields: [],
@@ -142,6 +150,7 @@ final class ControlPlaneResultMapper
         string $operation,
         ?string $operationName,
         string $workflowId,
+        ?string $runId,
         array $result,
         int $defaultStatus,
         array $fallbackFields,
@@ -152,11 +161,12 @@ final class ControlPlaneResultMapper
                 ControlPlaneResponseContract::attach(
                     operation: $operation,
                     operationName: $operationName,
-                    payload: [
+                    payload: array_filter([
                         'message' => 'Workflow not found.',
                         'workflow_id' => $workflowId,
+                        'run_id' => $runId,
                         'reason' => 'instance_not_found',
-                    ],
+                    ], static fn (mixed $value): bool => $value !== null),
                 ),
                 404,
             );
@@ -167,6 +177,7 @@ final class ControlPlaneResultMapper
             result: $result,
             fallbackFields: $fallbackFields,
             projectCommandReason: $projectCommandReason,
+            runId: $runId,
         );
 
         return ControlPlaneProtocol::json(
@@ -189,6 +200,7 @@ final class ControlPlaneResultMapper
         array $result,
         array $fallbackFields,
         bool $projectCommandReason,
+        ?string $runId,
     ): array {
         $payload = $result;
 
@@ -210,6 +222,10 @@ final class ControlPlaneResultMapper
         );
 
         $payload['workflow_id'] = $this->stringValue($payload['workflow_id'] ?? null) ?? $workflowId;
+
+        if ($this->stringValue($payload['run_id'] ?? null) === null && $runId !== null) {
+            $payload['run_id'] = $runId;
+        }
 
         foreach ($fallbackFields as $field => $value) {
             if ($this->stringValue($payload[$field] ?? null) === null) {
