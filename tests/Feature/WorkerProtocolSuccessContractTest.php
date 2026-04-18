@@ -16,6 +16,8 @@ use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\WorkflowStub;
 
@@ -351,6 +353,113 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $eventTypes = array_column((array) $poll->json('task.history_events'), 'event_type');
 
         $this->assertContains('UpdateAccepted', $eventTypes);
+    }
+
+    public function test_update_backed_workflow_task_complete_can_close_accepted_update(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.interactive-command-workflow' => InteractiveCommandWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-update-complete-contract',
+            'workflow_type' => 'tests.interactive-command-workflow',
+            'task_queue' => 'contract-queue',
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $signal = $this->postJson('/api/workflows/wf-worker-update-complete-contract/signal/advance', [
+            'input' => ['Ada'],
+            'request_id' => 'signal-update-complete-1',
+        ], $this->apiHeaders());
+
+        $signal->assertAccepted();
+
+        $this->runReadyWorkflowTask($runId);
+
+        $update = $this->postJson('/api/workflows/wf-worker-update-complete-contract/update/approve', [
+            'input' => [true, 'worker-complete'],
+            'request_id' => 'update-complete-1',
+            'wait_for' => 'accepted',
+        ], $this->apiHeaders());
+
+        $update->assertAccepted()
+            ->assertJsonPath('update_status', 'accepted');
+
+        $updateId = (string) $update->json('update_id');
+        $resultBlob = Serializer::serializeWithCodec('avro', [
+            'approved' => true,
+            'source' => 'worker-complete',
+        ]);
+
+        $this->registerWorker(
+            workerId: 'worker-update-complete-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.interactive-command-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-update-complete-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_update_id', $updateId);
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-update-complete-contract',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [
+                [
+                    'type' => 'complete_update',
+                    'update_id' => $updateId,
+                    'result' => [
+                        'codec' => 'avro',
+                        'blob' => $resultBlob,
+                    ],
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('run_status', 'waiting')
+            ->assertJsonPath('created_task_ids', []);
+
+        /** @var WorkflowUpdate $closedUpdate */
+        $closedUpdate = WorkflowUpdate::query()->findOrFail($updateId);
+
+        $this->assertSame('completed', $closedUpdate->status->value);
+        $this->assertSame('update_completed', $closedUpdate->outcome->value);
+        $this->assertSame($resultBlob, $closedUpdate->result);
+        $this->assertNotNull($closedUpdate->closed_at);
+
+        $events = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->whereIn('event_type', ['UpdateAccepted', 'UpdateApplied', 'UpdateCompleted'])
+            ->orderBy('sequence')
+            ->get();
+
+        $this->assertCount(3, $events);
+        $this->assertSame('UpdateAccepted', $events[0]->event_type->value);
+        $this->assertSame('UpdateApplied', $events[1]->event_type->value);
+        $this->assertSame('UpdateCompleted', $events[2]->event_type->value);
+        $this->assertSame($updateId, $events[2]->payload['update_id']);
+        $this->assertSame($resultBlob, $events[2]->payload['result']);
     }
 
     public function test_continue_as_new_completion_uses_worker_protocol_contract(): void

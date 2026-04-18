@@ -395,9 +395,13 @@ requires a protocol version bump.
 Workflow task polling returns a leased task plus `workflow_task_attempt`. Clients
 must echo both `workflow_task_attempt` and `lease_owner` on workflow-task
 `heartbeat`, `complete`, and `fail` calls. Workflow-task completion supports
-non-terminal commands such as `schedule_activity`, `start_timer`, and
-`start_child_workflow`, plus terminal `complete_workflow`, `fail_workflow`,
-and `continue_as_new` commands. Poll responses also expose stable resume
+non-terminal commands such as `schedule_activity`, `start_timer`,
+`start_child_workflow`, `complete_update`, and `fail_update`, plus terminal
+`complete_workflow`, `fail_workflow`, and `continue_as_new` commands. Workers
+use `complete_update` with `update_id` and an optional codec-tagged `result`
+after applying an accepted update, or `fail_update` with `update_id`,
+`message`, and optional exception metadata when the update handler fails. Poll
+responses also expose stable resume
 context fields from the durable task payload: `workflow_wait_kind`,
 `open_wait_id`, `resume_source_kind`, `resume_source_id`,
 `workflow_update_id`, `workflow_signal_id`, `workflow_command_id`,

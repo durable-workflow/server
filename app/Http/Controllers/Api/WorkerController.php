@@ -348,6 +348,7 @@ class WorkerController
             'commands.*.workflow_type' => ['nullable', 'string'],
             'commands.*.delay_seconds' => ['nullable', 'integer', 'min:0'],
             'commands.*.message' => ['nullable', 'string'],
+            'commands.*.update_id' => ['nullable', 'string'],
             'commands.*.exception_class' => ['nullable', 'string'],
             'commands.*.exception_type' => ['nullable', 'string'],
             'commands.*.change_id' => ['nullable', 'string'],
