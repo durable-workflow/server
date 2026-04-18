@@ -885,6 +885,8 @@ final class WorkflowTaskPoller
             'resume_source_id' => null,
             'workflow_update_id' => null,
             'workflow_signal_id' => null,
+            'signal_name' => null,
+            'signal_wait_id' => null,
             'workflow_command_id' => null,
             'activity_execution_id' => null,
             'activity_attempt_id' => null,
