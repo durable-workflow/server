@@ -18,6 +18,7 @@
         </include>
     </source>
     <php>
+        <ini name="memory_limit" value="-1"/>
         <env name="APP_ENV" value="testing"/>
         <env name="APP_KEY" value="base64:dGVzdGluZy10ZXN0aW5nLXRlc3RpbmctdGVzdGluZzEyMzQ1Ng=="/>
         <env name="CACHE_STORE" value="array"/>
