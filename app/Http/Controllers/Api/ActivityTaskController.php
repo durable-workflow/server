@@ -125,15 +125,16 @@ class ActivityTaskController
             $resolved['payload'],
             $resolved['codec'],
         );
+        $stopStatus = $this->activityStopStatus($bridge, $validated['activity_attempt_id'], $outcome['reason']);
 
-        return WorkerProtocol::json([
+        return WorkerProtocol::json(array_merge([
             'task_id' => $taskId,
             'activity_attempt_id' => $validated['activity_attempt_id'],
-            'outcome' => 'completed',
+            'outcome' => $this->activityOutcomeName('completed', $outcome['reason']),
             'recorded' => $outcome['recorded'],
             'reason' => $outcome['reason'],
             'next_task_id' => $outcome['next_task_id'],
-        ], $this->outcomeStatus($outcome['reason']));
+        ], $stopStatus), $this->outcomeStatus($outcome['reason']));
     }
 
     /**
@@ -184,15 +185,16 @@ class ActivityTaskController
         }
 
         $outcome = $bridge->fail($validated['activity_attempt_id'], $failure, $resolved['codec']);
+        $stopStatus = $this->activityStopStatus($bridge, $validated['activity_attempt_id'], $outcome['reason']);
 
-        return WorkerProtocol::json([
+        return WorkerProtocol::json(array_merge([
             'task_id' => $taskId,
             'activity_attempt_id' => $validated['activity_attempt_id'],
-            'outcome' => 'failed',
+            'outcome' => $this->activityOutcomeName('failed', $outcome['reason']),
             'recorded' => $outcome['recorded'],
             'reason' => $outcome['reason'],
             'next_task_id' => $outcome['next_task_id'],
-        ], $this->outcomeStatus($outcome['reason']));
+        ], $stopStatus), $this->outcomeStatus($outcome['reason']));
     }
 
     /**
@@ -383,6 +385,40 @@ class ActivityTaskController
             'attempt_not_found' => 404,
             default => 409,
         };
+    }
+
+    private function activityOutcomeName(string $default, ?string $reason): string
+    {
+        return in_array($reason, ['run_cancelled', 'run_terminated'], true)
+            ? 'ignored'
+            : $default;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function activityStopStatus(
+        ActivityTaskBridgeContract $bridge,
+        string $attemptId,
+        ?string $reason,
+    ): array {
+        if (! in_array($reason, ['run_cancelled', 'run_terminated'], true)) {
+            return [];
+        }
+
+        $status = $bridge->status($attemptId);
+
+        return [
+            'error' => 'Activity outcome ignored because the workflow run is already closed.',
+            'cancel_requested' => $status['cancel_requested'],
+            'can_continue' => $status['can_continue'],
+            'run_status' => $status['run_status'],
+            'activity_status' => $status['activity_status'],
+            'attempt_status' => $status['attempt_status'],
+            'task_status' => $status['task_status'],
+            'lease_owner' => $status['lease_owner'],
+            'lease_expires_at' => $status['lease_expires_at'],
+        ];
     }
 
     /**

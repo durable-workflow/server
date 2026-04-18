@@ -381,6 +381,74 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('heartbeat_recorded', false);
     }
 
+    public function test_leased_activity_task_complete_reports_ignored_after_run_cancellation(): void
+    {
+        $claim = $this->leaseExternalGreetingActivity(
+            workflowId: 'wf-activity-complete-cancelled-contract',
+            workerId: 'activity-worker-complete-cancelled',
+        );
+
+        $controlPlane = $this->postJson('/api/workflows/wf-activity-complete-cancelled-contract/cancel', [
+            'reason' => 'operator cancel',
+        ], $this->apiHeaders());
+
+        $controlPlane->assertOk()
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('workflow_id', 'wf-activity-complete-cancelled-contract')
+            ->assertJsonPath('outcome', 'cancelled');
+
+        $complete = $this->postJson("/api/worker/activity-tasks/{$claim['task_id']}/complete", [
+            'activity_attempt_id' => $claim['activity_attempt_id'],
+            'lease_owner' => $claim['lease_owner'],
+            'result' => Serializer::serializeWithCodec('json', 'too late'),
+        ], $this->workerProtocolHeaders());
+
+        $this->assertTerminalActivityOutcome(
+            $complete,
+            'run_cancelled',
+            'cancelled',
+            $claim['task_id'],
+            $claim['activity_attempt_id'],
+            $claim['lease_owner'],
+        );
+    }
+
+    public function test_leased_activity_task_fail_reports_ignored_after_run_termination(): void
+    {
+        $claim = $this->leaseExternalGreetingActivity(
+            workflowId: 'wf-activity-fail-terminated-contract',
+            workerId: 'activity-worker-fail-terminated',
+        );
+
+        $controlPlane = $this->postJson('/api/workflows/wf-activity-fail-terminated-contract/terminate', [
+            'reason' => 'operator terminate',
+        ], $this->apiHeaders());
+
+        $controlPlane->assertOk()
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('workflow_id', 'wf-activity-fail-terminated-contract')
+            ->assertJsonPath('outcome', 'terminated');
+
+        $fail = $this->postJson("/api/worker/activity-tasks/{$claim['task_id']}/fail", [
+            'activity_attempt_id' => $claim['activity_attempt_id'],
+            'lease_owner' => $claim['lease_owner'],
+            'failure' => [
+                'message' => 'too late',
+                'type' => 'ExternalError',
+                'details' => Serializer::serializeWithCodec('json', ['phase' => 'late']),
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertTerminalActivityOutcome(
+            $fail,
+            'run_terminated',
+            'terminated',
+            $claim['task_id'],
+            $claim['activity_attempt_id'],
+            $claim['lease_owner'],
+        );
+    }
+
     /**
      * @return array<string, array{command: string, expectedOutcome: string}>
      */
@@ -620,6 +688,68 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonMissingPath('control_plane');
 
         return $response;
+    }
+
+    /**
+     * @return array{task_id: string, activity_attempt_id: string, lease_owner: string}
+     */
+    private function leaseExternalGreetingActivity(string $workflowId, string $workerId): array
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, $workflowId);
+        $start = $workflow->start('Ada');
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
+
+        $this->runReadyWorkflowTask($start->runId());
+
+        $this->registerWorker(
+            workerId: $workerId,
+            taskQueue: 'external-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+        );
+
+        $poll = $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => 'external-activities',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.lease_owner', $workerId);
+
+        return [
+            'task_id' => (string) $poll->json('task.task_id'),
+            'activity_attempt_id' => (string) $poll->json('task.activity_attempt_id'),
+            'lease_owner' => (string) $poll->json('task.lease_owner'),
+        ];
+    }
+
+    private function assertTerminalActivityOutcome(
+        TestResponse $response,
+        string $reason,
+        string $runStatus,
+        string $taskId,
+        string $attemptId,
+        string $leaseOwner,
+    ): void {
+        $this->assertWorkerProtocolSuccess($response, 409)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('activity_attempt_id', $attemptId)
+            ->assertJsonPath('outcome', 'ignored')
+            ->assertJsonPath('recorded', false)
+            ->assertJsonPath('reason', $reason)
+            ->assertJsonPath('next_task_id', null)
+            ->assertJsonPath('error', 'Activity outcome ignored because the workflow run is already closed.')
+            ->assertJsonPath('cancel_requested', true)
+            ->assertJsonPath('can_continue', false)
+            ->assertJsonPath('run_status', $runStatus)
+            ->assertJsonPath('activity_status', 'cancelled')
+            ->assertJsonPath('attempt_status', 'cancelled')
+            ->assertJsonPath('task_status', 'cancelled')
+            ->assertJsonPath('lease_owner', $leaseOwner)
+            ->assertJsonPath('lease_expires_at', null);
     }
 
     /**
