@@ -13,10 +13,13 @@ use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
+use Workflow\V2\Models\WorkflowChildCall;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -3400,6 +3403,97 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('run_status', 'waiting');
     }
 
+    public function test_start_child_workflow_command_accepts_retry_policy_and_timeouts(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-child-retry-timeouts',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->registerWorker('php-worker-child-retry', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-child-retry',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'start_child_workflow',
+                        'workflow_type' => 'tests.external-child-workflow',
+                        'queue' => 'external-workflows',
+                        'retry_policy' => [
+                            'max_attempts' => 3,
+                            'backoff_seconds' => [2, 8],
+                            'non_retryable_error_types' => ['ValidationError'],
+                        ],
+                        'execution_timeout_seconds' => 600,
+                        'run_timeout_seconds' => 120,
+                    ],
+                ],
+            ]);
+
+        $complete->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'waiting');
+
+        /** @var WorkflowChildCall $childCall */
+        $childCall = WorkflowChildCall::query()
+            ->where('parent_workflow_run_id', $poll->json('task.run_id'))
+            ->where('child_workflow_type', 'tests.external-child-workflow')
+            ->firstOrFail();
+
+        $this->assertSame([
+            'snapshot_version' => 1,
+            'max_attempts' => 3,
+            'backoff_seconds' => [2, 8],
+            'non_retryable_error_types' => ['ValidationError'],
+        ], $childCall->retry_policy);
+        $this->assertSame([
+            'snapshot_version' => 1,
+            'execution_timeout_seconds' => 600,
+            'run_timeout_seconds' => 120,
+        ], $childCall->timeout_policy);
+
+        /** @var WorkflowRun $childRun */
+        $childRun = WorkflowRun::query()->findOrFail($childCall->resolved_child_run_id);
+
+        $this->assertSame(120, $childRun->run_timeout_seconds);
+        $this->assertNotNull($childRun->execution_deadline_at);
+        $this->assertNotNull($childRun->run_deadline_at);
+
+        /** @var WorkflowHistoryEvent $scheduled */
+        $scheduled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $poll->json('task.run_id'))
+            ->where('event_type', HistoryEventType::ChildWorkflowScheduled->value)
+            ->firstOrFail();
+
+        $this->assertSame($childCall->retry_policy, $scheduled->payload['retry_policy']);
+        $this->assertSame($childCall->timeout_policy, $scheduled->payload['timeout_policy']);
+    }
+
     public function test_start_child_workflow_command_rejects_invalid_parent_close_policy(): void
     {
         Queue::fake();
@@ -3730,7 +3824,9 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $response->assertOk()
             ->assertJsonPath('capabilities.parent_close_policy', true)
-            ->assertJsonPath('capabilities.non_retryable_failures', true);
+            ->assertJsonPath('capabilities.non_retryable_failures', true)
+            ->assertJsonPath('capabilities.child_workflow_retry_policy', true)
+            ->assertJsonPath('capabilities.child_workflow_timeouts', true);
     }
 
     private function configureWorkflowTypes(): void

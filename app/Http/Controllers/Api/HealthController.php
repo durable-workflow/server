@@ -58,6 +58,8 @@ class HealthController
             'child_workflows' => true,
             'activity_timeouts' => true,
             'activity_retry_policy' => true,
+            'child_workflow_retry_policy' => true,
+            'child_workflow_timeouts' => true,
             'parent_close_policy' => true,
             'non_retryable_failures' => true,
             'history_retention' => true,

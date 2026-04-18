@@ -320,6 +320,8 @@ class WorkerController
             'commands.*.schedule_to_start_timeout' => ['nullable', 'integer', 'min:1'],
             'commands.*.schedule_to_close_timeout' => ['nullable', 'integer', 'min:1'],
             'commands.*.heartbeat_timeout' => ['nullable', 'integer', 'min:1'],
+            'commands.*.execution_timeout_seconds' => ['nullable', 'integer', 'min:1'],
+            'commands.*.run_timeout_seconds' => ['nullable', 'integer', 'min:1'],
             'commands.*.workflow_type' => ['nullable', 'string'],
             'commands.*.delay_seconds' => ['nullable', 'integer', 'min:0'],
             'commands.*.message' => ['nullable', 'string'],
