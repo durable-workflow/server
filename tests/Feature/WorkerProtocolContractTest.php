@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use App\Support\WorkerProtocol;
@@ -211,6 +212,160 @@ class WorkerProtocolContractTest extends TestCase
     }
 
     /**
+     * @return array<string, array{
+     *     path: string,
+     *     body: array<string, mixed>,
+     *     registration: array<string, mixed>|null,
+     *     status: int,
+     *     reason: string,
+     *     paths: array<string, mixed>
+     * }>
+     */
+    public static function workerPollBusinessErrorProvider(): array
+    {
+        return [
+            'workflow poll unregistered worker' => [
+                'path' => '/api/worker/workflow-tasks/poll',
+                'body' => [
+                    'worker_id' => 'missing-workflow-poller',
+                    'task_queue' => 'contract-queue',
+                ],
+                'registration' => null,
+                'status' => 412,
+                'reason' => 'worker_not_registered',
+                'paths' => [
+                    'worker_id' => 'missing-workflow-poller',
+                ],
+            ],
+            'activity poll unregistered worker' => [
+                'path' => '/api/worker/activity-tasks/poll',
+                'body' => [
+                    'worker_id' => 'missing-activity-poller',
+                    'task_queue' => 'contract-queue',
+                ],
+                'registration' => null,
+                'status' => 412,
+                'reason' => 'worker_not_registered',
+                'paths' => [
+                    'worker_id' => 'missing-activity-poller',
+                ],
+            ],
+            'workflow poll task queue mismatch' => [
+                'path' => '/api/worker/workflow-tasks/poll',
+                'body' => [
+                    'worker_id' => 'workflow-queue-mismatch',
+                    'task_queue' => 'requested-queue',
+                ],
+                'registration' => [
+                    'worker_id' => 'workflow-queue-mismatch',
+                    'task_queue' => 'registered-queue',
+                ],
+                'status' => 409,
+                'reason' => 'task_queue_mismatch',
+                'paths' => [
+                    'worker_id' => 'workflow-queue-mismatch',
+                    'registered_task_queue' => 'registered-queue',
+                    'requested_task_queue' => 'requested-queue',
+                ],
+            ],
+            'activity poll task queue mismatch' => [
+                'path' => '/api/worker/activity-tasks/poll',
+                'body' => [
+                    'worker_id' => 'activity-queue-mismatch',
+                    'task_queue' => 'requested-queue',
+                ],
+                'registration' => [
+                    'worker_id' => 'activity-queue-mismatch',
+                    'task_queue' => 'registered-queue',
+                ],
+                'status' => 409,
+                'reason' => 'task_queue_mismatch',
+                'paths' => [
+                    'worker_id' => 'activity-queue-mismatch',
+                    'registered_task_queue' => 'registered-queue',
+                    'requested_task_queue' => 'requested-queue',
+                ],
+            ],
+            'workflow poll build id mismatch' => [
+                'path' => '/api/worker/workflow-tasks/poll',
+                'body' => [
+                    'worker_id' => 'workflow-build-mismatch',
+                    'task_queue' => 'contract-queue',
+                    'build_id' => 'build-requested',
+                ],
+                'registration' => [
+                    'worker_id' => 'workflow-build-mismatch',
+                    'task_queue' => 'contract-queue',
+                    'build_id' => 'build-registered',
+                ],
+                'status' => 409,
+                'reason' => 'build_id_mismatch',
+                'paths' => [
+                    'worker_id' => 'workflow-build-mismatch',
+                    'registered_build_id' => 'build-registered',
+                    'requested_build_id' => 'build-requested',
+                ],
+            ],
+            'activity poll build id mismatch' => [
+                'path' => '/api/worker/activity-tasks/poll',
+                'body' => [
+                    'worker_id' => 'activity-build-mismatch',
+                    'task_queue' => 'contract-queue',
+                    'build_id' => 'build-requested',
+                ],
+                'registration' => [
+                    'worker_id' => 'activity-build-mismatch',
+                    'task_queue' => 'contract-queue',
+                    'build_id' => 'build-registered',
+                ],
+                'status' => 409,
+                'reason' => 'build_id_mismatch',
+                'paths' => [
+                    'worker_id' => 'activity-build-mismatch',
+                    'registered_build_id' => 'build-registered',
+                    'requested_build_id' => 'build-requested',
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $body
+     * @param  array<string, mixed>|null  $registration
+     * @param  array<string, mixed>  $paths
+     */
+    #[DataProvider('workerPollBusinessErrorProvider')]
+    public function test_worker_poll_business_errors_use_worker_protocol_contract(
+        string $path,
+        array $body,
+        ?array $registration,
+        int $status,
+        string $reason,
+        array $paths,
+    ): void {
+        if ($registration !== null) {
+            $this->createWorkerRegistration($registration);
+        }
+
+        $response = $this->withHeaders($this->workerHeaders() + [
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ])->postJson($path, $body);
+
+        $response->assertStatus($status)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('reason', $reason)
+            ->assertJsonPath('error', static fn (mixed $error): bool => is_string($error) && $error !== '')
+            ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
+            ->assertJsonMissingPath('control_plane');
+
+        foreach ($paths as $jsonPath => $expected) {
+            $response->assertJsonPath($jsonPath, $expected);
+        }
+    }
+
+    /**
      * @return array<string, string>
      */
     private function workerHeaders(string $token = 'worker-token', bool $withAuthorization = true): array
@@ -225,5 +380,22 @@ class WorkerProtocolContractTest extends TestCase
         }
 
         return $headers;
+    }
+
+    /**
+     * @param  array<string, mixed>  $attributes
+     */
+    private function createWorkerRegistration(array $attributes): void
+    {
+        WorkerRegistration::query()->create($attributes + [
+            'namespace' => 'default',
+            'runtime' => 'python',
+            'supported_workflow_types' => [],
+            'supported_activity_types' => [],
+            'max_concurrent_workflow_tasks' => 100,
+            'max_concurrent_activity_tasks' => 100,
+            'last_heartbeat_at' => now(),
+            'status' => 'active',
+        ]);
     }
 }
