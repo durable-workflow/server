@@ -44,7 +44,10 @@ class CompressResponse
 
         $response->setContent($compressed);
         $response->headers->set('Content-Encoding', $encoding);
-        $response->headers->set('Vary', 'Accept-Encoding');
+        $response->setVary(array_values(array_unique(array_merge(
+            $response->getVary(),
+            ['Accept-Encoding'],
+        ))));
         $response->headers->remove('Content-Length');
 
         return $response;

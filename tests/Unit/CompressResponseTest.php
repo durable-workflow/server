@@ -96,6 +96,21 @@ class CompressResponseTest extends TestCase
         $this->assertSame('gzip', $response->headers->get('Content-Encoding'));
     }
 
+    public function test_it_preserves_existing_vary_values_when_compressing(): void
+    {
+        $request = $this->makeRequest('gzip');
+
+        $response = $this->middleware->handle($request, function () {
+            $response = new JsonResponse($this->largePayload());
+            $response->setVary(['Origin']);
+
+            return $response;
+        });
+
+        $this->assertSame('gzip', $response->headers->get('Content-Encoding'));
+        $this->assertSame(['Origin', 'Accept-Encoding'], $response->getVary());
+    }
+
     public function test_it_honors_accept_encoding_quality_values(): void
     {
         $request = $this->makeRequest('gzip;q=0, deflate;q=1');
