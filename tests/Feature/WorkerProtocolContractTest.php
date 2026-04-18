@@ -193,6 +193,23 @@ class WorkerProtocolContractTest extends TestCase
             ->assertJsonMissingPath('control_plane');
     }
 
+    public function test_worker_heartbeat_not_registered_errors_use_worker_protocol_contract(): void
+    {
+        $this->withHeaders($this->workerHeaders() + [
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ])->postJson('/api/worker/heartbeat', [
+            'worker_id' => 'missing-worker',
+        ])->assertNotFound()
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('error', 'Worker not registered.')
+            ->assertJsonPath('reason', 'worker_not_registered')
+            ->assertJsonPath('worker_id', 'missing-worker')
+            ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
+            ->assertJsonMissingPath('control_plane');
+    }
+
     /**
      * @return array<string, string>
      */

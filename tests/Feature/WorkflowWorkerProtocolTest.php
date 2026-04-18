@@ -428,7 +428,9 @@ class WorkflowWorkerProtocolTest extends TestCase
                 'worker_id' => 'php-worker-shared-id',
             ])
             ->assertNotFound()
-            ->assertJsonPath('error', 'Worker not registered.');
+            ->assertJsonPath('error', 'Worker not registered.')
+            ->assertJsonPath('reason', 'worker_not_registered')
+            ->assertJsonPath('worker_id', 'php-worker-shared-id');
     }
 
     public function test_it_scopes_workflow_task_polling_by_namespace(): void

@@ -242,7 +242,9 @@ class WorkerControllerTest extends TestCase
             ]);
 
         $response->assertStatus(404)
-            ->assertJsonPath('error', 'Worker not registered.');
+            ->assertJsonPath('error', 'Worker not registered.')
+            ->assertJsonPath('reason', 'worker_not_registered')
+            ->assertJsonPath('worker_id', 'nonexistent-worker');
     }
 
     public function test_heartbeat_requires_worker_id(): void
@@ -278,7 +280,8 @@ class WorkerControllerTest extends TestCase
             ->postJson('/api/worker/heartbeat', [
                 'worker_id' => 'ns-worker',
             ])
-            ->assertStatus(404);
+            ->assertStatus(404)
+            ->assertJsonPath('reason', 'worker_not_registered');
 
         $this->withHeaders($this->workerHeaders('default'))
             ->postJson('/api/worker/heartbeat', [

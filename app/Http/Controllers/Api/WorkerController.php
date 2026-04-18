@@ -110,7 +110,11 @@ class WorkerController
             ->first();
 
         if (! $worker) {
-            return WorkerProtocol::json(['error' => 'Worker not registered.'], 404);
+            return WorkerProtocol::json([
+                'error' => 'Worker not registered.',
+                'reason' => 'worker_not_registered',
+                'worker_id' => $validated['worker_id'],
+            ], 404);
         }
 
         $worker->update([
