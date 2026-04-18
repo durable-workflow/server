@@ -411,12 +411,16 @@ responses also expose stable resume
 context fields from the durable task payload: `workflow_wait_kind`,
 `open_wait_id`, `resume_source_kind`, `resume_source_id`,
 `workflow_update_id`, `workflow_signal_id`, `workflow_command_id`,
+`activity_execution_id`, `activity_attempt_id`, `activity_type`,
 `child_call_id`, `child_workflow_run_id`, `workflow_sequence`,
 `workflow_event_type`, `timer_id`, and `condition_wait_id`. Fields that do not
 apply to the leased task are `null`; update-backed tasks set
 `workflow_wait_kind: "update"` and `workflow_update_id` so SDK workers can tie
-the task to the accepted update they are applying. If a cancel or terminate
-command closes the run while a workflow task is leased, the next workflow-task
+the task to the accepted update they are applying, while activity-backed resume
+tasks set `workflow_wait_kind: "activity"` and `activity_execution_id` so
+workers can apply completed or failed activity history without scanning the full
+event stream. If a cancel or terminate command closes the run while a workflow
+task is leased, the next workflow-task
 `history`, `heartbeat`, `complete`, or `fail` response returns the worker
 envelope with `reason: "run_closed"`, `can_continue: false`,
 `cancel_requested: true`, and a concrete `stop_reason` such as `run_cancelled`

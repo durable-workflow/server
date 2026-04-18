@@ -959,6 +959,11 @@ class WorkerProtocolSuccessContractTest extends TestCase
             taskQueue: 'contract-activities',
             supportedActivityTypes: ['tests.external-greeting-activity'],
         );
+        $this->registerWorker(
+            workerId: 'worker-activity-resume-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
 
         $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
             'worker_id' => 'worker-activity-scheduler-contract',
@@ -1038,6 +1043,57 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ),
         );
 
+        $activityTaskId = (string) $activityPoll->json('task.task_id');
+        $activityAttemptId = (string) $activityPoll->json('task.activity_attempt_id');
+        $activityExecutionId = (string) $activityPoll->json('task.activity_execution_id');
+
+        $completeActivity = $this->postJson("/api/worker/activity-tasks/{$activityTaskId}/complete", [
+            'activity_attempt_id' => $activityAttemptId,
+            'lease_owner' => 'activity-worker-scheduled-contract',
+            'result' => Serializer::serializeWithCodec('avro', 'Hello, Ada!'),
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($completeActivity)
+            ->assertJsonPath('task_id', $activityTaskId)
+            ->assertJsonPath('activity_attempt_id', $activityAttemptId)
+            ->assertJsonPath('outcome', 'completed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('reason', null);
+
+        $this->assertIsString($completeActivity->json('next_task_id'));
+
+        $resumePoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-activity-resume-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($resumePoll)
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow')
+            ->assertJsonPath('task.lease_owner', 'worker-activity-resume-contract')
+            ->assertJsonPath('task.workflow_wait_kind', 'activity')
+            ->assertJsonPath('task.open_wait_id', "activity:{$activityExecutionId}")
+            ->assertJsonPath('task.resume_source_kind', 'activity_execution')
+            ->assertJsonPath('task.resume_source_id', $activityExecutionId)
+            ->assertJsonPath('task.activity_execution_id', $activityExecutionId)
+            ->assertJsonPath('task.activity_attempt_id', $activityAttemptId)
+            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity')
+            ->assertJsonPath('task.workflow_event_type', 'ActivityCompleted');
+
+        $resumeEvents = collect((array) $resumePoll->json('task.history_events'));
+        $resumeEventTypes = $resumeEvents->pluck('event_type')->all();
+
+        $this->assertContains('ActivityCompleted', $resumeEventTypes);
+
+        $activityCompleted = $resumeEvents->firstWhere('event_type', 'ActivityCompleted');
+
+        $this->assertIsArray($activityCompleted);
+        $this->assertSame(
+            $activityCompleted['payload']['sequence'] ?? null,
+            $resumePoll->json('task.workflow_sequence'),
+        );
+
         $history = $this->getJson(
             "/api/workflows/{$workflowId}/runs/{$runId}/history",
             $this->controlPlaneHeadersWithWorkerProtocol(),
@@ -1051,6 +1107,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
 
         $this->assertContains('ActivityScheduled', $eventTypes);
         $this->assertContains('ActivityStarted', $eventTypes);
+        $this->assertContains('ActivityCompleted', $eventTypes);
     }
 
     public function test_start_timer_completion_uses_worker_protocol_contract(): void
