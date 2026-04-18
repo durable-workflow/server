@@ -597,7 +597,9 @@ class ActivityWorkerProtocolTest extends TestCase
                 $mock->shouldReceive('fail')
                     ->once()
                     ->withArgs(function (string $attemptId, array $failure, ?string $codec) {
-                        return $codec === 'json';
+                        return $codec === 'json'
+                            && ($failure['details'] ?? null) === '{"retry_after":30}'
+                            && ($failure['details_payload_codec'] ?? null) === 'json';
                     })
                     ->andReturn([
                         'recorded' => true,

@@ -173,7 +173,17 @@ class ActivityTaskController
             $validated['failure']['details'] ?? null,
             'failure.details',
         );
-        $outcome = $bridge->fail($validated['activity_attempt_id'], $validated['failure'], $resolved['codec']);
+        $failure = $validated['failure'];
+
+        if (array_key_exists('details', $failure)) {
+            $failure['details'] = $resolved['payload'];
+
+            if ($resolved['codec'] !== null) {
+                $failure['details_payload_codec'] = $resolved['codec'];
+            }
+        }
+
+        $outcome = $bridge->fail($validated['activity_attempt_id'], $failure, $resolved['codec']);
 
         return WorkerProtocol::json([
             'task_id' => $taskId,
