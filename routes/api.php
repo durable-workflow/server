@@ -12,7 +12,10 @@ use App\Http\Controllers\Api\WorkerController;
 use App\Http\Controllers\Api\WorkerManagementController;
 use App\Http\Controllers\Api\WorkflowController;
 use App\Http\Middleware\Authenticate;
+use App\Http\Middleware\ControlPlaneVersionResolver;
+use App\Http\Middleware\NamespaceResolver;
 use App\Http\Middleware\RequireRole;
+use App\Http\Middleware\WorkerProtocolVersionResolver;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -38,13 +41,17 @@ Route::get('/health', [HealthController::class, 'check']);
 // namespace does not exist (TD-S050). /api/cluster/info is deliberately
 // omitted — it is the version-advertising endpoint and must remain callable
 // without the header.
+//
+// WorkerProtocolVersionResolver follows the same ordering for worker-plane
+// routes, keeping protocol skew and namespace errors in the worker envelope.
 Route::middleware([Authenticate::class])->group(function () {
     $admin = RequireRole::class.':admin';
     $operator = RequireRole::class.':operator,admin';
     $worker = RequireRole::class.':worker';
     $authenticated = RequireRole::class.':worker,operator,admin';
-    $ns = \App\Http\Middleware\NamespaceResolver::class;
-    $cpv = \App\Http\Middleware\ControlPlaneVersionResolver::class;
+    $ns = NamespaceResolver::class;
+    $cpv = ControlPlaneVersionResolver::class;
+    $wpv = WorkerProtocolVersionResolver::class;
 
     // ── System ───────────────────────────────────────────────────────
     Route::get('/cluster/info', [HealthController::class, 'clusterInfo'])->middleware([$authenticated, $ns]);
@@ -87,7 +94,7 @@ Route::middleware([Authenticate::class])->group(function () {
     });
 
     // ── Worker Task Polling ──────────────────────────────────────────
-    Route::prefix('worker')->middleware([$worker, $ns])->group(function () {
+    Route::prefix('worker')->middleware([$worker, $wpv, $ns])->group(function () {
         // Registration
         Route::post('/register', [WorkerController::class, 'register']);
         Route::post('/heartbeat', [WorkerController::class, 'heartbeat']);

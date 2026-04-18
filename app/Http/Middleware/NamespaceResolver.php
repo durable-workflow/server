@@ -4,6 +4,7 @@ namespace App\Http\Middleware;
 
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
+use App\Support\WorkerProtocol;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -26,12 +27,18 @@ class NamespaceResolver
         }
 
         if (! WorkflowNamespace::query()->where('name', $namespace)->exists()) {
-            return ControlPlaneProtocol::jsonForRequest($request, [
+            $payload = [
                 'message' => "Namespace '{$namespace}' does not exist.",
                 'reason' => 'namespace_not_found',
                 'namespace' => $namespace,
                 'remediation' => 'Register the namespace via POST /api/namespaces, or send an X-Namespace header naming an existing namespace.',
-            ], 404);
+            ];
+
+            if (WorkerProtocol::isWorkerPlaneRequest($request)) {
+                return WorkerProtocol::json($payload, 404);
+            }
+
+            return ControlPlaneProtocol::jsonForRequest($request, $payload, 404);
         }
 
         return $next($request);
