@@ -77,6 +77,41 @@ class ControlPlaneValidationContractTest extends TestCase
                 'errorField' => 'name',
                 'controlOperation' => null,
             ],
+            'system.repair_pass' => [
+                'method' => 'post',
+                'path' => '/api/system/repair/pass',
+                'body' => ['run_ids' => 'run-1'],
+                'errorField' => 'run_ids',
+                'controlOperation' => null,
+            ],
+            'system.activity_timeout_status' => [
+                'method' => 'get',
+                'path' => '/api/system/activity-timeouts?limit=0',
+                'body' => [],
+                'errorField' => 'limit',
+                'controlOperation' => null,
+            ],
+            'system.activity_timeout_pass' => [
+                'method' => 'post',
+                'path' => '/api/system/activity-timeouts/pass',
+                'body' => ['execution_ids' => 'execution-1'],
+                'errorField' => 'execution_ids',
+                'controlOperation' => null,
+            ],
+            'system.retention_status' => [
+                'method' => 'get',
+                'path' => '/api/system/retention?limit=0',
+                'body' => [],
+                'errorField' => 'limit',
+                'controlOperation' => null,
+            ],
+            'system.retention_pass' => [
+                'method' => 'post',
+                'path' => '/api/system/retention/pass',
+                'body' => ['run_ids' => 'run-1'],
+                'errorField' => 'run_ids',
+                'controlOperation' => null,
+            ],
         ];
     }
 

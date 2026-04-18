@@ -4,12 +4,11 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
-use App\Models\WorkflowNamespace;
+use App\Models\WorkerRegistration;
 use App\Support\NamespaceWorkflowScope;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
-use Tests\Fixtures\ExternalGreetingActivity;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\ActivityStatus;
@@ -17,6 +16,7 @@ use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkflowExecutor;
+use Workflow\V2\WorkflowStub;
 
 class ActivityTimeoutTest extends TestCase
 {
@@ -56,6 +56,24 @@ class ActivityTimeoutTest extends TestCase
         $response->assertOk()
             ->assertJsonPath('expired_count', 1)
             ->assertJsonPath('scan_pressure', false);
+
+        $this->assertCount(1, $response->json('expired_execution_ids'));
+    }
+
+    public function test_activity_timeout_status_respects_limit_query(): void
+    {
+        Queue::fake();
+
+        $this->setUpExpiredActivity();
+        $this->setUpExpiredActivity();
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/system/activity-timeouts?limit=1');
+
+        $response->assertOk()
+            ->assertJsonPath('expired_count', 1)
+            ->assertJsonPath('scan_limit', 1)
+            ->assertJsonPath('scan_pressure', true);
 
         $this->assertCount(1, $response->json('expired_execution_ids'));
     }
@@ -151,7 +169,7 @@ class ActivityTimeoutTest extends TestCase
 
         $this->createNamespace('default');
 
-        $workflow = \Workflow\V2\WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-deadline-poll');
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-deadline-poll');
         $start = $workflow->start('Ada');
         NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
         $this->runReadyWorkflowTask($start->runId());
@@ -199,7 +217,7 @@ class ActivityTimeoutTest extends TestCase
 
         $this->createNamespace('default');
 
-        $workflow = \Workflow\V2\WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-no-deadline-poll');
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-no-deadline-poll');
         $start = $workflow->start('Ada');
         NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
         $this->runReadyWorkflowTask($start->runId());
@@ -247,7 +265,7 @@ class ActivityTimeoutTest extends TestCase
         string $taskQueue,
         string $namespace = 'default',
     ): void {
-        \App\Models\WorkerRegistration::query()->updateOrCreate(
+        WorkerRegistration::query()->updateOrCreate(
             ['worker_id' => $workerId, 'namespace' => $namespace],
             [
                 'task_queue' => $taskQueue,
@@ -275,7 +293,7 @@ class ActivityTimeoutTest extends TestCase
      */
     private function setUpExpiredActivity(): string
     {
-        $workflow = \Workflow\V2\WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-timeout-test-' . uniqid());
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-timeout-test-'.uniqid());
         $start = $workflow->start('Ada');
         NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
         $this->runReadyWorkflowTask($start->runId());

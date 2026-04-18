@@ -9,9 +9,17 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimelineEntry;
+use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
@@ -25,15 +33,19 @@ class SystemController
             return $response;
         }
 
-        $runIds = is_array($request->input('run_ids'))
-            ? array_values(array_filter(array_map(
-                static fn (mixed $v): string => is_scalar($v) ? trim((string) $v) : '',
-                $request->input('run_ids'),
-            )))
-            : [];
+        $validated = $request->validate([
+            'run_ids' => ['nullable', 'array', 'max:100'],
+            'run_ids.*' => ['string', 'min:1', 'max:128'],
+            'instance_id' => ['nullable', 'string', 'min:1', 'max:128'],
+        ]);
 
-        $instanceId = is_string($request->input('instance_id')) && trim($request->input('instance_id')) !== ''
-            ? trim($request->input('instance_id'))
+        $runIds = array_values(array_map(
+            static fn (string $v): string => trim($v),
+            $validated['run_ids'] ?? [],
+        ));
+
+        $instanceId = isset($validated['instance_id']) && is_string($validated['instance_id'])
+            ? trim($validated['instance_id'])
             : null;
 
         $report = TaskWatchdog::runPass(
@@ -66,7 +78,11 @@ class SystemController
             return $response;
         }
 
-        $limit = 100;
+        $validated = $request->validate([
+            'limit' => ['nullable', 'integer', 'min:1'],
+        ]);
+
+        $limit = min(100, (int) ($validated['limit'] ?? 100));
         $expiredIds = ActivityTimeoutEnforcer::expiredExecutionIds($limit);
 
         return ControlPlaneProtocol::json([
@@ -83,14 +99,18 @@ class SystemController
             return $response;
         }
 
-        $limit = min(100, max(1, (int) ($request->input('limit') ?? 100)));
+        $validated = $request->validate([
+            'limit' => ['nullable', 'integer', 'min:1'],
+            'execution_ids' => ['nullable', 'array', 'max:100'],
+            'execution_ids.*' => ['string', 'min:1', 'max:128'],
+        ]);
 
-        $executionIds = is_array($request->input('execution_ids'))
-            ? array_values(array_filter(array_map(
-                static fn (mixed $v): string => is_scalar($v) ? trim((string) $v) : '',
-                $request->input('execution_ids'),
-            )))
-            : [];
+        $limit = min(100, (int) ($validated['limit'] ?? 100));
+
+        $executionIds = array_values(array_map(
+            static fn (string $v): string => trim($v),
+            $validated['execution_ids'] ?? [],
+        ));
 
         if ($executionIds === []) {
             $executionIds = ActivityTimeoutEnforcer::expiredExecutionIds($limit);
@@ -156,7 +176,10 @@ class SystemController
         }
 
         $namespace = $request->attributes->get('namespace');
-        $limit = min(100, max(1, (int) ($request->query('limit') ?? 100)));
+        $validated = $request->validate([
+            'limit' => ['nullable', 'integer', 'min:1'],
+        ]);
+        $limit = min(100, (int) ($validated['limit'] ?? 100));
 
         $ns = WorkflowNamespace::query()->where('name', $namespace)->first();
         $retentionDays = $ns?->retention_days ?? (int) config('server.history.retention_days', 30);
@@ -190,14 +213,17 @@ class SystemController
         }
 
         $namespace = $request->attributes->get('namespace');
-        $limit = min(100, max(1, (int) ($request->input('limit') ?? 100)));
+        $validated = $request->validate([
+            'limit' => ['nullable', 'integer', 'min:1'],
+            'run_ids' => ['nullable', 'array', 'max:100'],
+            'run_ids.*' => ['string', 'min:1', 'max:128'],
+        ]);
+        $limit = min(100, (int) ($validated['limit'] ?? 100));
 
-        $runIds = is_array($request->input('run_ids'))
-            ? array_values(array_filter(array_map(
-                static fn (mixed $v): string => is_scalar($v) ? trim((string) $v) : '',
-                $request->input('run_ids'),
-            )))
-            : [];
+        $runIds = array_values(array_map(
+            static fn (string $v): string => trim($v),
+            $validated['run_ids'] ?? [],
+        ));
 
         if ($runIds === []) {
             $ns = WorkflowNamespace::query()->where('name', $namespace)->first();
@@ -306,35 +332,35 @@ class SystemController
         ]);
 
         // Delete related records first
-        \Workflow\V2\Models\ActivityExecution::query()
+        ActivityExecution::query()
             ->where('workflow_run_id', $runId)
             ->delete();
 
-        \Workflow\V2\Models\WorkflowCommand::query()
+        WorkflowCommand::query()
             ->where('workflow_run_id', $runId)
             ->delete();
 
-        \Workflow\V2\Models\WorkflowFailure::query()
+        WorkflowFailure::query()
             ->where('workflow_run_id', $runId)
             ->delete();
 
-        \Workflow\V2\Models\WorkflowTimelineEntry::query()
+        WorkflowTimelineEntry::query()
             ->where('workflow_run_id', $runId)
             ->delete();
 
-        \Workflow\V2\Models\WorkflowRunWait::query()
+        WorkflowRunWait::query()
             ->where('workflow_run_id', $runId)
             ->delete();
 
-        \Workflow\V2\Models\WorkflowTimer::query()
+        WorkflowTimer::query()
             ->where('workflow_run_id', $runId)
             ->delete();
 
-        \Workflow\V2\Models\WorkflowRunLineageEntry::query()
+        WorkflowRunLineageEntry::query()
             ->where('workflow_run_id', $runId)
             ->delete();
 
-        \Workflow\V2\Models\WorkflowUpdate::query()
+        WorkflowUpdate::query()
             ->where('workflow_run_id', $runId)
             ->delete();
 

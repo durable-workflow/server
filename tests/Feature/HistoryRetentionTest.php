@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Models\WorkflowNamespace;
 use App\Support\NamespaceWorkflowScope;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
@@ -15,6 +16,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\WorkflowStub;
 
 class HistoryRetentionTest extends TestCase
 {
@@ -54,6 +56,25 @@ class HistoryRetentionTest extends TestCase
         $this->assertContains($runId, $response->json('expired_run_ids'));
     }
 
+    public function test_retention_status_respects_limit_query(): void
+    {
+        Queue::fake();
+
+        $this->createNamespace('default');
+        $this->createExpiredClosedRun('default', 'wf-retention-limit-a');
+        $this->createExpiredClosedRun('default', 'wf-retention-limit-b');
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/system/retention?limit=1');
+
+        $response->assertOk()
+            ->assertJsonPath('expired_run_count', 1)
+            ->assertJsonPath('scan_limit', 1)
+            ->assertJsonPath('scan_pressure', true);
+
+        $this->assertCount(1, $response->json('expired_run_ids'));
+    }
+
     public function test_retention_status_respects_namespace_retention_days(): void
     {
         Queue::fake();
@@ -76,7 +97,7 @@ class HistoryRetentionTest extends TestCase
 
         $this->createNamespace('default');
 
-        $workflow = \Workflow\V2\WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-still-running');
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-still-running');
         $workflow->start('Ada');
         NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
 
@@ -171,7 +192,7 @@ class HistoryRetentionTest extends TestCase
 
         $this->createNamespace('default');
 
-        $workflow = \Workflow\V2\WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-running-prune');
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-running-prune');
         $start = $workflow->start('Ada');
         NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
 
@@ -270,7 +291,7 @@ class HistoryRetentionTest extends TestCase
 
     private function createNamespaceWithRetention(string $name, int $retentionDays): void
     {
-        \App\Models\WorkflowNamespace::query()->updateOrCreate(
+        WorkflowNamespace::query()->updateOrCreate(
             ['name' => $name],
             [
                 'description' => 'Test namespace',
@@ -282,7 +303,7 @@ class HistoryRetentionTest extends TestCase
 
     private function createExpiredClosedRun(string $namespace, string $workflowId, int $daysAgo = 60): string
     {
-        $workflow = \Workflow\V2\WorkflowStub::make(ExternalGreetingWorkflow::class, $workflowId);
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, $workflowId);
         $start = $workflow->start('Ada');
         NamespaceWorkflowScope::bind($namespace, $workflow->id(), ExternalGreetingWorkflow::class);
 
