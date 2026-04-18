@@ -1894,7 +1894,9 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('cancel_requested', true)
             ->assertJsonPath('can_continue', false)
             ->assertJsonPath('reason', $expectedHeartbeatReason)
+            ->assertJsonPath('run_closed_reason', $expectedOutcome)
             ->assertJsonPath('heartbeat_recorded', false);
+        $this->assertNotNull($heartbeat->json('run_closed_at'));
     }
 
     /**
@@ -2271,17 +2273,22 @@ class WorkerProtocolSuccessContractTest extends TestCase
         int $attempt,
         string $leaseOwner,
     ): TestResponse {
-        return $this->assertWorkerProtocolSuccess($response, 409)
+        $this->assertWorkerProtocolSuccess($response, 409)
             ->assertJsonPath('task_id', $taskId)
             ->assertJsonPath('workflow_task_attempt', $attempt)
             ->assertJsonPath('error', 'Workflow run is already closed.')
             ->assertJsonPath('lease_owner', $leaseOwner)
             ->assertJsonPath('run_status', $runStatus)
+            ->assertJsonPath('run_closed_reason', $runStatus)
             ->assertJsonPath('task_status', 'cancelled')
             ->assertJsonPath('reason', 'run_closed')
             ->assertJsonPath('stop_reason', $stopReason)
             ->assertJsonPath('cancel_requested', true)
             ->assertJsonPath('can_continue', false);
+
+        $this->assertNotNull($response->json('run_closed_at'));
+
+        return $response;
     }
 
     /**
@@ -2339,11 +2346,13 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('cancel_requested', true)
             ->assertJsonPath('can_continue', false)
             ->assertJsonPath('run_status', $runStatus)
+            ->assertJsonPath('run_closed_reason', $runStatus)
             ->assertJsonPath('activity_status', 'cancelled')
             ->assertJsonPath('attempt_status', 'cancelled')
             ->assertJsonPath('task_status', 'cancelled')
             ->assertJsonPath('lease_owner', $leaseOwner)
             ->assertJsonPath('lease_expires_at', null);
+        $this->assertNotNull($response->json('run_closed_at'));
     }
 
     /**

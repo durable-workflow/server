@@ -720,6 +720,8 @@ class WorkerController
                 'cancel_requested' => $this->workflowTaskCancelRequested($result['status']['run_status'] ?? null),
                 'can_continue' => false,
                 'run_status' => $result['status']['run_status'] ?? null,
+                'run_closed_reason' => $result['status']['run_closed_reason'] ?? null,
+                'run_closed_at' => $result['status']['run_closed_at'] ?? null,
                 'task_status' => $result['status']['task_status'] ?? null,
                 'lease_owner' => $result['status']['lease_owner'] ?? null,
                 'lease_expires_at' => $result['status']['lease_expires_at'] ?? null,

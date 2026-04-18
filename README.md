@@ -435,7 +435,9 @@ is leased, the next workflow-task
 `history`, `heartbeat`, `complete`, or `fail` response returns the worker
 envelope with `reason: "run_closed"`, `can_continue: false`,
 `cancel_requested: true`, and a concrete `stop_reason` such as `run_cancelled`
-or `run_terminated`.
+or `run_terminated`. The response also includes `run_closed_reason` and
+`run_closed_at` from the durable run so external workers can log the exact
+closure state that stopped their leased task.
 
 Activity task polling returns a leased attempt identity. Clients must echo both
 `activity_attempt_id` and `lease_owner` on activity `complete`, `fail`, and
@@ -447,6 +449,9 @@ timeout. The server runs `activity:timeout-enforce` periodically to expire
 activities that exceed their deadlines. Heartbeats accept `message`, `current`,
 `total`, `unit`, and `details` fields; the server normalizes them to the package
 heartbeat-progress contract before recording the heartbeat.
+When a run-level cancel or terminate command stops a leased activity task,
+heartbeat, complete, and fail responses include `run_closed_reason` and
+`run_closed_at` alongside `cancel_requested: true`.
 
 ### Schedules
 - `GET /api/schedules` — List schedules
