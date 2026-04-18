@@ -223,6 +223,54 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonStructure(['created_task_ids']);
     }
 
+    public function test_workflow_task_poll_capability_filters_use_worker_protocol_contract(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-type-filter-contract',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $this->registerWorker(
+            workerId: 'worker-wrong-workflow-type',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.other-workflow'],
+        );
+
+        $wrongTypePoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-wrong-workflow-type',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($wrongTypePoll)
+            ->assertJsonPath('task', null);
+
+        $this->registerWorker(
+            workerId: 'worker-matching-workflow-type',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $matchingTypePoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-matching-workflow-type',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($matchingTypePoll)
+            ->assertJsonPath('task.workflow_id', 'wf-worker-type-filter-contract')
+            ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow')
+            ->assertJsonPath('task.lease_owner', 'worker-matching-workflow-type');
+    }
+
     public function test_workflow_task_history_page_compression_uses_worker_protocol_contract(): void
     {
         Queue::fake();
@@ -411,6 +459,52 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('recorded', true)
             ->assertJsonPath('reason', null)
             ->assertJsonStructure(['next_task_id']);
+    }
+
+    public function test_activity_task_poll_capability_filters_use_worker_protocol_contract(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(
+            ExternalGreetingWorkflow::class,
+            'wf-activity-type-filter-contract',
+        );
+        $start = $workflow->start('Ada');
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
+
+        $this->runReadyWorkflowTask($start->runId());
+
+        $this->registerWorker(
+            workerId: 'activity-worker-wrong-type',
+            taskQueue: 'external-activities',
+            supportedActivityTypes: ['tests.other-activity'],
+        );
+
+        $wrongTypePoll = $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'activity-worker-wrong-type',
+            'task_queue' => 'external-activities',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($wrongTypePoll)
+            ->assertJsonPath('task', null);
+
+        $this->registerWorker(
+            workerId: 'activity-worker-matching-type',
+            taskQueue: 'external-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+        );
+
+        $matchingTypePoll = $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'activity-worker-matching-type',
+            'task_queue' => 'external-activities',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($matchingTypePoll)
+            ->assertJsonPath('task.workflow_id', 'wf-activity-type-filter-contract')
+            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity')
+            ->assertJsonPath('task.lease_owner', 'activity-worker-matching-type')
+            ->assertJsonMissingPath('task.activity_class');
     }
 
     /**
