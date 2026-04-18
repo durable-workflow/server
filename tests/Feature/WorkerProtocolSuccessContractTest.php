@@ -16,8 +16,10 @@ use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\WorkflowStub;
@@ -1185,6 +1187,96 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $eventTypes = array_column($history->json('events'), 'event_type');
 
         $this->assertContains('TimerScheduled', $eventTypes);
+    }
+
+    public function test_timer_resume_task_exposes_worker_protocol_context(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-timer-resume-contract',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $workflowId = (string) $start->json('workflow_id');
+        $runId = (string) $start->json('run_id');
+
+        $this->registerWorker(
+            workerId: 'worker-timer-resume-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-timer-resume-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll);
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-timer-resume-contract',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [
+                [
+                    'type' => 'start_timer',
+                    'delay_seconds' => 0,
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('run_status', 'waiting')
+            ->assertJsonStructure(['created_task_ids']);
+
+        $timerTaskId = (string) $complete->json('created_task_ids.0');
+
+        /** @var WorkflowTask $timerTask */
+        $timerTask = WorkflowTask::query()->findOrFail($timerTaskId);
+        $timerId = $timerTask->payload['timer_id'] ?? null;
+
+        $this->assertIsString($timerId);
+
+        $this->app->call([new RunTimerTask($timerTaskId), 'handle']);
+
+        $resumePoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-timer-resume-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($resumePoll)
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow')
+            ->assertJsonPath('task.lease_owner', 'worker-timer-resume-contract')
+            ->assertJsonPath('task.workflow_wait_kind', 'timer')
+            ->assertJsonPath('task.open_wait_id', "timer:{$timerId}")
+            ->assertJsonPath('task.resume_source_kind', 'timer')
+            ->assertJsonPath('task.resume_source_id', $timerId)
+            ->assertJsonPath('task.timer_id', $timerId)
+            ->assertJsonPath('task.workflow_event_type', 'TimerFired');
+
+        $resumeEvents = collect((array) $resumePoll->json('task.history_events'));
+        $timerFired = $resumeEvents->firstWhere('event_type', 'TimerFired');
+
+        $this->assertIsArray($timerFired);
+        $this->assertSame($timerId, $timerFired['payload']['timer_id'] ?? null);
+        $this->assertSame(
+            $timerFired['payload']['sequence'] ?? null,
+            $resumePoll->json('task.workflow_sequence'),
+        );
     }
 
     public function test_marker_and_search_attribute_commands_use_worker_protocol_contract(): void

@@ -414,7 +414,10 @@ context fields from the durable task payload: `workflow_wait_kind`,
 `activity_execution_id`, `activity_attempt_id`, `activity_type`,
 `child_call_id`, `child_workflow_run_id`, `workflow_sequence`,
 `workflow_event_type`, `timer_id`, and `condition_wait_id`. Fields that do not
-apply to the leased task are `null`; update-backed tasks set
+apply to the leased task are `null`; pure timer resumes set
+`workflow_wait_kind: "timer"`, `open_wait_id: "timer:{timer_id}"`, and
+`timer_id` so SDK workers can apply timer-fired history directly. Update-backed
+tasks set
 `workflow_wait_kind: "update"` and `workflow_update_id` so SDK workers can tie
 the task to the accepted update they are applying, while activity-backed resume
 tasks set `workflow_wait_kind: "activity"` and `activity_execution_id` so
