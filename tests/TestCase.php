@@ -2,6 +2,7 @@
 
 namespace Tests;
 
+use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
@@ -18,7 +19,7 @@ abstract class TestCase extends BaseTestCase
             'server.auth.driver' => 'none',
             'server.polling.timeout' => 0,
             'server.polling.interval_ms' => 1,
-            'server.worker_protocol.version' => '1.0',
+            'server.worker_protocol.version' => WorkerProtocol::VERSION,
             'server.polling.cache_path' => $this->pollingCachePath(),
         ]);
 

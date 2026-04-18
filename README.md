@@ -384,7 +384,7 @@ prompt wake behavior; without one, correctness still comes from the periodic
 database recheck, but wake latency will regress toward the forced recheck
 interval.
 
-Within worker protocol version `1`, `worker_protocol.version`,
+Within worker protocol version `1.0`, `worker_protocol.version`,
 `server_capabilities.long_poll_timeout`, and
 `server_capabilities.supported_workflow_task_commands` are stable contract
 fields. The command-option booleans under `server_capabilities` are additive

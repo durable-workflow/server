@@ -8,24 +8,9 @@ use Workflow\V2\Support\WorkerProtocolVersion;
 
 class WorkerProtocol
 {
-    public const VERSION = '1.0';
+    public const VERSION = WorkerProtocolVersion::VERSION;
 
     public const HEADER = 'X-Durable-Workflow-Protocol-Version';
-
-    /**
-     * @var list<string>
-     */
-    private const SUPPORTED_WORKFLOW_TASK_COMMANDS = [
-        'complete_workflow',
-        'fail_workflow',
-        'continue_as_new',
-        'schedule_activity',
-        'start_timer',
-        'start_child_workflow',
-        'record_side_effect',
-        'record_version_marker',
-        'upsert_search_attributes',
-    ];
 
     public static function requestVersion(Request $request): ?string
     {
@@ -88,7 +73,10 @@ class WorkerProtocol
      */
     public static function supportedWorkflowTaskCommands(): array
     {
-        return self::SUPPORTED_WORKFLOW_TASK_COMMANDS;
+        return array_values(array_merge(
+            WorkerProtocolVersion::terminalCommandTypes(),
+            WorkerProtocolVersion::nonTerminalCommandTypes(),
+        ));
     }
 
     /**
@@ -111,11 +99,20 @@ class WorkerProtocol
     public static function serverCapabilities(): array
     {
         return [
-            'long_poll_timeout' => (int) config('server.polling.timeout', 30),
+            'long_poll_timeout' => (int) config(
+                'server.polling.timeout',
+                WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
+            ),
             'supported_workflow_task_commands' => self::supportedWorkflowTaskCommands(),
             'workflow_task_poll_request_idempotency' => true,
-            'history_page_size_default' => (int) config('server.worker_protocol.history_page_size_default', 500),
-            'history_page_size_max' => (int) config('server.worker_protocol.history_page_size_max', 1000),
+            'history_page_size_default' => (int) config(
+                'server.worker_protocol.history_page_size_default',
+                WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
+            ),
+            'history_page_size_max' => (int) config(
+                'server.worker_protocol.history_page_size_max',
+                WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
+            ),
             'activity_retry_policy' => true,
             'activity_timeouts' => true,
             'child_workflow_retry_policy' => true,

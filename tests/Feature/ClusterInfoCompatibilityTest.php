@@ -8,6 +8,7 @@ use App\Support\ControlPlaneRequestContract;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
+use Workflow\V2\Support\WorkerProtocolVersion;
 
 class ClusterInfoCompatibilityTest extends TestCase
 {
@@ -100,5 +101,35 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('client_compatibility.required_protocols.worker_protocol.header', WorkerProtocol::HEADER)
             ->assertJsonPath('client_compatibility.clients.cli.supported_versions', '0.1.x')
             ->assertJsonPath('client_compatibility.clients.sdk-python.supported_versions', '0.2.x');
+    }
+
+    public function test_worker_protocol_manifest_is_sourced_from_the_package_contract(): void
+    {
+        $expectedCommands = array_values(array_merge(
+            WorkerProtocolVersion::terminalCommandTypes(),
+            WorkerProtocolVersion::nonTerminalCommandTypes(),
+        ));
+
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+
+        $this->assertSame(WorkerProtocolVersion::VERSION, WorkerProtocol::VERSION);
+        $this->assertSame($expectedCommands, WorkerProtocol::supportedWorkflowTaskCommands());
+        $this->assertSame(WorkerProtocolVersion::VERSION, $response->json('worker_protocol.version'));
+        $this->assertSame(
+            $expectedCommands,
+            $response->json('worker_protocol.server_capabilities.supported_workflow_task_commands'),
+        );
+        $this->assertSame(
+            WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
+            $response->json('worker_protocol.server_capabilities.history_page_size_default'),
+        );
+        $this->assertSame(
+            WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
+            $response->json('worker_protocol.server_capabilities.history_page_size_max'),
+        );
+        $this->assertSame(
+            WorkerProtocolVersion::supportedHistoryEncodings(),
+            $response->json('worker_protocol.server_capabilities.history_compression.supported_encodings'),
+        );
     }
 }

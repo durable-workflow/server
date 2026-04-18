@@ -15,6 +15,7 @@ use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\HistoryPayloadCompression;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
+use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowTaskOwnership;
 
@@ -155,12 +156,23 @@ class WorkerController
             'task_queue' => ['required', 'string'],
             'build_id' => ['nullable', 'string'],
             'poll_request_id' => ['nullable', 'string', 'max:255'],
-            'history_page_size' => ['nullable', 'integer', 'min:1', 'max:1000'],
+            'history_page_size' => [
+                'nullable',
+                'integer',
+                'min:1',
+                'max:'.WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
+            ],
             'accept_history_encoding' => ['nullable', 'string', 'max:64'],
         ]);
 
-        $maxPageSize = (int) config('server.worker_protocol.history_page_size_max', 1000);
-        $defaultPageSize = (int) config('server.worker_protocol.history_page_size_default', 500);
+        $maxPageSize = (int) config(
+            'server.worker_protocol.history_page_size_max',
+            WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
+        );
+        $defaultPageSize = (int) config(
+            'server.worker_protocol.history_page_size_default',
+            WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
+        );
         $requestedPageSize = $validated['history_page_size'] ?? null;
         $pageSize = min($requestedPageSize ?? $defaultPageSize, $maxPageSize);
 
@@ -222,7 +234,12 @@ class WorkerController
             'lease_owner' => ['required', 'string'],
             'workflow_task_attempt' => ['required', 'integer', 'min:1'],
             'next_history_page_token' => ['required', 'string'],
-            'history_page_size' => ['nullable', 'integer', 'min:1', 'max:1000'],
+            'history_page_size' => [
+                'nullable',
+                'integer',
+                'min:1',
+                'max:'.WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
+            ],
             'accept_history_encoding' => ['nullable', 'string', 'max:64'],
         ]);
 
@@ -246,8 +263,14 @@ class WorkerController
             ], 400);
         }
 
-        $maxPageSize = (int) config('server.worker_protocol.history_page_size_max', 1000);
-        $defaultPageSize = (int) config('server.worker_protocol.history_page_size_default', 500);
+        $maxPageSize = (int) config(
+            'server.worker_protocol.history_page_size_max',
+            WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
+        );
+        $defaultPageSize = (int) config(
+            'server.worker_protocol.history_page_size_default',
+            WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
+        );
         $pageSize = min($validated['history_page_size'] ?? $defaultPageSize, $maxPageSize);
 
         /** @var WorkflowTaskBridge $bridge */

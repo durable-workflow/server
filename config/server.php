@@ -1,5 +1,7 @@
 <?php
 
+use Workflow\V2\Support\WorkerProtocolVersion;
+
 return [
 
     /*
@@ -133,7 +135,10 @@ return [
     */
 
     'polling' => [
-        'timeout' => (int) env('WORKFLOW_SERVER_WORKER_POLL_TIMEOUT', 30),
+        'timeout' => (int) env(
+            'WORKFLOW_SERVER_WORKER_POLL_TIMEOUT',
+            WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
+        ),
         'interval_ms' => (int) env('WORKFLOW_SERVER_WORKER_POLL_INTERVAL_MS', 1000),
         'signal_check_interval_ms' => (int) env('WORKFLOW_SERVER_WORKER_POLL_SIGNAL_CHECK_INTERVAL_MS', 100),
         'cache_path' => env(
@@ -166,9 +171,15 @@ return [
     */
 
     'worker_protocol' => [
-        'version' => env('WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION', '1.0'),
-        'history_page_size_default' => (int) env('WORKFLOW_SERVER_HISTORY_PAGE_SIZE_DEFAULT', 500),
-        'history_page_size_max' => (int) env('WORKFLOW_SERVER_HISTORY_PAGE_SIZE_MAX', 1000),
+        'version' => env('WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION', WorkerProtocolVersion::VERSION),
+        'history_page_size_default' => (int) env(
+            'WORKFLOW_SERVER_HISTORY_PAGE_SIZE_DEFAULT',
+            WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
+        ),
+        'history_page_size_max' => (int) env(
+            'WORKFLOW_SERVER_HISTORY_PAGE_SIZE_MAX',
+            WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
+        ),
     ],
 
     /*
