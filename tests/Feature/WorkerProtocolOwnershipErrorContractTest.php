@@ -170,6 +170,31 @@ class WorkerProtocolOwnershipErrorContractTest extends TestCase
 
         $taskId = (string) $poll->json('task.task_id');
         $attemptId = (string) $poll->json('task.activity_attempt_id');
+        $workflowTaskId = (string) WorkflowTask::query()
+            ->where('workflow_run_id', $start->runId())
+            ->where('task_type', 'workflow')
+            ->value('id');
+
+        $this->assertNotSame('', $workflowTaskId);
+
+        $missingAttempt = $this->postJson("/api/worker/activity-tasks/{$taskId}/heartbeat", [
+            'activity_attempt_id' => 'missing-attempt',
+            'lease_owner' => 'activity-owner-worker',
+        ], $this->mixedWorkerHeaders());
+
+        $this->assertWorkerProtocolError($missingAttempt, 404, 'attempt_not_found')
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('activity_attempt_id', 'missing-attempt');
+
+        $taskMismatch = $this->postJson("/api/worker/activity-tasks/{$workflowTaskId}/complete", [
+            'activity_attempt_id' => $attemptId,
+            'lease_owner' => 'activity-owner-worker',
+            'result' => Serializer::serializeWithCodec('json', 'Hello, Ada!'),
+        ], $this->mixedWorkerHeaders());
+
+        $this->assertWorkerProtocolError($taskMismatch, 409, 'task_mismatch')
+            ->assertJsonPath('task_id', $workflowTaskId)
+            ->assertJsonPath('activity_attempt_id', $attemptId);
 
         $heartbeat = $this->postJson("/api/worker/activity-tasks/{$taskId}/heartbeat", [
             'activity_attempt_id' => $attemptId,
