@@ -2,7 +2,6 @@
 
 namespace Tests\Feature;
 
-use App\Models\WorkflowNamespace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
@@ -312,7 +311,11 @@ class WorkflowReadEndpointTest extends TestCase
         $this->withHeaders($this->apiHeaders())
             ->getJson('/api/workflows/wf-read-run-404/runs/99999')
             ->assertNotFound()
-            ->assertJsonPath('message', 'Workflow run not found.');
+            ->assertJsonPath('message', 'Workflow run not found.')
+            ->assertJsonPath('reason', 'run_not_found')
+            ->assertJsonPath('workflow_id', 'wf-read-run-404')
+            ->assertJsonPath('run_id', '99999')
+            ->assertJsonPath('control_plane.operation', 'describe_run');
     }
 
     public function test_show_run_returns_404_for_unknown_workflow(): void
@@ -320,7 +323,11 @@ class WorkflowReadEndpointTest extends TestCase
         $this->withHeaders($this->apiHeaders())
             ->getJson('/api/workflows/wf-nonexistent/runs/1')
             ->assertNotFound()
-            ->assertJsonPath('message', 'Workflow run not found.');
+            ->assertJsonPath('message', 'Workflow run not found.')
+            ->assertJsonPath('reason', 'run_not_found')
+            ->assertJsonPath('workflow_id', 'wf-nonexistent')
+            ->assertJsonPath('run_id', '1')
+            ->assertJsonPath('control_plane.operation', 'describe_run');
     }
 
     public function test_show_run_is_scoped_by_namespace(): void
@@ -462,7 +469,7 @@ class WorkflowReadEndpointTest extends TestCase
             ->assertCreated();
 
         $filtered = $this->withHeaders($this->apiHeaders())
-            ->getJson('/api/workflows?workflow_type=' . urlencode('tests.await-approval-workflow'));
+            ->getJson('/api/workflows?workflow_type='.urlencode('tests.await-approval-workflow'));
 
         $filtered->assertOk()
             ->assertJsonPath('workflow_count', 1)

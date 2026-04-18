@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 /**
@@ -33,6 +34,31 @@ class ControlPlaneVersionCoverageTest extends TestCase
     public static function controlPlaneEndpointProvider(): array
     {
         return [
+            // WorkflowController + HistoryController
+            'workflows.index' => ['method' => 'get', 'path' => '/api/workflows'],
+            'workflows.start' => [
+                'method' => 'post',
+                'path' => '/api/workflows',
+                'body' => ['workflow_type' => 'AnyWorkflow'],
+            ],
+            'workflows.show' => ['method' => 'get', 'path' => '/api/workflows/wf-any'],
+            'workflows.runs' => ['method' => 'get', 'path' => '/api/workflows/wf-any/runs'],
+            'workflows.show_run' => ['method' => 'get', 'path' => '/api/workflows/wf-any/runs/run-any'],
+            'workflows.signal' => ['method' => 'post', 'path' => '/api/workflows/wf-any/signal/advance'],
+            'workflows.query' => ['method' => 'post', 'path' => '/api/workflows/wf-any/query/currentState'],
+            'workflows.update' => ['method' => 'post', 'path' => '/api/workflows/wf-any/update/approve'],
+            'workflows.cancel' => ['method' => 'post', 'path' => '/api/workflows/wf-any/cancel'],
+            'workflows.terminate' => ['method' => 'post', 'path' => '/api/workflows/wf-any/terminate'],
+            'workflows.repair' => ['method' => 'post', 'path' => '/api/workflows/wf-any/repair'],
+            'workflows.archive' => ['method' => 'post', 'path' => '/api/workflows/wf-any/archive'],
+            'workflows.signal_run' => ['method' => 'post', 'path' => '/api/workflows/wf-any/runs/run-any/signal/advance'],
+            'workflows.query_run' => ['method' => 'post', 'path' => '/api/workflows/wf-any/runs/run-any/query/currentState'],
+            'workflows.update_run' => ['method' => 'post', 'path' => '/api/workflows/wf-any/runs/run-any/update/approve'],
+            'workflows.cancel_run' => ['method' => 'post', 'path' => '/api/workflows/wf-any/runs/run-any/cancel'],
+            'workflows.terminate_run' => ['method' => 'post', 'path' => '/api/workflows/wf-any/runs/run-any/terminate'],
+            'history.show' => ['method' => 'get', 'path' => '/api/workflows/wf-any/runs/run-any/history'],
+            'history.export' => ['method' => 'get', 'path' => '/api/workflows/wf-any/runs/run-any/history/export'],
+
             // ScheduleController
             'schedules.index' => ['method' => 'get', 'path' => '/api/schedules'],
             'schedules.store' => [
@@ -149,6 +175,10 @@ class ControlPlaneVersionCoverageTest extends TestCase
             // control-plane version header.
             'namespaces.index' => ['method' => 'get', 'path' => '/api/namespaces', 'expected' => 200],
             'namespaces.show' => ['method' => 'get', 'path' => '/api/namespaces/default', 'expected' => 200],
+            'workflows.index' => ['method' => 'get', 'path' => '/api/workflows', 'expected' => 200],
+            'workflows.show_missing' => ['method' => 'get', 'path' => '/api/workflows/does-not-exist', 'expected' => 404],
+            'workflows.runs_missing' => ['method' => 'get', 'path' => '/api/workflows/does-not-exist/runs', 'expected' => 404],
+            'workflows.show_run_missing' => ['method' => 'get', 'path' => '/api/workflows/does-not-exist/runs/run-missing', 'expected' => 404],
             'schedules.index' => ['method' => 'get', 'path' => '/api/schedules', 'expected' => 200],
             'search-attributes.index' => ['method' => 'get', 'path' => '/api/search-attributes', 'expected' => 200],
             'workers.index' => ['method' => 'get', 'path' => '/api/workers', 'expected' => 200],
@@ -232,7 +262,7 @@ class ControlPlaneVersionCoverageTest extends TestCase
      * @param  array<string, mixed>  $body
      * @param  array<string, string>  $headers
      */
-    private function sendJson(string $method, string $path, array $body, array $headers): \Illuminate\Testing\TestResponse
+    private function sendJson(string $method, string $path, array $body, array $headers): TestResponse
     {
         return match ($method) {
             'get' => $this->getJson($path, $headers),

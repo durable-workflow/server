@@ -278,13 +278,13 @@ class WorkflowController
         $namespace = $request->attributes->get('namespace');
 
         if (! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
-            return ControlPlaneProtocol::jsonForRequest($request, ['message' => 'Workflow run not found.'], 404);
+            return $this->runNotFound($request, $workflowId, $runId);
         }
 
         $run = NamespaceWorkflowScope::run($namespace, $workflowId, $runId);
 
         if (! $run) {
-            return ControlPlaneProtocol::jsonForRequest($request, ['message' => 'Workflow run not found.'], 404);
+            return $this->runNotFound($request, $workflowId, $runId);
         }
 
         return ControlPlaneProtocol::jsonForRequest($request, $this->formatRun(
@@ -753,6 +753,16 @@ class WorkflowController
     private function encodePageToken(int $offset): string
     {
         return base64_encode((string) $offset);
+    }
+
+    private function runNotFound(Request $request, string $workflowId, string $runId): JsonResponse
+    {
+        return ControlPlaneProtocol::jsonForRequest($request, [
+            'message' => 'Workflow run not found.',
+            'reason' => 'run_not_found',
+            'workflow_id' => $workflowId,
+            'run_id' => $runId,
+        ], 404);
     }
 
     private function startStatusCode(?string $outcome): int

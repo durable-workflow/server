@@ -28,6 +28,24 @@ class ControlPlaneErrorContractTest extends TestCase
     public static function controlPlaneErrorProvider(): array
     {
         return [
+            'workflows.show_missing' => [
+                'method' => 'get',
+                'path' => '/api/workflows/ghost-workflow',
+                'body' => [],
+                'reason' => 'instance_not_found',
+            ],
+            'workflows.runs_missing' => [
+                'method' => 'get',
+                'path' => '/api/workflows/ghost-workflow/runs',
+                'body' => [],
+                'reason' => 'instance_not_found',
+            ],
+            'workflows.show_run_missing' => [
+                'method' => 'get',
+                'path' => '/api/workflows/ghost-workflow/runs/run-missing',
+                'body' => [],
+                'reason' => 'run_not_found',
+            ],
             'namespaces.show_missing' => [
                 'method' => 'get',
                 'path' => '/api/namespaces/ghost',
