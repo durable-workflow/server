@@ -7,6 +7,7 @@ use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 
@@ -43,6 +44,64 @@ class WorkerProtocolContractTest extends TestCase
             ->assertJsonPath('validation_errors.task_queue.0', 'The task queue field is required.')
             ->assertJsonPath('validation_errors.runtime.0', 'The runtime field is required.')
             ->assertJsonMissingPath('control_plane');
+    }
+
+    public function test_workflow_task_command_validation_errors_use_worker_protocol_contract(): void
+    {
+        Queue::fake();
+
+        $start = $this->withHeaders($this->controlPlaneHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-command-validation',
+                'workflow_type' => 'remote.command-validation',
+                'task_queue' => 'contract-queue',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->createWorkerRegistration([
+            'worker_id' => 'command-validation-worker',
+            'task_queue' => 'contract-queue',
+            'supported_workflow_types' => ['remote.command-validation'],
+        ]);
+
+        $poll = $this->withHeaders($this->workerHeaders() + [
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ])->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'command-validation-worker',
+            'task_queue' => 'contract-queue',
+        ]);
+
+        $poll->assertOk()
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertJsonPath('task.workflow_id', 'wf-command-validation');
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $response = $this->withHeaders($this->workerHeaders() + [
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ])->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'command-validation-worker',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [
+                ['type' => 'wait_condition'],
+            ],
+        ]);
+
+        $response->assertStatus(422)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('reason', 'validation_failed')
+            ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
+            ->assertJsonMissingPath('control_plane');
+
+        $this->assertSame(
+            'Workflow task command type [wait_condition] is not supported by the server yet.',
+            $response->json('validation_errors')['commands.0.type'][0] ?? null,
+        );
     }
 
     /**
@@ -380,6 +439,17 @@ class WorkerProtocolContractTest extends TestCase
         }
 
         return $headers;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function controlPlaneHeaders(): array
+    {
+        return [
+            'X-Namespace' => 'default',
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ];
     }
 
     /**
