@@ -302,6 +302,116 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonStructure(['next_task_id']);
     }
 
+    public function test_leased_workflow_task_failure_response_uses_worker_protocol_contract(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-fail-contract',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $this->registerWorker(
+            workerId: 'worker-fail-lifecycle',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-fail-lifecycle',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_id', 'wf-worker-fail-contract')
+            ->assertJsonPath('task.lease_owner', 'worker-fail-lifecycle');
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $fail = $this->postJson("/api/worker/workflow-tasks/{$taskId}/fail", [
+            'lease_owner' => 'worker-fail-lifecycle',
+            'workflow_task_attempt' => $attempt,
+            'failure' => [
+                'message' => 'Non-determinism detected: unexpected history event.',
+                'type' => 'NonDeterminismError',
+                'stack_trace' => 'at Replay::apply(Replay.php:42)',
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($fail)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('outcome', 'failed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('reason', null)
+            ->assertJsonPath('next_task_id', null);
+    }
+
+    public function test_leased_activity_task_failure_response_uses_worker_protocol_contract(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(
+            ExternalGreetingWorkflow::class,
+            'wf-activity-fail-contract',
+        );
+        $start = $workflow->start('Ada');
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
+
+        $this->runReadyWorkflowTask($start->runId());
+
+        $this->registerWorker(
+            workerId: 'activity-worker-fail-lifecycle',
+            taskQueue: 'external-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+        );
+
+        $poll = $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'activity-worker-fail-lifecycle',
+            'task_queue' => 'external-activities',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_id', 'wf-activity-fail-contract')
+            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity')
+            ->assertJsonPath('task.lease_owner', 'activity-worker-fail-lifecycle')
+            ->assertJsonMissingPath('task.activity_class');
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attemptId = (string) $poll->json('task.activity_attempt_id');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $fail = $this->postJson("/api/worker/activity-tasks/{$taskId}/fail", [
+            'activity_attempt_id' => $attemptId,
+            'lease_owner' => $leaseOwner,
+            'failure' => [
+                'message' => 'Connection timeout calling external service.',
+                'type' => 'TimeoutException',
+                'stack_trace' => 'at HttpClient::send(Client.php:120)',
+                'non_retryable' => false,
+                'details' => Serializer::serializeWithCodec('json', ['retry_after' => 30]),
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($fail)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('activity_attempt_id', $attemptId)
+            ->assertJsonPath('outcome', 'failed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('reason', null)
+            ->assertJsonStructure(['next_task_id']);
+    }
+
     private function prepareWorkerCase(string $case): void
     {
         if ($case === 'worker.register') {
