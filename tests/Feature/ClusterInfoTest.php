@@ -27,7 +27,7 @@ class ClusterInfoTest extends TestCase
      * server.package_provenance_path at it, and write the supplied lines.
      * tearDown() removes the fixture.
      *
-     * @param array<int, string> $lines
+     * @param  array<int, string>  $lines
      */
     private function useProvenanceFixture(array $lines): string
     {
@@ -210,6 +210,41 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('package_provenance.commit', 'abc123def456');
     }
 
+    public function test_package_provenance_is_admin_only_when_role_tokens_are_configured(): void
+    {
+        config([
+            'server.auth.driver' => 'token',
+            'server.auth.token' => null,
+            'server.auth.role_tokens' => [
+                'worker' => 'worker-token',
+                'operator' => 'operator-token',
+                'admin' => 'admin-token',
+            ],
+            'server.auth.backward_compatible' => true,
+            'server.expose_package_provenance' => true,
+        ]);
+
+        $this->useProvenanceFixture([
+            'https://github.com/durable-workflow/workflow.git',
+            'v2',
+            'fedcba987654',
+        ]);
+
+        $this->getJson('/api/cluster/info', $this->bearerHeaders('worker-token'))
+            ->assertOk()
+            ->assertJsonMissingPath('package_provenance');
+
+        $this->getJson('/api/cluster/info', $this->bearerHeaders('operator-token'))
+            ->assertOk()
+            ->assertJsonMissingPath('package_provenance');
+
+        $this->getJson('/api/cluster/info', $this->bearerHeaders('admin-token'))
+            ->assertOk()
+            ->assertJsonPath('package_provenance.source', 'https://github.com/durable-workflow/workflow.git')
+            ->assertJsonPath('package_provenance.ref', 'v2')
+            ->assertJsonPath('package_provenance.commit', 'fedcba987654');
+    }
+
     public function test_tests_do_not_mutate_the_repo_root_provenance_file(): void
     {
         // TD-S041 regression: verify the test fixture never touches
@@ -245,5 +280,16 @@ class ClusterInfoTest extends TestCase
                 'Provenance tests must not overwrite the repo-root .package-provenance file.',
             );
         }
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function bearerHeaders(string $token): array
+    {
+        return [
+            'Authorization' => "Bearer {$token}",
+            'Accept' => 'application/json',
+        ];
     }
 }
