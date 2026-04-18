@@ -111,6 +111,23 @@ class ControlPlaneWorkflowSuccessContractTest extends TestCase
             ->assertJsonPath('run_id', $runId)
             ->assertJsonPath('run_number', 1)
             ->assertJsonPath('is_current_run', true);
+
+        $history = $this->getJson(
+            "/api/workflows/wf-contract-read/runs/{$runId}/history?page_size=1",
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $this->assertControlPlaneSuccess($history, 200, 'history');
+        $history->assertJsonPath('workflow_id', 'wf-contract-read')
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('control_plane.workflow_id', 'wf-contract-read')
+            ->assertJsonPath('control_plane.run_id', $runId)
+            ->assertJsonStructure([
+                'events' => [
+                    ['sequence', 'event_type', 'timestamp', 'payload'],
+                ],
+                'next_page_token',
+            ]);
     }
 
     public function test_workflow_command_success_responses_use_control_plane_contract(): void

@@ -53,6 +53,11 @@ final class ControlPlaneResponseContract
             'required_fields' => ['workflow_id'],
             'success_fields' => ['run_id'],
         ],
+        'history' => [
+            'operation_name_field' => null,
+            'required_fields' => ['workflow_id', 'run_id'],
+            'success_fields' => ['next_page_token'],
+        ],
         'signal' => [
             'operation_name_field' => 'signal_name',
             'required_fields' => ['workflow_id', 'operation_name', 'operation_name_field'],

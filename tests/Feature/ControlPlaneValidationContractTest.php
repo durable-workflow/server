@@ -47,7 +47,7 @@ class ControlPlaneValidationContractTest extends TestCase
                 'path' => '/api/workflows/wf-validation/runs/run-validation/history?page_size=0',
                 'body' => [],
                 'errorField' => 'page_size',
-                'controlOperation' => null,
+                'controlOperation' => 'history',
             ],
             'namespaces.store' => [
                 'method' => 'post',

@@ -315,8 +315,9 @@ Only `GET /api/health` and `GET /api/cluster/info` are exempt — those two
 endpoints are intentionally version-free so clients can probe liveness and
 discover the supported control-plane version before adopting it.
 
-Workflow control-plane responses also publish a nested, independently versioned
-`control_plane.contract` boundary with:
+Workflow control-plane responses, including run-history listing responses, also
+publish a nested, independently versioned `control_plane.contract` boundary
+with:
 - `schema: durable-workflow.v2.control-plane-response.contract`
 - `version: 1`
 - `legacy_field_policy: reject_non_canonical`
@@ -324,6 +325,11 @@ Workflow control-plane responses also publish a nested, independently versioned
 
 Clients can validate that nested contract separately from the outer
 `control_plane` envelope.
+
+History export responses are the exception inside the workflow route group:
+`GET /api/workflows/{id}/runs/{runId}/history/export` returns the replay bundle
+as-is so its integrity checksum and optional signature cover the exact artifact
+the client receives.
 
 The server also publishes the current request contract in
 `GET /api/cluster/info` under `control_plane.request_contract` with:

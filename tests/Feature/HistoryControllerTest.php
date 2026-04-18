@@ -2,7 +2,6 @@
 
 namespace Tests\Feature;
 
-use App\Models\WorkflowNamespace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
@@ -50,6 +49,9 @@ class HistoryControllerTest extends TestCase
             ->assertHeader('X-Durable-Workflow-Control-Plane-Version', '2')
             ->assertJsonPath('workflow_id', 'wf-history-show')
             ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('control_plane.operation', 'history')
+            ->assertJsonPath('control_plane.workflow_id', 'wf-history-show')
+            ->assertJsonPath('control_plane.run_id', $runId)
             ->assertJsonStructure([
                 'events' => [
                     ['sequence', 'event_type', 'timestamp'],
@@ -244,6 +246,7 @@ class HistoryControllerTest extends TestCase
 
         $response->assertOk()
             ->assertHeader('X-Durable-Workflow-Control-Plane-Version', '2')
+            ->assertJsonMissingPath('control_plane')
             ->assertJsonPath('schema', 'durable-workflow.v2.history-export')
             ->assertJsonPath('workflow.instance_id', 'wf-history-export')
             ->assertJsonPath('workflow.run_id', $runId);
