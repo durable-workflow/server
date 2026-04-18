@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
-use App\Models\WorkflowNamespace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Feature\Concerns\ServerTestHelpers;
+use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Models\WorkflowTask;
 
 class TransportRepairTest extends TestCase
 {
@@ -165,6 +167,89 @@ class TransportRepairTest extends TestCase
             ])
             ->assertOk()
             ->assertJsonPath('selected_total_candidates', 0);
+    }
+
+    public function test_system_repair_pass_recovers_expired_poll_mode_workflow_task_leases(): void
+    {
+        config(['server.polling.timeout' => 0]);
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+        $this->registerWorker(
+            workerId: 'repair-worker-1',
+            taskQueue: 'repair-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-repair-expired-poll-lease',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'repair-queue',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'repair-worker-1',
+                'task_queue' => 'repair-queue',
+            ]);
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-repair-expired-poll-lease')
+            ->assertJsonPath('task.lease_owner', 'repair-worker-1')
+            ->assertJsonPath('task.workflow_task_attempt', 1);
+
+        $taskId = (string) $firstPoll->json('task.task_id');
+
+        WorkflowTask::query()
+            ->whereKey($taskId)
+            ->update([
+                'lease_expires_at' => now()->subSecond(),
+            ]);
+
+        $repair = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/repair/pass', [
+                'run_ids' => [$runId],
+            ]);
+
+        $repair->assertOk()
+            ->assertJsonPath('selected_existing_task_candidates', 1)
+            ->assertJsonPath('repaired_existing_tasks', 1)
+            ->assertJsonPath('dispatched_tasks', 1);
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()->findOrFail($taskId);
+
+        $this->assertEquals(TaskStatus::Ready, $task->status);
+        $this->assertNull($task->leased_at);
+        $this->assertNull($task->lease_owner);
+        $this->assertNull($task->lease_expires_at);
+        $this->assertSame(1, $task->repair_count);
+        $this->assertNotNull($task->last_dispatched_at);
+        $this->assertNull($task->last_dispatch_error);
+
+        $this->registerWorker(
+            workerId: 'repair-worker-2',
+            taskQueue: 'repair-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $secondPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'repair-worker-2',
+                'task_queue' => 'repair-queue',
+            ]);
+
+        $secondPoll->assertOk()
+            ->assertJsonPath('task.task_id', $taskId)
+            ->assertJsonPath('task.lease_owner', 'repair-worker-2')
+            ->assertJsonPath('task.workflow_task_attempt', 2);
     }
 
     public function test_system_repair_pass_requires_authentication(): void
