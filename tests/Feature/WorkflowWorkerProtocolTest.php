@@ -1134,6 +1134,57 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('run_status', 'completed');
     }
 
+    public function test_completion_accepts_open_condition_wait_command_and_marks_run_waiting(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-open-condition-wait',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->registerWorker('php-worker-open-condition-wait', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-open-condition-wait',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'open_condition_wait',
+                        'condition_key' => 'order-ready',
+                        'timeout_seconds' => 60,
+                    ],
+                ],
+            ]);
+
+        $complete->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'waiting');
+    }
+
     public function test_completion_returns_422_when_structural_limit_exceeded(): void
     {
         Queue::fake();

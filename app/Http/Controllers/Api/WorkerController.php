@@ -360,6 +360,9 @@ class WorkerController
             'commands.*.attributes' => ['nullable', 'array'],
             'commands.*.non_retryable' => ['nullable', 'boolean'],
             'commands.*.parent_close_policy' => ['nullable', 'string'],
+            'commands.*.condition_key' => ['nullable', 'string'],
+            'commands.*.condition_definition_fingerprint' => ['nullable', 'string'],
+            'commands.*.timeout_seconds' => ['nullable', 'integer', 'min:0'],
         ]);
 
         if ($response = $this->guardWorkflowTaskOwnership(
