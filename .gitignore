@@ -4,6 +4,9 @@
 /public/storage
 /storage/*.key
 /vendor
+/build/perf
+__pycache__/
+*.py[cod]
 .env
 .env.backup
 .env.production
