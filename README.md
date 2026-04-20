@@ -51,9 +51,9 @@ This walkthrough shows the full lifecycle using `curl` — start the server,
 create a workflow, poll for tasks, and complete them. Any HTTP client in any
 language follows the same steps.
 
-Set role tokens for convenience (or set `WORKFLOW_SERVER_AUTH_DRIVER=none` in
+Set role tokens for convenience (or set `DW_AUTH_DRIVER=none` in
 `.env` to skip auth during development). If you only configure the legacy
-`WORKFLOW_SERVER_AUTH_TOKEN`, use the same value for each variable below.
+`DW_AUTH_TOKEN`, use the same value for each variable below.
 
 ```bash
 export ADMIN_TOKEN="your-admin-token"
@@ -488,10 +488,10 @@ from this check.
 For production, prefer role-scoped tokens:
 
 ```env
-WORKFLOW_SERVER_AUTH_DRIVER=token
-WORKFLOW_SERVER_WORKER_TOKEN=worker-secret
-WORKFLOW_SERVER_OPERATOR_TOKEN=operator-secret
-WORKFLOW_SERVER_ADMIN_TOKEN=admin-secret
+DW_AUTH_DRIVER=token
+DW_WORKER_TOKEN=worker-secret
+DW_OPERATOR_TOKEN=operator-secret
+DW_ADMIN_TOKEN=admin-secret
 ```
 
 `worker` tokens can call `/api/worker/*` and `/api/cluster/info`. `operator`
@@ -506,10 +506,10 @@ curl -H "Authorization: Bearer operator-secret" \
      http://localhost:8080/api/workflows
 ```
 
-Existing deployments can keep `WORKFLOW_SERVER_AUTH_TOKEN`. When no role tokens
+Existing deployments can keep `DW_AUTH_TOKEN`. When no role tokens
 are configured, that legacy token keeps full API access. Once any role token is
 configured, the legacy token is treated as an admin token and no longer grants
-worker-plane access. Set `WORKFLOW_SERVER_AUTH_BACKWARD_COMPATIBLE=false` to
+worker-plane access. Set `DW_AUTH_BACKWARD_COMPATIBLE=false` to
 require role-scoped credentials only.
 
 ### Signature Authentication
@@ -517,10 +517,10 @@ require role-scoped credentials only.
 Signature auth supports the same role split with role-scoped HMAC keys:
 
 ```env
-WORKFLOW_SERVER_AUTH_DRIVER=signature
-WORKFLOW_SERVER_WORKER_SIGNATURE_KEY=worker-hmac-key
-WORKFLOW_SERVER_OPERATOR_SIGNATURE_KEY=operator-hmac-key
-WORKFLOW_SERVER_ADMIN_SIGNATURE_KEY=admin-hmac-key
+DW_AUTH_DRIVER=signature
+DW_WORKER_SIGNATURE_KEY=worker-hmac-key
+DW_OPERATOR_SIGNATURE_KEY=operator-hmac-key
+DW_ADMIN_SIGNATURE_KEY=admin-hmac-key
 ```
 
 ```bash
@@ -530,10 +530,10 @@ curl -H "X-Signature: COMPUTED_SIGNATURE" \
      http://localhost:8080/api/workflows
 ```
 
-The legacy `WORKFLOW_SERVER_SIGNATURE_KEY` follows the same compatibility rule
+The legacy `DW_SIGNATURE_KEY` follows the same compatibility rule
 as the legacy bearer token.
 
-Set `WORKFLOW_SERVER_AUTH_DRIVER=none` to disable authentication (development only).
+Set `DW_AUTH_DRIVER=none` to disable authentication (development only).
 
 ## Deployment
 
@@ -608,7 +608,79 @@ kubectl apply -f k8s/worker-deployment.yaml
 
 ### Configuration
 
-All configuration is via environment variables. See [.env.example](.env.example) for the full list.
+All operator-facing configuration is via `DW_*` environment variables.
+`config/dw-contract.php` is the authoritative machine-checkable contract;
+CI (`tests/Unit/EnvContractTest.php`) diffs it against `.env.example`,
+`docker-compose.yml`, and `k8s/secret.yaml` so the three surfaces cannot
+drift. The Docker entrypoint runs `php artisan env:audit` at boot and
+logs a warning for any unknown `DW_*` variable and any legacy
+`WORKFLOW_*` / `ACTIVITY_*` name that still resolves.
+
+Rules — every `DW_*` name is stable across minor versions. Additions are
+fine; renames require a major bump with the old name alias-honored for
+one major. Set `DW_ENV_AUDIT_STRICT=1` to fail container boot when the
+audit finds drift.
+
+#### Environment variable reference
+
+The full table below is generated from `config/dw-contract.php` and lists
+every operator-facing variable the server honors.
+
+| `DW_*` name | Default | Description |
+| --- | --- | --- |
+| `DW_MODE` | `service` | Server mode: "service" (external workers poll) or "embedded" (local queue). |
+| `DW_SERVER_ID` | `gethostname()` | Unique identifier for this server instance. |
+| `DW_DEFAULT_NAMESPACE` | `default` | Namespace used when a request omits the namespace header. |
+| `DW_TASK_DISPATCH_MODE` | (unset) | Override for `workflows.v2.task_dispatch_mode`. Set to `queue` to dispatch locally in service mode. |
+| `DW_AUTH_DRIVER` | `token` | `none`, `token`, or `signature`. |
+| `DW_AUTH_TOKEN` | (unset) | Single shared bearer token (backward-compat credential). |
+| `DW_SIGNATURE_KEY` | (unset) | HMAC key used when `DW_AUTH_DRIVER=signature` and no role-scoped key is configured. |
+| `DW_WORKER_TOKEN` | (unset) | Bearer token for the worker role. |
+| `DW_OPERATOR_TOKEN` | (unset) | Bearer token for the operator role. |
+| `DW_ADMIN_TOKEN` | (unset) | Bearer token for the admin role. |
+| `DW_WORKER_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for workers. |
+| `DW_OPERATOR_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for operators. |
+| `DW_ADMIN_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for admins. |
+| `DW_AUTH_BACKWARD_COMPATIBLE` | `true` | Honor `DW_AUTH_TOKEN` / `DW_SIGNATURE_KEY` as a fallback when role credentials are missing. |
+| `DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS` | `false` | Accept forwarded caller/auth headers from a trusted gateway. |
+| `DW_CALLER_TYPE_HEADER` | `X-Workflow-Caller-Type` | Request header carrying the forwarded caller type. |
+| `DW_CALLER_LABEL_HEADER` | `X-Workflow-Caller-Label` | Request header carrying the forwarded caller label. |
+| `DW_AUTH_STATUS_HEADER` | `X-Workflow-Auth-Status` | Request header carrying the forwarded auth status. |
+| `DW_AUTH_METHOD_HEADER` | `X-Workflow-Auth-Method` | Request header carrying the forwarded auth method. |
+| `DW_WORKER_POLL_TIMEOUT` | `30` | Seconds the server holds a poll open. |
+| `DW_WORKER_POLL_INTERVAL_MS` | `1000` | Internal scan interval during an open poll. |
+| `DW_WORKER_POLL_SIGNAL_CHECK_INTERVAL_MS` | `100` | Wake-signal check interval during an open poll. |
+| `DW_POLLING_CACHE_PATH` | `storage/.../server-polling/<APP_ENV>` | Directory for worker-poll coordination state. |
+| `DW_WAKE_SIGNAL_TTL_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT + 5, 60)` | TTL for per-queue wake signals. |
+| `DW_MAX_TASKS_PER_POLL` | `1` | Maximum tasks returned per poll. |
+| `DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT` | `5` | Max expired workflow tasks recovered per pass. |
+| `DW_EXPIRED_WORKFLOW_TASK_RECOVERY_TTL_SECONDS` | `5` | Min seconds between expired-task recovery passes. |
+| `DW_WORKER_PROTOCOL_VERSION` | `WorkerProtocolVersion::VERSION` | Override for the advertised worker protocol version. |
+| `DW_HISTORY_PAGE_SIZE_DEFAULT` | `DEFAULT_HISTORY_PAGE_SIZE` | Default page size for worker history reads. |
+| `DW_HISTORY_PAGE_SIZE_MAX` | `MAX_HISTORY_PAGE_SIZE` | Maximum page size honored for worker history reads. |
+| `DW_QUERY_TASK_TIMEOUT` | `DW_WORKER_POLL_TIMEOUT` | Seconds the control plane waits for a worker query response. |
+| `DW_QUERY_TASK_LEASE_TIMEOUT` | `DW_WORKFLOW_TASK_TIMEOUT` | Lease timeout for ephemeral query tasks. |
+| `DW_QUERY_TASK_TTL_SECONDS` | `180` | Retention for query-task result rows. |
+| `DW_WORKFLOW_TASK_TIMEOUT` | `60` | Default workflow-task lease timeout (seconds). |
+| `DW_ACTIVITY_TASK_TIMEOUT` | `300` | Default activity-task lease timeout (seconds). |
+| `DW_WORKER_STALE_AFTER_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT * 2, 60)` | Seconds before a worker heartbeat is considered stale. |
+| `DW_MAX_HISTORY_EVENTS` | `50000` | Max history events per run before continue-as-new is enforced. |
+| `DW_HISTORY_RETENTION_DAYS` | `30` | Default retention for closed-run history (namespaces can override). |
+| `DW_MAX_PAYLOAD_BYTES` | `2097152` | Max serialized bytes for a single payload. |
+| `DW_MAX_MEMO_BYTES` | `262144` | Max serialized bytes for a workflow memo. |
+| `DW_MAX_SEARCH_ATTRIBUTES` | `100` | Max search attributes per workflow. |
+| `DW_MAX_PENDING_ACTIVITIES` | `2000` | Max pending activities per run. |
+| `DW_MAX_PENDING_CHILDREN` | `2000` | Max pending child workflows per run. |
+| `DW_COMPRESSION_ENABLED` | `true` | Enable gzip/deflate on JSON responses over the size threshold. |
+| `DW_EXPOSE_PACKAGE_PROVENANCE` | `false` | Include `package_provenance` in `/api/cluster/info` (admin-only). |
+| `DW_PACKAGE_PROVENANCE_PATH` | `<base_path>/.package-provenance` | Path to the package provenance file written at Docker build time. |
+| `DW_ENV_AUDIT_STRICT` | `0` | When `1`, the entrypoint fails container boot on unknown/legacy DW vars. |
+| `DW_BOOTSTRAP_RETRIES` | `30` | Bootstrap attempts before the entrypoint gives up. |
+| `DW_BOOTSTRAP_DELAY_SECONDS` | `2` | Seconds between bootstrap attempts. |
+
+Legacy `WORKFLOW_*` / `ACTIVITY_*` names remain honored as fallbacks
+during the deprecation window so existing deployments keep working —
+`env:audit` logs a rename hint at boot for each one it sees.
 
 ### HTTP concurrency (PHP_CLI_SERVER_WORKERS)
 

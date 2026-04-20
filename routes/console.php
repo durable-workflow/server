@@ -1,6 +1,15 @@
 <?php
 
+use App\Models\WorkflowNamespace;
+use App\Support\EnvAuditor;
+use App\Support\NamespaceWorkflowScope;
 use Illuminate\Support\Facades\Artisan;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivityTimeoutEnforcer;
+use Workflow\V2\Support\ScheduleManager;
 
 Artisan::command('server:bootstrap {--force : Run bootstrap commands without a production prompt}', function (): int {
     $this->components->info('Running Durable Workflow server bootstrap...');
@@ -28,7 +37,7 @@ Artisan::command('server:bootstrap {--force : Run bootstrap commands without a p
 Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per evaluation}', function (): int {
     $limit = (int) $this->option('limit');
 
-    $results = \Workflow\V2\Support\ScheduleManager::tick($limit);
+    $results = ScheduleManager::tick($limit);
 
     if ($results === []) {
         $this->components->info('No schedules due.');
@@ -82,7 +91,7 @@ Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per
 Artisan::command('activity:timeout-enforce {--limit=100 : Maximum expired executions to process per pass}', function (): int {
     $limit = max(1, (int) $this->option('limit'));
 
-    $expiredIds = \Workflow\V2\Support\ActivityTimeoutEnforcer::expiredExecutionIds($limit);
+    $expiredIds = ActivityTimeoutEnforcer::expiredExecutionIds($limit);
 
     if ($expiredIds === []) {
         $this->components->info('No expired activity executions.');
@@ -97,7 +106,7 @@ Artisan::command('activity:timeout-enforce {--limit=100 : Maximum expired execut
     $failed = 0;
 
     foreach ($expiredIds as $executionId) {
-        $result = \Workflow\V2\Support\ActivityTimeoutEnforcer::enforce($executionId);
+        $result = ActivityTimeoutEnforcer::enforce($executionId);
 
         if ($result['enforced']) {
             $label = $result['next_task'] !== null ? 'retry scheduled' : 'terminal';
@@ -140,8 +149,8 @@ Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per
     $namespaceFilter = $this->option('namespace');
 
     $namespaces = $namespaceFilter
-        ? \App\Models\WorkflowNamespace::query()->where('name', $namespaceFilter)->get()
-        : \App\Models\WorkflowNamespace::all();
+        ? WorkflowNamespace::query()->where('name', $namespaceFilter)->get()
+        : WorkflowNamespace::all();
 
     if ($namespaces->isEmpty()) {
         $this->components->info('No namespaces found.');
@@ -157,7 +166,7 @@ Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per
         $retentionDays = $ns->retention_days ?? (int) config('server.history.retention_days', 30);
         $cutoff = now()->subDays($retentionDays);
 
-        $expiredRunIds = \App\Support\NamespaceWorkflowScope::runSummaryQuery($ns->name)
+        $expiredRunIds = NamespaceWorkflowScope::runSummaryQuery($ns->name)
             ->whereIn('workflow_run_summaries.status_bucket', ['completed', 'failed'])
             ->whereNotNull('workflow_run_summaries.closed_at')
             ->where('workflow_run_summaries.closed_at', '<', $cutoff)
@@ -179,7 +188,7 @@ Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per
 
         foreach ($expiredRunIds as $runId) {
             try {
-                $summary = \Workflow\V2\Models\WorkflowRunSummary::query()
+                $summary = WorkflowRunSummary::query()
                     ->where('id', $runId)
                     ->where('namespace', $ns->name)
                     ->first();
@@ -191,7 +200,7 @@ Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per
                 }
 
                 $status = is_string($summary->status)
-                    ? \Workflow\V2\Enums\RunStatus::tryFrom($summary->status)
+                    ? RunStatus::tryFrom($summary->status)
                     : null;
 
                 if ($status === null || ! $status->isTerminal()) {
@@ -200,15 +209,15 @@ Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per
                     continue;
                 }
 
-                $historyDeleted = \Workflow\V2\Models\WorkflowHistoryEvent::query()
+                $historyDeleted = WorkflowHistoryEvent::query()
                     ->where('workflow_run_id', $runId)
                     ->delete();
 
-                $tasksDeleted = \Workflow\V2\Models\WorkflowTask::query()
+                $tasksDeleted = WorkflowTask::query()
                     ->where('workflow_run_id', $runId)
                     ->delete();
 
-                \Workflow\V2\Models\WorkflowRunSummary::query()
+                WorkflowRunSummary::query()
                     ->where('id', $runId)
                     ->delete();
 
@@ -218,7 +227,7 @@ Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per
                 );
 
                 $totalPruned++;
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 $this->components->twoColumnDetail(
                     $runId,
                     sprintf('<fg=red>error</>: %s', $e->getMessage()),
@@ -244,3 +253,51 @@ Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per
 
     return $totalFailed > 0 ? 1 : 0;
 })->purpose('Prune history and task data for closed runs past the retention window');
+
+Artisan::command('env:audit {--strict : Exit non-zero when unknown or legacy DW_* vars are set}', function (): int {
+    $contract = config('dw-contract');
+
+    if (! is_array($contract)) {
+        $this->components->error('config/dw-contract.php is missing or invalid.');
+
+        return 1;
+    }
+
+    $report = EnvAuditor::audit(EnvAuditor::currentEnvironment(), $contract);
+
+    $prefix = $report['prefix'];
+    $issues = 0;
+
+    if ($report['unknown'] !== []) {
+        $this->components->warn(sprintf(
+            'Unknown %s variables set in environment (typo or silent-drop rename?): %s',
+            $prefix,
+            implode(', ', $report['unknown']),
+        ));
+        $issues += count($report['unknown']);
+    }
+
+    foreach ($report['legacy'] as $hit) {
+        $this->components->warn(sprintf(
+            'Legacy env var %s is still honored but deprecated — rename to %s.',
+            $hit['legacy'],
+            $hit['replacement'],
+        ));
+        $issues++;
+    }
+
+    if ($issues === 0) {
+        $this->components->info(sprintf(
+            '%s environment contract OK (%d %s vars recognized).',
+            rtrim($prefix, '_'),
+            count($report['known']),
+            $prefix,
+        ));
+    }
+
+    if ((bool) $this->option('strict') && $issues > 0) {
+        return 1;
+    }
+
+    return 0;
+})->purpose('Audit the process environment against the DW_* contract in config/dw-contract.php');

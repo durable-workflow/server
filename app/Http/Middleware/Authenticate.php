@@ -57,7 +57,7 @@ class Authenticate
         $backwardCompatible = (bool) config('server.auth.backward_compatible', true);
 
         if (! $hasRoleTokens && (! $backwardCompatible || ! $hasLegacyToken)) {
-            return self::error($request, 500, 'server_error', 'Auth driver is set to "token" but WORKFLOW_SERVER_AUTH_TOKEN is not configured.');
+            return self::error($request, 500, 'server_error', 'Auth driver is set to "token" but DW_AUTH_TOKEN is not configured.');
         }
 
         $provided = $request->bearerToken();
@@ -94,7 +94,7 @@ class Authenticate
         $backwardCompatible = (bool) config('server.auth.backward_compatible', true);
 
         if (! $hasRoleKeys && (! $backwardCompatible || ! $hasLegacyKey)) {
-            return self::error($request, 500, 'server_error', 'Auth driver is set to "signature" but WORKFLOW_SERVER_SIGNATURE_KEY is not configured.');
+            return self::error($request, 500, 'server_error', 'Auth driver is set to "signature" but DW_SIGNATURE_KEY is not configured.');
         }
 
         $signature = $request->header('X-Signature');

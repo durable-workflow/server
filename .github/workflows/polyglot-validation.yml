@@ -31,15 +31,15 @@ jobs:
       - name: Start server stack
         env:
           APP_KEY: ${{ steps.app-key.outputs.key }}
-          WORKFLOW_SERVER_AUTH_TOKEN: test-token-123
+          DW_AUTH_TOKEN: test-token-123
           APP_VERSION: 2.0.0
         run: |
           cat > docker-compose.override.yml << 'EOF'
           services:
             server:
               environment:
-                WORKFLOW_SERVER_WORKER_POLL_TIMEOUT: "1"
-                WORKFLOW_SERVER_WORKER_POLL_INTERVAL_MS: "100"
+                DW_WORKER_POLL_TIMEOUT: "1"
+                DW_WORKER_POLL_INTERVAL_MS: "100"
           EOF
 
           docker compose up -d --wait

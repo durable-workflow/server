@@ -32,7 +32,7 @@ jobs:
       - name: Start server (version 2.0.0)
         env:
           APP_KEY: ${{ steps.app-key.outputs.key }}
-          WORKFLOW_SERVER_AUTH_TOKEN: test-token-123
+          DW_AUTH_TOKEN: test-token-123
           APP_VERSION: 2.0.0
         run: |
           docker compose up -d --wait
@@ -42,7 +42,7 @@ jobs:
           curl -f http://localhost:8080/api/health || exit 1
 
           # Verify version endpoint returns 2.0.0
-          VERSION=$(curl -fsS -H "Authorization: Bearer ${WORKFLOW_SERVER_AUTH_TOKEN}" http://localhost:8080/api/cluster/info | jq -r '.version')
+          VERSION=$(curl -fsS -H "Authorization: Bearer ${DW_AUTH_TOKEN}" http://localhost:8080/api/cluster/info | jq -r '.version')
           echo "Server version: $VERSION"
           if [ "$VERSION" != "2.0.0" ]; then
             echo "ERROR: Expected version 2.0.0, got $VERSION"
@@ -145,13 +145,13 @@ jobs:
       - name: Start server (version 3.0.0)
         env:
           APP_KEY: ${{ steps.app-key.outputs.key }}
-          WORKFLOW_SERVER_AUTH_TOKEN: test-token-123
+          DW_AUTH_TOKEN: test-token-123
         run: |
           docker compose up -d --wait
           sleep 5
 
           # Verify server reports version 3.0.0
-          VERSION=$(curl -fsS -H "Authorization: Bearer ${WORKFLOW_SERVER_AUTH_TOKEN}" http://localhost:8080/api/cluster/info | jq -r '.version')
+          VERSION=$(curl -fsS -H "Authorization: Bearer ${DW_AUTH_TOKEN}" http://localhost:8080/api/cluster/info | jq -r '.version')
           echo "Server version: $VERSION"
           if [ "$VERSION" != "3.0.0" ]; then
             echo "ERROR: Expected version 3.0.0, got $VERSION"
@@ -215,27 +215,27 @@ jobs:
           services:
             bootstrap:
               environment:
-                WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION: "2.0"
+                DW_WORKER_PROTOCOL_VERSION: "2.0"
             server:
               environment:
-                WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION: "2.0"
+                DW_WORKER_PROTOCOL_VERSION: "2.0"
             worker:
               environment:
-                WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION: "2.0"
+                DW_WORKER_PROTOCOL_VERSION: "2.0"
             scheduler:
               environment:
-                WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION: "2.0"
+                DW_WORKER_PROTOCOL_VERSION: "2.0"
           EOF
 
       - name: Start server (worker protocol 2.0)
         env:
           APP_KEY: ${{ steps.app-key.outputs.key }}
-          WORKFLOW_SERVER_AUTH_TOKEN: test-token-123
+          DW_AUTH_TOKEN: test-token-123
         run: |
           docker compose up -d --wait
           sleep 5
 
-          VERSION=$(curl -fsS -H "Authorization: Bearer ${WORKFLOW_SERVER_AUTH_TOKEN}" http://localhost:8080/api/cluster/info | jq -r '.worker_protocol.version')
+          VERSION=$(curl -fsS -H "Authorization: Bearer ${DW_AUTH_TOKEN}" http://localhost:8080/api/cluster/info | jq -r '.worker_protocol.version')
           echo "Worker protocol version: $VERSION"
           if [ "$VERSION" != "2.0" ]; then
             echo "ERROR: Expected worker protocol 2.0, got $VERSION"
@@ -326,7 +326,7 @@ jobs:
       - name: Start server (version unknown)
         env:
           APP_KEY: ${{ steps.app-key.outputs.key }}
-          WORKFLOW_SERVER_AUTH_TOKEN: test-token-123
+          DW_AUTH_TOKEN: test-token-123
         run: |
           docker compose up -d --wait
           sleep 5

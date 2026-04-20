@@ -27,8 +27,8 @@
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="database"/>
         <env name="SESSION_DRIVER" value="array"/>
-        <env name="WORKFLOW_SERVER_AUTH_DRIVER" value="none"/>
-        <env name="WORKFLOW_SERVER_WORKER_POLL_TIMEOUT" value="0"/>
-        <env name="WORKFLOW_SERVER_WORKER_POLL_INTERVAL_MS" value="1"/>
+        <env name="DW_AUTH_DRIVER" value="none"/>
+        <env name="DW_WORKER_POLL_TIMEOUT" value="0"/>
+        <env name="DW_WORKER_POLL_INTERVAL_MS" value="1"/>
     </php>
 </phpunit>

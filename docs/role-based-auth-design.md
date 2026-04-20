@@ -18,24 +18,24 @@ Current flat auth: any valid token grants access to all endpoints. Workers can c
 ```php
 'auth' => [
     'driver' => 'token',  // or 'signature', 'none'
-    'token' => env('WORKFLOW_SERVER_AUTH_TOKEN'),  // backward compat
-    
+    'token' => EnvAuditor::env('DW_AUTH_TOKEN', 'WORKFLOW_SERVER_AUTH_TOKEN'),  // backward compat
+
     // Role tokens (Phase 1)
     'role_tokens' => [
-        'worker' => env('WORKFLOW_SERVER_WORKER_TOKEN'),
-        'operator' => env('WORKFLOW_SERVER_OPERATOR_TOKEN'),
-        'admin' => env('WORKFLOW_SERVER_ADMIN_TOKEN'),
+        'worker' => EnvAuditor::env('DW_WORKER_TOKEN', 'WORKFLOW_SERVER_WORKER_TOKEN'),
+        'operator' => EnvAuditor::env('DW_OPERATOR_TOKEN', 'WORKFLOW_SERVER_OPERATOR_TOKEN'),
+        'admin' => EnvAuditor::env('DW_ADMIN_TOKEN', 'WORKFLOW_SERVER_ADMIN_TOKEN'),
     ],
 
     'role_signature_keys' => [
-        'worker' => env('WORKFLOW_SERVER_WORKER_SIGNATURE_KEY'),
-        'operator' => env('WORKFLOW_SERVER_OPERATOR_SIGNATURE_KEY'),
-        'admin' => env('WORKFLOW_SERVER_ADMIN_SIGNATURE_KEY'),
+        'worker' => EnvAuditor::env('DW_WORKER_SIGNATURE_KEY', 'WORKFLOW_SERVER_WORKER_SIGNATURE_KEY'),
+        'operator' => EnvAuditor::env('DW_OPERATOR_SIGNATURE_KEY', 'WORKFLOW_SERVER_OPERATOR_SIGNATURE_KEY'),
+        'admin' => EnvAuditor::env('DW_ADMIN_SIGNATURE_KEY', 'WORKFLOW_SERVER_ADMIN_SIGNATURE_KEY'),
     ],
-    
+
     // Backward compatibility: if role credentials are not configured,
     // the legacy credential keeps full access
-    'backward_compatible' => env('WORKFLOW_SERVER_AUTH_BACKWARD_COMPATIBLE', true),
+    'backward_compatible' => EnvAuditor::env('DW_AUTH_BACKWARD_COMPATIBLE', 'WORKFLOW_SERVER_AUTH_BACKWARD_COMPATIBLE', true),
 ],
 ```
 
@@ -119,17 +119,19 @@ Signature auth follows the same rule using `role_signature_keys` and the legacy
 
 ### Migration Path
 
-**Existing deployments (no change needed):**
+**Existing deployments (legacy name still honored):**
 ```env
-WORKFLOW_SERVER_AUTH_TOKEN=secret123
+DW_AUTH_TOKEN=secret123
 # → Full API access when role credentials are absent
+# Legacy WORKFLOW_SERVER_AUTH_TOKEN still resolves; `env:audit` logs a
+# rename hint at boot.
 ```
 
 **New deployments (role separation):**
 ```env
-WORKFLOW_SERVER_WORKER_TOKEN=worker-secret
-WORKFLOW_SERVER_OPERATOR_TOKEN=operator-secret
-WORKFLOW_SERVER_ADMIN_TOKEN=admin-secret
+DW_WORKER_TOKEN=worker-secret
+DW_OPERATOR_TOKEN=operator-secret
+DW_ADMIN_TOKEN=admin-secret
 ```
 
 Workers use `worker-secret`, operators use `operator-secret`, etc.

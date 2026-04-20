@@ -148,7 +148,7 @@ class ClusterInfoTest extends TestCase
 
         $this->getJson('/api/cluster/info')
             ->assertStatus(500)
-            ->assertSee('WORKFLOW_SERVER_AUTH_TOKEN is not configured');
+            ->assertSee('DW_AUTH_TOKEN is not configured');
     }
 
     public function test_it_rejects_requests_when_signature_auth_is_enabled_but_key_is_not_configured(): void
@@ -160,7 +160,7 @@ class ClusterInfoTest extends TestCase
 
         $this->getJson('/api/cluster/info')
             ->assertStatus(500)
-            ->assertSee('WORKFLOW_SERVER_SIGNATURE_KEY is not configured');
+            ->assertSee('DW_SIGNATURE_KEY is not configured');
     }
 
     public function test_it_includes_structural_limits_from_the_package(): void

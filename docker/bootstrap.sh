@@ -1,8 +1,10 @@
 #!/usr/bin/env sh
 set -eu
 
-retries="${WORKFLOW_SERVER_BOOTSTRAP_RETRIES:-30}"
-delay="${WORKFLOW_SERVER_BOOTSTRAP_DELAY_SECONDS:-2}"
+# Honor the DW_ prefix with legacy WORKFLOW_SERVER_ fallback while the
+# deprecation window is open. See config/dw-contract.php.
+retries="${DW_BOOTSTRAP_RETRIES:-${WORKFLOW_SERVER_BOOTSTRAP_RETRIES:-30}}"
+delay="${DW_BOOTSTRAP_DELAY_SECONDS:-${WORKFLOW_SERVER_BOOTSTRAP_DELAY_SECONDS:-2}}"
 attempt=1
 
 while [ "$attempt" -le "$retries" ]; do
