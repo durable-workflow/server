@@ -382,6 +382,213 @@ return [
             'legacy' => 'WORKFLOW_SERVER_BOOTSTRAP_DELAY_SECONDS',
         ],
 
+        // --- Workflow package (vendor/durable-workflow/workflow) -------
+        //
+        // These control behavior of the durable-workflow/workflow package
+        // bundled inside the server image. They are resolved inside the
+        // package's config/workflows.php via Workflow\Support\Env::dw and
+        // follow the same DW_*-primary / legacy-fallback pattern as the
+        // server's own config/server.php (see
+        // zorporation/durable-workflow#494).
+
+        'DW_V2_NAMESPACE' => [
+            'description' => 'Scopes workflow instances to a namespace. When unset, instances are visible to every consumer.',
+            'default' => null,
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_NAMESPACE',
+        ],
+        'DW_V2_CURRENT_COMPATIBILITY' => [
+            'description' => 'Worker-compatibility marker this worker advertises (e.g. "build-2026-04-17"). Null means no marker.',
+            'default' => null,
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_CURRENT_COMPATIBILITY',
+        ],
+        'DW_V2_SUPPORTED_COMPATIBILITIES' => [
+            'description' => 'Comma-separated list of worker-compatibility markers this worker accepts, or "*" to accept any.',
+            'default' => null,
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_SUPPORTED_COMPATIBILITIES',
+        ],
+        'DW_V2_COMPATIBILITY_NAMESPACE' => [
+            'description' => 'Compatibility namespace when multiple apps share one workflow database but maintain independent compatibility fleets.',
+            'default' => null,
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_COMPATIBILITY_NAMESPACE',
+        ],
+        'DW_V2_COMPATIBILITY_HEARTBEAT_TTL' => [
+            'description' => 'Seconds a worker-compatibility heartbeat remains valid.',
+            'default' => '30',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_COMPATIBILITY_HEARTBEAT_TTL',
+        ],
+        'DW_V2_PIN_TO_RECORDED_FINGERPRINT' => [
+            'description' => 'When true (default), in-flight runs resolve their workflow class from the fingerprint recorded at WorkflowStarted.',
+            'default' => 'true',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_PIN_TO_RECORDED_FINGERPRINT',
+        ],
+        'DW_V2_CONTINUE_AS_NEW_EVENT_THRESHOLD' => [
+            'description' => 'History event count at which the package signals the workflow author to continue-as-new.',
+            'default' => '10000',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_CONTINUE_AS_NEW_EVENT_THRESHOLD',
+        ],
+        'DW_V2_CONTINUE_AS_NEW_SIZE_BYTES_THRESHOLD' => [
+            'description' => 'Serialized-history size (bytes) at which the package signals continue-as-new.',
+            'default' => '5242880',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_CONTINUE_AS_NEW_SIZE_BYTES_THRESHOLD',
+        ],
+        'DW_V2_HISTORY_EXPORT_SIGNING_KEY' => [
+            'description' => 'Optional HMAC key for authenticating history export archives. Unset emits unsigned exports.',
+            'default' => null,
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY',
+        ],
+        'DW_V2_HISTORY_EXPORT_SIGNING_KEY_ID' => [
+            'description' => 'Optional key identifier recorded alongside signed history exports for rotation.',
+            'default' => null,
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY_ID',
+        ],
+        'DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS' => [
+            'description' => 'Seconds the server waits for a workflow update to reach a terminal stage before returning.',
+            'default' => '10',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS',
+        ],
+        'DW_V2_UPDATE_WAIT_POLL_INTERVAL_MS' => [
+            'description' => 'Milliseconds between update-stage polls while waiting for a workflow update.',
+            'default' => '50',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_UPDATE_WAIT_POLL_INTERVAL_MS',
+        ],
+        'DW_V2_GUARDRAILS_BOOT' => [
+            'description' => 'Boot-time structural guardrail mode: "warn", "fail", or "silent".',
+            'default' => 'warn',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_GUARDRAILS_BOOT',
+        ],
+        'DW_V2_LIMIT_PENDING_ACTIVITIES' => [
+            'description' => 'Package-level pending-activity ceiling before a command batch is rejected.',
+            'default' => '2000',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_LIMIT_PENDING_ACTIVITIES',
+        ],
+        'DW_V2_LIMIT_PENDING_CHILDREN' => [
+            'description' => 'Package-level pending-child-workflow ceiling before a command batch is rejected.',
+            'default' => '1000',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_LIMIT_PENDING_CHILDREN',
+        ],
+        'DW_V2_LIMIT_PENDING_TIMERS' => [
+            'description' => 'Package-level pending-timer ceiling before a command batch is rejected.',
+            'default' => '2000',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_LIMIT_PENDING_TIMERS',
+        ],
+        'DW_V2_LIMIT_PENDING_SIGNALS' => [
+            'description' => 'Package-level pending-signal ceiling before a command batch is rejected.',
+            'default' => '5000',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_LIMIT_PENDING_SIGNALS',
+        ],
+        'DW_V2_LIMIT_PENDING_UPDATES' => [
+            'description' => 'Package-level pending-update ceiling before a command batch is rejected.',
+            'default' => '500',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_LIMIT_PENDING_UPDATES',
+        ],
+        'DW_V2_LIMIT_COMMAND_BATCH_SIZE' => [
+            'description' => 'Maximum commands accepted in a single workflow-task completion.',
+            'default' => '1000',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_LIMIT_COMMAND_BATCH_SIZE',
+        ],
+        'DW_V2_LIMIT_PAYLOAD_SIZE_BYTES' => [
+            'description' => 'Package-level single-payload byte ceiling.',
+            'default' => '2097152',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_LIMIT_PAYLOAD_SIZE_BYTES',
+        ],
+        'DW_V2_LIMIT_MEMO_SIZE_BYTES' => [
+            'description' => 'Package-level workflow-memo byte ceiling.',
+            'default' => '262144',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_LIMIT_MEMO_SIZE_BYTES',
+        ],
+        'DW_V2_LIMIT_SEARCH_ATTRIBUTE_SIZE_BYTES' => [
+            'description' => 'Package-level search-attribute byte ceiling.',
+            'default' => '40960',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_LIMIT_SEARCH_ATTRIBUTE_SIZE_BYTES',
+        ],
+        'DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE' => [
+            'description' => 'Package-level history-transaction event ceiling.',
+            'default' => '5000',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE',
+        ],
+        'DW_V2_LIMIT_WARNING_THRESHOLD_PERCENT' => [
+            'description' => 'Percent of a structural limit at which the package emits an approaching-limit warning.',
+            'default' => '80',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_LIMIT_WARNING_THRESHOLD_PERCENT',
+        ],
+        'DW_V2_TASK_DISPATCH_MODE' => [
+            'description' => 'Package-level workflow-task dispatch mode ("queue" or "poll"). Usually overridden by the server via DW_TASK_DISPATCH_MODE; included here for operators who bypass server.php.',
+            'default' => 'queue',
+            'since' => '2.0.0',
+        ],
+        'DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS' => [
+            'description' => 'Seconds before an orphaned workflow task is redispatched by the repair loop.',
+            'default' => '3',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS',
+        ],
+        'DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS' => [
+            'description' => 'Minimum seconds between successive task-repair passes per queue.',
+            'default' => '5',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS',
+        ],
+        'DW_V2_TASK_REPAIR_SCAN_LIMIT' => [
+            'description' => 'Maximum tasks considered per task-repair pass.',
+            'default' => '25',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_TASK_REPAIR_SCAN_LIMIT',
+        ],
+        'DW_V2_TASK_REPAIR_FAILURE_BACKOFF_MAX_SECONDS' => [
+            'description' => 'Ceiling on task-repair failure backoff in seconds.',
+            'default' => '60',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_TASK_REPAIR_FAILURE_BACKOFF_MAX_SECONDS',
+        ],
+        'DW_V2_MULTI_NODE' => [
+            'description' => 'Declare the deployment has multiple server nodes so cache backends are validated for cross-node coordination.',
+            'default' => 'false',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_MULTI_NODE',
+        ],
+        'DW_V2_VALIDATE_CACHE_BACKEND' => [
+            'description' => 'Whether to validate the long-poll cache backend at boot.',
+            'default' => 'true',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_VALIDATE_CACHE_BACKEND',
+        ],
+        'DW_V2_CACHE_VALIDATION_MODE' => [
+            'description' => 'How to handle cache-backend validation failures: "fail", "warn", or "silent".',
+            'default' => 'warn',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_CACHE_VALIDATION_MODE',
+        ],
+        'DW_SERIALIZER' => [
+            'description' => 'Payload codec diagnostic input. Final v2 always resolves new-run payloads to "avro"; legacy values are surfaced by workflow:v2:doctor.',
+            'default' => 'avro',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERIALIZER',
+        ],
+
     ],
 
     /*

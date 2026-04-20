@@ -678,9 +678,52 @@ every operator-facing variable the server honors.
 | `DW_BOOTSTRAP_RETRIES` | `30` | Bootstrap attempts before the entrypoint gives up. |
 | `DW_BOOTSTRAP_DELAY_SECONDS` | `2` | Seconds between bootstrap attempts. |
 
-Legacy `WORKFLOW_*` / `ACTIVITY_*` names remain honored as fallbacks
-during the deprecation window so existing deployments keep working —
-`env:audit` logs a rename hint at boot for each one it sees.
+The bundled `durable-workflow/workflow` package reads the same
+`DW_V2_*` prefix for operator controls; every entry below is resolved
+inside the package's `config/workflows.php` via
+`Workflow\Support\Env::dw` and falls back to its legacy
+`WORKFLOW_V2_*` counterpart the same way the server's own vars do.
+
+| `DW_*` name | Default | Description |
+| --- | --- | --- |
+| `DW_V2_NAMESPACE` | (unset) | Scope workflow instances to a namespace. Unset means the default, visible-to-every-consumer namespace. |
+| `DW_V2_CURRENT_COMPATIBILITY` | (unset) | Worker-compatibility marker this worker advertises (e.g. `build-2026-04-17`). |
+| `DW_V2_SUPPORTED_COMPATIBILITIES` | (unset) | Comma-separated marker list the worker accepts, or `*` for any. |
+| `DW_V2_COMPATIBILITY_NAMESPACE` | (unset) | Compatibility namespace for independent fleets sharing one database. |
+| `DW_V2_COMPATIBILITY_HEARTBEAT_TTL` | `30` | Seconds a worker-compatibility heartbeat remains valid. |
+| `DW_V2_PIN_TO_RECORDED_FINGERPRINT` | `true` | Resolve in-flight runs from the fingerprint recorded at WorkflowStarted. |
+| `DW_V2_CONTINUE_AS_NEW_EVENT_THRESHOLD` | `10000` | History event count at which the package signals continue-as-new. |
+| `DW_V2_CONTINUE_AS_NEW_SIZE_BYTES_THRESHOLD` | `5242880` | Serialized-history byte count at which the package signals continue-as-new. |
+| `DW_V2_HISTORY_EXPORT_SIGNING_KEY` | (unset) | Optional HMAC key authenticating history export archives. |
+| `DW_V2_HISTORY_EXPORT_SIGNING_KEY_ID` | (unset) | Optional key identifier recorded alongside signed exports. |
+| `DW_V2_UPDATE_WAIT_COMPLETION_TIMEOUT_SECONDS` | `10` | Seconds the server waits for an update to reach a terminal stage. |
+| `DW_V2_UPDATE_WAIT_POLL_INTERVAL_MS` | `50` | Milliseconds between update-stage polls. |
+| `DW_V2_GUARDRAILS_BOOT` | `warn` | Boot-time structural guardrail mode: `warn`, `fail`, or `silent`. |
+| `DW_V2_LIMIT_PENDING_ACTIVITIES` | `2000` | Package-level pending-activity ceiling per run. |
+| `DW_V2_LIMIT_PENDING_CHILDREN` | `1000` | Package-level pending-child ceiling per run. |
+| `DW_V2_LIMIT_PENDING_TIMERS` | `2000` | Package-level pending-timer ceiling per run. |
+| `DW_V2_LIMIT_PENDING_SIGNALS` | `5000` | Package-level pending-signal ceiling per run. |
+| `DW_V2_LIMIT_PENDING_UPDATES` | `500` | Package-level pending-update ceiling per run. |
+| `DW_V2_LIMIT_COMMAND_BATCH_SIZE` | `1000` | Maximum commands accepted per workflow-task completion. |
+| `DW_V2_LIMIT_PAYLOAD_SIZE_BYTES` | `2097152` | Package-level single-payload byte ceiling. |
+| `DW_V2_LIMIT_MEMO_SIZE_BYTES` | `262144` | Package-level memo byte ceiling. |
+| `DW_V2_LIMIT_SEARCH_ATTRIBUTE_SIZE_BYTES` | `40960` | Package-level search-attribute byte ceiling. |
+| `DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE` | `5000` | Package-level history-transaction event ceiling. |
+| `DW_V2_LIMIT_WARNING_THRESHOLD_PERCENT` | `80` | Percent of a structural limit at which the package warns. |
+| `DW_V2_TASK_DISPATCH_MODE` | `queue` | Package-level workflow-task dispatch mode. Usually overridden by the server via `DW_TASK_DISPATCH_MODE`. |
+| `DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS` | `3` | Seconds before an orphaned workflow task is redispatched. |
+| `DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS` | `5` | Minimum seconds between successive task-repair passes. |
+| `DW_V2_TASK_REPAIR_SCAN_LIMIT` | `25` | Maximum tasks considered per task-repair pass. |
+| `DW_V2_TASK_REPAIR_FAILURE_BACKOFF_MAX_SECONDS` | `60` | Ceiling on task-repair failure backoff in seconds. |
+| `DW_V2_MULTI_NODE` | `false` | Declare multi-node deployment so cache backends are validated for cross-node coordination. |
+| `DW_V2_VALIDATE_CACHE_BACKEND` | `true` | Validate the long-poll cache backend at boot. |
+| `DW_V2_CACHE_VALIDATION_MODE` | `warn` | Cache-backend validation failure handling: `fail`, `warn`, or `silent`. |
+| `DW_SERIALIZER` | `avro` | Payload codec diagnostic input. Legacy values are surfaced by `workflow:v2:doctor`; new-run v2 payloads always resolve to Avro. |
+
+Legacy `WORKFLOW_*` / `WORKFLOW_V2_*` / `ACTIVITY_*` names remain
+honored as fallbacks during the deprecation window so existing
+deployments keep working — `env:audit` logs a rename hint at boot for
+each one it sees.
 
 ### HTTP concurrency (PHP_CLI_SERVER_WORKERS)
 
