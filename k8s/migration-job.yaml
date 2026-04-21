@@ -11,11 +11,9 @@ spec:
   template:
     spec:
       restartPolicy: OnFailure
-      imagePullSecrets:
-        - name: durable-workflow-registry
       containers:
         - name: migrate
-          image: ghcr.io/durable-workflow/server:latest
+          image: durableworkflow/server:0.2
           command: ["server-entrypoint"]
           args: ["server-bootstrap"]
           envFrom:

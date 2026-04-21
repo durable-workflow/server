@@ -856,6 +856,12 @@ Helm chart. Use Kustomize overlays or direct patches for environment-specific
 names, images, registry secrets, and scaling policy; revisit Helm only when an
 operator needs chart versioning and a chart/image compatibility matrix.
 
+The public manifests default to the pinned Docker Hub image
+`durableworkflow/server:0.2`. For production, patch every workload to the exact
+Docker Hub or GHCR tag or digest you intend to run before applying it. See
+[`k8s/README.md`](k8s/README.md) for the raw-manifest support boundary and
+image-pinning contract.
+
 The supported apply order is configuration first, migration second, and
 long-running workloads last. The helper script enforces that order, deletes any
 previous completed migration job so a new deploy runs bootstrap again, waits for
@@ -883,14 +889,6 @@ kubectl create secret generic durable-workflow-redis \
   --namespace durable-workflow \
   --from-literal=REDIS_USERNAME='<username>' \
   --from-literal=REDIS_PASSWORD='<password>'
-
-# Required when pulling private images; delete imagePullSecrets from overlays
-# if every referenced image is public in your cluster.
-kubectl create secret docker-registry durable-workflow-registry \
-  --namespace durable-workflow \
-  --docker-server=ghcr.io \
-  --docker-username='<username>' \
-  --docker-password='<token>'
 
 # App config and app-level secrets only.
 kubectl apply -f k8s/secret.yaml

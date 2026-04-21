@@ -21,11 +21,9 @@ spec:
         app.kubernetes.io/name: durable-workflow
         app.kubernetes.io/component: server
     spec:
-      imagePullSecrets:
-        - name: durable-workflow-registry
       containers:
         - name: server
-          image: ghcr.io/durable-workflow/server:latest
+          image: durableworkflow/server:0.2
           ports:
             - containerPort: 8080
               name: http

@@ -22,11 +22,9 @@ spec:
             app.kubernetes.io/component: scheduler
         spec:
           restartPolicy: Never
-          imagePullSecrets:
-            - name: durable-workflow-registry
           containers:
             - name: scheduler
-              image: ghcr.io/durable-workflow/server:latest
+              image: durableworkflow/server:0.2
               command: ["server-entrypoint"]
               args: ["sh", "-c", "php artisan schedule:evaluate --limit=100; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100"]
               envFrom:

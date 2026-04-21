@@ -17,11 +17,9 @@ spec:
         app.kubernetes.io/name: durable-workflow
         app.kubernetes.io/component: worker
     spec:
-      imagePullSecrets:
-        - name: durable-workflow-registry
       containers:
         - name: worker
-          image: ghcr.io/durable-workflow/server:latest
+          image: durableworkflow/server:0.2
           command: ["server-entrypoint"]
           args: ["php", "artisan", "queue:work", "--sleep=1", "--tries=3", "--max-time=3600"]
           envFrom:
