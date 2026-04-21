@@ -24,6 +24,9 @@ added without a TTL, admission, or cardinality contract.
 - Prometheus label names emitted by the perf harness must exactly match the
   declared metric dimensions, so adding a label requires a reviewed cardinality
   policy in the same change.
+- Remote-write scrape labels must stay deployment-scoped. Per-run values such
+  as `GITHUB_RUN_ID` and `RUNNER_NAME` belong in `summary.json` provenance, not
+  in Prometheus labels that create new series for every soak.
 
 ## Cache Inventory
 
@@ -62,6 +65,8 @@ added without a TTL, admission, or cardinality contract.
   covered by a `metrics` entry;
 - perf-harness Prometheus labels must exactly match the corresponding metric
   dimensions declared in the policy;
+- perf-harness remote-write target labels must not include per-run or
+  per-runner dimensions;
 - each policy entry must include the required review fields;
 - policy owners must resolve to an autoloadable class or repo-relative file;
 - this document must mention every declared policy ID, cache prefix, and metric.

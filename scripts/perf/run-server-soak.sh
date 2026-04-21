@@ -111,8 +111,6 @@ scrape_configs:
         labels:
           repository: "${GITHUB_REPOSITORY:-local}"
           workflow: "${GITHUB_WORKFLOW:-local}"
-          run_id: "${GITHUB_RUN_ID:-local}"
-          runner: "${RUNNER_NAME:-local}"
 remote_write:
   - url: "${DW_PERF_REMOTE_WRITE_URL}"
     basic_auth:

@@ -38,7 +38,11 @@ Optional for Prometheus `remote_write` export:
 When those values are absent, the harness still runs and uploads local JSON,
 log, and Prometheus exposition artifacts. When all are present, the wrapper
 starts a short-lived Prometheus sidecar that scrapes the harness endpoint and
-remote-writes to the configured endpoint.
+remote-writes to the configured endpoint. Remote-write labels are intentionally
+limited to deployment-scoped values such as repository and workflow. Per-run
+identity, runner name, runner OS/arch, and the tested URL stay in
+`summary.json` provenance so the evidence can be traced without creating a new
+Prometheus series for every run.
 
 ## Harness Behavior
 

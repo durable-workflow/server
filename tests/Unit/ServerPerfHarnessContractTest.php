@@ -26,4 +26,15 @@ class ServerPerfHarnessContractTest extends TestCase
             $this->assertStringContainsString($needle, $source, "Perf soak summary must retain {$needle}");
         }
     }
+
+    public function test_remote_write_target_labels_exclude_per_run_dimensions(): void
+    {
+        $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/run-server-soak.sh');
+        $this->assertNotFalse($source, 'scripts/perf/run-server-soak.sh must be readable');
+
+        $this->assertStringContainsString('repository: "${GITHUB_REPOSITORY:-local}"', $source);
+        $this->assertStringContainsString('workflow: "${GITHUB_WORKFLOW:-local}"', $source);
+        $this->assertStringNotContainsString('run_id: "${GITHUB_RUN_ID:-local}"', $source);
+        $this->assertStringNotContainsString('runner: "${RUNNER_NAME:-local}"', $source);
+    }
 }
