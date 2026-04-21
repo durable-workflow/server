@@ -30,6 +30,7 @@ use Illuminate\Support\Facades\Route;
 */
 
 Route::get('/health', [HealthController::class, 'check']);
+Route::get('/ready', [HealthController::class, 'ready']);
 
 // NamespaceResolver is intentionally applied AFTER route-level RequireRole,
 // so wrong-role tokens cannot observe namespace existence via a 404/403

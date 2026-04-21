@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Models\WorkflowNamespace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -67,5 +68,85 @@ class HealthControllerTest extends TestCase
         $timestamp = $response->json('timestamp');
         $this->assertIsString($timestamp);
         $this->assertNotFalse(\DateTimeImmutable::createFromFormat(\DateTimeInterface::ATOM, $timestamp));
+    }
+
+    public function test_readiness_check_returns_ready_when_bootstrap_state_is_available(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        $response = $this->getJson('/api/ready');
+
+        $response->assertOk()
+            ->assertJsonPath('status', 'ready')
+            ->assertJsonPath('checks.database.status', 'ok')
+            ->assertJsonPath('checks.migrations.status', 'ok')
+            ->assertJsonPath('checks.default_namespace.status', 'ok')
+            ->assertJsonPath('checks.default_namespace.namespace', 'default')
+            ->assertJsonPath('checks.cache.status', 'ok')
+            ->assertJsonPath('checks.auth.status', 'ok');
+    }
+
+    public function test_readiness_check_reports_missing_default_namespace_before_bootstrap_seed(): void
+    {
+        $response = $this->getJson('/api/ready');
+
+        $response->assertStatus(503)
+            ->assertJsonPath('status', 'not_ready')
+            ->assertJsonPath('checks.default_namespace.status', 'missing')
+            ->assertJsonPath('checks.default_namespace.namespace', 'default')
+            ->assertJsonPath('checks.default_namespace.remediation', 'Run server-bootstrap to seed the default namespace.');
+    }
+
+    public function test_readiness_check_reports_unusable_database_cache_store(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        config(['cache.default' => 'database']);
+        app('cache')->forgetDriver('database');
+
+        $response = $this->getJson('/api/ready');
+
+        $response->assertStatus(503)
+            ->assertJsonPath('status', 'not_ready')
+            ->assertJsonPath('checks.cache.status', 'unavailable')
+            ->assertJsonPath('checks.cache.store', 'database');
+
+        $this->assertStringContainsString(
+            'no such table: cache',
+            (string) $response->json('checks.cache.message'),
+        );
+    }
+
+    public function test_readiness_check_reports_missing_auth_credential(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        config([
+            'server.auth.driver' => 'token',
+            'server.auth.token' => null,
+            'server.auth.role_tokens' => [],
+        ]);
+
+        $response = $this->getJson('/api/ready');
+
+        $response->assertStatus(503)
+            ->assertJsonPath('status', 'not_ready')
+            ->assertJsonPath('checks.auth.status', 'missing')
+            ->assertJsonPath('checks.auth.driver', 'token');
     }
 }

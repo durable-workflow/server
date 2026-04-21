@@ -4,6 +4,53 @@ A standalone, language-neutral workflow orchestration server. Write durable work
 
 ## Quick Start
 
+### Official Image + SQLite
+
+Use this path when you want to validate the published image without cloning the
+repository or starting MySQL/Redis. The image defaults to SQLite, database
+queues, and file cache; mount `/app/database` so the bootstrap command and API
+server share the same SQLite file.
+
+```bash
+export DW_SERVER_IMAGE=durableworkflow/server:0.2
+export DW_AUTH_TOKEN=dev-token
+docker volume create durable-workflow-sqlite
+
+# Bootstrap schema + default namespace once.
+docker run --rm \
+  -v durable-workflow-sqlite:/app/database \
+  -e DW_AUTH_DRIVER=token \
+  -e DW_AUTH_TOKEN="$DW_AUTH_TOKEN" \
+  "$DW_SERVER_IMAGE" server-bootstrap
+
+# Start the API server.
+docker run --rm --name durable-workflow-server \
+  -p 8080:8080 \
+  -v durable-workflow-sqlite:/app/database \
+  -e DW_AUTH_DRIVER=token \
+  -e DW_AUTH_TOKEN="$DW_AUTH_TOKEN" \
+  "$DW_SERVER_IMAGE"
+```
+
+In another terminal:
+
+```bash
+curl http://localhost:8080/api/health
+curl http://localhost:8080/api/ready
+curl -H "Authorization: Bearer $DW_AUTH_TOKEN" \
+  http://localhost:8080/api/cluster/info
+
+curl -X POST http://localhost:8080/api/worker/register \
+  -H "Authorization: Bearer $DW_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "X-Namespace: default" \
+  -H "X-Durable-Workflow-Protocol-Version: 1.0" \
+  -d '{"worker_id":"quickstart-worker","task_queue":"quickstart","runtime":"python"}'
+```
+
+Use Redis or another shared cache backend for multi-node deployments. The file
+cache default is intentionally scoped to the one-container SQLite quickstart.
+
 ### Docker Compose
 
 ```bash
@@ -19,6 +66,7 @@ docker compose up -d
 
 # Verify
 curl http://localhost:8080/api/health
+curl http://localhost:8080/api/ready
 ```
 
 Compose runs a one-shot `bootstrap` service before the API and worker
@@ -273,6 +321,7 @@ curl "$SERVER/api/workflows/order-42/runs/abc123/history" \
 
 ### System
 - `GET /api/health` — Health check
+- `GET /api/ready` — Readiness check for migrations, default namespace, cache, and auth config
 - `GET /api/cluster/info` — Server capabilities and version
 - `GET /api/system/repair` — Task repair diagnostics
 - `POST /api/system/repair/pass` — Run task repair sweep
@@ -541,12 +590,22 @@ Set `DW_AUTH_DRIVER=none` to disable authentication (development only).
 
 ```bash
 docker build -t durable-workflow-server .
+export DW_AUTH_TOKEN=dev-token
+docker volume create durable-workflow-sqlite
 
 # Bootstrap schema + default namespace once
-docker run --rm --env-file .env durable-workflow-server server-bootstrap
+docker run --rm \
+  -v durable-workflow-sqlite:/app/database \
+  -e DW_AUTH_DRIVER=token \
+  -e DW_AUTH_TOKEN="$DW_AUTH_TOKEN" \
+  durable-workflow-server server-bootstrap
 
 # Start the API server
-docker run --rm -p 8080:8080 --env-file .env durable-workflow-server
+docker run --rm -p 8080:8080 \
+  -v durable-workflow-sqlite:/app/database \
+  -e DW_AUTH_DRIVER=token \
+  -e DW_AUTH_TOKEN="$DW_AUTH_TOKEN" \
+  durable-workflow-server
 ```
 
 The Dockerfile clones the `durable-workflow/workflow` `v2` branch into the
@@ -555,9 +614,16 @@ build and satisfies the app's Composer path repository from that source. Use
 `--build-arg WORKFLOW_PACKAGE_REF=...` to point the image build at another
 remote or ref when needed.
 
+The production image defaults to `DB_CONNECTION=sqlite`,
+`DB_DATABASE=/app/database/database.sqlite`, `QUEUE_CONNECTION=database`, and
+`CACHE_STORE=file` so the plain Docker quickstart works without external
+services. The entrypoint creates the SQLite file when a fresh volume is mounted.
+Override those framework variables for MySQL/PostgreSQL/Redis deployments.
+
 Across Compose, plain Docker, and Kubernetes, the supported bootstrap contract
 is the same: run the image's `server-bootstrap` command once before starting the
-server and worker processes.
+server and worker processes. `/api/health` is a liveness check; `/api/ready`
+is the readiness check to gate workers and load balancers.
 
 ### Publishing Container Images
 

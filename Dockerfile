@@ -66,10 +66,11 @@ ARG WORKFLOW_PACKAGE_REF=v2
 COPY --from=vendor /app /app
 COPY --from=workflow-source /workflow/.package-provenance /app/.package-provenance
 COPY docker/bootstrap.sh /usr/local/bin/server-bootstrap
+COPY docker/ensure-sqlite-database.sh /usr/local/bin/server-ensure-sqlite
 COPY docker/entrypoint.sh /usr/local/bin/server-entrypoint
 COPY docker/php-custom.ini /usr/local/etc/php/conf.d/99-custom.ini
 
-RUN chmod +x /usr/local/bin/server-bootstrap /usr/local/bin/server-entrypoint
+RUN chmod +x /usr/local/bin/server-bootstrap /usr/local/bin/server-ensure-sqlite /usr/local/bin/server-entrypoint
 
 # Route cache is safe at build time (no env dependency).
 # Config cache is deferred to the entrypoint so runtime env vars take effect.
@@ -87,7 +88,11 @@ EXPOSE 8080
 # PHP_CLI_SERVER_WORKERS when `--no-reload` is set (otherwise it warns
 # and falls back to a single server thread), so both must be present
 # together.
-ENV PHP_CLI_SERVER_WORKERS=4
+ENV PHP_CLI_SERVER_WORKERS=4 \
+    DB_CONNECTION=sqlite \
+    DB_DATABASE=/app/database/database.sqlite \
+    QUEUE_CONNECTION=database \
+    CACHE_STORE=file
 
 ENTRYPOINT ["server-entrypoint"]
 

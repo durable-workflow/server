@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Middleware\Authenticate;
 use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
+use App\Support\ServerReadiness;
 use App\Support\WorkerProtocol;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -18,6 +19,10 @@ use Workflow\V2\Support\TaskRepairPolicy;
 class HealthController
 {
     private ?array $cachedProvenance = null;
+
+    public function __construct(
+        private readonly ServerReadiness $readiness,
+    ) {}
 
     public function check(): JsonResponse
     {
@@ -37,6 +42,18 @@ class HealthController
                 'database' => $dbHealthy ? 'ok' : 'unavailable',
             ],
         ], $dbHealthy ? 200 : 503);
+    }
+
+    public function ready(): JsonResponse
+    {
+        $snapshot = $this->readiness->snapshot();
+        $ready = $snapshot['ready'];
+
+        return response()->json([
+            'status' => $ready ? 'ready' : 'not_ready',
+            'timestamp' => now()->toIso8601String(),
+            'checks' => $snapshot['checks'],
+        ], $ready ? 200 : 503);
     }
 
     public function clusterInfo(Request $request): JsonResponse

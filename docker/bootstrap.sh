@@ -1,6 +1,8 @@
 #!/usr/bin/env sh
 set -eu
 
+/usr/local/bin/server-ensure-sqlite
+
 # Honor the DW_ prefix with legacy WORKFLOW_SERVER_ fallback while the
 # deprecation window is open. See config/dw-contract.php.
 retries="${DW_BOOTSTRAP_RETRIES:-${WORKFLOW_SERVER_BOOTSTRAP_RETRIES:-30}}"
