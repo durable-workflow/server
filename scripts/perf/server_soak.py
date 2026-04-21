@@ -544,13 +544,14 @@ def main() -> int:
                 )
 
             next_sample = time.monotonic()
+            sample_interval = max(1, args.sample_interval_seconds)
             while time.monotonic() < stop_at:
                 if time.monotonic() >= next_sample:
                     row = sample(args.compose_project)
                     samples.append(row)
                     metrics.update_sample(row)
                     write_jsonl(samples_path, row)
-                    next_sample = time.monotonic() + max(1, args.sample_interval_seconds)
+                    next_sample += sample_interval
                 time.sleep(0.2)
 
             wait(futures)

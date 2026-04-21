@@ -18,6 +18,7 @@ class ServerPerfHarnessContractTest extends TestCase
             'expected_periodic_samples',
             'minimum_trusted_samples',
             'sample coverage below trusted minimum',
+            'next_sample += sample_interval',
             'bounded_growth_policy_sha256',
             'GITHUB_RUN_ID',
             'RUNNER_NAME',
