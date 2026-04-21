@@ -19,6 +19,8 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        $this->normalizeRedisPorts();
+
         $this->app->singleton(AuthProvider::class, function ($app): AuthProvider {
             $provider = config('server.auth.provider');
 
@@ -40,6 +42,18 @@ class AppServiceProvider extends ServiceProvider
         });
 
         $this->app->singleton(ScheduleWorkflowStarter::class, RemoteScheduleStarter::class);
+    }
+
+    private function normalizeRedisPorts(): void
+    {
+        foreach (['default', 'cache'] as $connection) {
+            $key = "database.redis.{$connection}.port";
+            $port = config($key);
+
+            if (is_numeric($port)) {
+                config([$key => (int) $port]);
+            }
+        }
     }
 
     public function boot(): void
