@@ -51,6 +51,39 @@ curl -X POST http://localhost:8080/api/worker/register \
 Use Redis or another shared cache backend for multi-node deployments. The file
 cache default is intentionally scoped to the one-container SQLite quickstart.
 
+### Official Image + Compose
+
+Use this path when you want a source-free multi-container stack backed by MySQL
+and Redis. Pin `DW_SERVER_TAG` to a published `durableworkflow/server` tag, or
+set `DW_SERVER_IMAGE` to a registry reference with a digest.
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/durable-workflow/server/main/docker-compose.published.yml
+
+export DW_SERVER_TAG=0.2
+export DW_AUTH_TOKEN=dev-token
+export APP_KEY=base64:ZHVyYWJsZS13b3JrZmxvdy1zZXJ2ZXItZGV2LWtleSE=
+
+docker compose -f docker-compose.published.yml up -d --wait
+
+curl http://localhost:8080/api/health
+curl http://localhost:8080/api/ready
+curl -H "Authorization: Bearer $DW_AUTH_TOKEN" \
+  http://localhost:8080/api/cluster/info
+
+curl -X POST http://localhost:8080/api/worker/register \
+  -H "Authorization: Bearer $DW_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "X-Namespace: default" \
+  -H "X-Durable-Workflow-Protocol-Version: 1.0" \
+  -d '{"worker_id":"compose-worker","task_queue":"compose","runtime":"python"}'
+```
+
+For non-local deployments, set a unique `APP_KEY`, role-specific auth tokens,
+database passwords, and an exact image tag or digest before starting the stack.
+The published-image Compose file exposes only the API port by default; MySQL
+and Redis stay internal to the Compose project.
+
 ### Docker Compose
 
 ```bash

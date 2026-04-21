@@ -1,0 +1,115 @@
+name: durable-workflow-server
+
+x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:${DW_SERVER_TAG:-0.2}}
+
+x-server-environment: &server-environment
+  APP_NAME: "Durable Workflow Server"
+  APP_ENV: ${APP_ENV:-local}
+  APP_KEY: ${APP_KEY:-base64:ZHVyYWJsZS13b3JrZmxvdy1zZXJ2ZXItZGV2LWtleSE=}
+  APP_VERSION: ${APP_VERSION:-${DW_SERVER_TAG:-0.2}}
+  APP_DEBUG: ${APP_DEBUG:-false}
+  DB_CONNECTION: mysql
+  DB_HOST: mysql
+  DB_PORT: 3306
+  DB_DATABASE: ${DB_DATABASE:-durable_workflow}
+  DB_USERNAME: ${DB_USERNAME:-workflow}
+  DB_PASSWORD: ${DB_PASSWORD:-workflow}
+  REDIS_HOST: redis
+  QUEUE_CONNECTION: redis
+  CACHE_STORE: redis
+  DW_AUTH_DRIVER: ${DW_AUTH_DRIVER:-token}
+  DW_AUTH_TOKEN: ${DW_AUTH_TOKEN:-dev-token}
+  DW_WORKER_TOKEN: ${DW_WORKER_TOKEN:-}
+  DW_OPERATOR_TOKEN: ${DW_OPERATOR_TOKEN:-}
+  DW_ADMIN_TOKEN: ${DW_ADMIN_TOKEN:-}
+  DW_AUTH_BACKWARD_COMPATIBLE: ${DW_AUTH_BACKWARD_COMPATIBLE:-true}
+
+services:
+  bootstrap:
+    image: *server-image
+    command: ["server-bootstrap"]
+    environment:
+      <<: *server-environment
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  server:
+    image: *server-image
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    environment:
+      <<: *server-environment
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    image: *server-image
+    command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
+    environment:
+      <<: *server-environment
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      server:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  scheduler:
+    image: *server-image
+    init: true
+    command: >-
+      sh -c 'while true; do php artisan schedule:evaluate --limit=100; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done'
+    environment:
+      <<: *server-environment
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:${MYSQL_VERSION:-8.0}
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE:-durable_workflow}
+      MYSQL_USER: ${DB_USERNAME:-workflow}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-workflow}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:${REDIS_VERSION:-7-alpine}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  mysql_data:
+  redis_data:
