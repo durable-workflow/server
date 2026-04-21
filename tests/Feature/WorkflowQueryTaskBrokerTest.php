@@ -8,6 +8,12 @@ use App\Support\QueryTaskQueueFullException;
 use App\Support\ServerPollingCache;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowQueryTaskBroker;
+use Illuminate\Cache\ArrayStore;
+use Illuminate\Cache\Repository as CacheRepository;
+use Illuminate\Contracts\Cache\Lock as CacheLock;
+use Illuminate\Contracts\Cache\LockProvider;
+use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Contracts\Cache\Store as CacheStore;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
@@ -193,6 +199,54 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('control_plane.operation_name', 'status');
     }
 
+    public function test_worker_query_task_poll_reports_typed_503_when_cache_store_does_not_support_locks(): void
+    {
+        $this->bindPollingCacheStore(new WorkflowQueryTaskBrokerTestCacheStore);
+        $this->registerPythonWorker('python-query-unlocked-worker', 'python-queries', ['python.queryable']);
+
+        $poll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-unlocked-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $poll->assertStatus(503)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('reason', 'query_task_queue_unavailable')
+            ->assertJsonPath('error', 'Query task queue is temporarily unavailable.')
+            ->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('task_queue', 'python-queries')
+            ->assertJsonPath('server_capabilities.query_tasks', true)
+            ->assertJsonMissingPath('control_plane');
+    }
+
+    public function test_worker_query_task_poll_reports_typed_503_when_queue_lock_times_out(): void
+    {
+        $this->bindPollingCacheStore(new WorkflowQueryTaskBrokerTestLockTimeoutStore);
+        $this->registerPythonWorker('python-query-lock-timeout-worker', 'python-queries', ['python.queryable']);
+
+        $poll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-lock-timeout-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $poll->assertStatus(503)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('reason', 'query_task_queue_unavailable')
+            ->assertJsonPath('error', 'Query task queue is temporarily unavailable.')
+            ->assertJsonPath('message', static fn (mixed $message): bool => is_string($message)
+                && str_contains($message, 'Timed out waiting for the query task queue lock.'))
+            ->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('task_queue', 'python-queries')
+            ->assertJsonPath('server_capabilities.query_tasks', true)
+            ->assertJsonMissingPath('control_plane');
+    }
+
     public function test_concurrent_query_task_enqueues_are_atomic_for_file_cache_backend(): void
     {
         $cachePath = sys_get_temp_dir().'/dw-server-query-task-race-'.bin2hex(random_bytes(5));
@@ -335,6 +389,17 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         );
     }
 
+    private function bindPollingCacheStore(CacheStore $store): void
+    {
+        $cache = app(ServerPollingCache::class);
+        $repository = new CacheRepository($store);
+        $property = new \ReflectionProperty(ServerPollingCache::class, 'store');
+        $property->setAccessible(true);
+        $property->setValue($cache, $repository);
+
+        $this->app->instance(ServerPollingCache::class, $cache);
+    }
+
     /**
      * @param  list<Process>  $processes
      */
@@ -381,4 +446,109 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         return $decoded;
     }
+}
+
+class WorkflowQueryTaskBrokerTestCacheStore implements CacheStore
+{
+    private ArrayStore $store;
+
+    public function __construct()
+    {
+        $this->store = new ArrayStore;
+    }
+
+    public function get($key)
+    {
+        return $this->store->get($key);
+    }
+
+    public function many(array $keys)
+    {
+        return $this->store->many($keys);
+    }
+
+    public function put($key, $value, $seconds)
+    {
+        return $this->store->put($key, $value, $seconds);
+    }
+
+    public function putMany(array $values, $seconds)
+    {
+        return $this->store->putMany($values, $seconds);
+    }
+
+    public function increment($key, $value = 1)
+    {
+        return $this->store->increment($key, $value);
+    }
+
+    public function decrement($key, $value = 1)
+    {
+        return $this->store->decrement($key, $value);
+    }
+
+    public function forever($key, $value)
+    {
+        return $this->store->forever($key, $value);
+    }
+
+    public function touch($key, $seconds)
+    {
+        return $this->store->touch($key, $seconds);
+    }
+
+    public function forget($key)
+    {
+        return $this->store->forget($key);
+    }
+
+    public function flush()
+    {
+        return $this->store->flush();
+    }
+
+    public function getPrefix()
+    {
+        return $this->store->getPrefix();
+    }
+}
+
+final class WorkflowQueryTaskBrokerTestLockTimeoutStore extends WorkflowQueryTaskBrokerTestCacheStore implements LockProvider
+{
+    public function lock($name, $seconds = 0, $owner = null)
+    {
+        return new WorkflowQueryTaskBrokerTestTimeoutLock((string) $owner);
+    }
+
+    public function restoreLock($name, $owner)
+    {
+        return new WorkflowQueryTaskBrokerTestTimeoutLock((string) $owner);
+    }
+}
+
+final class WorkflowQueryTaskBrokerTestTimeoutLock implements CacheLock
+{
+    public function __construct(private readonly string $owner = '') {}
+
+    public function get($callback = null)
+    {
+        return false;
+    }
+
+    public function block($seconds, $callback = null)
+    {
+        throw new LockTimeoutException;
+    }
+
+    public function release()
+    {
+        return false;
+    }
+
+    public function owner()
+    {
+        return $this->owner;
+    }
+
+    public function forceRelease() {}
 }

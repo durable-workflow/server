@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkerRegistration;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\QueryTaskQueueUnavailableException;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowTaskLeaseRecovery;
@@ -516,8 +517,21 @@ class WorkerController
             return $worker;
         }
 
+        try {
+            $task = $this->queryTasks->poll($namespace, $worker);
+        } catch (QueryTaskQueueUnavailableException $exception) {
+            return WorkerProtocol::json([
+                'task' => null,
+                'error' => 'Query task queue is temporarily unavailable.',
+                'reason' => 'query_task_queue_unavailable',
+                'message' => $exception->getMessage(),
+                'namespace' => $namespace,
+                'task_queue' => $validated['task_queue'],
+            ], 503);
+        }
+
         return WorkerProtocol::json([
-            'task' => $this->queryTasks->poll($namespace, $worker),
+            'task' => $task,
         ]);
     }
 
