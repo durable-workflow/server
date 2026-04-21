@@ -3,6 +3,9 @@
 namespace App\Support;
 
 use App\Models\WorkerRegistration;
+use Closure;
+use Illuminate\Contracts\Cache\LockProvider;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
@@ -59,6 +62,14 @@ final class WorkflowQueryTaskBroker
                 'query_task_queue_full',
                 $exception->getMessage(),
                 429,
+            );
+        } catch (QueryTaskQueueUnavailableException $exception) {
+            return $this->queryFailed(
+                $run,
+                $queryName,
+                'query_task_queue_unavailable',
+                $exception->getMessage(),
+                503,
             );
         }
 
@@ -293,6 +304,25 @@ final class WorkflowQueryTaskBroker
         string $leaseOwner,
         array $supportedWorkflowTypes,
     ): ?array {
+        $task = $this->withQueueLock(
+            $namespace,
+            $taskQueue,
+            fn (): ?array => $this->claimNextPendingTask($namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes),
+        );
+
+        return is_array($task) ? $this->queryTaskPayload($task) : null;
+    }
+
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     * @return array<string, mixed>|null
+     */
+    private function claimNextPendingTask(
+        string $namespace,
+        string $taskQueue,
+        string $leaseOwner,
+        array $supportedWorkflowTypes,
+    ): ?array {
         $ids = $this->pendingTaskIds($namespace, $taskQueue);
         $remaining = [];
 
@@ -332,7 +362,7 @@ final class WorkflowQueryTaskBroker
                 )),
             );
 
-            return $this->queryTaskPayload($task);
+            return $task;
         }
 
         $this->storePendingTaskIds($namespace, $taskQueue, $remaining);
@@ -512,15 +542,17 @@ final class WorkflowQueryTaskBroker
 
     private function appendPendingTask(string $namespace, string $taskQueue, string $queryTaskId): void
     {
-        $ids = $this->pendingTaskIds($namespace, $taskQueue);
+        $this->withQueueLock($namespace, $taskQueue, function () use ($namespace, $taskQueue, $queryTaskId): void {
+            $ids = $this->pendingTaskIds($namespace, $taskQueue);
 
-        if (! in_array($queryTaskId, $ids, true) && count($ids) >= $this->maxPendingPerQueue()) {
-            throw new QueryTaskQueueFullException($namespace, $taskQueue, $this->maxPendingPerQueue());
-        }
+            if (! in_array($queryTaskId, $ids, true) && count($ids) >= $this->maxPendingPerQueue()) {
+                throw new QueryTaskQueueFullException($namespace, $taskQueue, $this->maxPendingPerQueue());
+            }
 
-        $ids[] = $queryTaskId;
+            $ids[] = $queryTaskId;
 
-        $this->storePendingTaskIds($namespace, $taskQueue, array_values(array_unique($ids)));
+            $this->storePendingTaskIds($namespace, $taskQueue, array_values(array_unique($ids)));
+        });
     }
 
     /**
@@ -552,6 +584,29 @@ final class WorkflowQueryTaskBroker
     private function storePendingTaskIds(string $namespace, string $taskQueue, array $ids): void
     {
         $this->store()->put($this->queueKey($namespace, $taskQueue), array_values($ids), now()->addSeconds($this->taskTtlSeconds()));
+    }
+
+    /**
+     * @template TReturn
+     *
+     * @param  Closure(): TReturn  $callback
+     * @return TReturn
+     */
+    private function withQueueLock(string $namespace, string $taskQueue, Closure $callback): mixed
+    {
+        $store = $this->store()->getStore();
+
+        if (! $store instanceof LockProvider) {
+            throw new QueryTaskQueueUnavailableException($namespace, $taskQueue, 'The configured polling cache store does not support atomic locks.');
+        }
+
+        try {
+            return $store
+                ->lock($this->queueLockKey($namespace, $taskQueue), $this->queueLockTtlSeconds())
+                ->block($this->queueLockWaitSeconds(), $callback);
+        } catch (LockTimeoutException $exception) {
+            throw new QueryTaskQueueUnavailableException($namespace, $taskQueue, 'Timed out waiting for the query task queue lock.', $exception);
+        }
     }
 
     private function queryFailed(
@@ -637,6 +692,16 @@ final class WorkflowQueryTaskBroker
         return max(1, min(10000, (int) config('server.query_tasks.max_pending_per_queue', 1024)));
     }
 
+    private function queueLockTtlSeconds(): int
+    {
+        return 10;
+    }
+
+    private function queueLockWaitSeconds(): int
+    {
+        return 5;
+    }
+
     private function staleAfterSeconds(): int
     {
         return max(1, (int) config('server.workers.stale_after_seconds', 60));
@@ -655,6 +720,11 @@ final class WorkflowQueryTaskBroker
     private function queueKey(string $namespace, string $taskQueue): string
     {
         return self::CACHE_PREFIX.'queue:'.sha1($namespace.'|'.$taskQueue);
+    }
+
+    private function queueLockKey(string $namespace, string $taskQueue): string
+    {
+        return self::CACHE_PREFIX.'queue-lock:'.sha1($namespace.'|'.$taskQueue);
     }
 
     private function store(): CacheRepository

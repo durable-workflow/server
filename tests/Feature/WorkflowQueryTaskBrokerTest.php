@@ -5,10 +5,13 @@ namespace Tests\Feature;
 use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneProtocol;
 use App\Support\QueryTaskQueueFullException;
+use App\Support\ServerPollingCache;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowQueryTaskBroker;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
+use Symfony\Component\Process\Process;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
@@ -190,6 +193,101 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('control_plane.operation_name', 'status');
     }
 
+    public function test_concurrent_query_task_enqueues_are_atomic_for_file_cache_backend(): void
+    {
+        $cachePath = sys_get_temp_dir().'/dw-server-query-task-race-'.bin2hex(random_bytes(5));
+        $readyDir = $cachePath.'-ready';
+        $barrierPath = $cachePath.'.release';
+        $processCount = 8;
+        $limit = 3;
+        $processes = [];
+
+        File::ensureDirectoryExists($cachePath);
+        File::ensureDirectoryExists($readyDir);
+
+        config([
+            'cache.default' => 'file',
+            'server.polling.cache_path' => $cachePath,
+            'server.query_tasks.max_pending_per_queue' => $limit,
+        ]);
+
+        try {
+            for ($i = 0; $i < $processCount; $i++) {
+                $process = new Process([
+                    PHP_BINARY,
+                    base_path('tests/Fixtures/query_task_enqueue_worker.php'),
+                    $cachePath,
+                    $barrierPath,
+                    $readyDir,
+                    (string) $limit,
+                    'default',
+                    'python-queries',
+                    'worker-'.$i,
+                ], base_path());
+                $process->setTimeout(30);
+                $process->start();
+
+                $processes[] = $process;
+            }
+
+            $this->waitForReadyQueryTaskEnqueueWorkers($readyDir, $processCount, $processes);
+
+            touch($barrierPath);
+
+            $results = array_map(
+                fn (Process $process): array => $this->queryTaskEnqueueWorkerResult($process),
+                $processes,
+            );
+
+            $errors = array_values(array_filter(
+                $results,
+                static fn (array $result): bool => ($result['status'] ?? null) === 'error',
+            ));
+
+            $this->assertSame([], $errors);
+
+            $enqueuedIds = array_values(array_map(
+                static fn (array $result): string => (string) $result['query_task_id'],
+                array_filter($results, static fn (array $result): bool => ($result['status'] ?? null) === 'enqueued'),
+            ));
+            $fullResults = array_values(array_filter(
+                $results,
+                static fn (array $result): bool => ($result['status'] ?? null) === 'full',
+            ));
+
+            $this->assertCount($limit, $enqueuedIds);
+            $this->assertCount($processCount - $limit, $fullResults);
+
+            /** @var ServerPollingCache $cache */
+            $cache = app(ServerPollingCache::class);
+            $store = $cache->store();
+            $queueIds = $store->get('server:workflow-query-task:queue:'.sha1('default|python-queries'));
+
+            $this->assertIsArray($queueIds);
+            sort($queueIds);
+            sort($enqueuedIds);
+
+            $this->assertSame($enqueuedIds, $queueIds);
+
+            foreach ($queueIds as $queryTaskId) {
+                $task = $store->get('server:workflow-query-task:task:'.$queryTaskId);
+
+                $this->assertIsArray($task);
+                $this->assertSame('pending', $task['status'] ?? null);
+            }
+        } finally {
+            foreach ($processes as $process) {
+                if ($process->isRunning()) {
+                    $process->stop(0);
+                }
+            }
+
+            File::deleteDirectory($cachePath);
+            File::deleteDirectory($readyDir);
+            @unlink($barrierPath);
+        }
+    }
+
     private function startRemoteWorkflow(string $workflowId): WorkflowRun
     {
         $start = $this->postJson('/api/workflows', [
@@ -235,5 +333,52 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 'status' => 'active',
             ],
         );
+    }
+
+    /**
+     * @param  list<Process>  $processes
+     */
+    private function waitForReadyQueryTaskEnqueueWorkers(string $readyDir, int $expected, array $processes): void
+    {
+        $deadline = microtime(true) + 15;
+
+        while ($this->readyQueryTaskEnqueueWorkerCount($readyDir) < $expected && microtime(true) < $deadline) {
+            foreach ($processes as $process) {
+                if (! $process->isRunning()) {
+                    $this->fail("Query-task enqueue worker exited before the barrier.\n".$process->getOutput().$process->getErrorOutput());
+                }
+            }
+
+            usleep(10000);
+        }
+
+        $this->assertSame($expected, $this->readyQueryTaskEnqueueWorkerCount($readyDir));
+    }
+
+    private function readyQueryTaskEnqueueWorkerCount(string $readyDir): int
+    {
+        return count(glob($readyDir.'/*.ready') ?: []);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function queryTaskEnqueueWorkerResult(Process $process): array
+    {
+        $process->wait();
+
+        $output = trim($process->getOutput());
+        $decoded = json_decode($output, true);
+
+        if (! $process->isSuccessful() || ! is_array($decoded)) {
+            return [
+                'status' => 'error',
+                'exit_code' => $process->getExitCode(),
+                'stdout' => $output,
+                'stderr' => trim($process->getErrorOutput()),
+            ];
+        }
+
+        return $decoded;
     }
 }
