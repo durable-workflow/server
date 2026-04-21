@@ -593,18 +593,63 @@ docker run --rm --entrypoint sh durableworkflow/server:0.2.0 -lc \
 
 ### Kubernetes
 
+The raw manifests intentionally stay Kubernetes-native instead of shipping a
+Helm chart. Use Kustomize overlays or direct patches for environment-specific
+names, images, registry secrets, and scaling policy; revisit Helm only when an
+operator needs chart versioning and a chart/image compatibility matrix.
+
+The supported apply order is configuration first, migration second, and
+long-running workloads last. The helper script enforces that order, deletes any
+previous completed migration job so a new deploy runs bootstrap again, waits for
+completion, and only then applies the server, worker, scheduler, and disruption
+budget manifests:
+
 ```bash
-# Create namespace and secrets
+scripts/deploy-k8s.sh
+```
+
+Before running it, create the externally managed credentials referenced by the
+pod templates. Keep DB/Redis credentials out of `k8s/secret.yaml`; manage them
+with your secret manager, External Secrets operator, or `kubectl`:
+
+```bash
+# Required by every pod template.
 kubectl apply -f k8s/namespace.yaml
-kubectl apply -f k8s/secret.yaml  # Edit secrets first!
+kubectl create secret generic durable-workflow-database \
+  --namespace durable-workflow \
+  --from-literal=DB_USERNAME=workflow \
+  --from-literal=DB_PASSWORD='CHANGE_ME'
 
-# Run bootstrap job
+# Optional; only create this when Redis requires auth.
+kubectl create secret generic durable-workflow-redis \
+  --namespace durable-workflow \
+  --from-literal=REDIS_USERNAME='<username>' \
+  --from-literal=REDIS_PASSWORD='<password>'
+
+# Required when pulling private images; delete imagePullSecrets from overlays
+# if every referenced image is public in your cluster.
+kubectl create secret docker-registry durable-workflow-registry \
+  --namespace durable-workflow \
+  --docker-server=ghcr.io \
+  --docker-username='<username>' \
+  --docker-password='<token>'
+
+# App config and app-level secrets only.
+kubectl apply -f k8s/secret.yaml
+
+# Manual equivalent of scripts/deploy-k8s.sh.
 kubectl apply -f k8s/migration-job.yaml
+kubectl -n durable-workflow wait --for=condition=complete --timeout=300s job/durable-workflow-migrate
 
-# Deploy server and workers
+kubectl apply -f k8s/server-pdb.yaml
 kubectl apply -f k8s/server-deployment.yaml
 kubectl apply -f k8s/worker-deployment.yaml
+kubectl apply -f k8s/scheduler-cronjob.yaml
 ```
+
+The Deployment manifests omit `spec.replicas` so HorizontalPodAutoscalers and
+operator overlays own replica count. For static installs, set replicas in your
+overlay or with `kubectl scale`.
 
 ### Configuration
 

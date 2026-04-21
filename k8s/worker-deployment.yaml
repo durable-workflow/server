@@ -7,7 +7,6 @@ metadata:
     app.kubernetes.io/name: durable-workflow
     app.kubernetes.io/component: worker
 spec:
-  replicas: 2
   selector:
     matchLabels:
       app.kubernetes.io/name: durable-workflow
@@ -18,14 +17,41 @@ spec:
         app.kubernetes.io/name: durable-workflow
         app.kubernetes.io/component: worker
     spec:
+      imagePullSecrets:
+        - name: durable-workflow-registry
       containers:
         - name: worker
           image: ghcr.io/durable-workflow/server:latest
           command: ["server-entrypoint"]
           args: ["php", "artisan", "queue:work", "--sleep=1", "--tries=3", "--max-time=3600"]
           envFrom:
+            - configMapRef:
+                name: durable-workflow-config
             - secretRef:
-                name: durable-workflow-env
+                name: durable-workflow-app-secrets
+          env:
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: durable-workflow-database
+                  key: DB_USERNAME
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: durable-workflow-database
+                  key: DB_PASSWORD
+            - name: REDIS_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: durable-workflow-redis
+                  key: REDIS_USERNAME
+                  optional: true
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: durable-workflow-redis
+                  key: REDIS_PASSWORD
+                  optional: true
           livenessProbe:
             exec:
               command: ["php", "artisan", "queue:monitor", "default"]

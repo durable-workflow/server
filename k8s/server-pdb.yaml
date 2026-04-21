@@ -1,0 +1,14 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: durable-workflow-server
+  namespace: durable-workflow
+  labels:
+    app.kubernetes.io/name: durable-workflow
+    app.kubernetes.io/component: server
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: durable-workflow
+      app.kubernetes.io/component: server

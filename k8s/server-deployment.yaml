@@ -7,17 +7,22 @@ metadata:
     app.kubernetes.io/name: durable-workflow
     app.kubernetes.io/component: server
 spec:
-  replicas: 2
   selector:
     matchLabels:
       app.kubernetes.io/name: durable-workflow
       app.kubernetes.io/component: server
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
   template:
     metadata:
       labels:
         app.kubernetes.io/name: durable-workflow
         app.kubernetes.io/component: server
     spec:
+      imagePullSecrets:
+        - name: durable-workflow-registry
       containers:
         - name: server
           image: ghcr.io/durable-workflow/server:latest
@@ -25,8 +30,33 @@ spec:
             - containerPort: 8080
               name: http
           envFrom:
+            - configMapRef:
+                name: durable-workflow-config
             - secretRef:
-                name: durable-workflow-env
+                name: durable-workflow-app-secrets
+          env:
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: durable-workflow-database
+                  key: DB_USERNAME
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: durable-workflow-database
+                  key: DB_PASSWORD
+            - name: REDIS_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: durable-workflow-redis
+                  key: REDIS_USERNAME
+                  optional: true
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: durable-workflow-redis
+                  key: REDIS_PASSWORD
+                  optional: true
           livenessProbe:
             httpGet:
               path: /api/health

@@ -22,14 +22,41 @@ spec:
             app.kubernetes.io/component: scheduler
         spec:
           restartPolicy: Never
+          imagePullSecrets:
+            - name: durable-workflow-registry
           containers:
             - name: scheduler
               image: ghcr.io/durable-workflow/server:latest
               command: ["server-entrypoint"]
               args: ["sh", "-c", "php artisan schedule:evaluate --limit=100; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100"]
               envFrom:
+                - configMapRef:
+                    name: durable-workflow-config
                 - secretRef:
-                    name: durable-workflow-env
+                    name: durable-workflow-app-secrets
+              env:
+                - name: DB_USERNAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: durable-workflow-database
+                      key: DB_USERNAME
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: durable-workflow-database
+                      key: DB_PASSWORD
+                - name: REDIS_USERNAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: durable-workflow-redis
+                      key: REDIS_USERNAME
+                      optional: true
+                - name: REDIS_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: durable-workflow-redis
+                      key: REDIS_PASSWORD
+                      optional: true
               resources:
                 requests:
                   cpu: 100m
