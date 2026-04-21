@@ -162,7 +162,7 @@ final class WorkflowQueryTaskBroker
 
         try {
             $this->appendPendingTask($namespace, $taskQueue, $queryTaskId);
-        } catch (QueryTaskQueueFullException $exception) {
+        } catch (QueryTaskQueueFullException|QueryTaskQueueUnavailableException $exception) {
             $this->store()->forget($this->taskKey($queryTaskId));
 
             throw $exception;

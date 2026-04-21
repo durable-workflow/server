@@ -222,6 +222,31 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonMissingPath('control_plane');
     }
 
+    public function test_control_plane_query_reports_typed_503_without_orphaning_task_when_cache_store_does_not_support_locks(): void
+    {
+        Queue::fake();
+
+        $store = new WorkflowQueryTaskBrokerTestCacheStore;
+        $this->bindPollingCacheStore($store);
+        $this->startRemoteWorkflow('wf-query-task-unlocked-response');
+        $this->registerPythonWorker('python-query-unlocked-worker', 'python-queries', ['python.queryable']);
+
+        $query = $this->postJson('/api/workflows/wf-query-task-unlocked-response/query/status', [
+            'input' => ['summary'],
+        ], $this->apiHeaders());
+
+        $query->assertStatus(503)
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('workflow_id', 'wf-query-task-unlocked-response')
+            ->assertJsonPath('query_name', 'status')
+            ->assertJsonPath('reason', 'query_task_queue_unavailable')
+            ->assertJsonPath('control_plane.operation', 'query')
+            ->assertJsonPath('control_plane.operation_name', 'status');
+
+        $this->assertSame([], $store->keysStartingWith('server:workflow-query-task:task:'));
+        $this->assertSame([], $store->keysStartingWith('server:workflow-query-task:queue:'));
+    }
+
     public function test_worker_query_task_poll_reports_typed_503_when_queue_lock_times_out(): void
     {
         $this->bindPollingCacheStore(new WorkflowQueryTaskBrokerTestLockTimeoutStore);
@@ -245,6 +270,33 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('task_queue', 'python-queries')
             ->assertJsonPath('server_capabilities.query_tasks', true)
             ->assertJsonMissingPath('control_plane');
+    }
+
+    public function test_control_plane_query_reports_typed_503_without_orphaning_task_when_queue_lock_times_out(): void
+    {
+        Queue::fake();
+
+        $store = new WorkflowQueryTaskBrokerTestLockTimeoutStore;
+        $this->bindPollingCacheStore($store);
+        $this->startRemoteWorkflow('wf-query-task-lock-timeout-response');
+        $this->registerPythonWorker('python-query-lock-timeout-worker', 'python-queries', ['python.queryable']);
+
+        $query = $this->postJson('/api/workflows/wf-query-task-lock-timeout-response/query/status', [
+            'input' => ['summary'],
+        ], $this->apiHeaders());
+
+        $query->assertStatus(503)
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('workflow_id', 'wf-query-task-lock-timeout-response')
+            ->assertJsonPath('query_name', 'status')
+            ->assertJsonPath('reason', 'query_task_queue_unavailable')
+            ->assertJsonPath('message', static fn (mixed $message): bool => is_string($message)
+                && str_contains($message, 'Timed out waiting for the query task queue lock.'))
+            ->assertJsonPath('control_plane.operation', 'query')
+            ->assertJsonPath('control_plane.operation_name', 'status');
+
+        $this->assertSame([], $store->keysStartingWith('server:workflow-query-task:task:'));
+        $this->assertSame([], $store->keysStartingWith('server:workflow-query-task:queue:'));
     }
 
     public function test_concurrent_query_task_enqueues_are_atomic_for_file_cache_backend(): void
@@ -452,6 +504,9 @@ class WorkflowQueryTaskBrokerTestCacheStore implements CacheStore
 {
     private ArrayStore $store;
 
+    /** @var array<string, true> */
+    private array $keys = [];
+
     public function __construct()
     {
         $this->store = new ArrayStore;
@@ -469,11 +524,17 @@ class WorkflowQueryTaskBrokerTestCacheStore implements CacheStore
 
     public function put($key, $value, $seconds)
     {
+        $this->keys[(string) $key] = true;
+
         return $this->store->put($key, $value, $seconds);
     }
 
     public function putMany(array $values, $seconds)
     {
+        foreach (array_keys($values) as $key) {
+            $this->keys[(string) $key] = true;
+        }
+
         return $this->store->putMany($values, $seconds);
     }
 
@@ -489,6 +550,8 @@ class WorkflowQueryTaskBrokerTestCacheStore implements CacheStore
 
     public function forever($key, $value)
     {
+        $this->keys[(string) $key] = true;
+
         return $this->store->forever($key, $value);
     }
 
@@ -499,17 +562,36 @@ class WorkflowQueryTaskBrokerTestCacheStore implements CacheStore
 
     public function forget($key)
     {
+        unset($this->keys[(string) $key]);
+
         return $this->store->forget($key);
     }
 
     public function flush()
     {
+        $this->keys = [];
+
         return $this->store->flush();
     }
 
     public function getPrefix()
     {
         return $this->store->getPrefix();
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function keysStartingWith(string $prefix): array
+    {
+        $keys = array_values(array_filter(
+            array_keys($this->keys),
+            static fn (string $key): bool => str_starts_with($key, $prefix),
+        ));
+
+        sort($keys);
+
+        return $keys;
     }
 }
 
