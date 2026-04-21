@@ -180,6 +180,20 @@ The published Compose smoke workflow runs this file in both `local` and
 single-token development recipe; the `production` profile validates role-scoped
 worker/admin tokens with backward-compatible auth disabled.
 
+### Small Cluster Status
+
+Small clustered deployments without Kubernetes are being validated as a narrow
+public support boundary, not as a general HA promise. The current decision is to
+proceed toward one boring topology: 2 or 3 API nodes behind a stateless load
+balancer, external MySQL or PostgreSQL, shared Redis, independently scaled
+external workers, and exactly one scheduler or maintenance runner. SQLite,
+Redis-less multi-node mode, duplicate schedulers, rolling upgrades, multi-region
+deployments, Helm charts, and provider-specific failover semantics are not part
+of that first contract.
+
+The Phase 0 rationale and the next harness requirements live in
+[`docs/small-cluster-validation.md`](docs/small-cluster-validation.md).
+
 ### Docker Compose
 
 ```bash
