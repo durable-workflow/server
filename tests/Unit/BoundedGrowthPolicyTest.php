@@ -112,6 +112,17 @@ class BoundedGrowthPolicyTest extends TestCase
         }
     }
 
+    public function test_policy_owners_reference_existing_code(): void
+    {
+        foreach ($this->policyCacheKeys() as $id => $entry) {
+            $this->assertPolicyOwnerExists((string) ($entry['owner'] ?? ''), $id);
+        }
+
+        foreach ($this->policyMetrics() as $metric => $entry) {
+            $this->assertPolicyOwnerExists((string) ($entry['owner'] ?? ''), $metric);
+        }
+    }
+
     public function test_metric_policy_entries_have_cardinality_fields(): void
     {
         $required = [
@@ -377,6 +388,22 @@ class BoundedGrowthPolicyTest extends TestCase
             'workflow_id',
             'workflow_type',
         ];
+    }
+
+    private function assertPolicyOwnerExists(string $owner, string $policyId): void
+    {
+        $this->assertNotSame('', trim($owner), "{$policyId}.owner must not be empty");
+
+        if (class_exists($owner)) {
+            return;
+        }
+
+        $path = self::$repoRoot.'/'.ltrim($owner, '/');
+
+        $this->assertFileExists(
+            $path,
+            "{$policyId}.owner must be an autoloadable class or repo-relative file path.",
+        );
     }
 
     /**

@@ -63,6 +63,7 @@ added without a TTL, admission, or cardinality contract.
 - perf-harness Prometheus labels must exactly match the corresponding metric
   dimensions declared in the policy;
 - each policy entry must include the required review fields;
+- policy owners must resolve to an autoloadable class or repo-relative file;
 - this document must mention every declared policy ID, cache prefix, and metric.
 
 This is not a replacement for long-running soak evidence. It is the repository
