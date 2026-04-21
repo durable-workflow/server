@@ -8,6 +8,7 @@ use App\Support\ControlPlaneResultMapper;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkflowCommandContextFactory;
 use App\Support\WorkflowQueryTaskBroker;
+use App\Support\WorkflowRunDiagnostics;
 use App\Support\WorkflowStartService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -28,6 +29,7 @@ class WorkflowController
         private readonly WorkflowCommandContextFactory $commandContexts,
         private readonly ControlPlaneResultMapper $resultMapper,
         private readonly WorkflowQueryTaskBroker $queryTasks,
+        private readonly WorkflowRunDiagnostics $diagnostics,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -298,6 +300,60 @@ class WorkflowController
             $namespace,
             $this->workflowControlPlane->describe($workflowId, ['run_id' => $runId]),
         ));
+    }
+
+    public function debug(Request $request, string $workflowId): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = $request->attributes->get('namespace');
+
+        if (! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
+            return ControlPlaneProtocol::jsonForRequest($request, [
+                'message' => 'Workflow not found.',
+                'reason' => 'instance_not_found',
+            ], 404);
+        }
+
+        $run = NamespaceWorkflowScope::currentRun($namespace, $workflowId);
+
+        if (! $run) {
+            return ControlPlaneProtocol::jsonForRequest($request, [
+                'message' => 'Workflow not found.',
+                'reason' => 'instance_not_found',
+            ], 404);
+        }
+
+        return ControlPlaneProtocol::jsonForRequest(
+            $request,
+            $this->diagnostics->forRun($namespace, $run),
+        );
+    }
+
+    public function debugRun(Request $request, string $workflowId, string $runId): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = $request->attributes->get('namespace');
+
+        if (! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
+            return $this->runNotFound($request, $workflowId, $runId);
+        }
+
+        $run = NamespaceWorkflowScope::run($namespace, $workflowId, $runId);
+
+        if (! $run) {
+            return $this->runNotFound($request, $workflowId, $runId);
+        }
+
+        return ControlPlaneProtocol::jsonForRequest(
+            $request,
+            $this->diagnostics->forRun($namespace, $run),
+        );
     }
 
     public function signal(Request $request, string $workflowId, string $signalName): JsonResponse

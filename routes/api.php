@@ -70,8 +70,10 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::get('/', [WorkflowController::class, 'index']);
         Route::post('/', [WorkflowController::class, 'start']);
         Route::get('/{workflowId}', [WorkflowController::class, 'show']);
+        Route::get('/{workflowId}/debug', [WorkflowController::class, 'debug']);
         Route::get('/{workflowId}/runs', [WorkflowController::class, 'runs']);
         Route::get('/{workflowId}/runs/{runId}', [WorkflowController::class, 'showRun']);
+        Route::get('/{workflowId}/runs/{runId}/debug', [WorkflowController::class, 'debugRun']);
 
         // Commands (instance-targeted — always targets the current run)
         Route::post('/{workflowId}/signal/{signalName}', [WorkflowController::class, 'signal']);

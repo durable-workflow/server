@@ -34,6 +34,15 @@ final class ControlPlaneOperation
             );
         }
 
+        if ($request->isMethod('GET') && preg_match('#^/api/workflows/([^/]+)/runs/([^/]+)/debug$#', $path, $matches) === 1) {
+            return new self(
+                'debug_workflow',
+                null,
+                rawurldecode($matches[1]),
+                rawurldecode($matches[2]),
+            );
+        }
+
         if ($request->isMethod('GET') && preg_match('#^/api/workflows/([^/]+)/runs/([^/]+)/history$#', $path, $matches) === 1) {
             return new self(
                 'history',
@@ -49,6 +58,10 @@ final class ControlPlaneOperation
 
         if ($request->isMethod('GET') && preg_match('#^/api/workflows/([^/]+)$#', $path, $matches) === 1) {
             return new self('describe', null, rawurldecode($matches[1]));
+        }
+
+        if ($request->isMethod('GET') && preg_match('#^/api/workflows/([^/]+)/debug$#', $path, $matches) === 1) {
+            return new self('debug_workflow', null, rawurldecode($matches[1]));
         }
 
         if ($request->isMethod('POST') && preg_match('#^/api/workflows/([^/]+)/signal/([^/]+)$#', $path, $matches) === 1) {
