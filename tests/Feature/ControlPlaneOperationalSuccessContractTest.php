@@ -98,6 +98,14 @@ class ControlPlaneOperationalSuccessContractTest extends TestCase
                             'label_cardinality_policy',
                             'by_workflow_type',
                         ],
+                        'dw_projection_drift_total' => [
+                            'total',
+                            'table_count',
+                            'tables_with_drift',
+                            'scope',
+                            'label_cardinality_policy',
+                            'by_table',
+                        ],
                     ],
                     'cardinality' => [
                         'metric_label_sets',

@@ -73,6 +73,52 @@ class SystemMetricsTest extends TestCase
         ], $response->json('metrics.dw_workflow_task_consecutive_failures.by_workflow_type'));
     }
 
+    public function test_system_metrics_reports_projection_drift_by_fixed_table_inventory(): void
+    {
+        $this->createWorkflowTaskMetricRow('tests.projection-drift', 1);
+
+        $response = $this->getJson('/api/system/metrics', $this->controlPlaneHeadersWithWorkerProtocol());
+
+        $response->assertOk()
+            ->assertJsonPath('metrics.dw_projection_drift_total.total', 1)
+            ->assertJsonPath('metrics.dw_projection_drift_total.table_count', 5)
+            ->assertJsonPath('metrics.dw_projection_drift_total.tables_with_drift', 1)
+            ->assertJsonPath('metrics.dw_projection_drift_total.scope', 'server')
+            ->assertJsonPath(
+                'cardinality.metric_label_sets.dw_projection_drift_total.table.selection',
+                'fixed_projection_table_inventory',
+            );
+
+        $policy = require base_path('config/dw-bounded-growth.php');
+        $this->assertSame(
+            array_keys($policy['metrics']['dw_projection_drift_total']['dimensions']),
+            array_keys($response->json('cardinality.metric_label_sets.dw_projection_drift_total')),
+        );
+
+        $this->assertSame([
+            [
+                'table' => 'run_summaries',
+                'needs_rebuild' => 1,
+            ],
+            [
+                'table' => 'run_waits',
+                'needs_rebuild' => 0,
+            ],
+            [
+                'table' => 'run_timeline_entries',
+                'needs_rebuild' => 0,
+            ],
+            [
+                'table' => 'run_timer_entries',
+                'needs_rebuild' => 0,
+            ],
+            [
+                'table' => 'run_lineage_entries',
+                'needs_rebuild' => 0,
+            ],
+        ], $response->json('metrics.dw_projection_drift_total.by_table'));
+    }
+
     private function createWorkflowTaskMetricRow(
         string $workflowType,
         int $attemptCount,

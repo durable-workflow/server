@@ -42,6 +42,7 @@ added without a TTL, admission, or cardinality contract.
 | Metric | Surface | Label Policy |
 | --- | --- | --- |
 | `dw_workflow_task_consecutive_failures` | `GET /api/system/metrics` | `namespace` is request-scoped rather than a label. `workflow_type` series are limited by `server.metrics.workflow_task_failure_type_limit`, default 20 and hard-clamped to 100; suppressed type/task counts are reported in the payload. |
+| `dw_projection_drift_total` | `GET /api/system/metrics` | `namespace` is server-scoped rather than a label. `table` is fixed to the finite projection inventory: `run_summaries`, `run_waits`, `run_timeline_entries`, `run_timer_entries`, and `run_lineage_entries`. Alert on non-zero `needs_rebuild` per table. |
 | `dw_perf_requests_total` | Perf harness `/metrics`; optional remote_write | The only label is `status`, produced from HTTP response codes and load-generator exception buckets, so the series set is finite. |
 | `dw_perf_errors_total` | Perf harness `/metrics`; optional remote_write | No labels; single counter series per soak run. |
 | `dw_perf_latency_seconds_average` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |

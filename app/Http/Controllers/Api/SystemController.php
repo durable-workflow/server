@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\ProjectionDriftMetrics;
 use App\Support\WorkflowTaskFailureMetrics;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -89,16 +90,19 @@ class SystemController
 
         $namespace = (string) $request->attributes->get('namespace');
         $workflowTaskFailures = WorkflowTaskFailureMetrics::snapshot($namespace);
+        $projectionDrift = ProjectionDriftMetrics::snapshot();
 
         return ControlPlaneProtocol::json([
             'generated_at' => now()->toJSON(),
             'namespace' => $namespace,
             'metrics' => [
                 WorkflowTaskFailureMetrics::METRIC_NAME => $workflowTaskFailures,
+                ProjectionDriftMetrics::METRIC_NAME => $projectionDrift,
             ],
             'cardinality' => [
                 'metric_label_sets' => [
                     WorkflowTaskFailureMetrics::METRIC_NAME => $workflowTaskFailures['label_cardinality_policy'],
+                    ProjectionDriftMetrics::METRIC_NAME => $projectionDrift['label_cardinality_policy'],
                 ],
             ],
         ]);

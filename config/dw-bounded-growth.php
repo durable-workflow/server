@@ -1,6 +1,7 @@
 <?php
 
 use App\Support\LongPollSignalStore;
+use App\Support\ProjectionDriftMetrics;
 use App\Support\ServerReadiness;
 use App\Support\TaskQueueAdmission;
 use App\Support\WorkflowQueryTaskBroker;
@@ -139,6 +140,18 @@ return [
             'cardinality' => 'workflow_type series are limited by server.metrics.workflow_task_failure_type_limit, default 20 and hard-clamped to 100.',
             'selection' => 'top_by_max_consecutive_failures_then_name',
             'suppression' => 'Suppressed workflow type and failed-task counts are returned with the metric payload.',
+        ],
+
+        'dw_projection_drift_total' => [
+            'owner' => ProjectionDriftMetrics::class,
+            'surface' => 'GET /api/system/metrics',
+            'dimensions' => [
+                'namespace' => 'server_scope_no_label',
+                'table' => 'finite_projection_table_inventory',
+            ],
+            'cardinality' => 'table series are fixed to the server projection inventory: run_summaries, run_waits, run_timeline_entries, run_timer_entries, and run_lineage_entries.',
+            'selection' => 'all projection tables in the fixed inventory.',
+            'suppression' => 'No suppression path is needed because the table inventory is finite.',
         ],
 
         'dw_perf_requests_total' => [
