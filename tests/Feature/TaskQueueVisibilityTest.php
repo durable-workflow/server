@@ -5,11 +5,14 @@ namespace Tests\Feature;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\WorkflowQueryTaskBroker;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\WorkflowStub;
@@ -24,6 +27,7 @@ class TaskQueueVisibilityTest extends TestCase
 
         config([
             'server.workers.stale_after_seconds' => 60,
+            'server.query_tasks.max_pending_per_queue' => 1,
         ]);
 
         $this->createNamespace('default', 'Default namespace');
@@ -92,6 +96,12 @@ class TaskQueueVisibilityTest extends TestCase
             ]);
 
         $readyStart->assertCreated();
+        $run = WorkflowRun::query()->findOrFail((string) $readyStart->json('run_id'));
+
+        app(WorkflowQueryTaskBroker::class)->enqueue('default', $run, 'status', [
+            'codec' => CodecRegistry::defaultCodec(),
+            'blob' => 'null',
+        ]);
 
         $describe = $this->withHeaders($this->apiHeaders())
             ->getJson('/api/task-queues/external-workflows');
@@ -118,7 +128,34 @@ class TaskQueueVisibilityTest extends TestCase
             ->assertJsonPath('current_leases.0.lease_owner', 'php-worker-active')
             ->assertJsonPath('current_leases.0.is_expired', true)
             ->assertJsonPath('current_leases.0.workflow_task_attempt', 1)
-            ->assertJsonPath('stats.oldest_ready_task.workflow_id', 'wf-task-queue-ready');
+            ->assertJsonPath('stats.oldest_ready_task.workflow_id', 'wf-task-queue-ready')
+            ->assertJsonPath('admission.workflow_tasks.budget_source', 'worker_registration.max_concurrent_workflow_tasks')
+            ->assertJsonPath('admission.workflow_tasks.active_worker_count', 1)
+            ->assertJsonPath('admission.workflow_tasks.configured_slot_count', 10)
+            ->assertJsonPath('admission.workflow_tasks.leased_count', 1)
+            ->assertJsonPath('admission.workflow_tasks.ready_count', 1)
+            ->assertJsonPath('admission.workflow_tasks.available_slot_count', 9)
+            ->assertJsonPath('admission.workflow_tasks.status', 'accepting')
+            ->assertJsonPath('admission.activity_tasks.budget_source', 'worker_registration.max_concurrent_activity_tasks')
+            ->assertJsonPath('admission.activity_tasks.active_worker_count', 1)
+            ->assertJsonPath('admission.activity_tasks.configured_slot_count', 0)
+            ->assertJsonPath('admission.activity_tasks.status', 'no_slots')
+            ->assertJsonPath('admission.query_tasks.budget_source', 'server.query_tasks.max_pending_per_queue')
+            ->assertJsonPath('admission.query_tasks.max_pending_per_queue', 1)
+            ->assertJsonPath('admission.query_tasks.approximate_pending_count', 1)
+            ->assertJsonPath('admission.query_tasks.remaining_pending_capacity', 0)
+            ->assertJsonPath('admission.query_tasks.lock_required', true)
+            ->assertJsonPath('admission.query_tasks.lock_supported', true)
+            ->assertJsonPath('admission.query_tasks.status', 'full');
+
+        $list = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/task-queues');
+
+        $list->assertOk()
+            ->assertJsonPath('task_queues.0.name', 'external-workflows')
+            ->assertJsonPath('task_queues.0.admission.workflow_tasks.configured_slot_count', 10)
+            ->assertJsonPath('task_queues.0.admission.query_tasks.status', 'full')
+            ->assertJsonMissingPath('task_queues.0.pollers');
     }
 
     public function test_it_reports_activity_backlog_and_current_activity_attempt_leases(): void

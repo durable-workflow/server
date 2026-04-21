@@ -4,12 +4,17 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneProtocol;
+use App\Support\WorkflowQueryTaskBroker;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
 
 class TaskQueueController
 {
+    public function __construct(
+        private readonly WorkflowQueryTaskBroker $queryTasks,
+    ) {}
+
     public function index(Request $request): JsonResponse
     {
         if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
@@ -17,15 +22,26 @@ class TaskQueueController
         }
 
         $namespace = (string) $request->attributes->get('namespace');
-
-        return ControlPlaneProtocol::json(
-            StandaloneWorkerVisibility::queueSnapshot(
-                $namespace,
-                WorkerRegistration::class,
-                now(),
-                $this->workerStaleAfterSeconds(),
-            )->toArray(),
+        $snapshot = StandaloneWorkerVisibility::queueSnapshot(
+            $namespace,
+            WorkerRegistration::class,
+            now(),
+            $this->workerStaleAfterSeconds(),
         );
+
+        $payload = [
+            'namespace' => $snapshot->namespace,
+            'task_queues' => array_map(function ($detail) use ($namespace): array {
+                $summary = $detail->toSummaryArray();
+                $summary['pollers'] = $detail->pollers();
+                $summary = $this->withAdmission($namespace, $summary);
+                unset($summary['pollers']);
+
+                return $summary;
+            }, $snapshot->taskQueues()),
+        ];
+
+        return ControlPlaneProtocol::json($payload);
     }
 
     public function show(Request $request, string $taskQueue): JsonResponse
@@ -37,14 +53,102 @@ class TaskQueueController
         $namespace = (string) $request->attributes->get('namespace');
 
         return ControlPlaneProtocol::json(
-            StandaloneWorkerVisibility::queueDetail(
+            $this->withAdmission($namespace, StandaloneWorkerVisibility::queueDetail(
                 $namespace,
                 $taskQueue,
                 WorkerRegistration::class,
                 now(),
                 $this->workerStaleAfterSeconds(),
-            )->toArray(),
+            )->toArray()),
         );
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function withAdmission(string $namespace, array $payload): array
+    {
+        $taskQueue = is_string($payload['name'] ?? null) && trim($payload['name']) !== ''
+            ? trim($payload['name'])
+            : 'default';
+        $pollers = $payload['pollers'] ?? [];
+        $stats = $payload['stats'] ?? [];
+
+        $payload['admission'] = [
+            'workflow_tasks' => $this->taskAdmission(
+                'worker_registration.max_concurrent_workflow_tasks',
+                is_array($pollers) ? $pollers : [],
+                'max_concurrent_workflow_tasks',
+                (int) data_get($stats, 'workflow_tasks.leased_count', 0),
+                (int) data_get($stats, 'workflow_tasks.ready_count', 0),
+            ),
+            'activity_tasks' => $this->taskAdmission(
+                'worker_registration.max_concurrent_activity_tasks',
+                is_array($pollers) ? $pollers : [],
+                'max_concurrent_activity_tasks',
+                (int) data_get($stats, 'activity_tasks.leased_count', 0),
+                (int) data_get($stats, 'activity_tasks.ready_count', 0),
+            ),
+            'query_tasks' => $this->queryTasks->queueAdmission($namespace, $taskQueue),
+        ];
+
+        return $payload;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $pollers
+     * @return array{
+     *     budget_source: string,
+     *     active_worker_count: int,
+     *     configured_slot_count: int,
+     *     leased_count: int,
+     *     ready_count: int,
+     *     available_slot_count: int,
+     *     status: string
+     * }
+     */
+    private function taskAdmission(
+        string $budgetSource,
+        array $pollers,
+        string $slotField,
+        int $leasedCount,
+        int $readyCount,
+    ): array {
+        $activePollers = array_values(array_filter(
+            $pollers,
+            static fn (array $poller): bool => ($poller['is_stale'] ?? false) !== true
+                && (($poller['status'] ?? 'active') === 'active'),
+        ));
+        $slotCounts = array_map(
+            static fn (array $poller): int => max(0, (int) ($poller[$slotField] ?? 0)),
+            $activePollers,
+        );
+        $configuredSlots = array_sum($slotCounts);
+        $activeWorkerCount = count($activePollers);
+
+        return [
+            'budget_source' => $budgetSource,
+            'active_worker_count' => $activeWorkerCount,
+            'configured_slot_count' => $configuredSlots,
+            'leased_count' => max(0, $leasedCount),
+            'ready_count' => max(0, $readyCount),
+            'available_slot_count' => max(0, $configuredSlots - max(0, $leasedCount)),
+            'status' => $this->taskAdmissionStatus($activeWorkerCount, $configuredSlots, $leasedCount),
+        ];
+    }
+
+    private function taskAdmissionStatus(int $activeWorkerCount, int $configuredSlots, int $leasedCount): string
+    {
+        if ($activeWorkerCount === 0) {
+            return 'no_active_workers';
+        }
+
+        if ($configuredSlots <= 0) {
+            return 'no_slots';
+        }
+
+        return $leasedCount >= $configuredSlots ? 'saturated' : 'accepting';
     }
 
     private function workerStaleAfterSeconds(): int

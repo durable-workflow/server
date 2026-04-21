@@ -295,6 +295,34 @@ final class WorkflowQueryTaskBroker
     }
 
     /**
+     * @return array{
+     *     budget_source: string,
+     *     max_pending_per_queue: int,
+     *     approximate_pending_count: int,
+     *     remaining_pending_capacity: int,
+     *     lock_required: bool,
+     *     lock_supported: bool,
+     *     status: string
+     * }
+     */
+    public function queueAdmission(string $namespace, string $taskQueue): array
+    {
+        $maxPending = $this->maxPendingPerQueue();
+        $pendingCount = count($this->pendingTaskIds($namespace, $taskQueue));
+        $lockSupported = $this->store()->getStore() instanceof LockProvider;
+
+        return [
+            'budget_source' => 'server.query_tasks.max_pending_per_queue',
+            'max_pending_per_queue' => $maxPending,
+            'approximate_pending_count' => $pendingCount,
+            'remaining_pending_capacity' => max(0, $maxPending - $pendingCount),
+            'lock_required' => true,
+            'lock_supported' => $lockSupported,
+            'status' => $this->queueAdmissionStatus($pendingCount, $maxPending, $lockSupported),
+        ];
+    }
+
+    /**
      * @param  list<string>  $supportedWorkflowTypes
      * @return array<string, mixed>|null
      */
@@ -690,6 +718,15 @@ final class WorkflowQueryTaskBroker
     private function maxPendingPerQueue(): int
     {
         return max(1, min(10000, (int) config('server.query_tasks.max_pending_per_queue', 1024)));
+    }
+
+    private function queueAdmissionStatus(int $pendingCount, int $maxPending, bool $lockSupported): string
+    {
+        if (! $lockSupported) {
+            return 'unavailable';
+        }
+
+        return $pendingCount >= $maxPending ? 'full' : 'accepting';
     }
 
     private function queueLockTtlSeconds(): int

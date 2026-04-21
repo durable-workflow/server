@@ -530,6 +530,15 @@ heartbeat, complete, and fail responses include `run_closed_reason` and
 - `GET /api/task-queues` — List task queues
 - `GET /api/task-queues/{name}` — Task queue details and pollers
 
+Task queue responses include an `admission` object so operators can separate
+worker-local capacity from server-side query-task admission limits. Workflow
+and activity entries report active worker count, configured slots from worker
+registrations, leased and ready counts, available slots, and a status such as
+`accepting`, `saturated`, `no_slots`, or `no_active_workers`. Query-task
+entries report `server.query_tasks.max_pending_per_queue`, approximate pending
+count, remaining capacity, cache-lock support, and whether the queue is
+`accepting`, `full`, or `unavailable`.
+
 ### Search Attributes
 - `GET /api/search-attributes` — List search attributes
 - `POST /api/search-attributes` — Register custom attribute
