@@ -61,3 +61,21 @@ added without a TTL, admission, or cardinality contract.
 This is not a replacement for long-running soak evidence. It is the repository
 gate that keeps future cache and metric additions reviewable before they can
 become an operator memory or cardinality problem.
+
+## Soak Evidence
+
+The perf harness writes `summary.json`, `samples.jsonl`, `metrics.prom`, and
+service logs under `build/perf/`. A trusted bounded-growth run must include:
+
+- enough periodic samples to cover at least `DW_PERF_MIN_SAMPLE_COVERAGE`
+  (default 80%) of the configured duration/sample-interval window;
+- the maximum server memory, Redis key counts, final drain counts, and, for
+  runs of at least 10 minutes, the post-warmup memory slope when a slope limit
+  is configured;
+- GitHub/runner provenance in `summary.json` (`GITHUB_SHA`, `GITHUB_RUN_ID`,
+  runner name/OS/arch, Compose project, and the tested base URL when present);
+- the SHA-256 digest of `config/dw-bounded-growth.php` so the artifact can be
+  tied back to the policy that was active for the run.
+
+If sample coverage falls below the trusted minimum, the harness marks the run
+failed instead of uploading an incomplete artifact as passing evidence.

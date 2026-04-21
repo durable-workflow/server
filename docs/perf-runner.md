@@ -68,6 +68,13 @@ scripts/perf/run-server-soak.sh
 
 Artifacts land in `build/perf/` by default. The script removes the Compose project and volumes on exit.
 
+`summary.json` is the evidence index for a run. It includes the configured
+duration, elapsed time, request/error totals, memory and Redis key ceilings,
+final drain counts, sample coverage, GitHub runner provenance, and the
+SHA-256 digest of `config/dw-bounded-growth.php`. The harness fails when it
+cannot collect at least `DW_PERF_MIN_SAMPLE_COVERAGE` of the expected periodic
+samples, which defaults to 80%.
+
 ## Safety Rules
 
 - Do not run the self-hosted soak job for pull requests from forks.

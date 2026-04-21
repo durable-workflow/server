@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -17,6 +18,7 @@ import urllib.error
 import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, wait
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -141,6 +143,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-polling-keys", type=int, default=int(os.environ.get("DW_PERF_MAX_POLLING_KEYS", "512")))
     parser.add_argument("--max-final-polling-keys", type=int, default=int(os.environ.get("DW_PERF_MAX_FINAL_POLLING_KEYS", "0")))
     parser.add_argument(
+        "--min-sample-coverage",
+        type=float,
+        default=float(os.environ.get("DW_PERF_MIN_SAMPLE_COVERAGE", "0.8")),
+        help="Minimum fraction of expected periodic samples required before the run is trusted.",
+    )
+    parser.add_argument(
         "--max-server-memory-slope-mb-hour",
         type=float,
         default=float(os.environ.get("DW_PERF_MAX_SERVER_MEMORY_SLOPE_MB_HOUR", "0")),
@@ -244,6 +252,26 @@ def register_workers(base_url: str, token: str, namespaces: list[str], queues: l
 
 def run_command(command: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, check=False)
+
+
+def command_output(command: list[str], timeout: int = 5) -> str:
+    try:
+        result = run_command(command, timeout=timeout)
+    except Exception:  # noqa: BLE001
+        return ""
+
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def file_sha256(path: Path) -> str:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return ""
 
 
 def compose_command(project: str, *args: str) -> list[str]:
@@ -458,6 +486,26 @@ def start_metrics_server(metrics: Metrics, port: int) -> ThreadingHTTPServer:
     return server
 
 
+def evidence_provenance(base_url: str, compose_project: str) -> dict[str, Any]:
+    repo_root = Path(__file__).resolve().parents[2]
+    policy_path = repo_root / "config" / "dw-bounded-growth.php"
+
+    return {
+        "repository": os.environ.get("GITHUB_REPOSITORY") or command_output(["git", "config", "--get", "remote.origin.url"]),
+        "ref": os.environ.get("GITHUB_REF") or command_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]),
+        "sha": os.environ.get("GITHUB_SHA") or command_output(["git", "rev-parse", "HEAD"]),
+        "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
+        "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+        "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+        "runner_name": os.environ.get("RUNNER_NAME", ""),
+        "runner_os": os.environ.get("RUNNER_OS", ""),
+        "runner_arch": os.environ.get("RUNNER_ARCH", ""),
+        "compose_project": compose_project,
+        "base_url": base_url,
+        "bounded_growth_policy_sha256": file_sha256(policy_path),
+    }
+
+
 def main() -> int:
     args = parse_args()
     artifact_dir = Path(args.artifact_dir)
@@ -474,6 +522,8 @@ def main() -> int:
     metrics = Metrics()
     metrics_server = start_metrics_server(metrics, args.metrics_port)
     base_url = args.base_url.rstrip("/")
+    started_at = datetime.now(timezone.utc)
+    started_monotonic = time.monotonic()
 
     try:
         wait_for_health(base_url)
@@ -524,12 +574,23 @@ def main() -> int:
         final_redis_db_keys = int(final_sample.get("redis_db_keys") or 0)
         final_polling_keys = max(final_pattern_polling_keys, final_redis_db_keys)
         slope = memory_slope_mb_hour(samples) if args.duration_seconds >= 600 else None
+        finished_at = datetime.now(timezone.utc)
+        elapsed_seconds = time.monotonic() - started_monotonic
+        expected_samples = max(1, math.floor(args.duration_seconds / max(1, args.sample_interval_seconds)))
+        sample_coverage = max(0.0, min(1.0, args.min_sample_coverage))
+        min_samples = max(1, math.ceil(expected_samples * sample_coverage))
+        sample_count = len(samples)
 
         summary = {
             "duration_seconds": args.duration_seconds,
+            "elapsed_seconds": round(elapsed_seconds, 2),
             "concurrency": args.concurrency,
             "namespaces": len(namespaces),
             "task_queues": len(queues),
+            "sample_interval_seconds": args.sample_interval_seconds,
+            "sample_count": sample_count,
+            "expected_periodic_samples": expected_samples,
+            "minimum_trusted_samples": min_samples,
             "requests": dict(metrics.requests),
             "errors": metrics.errors,
             "max_server_memory_mb": round(max_server_memory_bytes / (1024 * 1024), 2),
@@ -545,12 +606,20 @@ def main() -> int:
                 "max_polling_keys": args.max_polling_keys,
                 "max_final_polling_keys": args.max_final_polling_keys,
                 "max_server_memory_slope_mb_hour": args.max_server_memory_slope_mb_hour,
+                "min_sample_coverage": args.min_sample_coverage,
+            },
+            "evidence": {
+                "started_at": started_at.isoformat().replace("+00:00", "Z"),
+                "finished_at": finished_at.isoformat().replace("+00:00", "Z"),
+                "provenance": evidence_provenance(base_url, args.compose_project),
             },
         }
 
         failures = []
         if metrics.errors > 0:
             failures.append(f"{metrics.errors} load-generator errors")
+        if sample_count < min_samples:
+            failures.append(f"sample coverage below trusted minimum {min_samples} (observed {sample_count})")
         if max_server_memory_bytes > args.max_server_memory_mb * 1024 * 1024:
             failures.append(
                 f"server memory exceeded {args.max_server_memory_mb} MB "
