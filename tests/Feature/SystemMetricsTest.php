@@ -119,6 +119,54 @@ class SystemMetricsTest extends TestCase
         ], $response->json('metrics.dw_projection_drift_total.by_table'));
     }
 
+    public function test_system_metrics_surface_matches_bounded_growth_policy_inventory(): void
+    {
+        $response = $this->getJson('/api/system/metrics', $this->controlPlaneHeadersWithWorkerProtocol());
+        $response->assertOk();
+
+        $policy = require base_path('config/dw-bounded-growth.php');
+        $systemMetrics = [];
+
+        foreach (($policy['metrics'] ?? []) as $metric => $entry) {
+            if (($entry['surface'] ?? null) === 'GET /api/system/metrics') {
+                $systemMetrics[] = $metric;
+            }
+        }
+
+        sort($systemMetrics);
+
+        $responseMetrics = array_keys($response->json('metrics'));
+        sort($responseMetrics);
+
+        $responseLabelSets = array_keys($response->json('cardinality.metric_label_sets'));
+        sort($responseLabelSets);
+
+        $this->assertSame(
+            $systemMetrics,
+            $responseMetrics,
+            'Every /api/system/metrics metric must be declared in config/dw-bounded-growth.php for that surface.',
+        );
+        $this->assertSame(
+            $systemMetrics,
+            $responseLabelSets,
+            'Every /api/system/metrics metric must expose a cardinality label-set disclosure.',
+        );
+
+        foreach ($systemMetrics as $metric) {
+            $declaredDimensions = array_keys($policy['metrics'][$metric]['dimensions'] ?? []);
+            sort($declaredDimensions);
+
+            $runtimeDimensions = array_keys($response->json("cardinality.metric_label_sets.{$metric}"));
+            sort($runtimeDimensions);
+
+            $this->assertSame(
+                $declaredDimensions,
+                $runtimeDimensions,
+                "{$metric} runtime label-set disclosure must match the bounded-growth policy dimensions.",
+            );
+        }
+    }
+
     private function createWorkflowTaskMetricRow(
         string $workflowType,
         int $attemptCount,
