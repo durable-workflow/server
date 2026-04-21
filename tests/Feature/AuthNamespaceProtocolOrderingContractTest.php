@@ -8,6 +8,7 @@ use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Fixtures\ResourceAwareAuthProvider;
 use Tests\TestCase;
 
 class AuthNamespaceProtocolOrderingContractTest extends TestCase
@@ -379,6 +380,98 @@ class AuthNamespaceProtocolOrderingContractTest extends TestCase
             ->assertJsonPath('namespace', 'ghost-namespace');
 
         $this->assertPlaneEnvelope($response, $plane);
+    }
+
+    public function test_custom_provider_can_authorize_by_requested_namespace_before_namespace_resolution(): void
+    {
+        ResourceAwareAuthProvider::reset();
+
+        config(['server.auth.provider' => ResourceAwareAuthProvider::class]);
+
+        $response = $this->withHeaders([
+            'X-Test-Subject' => 'tenant-operator',
+            'X-Test-Roles' => 'operator',
+            'X-Test-Allow-Namespace' => 'tenant-a',
+            'X-Namespace' => 'ghost-namespace',
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ])->getJson('/api/workflows');
+
+        $response->assertForbidden()
+            ->assertJsonPath('reason', 'forbidden')
+            ->assertJsonMissing(['reason' => 'namespace_not_found']);
+
+        $this->assertSame('server.route.access', ResourceAwareAuthProvider::$lastAction);
+        $this->assertSame('ghost-namespace', ResourceAwareAuthProvider::$lastResource['requested_namespace'] ?? null);
+        $this->assertSame('ghost-namespace', ResourceAwareAuthProvider::$lastResource['namespace'] ?? null);
+        $this->assertSame('default', ResourceAwareAuthProvider::$lastResource['default_namespace'] ?? null);
+        $this->assertSame('workflow', ResourceAwareAuthProvider::$lastResource['operation_family'] ?? null);
+        $this->assertSame('list', ResourceAwareAuthProvider::$lastResource['operation_name'] ?? null);
+    }
+
+    public function test_custom_provider_can_authorize_by_workflow_command_resource_without_path_parsing(): void
+    {
+        ResourceAwareAuthProvider::reset();
+
+        config(['server.auth.provider' => ResourceAwareAuthProvider::class]);
+
+        $response = $this->withHeaders([
+            'X-Test-Subject' => 'workflow-operator',
+            'X-Test-Roles' => 'operator',
+            'X-Test-Deny-Operation-Family' => 'workflow',
+            'X-Test-Deny-Operation-Name' => 'signal',
+            'X-Test-Deny-Workflow-Id' => 'wf-secret',
+            'X-Namespace' => 'default',
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ])->postJson('/api/workflows/wf-secret/signal/advance', [
+            'input' => ['approved' => true],
+        ]);
+
+        $response->assertForbidden()
+            ->assertJsonPath('reason', 'forbidden')
+            ->assertJsonMissing(['reason' => 'instance_not_found']);
+
+        $resource = ResourceAwareAuthProvider::$lastResource;
+
+        $this->assertSame('workflow', $resource['operation_family'] ?? null);
+        $this->assertSame('signal', $resource['operation_name'] ?? null);
+        $this->assertSame('wf-secret', $resource['workflow_id'] ?? null);
+        $this->assertSame('advance', $resource['signal_name'] ?? null);
+        $this->assertSame([
+            'workflow_id' => 'wf-secret',
+            'signal_name' => 'advance',
+        ], $resource['route_parameters'] ?? null);
+    }
+
+    public function test_custom_provider_can_authorize_worker_task_queue_before_namespace_resolution(): void
+    {
+        ResourceAwareAuthProvider::reset();
+
+        config(['server.auth.provider' => ResourceAwareAuthProvider::class]);
+
+        $response = $this->withHeaders([
+            'X-Test-Subject' => 'queue-worker',
+            'X-Test-Roles' => 'worker',
+            'X-Test-Deny-Task-Queue' => 'restricted-queue',
+            'X-Namespace' => 'ghost-namespace',
+            WorkerProtocol::HEADER => WorkerProtocol::VERSION,
+        ])->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-authz',
+            'task_queue' => 'restricted-queue',
+        ]);
+
+        $response->assertForbidden()
+            ->assertJsonPath('reason', 'forbidden')
+            ->assertJsonMissing(['reason' => 'namespace_not_found']);
+
+        $this->assertPlaneEnvelope($response, 'worker');
+
+        $resource = ResourceAwareAuthProvider::$lastResource;
+
+        $this->assertSame('ghost-namespace', $resource['requested_namespace'] ?? null);
+        $this->assertSame('worker', $resource['operation_family'] ?? null);
+        $this->assertSame('poll_workflow_tasks', $resource['operation_name'] ?? null);
+        $this->assertSame('worker-authz', $resource['worker_id'] ?? null);
+        $this->assertSame('restricted-queue', $resource['task_queue'] ?? null);
     }
 
     private function configureRoleTokens(): void

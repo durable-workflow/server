@@ -4,6 +4,7 @@ namespace App\Http\Middleware;
 
 use App\Contracts\AuthProvider;
 use App\Support\ControlPlaneProtocol;
+use App\Support\RouteAuthorizationResource;
 use App\Support\WorkerProtocol;
 use Closure;
 use Illuminate\Http\JsonResponse;
@@ -14,6 +15,7 @@ class RequireRole
 {
     public function __construct(
         private readonly AuthProvider $authProvider,
+        private readonly RouteAuthorizationResource $resourceBuilder,
     ) {}
 
     public function handle(Request $request, Closure $next, string ...$roles): Response
@@ -30,7 +32,7 @@ class RequireRole
             return self::error($request, 401, 'unauthorized', 'Missing authenticated principal.');
         }
 
-        if ($this->authProvider->authorize($principal, 'server.route.access', $this->resource($request, $allowedRoles))) {
+        if ($this->authProvider->authorize($principal, 'server.route.access', $this->resourceBuilder->make($request, $allowedRoles))) {
             return $next($request);
         }
 
@@ -61,21 +63,6 @@ class RequireRole
         }
 
         return array_values(array_unique($allowed));
-    }
-
-    /**
-     * @param  array<int, string>  $allowedRoles
-     * @return array<string, mixed>
-     */
-    private function resource(Request $request, array $allowedRoles): array
-    {
-        return array_filter([
-            'allowed_roles' => $allowedRoles,
-            'method' => $request->method(),
-            'path' => '/'.ltrim($request->path(), '/'),
-            'route_name' => $request->route()?->getName(),
-            'namespace' => $request->attributes->get('namespace'),
-        ], static fn (mixed $value): bool => $value !== null && $value !== '' && $value !== []);
     }
 
     /**

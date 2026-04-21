@@ -595,13 +595,20 @@ provider returns an `App\Auth\Principal` from `authenticate(Request $request)`
 and receives each route authorization decision as
 `authorize(Principal $principal, string $action, array $resource): bool`.
 
-The route resource includes `allowed_roles`, HTTP method/path, route name, and
-the resolved namespace when available. The authenticated principal is also
-recorded in workflow command attribution so signal/update/query history can
-show the subject, roles, tenant, and non-secret claims supplied by the provider.
-When `DW_AUTH_PROVIDER` is set, `/api/ready` verifies that the class resolves
-and implements `AuthProvider`; built-in token or signature credentials are not
-required for readiness.
+The route resource includes `allowed_roles`, HTTP method/path, route name/URI,
+normalized `requested_namespace`, `default_namespace`, route parameters,
+`operation_family`, `operation_name`, and stable identifier fields such as
+`workflow_id`, `run_id`, `signal_name`, `query_name`, `update_name`, `task_id`,
+`query_task_id`, `task_queue`, `worker_id`, `schedule_id`, and
+`search_attribute_name` when those identifiers are present on the route or in
+the worker request body. This resource is built before namespace existence is
+validated, so tenant-aware providers can deny access by namespace or workflow
+resource without reparsing raw paths and without revealing whether a namespace
+exists. The authenticated principal is also recorded in workflow command
+attribution so signal/update/query history can show the subject, roles, tenant,
+and non-secret claims supplied by the provider. When `DW_AUTH_PROVIDER` is set,
+`/api/ready` verifies that the class resolves and implements `AuthProvider`;
+built-in token or signature credentials are not required for readiness.
 
 ## Deployment
 
