@@ -20,6 +20,7 @@ final class RouteAuthorizationResource
         $defaultNamespace = $this->namespaceValue(config('server.default_namespace'));
         $requestedNamespace = $this->requestedNamespace($request, $defaultNamespace);
         $operationFamily = $this->operationFamily($request);
+        $targetNamespace = $this->targetNamespace($request, $routeParameters, $operationFamily);
 
         return array_filter([
             'allowed_roles' => $allowedRoles,
@@ -33,6 +34,8 @@ final class RouteAuthorizationResource
             'default_namespace' => $defaultNamespace,
             'requested_namespace' => $requestedNamespace,
             'namespace' => $requestedNamespace,
+            'target_namespace' => $targetNamespace,
+            'namespace_name' => $targetNamespace,
         ] + $this->namedIdentifiers($identifiers, $operationFamily), static fn (mixed $value): bool => $value !== null && $value !== '' && $value !== []);
     }
 
@@ -47,6 +50,33 @@ final class RouteAuthorizationResource
     private function namespaceValue(mixed $value): string
     {
         return strtolower((string) $value);
+    }
+
+    /**
+     * @param  array<string, string|int|float|bool>  $routeParameters
+     */
+    private function targetNamespace(Request $request, array $routeParameters, ?string $operationFamily): ?string
+    {
+        if ($operationFamily !== 'namespace') {
+            return null;
+        }
+
+        if (array_key_exists('namespace', $routeParameters)) {
+            return $this->namespaceIdentifier($routeParameters['namespace']);
+        }
+
+        return $this->namespaceIdentifier($request->input('name'));
+    }
+
+    private function namespaceIdentifier(mixed $value): ?string
+    {
+        $identifier = $this->identifierValue($value);
+
+        if ($identifier === null || is_bool($identifier)) {
+            return null;
+        }
+
+        return strtolower((string) $identifier);
     }
 
     /**

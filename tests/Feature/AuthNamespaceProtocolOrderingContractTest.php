@@ -408,6 +408,77 @@ class AuthNamespaceProtocolOrderingContractTest extends TestCase
         $this->assertSame('list', ResourceAwareAuthProvider::$lastResource['operation_name'] ?? null);
     }
 
+    /**
+     * @return array<string, array{
+     *     method: string,
+     *     path: string,
+     *     body: array<string, mixed>,
+     *     operationName: string
+     * }>
+     */
+    public static function namespaceAdministrationTargetProvider(): array
+    {
+        return [
+            'create namespace target from request body' => [
+                'method' => 'post',
+                'path' => '/api/namespaces',
+                'body' => ['name' => 'Tenant-Secret'],
+                'operationName' => 'store',
+            ],
+            'show namespace target from route parameter' => [
+                'method' => 'get',
+                'path' => '/api/namespaces/Tenant-Secret',
+                'body' => [],
+                'operationName' => 'show',
+            ],
+            'update namespace target from route parameter' => [
+                'method' => 'put',
+                'path' => '/api/namespaces/Tenant-Secret',
+                'body' => ['description' => 'Should not be written'],
+                'operationName' => 'update',
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $body
+     */
+    #[DataProvider('namespaceAdministrationTargetProvider')]
+    public function test_custom_provider_can_authorize_namespace_administration_by_target_namespace(
+        string $method,
+        string $path,
+        array $body,
+        string $operationName,
+    ): void {
+        ResourceAwareAuthProvider::reset();
+
+        config(['server.auth.provider' => ResourceAwareAuthProvider::class]);
+
+        $response = $this->sendJson($method, $path, $body, [
+            'X-Test-Subject' => 'tenant-admin',
+            'X-Test-Roles' => 'admin',
+            'X-Test-Deny-Target-Namespace' => 'tenant-secret',
+            'X-Namespace' => 'default',
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ]);
+
+        $response->assertForbidden()
+            ->assertJsonPath('reason', 'forbidden')
+            ->assertJsonMissing(['reason' => 'namespace_not_found'])
+            ->assertJsonMissing(['reason' => 'missing_control_plane_version'])
+            ->assertJsonMissing(['reason' => 'unsupported_control_plane_version']);
+
+        $resource = ResourceAwareAuthProvider::$lastResource;
+
+        $this->assertSame('namespace', $resource['operation_family'] ?? null);
+        $this->assertSame($operationName, $resource['operation_name'] ?? null);
+        $this->assertSame('default', $resource['requested_namespace'] ?? null);
+        $this->assertSame('default', $resource['namespace'] ?? null);
+        $this->assertSame('tenant-secret', $resource['target_namespace'] ?? null);
+        $this->assertSame('tenant-secret', $resource['namespace_name'] ?? null);
+        $this->assertDatabaseMissing('workflow_namespaces', ['name' => 'tenant-secret']);
+    }
+
     public function test_custom_provider_can_authorize_by_workflow_command_resource_without_path_parsing(): void
     {
         ResourceAwareAuthProvider::reset();
@@ -497,6 +568,7 @@ class AuthNamespaceProtocolOrderingContractTest extends TestCase
         return match ($method) {
             'get' => $this->getJson($path, $headers),
             'post' => $this->postJson($path, $body, $headers),
+            'put' => $this->putJson($path, $body, $headers),
             default => throw new \InvalidArgumentException("Unsupported method: {$method}"),
         };
     }

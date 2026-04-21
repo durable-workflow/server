@@ -37,6 +37,7 @@ final class ResourceAwareAuthProvider implements AuthProvider
                 'allowed_namespace' => $this->header($request, 'X-Test-Allow-Namespace'),
                 'denied_operation_family' => $this->header($request, 'X-Test-Deny-Operation-Family'),
                 'denied_operation_name' => $this->header($request, 'X-Test-Deny-Operation-Name'),
+                'denied_target_namespace' => $this->header($request, 'X-Test-Deny-Target-Namespace'),
                 'denied_task_queue' => $this->header($request, 'X-Test-Deny-Task-Queue'),
                 'denied_workflow_id' => $this->header($request, 'X-Test-Deny-Workflow-Id'),
             ], static fn (mixed $value): bool => $value !== null && $value !== ''),
@@ -85,6 +86,7 @@ final class ResourceAwareAuthProvider implements AuthProvider
         foreach ([
             'denied_operation_family' => 'operation_family',
             'denied_operation_name' => 'operation_name',
+            'denied_target_namespace' => 'target_namespace',
             'denied_task_queue' => 'task_queue',
             'denied_workflow_id' => 'workflow_id',
         ] as $claim => $field) {
