@@ -21,6 +21,9 @@ added without a TTL, admission, or cardinality contract.
   suppression counters are documented.
 - New Prometheus or scrape-style surfaces must use the same policy file before
   exposing labels.
+- Prometheus label names emitted by the perf harness must exactly match the
+  declared metric dimensions, so adding a label requires a reviewed cardinality
+  policy in the same change.
 
 ## Cache Inventory
 
@@ -55,6 +58,8 @@ added without a TTL, admission, or cardinality contract.
   `cache_keys` entry;
 - every `dw_*` metric name literal in `app/` and `scripts/perf/` must be
   covered by a `metrics` entry;
+- perf-harness Prometheus labels must exactly match the corresponding metric
+  dimensions declared in the policy;
 - each policy entry must include the required review fields;
 - this document must mention every declared policy ID, cache prefix, and metric.
 

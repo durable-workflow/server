@@ -53,6 +53,12 @@ class SystemMetricsTest extends TestCase
                 'top_by_max_consecutive_failures_then_name',
             );
 
+        $policy = require base_path('config/dw-bounded-growth.php');
+        $this->assertSame(
+            array_keys($policy['metrics']['dw_workflow_task_consecutive_failures']['dimensions']),
+            array_keys($response->json('cardinality.metric_label_sets.dw_workflow_task_consecutive_failures')),
+        );
+
         $this->assertSame([
             [
                 'workflow_type' => 'tests.metric-high',

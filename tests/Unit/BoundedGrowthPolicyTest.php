@@ -134,10 +134,43 @@ class BoundedGrowthPolicyTest extends TestCase
             $this->assertIsString($entry['surface'], "{$metric}.surface must be a string");
             $this->assertIsArray($entry['dimensions'], "{$metric}.dimensions must be an array");
 
+            foreach ($entry['dimensions'] as $dimension => $cardinalityClass) {
+                $this->assertIsString($dimension, "{$metric}.dimensions keys must be label names");
+                $this->assertNotSame('', trim($dimension), "{$metric}.dimensions must not contain empty label names");
+                $this->assertIsString($cardinalityClass, "{$metric}.dimensions.{$dimension} must describe the cardinality policy");
+                $this->assertNotSame('', trim($cardinalityClass), "{$metric}.dimensions.{$dimension} must not be empty");
+
+                if (in_array($dimension, $this->userControlledMetricDimensions(), true)) {
+                    $this->assertMatchesRegularExpression(
+                        '/(^|_)(bounded|finite|request_scope|no_label)($|_)/',
+                        $cardinalityClass,
+                        "{$metric}.dimensions.{$dimension} is user-controlled and must be explicitly bounded or kept out of labels.",
+                    );
+                }
+            }
+
             foreach (['cardinality', 'selection', 'suppression'] as $field) {
                 $this->assertIsString($entry[$field], "{$metric}.{$field} must be a string");
                 $this->assertNotSame('', trim($entry[$field]), "{$metric}.{$field} must not be empty");
             }
+        }
+    }
+
+    public function test_perf_harness_prometheus_labels_match_metric_policy_dimensions(): void
+    {
+        $declared = $this->policyMetrics();
+
+        foreach ($this->prometheusLabelsInPerfHarness() as $metric => $labels) {
+            $this->assertArrayHasKey($metric, $declared, "{$metric} appears in the perf harness but has no metric policy.");
+
+            $declaredLabels = array_keys($declared[$metric]['dimensions'] ?? []);
+            sort($declaredLabels);
+
+            $this->assertSame(
+                $declaredLabels,
+                $labels,
+                "{$metric} Prometheus labels must exactly match config/dw-bounded-growth.php dimensions.",
+            );
         }
     }
 
@@ -288,6 +321,62 @@ class BoundedGrowthPolicyTest extends TestCase
         sort($metrics);
 
         return $metrics;
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    private function prometheusLabelsInPerfHarness(): array
+    {
+        $labelsByMetric = [];
+
+        foreach ($this->filesWithExtensions(self::$repoRoot.'/scripts/perf', ['py', 'sh']) as $file) {
+            $source = file_get_contents($file);
+            $this->assertNotFalse($source, "{$file} must be readable");
+
+            preg_match_all('/\b(dw_[a-z0-9_]+)\{+([^}\n]*)\}+/m', $source, $matches, PREG_SET_ORDER);
+
+            foreach ($matches as $match) {
+                $metric = $match[1];
+                $labels = $labelsByMetric[$metric] ?? [];
+
+                preg_match_all('/(?:^|,)\s*([a-zA-Z_:][a-zA-Z0-9_:]*)\s*=/', $match[2], $labelMatches);
+
+                foreach ($labelMatches[1] ?? [] as $label) {
+                    $labels[$label] = $label;
+                }
+
+                $labelsByMetric[$metric] = $labels;
+            }
+        }
+
+        foreach ($labelsByMetric as $metric => $labels) {
+            $labels = array_values($labels);
+            sort($labels);
+            $labelsByMetric[$metric] = $labels;
+        }
+
+        ksort($labelsByMetric);
+
+        return $labelsByMetric;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function userControlledMetricDimensions(): array
+    {
+        return [
+            'activity_type',
+            'build_id',
+            'namespace',
+            'queue',
+            'run_id',
+            'task_queue',
+            'worker_id',
+            'workflow_id',
+            'workflow_type',
+        ];
     }
 
     /**
