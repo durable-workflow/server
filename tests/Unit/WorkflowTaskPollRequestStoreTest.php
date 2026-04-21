@@ -105,4 +105,41 @@ class WorkflowTaskPollRequestStoreTest extends TestCase
 
         $this->assertTrue($store->tryStart('default', 'external-workflows', null, 'worker-a', 'poll-3'));
     }
+
+    public function test_pending_markers_expire_after_the_poll_window(): void
+    {
+        config(['server.polling.timeout' => 1]);
+
+        $store = app(WorkflowTaskPollRequestStore::class);
+
+        $this->assertTrue($store->tryStart('default', 'external-workflows', null, 'worker-a', 'poll-ttl'));
+        $this->assertFalse($store->tryStart('default', 'external-workflows', null, 'worker-a', 'poll-ttl'));
+
+        $this->travel(7)->seconds();
+
+        $this->assertTrue($store->tryStart('default', 'external-workflows', null, 'worker-a', 'poll-ttl'));
+    }
+
+    public function test_empty_result_cache_entries_expire_after_the_poll_window(): void
+    {
+        config(['server.polling.timeout' => 1]);
+
+        $store = app(WorkflowTaskPollRequestStore::class);
+
+        $this->assertTrue($store->tryStart('default', 'external-workflows', null, 'worker-a', 'poll-empty-result'));
+
+        $store->rememberResult('default', 'external-workflows', null, 'worker-a', 'poll-empty-result', null);
+
+        $this->assertSame([
+            'resolved' => true,
+            'task' => null,
+        ], $store->result('default', 'external-workflows', null, 'worker-a', 'poll-empty-result'));
+
+        $this->travel(7)->seconds();
+
+        $this->assertSame([
+            'resolved' => false,
+            'task' => null,
+        ], $store->result('default', 'external-workflows', null, 'worker-a', 'poll-empty-result'));
+    }
 }

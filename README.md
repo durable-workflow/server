@@ -779,6 +779,7 @@ every operator-facing variable the server honors.
 | `DW_QUERY_TASK_TIMEOUT` | `DW_WORKER_POLL_TIMEOUT` | Seconds the control plane waits for a worker query response. |
 | `DW_QUERY_TASK_LEASE_TIMEOUT` | `DW_WORKFLOW_TASK_TIMEOUT` | Lease timeout for ephemeral query tasks. |
 | `DW_QUERY_TASK_TTL_SECONDS` | `180` | Retention for query-task result rows. |
+| `DW_QUERY_TASK_MAX_PENDING_PER_QUEUE` | `1024` | Max pending cache-backed query tasks per namespace/task queue before new queries are rejected. |
 | `DW_WORKFLOW_TASK_TIMEOUT` | `60` | Default workflow-task lease timeout (seconds). |
 | `DW_ACTIVITY_TASK_TIMEOUT` | `300` | Default activity-task lease timeout (seconds). |
 | `DW_WORKER_STALE_AFTER_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT * 2, 60)` | Seconds before a worker heartbeat is considered stale. |

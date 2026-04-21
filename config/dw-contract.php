@@ -268,6 +268,12 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_TTL_SECONDS',
         ],
+        'DW_QUERY_TASK_MAX_PENDING_PER_QUEUE' => [
+            'description' => 'Maximum pending cache-backed query tasks retained per namespace/task queue before new control-plane queries are rejected.',
+            'default' => '1024',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_MAX_PENDING_PER_QUEUE',
+        ],
 
         // --- Lease / timeout defaults ----------------------------------
 

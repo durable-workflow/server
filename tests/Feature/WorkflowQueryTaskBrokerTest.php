@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneProtocol;
+use App\Support\QueryTaskQueueFullException;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowQueryTaskBroker;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -147,6 +148,48 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('task', null);
     }
 
+    public function test_query_task_enqueue_rejects_when_per_queue_pending_limit_is_reached(): void
+    {
+        Queue::fake();
+        config(['server.query_tasks.max_pending_per_queue' => 1]);
+
+        $run = $this->startRemoteWorkflow('wf-query-task-enqueue-limit');
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+
+        $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+        $this->expectException(QueryTaskQueueFullException::class);
+
+        $broker->enqueue('default', $run, 'status', $this->queryArguments());
+    }
+
+    public function test_control_plane_query_reports_queue_full_when_pending_limit_is_reached(): void
+    {
+        Queue::fake();
+        config(['server.query_tasks.max_pending_per_queue' => 1]);
+
+        $run = $this->startRemoteWorkflow('wf-query-task-full-response');
+        $this->registerPythonWorker('python-query-full-worker', 'python-queries', ['python.queryable']);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+        $query = $this->postJson('/api/workflows/wf-query-task-full-response/query/status', [
+            'input' => ['summary'],
+        ], $this->apiHeaders());
+
+        $query->assertStatus(429)
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('workflow_id', 'wf-query-task-full-response')
+            ->assertJsonPath('query_name', 'status')
+            ->assertJsonPath('reason', 'query_task_queue_full')
+            ->assertJsonPath('control_plane.operation', 'query')
+            ->assertJsonPath('control_plane.operation_name', 'status');
+    }
+
     private function startRemoteWorkflow(string $workflowId): WorkflowRun
     {
         $start = $this->postJson('/api/workflows', [
@@ -159,6 +202,17 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $start->assertCreated();
 
         return WorkflowRun::query()->findOrFail((string) $start->json('run_id'));
+    }
+
+    /**
+     * @return array{codec: string, blob: string}
+     */
+    private function queryArguments(): array
+    {
+        return [
+            'codec' => 'avro',
+            'blob' => Serializer::serializeWithCodec('avro', ['summary']),
+        ];
     }
 
     /**

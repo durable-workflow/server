@@ -236,6 +236,11 @@ return [
             EnvAuditor::env('DW_WORKFLOW_TASK_TIMEOUT', 'WORKFLOW_TASK_TIMEOUT', 60),
         ),
         'ttl_seconds' => (int) EnvAuditor::env('DW_QUERY_TASK_TTL_SECONDS', 'WORKFLOW_SERVER_QUERY_TASK_TTL_SECONDS', 180),
+        'max_pending_per_queue' => (int) EnvAuditor::env(
+            'DW_QUERY_TASK_MAX_PENDING_PER_QUEUE',
+            'WORKFLOW_SERVER_QUERY_TASK_MAX_PENDING_PER_QUEUE',
+            1024,
+        ),
     ],
 
     /*

@@ -50,7 +50,18 @@ final class WorkflowQueryTaskBroker
             );
         }
 
-        $task = $this->enqueue($namespace, $run, $queryName, $queryArguments);
+        try {
+            $task = $this->enqueue($namespace, $run, $queryName, $queryArguments);
+        } catch (QueryTaskQueueFullException $exception) {
+            return $this->queryFailed(
+                $run,
+                $queryName,
+                'query_task_queue_full',
+                $exception->getMessage(),
+                429,
+            );
+        }
+
         $result = $this->waitForResult((string) $task['query_task_id']);
 
         if (($result['status'] ?? null) === 'completed') {
@@ -137,7 +148,15 @@ final class WorkflowQueryTaskBroker
         ];
 
         $this->putTask($task);
-        $this->appendPendingTask($namespace, $taskQueue, $queryTaskId);
+
+        try {
+            $this->appendPendingTask($namespace, $taskQueue, $queryTaskId);
+        } catch (QueryTaskQueueFullException $exception) {
+            $this->store()->forget($this->taskKey($queryTaskId));
+
+            throw $exception;
+        }
+
         $this->signals->signalQueryTaskQueue($namespace, $taskQueue);
 
         return $task;
@@ -494,6 +513,11 @@ final class WorkflowQueryTaskBroker
     private function appendPendingTask(string $namespace, string $taskQueue, string $queryTaskId): void
     {
         $ids = $this->pendingTaskIds($namespace, $taskQueue);
+
+        if (! in_array($queryTaskId, $ids, true) && count($ids) >= $this->maxPendingPerQueue()) {
+            throw new QueryTaskQueueFullException($namespace, $taskQueue, $this->maxPendingPerQueue());
+        }
+
         $ids[] = $queryTaskId;
 
         $this->storePendingTaskIds($namespace, $taskQueue, array_values(array_unique($ids)));
@@ -504,7 +528,22 @@ final class WorkflowQueryTaskBroker
      */
     private function pendingTaskIds(string $namespace, string $taskQueue): array
     {
-        return $this->stringArray($this->store()->get($this->queueKey($namespace, $taskQueue)));
+        $ids = $this->stringArray($this->store()->get($this->queueKey($namespace, $taskQueue)));
+        $pending = [];
+
+        foreach ($ids as $queryTaskId) {
+            $task = $this->task($queryTaskId);
+
+            if (is_array($task) && ($task['status'] ?? null) === 'pending') {
+                $pending[] = $queryTaskId;
+            }
+        }
+
+        if ($pending !== $ids) {
+            $this->storePendingTaskIds($namespace, $taskQueue, $pending);
+        }
+
+        return $pending;
     }
 
     /**
@@ -591,6 +630,11 @@ final class WorkflowQueryTaskBroker
     private function taskTtlSeconds(): int
     {
         return max(60, (int) config('server.query_tasks.ttl_seconds', $this->queryTimeoutSeconds() + $this->leaseTtlSeconds() + 60));
+    }
+
+    private function maxPendingPerQueue(): int
+    {
+        return max(1, min(10000, (int) config('server.query_tasks.max_pending_per_queue', 1024)));
     }
 
     private function staleAfterSeconds(): int
