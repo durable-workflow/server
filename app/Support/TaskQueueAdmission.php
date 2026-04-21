@@ -29,7 +29,7 @@ final class TaskQueueAdmission
     {
         $budget = $this->budget($namespace, $taskQueue, $taskKind);
 
-        if ($budget['max_active_leases_per_queue'] === null) {
+        if ($budget['lock_required'] !== true) {
             return $callback();
         }
 
@@ -57,7 +57,20 @@ final class TaskQueueAdmission
                         return null;
                     }
 
-                    return $callback();
+                    if (
+                        $fresh['max_dispatches_per_minute'] !== null
+                        && $fresh['dispatch_count_this_minute'] >= $fresh['max_dispatches_per_minute']
+                    ) {
+                        return null;
+                    }
+
+                    $result = $callback();
+
+                    if ($result !== null) {
+                        $this->recordDispatch($namespace, $taskQueue, $taskKind);
+                    }
+
+                    return $result;
                 });
         } catch (LockTimeoutException) {
             Log::warning('Task queue admission lock timed out.', [
@@ -76,6 +89,9 @@ final class TaskQueueAdmission
      *     max_active_leases_per_queue: int|null,
      *     active_lease_count: int,
      *     remaining_active_lease_capacity: int|null,
+     *     max_dispatches_per_minute: int|null,
+     *     dispatch_count_this_minute: int,
+     *     remaining_dispatch_capacity: int|null,
      *     lock_required: bool,
      *     lock_supported: bool,
      *     status: string
@@ -84,19 +100,26 @@ final class TaskQueueAdmission
     public function budget(string $namespace, string $taskQueue, string $taskKind): array
     {
         $limit = $this->maxActiveLeasesPerQueue($namespace, $taskQueue, $taskKind);
+        $dispatchLimit = $this->maxDispatchesPerMinute($namespace, $taskQueue, $taskKind);
         $activeLeases = $this->activeLeaseCount($namespace, $taskQueue, $taskKind);
+        $dispatchCount = $this->dispatchCountThisMinute($namespace, $taskQueue, $taskKind);
         $lockSupported = $this->cache->store()->getStore() instanceof LockProvider;
 
         return [
-            'budget_source' => $limit['source'],
+            'budget_source' => $this->budgetSource($limit, $dispatchLimit),
             'max_active_leases_per_queue' => $limit['value'],
             'active_lease_count' => $activeLeases,
             'remaining_active_lease_capacity' => $limit['value'] === null
                 ? null
                 : max(0, $limit['value'] - $activeLeases),
-            'lock_required' => $limit['value'] !== null,
+            'max_dispatches_per_minute' => $dispatchLimit['value'],
+            'dispatch_count_this_minute' => $dispatchCount,
+            'remaining_dispatch_capacity' => $dispatchLimit['value'] === null
+                ? null
+                : max(0, $dispatchLimit['value'] - $dispatchCount),
+            'lock_required' => $limit['value'] !== null || $dispatchLimit['value'] !== null,
             'lock_supported' => $lockSupported,
-            'status' => $this->status($limit['value'], $activeLeases, $lockSupported),
+            'status' => $this->status($limit['value'], $activeLeases, $dispatchLimit['value'], $dispatchCount, $lockSupported),
         ];
     }
 
@@ -120,7 +143,27 @@ final class TaskQueueAdmission
         ];
     }
 
-    private function queueOverride(string $namespace, string $taskQueue, string $taskKind): mixed
+    /**
+     * @return array{value: int|null, source: string}
+     */
+    private function maxDispatchesPerMinute(string $namespace, string $taskQueue, string $taskKind): array
+    {
+        $override = $this->queueOverride($namespace, $taskQueue, $taskKind, 'max_dispatches_per_minute');
+
+        if ($override !== null) {
+            return [
+                'value' => $this->positiveIntOrNull($override),
+                'source' => 'server.admission.queue_overrides',
+            ];
+        }
+
+        return [
+            'value' => $this->positiveIntOrNull(config("server.admission.{$taskKind}.max_dispatches_per_minute")),
+            'source' => "server.admission.{$taskKind}.max_dispatches_per_minute",
+        ];
+    }
+
+    private function queueOverride(string $namespace, string $taskQueue, string $taskKind, string $field = 'max_active_leases'): mixed
     {
         $overrides = config('server.admission.queue_overrides', []);
 
@@ -135,16 +178,25 @@ final class TaskQueueAdmission
 
             $kind = $overrides[$key][$taskKind] ?? null;
 
-            if (is_array($kind) && array_key_exists('max_active_leases', $kind)) {
+            if (is_array($kind) && array_key_exists($field, $kind)) {
+                return $kind[$field];
+            }
+
+            if ($field === 'max_active_leases' && is_array($kind) && array_key_exists('max_active_leases', $kind)) {
                 return $kind['max_active_leases'];
             }
 
-            if (is_array($kind) && array_key_exists('max_active_leases_per_queue', $kind)) {
+            if ($field === 'max_active_leases' && is_array($kind) && array_key_exists('max_active_leases_per_queue', $kind)) {
                 return $kind['max_active_leases_per_queue'];
             }
         }
 
         return null;
+    }
+
+    private function dispatchCountThisMinute(string $namespace, string $taskQueue, string $taskKind): int
+    {
+        return max(0, (int) $this->cache->store()->get($this->dispatchCounterKey($namespace, $taskQueue, $taskKind), 0));
     }
 
     private function activeLeaseCount(string $namespace, string $taskQueue, string $taskKind): int
@@ -167,9 +219,9 @@ final class TaskQueueAdmission
             : TaskType::Workflow;
     }
 
-    private function status(?int $limit, int $activeLeases, bool $lockSupported): string
+    private function status(?int $activeLimit, int $activeLeases, ?int $dispatchLimit, int $dispatchCount, bool $lockSupported): string
     {
-        if ($limit === null) {
+        if ($activeLimit === null && $dispatchLimit === null) {
             return 'unlimited';
         }
 
@@ -177,7 +229,15 @@ final class TaskQueueAdmission
             return 'unavailable';
         }
 
-        return $activeLeases >= $limit ? 'throttled' : 'accepting';
+        if ($activeLimit !== null && $activeLeases >= $activeLimit) {
+            return 'throttled';
+        }
+
+        if ($dispatchLimit !== null && $dispatchCount >= $dispatchLimit) {
+            return 'throttled';
+        }
+
+        return 'accepting';
     }
 
     private function positiveIntOrNull(mixed $value): ?int
@@ -202,6 +262,52 @@ final class TaskQueueAdmission
     private function lockKey(string $namespace, string $taskQueue, string $taskKind): string
     {
         return sprintf('server:task-queue-admission:%s:%s:%s', sha1($namespace), sha1($taskQueue), $taskKind);
+    }
+
+    private function dispatchCounterKey(string $namespace, string $taskQueue, string $taskKind): string
+    {
+        return sprintf(
+            'server:task-queue-dispatch:%s:%s:%s:%s',
+            sha1($namespace),
+            sha1($taskQueue),
+            $taskKind,
+            now()->format('YmdHi'),
+        );
+    }
+
+    private function recordDispatch(string $namespace, string $taskQueue, string $taskKind): void
+    {
+        $key = $this->dispatchCounterKey($namespace, $taskQueue, $taskKind);
+
+        if ($this->cache->store()->add($key, 1, now()->addMinutes(2))) {
+            return;
+        }
+
+        $this->cache->store()->increment($key);
+    }
+
+    /**
+     * @param  array{value: int|null, source: string}  $activeLimit
+     * @param  array{value: int|null, source: string}  $dispatchLimit
+     */
+    private function budgetSource(array $activeLimit, array $dispatchLimit): string
+    {
+        $activeSource = $activeLimit['source'];
+        $dispatchSource = $dispatchLimit['source'];
+
+        if ($activeLimit['value'] === null) {
+            return $dispatchLimit['value'] === null ? $activeSource : $dispatchSource;
+        }
+
+        if ($dispatchLimit['value'] === null) {
+            return $activeSource;
+        }
+
+        if ($activeSource === $dispatchSource) {
+            return $activeSource;
+        }
+
+        return $activeSource.';'.$dispatchSource;
     }
 
     private function lockTtlSeconds(): int

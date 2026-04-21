@@ -208,11 +208,21 @@ return [
                 'WORKFLOW_SERVER_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_QUEUE',
                 null,
             ),
+            'max_dispatches_per_minute' => EnvAuditor::env(
+                'DW_WORKFLOW_TASK_MAX_DISPATCHES_PER_MINUTE',
+                'WORKFLOW_SERVER_WORKFLOW_TASK_MAX_DISPATCHES_PER_MINUTE',
+                null,
+            ),
         ],
         'activity_tasks' => [
             'max_active_leases_per_queue' => EnvAuditor::env(
                 'DW_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_QUEUE',
                 'WORKFLOW_SERVER_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_QUEUE',
+                null,
+            ),
+            'max_dispatches_per_minute' => EnvAuditor::env(
+                'DW_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE',
+                'WORKFLOW_SERVER_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE',
                 null,
             ),
         ],

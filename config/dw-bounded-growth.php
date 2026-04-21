@@ -83,9 +83,24 @@ return [
                 'task_kind',
             ],
             'ttl' => 'server.admission.lock_ttl_seconds seconds, default 5.',
-            'bound' => 'One short-lived lock key per namespace/task_queue/task_kind that has an active server-side lease cap and concurrent poll attempts.',
-            'admission' => 'Locks are acquired only when workflow or activity active-lease caps are configured; uncapped queues do not create these keys.',
+            'bound' => 'One short-lived lock key per namespace/task_queue/task_kind that has an active server-side lease cap or dispatch-per-minute budget and concurrent poll attempts.',
+            'admission' => 'Locks are acquired only when workflow or activity active-lease caps or dispatch-per-minute budgets are configured; uncapped queues do not create these keys.',
             'eviction' => 'Cache lock TTL only. The durable task rows remain the source of truth for active lease counts.',
+        ],
+
+        'task_queue_dispatch_counters' => [
+            'owner' => TaskQueueAdmission::class,
+            'prefix' => 'server:task-queue-dispatch:',
+            'dimensions' => [
+                'namespace_hash',
+                'task_queue_hash',
+                'task_kind',
+                'minute_bucket',
+            ],
+            'ttl' => '2 minutes.',
+            'bound' => 'One short-lived counter per capped namespace/task_queue/task_kind/minute bucket that has dispatched at least one task.',
+            'admission' => 'Counters are created only when workflow or activity dispatch-per-minute budgets are configured and a task is actually leased.',
+            'eviction' => 'Counters expire automatically after the two-minute rolling bucket window.',
         ],
 
         'workflow_task_expired_lease_recovery' => [
