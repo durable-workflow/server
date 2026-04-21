@@ -79,7 +79,7 @@ jobs:
         id: workflow
         run: |
           # Fetch latest pre-release tag from workflow repo (2.0.0-alpha.x, 2.0.0-beta.x)
-          LATEST_TAG=$(git ls-remote --tags --sort=v:refname https://github.com/durable-workflow/workflow.git \
+          LATEST_TAG=$(git ls-remote --tags --refs --sort=v:refname https://github.com/durable-workflow/workflow.git \
             | grep -E 'refs/tags/2\.0\.0-(alpha|beta)\.' \
             | tail -1 \
             | sed 's/.*refs\/tags\///')
