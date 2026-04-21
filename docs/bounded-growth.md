@@ -1,7 +1,7 @@
 # Server Bounded-Growth Policy
 
-The server owns a few cache-backed coordination surfaces, one JSON metric
-surface, and the perf harness metrics that can be remote-written during soaks.
+The server owns a few cache-backed coordination surfaces, JSON metric surfaces,
+and the perf harness metrics that can be remote-written during soaks.
 Each surface must declare a bounded-growth policy in
 `config/dw-bounded-growth.php` before it ships. The policy is intentionally
 machine-readable so tests can fail when new cache prefixes or `dw_*` metrics are

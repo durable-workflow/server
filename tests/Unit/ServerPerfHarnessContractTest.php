@@ -53,19 +53,40 @@ class ServerPerfHarnessContractTest extends TestCase
         $cacheKeys = $policy['cache_keys'] ?? [];
         $this->assertNotEmpty($cacheKeys, 'config/dw-bounded-growth.php must declare cache_keys.');
 
-        foreach ($cacheKeys as $policyId => $entry) {
-            $prefix = (string) ($entry['prefix'] ?? '');
+        $expected = [];
 
-            $this->assertStringContainsString(
-                sprintf('"%s":', $policyId),
-                $source,
-                "Perf soak cache inventory must include {$policyId}.",
-            );
-            $this->assertStringContainsString(
-                sprintf('"*%s*"', $prefix),
-                $source,
-                "Perf soak cache inventory must scan {$prefix}.",
-            );
+        foreach ($cacheKeys as $policyId => $entry) {
+            $expected[$policyId] = '*'.((string) ($entry['prefix'] ?? '')).'*';
         }
+
+        $this->assertSame(
+            $expected,
+            $this->serverCacheKeyPatterns($source),
+            'Perf soak cache inventory must exactly mirror config/dw-bounded-growth.php cache_keys.',
+        );
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function serverCacheKeyPatterns(string $source): array
+    {
+        $this->assertMatchesRegularExpression(
+            '/SERVER_CACHE_KEY_PATTERNS\s*=\s*\{(?P<body>.*?)\n\}/s',
+            $source,
+            'scripts/perf/server_soak.py must declare SERVER_CACHE_KEY_PATTERNS as a literal map.',
+        );
+
+        preg_match('/SERVER_CACHE_KEY_PATTERNS\s*=\s*\{(?P<body>.*?)\n\}/s', $source, $mapMatch);
+        $body = (string) ($mapMatch['body'] ?? '');
+        preg_match_all('/^\s+"(?P<id>[a-z0-9_]+)":\s+"(?P<pattern>\*server:[^"]+\*)",\s*$/m', $body, $matches, PREG_SET_ORDER);
+
+        $patterns = [];
+
+        foreach ($matches as $match) {
+            $patterns[$match['id']] = $match['pattern'];
+        }
+
+        return $patterns;
     }
 }
