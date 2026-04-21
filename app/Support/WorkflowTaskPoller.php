@@ -21,6 +21,7 @@ final class WorkflowTaskPoller
         private readonly WorkflowTaskLeaseRecovery $leaseRecovery,
         private readonly WorkflowTaskPollRequestStore $pollRequests,
         private readonly ServerPollingCache $cache,
+        private readonly TaskQueueAdmission $admission,
     ) {}
 
     /**
@@ -336,15 +337,20 @@ final class WorkflowTaskPoller
     ): array {
         $this->applyWorkerCompatibility($namespace, $buildId);
 
-        $task = $this->claimReadyTask(
-            namespace: $namespace,
-            taskQueue: $taskQueue,
-            leaseOwner: $leaseOwner,
-            buildId: $buildId,
-            limit: $limit,
-            historyPageSize: $historyPageSize,
-            acceptHistoryEncoding: $acceptHistoryEncoding,
-            supportedWorkflowTypes: $supportedWorkflowTypes,
+        $task = $this->admission->withLeaseAdmission(
+            $namespace,
+            $taskQueue,
+            TaskQueueAdmission::WORKFLOW_TASKS,
+            fn (): ?array => $this->claimReadyTask(
+                namespace: $namespace,
+                taskQueue: $taskQueue,
+                leaseOwner: $leaseOwner,
+                buildId: $buildId,
+                limit: $limit,
+                historyPageSize: $historyPageSize,
+                acceptHistoryEncoding: $acceptHistoryEncoding,
+                supportedWorkflowTypes: $supportedWorkflowTypes,
+            ),
         );
 
         if (is_array($task)) {
@@ -355,15 +361,20 @@ final class WorkflowTaskPoller
         }
 
         if ($this->recoverExpiredLeases($request, $namespace, $taskQueue)) {
-            $task = $this->claimReadyTask(
-                namespace: $namespace,
-                taskQueue: $taskQueue,
-                leaseOwner: $leaseOwner,
-                buildId: $buildId,
-                limit: $limit,
-                historyPageSize: $historyPageSize,
-                acceptHistoryEncoding: $acceptHistoryEncoding,
-                supportedWorkflowTypes: $supportedWorkflowTypes,
+            $task = $this->admission->withLeaseAdmission(
+                $namespace,
+                $taskQueue,
+                TaskQueueAdmission::WORKFLOW_TASKS,
+                fn (): ?array => $this->claimReadyTask(
+                    namespace: $namespace,
+                    taskQueue: $taskQueue,
+                    leaseOwner: $leaseOwner,
+                    buildId: $buildId,
+                    limit: $limit,
+                    historyPageSize: $historyPageSize,
+                    acceptHistoryEncoding: $acceptHistoryEncoding,
+                    supportedWorkflowTypes: $supportedWorkflowTypes,
+                ),
             );
 
             if (is_array($task)) {

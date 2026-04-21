@@ -220,6 +220,24 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_MAX_TASKS_PER_POLL',
         ],
+        'DW_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_QUEUE' => [
+            'description' => 'Optional server-side cap for active workflow-task leases per namespace/task queue. Unset means no server-side cap beyond worker registration capacity.',
+            'default' => '(unset)',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_QUEUE',
+        ],
+        'DW_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_QUEUE' => [
+            'description' => 'Optional server-side cap for active activity-task leases per namespace/task queue. Unset means no server-side cap beyond worker registration capacity.',
+            'default' => '(unset)',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_QUEUE',
+        ],
+        'DW_TASK_QUEUE_ADMISSION_OVERRIDES' => [
+            'description' => 'JSON object keyed by "namespace:task_queue", "task_queue", or "*" with workflow_tasks/activity_tasks max_active_leases overrides.',
+            'default' => '{}',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_TASK_QUEUE_ADMISSION_OVERRIDES',
+        ],
         'DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT' => [
             'description' => 'Maximum expired workflow tasks to recover per pass.',
             'default' => '5',

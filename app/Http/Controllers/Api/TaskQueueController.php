@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneProtocol;
+use App\Support\TaskQueueAdmission;
 use App\Support\WorkflowQueryTaskBroker;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -13,6 +14,7 @@ class TaskQueueController
 {
     public function __construct(
         private readonly WorkflowQueryTaskBroker $queryTasks,
+        private readonly TaskQueueAdmission $admission,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -77,6 +79,9 @@ class TaskQueueController
 
         $payload['admission'] = [
             'workflow_tasks' => $this->taskAdmission(
+                $namespace,
+                $taskQueue,
+                TaskQueueAdmission::WORKFLOW_TASKS,
                 'worker_registration.max_concurrent_workflow_tasks',
                 is_array($pollers) ? $pollers : [],
                 'max_concurrent_workflow_tasks',
@@ -84,6 +89,9 @@ class TaskQueueController
                 (int) data_get($stats, 'workflow_tasks.ready_count', 0),
             ),
             'activity_tasks' => $this->taskAdmission(
+                $namespace,
+                $taskQueue,
+                TaskQueueAdmission::ACTIVITY_TASKS,
                 'worker_registration.max_concurrent_activity_tasks',
                 is_array($pollers) ? $pollers : [],
                 'max_concurrent_activity_tasks',
@@ -100,15 +108,24 @@ class TaskQueueController
      * @param  list<array<string, mixed>>  $pollers
      * @return array{
      *     budget_source: string,
+     *     server_budget_source: string,
      *     active_worker_count: int,
      *     configured_slot_count: int,
      *     leased_count: int,
      *     ready_count: int,
      *     available_slot_count: int,
+     *     server_max_active_leases_per_queue: int|null,
+     *     server_active_lease_count: int,
+     *     server_remaining_active_lease_capacity: int|null,
+     *     server_lock_required: bool,
+     *     server_lock_supported: bool,
      *     status: string
      * }
      */
     private function taskAdmission(
+        string $namespace,
+        string $taskQueue,
+        string $taskKind,
         string $budgetSource,
         array $pollers,
         string $slotField,
@@ -126,20 +143,38 @@ class TaskQueueController
         );
         $configuredSlots = array_sum($slotCounts);
         $activeWorkerCount = count($activePollers);
+        $serverBudget = $this->admission->budget($namespace, $taskQueue, $taskKind);
 
         return [
             'budget_source' => $budgetSource,
+            'server_budget_source' => $serverBudget['budget_source'],
             'active_worker_count' => $activeWorkerCount,
             'configured_slot_count' => $configuredSlots,
             'leased_count' => max(0, $leasedCount),
             'ready_count' => max(0, $readyCount),
             'available_slot_count' => max(0, $configuredSlots - max(0, $leasedCount)),
-            'status' => $this->taskAdmissionStatus($activeWorkerCount, $configuredSlots, $leasedCount),
+            'server_max_active_leases_per_queue' => $serverBudget['max_active_leases_per_queue'],
+            'server_active_lease_count' => $serverBudget['active_lease_count'],
+            'server_remaining_active_lease_capacity' => $serverBudget['remaining_active_lease_capacity'],
+            'server_lock_required' => $serverBudget['lock_required'],
+            'server_lock_supported' => $serverBudget['lock_supported'],
+            'status' => $this->taskAdmissionStatus($activeWorkerCount, $configuredSlots, $leasedCount, $serverBudget),
         ];
     }
 
-    private function taskAdmissionStatus(int $activeWorkerCount, int $configuredSlots, int $leasedCount): string
+    /**
+     * @param  array<string, mixed>  $serverBudget
+     */
+    private function taskAdmissionStatus(int $activeWorkerCount, int $configuredSlots, int $leasedCount, array $serverBudget): string
     {
+        if (($serverBudget['status'] ?? null) === 'unavailable') {
+            return 'unavailable';
+        }
+
+        if (($serverBudget['status'] ?? null) === 'throttled') {
+            return 'throttled';
+        }
+
         if ($activeWorkerCount === 0) {
             return 'no_active_workers';
         }

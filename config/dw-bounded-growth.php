@@ -2,6 +2,7 @@
 
 use App\Support\LongPollSignalStore;
 use App\Support\ServerReadiness;
+use App\Support\TaskQueueAdmission;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowTaskFailureMetrics;
 use App\Support\WorkflowTaskPoller;
@@ -70,6 +71,20 @@ return [
             'bound' => 'Pending query tasks are capped per namespace/task_queue by server.query_tasks.max_pending_per_queue, default 1024 and hard-clamped to 10000.',
             'admission' => 'Queue mutations require an atomic cache lock. Full queues return query_task_queue_full/HTTP 429; stores without locks or lock timeouts return query_task_queue_unavailable/HTTP 503.',
             'eviction' => 'Poll and enqueue paths prune stale queue IDs by checking each referenced task. Task, lease, queue, and lock keys expire by TTL.',
+        ],
+
+        'task_queue_admission_locks' => [
+            'owner' => TaskQueueAdmission::class,
+            'prefix' => 'server:task-queue-admission:',
+            'dimensions' => [
+                'namespace_hash',
+                'task_queue_hash',
+                'task_kind',
+            ],
+            'ttl' => 'server.admission.lock_ttl_seconds seconds, default 5.',
+            'bound' => 'One short-lived lock key per namespace/task_queue/task_kind that has an active server-side lease cap and concurrent poll attempts.',
+            'admission' => 'Locks are acquired only when workflow or activity active-lease caps are configured; uncapped queues do not create these keys.',
+            'eviction' => 'Cache lock TTL only. The durable task rows remain the source of truth for active lease counts.',
         ],
 
         'workflow_task_expired_lease_recovery' => [

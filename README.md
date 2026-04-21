@@ -533,8 +533,13 @@ heartbeat, complete, and fail responses include `run_closed_reason` and
 Task queue responses include an `admission` object so operators can separate
 worker-local capacity from server-side query-task admission limits. Workflow
 and activity entries report active worker count, configured slots from worker
-registrations, leased and ready counts, available slots, and a status such as
-`accepting`, `saturated`, `no_slots`, or `no_active_workers`. Query-task
+registrations, leased and ready counts, available slots, optional server-side
+active lease caps, and a status such as `accepting`, `throttled`, `saturated`,
+`no_slots`, or `no_active_workers`. Set
+`DW_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_QUEUE` and
+`DW_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_QUEUE` to cap active leases per
+namespace/task queue, or use `DW_TASK_QUEUE_ADMISSION_OVERRIDES` for exact
+queue overrides keyed by `namespace:task_queue`, `task_queue`, or `*`. Query-task
 entries report `server.query_tasks.max_pending_per_queue`, approximate pending
 count, remaining capacity, cache-lock support, and whether the queue is
 `accepting`, `full`, or `unavailable`.
@@ -816,6 +821,9 @@ every operator-facing variable the server honors.
 | `DW_POLLING_CACHE_PATH` | `storage/.../server-polling/<APP_ENV>` | Directory for worker-poll coordination state. |
 | `DW_WAKE_SIGNAL_TTL_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT + 5, 60)` | TTL for per-queue wake signals. |
 | `DW_MAX_TASKS_PER_POLL` | `1` | Maximum tasks returned per poll. |
+| `DW_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_QUEUE` | (unset) | Optional server-side cap for active workflow-task leases per namespace/task queue. |
+| `DW_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_QUEUE` | (unset) | Optional server-side cap for active activity-task leases per namespace/task queue. |
+| `DW_TASK_QUEUE_ADMISSION_OVERRIDES` | `{}` | JSON overrides keyed by `namespace:task_queue`, `task_queue`, or `*` for workflow/activity active lease caps. |
 | `DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT` | `5` | Max expired workflow tasks recovered per pass. |
 | `DW_EXPIRED_WORKFLOW_TASK_RECOVERY_TTL_SECONDS` | `5` | Min seconds between expired-task recovery passes. |
 | `DW_WORKER_PROTOCOL_VERSION` | `WorkerProtocolVersion::VERSION` | Override for the advertised worker protocol version. |

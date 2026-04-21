@@ -13,6 +13,7 @@ final class ActivityTaskPoller
         private readonly LongPoller $longPoller,
         private readonly ActivityTaskBridgeContract $bridge,
         private readonly LongPollSignalStore $signals,
+        private readonly TaskQueueAdmission $admission,
     ) {}
 
     /**
@@ -71,7 +72,12 @@ final class ActivityTaskPoller
     ): array {
         $this->applyWorkerCompatibility($namespace, $buildId);
 
-        $task = $this->claimReadyTask($namespace, $taskQueue, $leaseOwner, $buildId, $limit, $supportedActivityTypes);
+        $task = $this->admission->withLeaseAdmission(
+            $namespace,
+            $taskQueue,
+            TaskQueueAdmission::ACTIVITY_TASKS,
+            fn (): ?array => $this->claimReadyTask($namespace, $taskQueue, $leaseOwner, $buildId, $limit, $supportedActivityTypes),
+        );
 
         return [
             'task' => $task,

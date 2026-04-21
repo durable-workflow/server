@@ -191,6 +191,45 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Task Queue Admission
+    |--------------------------------------------------------------------------
+    |
+    | Optional server-side active-lease budgets for workflow and activity task
+    | queues. Worker registrations still advertise local capacity; these limits
+    | let operators cap queue-level dispatch before a noisy tenant or downstream
+    | dependency consumes the fleet.
+    |
+    */
+
+    'admission' => [
+        'workflow_tasks' => [
+            'max_active_leases_per_queue' => EnvAuditor::env(
+                'DW_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_QUEUE',
+                'WORKFLOW_SERVER_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_QUEUE',
+                null,
+            ),
+        ],
+        'activity_tasks' => [
+            'max_active_leases_per_queue' => EnvAuditor::env(
+                'DW_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_QUEUE',
+                'WORKFLOW_SERVER_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_QUEUE',
+                null,
+            ),
+        ],
+        'queue_overrides' => json_decode(
+            (string) EnvAuditor::env(
+                'DW_TASK_QUEUE_ADMISSION_OVERRIDES',
+                'WORKFLOW_SERVER_TASK_QUEUE_ADMISSION_OVERRIDES',
+                '{}',
+            ),
+            true,
+        ) ?: [],
+        'lock_ttl_seconds' => 5,
+        'lock_wait_seconds' => 1,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Worker Protocol
     |--------------------------------------------------------------------------
     |
