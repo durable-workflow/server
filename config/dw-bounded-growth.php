@@ -15,8 +15,9 @@ use App\Support\WorkflowTaskPollRequestStore;
 |
 | Server-owned cache and metric surfaces must declare their key dimensions,
 | TTL or admission policy, and operator-visible cardinality bounds here.
-| Tests diff this policy against app source so new cache prefixes and dw_*
-| metric names cannot be added without an explicit growth policy.
+| Tests diff this policy against app and perf-harness source so new cache
+| prefixes and dw_* metric names cannot be added without an explicit growth
+| policy.
 |
 */
 
@@ -123,6 +124,80 @@ return [
             'cardinality' => 'workflow_type series are limited by server.metrics.workflow_task_failure_type_limit, default 20 and hard-clamped to 100.',
             'selection' => 'top_by_max_consecutive_failures_then_name',
             'suppression' => 'Suppressed workflow type and failed-task counts are returned with the metric payload.',
+        ],
+
+        'dw_perf_requests_total' => [
+            'owner' => 'scripts/perf/server_soak.py',
+            'surface' => 'Perf harness /metrics scrape; optional remote_write.',
+            'dimensions' => [
+                'status' => 'bounded_http_status_code',
+            ],
+            'cardinality' => 'status is produced from HTTP response codes and load-generator exception buckets; observed series are bounded to the finite status-code set.',
+            'selection' => 'all observed status buckets for the current soak run.',
+            'suppression' => 'No suppression path is needed because status-code cardinality is finite.',
+        ],
+
+        'dw_perf_errors_total' => [
+            'owner' => 'scripts/perf/server_soak.py',
+            'surface' => 'Perf harness /metrics scrape; optional remote_write.',
+            'dimensions' => [],
+            'cardinality' => 'single counter series per soak run.',
+            'selection' => 'current run aggregate.',
+            'suppression' => 'No labels are exposed.',
+        ],
+
+        'dw_perf_latency_seconds_average' => [
+            'owner' => 'scripts/perf/server_soak.py',
+            'surface' => 'Perf harness /metrics scrape; optional remote_write.',
+            'dimensions' => [],
+            'cardinality' => 'single gauge series per soak run.',
+            'selection' => 'current run aggregate.',
+            'suppression' => 'No labels are exposed.',
+        ],
+
+        'dw_perf_server_memory_bytes' => [
+            'owner' => 'scripts/perf/server_soak.py',
+            'surface' => 'Perf harness /metrics scrape; optional remote_write.',
+            'dimensions' => [],
+            'cardinality' => 'single gauge series per soak run.',
+            'selection' => 'latest sampled server container memory.',
+            'suppression' => 'No labels are exposed.',
+        ],
+
+        'dw_perf_redis_memory_bytes' => [
+            'owner' => 'scripts/perf/server_soak.py',
+            'surface' => 'Perf harness /metrics scrape; optional remote_write.',
+            'dimensions' => [],
+            'cardinality' => 'single gauge series per soak run.',
+            'selection' => 'latest sampled Redis used_memory value.',
+            'suppression' => 'No labels are exposed.',
+        ],
+
+        'dw_perf_redis_polling_keys' => [
+            'owner' => 'scripts/perf/server_soak.py',
+            'surface' => 'Perf harness /metrics scrape; optional remote_write.',
+            'dimensions' => [],
+            'cardinality' => 'single gauge series per soak run.',
+            'selection' => 'latest sampled Redis keys matching the polling-cache pattern.',
+            'suppression' => 'No labels are exposed.',
+        ],
+
+        'dw_perf_redis_db_keys' => [
+            'owner' => 'scripts/perf/server_soak.py',
+            'surface' => 'Perf harness /metrics scrape; optional remote_write.',
+            'dimensions' => [],
+            'cardinality' => 'single gauge series per soak run.',
+            'selection' => 'latest sampled Redis DBSIZE value.',
+            'suppression' => 'No labels are exposed.',
+        ],
+
+        'dw_perf_assertion_failed' => [
+            'owner' => 'scripts/perf/server_soak.py',
+            'surface' => 'Perf harness /metrics scrape; optional remote_write.',
+            'dimensions' => [],
+            'cardinality' => 'single gauge series per soak run.',
+            'selection' => 'current run assertion state.',
+            'suppression' => 'No labels are exposed.',
         ],
     ],
 ];

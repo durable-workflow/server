@@ -49,31 +49,31 @@ class BoundedGrowthPolicyTest extends TestCase
         }
     }
 
-    public function test_every_dw_metric_literal_in_app_source_is_declared(): void
+    public function test_every_dw_metric_literal_in_bounded_growth_source_is_declared(): void
     {
         $declared = array_keys($this->policyMetrics());
-        $seen = $this->metricNamesInAppSource();
+        $seen = $this->metricNamesInBoundedGrowthSource();
 
-        $this->assertNotEmpty($seen, 'No dw_* metric names were found in app source.');
+        $this->assertNotEmpty($seen, 'No dw_* metric names were found in bounded-growth source.');
 
         foreach ($seen as $metric) {
             $this->assertContains(
                 $metric,
                 $declared,
-                "{$metric} appears in app source but is missing from config/dw-bounded-growth.php metrics.",
+                "{$metric} appears in bounded-growth source but is missing from config/dw-bounded-growth.php metrics.",
             );
         }
     }
 
-    public function test_every_declared_metric_is_still_used_by_app_source(): void
+    public function test_every_declared_metric_is_still_used_by_bounded_growth_source(): void
     {
-        $seen = $this->metricNamesInAppSource();
+        $seen = $this->metricNamesInBoundedGrowthSource();
 
         foreach (array_keys($this->policyMetrics()) as $metric) {
             $this->assertContains(
                 $metric,
                 $seen,
-                "{$metric} is declared in config/dw-bounded-growth.php but was not found in app source.",
+                "{$metric} is declared in config/dw-bounded-growth.php but was not found in bounded-growth source.",
             );
         }
     }
@@ -269,17 +269,17 @@ class BoundedGrowthPolicyTest extends TestCase
     /**
      * @return list<string>
      */
-    private function metricNamesInAppSource(): array
+    private function metricNamesInBoundedGrowthSource(): array
     {
         $metrics = [];
 
-        foreach ($this->phpFiles(self::$repoRoot.'/app') as $file) {
+        foreach ($this->metricSourceFiles() as $file) {
             $source = file_get_contents($file);
             $this->assertNotFalse($source, "{$file} must be readable");
 
-            preg_match_all('/[\'"](dw_[a-z0-9_]+)[\'"]/', $source, $matches);
+            preg_match_all('/\bdw_[a-z0-9_]+\b/', $source, $matches);
 
-            foreach ($matches[1] ?? [] as $metric) {
+            foreach ($matches[0] ?? [] as $metric) {
                 $metrics[$metric] = $metric;
             }
         }
@@ -293,7 +293,27 @@ class BoundedGrowthPolicyTest extends TestCase
     /**
      * @return list<string>
      */
+    private function metricSourceFiles(): array
+    {
+        return [
+            ...$this->filesWithExtensions(self::$repoRoot.'/app', ['php']),
+            ...$this->filesWithExtensions(self::$repoRoot.'/scripts/perf', ['py', 'sh']),
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
     private function phpFiles(string $directory): array
+    {
+        return $this->filesWithExtensions($directory, ['php']);
+    }
+
+    /**
+     * @param  list<string>  $extensions
+     * @return list<string>
+     */
+    private function filesWithExtensions(string $directory, array $extensions): array
     {
         $files = [];
         $iterator = new RecursiveIteratorIterator(
@@ -301,7 +321,7 @@ class BoundedGrowthPolicyTest extends TestCase
         );
 
         foreach ($iterator as $file) {
-            if (! $file->isFile() || $file->getExtension() !== 'php') {
+            if (! $file->isFile() || ! in_array($file->getExtension(), $extensions, true)) {
                 continue;
             }
 

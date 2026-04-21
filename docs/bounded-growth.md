@@ -1,7 +1,8 @@
 # Server Bounded-Growth Policy
 
-The server owns a few cache-backed coordination surfaces and one JSON metric
-surface. Each surface must declare a bounded-growth policy in
+The server owns a few cache-backed coordination surfaces, one JSON metric
+surface, and the perf harness metrics that can be remote-written during soaks.
+Each surface must declare a bounded-growth policy in
 `config/dw-bounded-growth.php` before it ships. The policy is intentionally
 machine-readable so tests can fail when new cache prefixes or `dw_*` metrics are
 added without a TTL, admission, or cardinality contract.
@@ -37,6 +38,14 @@ added without a TTL, admission, or cardinality contract.
 | Metric | Surface | Label Policy |
 | --- | --- | --- |
 | `dw_workflow_task_consecutive_failures` | `GET /api/system/metrics` | `namespace` is request-scoped rather than a label. `workflow_type` series are limited by `server.metrics.workflow_task_failure_type_limit`, default 20 and hard-clamped to 100; suppressed type/task counts are reported in the payload. |
+| `dw_perf_requests_total` | Perf harness `/metrics`; optional remote_write | The only label is `status`, produced from HTTP response codes and load-generator exception buckets, so the series set is finite. |
+| `dw_perf_errors_total` | Perf harness `/metrics`; optional remote_write | No labels; single counter series per soak run. |
+| `dw_perf_latency_seconds_average` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |
+| `dw_perf_server_memory_bytes` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |
+| `dw_perf_redis_memory_bytes` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |
+| `dw_perf_redis_polling_keys` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |
+| `dw_perf_redis_db_keys` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |
+| `dw_perf_assertion_failed` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |
 
 ## Enforcement
 
@@ -44,8 +53,8 @@ added without a TTL, admission, or cardinality contract.
 
 - every `server:*` cache key prefix literal in `app/` must be covered by a
   `cache_keys` entry;
-- every `dw_*` metric name literal in `app/` must be covered by a `metrics`
-  entry;
+- every `dw_*` metric name literal in `app/` and `scripts/perf/` must be
+  covered by a `metrics` entry;
 - each policy entry must include the required review fields;
 - this document must mention every declared policy ID, cache prefix, and metric.
 
