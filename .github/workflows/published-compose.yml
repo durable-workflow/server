@@ -35,7 +35,7 @@ concurrency:
 
 jobs:
   smoke:
-    name: ${{ matrix.platform }} published image
+    name: ${{ matrix.platform }} ${{ matrix.profile }} published image
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
@@ -44,9 +44,17 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
+            profile: local
             port: "18080"
           - platform: linux/arm64
+            profile: local
             port: "18081"
+          - platform: linux/amd64
+            profile: production
+            port: "18082"
+          - platform: linux/arm64
+            profile: production
+            port: "18083"
 
     steps:
       - name: Checkout server
@@ -69,7 +77,8 @@ jobs:
       - name: Smoke published Compose stack
         env:
           DW_SERVER_PLATFORM: ${{ matrix.platform }}
-          DW_PUBLISHED_COMPOSE_PROJECT: published-compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.port }}
+          DW_PUBLISHED_COMPOSE_PROFILE: ${{ matrix.profile }}
+          DW_PUBLISHED_COMPOSE_PROJECT: published-compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}-${{ matrix.port }}
           SERVER_PORT: ${{ matrix.port }}
           DW_AUTH_TOKEN: published-compose-token
         run: scripts/smoke-published-compose.sh

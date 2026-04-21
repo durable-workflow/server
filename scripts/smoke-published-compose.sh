@@ -12,6 +12,7 @@ WORKER_ID="${DW_SMOKE_WORKER_ID:-published-compose-smoke-worker}"
 TASK_QUEUE="${DW_SMOKE_TASK_QUEUE:-published-compose-smoke}"
 ENDPOINT_MODE="${DW_PUBLISHED_COMPOSE_ENDPOINT_MODE:-host}"
 SERVER_PLATFORM="${DW_SERVER_PLATFORM:-${DOCKER_DEFAULT_PLATFORM:-}}"
+PROFILE="${DW_PUBLISHED_COMPOSE_PROFILE:-local}"
 
 export DW_SERVER_PLATFORM="$SERVER_PLATFORM"
 unset DOCKER_DEFAULT_PLATFORM
@@ -23,7 +24,37 @@ else
 fi
 
 export SERVER_PORT
-export DW_AUTH_TOKEN="$TOKEN"
+
+case "$PROFILE" in
+  local)
+    AUTH_TOKEN="$TOKEN"
+    WORKER_AUTH_TOKEN="$TOKEN"
+    export APP_ENV="${APP_ENV:-local}"
+    export APP_DEBUG="${APP_DEBUG:-false}"
+    export DW_AUTH_DRIVER="${DW_AUTH_DRIVER:-token}"
+    export DW_AUTH_TOKEN="$TOKEN"
+    export DW_AUTH_BACKWARD_COMPATIBLE="${DW_AUTH_BACKWARD_COMPATIBLE:-true}"
+    ;;
+  production)
+    AUTH_TOKEN="${DW_ADMIN_TOKEN:-published-compose-admin-token}"
+    WORKER_AUTH_TOKEN="${DW_WORKER_TOKEN:-published-compose-worker-token}"
+    export APP_ENV="${APP_ENV:-production}"
+    export APP_DEBUG="${APP_DEBUG:-false}"
+    export DB_PASSWORD="${DB_PASSWORD:-published-compose-db-password}"
+    export DB_ROOT_PASSWORD="${DB_ROOT_PASSWORD:-published-compose-root-password}"
+    export DW_AUTH_DRIVER="${DW_AUTH_DRIVER:-token}"
+    export DW_AUTH_BACKWARD_COMPATIBLE="${DW_AUTH_BACKWARD_COMPATIBLE:-false}"
+    export DW_AUTH_TOKEN="${DW_AUTH_TOKEN:-}"
+    export DW_WORKER_TOKEN="$WORKER_AUTH_TOKEN"
+    export DW_OPERATOR_TOKEN="${DW_OPERATOR_TOKEN:-published-compose-operator-token}"
+    export DW_ADMIN_TOKEN="$AUTH_TOKEN"
+    ;;
+  *)
+    echo "Unsupported DW_PUBLISHED_COMPOSE_PROFILE: $PROFILE" >&2
+    echo "Expected one of: local, production" >&2
+    exit 2
+    ;;
+esac
 
 compose() {
   docker compose -p "$PROJECT" -f "$COMPOSE_FILE" "$@"
@@ -68,6 +99,7 @@ echo "  project: $PROJECT"
 echo "  compose: $COMPOSE_FILE"
 echo "  image: ${DW_SERVER_IMAGE:-durableworkflow/server:${DW_SERVER_TAG:-0.2}}"
 echo "  platform: ${DW_SERVER_PLATFORM:-docker-default}"
+echo "  profile: $PROFILE"
 echo "  port: $SERVER_PORT"
 echo "  endpoint: $ENDPOINT_MODE"
 
@@ -77,12 +109,12 @@ compose up -d --wait
 curl_json_with_retry /tmp/dw-server-compose-health.json "${BASE_URL}/api/health"
 curl_json_with_retry /tmp/dw-server-compose-ready.json "${BASE_URL}/api/ready"
 curl_json_with_retry /tmp/dw-server-compose-cluster.json \
-  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Authorization: Bearer ${AUTH_TOKEN}" \
   "${BASE_URL}/api/cluster/info"
 
 curl_json_with_retry /tmp/dw-server-compose-worker.json \
   -X POST "${BASE_URL}/api/worker/register" \
-  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Authorization: Bearer ${WORKER_AUTH_TOKEN}" \
   -H "Content-Type: application/json" \
   -H "X-Namespace: default" \
   -H "X-Durable-Workflow-Protocol-Version: 1.0" \

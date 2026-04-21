@@ -175,6 +175,11 @@ The image generates an internal runtime key automatically. Set `DW_SERVER_KEY`
 only if your deployment needs that key to remain stable across container
 replacement.
 
+The published Compose smoke workflow runs this file in both `local` and
+`production` profiles for amd64 and arm64. The `local` profile validates the
+single-token development recipe; the `production` profile validates role-scoped
+worker/admin tokens with backward-compatible auth disabled.
+
 ### Docker Compose
 
 ```bash
