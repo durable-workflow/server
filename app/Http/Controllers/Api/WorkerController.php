@@ -72,8 +72,11 @@ class WorkerController
             ->first();
 
         if ($existing instanceof WorkerRegistration && $existing->status === 'active') {
+            $currentWorkflowDefinitionFingerprints = $this->workflowDefinitionFingerprints(
+                $existing->workflow_definition_fingerprints ?? []
+            );
             $conflict = $this->firstWorkflowDefinitionFingerprintConflict(
-                $this->workflowDefinitionFingerprints($existing->workflow_definition_fingerprints ?? []),
+                $currentWorkflowDefinitionFingerprints,
                 $workflowDefinitionFingerprints,
             );
 
@@ -85,6 +88,12 @@ class WorkerController
                     'remediation' => 'Restart the worker with a new worker_id before registering a changed workflow class definition.',
                 ], 409);
             }
+
+            $workflowDefinitionFingerprints = $this->preserveAdvertisedWorkflowDefinitionFingerprints(
+                $currentWorkflowDefinitionFingerprints,
+                $workflowDefinitionFingerprints,
+                $validated['supported_workflow_types'] ?? null,
+            );
         }
 
         WorkerRegistration::updateOrCreate(
@@ -146,6 +155,44 @@ class WorkerController
         ksort($normalized);
 
         return $normalized;
+    }
+
+    /**
+     * @param  array<string, string>  $current
+     * @param  array<string, string>  $incoming
+     * @param  array<array-key, mixed>|null  $supportedWorkflowTypes
+     * @return array<string, string>
+     */
+    private function preserveAdvertisedWorkflowDefinitionFingerprints(
+        array $current,
+        array $incoming,
+        ?array $supportedWorkflowTypes,
+    ): array {
+        $advertisedWorkflowTypes = [];
+
+        foreach ($supportedWorkflowTypes ?? array_keys($current) as $workflowType) {
+            if (! is_string($workflowType)) {
+                continue;
+            }
+
+            $workflowType = trim($workflowType);
+
+            if ($workflowType === '') {
+                continue;
+            }
+
+            $advertisedWorkflowTypes[$workflowType] = true;
+        }
+
+        foreach ($current as $workflowType => $fingerprint) {
+            if (isset($advertisedWorkflowTypes[$workflowType]) && ! isset($incoming[$workflowType])) {
+                $incoming[$workflowType] = $fingerprint;
+            }
+        }
+
+        ksort($incoming);
+
+        return $incoming;
     }
 
     /**

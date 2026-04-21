@@ -309,6 +309,9 @@ When a worker re-registers the same active `worker_id`, any advertised
 workflow type must keep the same `workflow_definition_fingerprints` value. A
 changed fingerprint is rejected with `workflow_definition_changed`; restart
 the process with a new worker id before serving a changed workflow class.
+Workers that omit fingerprints during re-registration cannot clear previously
+stored fingerprints for workflow types they still advertise; the server keeps
+the stored value until a new worker id is used.
 
 ### 5. Poll for Workflow Tasks
 

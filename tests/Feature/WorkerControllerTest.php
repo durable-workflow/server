@@ -210,6 +210,36 @@ class WorkerControllerTest extends TestCase
         $this->assertSame(['order.process' => 'sha256:old'], $worker->workflow_definition_fingerprints);
     }
 
+    public function test_register_preserves_active_workflow_definition_fingerprint_when_omitted(): void
+    {
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'legacy-reload-worker',
+                'task_queue' => 'default',
+                'runtime' => 'python',
+                'supported_workflow_types' => ['order.process'],
+                'workflow_definition_fingerprints' => [
+                    'order.process' => 'sha256:old',
+                ],
+            ])
+            ->assertStatus(201);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'legacy-reload-worker',
+                'task_queue' => 'default',
+                'runtime' => 'python',
+                'supported_workflow_types' => ['order.process'],
+            ])
+            ->assertStatus(201);
+
+        $worker = WorkerRegistration::query()
+            ->where('worker_id', 'legacy-reload-worker')
+            ->firstOrFail();
+
+        $this->assertSame(['order.process' => 'sha256:old'], $worker->workflow_definition_fingerprints);
+    }
+
     public function test_register_allows_same_workflow_definition_for_same_worker(): void
     {
         foreach (range(1, 2) as $_) {
