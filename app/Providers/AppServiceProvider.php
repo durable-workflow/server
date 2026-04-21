@@ -2,6 +2,8 @@
 
 namespace App\Providers;
 
+use App\Auth\ConfiguredAuthProvider;
+use App\Contracts\AuthProvider;
 use App\Observers\WorkflowHistoryEventObserver;
 use App\Observers\WorkflowTaskObserver;
 use App\Support\RemoteScheduleStarter;
@@ -17,6 +19,26 @@ class AppServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        $this->app->singleton(AuthProvider::class, function ($app): AuthProvider {
+            $provider = config('server.auth.provider');
+
+            if (is_string($provider) && trim($provider) !== '') {
+                $instance = $app->make($provider);
+
+                if (! $instance instanceof AuthProvider) {
+                    throw new \InvalidArgumentException(sprintf(
+                        'Configured auth provider [%s] must implement [%s].',
+                        $provider,
+                        AuthProvider::class,
+                    ));
+                }
+
+                return $instance;
+            }
+
+            return $app->make(ConfiguredAuthProvider::class);
+        });
+
         $this->app->singleton(ScheduleWorkflowStarter::class, RemoteScheduleStarter::class);
     }
 

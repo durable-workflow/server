@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Fixtures\HeaderAuthProvider;
 use Tests\TestCase;
 
 class AuthenticateMiddlewareTest extends TestCase
@@ -205,6 +206,38 @@ class AuthenticateMiddlewareTest extends TestCase
             ->assertStatus(500);
     }
 
+    // ── Custom providers ────────────────────────────────────────────
+
+    public function test_custom_auth_provider_can_be_configured_without_replacing_middleware(): void
+    {
+        config([
+            'server.auth.provider' => HeaderAuthProvider::class,
+            'server.auth.driver' => 'token',
+            'server.auth.token' => null,
+        ]);
+
+        $this->withHeaders($this->customProviderHeaders('operator'))
+            ->getJson('/api/workflows')
+            ->assertOk();
+
+        $this->withHeaders($this->customProviderHeaders('worker'))
+            ->getJson('/api/workflows')
+            ->assertForbidden()
+            ->assertJsonPath('reason', 'forbidden')
+            ->assertJsonPath('role', 'worker')
+            ->assertJsonPath('allowed_roles', ['operator', 'admin']);
+    }
+
+    public function test_custom_auth_provider_can_return_protocol_json_auth_errors(): void
+    {
+        config(['server.auth.provider' => HeaderAuthProvider::class]);
+
+        $this->getJson('/api/cluster/info')
+            ->assertUnauthorized()
+            ->assertJsonPath('reason', 'unauthorized')
+            ->assertJsonPath('message', 'Missing test principal.');
+    }
+
     // ── Health endpoint bypasses auth ───────────────────────────────
 
     public function test_health_endpoint_is_not_behind_auth(): void
@@ -294,5 +327,18 @@ class AuthenticateMiddlewareTest extends TestCase
     private function controlPlaneHeaders(array $extra = []): array
     {
         return ['X-Durable-Workflow-Control-Plane-Version' => '2'] + $extra;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function customProviderHeaders(string $roles): array
+    {
+        return $this->controlPlaneHeaders([
+            'X-Namespace' => 'default',
+            'X-Test-Subject' => 'user-123',
+            'X-Test-Roles' => $roles,
+            'X-Test-Tenant' => 'tenant-a',
+        ]);
     }
 }

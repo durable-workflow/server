@@ -1,6 +1,8 @@
 # Role-Based Auth Design (Issue #209 Phase 1)
 
-Status: implemented in the server route/middleware layer.
+Status: implemented in the server route/middleware layer. The built-in
+token/signature behavior now runs through the same `App\Contracts\AuthProvider`
+contract that custom deployments can swap in with `DW_AUTH_PROVIDER`.
 
 ## Problem
 Current flat auth: any valid token grants access to all endpoints. Workers can call terminate, operators can poll tasks.
@@ -41,7 +43,8 @@ Current flat auth: any valid token grants access to all endpoints. Workers can c
 
 **2. Modified Authenticate Middleware**
 - After validating token/signature, determine role
-- Store role in `$request->attributes->set('auth.role', $role)`
+- Store the authenticated `App\Auth\Principal` plus compatibility attributes
+  (`auth.role`, `auth.method`, `auth.legacy_full_access`) on the request
 - If backward compatible mode + main token → keep full access while no role
   credentials are configured, then treat it as admin-scoped during migration
 
@@ -51,12 +54,14 @@ class RequireRole
 {
     public function handle(Request $request, Closure $next, string ...$roles): Response
     {
-        $currentRole = $request->attributes->get('auth.role');
-        
-        if (!in_array($currentRole, $roles, true)) {
-            return error(403, 'forbidden', "Access denied for role: $currentRole");
+        $principal = Authenticate::principal($request);
+
+        if (! $authProvider->authorize($principal, 'server.route.access', [
+            'allowed_roles' => $roles,
+        ])) {
+            return error(403, 'forbidden', 'Authenticated role is not allowed');
         }
-        
+
         return $next($request);
     }
 }
@@ -111,6 +116,27 @@ the legacy credential.
 
 Signature auth follows the same rule using `role_signature_keys` and the legacy
 `signature_key`.
+
+### Pluggable Provider Contract
+
+Set `DW_AUTH_PROVIDER` to a Laravel-resolvable class implementing
+`App\Contracts\AuthProvider`:
+
+```php
+interface AuthProvider
+{
+    public function authenticate(Request $request): Principal;
+
+    public function authorize(Principal $principal, string $action, array $resource = []): bool;
+}
+```
+
+`authenticate()` returns a `Principal` with a subject, roles, optional tenant,
+auth method, and non-secret claims. `RequireRole` calls `authorize()` with
+`action = server.route.access` and a resource payload containing
+`allowed_roles`, method/path, route name, and resolved namespace when available.
+Workflow command attribution records the principal context for control-plane
+commands so signal/update/query history carries the authenticated subject.
 
 ### Testing
 1. Unit test role determination logic

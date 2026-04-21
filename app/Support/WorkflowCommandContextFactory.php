@@ -2,6 +2,8 @@
 
 namespace App\Support;
 
+use App\Auth\Principal;
+use App\Http\Middleware\Authenticate;
 use Illuminate\Http\Request;
 use Workflow\V2\CommandContext;
 
@@ -70,11 +72,31 @@ final class WorkflowCommandContextFactory
         string $defaultStatus,
         string $defaultMethod,
     ): array {
+        $principal = Authenticate::principal($request);
+        $principalContext = $principal?->toAuditContext() ?? [];
+
         return array_filter([
-            'status' => $this->forwardedAttributionValue($request, 'auth_status') ?? $defaultStatus,
-            'method' => $this->forwardedAttributionValue($request, 'auth_method') ?? $defaultMethod,
-            'role' => $request->attributes->get(\App\Http\Middleware\Authenticate::ATTRIBUTE_ROLE),
+            'status' => $this->forwardedAttributionValue($request, 'auth_status')
+                ?? $this->principalAuthStatus($principal)
+                ?? $defaultStatus,
+            'method' => $this->forwardedAttributionValue($request, 'auth_method')
+                ?? $principal?->method()
+                ?? $defaultMethod,
+            'role' => $principal?->primaryRole(),
+            'roles' => $principal?->roles(),
+            'principal' => $principalContext === [] ? null : $principalContext,
         ], static fn (mixed $value): bool => $value !== null && $value !== '');
+    }
+
+    private function principalAuthStatus(?Principal $principal): ?string
+    {
+        if ($principal === null) {
+            return null;
+        }
+
+        return $principal->method() === 'none'
+            ? 'not_configured'
+            : 'authorized';
     }
 
     private function hasConfiguredCredential(string $key): bool

@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Contracts\AuthProvider;
 use App\Support\ControlPlaneProtocol;
 use App\Support\WorkerProtocol;
 use Closure;
@@ -11,6 +12,10 @@ use Symfony\Component\HttpFoundation\Response;
 
 class RequireRole
 {
+    public function __construct(
+        private readonly AuthProvider $authProvider,
+    ) {}
+
     public function handle(Request $request, Closure $next, string ...$roles): Response
     {
         $allowedRoles = $this->allowedRoles($roles);
@@ -19,19 +24,17 @@ class RequireRole
             return self::error($request, 500, 'server_error', 'Route role requirement is not configured.');
         }
 
-        if ((string) config('server.auth.driver', 'none') === 'none') {
+        $principal = Authenticate::principal($request);
+
+        if ($principal === null) {
+            return self::error($request, 401, 'unauthorized', 'Missing authenticated principal.');
+        }
+
+        if ($this->authProvider->authorize($principal, 'server.route.access', $this->resource($request, $allowedRoles))) {
             return $next($request);
         }
 
-        if ($request->attributes->get(Authenticate::ATTRIBUTE_LEGACY_FULL_ACCESS) === true) {
-            return $next($request);
-        }
-
-        $role = $request->attributes->get(Authenticate::ATTRIBUTE_ROLE);
-
-        if (is_string($role) && in_array($role, $allowedRoles, true)) {
-            return $next($request);
-        }
+        $role = $principal->primaryRole();
 
         return self::error($request, 403, 'forbidden', 'Authenticated role is not allowed to access this endpoint.', [
             'role' => is_string($role) && $role !== '' ? $role : null,
@@ -58,6 +61,21 @@ class RequireRole
         }
 
         return array_values(array_unique($allowed));
+    }
+
+    /**
+     * @param  array<int, string>  $allowedRoles
+     * @return array<string, mixed>
+     */
+    private function resource(Request $request, array $allowedRoles): array
+    {
+        return array_filter([
+            'allowed_roles' => $allowedRoles,
+            'method' => $request->method(),
+            'path' => '/'.ltrim($request->path(), '/'),
+            'route_name' => $request->route()?->getName(),
+            'namespace' => $request->attributes->get('namespace'),
+        ], static fn (mixed $value): bool => $value !== null && $value !== '' && $value !== []);
     }
 
     /**

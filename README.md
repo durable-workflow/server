@@ -586,6 +586,20 @@ as the legacy bearer token.
 
 Set `DW_AUTH_DRIVER=none` to disable authentication (development only).
 
+### Custom Auth Providers
+
+Set `DW_AUTH_PROVIDER` to the fully-qualified class name of a Laravel
+container-resolvable implementation of `App\Contracts\AuthProvider` to replace
+the built-in token/signature provider without editing server middleware. The
+provider returns an `App\Auth\Principal` from `authenticate(Request $request)`
+and receives each route authorization decision as
+`authorize(Principal $principal, string $action, array $resource): bool`.
+
+The route resource includes `allowed_roles`, HTTP method/path, route name, and
+the resolved namespace when available. The authenticated principal is also
+recorded in workflow command attribution so signal/update/query history can
+show the subject, roles, tenant, and non-secret claims supplied by the provider.
+
 ## Deployment
 
 ### Docker
@@ -750,6 +764,7 @@ every operator-facing variable the server honors.
 | `DW_SERVER_ID` | `gethostname()` | Unique identifier for this server instance. |
 | `DW_DEFAULT_NAMESPACE` | `default` | Namespace used when a request omits the namespace header. |
 | `DW_TASK_DISPATCH_MODE` | (unset) | Override for `workflows.v2.task_dispatch_mode`. Set to `queue` to dispatch locally in service mode. |
+| `DW_AUTH_PROVIDER` | (unset) | Optional FQCN implementing `App\Contracts\AuthProvider`; unset uses the built-in driver. |
 | `DW_AUTH_DRIVER` | `token` | `none`, `token`, or `signature`. |
 | `DW_AUTH_TOKEN` | (unset) | Single shared bearer token (backward-compat credential). |
 | `DW_SIGNATURE_KEY` | (unset) | HMAC key used when `DW_AUTH_DRIVER=signature` and no role-scoped key is configured. |

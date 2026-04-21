@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\WorkflowNamespace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\HeaderAuthProvider;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -104,6 +105,49 @@ class WorkflowCommandAttributionTest extends TestCase
         $this->assertSame('token', $command->authMethod());
     }
 
+    public function test_it_records_custom_provider_principal_in_command_context(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        config(['server.auth.provider' => HeaderAuthProvider::class]);
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->customAuthHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-custom-provider-principal',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+        $this->runReadyWorkflowTask($runId);
+
+        $this->withHeaders($this->customAuthHeaders([
+            'X-Test-Trace' => 'trace-signal-1',
+        ]))->postJson('/api/workflows/wf-custom-provider-principal/signal/advance', [
+            'input' => ['Lin'],
+        ])->assertAccepted();
+
+        $command = WorkflowCommand::query()
+            ->where('workflow_instance_id', 'wf-custom-provider-principal')
+            ->where('command_type', 'signal')
+            ->latest('command_sequence')
+            ->firstOrFail();
+
+        $auth = $command->commandContext()['auth'] ?? null;
+
+        $this->assertIsArray($auth);
+        $this->assertSame('authorized', $auth['status'] ?? null);
+        $this->assertSame('test-header', $auth['method'] ?? null);
+        $this->assertSame('operator', $auth['role'] ?? null);
+        $this->assertSame(['operator'], $auth['roles'] ?? null);
+        $this->assertSame('user-456', $auth['principal']['subject'] ?? null);
+        $this->assertSame('tenant-a', $auth['principal']['tenant'] ?? null);
+        $this->assertSame('trace-signal-1', $auth['principal']['claims']['trace_id'] ?? null);
+    }
+
     private function configureWorkflowTypes(): void
     {
         config()->set('workflows.v2.types.workflows', [
@@ -141,6 +185,21 @@ class WorkflowCommandAttributionTest extends TestCase
             'Authorization' => 'Bearer server-token',
             'X-Namespace' => 'default',
             'X-Durable-Workflow-Control-Plane-Version' => '2',
+        ], $extra);
+    }
+
+    /**
+     * @param  array<string, string>  $extra
+     * @return array<string, string>
+     */
+    private function customAuthHeaders(array $extra = []): array
+    {
+        return array_merge([
+            'X-Namespace' => 'default',
+            'X-Durable-Workflow-Control-Plane-Version' => '2',
+            'X-Test-Subject' => 'user-456',
+            'X-Test-Roles' => 'operator',
+            'X-Test-Tenant' => 'tenant-a',
         ], $extra);
     }
 

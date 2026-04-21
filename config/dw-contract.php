@@ -82,6 +82,12 @@ return [
 
         // --- Authentication --------------------------------------------
 
+        'DW_AUTH_PROVIDER' => [
+            'description' => 'Optional FQCN of a Laravel-resolvable class implementing App\\Contracts\\AuthProvider.',
+            'default' => null,
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_AUTH_PROVIDER',
+        ],
         'DW_AUTH_DRIVER' => [
             'description' => 'Auth driver: "none", "token", or "signature".',
             'default' => 'token',

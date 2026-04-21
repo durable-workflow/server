@@ -96,6 +96,7 @@ return [
     */
 
     'auth' => [
+        'provider' => EnvAuditor::env('DW_AUTH_PROVIDER', 'WORKFLOW_SERVER_AUTH_PROVIDER'),
         'driver' => EnvAuditor::env('DW_AUTH_DRIVER', 'WORKFLOW_SERVER_AUTH_DRIVER', 'token'),
         'token' => EnvAuditor::env('DW_AUTH_TOKEN', 'WORKFLOW_SERVER_AUTH_TOKEN'),
         'signature_key' => EnvAuditor::env('DW_SIGNATURE_KEY', 'WORKFLOW_SERVER_SIGNATURE_KEY'),
