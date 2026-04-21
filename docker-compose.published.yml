@@ -27,6 +27,7 @@ x-server-environment: &server-environment
 services:
   bootstrap:
     image: *server-image
+    platform: ${DW_SERVER_PLATFORM:-}
     command: ["server-bootstrap"]
     environment:
       <<: *server-environment
@@ -38,6 +39,7 @@ services:
 
   server:
     image: *server-image
+    platform: ${DW_SERVER_PLATFORM:-}
     ports:
       - "${SERVER_PORT:-8080}:8080"
     environment:
@@ -57,6 +59,7 @@ services:
 
   worker:
     image: *server-image
+    platform: ${DW_SERVER_PLATFORM:-}
     command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
     environment:
       <<: *server-environment
@@ -72,6 +75,7 @@ services:
 
   scheduler:
     image: *server-image
+    platform: ${DW_SERVER_PLATFORM:-}
     init: true
     command: >-
       sh -c 'while true; do php artisan schedule:evaluate --limit=100; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done'

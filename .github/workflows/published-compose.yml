@@ -1,0 +1,75 @@
+name: Published Compose Smoke
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/published-compose.yml"
+      - "docker-compose.published.yml"
+      - "scripts/smoke-published-compose.sh"
+      - "README.md"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/published-compose.yml"
+      - "docker-compose.published.yml"
+      - "scripts/smoke-published-compose.sh"
+      - "README.md"
+  workflow_dispatch:
+    inputs:
+      server_tag:
+        description: "Published durableworkflow/server tag to test when DW_SERVER_IMAGE is not set"
+        required: false
+        default: "0.2"
+      server_image:
+        description: "Full image reference or digest override, for example ghcr.io/durable-workflow/server:0.2"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: published-compose-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: ${{ matrix.platform }} published image
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            port: "18080"
+          - platform: linux/arm64
+            port: "18081"
+
+    steps:
+      - name: Checkout server
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        if: matrix.platform == 'linux/arm64'
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set Compose image selector
+        env:
+          INPUT_SERVER_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.server_tag || '0.2' }}
+          INPUT_SERVER_IMAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.server_image || '' }}
+        run: |
+          echo "DW_SERVER_TAG=${INPUT_SERVER_TAG:-0.2}" >> "$GITHUB_ENV"
+          if [ -n "$INPUT_SERVER_IMAGE" ]; then
+            echo "DW_SERVER_IMAGE=$INPUT_SERVER_IMAGE" >> "$GITHUB_ENV"
+          fi
+
+      - name: Smoke published Compose stack
+        env:
+          DW_SERVER_PLATFORM: ${{ matrix.platform }}
+          DW_PUBLISHED_COMPOSE_PROJECT: published-compose-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.port }}
+          SERVER_PORT: ${{ matrix.port }}
+          DW_AUTH_TOKEN: published-compose-token
+        run: scripts/smoke-published-compose.sh
