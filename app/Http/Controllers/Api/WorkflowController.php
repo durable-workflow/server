@@ -328,7 +328,7 @@ class WorkflowController
 
         return ControlPlaneProtocol::jsonForRequest(
             $request,
-            $this->diagnostics->forRun($namespace, $run),
+            $this->diagnostics->forRun($namespace, $run, $this->includeLastEventPayload($request)),
         );
     }
 
@@ -352,8 +352,13 @@ class WorkflowController
 
         return ControlPlaneProtocol::jsonForRequest(
             $request,
-            $this->diagnostics->forRun($namespace, $run),
+            $this->diagnostics->forRun($namespace, $run, $this->includeLastEventPayload($request)),
         );
+    }
+
+    private function includeLastEventPayload(Request $request): bool
+    {
+        return $request->boolean('include_last_event_payload');
     }
 
     public function signal(Request $request, string $workflowId, string $signalName): JsonResponse

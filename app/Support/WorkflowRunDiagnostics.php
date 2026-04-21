@@ -28,10 +28,14 @@ class WorkflowRunDiagnostics
 
     private const FAILURE_LIMIT = 10;
 
+    private const LAST_EVENT_PAYLOAD_PREVIEW_BYTES = 4096;
+
+    private const LAST_EVENT_PAYLOAD_KEY_LIMIT = 20;
+
     /**
      * @return array<string, mixed>
      */
-    public function forRun(string $namespace, WorkflowRun $run): array
+    public function forRun(string $namespace, WorkflowRun $run, bool $includeLastEventPayload = false): array
     {
         $summary = $this->summary($run);
         $taskRows = collect($this->pendingWorkflowTaskRows($run, $summary));
@@ -44,7 +48,7 @@ class WorkflowRunDiagnostics
         $taskQueue = is_string($run->queue) && $run->queue !== ''
             ? $this->taskQueue($namespace, $run->queue)
             : null;
-        $lastEvent = $this->lastEvent($run);
+        $lastEvent = $this->lastEvent($run, $includeLastEventPayload);
         $nextScheduledEvent = $this->nextScheduledEvent($summary, $taskRows->all());
         $recentFailures = $this->recentFailures($run);
 
@@ -389,7 +393,7 @@ class WorkflowRunDiagnostics
     /**
      * @return array<string, mixed>|null
      */
-    private function lastEvent(WorkflowRun $run): ?array
+    private function lastEvent(WorkflowRun $run, bool $includePayload): ?array
     {
         /** @var WorkflowHistoryEvent|null $event */
         $event = WorkflowHistoryEvent::query()
@@ -401,12 +405,68 @@ class WorkflowRunDiagnostics
             return null;
         }
 
-        return [
+        $payload = is_array($event->payload) ? $event->payload : [];
+        $payloadJson = $this->diagnosticPayloadJson($payload);
+
+        return $this->compact([
             'sequence' => (int) $event->sequence,
             'event_type' => $event->event_type?->value ?? $event->event_type,
             'timestamp' => $this->timestamp($event->recorded_at),
-            'payload' => $event->payload ?? [],
+            'payload_summary' => $this->lastEventPayloadSummary($payload, $payloadJson, $includePayload),
+            'payload_preview' => $includePayload ? $this->lastEventPayloadPreview($payloadJson) : null,
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function lastEventPayloadSummary(array $payload, string $payloadJson, bool $included): array
+    {
+        $keys = array_map(
+            static fn (int|string $key): string => (string) $key,
+            array_keys($payload),
+        );
+
+        return [
+            'included' => $included,
+            'encoding' => 'json',
+            'size_bytes' => strlen($payloadJson),
+            'top_level_type' => array_is_list($payload) ? 'list' : 'object',
+            'top_level_key_count' => count($payload),
+            'top_level_keys' => array_slice($keys, 0, self::LAST_EVENT_PAYLOAD_KEY_LIMIT),
+            'top_level_keys_truncated' => count($keys) > self::LAST_EVENT_PAYLOAD_KEY_LIMIT,
+            'preview_max_bytes' => self::LAST_EVENT_PAYLOAD_PREVIEW_BYTES,
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function lastEventPayloadPreview(string $payloadJson): array
+    {
+        return [
+            'encoding' => 'json',
+            'size_bytes' => strlen($payloadJson),
+            'max_bytes' => self::LAST_EVENT_PAYLOAD_PREVIEW_BYTES,
+            'truncated' => strlen($payloadJson) > self::LAST_EVENT_PAYLOAD_PREVIEW_BYTES,
+            'data' => substr($payloadJson, 0, self::LAST_EVENT_PAYLOAD_PREVIEW_BYTES),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function diagnosticPayloadJson(array $payload): string
+    {
+        try {
+            return json_encode(
+                $payload,
+                JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_SLASHES,
+            );
+        } catch (\JsonException) {
+            return '{}';
+        }
     }
 
     /**

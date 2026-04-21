@@ -11,11 +11,13 @@ use Tests\TestCase;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\FailureCategory;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -95,6 +97,7 @@ class WorkflowDebugTest extends TestCase
             ->assertJsonPath('recent_failures.0.message', 'Replay failed in debug test.')
             ->assertJsonPath('control_plane.operation', 'debug_workflow')
             ->assertJsonPath('control_plane.workflow_id', 'wf-debug')
+            ->assertJsonPath('execution.last_event.payload_summary.included', false)
             ->assertJsonStructure([
                 'generated_at',
                 'execution' => [
@@ -102,6 +105,7 @@ class WorkflowDebugTest extends TestCase
                         'sequence',
                         'event_type',
                         'timestamp',
+                        'payload_summary',
                     ],
                 ],
                 'pending_workflow_tasks',
@@ -140,6 +144,57 @@ class WorkflowDebugTest extends TestCase
             ->assertJsonPath('run_id', $runId)
             ->assertJsonPath('control_plane.operation', 'debug_workflow')
             ->assertJsonPath('control_plane.run_id', $runId);
+    }
+
+    public function test_debug_diagnostics_bound_last_event_payload_detail(): void
+    {
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-debug-large-last-event',
+            'workflow_type' => 'tests.await-approval-workflow',
+            'task_queue' => 'debug-queue',
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
+
+        $start->assertCreated();
+        $run = WorkflowRun::query()->findOrFail((string) $start->json('run_id'));
+        $largeValue = str_repeat('x', 64 * 1024);
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::SideEffectRecorded, [
+            'result' => $largeValue,
+            'metadata' => [
+                'source' => 'debug-test',
+            ],
+        ]);
+
+        $debug = $this->getJson(
+            '/api/workflows/wf-debug-large-last-event/debug',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $debug->assertOk()
+            ->assertJsonPath('execution.last_event.event_type', HistoryEventType::SideEffectRecorded->value)
+            ->assertJsonPath('execution.last_event.payload_summary.included', false)
+            ->assertJsonPath('execution.last_event.payload_summary.top_level_keys', ['result', 'metadata'])
+            ->assertJsonMissingPath('execution.last_event.payload')
+            ->assertJsonMissingPath('execution.last_event.payload_preview');
+
+        $this->assertGreaterThan(64 * 1024, $debug->json('execution.last_event.payload_summary.size_bytes'));
+        $this->assertStringNotContainsString(str_repeat('x', 4096), $debug->getContent());
+
+        $withPreview = $this->getJson(
+            '/api/workflows/wf-debug-large-last-event/debug?include_last_event_payload=true',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $withPreview->assertOk()
+            ->assertJsonPath('execution.last_event.payload_summary.included', true)
+            ->assertJsonPath('execution.last_event.payload_preview.encoding', 'json')
+            ->assertJsonPath('execution.last_event.payload_preview.max_bytes', 4096)
+            ->assertJsonPath('execution.last_event.payload_preview.truncated', true);
+
+        $preview = (string) $withPreview->json('execution.last_event.payload_preview.data');
+        $this->assertSame(4096, strlen($preview));
+        $this->assertStringStartsWith('{"result":"', $preview);
+        $this->assertStringNotContainsString(str_repeat('x', 8192), $withPreview->getContent());
     }
 
     public function test_debug_diagnostics_do_not_load_unbounded_historical_task_graphs(): void

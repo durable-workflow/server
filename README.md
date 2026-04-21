@@ -351,8 +351,11 @@ curl "$SERVER/api/workflows/order-42/runs/abc123/history" \
 
 Workflow debug responses are capped support snapshots, not full run exports:
 the server fetches at most 25 pending workflow tasks, 25 pending activities
-with only each activity's current/latest attempt, and 10 recent failures. Use
-the history endpoints when a full replay/debug archive is needed.
+with only each activity's current/latest attempt, and 10 recent failures. The
+last history event includes only sequence, type, timestamp, and bounded payload
+metadata by default; add `include_last_event_payload=true` to include at most a
+4 KiB JSON preview. Use the history endpoints when a full replay/debug archive
+is needed.
 
 ### History
 - `GET /api/workflows/{id}/runs/{runId}/history` — Get event history
