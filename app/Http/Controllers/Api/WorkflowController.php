@@ -149,6 +149,10 @@ class WorkflowController
             }
         }
 
+        if (isset($validated['search_attributes'])) {
+            $this->validateSearchAttributes($validated['search_attributes']);
+        }
+
         $workflowId = $validated['workflow_id'] ?? null;
 
         if ($workflowId !== null && $this->workflowIdReservedElsewhere($namespace, $workflowId)) {
@@ -302,6 +306,8 @@ class WorkflowController
             return $response;
         }
 
+        $this->validateOperationName($signalName, 'signal');
+
         $namespace = $request->attributes->get('namespace');
 
         if (! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
@@ -351,6 +357,8 @@ class WorkflowController
         if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
             return $response;
         }
+
+        $this->validateOperationName($queryName, 'query');
 
         $namespace = $request->attributes->get('namespace');
 
@@ -407,6 +415,8 @@ class WorkflowController
         if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
             return $response;
         }
+
+        $this->validateOperationName($updateName, 'update');
 
         $namespace = $request->attributes->get('namespace');
 
@@ -836,6 +846,105 @@ class WorkflowController
         if (array_key_exists('wait_policy', $request->all())) {
             throw ValidationException::withMessages([
                 'wait_policy' => ['The wait_policy field is no longer supported. Use wait_for.'],
+            ]);
+        }
+    }
+
+    /**
+     * Fast-fail oversize or malformed signal/update/query names at the
+     * request boundary so the control plane never dispatches a command
+     * row the downstream path would later reject.
+     */
+    private function validateOperationName(string $name, string $kind): void
+    {
+        $max = (int) config('server.limits.max_operation_name_length', 256);
+        $field = $kind.'_name';
+        $bytes = strlen($name);
+
+        if ($bytes === 0) {
+            throw ValidationException::withMessages([
+                $field => [sprintf('The %s name must not be empty.', $kind)],
+            ]);
+        }
+
+        if ($max > 0 && $bytes > $max) {
+            throw ValidationException::withMessages([
+                $field => [sprintf(
+                    'The %s name exceeds the maximum length of %d bytes.',
+                    $kind,
+                    $max,
+                )],
+            ]);
+        }
+
+        if (preg_match('/[\x00-\x1F\x7F]/', $name) === 1) {
+            throw ValidationException::withMessages([
+                $field => [sprintf(
+                    'The %s name must not contain control characters.',
+                    $kind,
+                )],
+            ]);
+        }
+    }
+
+    /**
+     * Validate each search-attribute key and string value against the
+     * per-key and per-value limits so large or malformed entries are
+     * rejected before being written to the DB or forwarded to the
+     * control plane.
+     *
+     * @param  array<int|string, mixed>  $searchAttributes
+     */
+    private function validateSearchAttributes(array $searchAttributes): void
+    {
+        $maxKeyLength = (int) config('server.limits.max_search_attribute_key_length', 128);
+        $maxValueBytes = (int) config('server.limits.max_search_attribute_value_bytes', 2048);
+        $messages = [];
+
+        foreach ($searchAttributes as $key => $value) {
+            if (! is_string($key) || $key === '') {
+                $messages[] = 'Search attribute keys must be non-empty strings.';
+
+                continue;
+            }
+
+            if ($maxKeyLength > 0 && strlen($key) > $maxKeyLength) {
+                $messages[] = sprintf(
+                    'Search attribute key [%s] exceeds the maximum length of %d bytes.',
+                    $key,
+                    $maxKeyLength,
+                );
+
+                continue;
+            }
+
+            if (preg_match('/^[a-zA-Z][a-zA-Z0-9_]*$/', $key) !== 1) {
+                $messages[] = sprintf(
+                    'Search attribute key [%s] must start with a letter and contain only letters, numbers, and underscores.',
+                    $key,
+                );
+
+                continue;
+            }
+
+            $atoms = is_array($value) ? $value : [$value];
+
+            foreach ($atoms as $atom) {
+                if (is_string($atom) && $maxValueBytes > 0 && strlen($atom) > $maxValueBytes) {
+                    $messages[] = sprintf(
+                        'Search attribute [%s] value exceeds the maximum of %d bytes.',
+                        $key,
+                        $maxValueBytes,
+                    );
+
+                    break;
+                }
+            }
+        }
+
+        if ($messages !== []) {
+            throw ValidationException::withMessages([
+                'search_attributes' => $messages,
             ]);
         }
     }

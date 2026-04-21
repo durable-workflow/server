@@ -325,6 +325,24 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_MAX_SEARCH_ATTRIBUTES',
         ],
+        'DW_MAX_SEARCH_ATTRIBUTE_KEY_LENGTH' => [
+            'description' => 'Maximum length in bytes for a single search-attribute key at the request boundary.',
+            'default' => '128',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_MAX_SEARCH_ATTRIBUTE_KEY_LENGTH',
+        ],
+        'DW_MAX_SEARCH_ATTRIBUTE_VALUE_BYTES' => [
+            'description' => 'Maximum size in bytes for a single search-attribute string value at the request boundary.',
+            'default' => '2048',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_MAX_SEARCH_ATTRIBUTE_VALUE_BYTES',
+        ],
+        'DW_MAX_OPERATION_NAME_LENGTH' => [
+            'description' => 'Maximum length in bytes for a signal, update, or query name accepted at the request boundary.',
+            'default' => '256',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_MAX_OPERATION_NAME_LENGTH',
+        ],
         'DW_MAX_PENDING_ACTIVITIES' => [
             'description' => 'Maximum pending activities per workflow run before the server rejects a command batch.',
             'default' => '2000',

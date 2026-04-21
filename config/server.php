@@ -350,6 +350,21 @@ return [
         'max_payload_bytes' => (int) EnvAuditor::env('DW_MAX_PAYLOAD_BYTES', 'WORKFLOW_MAX_PAYLOAD_BYTES', 2 * 1024 * 1024),
         'max_memo_bytes' => (int) EnvAuditor::env('DW_MAX_MEMO_BYTES', 'WORKFLOW_MAX_MEMO_BYTES', 256 * 1024),
         'max_search_attributes' => (int) EnvAuditor::env('DW_MAX_SEARCH_ATTRIBUTES', 'WORKFLOW_MAX_SEARCH_ATTRIBUTES', 100),
+        'max_search_attribute_key_length' => (int) EnvAuditor::env(
+            'DW_MAX_SEARCH_ATTRIBUTE_KEY_LENGTH',
+            'WORKFLOW_MAX_SEARCH_ATTRIBUTE_KEY_LENGTH',
+            128,
+        ),
+        'max_search_attribute_value_bytes' => (int) EnvAuditor::env(
+            'DW_MAX_SEARCH_ATTRIBUTE_VALUE_BYTES',
+            'WORKFLOW_MAX_SEARCH_ATTRIBUTE_VALUE_BYTES',
+            2048,
+        ),
+        'max_operation_name_length' => (int) EnvAuditor::env(
+            'DW_MAX_OPERATION_NAME_LENGTH',
+            'WORKFLOW_MAX_OPERATION_NAME_LENGTH',
+            256,
+        ),
         'max_pending_activities' => (int) EnvAuditor::env('DW_MAX_PENDING_ACTIVITIES', 'WORKFLOW_MAX_PENDING_ACTIVITIES', 2000),
         'max_pending_children' => (int) EnvAuditor::env('DW_MAX_PENDING_CHILDREN', 'WORKFLOW_MAX_PENDING_CHILDREN', 2000),
     ],

@@ -314,4 +314,188 @@ class PayloadLimitsTest extends TestCase
         ], $this->apiHeaders('default'))
             ->assertCreated();
     }
+
+    // ── Per-attribute SA validation at request boundary ─────────────
+
+    public function test_workflow_start_rejects_oversized_search_attribute_value(): void
+    {
+        config(['server.limits.max_search_attribute_value_bytes' => 64]);
+
+        $this->configureWorkflowTypes([
+            ExternalGreetingWorkflow::class,
+        ]);
+
+        $this->postJson('/api/workflows', [
+            'workflow_type' => 'ExternalGreetingWorkflow',
+            'search_attributes' => ['Region' => str_repeat('x', 200)],
+        ], $this->apiHeaders())
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'validation_errors.search_attributes.0',
+                fn (string $msg): bool => str_contains($msg, 'Region') && str_contains($msg, '64'),
+            );
+    }
+
+    public function test_workflow_start_rejects_oversized_search_attribute_key(): void
+    {
+        config(['server.limits.max_search_attribute_key_length' => 8]);
+
+        $this->configureWorkflowTypes([
+            ExternalGreetingWorkflow::class,
+        ]);
+
+        $longKey = str_repeat('K', 32);
+
+        $this->postJson('/api/workflows', [
+            'workflow_type' => 'ExternalGreetingWorkflow',
+            'search_attributes' => [$longKey => 'small'],
+        ], $this->apiHeaders())
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'validation_errors.search_attributes.0',
+                fn (string $msg): bool => str_contains($msg, $longKey) && str_contains($msg, '8'),
+            );
+    }
+
+    public function test_workflow_start_rejects_malformed_search_attribute_key(): void
+    {
+        $this->configureWorkflowTypes([
+            ExternalGreetingWorkflow::class,
+        ]);
+
+        $this->postJson('/api/workflows', [
+            'workflow_type' => 'ExternalGreetingWorkflow',
+            'search_attributes' => ['123invalid' => 'small'],
+        ], $this->apiHeaders())
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'validation_errors.search_attributes.0',
+                fn (string $msg): bool => str_contains($msg, '123invalid'),
+            );
+    }
+
+    public function test_workflow_start_rejects_search_attribute_array_with_oversized_element(): void
+    {
+        config(['server.limits.max_search_attribute_value_bytes' => 32]);
+
+        $this->configureWorkflowTypes([
+            ExternalGreetingWorkflow::class,
+        ]);
+
+        $this->postJson('/api/workflows', [
+            'workflow_type' => 'ExternalGreetingWorkflow',
+            'search_attributes' => ['Tags' => ['short', str_repeat('y', 200)]],
+        ], $this->apiHeaders())
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'validation_errors.search_attributes.0',
+                fn (string $msg): bool => str_contains($msg, 'Tags') && str_contains($msg, '32'),
+            );
+    }
+
+    public function test_workflow_start_accepts_valid_search_attributes(): void
+    {
+        $this->configureWorkflowTypes([
+            ExternalGreetingWorkflow::class,
+        ]);
+
+        $this->postJson('/api/workflows', [
+            'workflow_type' => 'ExternalGreetingWorkflow',
+            'search_attributes' => [
+                'Region' => 'us-east-1',
+                'Priority' => 5,
+                'Tags' => ['alpha', 'beta'],
+            ],
+        ], $this->apiHeaders())
+            ->assertSuccessful();
+    }
+
+    // ── Signal / update / query name length validation ─────────────
+
+    public function test_workflow_signal_rejects_oversized_name(): void
+    {
+        config(['server.limits.max_operation_name_length' => 16]);
+
+        $longName = str_repeat('A', 64);
+
+        $this->postJson(
+            "/api/workflows/wf-any/signal/{$longName}",
+            ['input' => []],
+            $this->apiHeaders(),
+        )
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'validation_errors.signal_name.0',
+                fn (string $msg): bool => str_contains($msg, '16'),
+            );
+    }
+
+    public function test_workflow_query_rejects_oversized_name(): void
+    {
+        config(['server.limits.max_operation_name_length' => 16]);
+
+        $longName = str_repeat('Q', 64);
+
+        $this->postJson(
+            "/api/workflows/wf-any/query/{$longName}",
+            ['input' => []],
+            $this->apiHeaders(),
+        )
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'validation_errors.query_name.0',
+                fn (string $msg): bool => str_contains($msg, '16'),
+            );
+    }
+
+    public function test_workflow_update_rejects_oversized_name(): void
+    {
+        config(['server.limits.max_operation_name_length' => 16]);
+
+        $longName = str_repeat('U', 64);
+
+        $this->postJson(
+            "/api/workflows/wf-any/update/{$longName}",
+            ['input' => []],
+            $this->apiHeaders(),
+        )
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'validation_errors.update_name.0',
+                fn (string $msg): bool => str_contains($msg, '16'),
+            );
+    }
+
+    public function test_workflow_signal_rejects_control_characters_in_name(): void
+    {
+        $badName = rawurlencode("my\x01signal");
+
+        $this->postJson(
+            "/api/workflows/wf-any/signal/{$badName}",
+            ['input' => []],
+            $this->apiHeaders(),
+        )
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'validation_errors.signal_name.0',
+                fn (string $msg): bool => str_contains($msg, 'control characters'),
+            );
+    }
+
+    public function test_workflow_signal_name_validation_runs_before_workflow_lookup(): void
+    {
+        // Even when the workflow does not exist, the name-validation
+        // failure must surface as 422 (not 404) so clients learn the
+        // name itself is the problem.
+        config(['server.limits.max_operation_name_length' => 8]);
+
+        $longName = str_repeat('A', 16);
+
+        $this->postJson(
+            "/api/workflows/does-not-exist/signal/{$longName}",
+            ['input' => []],
+            $this->apiHeaders(),
+        )
+            ->assertStatus(422);
+    }
 }
