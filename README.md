@@ -441,6 +441,10 @@ prompt wake behavior; without one, correctness still comes from the periodic
 database recheck, but wake latency will regress toward the forced recheck
 interval.
 
+Server-owned cache keys and metric label sets are governed by the bounded-growth
+policy in `config/dw-bounded-growth.php`; the human-readable inventory lives in
+`docs/bounded-growth.md`.
+
 Within worker protocol version `1.0`, `worker_protocol.version`,
 `server_capabilities.long_poll_timeout`, and
 `server_capabilities.supported_workflow_task_commands` are stable contract
