@@ -230,11 +230,23 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_QUEUE',
         ],
+        'DW_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_NAMESPACE' => [
+            'description' => 'Optional server-side cap for active workflow-task leases across all task queues in a namespace. Unset means no namespace-wide active lease cap.',
+            'default' => '(unset)',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_NAMESPACE',
+        ],
         'DW_WORKFLOW_TASK_MAX_DISPATCHES_PER_MINUTE' => [
             'description' => 'Optional server-side per-minute workflow-task dispatch cap per namespace/task queue. Unset means no server-side dispatch-rate cap.',
             'default' => '(unset)',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_WORKFLOW_TASK_MAX_DISPATCHES_PER_MINUTE',
+        ],
+        'DW_WORKFLOW_TASK_MAX_DISPATCHES_PER_MINUTE_PER_NAMESPACE' => [
+            'description' => 'Optional server-side per-minute workflow-task dispatch cap across all task queues in a namespace. Unset means no namespace-wide dispatch-rate cap.',
+            'default' => '(unset)',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_WORKFLOW_TASK_MAX_DISPATCHES_PER_MINUTE_PER_NAMESPACE',
         ],
         'DW_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_QUEUE' => [
             'description' => 'Optional server-side cap for active activity-task leases per namespace/task queue. Unset means no server-side cap beyond worker registration capacity.',
@@ -242,14 +254,26 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_QUEUE',
         ],
+        'DW_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_NAMESPACE' => [
+            'description' => 'Optional server-side cap for active activity-task leases across all task queues in a namespace. Unset means no namespace-wide active lease cap.',
+            'default' => '(unset)',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_NAMESPACE',
+        ],
         'DW_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE' => [
             'description' => 'Optional server-side per-minute activity-task dispatch cap per namespace/task queue. Unset means no server-side dispatch-rate cap.',
             'default' => '(unset)',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE',
         ],
+        'DW_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE_PER_NAMESPACE' => [
+            'description' => 'Optional server-side per-minute activity-task dispatch cap across all task queues in a namespace. Unset means no namespace-wide dispatch-rate cap.',
+            'default' => '(unset)',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE_PER_NAMESPACE',
+        ],
         'DW_TASK_QUEUE_ADMISSION_OVERRIDES' => [
-            'description' => 'JSON object keyed by "namespace:task_queue", "task_queue", or "*" with workflow_tasks/activity_tasks max_active_leases and max_dispatches_per_minute overrides.',
+            'description' => 'JSON object keyed by "namespace:task_queue", "namespace:*", "task_queue", or "*" with workflow_tasks/activity_tasks active-lease and dispatch-rate overrides.',
             'default' => '{}',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_TASK_QUEUE_ADMISSION_OVERRIDES',

@@ -208,9 +208,19 @@ return [
                 'WORKFLOW_SERVER_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_QUEUE',
                 null,
             ),
+            'max_active_leases_per_namespace' => EnvAuditor::env(
+                'DW_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_NAMESPACE',
+                'WORKFLOW_SERVER_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_NAMESPACE',
+                null,
+            ),
             'max_dispatches_per_minute' => EnvAuditor::env(
                 'DW_WORKFLOW_TASK_MAX_DISPATCHES_PER_MINUTE',
                 'WORKFLOW_SERVER_WORKFLOW_TASK_MAX_DISPATCHES_PER_MINUTE',
+                null,
+            ),
+            'max_dispatches_per_minute_per_namespace' => EnvAuditor::env(
+                'DW_WORKFLOW_TASK_MAX_DISPATCHES_PER_MINUTE_PER_NAMESPACE',
+                'WORKFLOW_SERVER_WORKFLOW_TASK_MAX_DISPATCHES_PER_MINUTE_PER_NAMESPACE',
                 null,
             ),
         ],
@@ -220,9 +230,19 @@ return [
                 'WORKFLOW_SERVER_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_QUEUE',
                 null,
             ),
+            'max_active_leases_per_namespace' => EnvAuditor::env(
+                'DW_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_NAMESPACE',
+                'WORKFLOW_SERVER_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_NAMESPACE',
+                null,
+            ),
             'max_dispatches_per_minute' => EnvAuditor::env(
                 'DW_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE',
                 'WORKFLOW_SERVER_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE',
+                null,
+            ),
+            'max_dispatches_per_minute_per_namespace' => EnvAuditor::env(
+                'DW_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE_PER_NAMESPACE',
+                'WORKFLOW_SERVER_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE_PER_NAMESPACE',
                 null,
             ),
         ],

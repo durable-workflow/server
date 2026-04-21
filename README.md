@@ -696,17 +696,27 @@ Task queue responses include an `admission` object so operators can separate
 worker-local capacity from server-side queue and query-task admission limits. Workflow
 and activity entries report active worker count, configured slots from worker
 registrations, leased and ready counts, available slots, optional server-side
-active lease caps, optional per-minute dispatch caps, and a status such as
+queue and namespace active lease caps, optional queue and namespace per-minute
+dispatch caps, and a status such as
 `accepting`, `throttled`, `saturated`, `no_slots`, or `no_active_workers`. Set
 `DW_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_QUEUE` and
 `DW_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_QUEUE` to cap active leases per
-namespace/task queue. Set `DW_WORKFLOW_TASK_MAX_DISPATCHES_PER_MINUTE` and
+namespace/task queue. Set `DW_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_NAMESPACE`
+and `DW_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_NAMESPACE` to cap active leases
+across all task queues in a namespace. Set `DW_WORKFLOW_TASK_MAX_DISPATCHES_PER_MINUTE` and
 `DW_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE` to smooth downstream dispatch per
-namespace/task queue, or use `DW_TASK_QUEUE_ADMISSION_OVERRIDES` for exact
-queue overrides keyed by `namespace:task_queue`, `task_queue`, or `*`. Override
+namespace/task queue. Set `DW_WORKFLOW_TASK_MAX_DISPATCHES_PER_MINUTE_PER_NAMESPACE`
+and `DW_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE_PER_NAMESPACE` to smooth
+tenant-wide dispatch across all queues in a namespace, or use
+`DW_TASK_QUEUE_ADMISSION_OVERRIDES` for exact queue and namespace overrides
+keyed by `namespace:task_queue`, `namespace:*`, `task_queue`, or `*`. Override
 entries may set `workflow_tasks.max_active_leases`,
+`workflow_tasks.max_active_leases_per_namespace`,
 `workflow_tasks.max_dispatches_per_minute`, `activity_tasks.max_active_leases`,
-or `activity_tasks.max_dispatches_per_minute`. Query-task
+`workflow_tasks.max_dispatches_per_minute_per_namespace`,
+`activity_tasks.max_active_leases_per_namespace`,
+`activity_tasks.max_dispatches_per_minute`, or
+`activity_tasks.max_dispatches_per_minute_per_namespace`. Query-task
 entries report `server.query_tasks.max_pending_per_queue`, approximate pending
 count, remaining capacity, cache-lock support, and whether the queue is
 `accepting`, `full`, or `unavailable`.
@@ -988,10 +998,14 @@ every operator-facing variable the server honors.
 | `DW_WAKE_SIGNAL_TTL_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT + 5, 60)` | TTL for per-queue wake signals. |
 | `DW_MAX_TASKS_PER_POLL` | `1` | Maximum tasks returned per poll. |
 | `DW_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_QUEUE` | (unset) | Optional server-side cap for active workflow-task leases per namespace/task queue. |
+| `DW_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_NAMESPACE` | (unset) | Optional server-side cap for active workflow-task leases across all task queues in a namespace. |
 | `DW_WORKFLOW_TASK_MAX_DISPATCHES_PER_MINUTE` | (unset) | Optional server-side cap for workflow-task dispatches per minute per namespace/task queue. |
+| `DW_WORKFLOW_TASK_MAX_DISPATCHES_PER_MINUTE_PER_NAMESPACE` | (unset) | Optional server-side cap for workflow-task dispatches per minute across all task queues in a namespace. |
 | `DW_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_QUEUE` | (unset) | Optional server-side cap for active activity-task leases per namespace/task queue. |
+| `DW_ACTIVITY_TASK_MAX_ACTIVE_LEASES_PER_NAMESPACE` | (unset) | Optional server-side cap for active activity-task leases across all task queues in a namespace. |
 | `DW_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE` | (unset) | Optional server-side cap for activity-task dispatches per minute per namespace/task queue. |
-| `DW_TASK_QUEUE_ADMISSION_OVERRIDES` | `{}` | JSON overrides keyed by `namespace:task_queue`, `task_queue`, or `*` for workflow/activity active lease and dispatch-per-minute caps. |
+| `DW_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE_PER_NAMESPACE` | (unset) | Optional server-side cap for activity-task dispatches per minute across all task queues in a namespace. |
+| `DW_TASK_QUEUE_ADMISSION_OVERRIDES` | `{}` | JSON overrides keyed by `namespace:task_queue`, `namespace:*`, `task_queue`, or `*` for workflow/activity active lease and dispatch-per-minute caps. |
 | `DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT` | `5` | Max expired workflow tasks recovered per pass. |
 | `DW_EXPIRED_WORKFLOW_TASK_RECOVERY_TTL_SECONDS` | `5` | Min seconds between expired-task recovery passes. |
 | `DW_WORKER_PROTOCOL_VERSION` | `WorkerProtocolVersion::VERSION` | Override for the advertised worker protocol version. |
