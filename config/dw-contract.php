@@ -273,7 +273,7 @@ return [
             'legacy' => 'WORKFLOW_SERVER_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE_PER_NAMESPACE',
         ],
         'DW_TASK_QUEUE_ADMISSION_OVERRIDES' => [
-            'description' => 'JSON object keyed by "namespace:task_queue", "namespace:*", "task_queue", or "*" with workflow_tasks/activity_tasks active-lease and dispatch-rate overrides.',
+            'description' => 'JSON object keyed by "namespace:task_queue", "namespace:*", "task_queue", or "*" with workflow_tasks/activity_tasks active-lease, dispatch-rate, namespace, and downstream budget-group overrides.',
             'default' => '{}',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_TASK_QUEUE_ADMISSION_OVERRIDES',

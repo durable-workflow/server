@@ -78,6 +78,13 @@ final class TaskQueueAdmission
                         return null;
                     }
 
+                    if (
+                        $fresh['max_dispatches_per_minute_per_budget_group'] !== null
+                        && $fresh['budget_group_dispatch_count_this_minute'] >= $fresh['max_dispatches_per_minute_per_budget_group']
+                    ) {
+                        return null;
+                    }
+
                     $result = $callback();
 
                     if ($result !== null && $this->hasDispatchBudget($fresh)) {
@@ -112,6 +119,10 @@ final class TaskQueueAdmission
      *     max_dispatches_per_minute_per_namespace: int|null,
      *     namespace_dispatch_count_this_minute: int,
      *     remaining_namespace_dispatch_capacity: int|null,
+     *     dispatch_budget_group: string|null,
+     *     max_dispatches_per_minute_per_budget_group: int|null,
+     *     budget_group_dispatch_count_this_minute: int,
+     *     remaining_budget_group_dispatch_capacity: int|null,
      *     lock_required: bool,
      *     lock_supported: bool,
      *     status: string
@@ -123,14 +134,21 @@ final class TaskQueueAdmission
         $namespaceLimit = $this->maxActiveLeasesPerNamespace($namespace, $taskQueue, $taskKind);
         $dispatchLimit = $this->maxDispatchesPerMinute($namespace, $taskQueue, $taskKind);
         $namespaceDispatchLimit = $this->maxDispatchesPerMinutePerNamespace($namespace, $taskQueue, $taskKind);
+        $budgetGroup = $this->dispatchBudgetGroup($namespace, $taskQueue, $taskKind);
+        $budgetGroupDispatchLimit = $budgetGroup['value'] === null
+            ? ['value' => null, 'source' => 'server.admission.queue_overrides']
+            : $this->maxDispatchesPerMinutePerBudgetGroup($namespace, $taskQueue, $taskKind);
         $activeLeases = $this->activeLeaseCount($namespace, $taskQueue, $taskKind);
         $namespaceActiveLeases = $this->namespaceActiveLeaseCount($namespace, $taskKind);
         $dispatchCount = $this->dispatchCountThisMinute($namespace, $taskQueue, $taskKind);
         $namespaceDispatchCount = $this->namespaceDispatchCountThisMinute($namespace, $taskKind);
+        $budgetGroupDispatchCount = $budgetGroup['value'] === null
+            ? 0
+            : $this->budgetGroupDispatchCountThisMinute($namespace, $budgetGroup['value'], $taskKind);
         $lockSupported = $this->cache->store()->getStore() instanceof LockProvider;
 
         return [
-            'budget_source' => $this->budgetSource($limit, $namespaceLimit, $dispatchLimit, $namespaceDispatchLimit),
+            'budget_source' => $this->budgetSource($limit, $namespaceLimit, $dispatchLimit, $namespaceDispatchLimit, $budgetGroupDispatchLimit),
             'max_active_leases_per_queue' => $limit['value'],
             'active_lease_count' => $activeLeases,
             'remaining_active_lease_capacity' => $limit['value'] === null
@@ -151,10 +169,17 @@ final class TaskQueueAdmission
             'remaining_namespace_dispatch_capacity' => $namespaceDispatchLimit['value'] === null
                 ? null
                 : max(0, $namespaceDispatchLimit['value'] - $namespaceDispatchCount),
+            'dispatch_budget_group' => $budgetGroup['value'],
+            'max_dispatches_per_minute_per_budget_group' => $budgetGroupDispatchLimit['value'],
+            'budget_group_dispatch_count_this_minute' => $budgetGroupDispatchCount,
+            'remaining_budget_group_dispatch_capacity' => $budgetGroupDispatchLimit['value'] === null
+                ? null
+                : max(0, $budgetGroupDispatchLimit['value'] - $budgetGroupDispatchCount),
             'lock_required' => $limit['value'] !== null
                 || $namespaceLimit['value'] !== null
                 || $dispatchLimit['value'] !== null
-                || $namespaceDispatchLimit['value'] !== null,
+                || $namespaceDispatchLimit['value'] !== null
+                || $budgetGroupDispatchLimit['value'] !== null,
             'lock_supported' => $lockSupported,
             'status' => $this->status(
                 $limit['value'],
@@ -165,6 +190,8 @@ final class TaskQueueAdmission
                 $dispatchCount,
                 $namespaceDispatchLimit['value'],
                 $namespaceDispatchCount,
+                $budgetGroupDispatchLimit['value'],
+                $budgetGroupDispatchCount,
                 $lockSupported,
             ),
         ];
@@ -250,6 +277,49 @@ final class TaskQueueAdmission
         ];
     }
 
+    /**
+     * @return array{value: string|null, source: string}
+     */
+    private function dispatchBudgetGroup(string $namespace, string $taskQueue, string $taskKind): array
+    {
+        $group = $this->queueOverride($namespace, $taskQueue, $taskKind, 'dispatch_budget_group')
+            ?? $this->queueOverride($namespace, $taskQueue, $taskKind, 'budget_group');
+
+        if (! is_string($group)) {
+            return [
+                'value' => null,
+                'source' => 'server.admission.queue_overrides',
+            ];
+        }
+
+        $group = trim($group);
+
+        return [
+            'value' => $group === '' ? null : $group,
+            'source' => 'server.admission.queue_overrides',
+        ];
+    }
+
+    /**
+     * @return array{value: int|null, source: string}
+     */
+    private function maxDispatchesPerMinutePerBudgetGroup(string $namespace, string $taskQueue, string $taskKind): array
+    {
+        $override = $this->queueOverride($namespace, $taskQueue, $taskKind, 'max_dispatches_per_minute_per_budget_group');
+
+        if ($override !== null) {
+            return [
+                'value' => $this->positiveIntOrNull($override),
+                'source' => 'server.admission.queue_overrides',
+            ];
+        }
+
+        return [
+            'value' => null,
+            'source' => 'server.admission.queue_overrides',
+        ];
+    }
+
     private function queueOverride(string $namespace, string $taskQueue, string $taskKind, string $field = 'max_active_leases'): mixed
     {
         $overrides = config('server.admission.queue_overrides', []);
@@ -289,6 +359,11 @@ final class TaskQueueAdmission
     private function namespaceDispatchCountThisMinute(string $namespace, string $taskKind): int
     {
         return max(0, (int) $this->cache->store()->get($this->namespaceDispatchCounterKey($namespace, $taskKind), 0));
+    }
+
+    private function budgetGroupDispatchCountThisMinute(string $namespace, string $budgetGroup, string $taskKind): int
+    {
+        return max(0, (int) $this->cache->store()->get($this->budgetGroupDispatchCounterKey($namespace, $budgetGroup, $taskKind), 0));
     }
 
     private function activeLeaseCount(string $namespace, string $taskQueue, string $taskKind): int
@@ -332,6 +407,8 @@ final class TaskQueueAdmission
         int $dispatchCount,
         ?int $namespaceDispatchLimit,
         int $namespaceDispatchCount,
+        ?int $budgetGroupDispatchLimit,
+        int $budgetGroupDispatchCount,
         bool $lockSupported,
     ): string {
         if (
@@ -339,6 +416,7 @@ final class TaskQueueAdmission
             && $namespaceActiveLimit === null
             && $dispatchLimit === null
             && $namespaceDispatchLimit === null
+            && $budgetGroupDispatchLimit === null
         ) {
             return 'unlimited';
         }
@@ -360,6 +438,10 @@ final class TaskQueueAdmission
         }
 
         if ($namespaceDispatchLimit !== null && $namespaceDispatchCount >= $namespaceDispatchLimit) {
+            return 'throttled';
+        }
+
+        if ($budgetGroupDispatchLimit !== null && $budgetGroupDispatchCount >= $budgetGroupDispatchLimit) {
             return 'throttled';
         }
 
@@ -397,6 +479,18 @@ final class TaskQueueAdmission
             return sprintf('server:task-queue-admission:%s:namespace:%s', sha1($namespace), $taskKind);
         }
 
+        if (
+            $budget['dispatch_budget_group'] !== null
+            && $budget['max_dispatches_per_minute_per_budget_group'] !== null
+        ) {
+            return sprintf(
+                'server:task-queue-admission:%s:budget-group:%s:%s',
+                sha1($namespace),
+                sha1($budget['dispatch_budget_group']),
+                $taskKind,
+            );
+        }
+
         return sprintf('server:task-queue-admission:%s:%s:%s', sha1($namespace), sha1($taskQueue), $taskKind);
     }
 
@@ -421,18 +515,31 @@ final class TaskQueueAdmission
         );
     }
 
+    private function budgetGroupDispatchCounterKey(string $namespace, string $budgetGroup, string $taskKind): string
+    {
+        return sprintf(
+            'server:task-queue-dispatch:%s:budget-group:%s:%s:%s',
+            sha1($namespace),
+            sha1($budgetGroup),
+            $taskKind,
+            now()->format('YmdHi'),
+        );
+    }
+
     private function recordDispatch(string $namespace, string $taskQueue, string $taskKind): void
     {
         $key = $this->dispatchCounterKey($namespace, $taskQueue, $taskKind);
 
         if ($this->cache->store()->add($key, 1, now()->addMinutes(2))) {
             $this->recordNamespaceDispatch($namespace, $taskQueue, $taskKind);
+            $this->recordBudgetGroupDispatch($namespace, $taskQueue, $taskKind);
 
             return;
         }
 
         $this->cache->store()->increment($key);
         $this->recordNamespaceDispatch($namespace, $taskQueue, $taskKind);
+        $this->recordBudgetGroupDispatch($namespace, $taskQueue, $taskKind);
     }
 
     /**
@@ -441,7 +548,8 @@ final class TaskQueueAdmission
     private function hasDispatchBudget(array $budget): bool
     {
         return $budget['max_dispatches_per_minute'] !== null
-            || $budget['max_dispatches_per_minute_per_namespace'] !== null;
+            || $budget['max_dispatches_per_minute_per_namespace'] !== null
+            || $budget['max_dispatches_per_minute_per_budget_group'] !== null;
     }
 
     private function recordNamespaceDispatch(string $namespace, string $taskQueue, string $taskKind): void
@@ -459,21 +567,43 @@ final class TaskQueueAdmission
         $this->cache->store()->increment($key);
     }
 
+    private function recordBudgetGroupDispatch(string $namespace, string $taskQueue, string $taskKind): void
+    {
+        $budgetGroup = $this->dispatchBudgetGroup($namespace, $taskQueue, $taskKind)['value'];
+
+        if (
+            $budgetGroup === null
+            || $this->maxDispatchesPerMinutePerBudgetGroup($namespace, $taskQueue, $taskKind)['value'] === null
+        ) {
+            return;
+        }
+
+        $key = $this->budgetGroupDispatchCounterKey($namespace, $budgetGroup, $taskKind);
+
+        if ($this->cache->store()->add($key, 1, now()->addMinutes(2))) {
+            return;
+        }
+
+        $this->cache->store()->increment($key);
+    }
+
     /**
      * @param  array{value: int|null, source: string}  $activeLimit
      * @param  array{value: int|null, source: string}  $namespaceActiveLimit
      * @param  array{value: int|null, source: string}  $dispatchLimit
      * @param  array{value: int|null, source: string}  $namespaceDispatchLimit
+     * @param  array{value: int|null, source: string}  $budgetGroupDispatchLimit
      */
     private function budgetSource(
         array $activeLimit,
         array $namespaceActiveLimit,
         array $dispatchLimit,
         array $namespaceDispatchLimit,
+        array $budgetGroupDispatchLimit,
     ): string {
         $sources = [];
 
-        foreach ([$activeLimit, $namespaceActiveLimit, $dispatchLimit, $namespaceDispatchLimit] as $limit) {
+        foreach ([$activeLimit, $namespaceActiveLimit, $dispatchLimit, $namespaceDispatchLimit, $budgetGroupDispatchLimit] as $limit) {
             if ($limit['value'] === null) {
                 continue;
             }

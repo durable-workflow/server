@@ -265,6 +265,81 @@ class TaskQueueAdmissionTest extends TestCase
             ->assertJsonPath('admission.workflow_tasks.server_remaining_namespace_dispatch_capacity', 0);
     }
 
+    public function test_workflow_task_polls_respect_budget_group_dispatch_rate_caps_across_queues(): void
+    {
+        Queue::fake();
+
+        config([
+            'server.admission.queue_overrides' => [
+                'default:external-workflows-a' => [
+                    'workflow_tasks' => [
+                        'dispatch_budget_group' => 'downstream-openai',
+                        'max_dispatches_per_minute_per_budget_group' => 1,
+                    ],
+                ],
+                'default:external-workflows-b' => [
+                    'workflow_tasks' => [
+                        'dispatch_budget_group' => 'downstream-openai',
+                        'max_dispatches_per_minute_per_budget_group' => 1,
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->createNamespace('default');
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+        $this->registerWorker('php-workflow-budget-group-a', 'external-workflows-a');
+        $this->registerWorker('php-workflow-budget-group-b', 'external-workflows-b');
+
+        $firstStart = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-workflow-budget-group-1',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows-a',
+                'input' => ['Ada'],
+            ]);
+        $firstStart->assertCreated();
+
+        $secondStart = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-workflow-budget-group-2',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows-b',
+                'input' => ['Grace'],
+            ]);
+        $secondStart->assertCreated();
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-workflow-budget-group-a',
+                'task_queue' => 'external-workflows-a',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-workflow-budget-group-1');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-workflow-budget-group-b',
+                'task_queue' => 'external-workflows-b',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/task-queues/external-workflows-b')
+            ->assertOk()
+            ->assertJsonPath('admission.workflow_tasks.status', 'throttled')
+            ->assertJsonPath('admission.workflow_tasks.server_budget_source', 'server.admission.queue_overrides')
+            ->assertJsonPath('admission.workflow_tasks.server_dispatch_budget_group', 'downstream-openai')
+            ->assertJsonPath('admission.workflow_tasks.server_max_dispatches_per_minute_per_budget_group', 1)
+            ->assertJsonPath('admission.workflow_tasks.server_budget_group_dispatch_count_this_minute', 1)
+            ->assertJsonPath('admission.workflow_tasks.server_remaining_budget_group_dispatch_capacity', 0)
+            ->assertJsonPath('admission.workflow_tasks.server_lock_required', true)
+            ->assertJsonPath('admission.workflow_tasks.server_lock_supported', true);
+    }
+
     public function test_activity_task_polls_respect_queue_specific_active_lease_caps(): void
     {
         Queue::fake();
