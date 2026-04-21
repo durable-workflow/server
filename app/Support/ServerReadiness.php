@@ -2,6 +2,7 @@
 
 namespace App\Support;
 
+use App\Contracts\AuthProvider;
 use App\Models\WorkflowNamespace;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -164,6 +165,39 @@ final class ServerReadiness
      */
     private function authCheck(): array
     {
+        $provider = config('server.auth.provider');
+
+        if (is_string($provider) && trim($provider) !== '') {
+            $provider = trim($provider);
+
+            try {
+                $instance = app()->make($provider);
+            } catch (\Throwable $exception) {
+                return [
+                    'status' => 'invalid',
+                    'driver' => 'custom',
+                    'provider' => $provider,
+                    'message' => $exception->getMessage(),
+                    'remediation' => 'Set DW_AUTH_PROVIDER to a Laravel-resolvable class implementing App\Contracts\AuthProvider.',
+                ];
+            }
+
+            if (! $instance instanceof AuthProvider) {
+                return [
+                    'status' => 'invalid',
+                    'driver' => 'custom',
+                    'provider' => $provider,
+                    'remediation' => 'Set DW_AUTH_PROVIDER to a Laravel-resolvable class implementing App\Contracts\AuthProvider.',
+                ];
+            }
+
+            return [
+                'status' => 'ok',
+                'driver' => 'custom',
+                'provider' => $provider,
+            ];
+        }
+
         $driver = (string) config('server.auth.driver', 'token');
 
         if ($driver === 'none') {

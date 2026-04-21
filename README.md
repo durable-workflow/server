@@ -599,6 +599,9 @@ The route resource includes `allowed_roles`, HTTP method/path, route name, and
 the resolved namespace when available. The authenticated principal is also
 recorded in workflow command attribution so signal/update/query history can
 show the subject, roles, tenant, and non-secret claims supplied by the provider.
+When `DW_AUTH_PROVIDER` is set, `/api/ready` verifies that the class resolves
+and implements `AuthProvider`; built-in token or signature credentials are not
+required for readiness.
 
 ## Deployment
 

@@ -7,6 +7,7 @@ namespace Tests\Feature;
 use App\Models\WorkflowNamespace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Tests\Fixtures\HeaderAuthProvider;
 use Tests\TestCase;
 
 class HealthControllerTest extends TestCase
@@ -148,5 +149,53 @@ class HealthControllerTest extends TestCase
             ->assertJsonPath('status', 'not_ready')
             ->assertJsonPath('checks.auth.status', 'missing')
             ->assertJsonPath('checks.auth.driver', 'token');
+    }
+
+    public function test_readiness_check_accepts_custom_auth_provider_without_builtin_credentials(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        config([
+            'server.auth.provider' => HeaderAuthProvider::class,
+            'server.auth.driver' => 'token',
+            'server.auth.token' => null,
+            'server.auth.role_tokens' => [],
+        ]);
+
+        $response = $this->getJson('/api/ready');
+
+        $response->assertOk()
+            ->assertJsonPath('status', 'ready')
+            ->assertJsonPath('checks.auth.status', 'ok')
+            ->assertJsonPath('checks.auth.driver', 'custom')
+            ->assertJsonPath('checks.auth.provider', HeaderAuthProvider::class);
+    }
+
+    public function test_readiness_check_reports_invalid_custom_auth_provider(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        config([
+            'server.auth.provider' => \stdClass::class,
+        ]);
+
+        $response = $this->getJson('/api/ready');
+
+        $response->assertStatus(503)
+            ->assertJsonPath('status', 'not_ready')
+            ->assertJsonPath('checks.auth.status', 'invalid')
+            ->assertJsonPath('checks.auth.driver', 'custom')
+            ->assertJsonPath('checks.auth.provider', \stdClass::class)
+            ->assertJsonPath('checks.auth.remediation', 'Set DW_AUTH_PROVIDER to a Laravel-resolvable class implementing App\Contracts\AuthProvider.');
     }
 }
