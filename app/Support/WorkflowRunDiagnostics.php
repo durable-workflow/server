@@ -7,6 +7,7 @@ use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
@@ -14,8 +15,12 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
-use Workflow\V2\Support\RunTaskView;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
+use Workflow\V2\Support\TaskCompatibility;
+use Workflow\V2\Support\TaskRepairPolicy;
+use Workflow\V2\Support\WorkerCompatibility;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class WorkflowRunDiagnostics
 {
@@ -28,16 +33,9 @@ class WorkflowRunDiagnostics
      */
     public function forRun(string $namespace, WorkflowRun $run): array
     {
-        $run->loadMissing(['activityExecutions.attempts', 'summary']);
-
-        $summary = $run->summary instanceof WorkflowRunSummary
-            ? $run->summary
-            : WorkflowRunSummary::query()->find($run->id);
-        $taskRows = collect(RunTaskView::forRun($run))
-            ->filter(static fn (array $task): bool => ($task['is_open'] ?? false) === true || ($task['task_missing'] ?? false) === true)
-            ->values();
+        $summary = $this->summary($run);
+        $taskRows = collect($this->pendingWorkflowTaskRows($run, $summary));
         $pendingWorkflowTasks = $taskRows
-            ->filter(static fn (array $task): bool => ($task['type'] ?? null) === TaskType::Workflow->value)
             ->take(self::TASK_LIMIT)
             ->map(fn (array $task): array => $this->task($task))
             ->values()
@@ -67,6 +65,254 @@ class WorkflowRunDiagnostics
         $payload['findings'] = $this->findings($payload);
 
         return $payload;
+    }
+
+    private function summary(WorkflowRun $run): ?WorkflowRunSummary
+    {
+        if ($run->relationLoaded('summary') && $run->summary instanceof WorkflowRunSummary) {
+            return $run->summary;
+        }
+
+        return WorkflowRunSummary::query()->find($run->id);
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function pendingWorkflowTaskRows(WorkflowRun $run, ?WorkflowRunSummary $summary): array
+    {
+        $tasks = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->orderBy('available_at')
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->limit(self::TASK_LIMIT)
+            ->get();
+
+        $rows = $tasks
+            ->map(fn (WorkflowTask $task): array => $this->workflowTaskRow($task, $run))
+            ->values()
+            ->all();
+
+        if (count($rows) >= self::TASK_LIMIT) {
+            return $rows;
+        }
+
+        $summaryRow = $this->summaryMissingWorkflowTaskRow($run, $summary, array_column($rows, 'id'));
+
+        if ($summaryRow !== null) {
+            $rows[] = $summaryRow;
+        }
+
+        return array_slice($rows, 0, self::TASK_LIMIT);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function workflowTaskRow(WorkflowTask $task, WorkflowRun $run): array
+    {
+        $compatibility = TaskCompatibility::resolve($task, $run);
+
+        return [
+            'id' => $task->id,
+            'type' => $this->enumValue($task->task_type),
+            'status' => $this->enumValue($task->status),
+            'transport_state' => $this->taskTransportState($task),
+            'task_missing' => false,
+            'synthetic' => false,
+            'expected_task_id' => null,
+            'summary' => $this->workflowTaskSummary($task),
+            'compatibility' => $compatibility,
+            'compatibility_supported' => WorkerCompatibility::supports($compatibility),
+            'compatibility_reason' => WorkerCompatibility::mismatchReason($compatibility),
+            'compatibility_supported_in_fleet' => TaskCompatibility::supportedInFleet($task, $run),
+            'compatibility_fleet_reason' => TaskCompatibility::fleetMismatchReason($task, $run),
+            'dispatch_failed' => TaskRepairPolicy::dispatchFailed($task),
+            'dispatch_overdue' => TaskRepairPolicy::dispatchOverdue($task),
+            'claim_failed' => TaskRepairPolicy::claimFailed($task),
+            'is_open' => true,
+            'available_at' => $task->available_at,
+            'last_dispatch_attempt_at' => $task->last_dispatch_attempt_at,
+            'leased_at' => $task->leased_at,
+            'last_dispatched_at' => $task->last_dispatched_at,
+            'last_dispatch_error' => $task->last_dispatch_error,
+            'last_claim_failed_at' => $task->last_claim_failed_at,
+            'last_claim_error' => $task->last_claim_error,
+            'repair_available_at' => $task->repair_available_at,
+            'repair_backoff_seconds' => TaskRepairPolicy::failureBackoffSeconds($task),
+            'lease_expired' => TaskRepairPolicy::leaseExpired($task),
+            'lease_owner' => $task->lease_owner,
+            'lease_expires_at' => $task->lease_expires_at,
+            'attempt_count' => $task->attempt_count,
+            'repair_count' => $task->repair_count,
+            'last_error' => $task->last_error,
+            'connection' => $task->connection,
+            'queue' => $task->queue,
+            'workflow_wait_kind' => $this->stringValue($task->payload['workflow_wait_kind'] ?? null),
+            'workflow_open_wait_id' => $this->stringValue($task->payload['open_wait_id'] ?? null),
+            'workflow_resume_source_kind' => $this->stringValue($task->payload['resume_source_kind'] ?? null),
+            'workflow_resume_source_id' => $this->stringValue($task->payload['resume_source_id'] ?? null),
+            'replay_blocked' => ($task->payload['replay_blocked'] ?? false) === true,
+            'replay_blocked_reason' => $this->stringValue($task->payload['replay_blocked_reason'] ?? null),
+            'created_at' => $task->created_at,
+            'updated_at' => $task->updated_at,
+        ];
+    }
+
+    /**
+     * @param  list<string|null>  $loadedTaskIds
+     * @return array<string, mixed>|null
+     */
+    private function summaryMissingWorkflowTaskRow(
+        WorkflowRun $run,
+        ?WorkflowRunSummary $summary,
+        array $loadedTaskIds,
+    ): ?array {
+        if (! $summary instanceof WorkflowRunSummary) {
+            return null;
+        }
+
+        $taskId = $this->stringValue($summary->next_task_id);
+        $taskType = $this->stringValue($summary->next_task_type);
+        $taskStatus = $this->stringValue($summary->next_task_status);
+
+        if (
+            $taskId === null
+            || $taskType !== TaskType::Workflow->value
+            || ! in_array($taskStatus, [TaskStatus::Ready->value, TaskStatus::Leased->value], true)
+            || in_array($taskId, $loadedTaskIds, true)
+        ) {
+            return null;
+        }
+
+        $taskExists = WorkflowTask::query()
+            ->whereKey($taskId)
+            ->where('workflow_run_id', $run->id)
+            ->exists();
+
+        if ($taskExists) {
+            return null;
+        }
+
+        $compatibility = $this->stringValue($summary->compatibility) ?? $this->stringValue($run->compatibility);
+        $queue = $this->stringValue($summary->queue) ?? $this->stringValue($run->queue);
+        $connection = $this->stringValue($summary->connection) ?? $this->stringValue($run->connection);
+
+        return [
+            'id' => sprintf('missing:workflow:%s', $taskId),
+            'type' => TaskType::Workflow->value,
+            'status' => 'missing',
+            'transport_state' => 'missing',
+            'task_missing' => true,
+            'synthetic' => true,
+            'expected_task_id' => $taskId,
+            'summary' => 'Workflow task referenced by the run summary is missing.',
+            'compatibility' => $compatibility,
+            'compatibility_supported' => WorkerCompatibility::supports($compatibility),
+            'compatibility_reason' => WorkerCompatibility::mismatchReason($compatibility),
+            'compatibility_supported_in_fleet' => WorkerCompatibilityFleet::supports($compatibility, $connection, $queue),
+            'compatibility_fleet_reason' => WorkerCompatibilityFleet::mismatchReason($compatibility, $connection, $queue),
+            'dispatch_failed' => false,
+            'dispatch_overdue' => false,
+            'claim_failed' => false,
+            'is_open' => false,
+            'available_at' => $summary->next_task_at,
+            'lease_expires_at' => $summary->next_task_lease_expires_at,
+            'lease_expired' => false,
+            'lease_owner' => null,
+            'attempt_count' => 0,
+            'repair_count' => 0,
+            'connection' => $connection,
+            'queue' => $queue,
+            'workflow_wait_kind' => $this->stringValue($summary->wait_kind),
+            'workflow_open_wait_id' => $this->stringValue($summary->open_wait_id),
+            'workflow_resume_source_kind' => $this->stringValue($summary->resume_source_kind),
+            'workflow_resume_source_id' => $this->stringValue($summary->resume_source_id),
+            'replay_blocked' => false,
+        ];
+    }
+
+    private function taskTransportState(WorkflowTask $task): string
+    {
+        $status = $task->status instanceof TaskStatus
+            ? $task->status
+            : (is_string($task->status) ? TaskStatus::tryFrom($task->status) : null);
+
+        if ($status === TaskStatus::Leased) {
+            return TaskRepairPolicy::leaseExpired($task) ? 'lease_expired' : 'leased';
+        }
+
+        if ($status !== TaskStatus::Ready) {
+            return $status?->value ?? 'unknown';
+        }
+
+        if ($task->available_at !== null && $task->available_at->isFuture()) {
+            return TaskRepairPolicy::dispatchFailed($task) ? 'dispatch_failed' : 'scheduled';
+        }
+
+        if (TaskRepairPolicy::dispatchFailed($task)) {
+            return TaskRepairPolicy::dispatchFailedNeedsRedispatch($task) ? 'dispatch_failed' : 'repair_backoff';
+        }
+
+        if (TaskRepairPolicy::claimFailed($task)) {
+            return TaskRepairPolicy::claimFailedNeedsRedispatch($task) ? 'claim_failed' : 'repair_backoff';
+        }
+
+        if (TaskRepairPolicy::dispatchOverdue($task)) {
+            return 'dispatch_overdue';
+        }
+
+        return 'ready';
+    }
+
+    private function workflowTaskSummary(WorkflowTask $task): string
+    {
+        $status = $task->status instanceof TaskStatus
+            ? $task->status
+            : (is_string($task->status) ? TaskStatus::tryFrom($task->status) : null);
+
+        if (($task->payload['replay_blocked'] ?? false) === true) {
+            return 'Workflow replay blocked.';
+        }
+
+        if (TaskRepairPolicy::leaseExpired($task)) {
+            return 'Workflow task lease expired; waiting for recovery.';
+        }
+
+        if (TaskRepairPolicy::dispatchFailed($task)) {
+            return 'Workflow task dispatch failed; waiting for recovery.';
+        }
+
+        if (TaskRepairPolicy::claimFailed($task)) {
+            return 'Workflow task claim failed; worker backend capability is unsupported.';
+        }
+
+        if (TaskRepairPolicy::dispatchOverdue($task)) {
+            return 'Workflow task is ready but dispatch is overdue.';
+        }
+
+        return match ($status) {
+            TaskStatus::Ready => match ($this->stringValue($task->payload['workflow_wait_kind'] ?? null)) {
+                'update' => 'Workflow task ready to apply accepted update.',
+                'signal' => $this->stringValue($task->payload['resume_source_kind'] ?? null) === 'timer'
+                    ? 'Workflow task ready to apply signal timeout.'
+                    : 'Workflow task ready to apply accepted signal.',
+                'condition' => 'Workflow task ready to apply condition timeout.',
+                default => 'Workflow task ready to resume the selected run.',
+            },
+            TaskStatus::Leased => match ($this->stringValue($task->payload['workflow_wait_kind'] ?? null)) {
+                'update' => 'Workflow task leased to apply accepted update.',
+                'signal' => $this->stringValue($task->payload['resume_source_kind'] ?? null) === 'timer'
+                    ? 'Workflow task leased to apply signal timeout.'
+                    : 'Workflow task leased to apply accepted signal.',
+                'condition' => 'Workflow task leased to apply condition timeout.',
+                default => 'Workflow task leased to a worker.',
+            },
+            default => 'Workflow task is not pending.',
+        };
     }
 
     /**
@@ -212,18 +458,14 @@ class WorkflowRunDiagnostics
      */
     private function pendingActivities(WorkflowRun $run): array
     {
-        return $run->activityExecutions
-            ->filter(static fn (ActivityExecution $execution): bool => in_array(
-                $execution->status,
-                [ActivityStatus::Pending, ActivityStatus::Running],
-                true,
-            ))
-            ->sortBy([
-                ['started_at', 'asc'],
-                ['sequence', 'asc'],
-                ['id', 'asc'],
-            ])
+        return ActivityExecution::query()
+            ->where('workflow_run_id', $run->id)
+            ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
+            ->orderBy('started_at')
+            ->orderBy('sequence')
+            ->orderBy('id')
             ->take(self::TASK_LIMIT)
+            ->get()
             ->map(function (ActivityExecution $execution): array {
                 $attempt = $this->currentAttempt($execution);
 
@@ -253,10 +495,26 @@ class WorkflowRunDiagnostics
      */
     private function currentAttempt(ActivityExecution $execution): ?array
     {
-        /** @var ActivityAttempt|null $attempt */
-        $attempt = $execution->attempts
-            ->firstWhere('id', $execution->current_attempt_id)
-            ?? $execution->attempts->sortByDesc('attempt_number')->first();
+        $attempt = null;
+
+        if (is_string($execution->current_attempt_id) && $execution->current_attempt_id !== '') {
+            /** @var ActivityAttempt|null $attempt */
+            $attempt = ActivityAttempt::query()
+                ->where('workflow_run_id', $execution->workflow_run_id)
+                ->whereKey($execution->current_attempt_id)
+                ->first();
+        }
+
+        if (! $attempt instanceof ActivityAttempt) {
+            /** @var ActivityAttempt|null $attempt */
+            $attempt = ActivityAttempt::query()
+                ->where('workflow_run_id', $execution->workflow_run_id)
+                ->where('activity_execution_id', $execution->id)
+                ->orderByDesc('attempt_number')
+                ->orderByDesc('started_at')
+                ->orderByDesc('id')
+                ->first();
+        }
 
         if (! $attempt instanceof ActivityAttempt) {
             return null;
@@ -483,5 +741,16 @@ class WorkflowRunDiagnostics
         } catch (\Throwable) {
             return null;
         }
+    }
+
+    private function stringValue(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value === '' ? null : $value;
     }
 }

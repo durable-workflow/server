@@ -3,12 +3,21 @@
 namespace Tests\Feature;
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\AwaitApprovalWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Enums\ActivityAttemptStatus;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\FailureCategory;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 
 class WorkflowDebugTest extends TestCase
 {
@@ -131,5 +140,169 @@ class WorkflowDebugTest extends TestCase
             ->assertJsonPath('run_id', $runId)
             ->assertJsonPath('control_plane.operation', 'debug_workflow')
             ->assertJsonPath('control_plane.run_id', $runId);
+    }
+
+    public function test_debug_diagnostics_do_not_load_unbounded_historical_task_graphs(): void
+    {
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-debug-large-history',
+            'workflow_type' => 'tests.await-approval-workflow',
+            'task_queue' => 'debug-queue',
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
+
+        $start->assertCreated();
+        $run = WorkflowRun::query()->findOrFail((string) $start->json('run_id'));
+
+        $historicalWorkflowTaskIds = [];
+        $historicalActivityIds = [];
+
+        for ($i = 0; $i < 40; $i++) {
+            $historicalWorkflowTaskIds[] = $this->createDiagnosticWorkflowTask(
+                $run,
+                TaskStatus::Completed,
+                ['available_at' => now()->subMinutes(120 - $i)],
+            )->id;
+
+            $historicalActivityIds[] = $this->createDiagnosticActivity(
+                $run,
+                1000 + $i,
+                ActivityStatus::Completed,
+                ActivityAttemptStatus::Completed,
+                4,
+            )->id;
+        }
+
+        for ($i = 0; $i < 30; $i++) {
+            $this->createDiagnosticWorkflowTask(
+                $run,
+                TaskStatus::Ready,
+                ['available_at' => now()->addSeconds($i)],
+            );
+            $this->createDiagnosticActivity(
+                $run,
+                2000 + $i,
+                ActivityStatus::Running,
+                ActivityAttemptStatus::Running,
+                1,
+            );
+        }
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        $debug = $this->getJson(
+            '/api/workflows/wf-debug-large-history/debug',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $queries = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $debug->assertOk()
+            ->assertJsonCount(25, 'pending_workflow_tasks')
+            ->assertJsonCount(25, 'pending_activities');
+
+        $debugWorkflowTaskIds = collect($debug->json('pending_workflow_tasks'))
+            ->pluck('task_id')
+            ->all();
+        $debugActivityIds = collect($debug->json('pending_activities'))
+            ->pluck('activity_execution_id')
+            ->all();
+
+        $this->assertEmpty(array_intersect($historicalWorkflowTaskIds, $debugWorkflowTaskIds));
+        $this->assertEmpty(array_intersect($historicalActivityIds, $debugActivityIds));
+        $this->assertNoUnboundedDebugGraphQueries($queries);
+    }
+
+    private function createDiagnosticWorkflowTask(
+        WorkflowRun $run,
+        TaskStatus $status,
+        array $attributes = [],
+    ): WorkflowTask {
+        return WorkflowTask::query()->create(array_merge([
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Workflow->value,
+            'status' => $status->value,
+            'compatibility' => $run->compatibility,
+            'payload' => [],
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'available_at' => now(),
+        ], $attributes));
+    }
+
+    private function createDiagnosticActivity(
+        WorkflowRun $run,
+        int $sequence,
+        ActivityStatus $status,
+        ActivityAttemptStatus $attemptStatus,
+        int $attemptCount,
+    ): ActivityExecution {
+        $execution = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => $sequence,
+            'activity_class' => 'Tests\\Fixtures\\DebugActivity',
+            'activity_type' => sprintf('debug.activity.%d', $sequence),
+            'status' => $status->value,
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'attempt_count' => $attemptCount,
+            'started_at' => now()->addSeconds($sequence),
+        ]);
+
+        $currentAttempt = null;
+
+        for ($attemptNumber = 1; $attemptNumber <= $attemptCount; $attemptNumber++) {
+            $currentAttempt = ActivityAttempt::query()->create([
+                'workflow_run_id' => $run->id,
+                'activity_execution_id' => $execution->id,
+                'workflow_task_id' => null,
+                'attempt_number' => $attemptNumber,
+                'status' => $attemptStatus->value,
+                'lease_owner' => $attemptStatus === ActivityAttemptStatus::Running ? 'debug-worker' : null,
+                'started_at' => now()->addSeconds($sequence + $attemptNumber),
+                'closed_at' => $attemptStatus === ActivityAttemptStatus::Running
+                    ? null
+                    : now()->addSeconds($sequence + $attemptNumber + 1),
+            ]);
+        }
+
+        if ($currentAttempt instanceof ActivityAttempt) {
+            $execution->forceFill([
+                'current_attempt_id' => $currentAttempt->id,
+            ])->save();
+        }
+
+        return $execution->refresh();
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $queries
+     */
+    private function assertNoUnboundedDebugGraphQueries(array $queries): void
+    {
+        $offenders = collect($queries)
+            ->pluck('query')
+            ->filter(static function (string $query): bool {
+                $normalized = strtolower($query);
+
+                foreach (['workflow_tasks', 'activity_executions', 'activity_attempts'] as $table) {
+                    $selectsWholeRows = preg_match(
+                        '/^\s*select\s+\*\s+from\s+["`]?'.preg_quote($table, '/').'["`]?/',
+                        $normalized,
+                    ) === 1;
+
+                    if ($selectsWholeRows && ! str_contains($normalized, 'limit')) {
+                        return true;
+                    }
+                }
+
+                return false;
+            })
+            ->values()
+            ->all();
+
+        $this->assertSame([], $offenders, 'Debug diagnostics must not select full task graphs without a limit.');
     }
 }

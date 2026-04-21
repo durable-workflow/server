@@ -341,11 +341,18 @@ curl "$SERVER/api/workflows/order-42/runs/abc123/history" \
 - `GET /api/workflows/{id}` — Describe a workflow
 - `GET /api/workflows/{id}/runs` — List runs (continue-as-new chain)
 - `GET /api/workflows/{id}/runs/{runId}` — Describe a specific run
+- `GET /api/workflows/{id}/debug` — Bounded support diagnostic for the current run
+- `GET /api/workflows/{id}/runs/{runId}/debug` — Bounded support diagnostic for a specific run
 - `POST /api/workflows/{id}/signal/{name}` — Send a signal
 - `POST /api/workflows/{id}/query/{name}` — Execute a query
 - `POST /api/workflows/{id}/update/{name}` — Execute an update
 - `POST /api/workflows/{id}/cancel` — Request cancellation
 - `POST /api/workflows/{id}/terminate` — Terminate immediately
+
+Workflow debug responses are capped support snapshots, not full run exports:
+the server fetches at most 25 pending workflow tasks, 25 pending activities
+with only each activity's current/latest attempt, and 10 recent failures. Use
+the history endpoints when a full replay/debug archive is needed.
 
 ### History
 - `GET /api/workflows/{id}/runs/{runId}/history` — Get event history
