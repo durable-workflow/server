@@ -27,6 +27,15 @@ from typing import Any
 CONTROL_PLANE_VERSION = "2"
 WORKER_PROTOCOL_VERSION = "1.0"
 ERROR_WRITE_LOCK = threading.Lock()
+SERVER_CACHE_KEY_PATTERNS = {
+    "long_poll_signals": "*server:long-poll-signal:*",
+    "workflow_task_poll_requests": "*server:workflow-task-poll-request:*",
+    "workflow_query_tasks": "*server:workflow-query-task:*",
+    "task_queue_admission_locks": "*server:task-queue-admission:*",
+    "task_queue_dispatch_counters": "*server:task-queue-dispatch:*",
+    "workflow_task_expired_lease_recovery": "*server:workflow-task-expired-lease-recovery:*",
+    "readiness_probe": "*server:readiness:*",
+}
 
 
 class Metrics:
@@ -347,8 +356,8 @@ def docker_stats(project: str) -> dict[str, int]:
 def redis_info(project: str) -> dict[str, int]:
     used_memory = 0
     db_keys = 0
-    polling_keys = 0
     server_keys = 0
+    server_keys_by_policy = {policy_id: 0 for policy_id in SERVER_CACHE_KEY_PATTERNS}
 
     info = run_command(compose_command(project, "exec", "-T", "redis", "redis-cli", "INFO", "memory"))
     for line in info.stdout.splitlines():
@@ -362,6 +371,21 @@ def redis_info(project: str) -> dict[str, int]:
     except ValueError:
         db_keys = 0
 
+    for policy_id, pattern in SERVER_CACHE_KEY_PATTERNS.items():
+        server_keys_by_policy[policy_id] = redis_scan_count(project, pattern)
+
+    server_keys = redis_scan_count(project, "*server:*")
+
+    return {
+        "redis_used_memory_bytes": used_memory,
+        "redis_db_keys": db_keys,
+        "redis_polling_keys": server_keys_by_policy["workflow_task_poll_requests"],
+        "redis_server_keys": server_keys,
+        "redis_server_keys_by_policy": server_keys_by_policy,
+    }
+
+
+def redis_scan_count(project: str, pattern: str) -> int:
     count = run_command(
         compose_command(
             project,
@@ -370,36 +394,13 @@ def redis_info(project: str) -> dict[str, int]:
             "redis",
             "sh",
             "-lc",
-            "redis-cli --scan --pattern '*server:workflow-task-poll-request:*' | wc -l",
+            f"redis-cli --scan --pattern {json.dumps(pattern)} | wc -l",
         )
     )
     try:
-        polling_keys = int(count.stdout.strip() or "0")
+        return int(count.stdout.strip() or "0")
     except ValueError:
-        polling_keys = 0
-
-    server_count = run_command(
-        compose_command(
-            project,
-            "exec",
-            "-T",
-            "redis",
-            "sh",
-            "-lc",
-            "redis-cli --scan --pattern '*server:*' | wc -l",
-        )
-    )
-    try:
-        server_keys = int(server_count.stdout.strip() or "0")
-    except ValueError:
-        server_keys = 0
-
-    return {
-        "redis_used_memory_bytes": used_memory,
-        "redis_db_keys": db_keys,
-        "redis_polling_keys": polling_keys,
-        "redis_server_keys": server_keys,
-    }
+        return 0
 
 
 def mysql_counts(project: str) -> dict[str, int]:
@@ -606,10 +607,25 @@ def main() -> int:
         max_pattern_polling_keys = max((int(row.get("redis_polling_keys") or 0) for row in samples), default=0)
         max_server_cache_keys = max((int(row.get("redis_server_keys") or 0) for row in samples), default=0)
         max_redis_db_keys = max((int(row.get("redis_db_keys") or 0) for row in samples), default=0)
+        max_server_cache_keys_by_policy = {
+            policy_id: max(
+                (
+                    int((row.get("redis_server_keys_by_policy") or {}).get(policy_id) or 0)
+                    for row in samples
+                    if isinstance(row.get("redis_server_keys_by_policy"), dict)
+                ),
+                default=0,
+            )
+            for policy_id in SERVER_CACHE_KEY_PATTERNS
+        }
         max_polling_keys = max(max_pattern_polling_keys, max_redis_db_keys)
         final_pattern_polling_keys = int(final_sample.get("redis_polling_keys") or 0)
         final_server_cache_keys = int(final_sample.get("redis_server_keys") or 0)
         final_redis_db_keys = int(final_sample.get("redis_db_keys") or 0)
+        final_server_cache_keys_by_policy = {
+            policy_id: int((final_sample.get("redis_server_keys_by_policy") or {}).get(policy_id) or 0)
+            for policy_id in SERVER_CACHE_KEY_PATTERNS
+        }
         final_polling_keys = max(final_pattern_polling_keys, final_redis_db_keys)
         slope = memory_slope_mb_hour(samples) if args.duration_seconds >= 600 else None
         finished_at = datetime.now(timezone.utc)
@@ -635,10 +651,12 @@ def main() -> int:
             "max_polling_keys": max_polling_keys,
             "max_polling_pattern_keys": max_pattern_polling_keys,
             "max_server_cache_keys": max_server_cache_keys,
+            "max_server_cache_keys_by_policy": max_server_cache_keys_by_policy,
             "max_redis_db_keys": max_redis_db_keys,
             "final_polling_keys": final_polling_keys,
             "final_polling_pattern_keys": final_pattern_polling_keys,
             "final_server_cache_keys": final_server_cache_keys,
+            "final_server_cache_keys_by_policy": final_server_cache_keys_by_policy,
             "final_redis_db_keys": final_redis_db_keys,
             "server_memory_slope_mb_hour": None if slope is None else round(slope, 2),
             "assertions": {

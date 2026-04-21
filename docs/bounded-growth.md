@@ -84,8 +84,9 @@ service logs under `build/perf/`. A trusted bounded-growth run must include:
 - enough periodic samples to cover at least `DW_PERF_MIN_SAMPLE_COVERAGE`
   (default 80%) of the configured duration/sample-interval window;
 - the maximum server memory, Redis key counts, server-owned `server:*` cache
-  key counts, final drain counts, and, for runs of at least 10 minutes, the
-  post-warmup memory slope when a slope limit is configured;
+  key counts, per-policy server cache key counts, final drain counts, and, for
+  runs of at least 10 minutes, the post-warmup memory slope when a slope limit
+  is configured;
 - GitHub/runner provenance in `summary.json` (`GITHUB_SHA`, `GITHUB_RUN_ID`,
   runner name/OS/arch, Compose project, and the tested base URL when present);
 - the SHA-256 digest of `config/dw-bounded-growth.php` so the artifact can be
@@ -93,3 +94,9 @@ service logs under `build/perf/`. A trusted bounded-growth run must include:
 
 If sample coverage falls below the trusted minimum, the harness marks the run
 failed instead of uploading an incomplete artifact as passing evidence.
+
+`summary.json` includes both aggregate server cache keys and
+`max_server_cache_keys_by_policy` / `final_server_cache_keys_by_policy`. Those
+per-policy maps mirror the `cache_keys` inventory so a long soak can show which
+bounded cache family produced growth instead of only reporting a total
+`server:*` count.
