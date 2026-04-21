@@ -13,8 +13,7 @@ use Workflow\V2\Support\WorkerProtocolVersion;
 | documented public contract (see config/dw-contract.php); the legacy
 | WORKFLOW_* / ACTIVITY_* name is honored for backward compatibility and
 | logged as deprecated by the `env:audit` artisan command. Renaming a
-| DW_* name requires a major bump with the old name aliased for one
-| major — see zorporation/durable-workflow#455.
+| DW_* name requires a major bump with the old name aliased for one major.
 */
 
 return [

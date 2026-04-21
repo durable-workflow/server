@@ -13,8 +13,6 @@ use Tests\TestCase;
 use Workflow\V2\WorkflowStub;
 
 /**
- * Regression test for zorporation/durable-workflow#310.
- *
  * The standalone server runs in service mode (external workers poll over HTTP),
  * so the PHP queue never receives workflow or activity task jobs. Before the
  * fix, TaskDispatcher and TaskBackendCapabilities still ran the queue-driver

@@ -87,15 +87,15 @@ cleanup() {
 trap cleanup EXIT
 
 maybe_start_prometheus() {
-  if [ "${DW_PERF_GRAFANA_REMOTE_WRITE_ENABLED:-true}" != "true" ]; then
-    echo "Grafana Cloud remote_write disabled for this run; writing local perf artifacts only."
+  if [ "${DW_PERF_REMOTE_WRITE_ENABLED:-true}" != "true" ]; then
+    echo "Prometheus remote_write disabled for this run; writing local perf artifacts only."
     return
   fi
 
-  if [ -z "${DW_PERF_GRAFANA_REMOTE_WRITE_URL:-}" ] \
-    || [ -z "${DW_PERF_GRAFANA_USERNAME:-}" ] \
-    || [ -z "${DW_PERF_GRAFANA_API_TOKEN:-}" ]; then
-    echo "Grafana Cloud remote_write is not configured; writing local perf artifacts only."
+  if [ -z "${DW_PERF_REMOTE_WRITE_URL:-}" ] \
+    || [ -z "${DW_PERF_REMOTE_WRITE_USERNAME:-}" ] \
+    || [ -z "${DW_PERF_REMOTE_WRITE_PASSWORD:-}" ]; then
+    echo "Prometheus remote_write is not configured; writing local perf artifacts only."
     return
   fi
 
@@ -114,10 +114,10 @@ scrape_configs:
           run_id: "${GITHUB_RUN_ID:-local}"
           runner: "${RUNNER_NAME:-local}"
 remote_write:
-  - url: "${DW_PERF_GRAFANA_REMOTE_WRITE_URL}"
+  - url: "${DW_PERF_REMOTE_WRITE_URL}"
     basic_auth:
-      username: "${DW_PERF_GRAFANA_USERNAME}"
-      password: "${DW_PERF_GRAFANA_API_TOKEN}"
+      username: "${DW_PERF_REMOTE_WRITE_USERNAME}"
+      password: "${DW_PERF_REMOTE_WRITE_PASSWORD}"
 YAML
 
   docker run -d --rm \

@@ -21,8 +21,6 @@ use RuntimeException;
  * Rather than fail at first request, assert the floor at boot so broken
  * installs surface a clear diagnostic during `php artisan package:discover`
  * or the first Laravel request.
- *
- * @see https://github.com/zorporation/durable-workflow/issues/346
  */
 final class WorkflowPackageApiFloor
 {

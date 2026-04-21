@@ -8,7 +8,7 @@
 | This file is the machine-checkable contract for operator-facing
 | environment variables exposed by the Durable Workflow server image.
 |
-| Rules (see zorporation/durable-workflow#455):
+| Rules:
 |
 |   1. Every operator-facing env var the server honors has the `DW_` prefix
 |      and appears in the `vars` list below.
@@ -427,8 +427,7 @@ return [
         // bundled inside the server image. They are resolved inside the
         // package's config/workflows.php via Workflow\Support\Env::dw and
         // follow the same DW_*-primary / legacy-fallback pattern as the
-        // server's own config/server.php (see
-        // zorporation/durable-workflow#494).
+        // server's own config/server.php.
 
         'DW_V2_NAMESPACE' => [
             'description' => 'Scopes workflow instances to a namespace. When unset, instances are visible to every consumer.',

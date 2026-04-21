@@ -35,8 +35,8 @@ on:
         description: "Concurrent long-poll workers"
         required: false
         default: "24"
-      grafana_remote_write:
-        description: "Enable Grafana Cloud remote_write when variables/secrets are configured"
+      remote_write:
+        description: "Enable Prometheus remote_write when variables/secrets are configured"
         required: false
         type: boolean
         default: true
@@ -82,9 +82,9 @@ jobs:
           if-no-files-found: warn
 
   soak:
-    name: Vultr self-hosted polling cache soak
+    name: Self-hosted polling cache soak
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, linux, x64, vultr-perf, server-perf]
+    runs-on: [self-hosted, linux, x64, perf-soak, server-perf]
     timeout-minutes: 390
 
     steps:
@@ -101,10 +101,10 @@ jobs:
           DW_PERF_MAX_POLLING_KEYS: "2048"
           DW_PERF_MAX_FINAL_POLLING_KEYS: "0"
           DW_PERF_MAX_SERVER_MEMORY_SLOPE_MB_HOUR: "128"
-          DW_PERF_GRAFANA_REMOTE_WRITE_ENABLED: ${{ github.event_name != 'workflow_dispatch' || inputs.grafana_remote_write }}
-          DW_PERF_GRAFANA_REMOTE_WRITE_URL: ${{ vars.DW_PERF_GRAFANA_REMOTE_WRITE_URL }}
-          DW_PERF_GRAFANA_USERNAME: ${{ vars.DW_PERF_GRAFANA_USERNAME }}
-          DW_PERF_GRAFANA_API_TOKEN: ${{ secrets.DW_PERF_GRAFANA_API_TOKEN }}
+          DW_PERF_REMOTE_WRITE_ENABLED: ${{ github.event_name != 'workflow_dispatch' || inputs.remote_write }}
+          DW_PERF_REMOTE_WRITE_URL: ${{ vars.DW_PERF_REMOTE_WRITE_URL }}
+          DW_PERF_REMOTE_WRITE_USERNAME: ${{ vars.DW_PERF_REMOTE_WRITE_USERNAME }}
+          DW_PERF_REMOTE_WRITE_PASSWORD: ${{ secrets.DW_PERF_REMOTE_WRITE_PASSWORD }}
         run: scripts/perf/run-server-soak.sh
 
       - name: Upload perf artifacts
