@@ -297,9 +297,18 @@ curl -X POST $SERVER/api/worker/register \
   -d '{
     "worker_id": "worker-1",
     "task_queue": "order-workers",
-    "runtime": "python"
+    "runtime": "python",
+    "supported_workflow_types": ["orders.process"],
+    "workflow_definition_fingerprints": {
+      "orders.process": "sha256:..."
+    }
   }'
 ```
+
+When a worker re-registers the same active `worker_id`, any advertised
+workflow type must keep the same `workflow_definition_fingerprints` value. A
+changed fingerprint is rejected with `workflow_definition_changed`; restart
+the process with a new worker id before serving a changed workflow class.
 
 ### 5. Poll for Workflow Tasks
 

@@ -53,6 +53,8 @@ class WorkerController
             'build_id' => ['nullable', 'string', 'max:255'],
             'supported_workflow_types' => ['nullable', 'array'],
             'supported_workflow_types.*' => ['string'],
+            'workflow_definition_fingerprints' => ['nullable', 'array'],
+            'workflow_definition_fingerprints.*' => ['string', 'max:255'],
             'supported_activity_types' => ['nullable', 'array'],
             'supported_activity_types.*' => ['string'],
             'max_concurrent_workflow_tasks' => ['nullable', 'integer', 'min:1'],
@@ -60,6 +62,30 @@ class WorkerController
         ]);
 
         $workerId = $validated['worker_id'] ?? Str::ulid()->toBase32();
+        $workflowDefinitionFingerprints = $this->workflowDefinitionFingerprints(
+            $validated['workflow_definition_fingerprints'] ?? []
+        );
+
+        $existing = WorkerRegistration::query()
+            ->where('worker_id', $workerId)
+            ->where('namespace', $namespace)
+            ->first();
+
+        if ($existing instanceof WorkerRegistration && $existing->status === 'active') {
+            $conflict = $this->firstWorkflowDefinitionFingerprintConflict(
+                $this->workflowDefinitionFingerprints($existing->workflow_definition_fingerprints ?? []),
+                $workflowDefinitionFingerprints,
+            );
+
+            if ($conflict !== null) {
+                return WorkerProtocol::json([
+                    'error' => 'Worker attempted to re-register a changed workflow definition.',
+                    'reason' => 'workflow_definition_changed',
+                    'workflow_type' => $conflict,
+                    'remediation' => 'Restart the worker with a new worker_id before registering a changed workflow class definition.',
+                ], 409);
+            }
+        }
 
         WorkerRegistration::updateOrCreate(
             [
@@ -72,6 +98,7 @@ class WorkerController
                 'sdk_version' => $validated['sdk_version'] ?? null,
                 'build_id' => $validated['build_id'] ?? null,
                 'supported_workflow_types' => $validated['supported_workflow_types'] ?? [],
+                'workflow_definition_fingerprints' => $workflowDefinitionFingerprints,
                 'supported_activity_types' => $validated['supported_activity_types'] ?? [],
                 'max_concurrent_workflow_tasks' => $validated['max_concurrent_workflow_tasks'] ?? 100,
                 'max_concurrent_activity_tasks' => $validated['max_concurrent_activity_tasks'] ?? 100,
@@ -91,6 +118,49 @@ class WorkerController
             'worker_id' => $workerId,
             'registered' => true,
         ], 201);
+    }
+
+    /**
+     * @param  array<array-key, mixed>  $fingerprints
+     * @return array<string, string>
+     */
+    private function workflowDefinitionFingerprints(array $fingerprints): array
+    {
+        $normalized = [];
+
+        foreach ($fingerprints as $workflowType => $fingerprint) {
+            if (! is_string($workflowType) || ! is_string($fingerprint)) {
+                continue;
+            }
+
+            $workflowType = trim($workflowType);
+            $fingerprint = trim($fingerprint);
+
+            if ($workflowType === '' || $fingerprint === '') {
+                continue;
+            }
+
+            $normalized[$workflowType] = $fingerprint;
+        }
+
+        ksort($normalized);
+
+        return $normalized;
+    }
+
+    /**
+     * @param  array<string, string>  $current
+     * @param  array<string, string>  $incoming
+     */
+    private function firstWorkflowDefinitionFingerprintConflict(array $current, array $incoming): ?string
+    {
+        foreach ($incoming as $workflowType => $fingerprint) {
+            if (isset($current[$workflowType]) && $current[$workflowType] !== $fingerprint) {
+                return $workflowType;
+            }
+        }
+
+        return null;
     }
 
     /**

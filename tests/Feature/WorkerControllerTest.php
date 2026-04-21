@@ -154,6 +154,10 @@ class WorkerControllerTest extends TestCase
                 'task_queue' => 'default',
                 'runtime' => 'python',
                 'supported_workflow_types' => ['order.process', 'order.cancel'],
+                'workflow_definition_fingerprints' => [
+                    'order.process' => 'sha256:process',
+                    'order.cancel' => 'sha256:cancel',
+                ],
                 'supported_activity_types' => ['email.send', 'payment.charge'],
             ])
             ->assertStatus(201);
@@ -163,7 +167,64 @@ class WorkerControllerTest extends TestCase
             ->first();
 
         $this->assertSame(['order.process', 'order.cancel'], $worker->supported_workflow_types);
+        $this->assertSame([
+            'order.cancel' => 'sha256:cancel',
+            'order.process' => 'sha256:process',
+        ], $worker->workflow_definition_fingerprints);
         $this->assertSame(['email.send', 'payment.charge'], $worker->supported_activity_types);
+    }
+
+    public function test_register_rejects_changed_active_workflow_definition_for_same_worker(): void
+    {
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'reload-worker',
+                'task_queue' => 'default',
+                'runtime' => 'python',
+                'supported_workflow_types' => ['order.process'],
+                'workflow_definition_fingerprints' => [
+                    'order.process' => 'sha256:old',
+                ],
+            ])
+            ->assertStatus(201);
+
+        $response = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'reload-worker',
+                'task_queue' => 'default',
+                'runtime' => 'python',
+                'supported_workflow_types' => ['order.process'],
+                'workflow_definition_fingerprints' => [
+                    'order.process' => 'sha256:new',
+                ],
+            ]);
+
+        $response->assertStatus(409)
+            ->assertJsonPath('reason', 'workflow_definition_changed')
+            ->assertJsonPath('workflow_type', 'order.process');
+
+        $worker = WorkerRegistration::query()
+            ->where('worker_id', 'reload-worker')
+            ->firstOrFail();
+
+        $this->assertSame(['order.process' => 'sha256:old'], $worker->workflow_definition_fingerprints);
+    }
+
+    public function test_register_allows_same_workflow_definition_for_same_worker(): void
+    {
+        foreach (range(1, 2) as $_) {
+            $this->withHeaders($this->workerHeaders())
+                ->postJson('/api/worker/register', [
+                    'worker_id' => 'stable-worker',
+                    'task_queue' => 'default',
+                    'runtime' => 'python',
+                    'supported_workflow_types' => ['order.process'],
+                    'workflow_definition_fingerprints' => [
+                        'order.process' => 'sha256:same',
+                    ],
+                ])
+                ->assertStatus(201);
+        }
     }
 
     public function test_register_is_scoped_to_namespace(): void

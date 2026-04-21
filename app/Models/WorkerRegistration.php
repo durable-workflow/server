@@ -16,6 +16,7 @@ class WorkerRegistration extends Model
         'sdk_version',
         'build_id',
         'supported_workflow_types',
+        'workflow_definition_fingerprints',
         'supported_activity_types',
         'max_concurrent_workflow_tasks',
         'max_concurrent_activity_tasks',
@@ -27,6 +28,7 @@ class WorkerRegistration extends Model
     {
         return [
             'supported_workflow_types' => 'array',
+            'workflow_definition_fingerprints' => 'array',
             'supported_activity_types' => 'array',
             'last_heartbeat_at' => 'datetime',
         ];

@@ -17,6 +17,7 @@ return new class extends Migration
             $table->string('sdk_version', 64)->nullable();
             $table->string('build_id', 255)->nullable();
             $table->json('supported_workflow_types')->nullable();
+            $table->json('workflow_definition_fingerprints')->nullable();
             $table->json('supported_activity_types')->nullable();
             $table->unsignedInteger('max_concurrent_workflow_tasks')->default(100);
             $table->unsignedInteger('max_concurrent_activity_tasks')->default(100);
