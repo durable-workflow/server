@@ -75,7 +75,10 @@ class KubernetesManifestContractTest extends TestCase
         $source = $this->read('.github/workflows/kubernetes-validation.yml');
 
         foreach ([
+            'app/**',
+            'config/**',
             'ghcr.io/yannh/kubeconform:v0.6.7',
+            'routes/**',
             'scripts/k8s-kind-smoke.sh',
             'kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64',
             'K8S_SMOKE_KIND_NODE_IMAGE',
