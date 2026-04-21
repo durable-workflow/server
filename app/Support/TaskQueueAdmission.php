@@ -80,7 +80,7 @@ final class TaskQueueAdmission
 
                     $result = $callback();
 
-                    if ($result !== null) {
+                    if ($result !== null && $this->hasDispatchBudget($fresh)) {
                         $this->recordDispatch($namespace, $taskQueue, $taskKind);
                     }
 
@@ -433,6 +433,15 @@ final class TaskQueueAdmission
 
         $this->cache->store()->increment($key);
         $this->recordNamespaceDispatch($namespace, $taskQueue, $taskKind);
+    }
+
+    /**
+     * @param  array<string, mixed>  $budget
+     */
+    private function hasDispatchBudget(array $budget): bool
+    {
+        return $budget['max_dispatches_per_minute'] !== null
+            || $budget['max_dispatches_per_minute_per_namespace'] !== null;
     }
 
     private function recordNamespaceDispatch(string $namespace, string $taskQueue, string $taskKind): void

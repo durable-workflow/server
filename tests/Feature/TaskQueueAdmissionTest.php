@@ -70,6 +70,9 @@ class TaskQueueAdmissionTest extends TestCase
             ->assertJsonPath('admission.workflow_tasks.server_max_active_leases_per_queue', 1)
             ->assertJsonPath('admission.workflow_tasks.server_active_lease_count', 1)
             ->assertJsonPath('admission.workflow_tasks.server_remaining_active_lease_capacity', 0)
+            ->assertJsonPath('admission.workflow_tasks.server_max_dispatches_per_minute', null)
+            ->assertJsonPath('admission.workflow_tasks.server_dispatch_count_this_minute', 0)
+            ->assertJsonPath('admission.workflow_tasks.server_remaining_dispatch_capacity', null)
             ->assertJsonPath('admission.workflow_tasks.server_lock_required', true)
             ->assertJsonPath('admission.workflow_tasks.server_lock_supported', true);
     }
@@ -312,7 +315,10 @@ class TaskQueueAdmissionTest extends TestCase
             ->assertJsonPath('admission.activity_tasks.server_budget_source', 'server.admission.queue_overrides')
             ->assertJsonPath('admission.activity_tasks.server_max_active_leases_per_queue', 1)
             ->assertJsonPath('admission.activity_tasks.server_active_lease_count', 1)
-            ->assertJsonPath('admission.activity_tasks.server_remaining_active_lease_capacity', 0);
+            ->assertJsonPath('admission.activity_tasks.server_remaining_active_lease_capacity', 0)
+            ->assertJsonPath('admission.activity_tasks.server_max_dispatches_per_minute', null)
+            ->assertJsonPath('admission.activity_tasks.server_dispatch_count_this_minute', 0)
+            ->assertJsonPath('admission.activity_tasks.server_remaining_dispatch_capacity', null);
     }
 
     public function test_activity_task_polls_respect_queue_specific_dispatch_rate_caps(): void
