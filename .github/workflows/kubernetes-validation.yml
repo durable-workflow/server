@@ -1,0 +1,85 @@
+name: Kubernetes Manifest Validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/kubernetes-validation.yml"
+      - "Dockerfile"
+      - "docker/**"
+      - "k8s/**"
+      - "scripts/k8s-kind-smoke.sh"
+      - "composer.json"
+      - "composer.lock"
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/kubernetes-validation.yml"
+      - "Dockerfile"
+      - "docker/**"
+      - "k8s/**"
+      - "scripts/k8s-kind-smoke.sh"
+      - "composer.json"
+      - "composer.lock"
+
+permissions:
+  contents: read
+
+jobs:
+  static-manifest-validation:
+    name: Validate raw Kubernetes manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout server
+        uses: actions/checkout@v6
+
+      - name: Run kubeconform
+        run: |
+          docker run --rm \
+            -v "${PWD}:/work:ro" \
+            ghcr.io/yannh/kubeconform:v0.6.7 \
+            -strict \
+            -summary \
+            -kubernetes-version 1.29.0 \
+            /work/k8s
+
+  kind-smoke:
+    name: Smoke raw manifests in kind
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout server
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Install kind and kubectl
+        run: |
+          curl -fsSL -o /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+          chmod +x /usr/local/bin/kind
+
+          curl -fsSL -o /usr/local/bin/kubectl https://dl.k8s.io/release/v1.29.9/bin/linux/amd64/kubectl
+          chmod +x /usr/local/bin/kubectl
+
+          kind version
+          kubectl version --client=true
+
+      - name: Run kind smoke
+        env:
+          K8S_SMOKE_CLUSTER: durable-workflow-server-${{ github.run_id }}-${{ github.run_attempt }}
+          K8S_SMOKE_IMAGE: durableworkflow/server:k8s-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          K8S_SMOKE_KIND_NODE_IMAGE: kindest/node:v1.29.4
+          K8S_SMOKE_ARTIFACT_DIR: ${{ runner.temp }}/k8s-kind-smoke-artifacts
+        run: scripts/k8s-kind-smoke.sh
+
+      - name: Upload Kubernetes smoke artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubernetes-kind-smoke-artifacts
+          path: ${{ runner.temp }}/k8s-kind-smoke-artifacts
+          if-no-files-found: ignore

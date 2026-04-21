@@ -70,6 +70,41 @@ class KubernetesManifestContractTest extends TestCase
         }
     }
 
+    public function test_kubernetes_validation_workflow_runs_static_schema_and_kind_smoke(): void
+    {
+        $source = $this->read('.github/workflows/kubernetes-validation.yml');
+
+        foreach ([
+            'ghcr.io/yannh/kubeconform:v0.6.7',
+            'scripts/k8s-kind-smoke.sh',
+            'kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64',
+            'K8S_SMOKE_KIND_NODE_IMAGE',
+            'K8S_SMOKE_ARTIFACT_DIR',
+            'actions/upload-artifact@v4',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $source);
+        }
+    }
+
+    public function test_kind_smoke_script_verifies_readiness_cluster_info_and_worker_registration(): void
+    {
+        $source = $this->read('scripts/k8s-kind-smoke.sh');
+
+        foreach ([
+            'build -t "${image}" "${repo_root}"',
+            'kindest/node:v1.29.4',
+            'load docker-image "${image}"',
+            'wait_for_kubernetes_api',
+            'rollout status deploy/durable-workflow-mysql',
+            '/api/ready',
+            '/api/cluster/info',
+            '/api/worker/register',
+            'collect_artifacts',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $source);
+        }
+    }
+
     /**
      * @return list<string>
      */
