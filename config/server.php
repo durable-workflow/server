@@ -274,6 +274,24 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Metrics
+    |--------------------------------------------------------------------------
+    |
+    | Server-owned metrics keep user-controlled dimensions capped before any
+    | JSON or Prometheus-style surface exposes them to long-running operators.
+    |
+    */
+
+    'metrics' => [
+        'workflow_task_failure_type_limit' => (int) EnvAuditor::env(
+            'DW_METRICS_WORKFLOW_TASK_FAILURE_TYPE_LIMIT',
+            'WORKFLOW_SERVER_METRICS_WORKFLOW_TASK_FAILURE_TYPE_LIMIT',
+            20,
+        ),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | History
     |--------------------------------------------------------------------------
     |

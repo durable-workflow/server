@@ -293,6 +293,15 @@ return [
             'legacy' => 'WORKFLOW_SERVER_WORKER_STALE_AFTER_SECONDS',
         ],
 
+        // --- Metrics --------------------------------------------------
+
+        'DW_METRICS_WORKFLOW_TASK_FAILURE_TYPE_LIMIT' => [
+            'description' => 'Maximum workflow_type series reported by dw_workflow_task_consecutive_failures; excess types are summarized.',
+            'default' => '20',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_METRICS_WORKFLOW_TASK_FAILURE_TYPE_LIMIT',
+        ],
+
         // --- History / retention / limits ------------------------------
 
         'DW_MAX_HISTORY_EVENTS' => [

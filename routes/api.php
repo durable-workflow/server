@@ -154,6 +154,7 @@ Route::middleware([Authenticate::class])->group(function () {
 
     // ── System / Operations ─────────────────────────────────────────
     Route::prefix('system')->middleware([$admin, $cpv, $ns])->group(function () {
+        Route::get('/metrics', [SystemController::class, 'metrics']);
         Route::get('/repair', [SystemController::class, 'repairStatus']);
         Route::post('/repair/pass', [SystemController::class, 'repairPass']);
         Route::get('/activity-timeouts', [SystemController::class, 'activityTimeoutStatus']);

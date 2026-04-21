@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\WorkflowTaskFailureMetrics;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -77,6 +78,29 @@ class SystemController
         return ControlPlaneProtocol::json([
             'policy' => TaskRepairPolicy::snapshot(),
             'candidates' => TaskRepairCandidates::snapshot(),
+        ]);
+    }
+
+    public function metrics(Request $request): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = (string) $request->attributes->get('namespace');
+        $workflowTaskFailures = WorkflowTaskFailureMetrics::snapshot($namespace);
+
+        return ControlPlaneProtocol::json([
+            'generated_at' => now()->toJSON(),
+            'namespace' => $namespace,
+            'metrics' => [
+                WorkflowTaskFailureMetrics::METRIC_NAME => $workflowTaskFailures,
+            ],
+            'cardinality' => [
+                'metric_label_sets' => [
+                    WorkflowTaskFailureMetrics::METRIC_NAME => $workflowTaskFailures['label_cardinality_policy'],
+                ],
+            ],
         ]);
     }
 

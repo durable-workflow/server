@@ -99,6 +99,7 @@ class ControlPlaneVersionCoverageTest extends TestCase
             'namespaces.update' => ['method' => 'put', 'path' => '/api/namespaces/default'],
 
             // SystemController
+            'system.metrics' => ['method' => 'get', 'path' => '/api/system/metrics'],
             'system.repair_status' => ['method' => 'get', 'path' => '/api/system/repair'],
             'system.repair_pass' => ['method' => 'post', 'path' => '/api/system/repair/pass'],
             'system.activity_timeout_status' => ['method' => 'get', 'path' => '/api/system/activity-timeouts'],

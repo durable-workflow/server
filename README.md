@@ -323,6 +323,7 @@ curl "$SERVER/api/workflows/order-42/runs/abc123/history" \
 - `GET /api/health` — Health check
 - `GET /api/ready` — Readiness check for migrations, default namespace, cache, and auth config
 - `GET /api/cluster/info` — Server capabilities and version
+- `GET /api/system/metrics` — Server metrics including bounded stuck workflow-task diagnostics
 - `GET /api/system/repair` — Task repair diagnostics
 - `POST /api/system/repair/pass` — Run task repair sweep
 - `GET /api/system/activity-timeouts` — Expired activity execution diagnostics
