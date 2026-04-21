@@ -1,0 +1,164 @@
+name: durable-workflow-server-small-cluster
+
+x-server-image: &server-image ${DW_SMALL_CLUSTER_IMAGE:-durable-workflow/server-small-cluster:local}
+
+x-server-build: &server-build
+  context: .
+  args:
+    WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
+    WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-v2}
+    WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
+
+x-server-environment: &server-environment
+  APP_NAME: "Durable Workflow Server"
+  APP_ENV: testing
+  APP_VERSION: ${APP_VERSION:-2.0.0}
+  APP_DEBUG: "false"
+  DW_SERVER_KEY: ${DW_SERVER_KEY:-base64:5Zt4nUhlCm3DD0nLXZJQdHiwPfb56yGo9gNV/g3jYbY=}
+  DB_CONNECTION: ${DW_SMALL_CLUSTER_DB:-mysql}
+  DB_HOST: ${DW_SMALL_CLUSTER_DB_HOST:-mysql}
+  DB_PORT: ${DW_SMALL_CLUSTER_DB_PORT:-3306}
+  DB_DATABASE: ${DB_DATABASE:-durable_workflow}
+  DB_USERNAME: ${DB_USERNAME:-workflow}
+  DB_PASSWORD: ${DB_PASSWORD:-workflow}
+  REDIS_HOST: redis
+  QUEUE_CONNECTION: redis
+  CACHE_STORE: redis
+  DW_AUTH_DRIVER: token
+  DW_AUTH_TOKEN: ${DW_AUTH_TOKEN:-small-cluster-token}
+  DW_AUTH_BACKWARD_COMPATIBLE: "true"
+  DW_WORKER_POLL_TIMEOUT: "1"
+  DW_WORKER_POLL_INTERVAL_MS: "100"
+  DW_ENV_AUDIT_STRICT: "1"
+
+services:
+  bootstrap:
+    image: *server-image
+    build: *server-build
+    command: ["server-bootstrap"]
+    environment:
+      <<: *server-environment
+      DW_SERVER_ID: bootstrap
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  server-a:
+    image: *server-image
+    build: *server-build
+    ports:
+      - "${DW_SMALL_CLUSTER_SERVER_A_PORT:-18084}:8080"
+    environment:
+      <<: *server-environment
+      DW_SERVER_ID: server-a
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  server-b:
+    image: *server-image
+    build: *server-build
+    ports:
+      - "${DW_SMALL_CLUSTER_SERVER_B_PORT:-18085}:8080"
+    environment:
+      <<: *server-environment
+      DW_SERVER_ID: server-b
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  scheduler:
+    image: *server-image
+    build: *server-build
+    init: true
+    command: >-
+      sh -c 'while true; do php artisan schedule:evaluate --limit=100; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done'
+    environment:
+      <<: *server-environment
+      DW_SERVER_ID: scheduler
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  load-balancer:
+    image: nginx:1.27-alpine
+    ports:
+      - "${DW_SMALL_CLUSTER_LB_PORT:-18086}:8080"
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        cat >/etc/nginx/conf.d/default.conf <<'NGINX'
+        upstream durable_workflow_api {
+          server server-a:8080;
+          server server-b:8080;
+        }
+
+        server {
+          listen 8080;
+
+          location / {
+            proxy_http_version 1.1;
+            proxy_set_header Host $$host;
+            proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+            proxy_pass http://durable_workflow_api;
+          }
+        }
+        NGINX
+        exec nginx -g 'daemon off;'
+    depends_on:
+      server-a:
+        condition: service_healthy
+      server-b:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:${MYSQL_VERSION:-8.0}
+    profiles: ["mysql"]
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE:-durable_workflow}
+      MYSQL_USER: ${DB_USERNAME:-workflow}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-workflow}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root}
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  pgsql:
+    image: postgres:${POSTGRES_VERSION:-16-alpine}
+    profiles: ["pgsql"]
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-durable_workflow}
+      POSTGRES_USER: ${DB_USERNAME:-workflow}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-workflow}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:${REDIS_VERSION:-7-alpine}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

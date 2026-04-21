@@ -1,8 +1,9 @@
 # Small Cluster Validation
 
-This note records the Phase 0 decision for non-Kubernetes clustered Durable
-Workflow Server deployments. It is a validation outcome, not the full supported
-cluster harness.
+This note records the Phase 0 decision and CI harness shape for non-Kubernetes
+clustered Durable Workflow Server deployments. The harness is intentionally
+narrow: it validates the first boring topology without broad HA, rolling
+upgrade, Kubernetes, or provider-failover promises.
 
 ## Decision
 
@@ -57,25 +58,29 @@ database and Redis state during a rolling deploy. The first contract should
 require draining workers, stopping scheduler/maintenance, replacing API nodes,
 running bootstrap or migrations, then starting workers and scheduler again.
 
-## Proceed Criteria For The Next Phase
+## CI Harness
 
-The next phase can build the supported harness if it proves exactly this shape:
+`docker-compose.small-cluster.yml` and `scripts/smoke-small-cluster.sh` validate
+the first supported shape in CI. The smoke runs once with MySQL and once with
+PostgreSQL. Each run starts:
 
-- one MySQL-backed small cluster;
-- one PostgreSQL-backed small cluster;
-- 2 API nodes behind a load balancer;
+- 2 API nodes behind an nginx load balancer;
 - one bootstrap or migration job;
 - one scheduler or maintenance runner;
-- shared Redis;
-- at least one external worker registration through the load balancer;
-- `/api/health`, `/api/ready`, and `/api/cluster/info` through the load
-  balancer;
-- a worker poll and completion path that can cross API nodes without sticky
-  sessions.
+- shared Redis for cache and queue state;
+- either MySQL or PostgreSQL as the shared durable database.
 
-The harness should be boring Docker Compose or an equivalent CI topology. It
-should avoid provider-specific orchestration and should not imply Helm,
-Kubernetes, multi-region, automated database failover, or SLA-grade HA.
+The smoke checks `/api/health`, `/api/ready`, and `/api/cluster/info` through
+the load balancer, registers an external worker through the load balancer,
+starts a workflow through the load balancer, polls the workflow task from
+`server-a`, completes the leased task through `server-b`, and verifies the run
+through the load balancer. That direct node split is deliberate: it proves
+worker lease and completion state survives API-node crossing without sticky
+sessions.
+
+The harness remains boring Docker Compose. It avoids provider-specific
+orchestration and does not imply Helm, Kubernetes, multi-region, automated
+database failover, rolling upgrades, or SLA-grade HA.
 
 ## Unsupported Until Proven
 

@@ -44,6 +44,55 @@ class SmallClusterContractTest extends TestCase
         }
     }
 
+    public function test_compose_harness_proves_the_narrow_cluster_shape(): void
+    {
+        $compose = $this->read('docker-compose.small-cluster.yml');
+        $script = $this->read('scripts/smoke-small-cluster.sh');
+        $workflow = $this->read('.github/workflows/small-cluster.yml');
+
+        foreach ([
+            'server-a:',
+            'server-b:',
+            'load-balancer:',
+            'bootstrap:',
+            'scheduler:',
+            'redis:',
+            'mysql:',
+            'pgsql:',
+            'DW_SERVER_ID: server-a',
+            'DW_SERVER_ID: server-b',
+            'CACHE_STORE: redis',
+            'QUEUE_CONNECTION: redis',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $compose);
+        }
+
+        foreach ([
+            'DW_SMALL_CLUSTER_DATABASES:-mysql,pgsql',
+            '/api/health',
+            '/api/ready',
+            '/api/cluster/info',
+            '/api/worker/register',
+            '/api/workflows',
+            '/api/worker/workflow-tasks/poll',
+            '/api/worker/workflow-tasks/${task_id}/complete',
+            'server_a_port',
+            'server_b_port',
+            'Small cluster smoke passed',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $script);
+        }
+
+        foreach ([
+            'name: Small Cluster Smoke',
+            'scripts/smoke-small-cluster.sh',
+            'docker-compose.small-cluster.yml',
+            'DW_SMALL_CLUSTER_DATABASES',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $workflow);
+        }
+    }
+
     private function read(string $path): string
     {
         $source = file_get_contents(dirname(__DIR__, 2).'/'.$path);

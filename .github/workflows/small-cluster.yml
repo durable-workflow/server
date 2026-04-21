@@ -1,0 +1,65 @@
+name: Small Cluster Smoke
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/small-cluster.yml"
+      - "Dockerfile"
+      - "docker-compose.small-cluster.yml"
+      - "docker/**"
+      - "app/**"
+      - "bootstrap/**"
+      - "config/**"
+      - "database/**"
+      - "routes/**"
+      - "scripts/smoke-small-cluster.sh"
+      - "composer.json"
+      - "composer.lock"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/small-cluster.yml"
+      - "Dockerfile"
+      - "docker-compose.small-cluster.yml"
+      - "docker/**"
+      - "app/**"
+      - "bootstrap/**"
+      - "config/**"
+      - "database/**"
+      - "routes/**"
+      - "scripts/smoke-small-cluster.sh"
+      - "composer.json"
+      - "composer.lock"
+  workflow_dispatch:
+    inputs:
+      databases:
+        description: "Comma-separated database backends to validate"
+        required: false
+        default: "mysql,pgsql"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: small-cluster-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: MySQL/PostgreSQL small cluster
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout server
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Run small cluster smoke
+        env:
+          DW_SMALL_CLUSTER_DATABASES: ${{ github.event_name == 'workflow_dispatch' && inputs.databases || 'mysql,pgsql' }}
+          DW_SMALL_CLUSTER_IMAGE: durable-workflow/server-small-cluster:${{ github.run_id }}-${{ github.run_attempt }}
+        run: scripts/smoke-small-cluster.sh

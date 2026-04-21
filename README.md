@@ -182,16 +182,20 @@ worker/admin tokens with backward-compatible auth disabled.
 
 ### Small Cluster Status
 
-Small clustered deployments without Kubernetes are being validated as a narrow
-public support boundary, not as a general HA promise. The current decision is to
-proceed toward one boring topology: 2 or 3 API nodes behind a stateless load
-balancer, external MySQL or PostgreSQL, shared Redis, independently scaled
-external workers, and exactly one scheduler or maintenance runner. SQLite,
+Small clustered deployments without Kubernetes are validated as a narrow public
+support boundary, not as a general HA promise. The current supported shape uses
+external MySQL or PostgreSQL plus 2 or 3 API nodes behind a stateless load
+balancer, shared Redis, and independently scaled external workers. The first
+contract requires exactly one scheduler or maintenance runner. SQLite,
 Redis-less multi-node mode, duplicate schedulers, rolling upgrades, multi-region
 deployments, Helm charts, and provider-specific failover semantics are not part
 of that first contract.
 
-The Phase 0 rationale and the next harness requirements live in
+The CI harness in `docker-compose.small-cluster.yml` runs the MySQL and
+PostgreSQL variants with two API nodes, one bootstrap job, one scheduler, shared
+Redis, load-balanced health/readiness/cluster-info checks, external worker
+registration, and a workflow-task poll on one API node followed by completion
+on the other. The Phase 0 rationale and harness details live in
 [`docs/small-cluster-validation.md`](docs/small-cluster-validation.md).
 
 ### Docker Compose
