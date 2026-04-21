@@ -210,6 +210,15 @@ return [
             'suppression' => 'No labels are exposed.',
         ],
 
+        'dw_perf_redis_server_keys' => [
+            'owner' => 'scripts/perf/server_soak.py',
+            'surface' => 'Perf harness /metrics scrape; optional remote_write.',
+            'dimensions' => [],
+            'cardinality' => 'single gauge series per soak run.',
+            'selection' => 'latest sampled Redis keys matching the server-owned cache namespace pattern.',
+            'suppression' => 'No labels are exposed.',
+        ],
+
         'dw_perf_redis_db_keys' => [
             'owner' => 'scripts/perf/server_soak.py',
             'surface' => 'Perf harness /metrics scrape; optional remote_write.',

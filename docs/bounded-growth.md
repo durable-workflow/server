@@ -52,6 +52,7 @@ added without a TTL, admission, or cardinality contract.
 | `dw_perf_server_memory_bytes` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |
 | `dw_perf_redis_memory_bytes` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |
 | `dw_perf_redis_polling_keys` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |
+| `dw_perf_redis_server_keys` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. Counts all Redis keys in the server-owned `server:*` cache namespace, not only the workflow-task polling subset. |
 | `dw_perf_redis_db_keys` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |
 | `dw_perf_assertion_failed` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |
 
@@ -82,9 +83,9 @@ service logs under `build/perf/`. A trusted bounded-growth run must include:
 
 - enough periodic samples to cover at least `DW_PERF_MIN_SAMPLE_COVERAGE`
   (default 80%) of the configured duration/sample-interval window;
-- the maximum server memory, Redis key counts, final drain counts, and, for
-  runs of at least 10 minutes, the post-warmup memory slope when a slope limit
-  is configured;
+- the maximum server memory, Redis key counts, server-owned `server:*` cache
+  key counts, final drain counts, and, for runs of at least 10 minutes, the
+  post-warmup memory slope when a slope limit is configured;
 - GitHub/runner provenance in `summary.json` (`GITHUB_SHA`, `GITHUB_RUN_ID`,
   runner name/OS/arch, Compose project, and the tested base URL when present);
 - the SHA-256 digest of `config/dw-bounded-growth.php` so the artifact can be

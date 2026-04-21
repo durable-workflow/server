@@ -41,6 +41,7 @@ class Metrics:
             "redis_memory_bytes": 0,
             "redis_db_keys": 0,
             "redis_polling_keys": 0,
+            "redis_server_keys": 0,
             "assertion_failed": 0,
         }
 
@@ -60,6 +61,7 @@ class Metrics:
             self.latest["redis_memory_bytes"] = int(sample.get("redis_used_memory_bytes") or 0)
             self.latest["redis_db_keys"] = int(sample.get("redis_db_keys") or 0)
             self.latest["redis_polling_keys"] = int(sample.get("redis_polling_keys") or 0)
+            self.latest["redis_server_keys"] = int(sample.get("redis_server_keys") or 0)
 
     def mark_assertion_failed(self) -> None:
         with self.lock:
@@ -92,6 +94,9 @@ class Metrics:
                     "# HELP dw_perf_redis_polling_keys Redis keys matching the polling cache pattern.",
                     "# TYPE dw_perf_redis_polling_keys gauge",
                     f"dw_perf_redis_polling_keys {self.latest['redis_polling_keys']}",
+                    "# HELP dw_perf_redis_server_keys Redis keys owned by the Durable Workflow server cache namespace.",
+                    "# TYPE dw_perf_redis_server_keys gauge",
+                    f"dw_perf_redis_server_keys {self.latest['redis_server_keys']}",
                     "# HELP dw_perf_redis_db_keys Redis DBSIZE count.",
                     "# TYPE dw_perf_redis_db_keys gauge",
                     f"dw_perf_redis_db_keys {self.latest['redis_db_keys']}",
@@ -142,6 +147,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-server-memory-mb", type=float, default=float(os.environ.get("DW_PERF_MAX_SERVER_MEMORY_MB", "768")))
     parser.add_argument("--max-polling-keys", type=int, default=int(os.environ.get("DW_PERF_MAX_POLLING_KEYS", "512")))
     parser.add_argument("--max-final-polling-keys", type=int, default=int(os.environ.get("DW_PERF_MAX_FINAL_POLLING_KEYS", "0")))
+    parser.add_argument(
+        "--max-server-cache-keys",
+        type=int,
+        default=int(os.environ.get("DW_PERF_MAX_SERVER_CACHE_KEYS", "1024")),
+        help="Maximum server:* cache keys observed during the run.",
+    )
+    parser.add_argument(
+        "--max-final-server-cache-keys",
+        type=int,
+        default=int(os.environ.get("DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS", "0")),
+        help="Maximum server:* cache keys allowed after the drain window.",
+    )
     parser.add_argument(
         "--min-sample-coverage",
         type=float,
@@ -331,6 +348,7 @@ def redis_info(project: str) -> dict[str, int]:
     used_memory = 0
     db_keys = 0
     polling_keys = 0
+    server_keys = 0
 
     info = run_command(compose_command(project, "exec", "-T", "redis", "redis-cli", "INFO", "memory"))
     for line in info.stdout.splitlines():
@@ -360,10 +378,27 @@ def redis_info(project: str) -> dict[str, int]:
     except ValueError:
         polling_keys = 0
 
+    server_count = run_command(
+        compose_command(
+            project,
+            "exec",
+            "-T",
+            "redis",
+            "sh",
+            "-lc",
+            "redis-cli --scan --pattern '*server:*' | wc -l",
+        )
+    )
+    try:
+        server_keys = int(server_count.stdout.strip() or "0")
+    except ValueError:
+        server_keys = 0
+
     return {
         "redis_used_memory_bytes": used_memory,
         "redis_db_keys": db_keys,
         "redis_polling_keys": polling_keys,
+        "redis_server_keys": server_keys,
     }
 
 
@@ -569,9 +604,11 @@ def main() -> int:
 
         max_server_memory_bytes = max((int(row.get("server_memory_bytes") or 0) for row in samples), default=0)
         max_pattern_polling_keys = max((int(row.get("redis_polling_keys") or 0) for row in samples), default=0)
+        max_server_cache_keys = max((int(row.get("redis_server_keys") or 0) for row in samples), default=0)
         max_redis_db_keys = max((int(row.get("redis_db_keys") or 0) for row in samples), default=0)
         max_polling_keys = max(max_pattern_polling_keys, max_redis_db_keys)
         final_pattern_polling_keys = int(final_sample.get("redis_polling_keys") or 0)
+        final_server_cache_keys = int(final_sample.get("redis_server_keys") or 0)
         final_redis_db_keys = int(final_sample.get("redis_db_keys") or 0)
         final_polling_keys = max(final_pattern_polling_keys, final_redis_db_keys)
         slope = memory_slope_mb_hour(samples) if args.duration_seconds >= 600 else None
@@ -597,15 +634,19 @@ def main() -> int:
             "max_server_memory_mb": round(max_server_memory_bytes / (1024 * 1024), 2),
             "max_polling_keys": max_polling_keys,
             "max_polling_pattern_keys": max_pattern_polling_keys,
+            "max_server_cache_keys": max_server_cache_keys,
             "max_redis_db_keys": max_redis_db_keys,
             "final_polling_keys": final_polling_keys,
             "final_polling_pattern_keys": final_pattern_polling_keys,
+            "final_server_cache_keys": final_server_cache_keys,
             "final_redis_db_keys": final_redis_db_keys,
             "server_memory_slope_mb_hour": None if slope is None else round(slope, 2),
             "assertions": {
                 "max_server_memory_mb": args.max_server_memory_mb,
                 "max_polling_keys": args.max_polling_keys,
                 "max_final_polling_keys": args.max_final_polling_keys,
+                "max_server_cache_keys": args.max_server_cache_keys,
+                "max_final_server_cache_keys": args.max_final_server_cache_keys,
                 "max_server_memory_slope_mb_hour": args.max_server_memory_slope_mb_hour,
                 "min_sample_coverage": args.min_sample_coverage,
             },
@@ -632,6 +673,16 @@ def main() -> int:
             failures.append(
                 f"polling cache keys did not drain to {args.max_final_polling_keys} "
                 f"(observed {final_polling_keys})"
+            )
+        if max_server_cache_keys > args.max_server_cache_keys:
+            failures.append(
+                f"server cache keys exceeded {args.max_server_cache_keys} "
+                f"(observed {max_server_cache_keys})"
+            )
+        if final_server_cache_keys > args.max_final_server_cache_keys:
+            failures.append(
+                f"server cache keys did not drain to {args.max_final_server_cache_keys} "
+                f"(observed {final_server_cache_keys})"
             )
         if (
             slope is not None
