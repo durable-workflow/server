@@ -54,8 +54,23 @@ cache default is intentionally scoped to the one-container SQLite quickstart.
 ### Official Image + Compose
 
 Use this path when you want a source-free multi-container stack backed by MySQL
-and Redis. Pin `DW_SERVER_TAG` to a published `durableworkflow/server` tag, or
-set `DW_SERVER_IMAGE` to a registry reference with a digest.
+and Redis. The same Compose file supports local development and single-node
+production; the difference is the environment you provide and the operational
+care around persistence, backups, and upgrades.
+
+Image selection:
+
+- `DW_SERVER_TAG=0.2` pulls `durableworkflow/server:0.2` from Docker Hub.
+- `DW_SERVER_IMAGE=ghcr.io/durable-workflow/server:0.2` pulls the same release
+  line from GitHub Container Registry.
+- `DW_SERVER_IMAGE=durableworkflow/server@sha256:...` pins an exact image
+  digest for production change control.
+
+#### Local Development Compose
+
+This recipe is for one developer machine or internal non-production testing. It
+uses the default MySQL/Redis volumes, exposes only the API port, and allows the
+single `DW_AUTH_TOKEN` compatibility token for quick verification.
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/durable-workflow/server/main/docker-compose.published.yml
@@ -64,7 +79,11 @@ export DW_SERVER_TAG=0.2
 export DW_AUTH_TOKEN=dev-token
 
 docker compose -f docker-compose.published.yml up -d --wait
+```
 
+Verify health, readiness, cluster discovery, and worker registration:
+
+```bash
 curl http://localhost:8080/api/health
 curl http://localhost:8080/api/ready
 curl -H "Authorization: Bearer $DW_AUTH_TOKEN" \
@@ -78,12 +97,83 @@ curl -X POST http://localhost:8080/api/worker/register \
   -d '{"worker_id":"compose-worker","task_queue":"compose","runtime":"python"}'
 ```
 
-For non-local deployments, set role-specific auth tokens, database passwords,
-and an exact image tag or digest before starting the stack. The image generates
-an internal runtime key automatically; set `DW_SERVER_KEY` only if your
-deployment needs that key to remain stable across container replacement. The
-published-image Compose file exposes only the API port by default; MySQL and
-Redis stay internal to the Compose project.
+#### Single-Node Production Compose
+
+This recipe is for a small self-hosted deployment on one Docker host. It keeps
+MySQL, Redis, and server storage in named volumes, exposes only the API port,
+and expects role-scoped credentials plus an exact image tag or digest.
+
+Create a production env file outside source control:
+
+```env
+DW_SERVER_IMAGE=durableworkflow/server:0.2
+SERVER_PORT=8080
+APP_ENV=production
+APP_DEBUG=false
+
+DB_DATABASE=durable_workflow
+DB_USERNAME=workflow
+DB_PASSWORD=replace-with-random-password
+DB_ROOT_PASSWORD=replace-with-random-root-password
+
+DW_AUTH_DRIVER=token
+DW_AUTH_BACKWARD_COMPATIBLE=false
+DW_WORKER_TOKEN=replace-with-worker-token
+DW_OPERATOR_TOKEN=replace-with-operator-token
+DW_ADMIN_TOKEN=replace-with-admin-token
+```
+
+Start the stack and run the same readiness checks:
+
+```bash
+docker compose --env-file durable-workflow.prod.env \
+  -f docker-compose.published.yml up -d --wait
+
+curl http://localhost:8080/api/health
+curl http://localhost:8080/api/ready
+curl -H "Authorization: Bearer $(grep '^DW_ADMIN_TOKEN=' durable-workflow.prod.env | cut -d= -f2-)" \
+  http://localhost:8080/api/cluster/info
+```
+
+Register workers with `DW_WORKER_TOKEN` and send operator traffic with
+`DW_OPERATOR_TOKEN`. Put TLS, request logging, and public routing in a reverse
+proxy in front of the API container; do not expose the MySQL or Redis services.
+
+Persistence and backups:
+
+- `mysql_data` is the durable workflow state. Back it up before every image
+  upgrade and on a regular schedule.
+- `redis_data` contains queue/cache state. Preserve it for graceful restarts;
+  MySQL remains the source of truth for workflow history.
+- Keep a copy of the exact env file and image reference with each backup so a
+  restore uses the same auth, database, and image contract.
+
+Backup and restore examples:
+
+```bash
+docker compose --env-file durable-workflow.prod.env \
+  -f docker-compose.published.yml exec -T mysql \
+  sh -lc 'mysqldump -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"' \
+  > durable-workflow-$(date +%Y%m%d%H%M%S).sql
+
+docker compose --env-file durable-workflow.prod.env \
+  -f docker-compose.published.yml exec -T mysql \
+  sh -lc 'mysql -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"' \
+  < durable-workflow-backup.sql
+```
+
+Upgrade order:
+
+1. Back up MySQL and record the current image reference.
+2. Change only `DW_SERVER_IMAGE` or `DW_SERVER_TAG` in the env file.
+3. Run `docker compose --env-file durable-workflow.prod.env -f docker-compose.published.yml pull`.
+4. Run `docker compose --env-file durable-workflow.prod.env -f docker-compose.published.yml up -d --wait`.
+5. Confirm `/api/ready`, `/api/cluster/info`, and worker registration before
+   shifting external traffic.
+
+The image generates an internal runtime key automatically. Set `DW_SERVER_KEY`
+only if your deployment needs that key to remain stable across container
+replacement.
 
 ### Docker Compose
 
