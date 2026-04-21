@@ -663,6 +663,13 @@ or `run_terminated`. The response also includes `run_closed_reason` and
 `run_closed_at` from the durable run so external workers can log the exact
 closure state that stopped their leased task.
 
+Start-boundary command ordering is part of the worker replay contract. When a
+signal or update is accepted after the run is persisted but before the first
+workflow task is polled, the server still records and returns `WorkflowStarted`
+before `SignalReceived` or `UpdateAccepted`. SDK workers can initialize workflow
+state before applying command handlers during replay; commands sent before a
+workflow ID is bound remain rejected as `instance_not_found`.
+
 Activity task polling returns a leased attempt identity. Clients must echo both
 `activity_attempt_id` and `lease_owner` on activity `complete`, `fail`, and
 `heartbeat` calls. When the activity execution has timeout deadlines configured,
