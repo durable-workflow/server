@@ -23,6 +23,7 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\WorkflowStub;
@@ -1442,6 +1443,140 @@ class WorkerProtocolSuccessContractTest extends TestCase
         } finally {
             Carbon::setTestNow();
         }
+    }
+
+    public function test_signal_resume_completion_records_condition_wait_satisfied_event(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.interactive-command-workflow' => InteractiveCommandWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-condition-signal-contract',
+            'workflow_type' => 'tests.interactive-command-workflow',
+            'task_queue' => 'contract-queue',
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->registerWorker(
+            workerId: 'worker-condition-signal-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.interactive-command-workflow'],
+        );
+
+        $openPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-condition-signal-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($openPoll)
+            ->assertJsonPath('task.workflow_id', 'wf-worker-condition-signal-contract')
+            ->assertJsonPath('task.run_id', $runId);
+
+        $openTaskId = (string) $openPoll->json('task.task_id');
+        $openAttempt = (int) $openPoll->json('task.workflow_task_attempt');
+        $openLeaseOwner = (string) $openPoll->json('task.lease_owner');
+
+        $open = $this->postJson("/api/worker/workflow-tasks/{$openTaskId}/complete", [
+            'lease_owner' => $openLeaseOwner,
+            'workflow_task_attempt' => $openAttempt,
+            'commands' => [
+                [
+                    'type' => 'open_condition_wait',
+                    'condition_key' => 'approval.ready',
+                    'condition_definition_fingerprint' => 'condition-fp-1',
+                    'timeout_seconds' => 60,
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($open)
+            ->assertJsonPath('run_status', 'waiting');
+
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'ConditionWaitOpened')
+            ->firstOrFail();
+        $timer = WorkflowTimer::query()
+            ->where('workflow_run_id', $runId)
+            ->firstOrFail();
+        $timerTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', 'timer')
+            ->firstOrFail();
+        $conditionWaitId = $opened->payload['condition_wait_id'] ?? null;
+
+        $this->assertIsString($conditionWaitId);
+        $this->assertSame('pending', $timer->status->value);
+        $this->assertSame('ready', $timerTask->status->value);
+
+        $signal = $this->postJson('/api/workflows/wf-worker-condition-signal-contract/signal/advance', [
+            'input' => ['Ada'],
+            'request_id' => 'condition-signal-1',
+        ], $this->apiHeaders());
+
+        $signal->assertAccepted()
+            ->assertJsonPath('signal_name', 'advance')
+            ->assertJsonPath('outcome', 'signal_received');
+
+        $signalRecord = WorkflowSignal::query()
+            ->where('workflow_run_id', $runId)
+            ->where('signal_name', 'advance')
+            ->sole();
+        $signalId = (string) $signalRecord->id;
+
+        $resumePoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-condition-signal-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($resumePoll)
+            ->assertJsonPath('task.workflow_wait_kind', 'signal')
+            ->assertJsonPath('task.resume_source_kind', 'workflow_signal')
+            ->assertJsonPath('task.workflow_signal_id', $signalId)
+            ->assertJsonPath('task.signal_name', 'advance');
+
+        $resumeTaskId = (string) $resumePoll->json('task.task_id');
+        $resumeAttempt = (int) $resumePoll->json('task.workflow_task_attempt');
+        $resumeLeaseOwner = (string) $resumePoll->json('task.lease_owner');
+
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$resumeTaskId}/complete", [
+            'lease_owner' => $resumeLeaseOwner,
+            'workflow_task_attempt' => $resumeAttempt,
+            'commands' => [
+                [
+                    'type' => 'complete_workflow',
+                    'result' => Serializer::serialize(['approved' => true]),
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('run_status', 'completed');
+
+        $satisfied = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', 'ConditionWaitSatisfied')
+            ->firstOrFail();
+
+        $this->assertSame($conditionWaitId, $satisfied->payload['condition_wait_id'] ?? null);
+        $this->assertSame('approval.ready', $satisfied->payload['condition_key'] ?? null);
+        $this->assertSame('condition-fp-1', $satisfied->payload['condition_definition_fingerprint'] ?? null);
+        $this->assertSame($timer->id, $satisfied->payload['timer_id'] ?? null);
+        $this->assertSame(60, $satisfied->payload['timeout_seconds'] ?? null);
+        $this->assertSame($signalId, $satisfied->payload['workflow_signal_id'] ?? null);
+        $this->assertSame('advance', $satisfied->payload['signal_name'] ?? null);
+
+        $timer->refresh();
+        $timerTask->refresh();
+
+        $this->assertSame('cancelled', $timer->status->value);
+        $this->assertSame('cancelled', $timerTask->status->value);
     }
 
     public function test_marker_and_search_attribute_commands_use_worker_protocol_contract(): void

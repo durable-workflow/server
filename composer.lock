@@ -509,7 +509,7 @@
             "dist": {
                 "type": "path",
                 "url": "/workflow",
-                "reference": "b2396c579e33eb0eb168a433a9f4169be37485d7"
+                "reference": "9df1fd0a71480233d2be3ef162e3dfde92102d5f"
             },
             "require": {
                 "apache/avro": "^1.12",
@@ -8475,5 +8475,5 @@
     "platform-overrides": {
         "php": "8.3.30"
     },
-    "plugin-api-version": "2.6.0"
+    "plugin-api-version": "2.9.0"
 }
