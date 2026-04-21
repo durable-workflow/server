@@ -10,7 +10,7 @@ services:
     environment:
       APP_NAME: "Durable Workflow Server"
       APP_ENV: local
-      APP_KEY: "${APP_KEY}"
+      DW_SERVER_KEY: "${DW_SERVER_KEY:-}"
       APP_VERSION: "${APP_VERSION:-2.0.0}"
       APP_DEBUG: "false"
       DB_CONNECTION: mysql
@@ -48,7 +48,7 @@ services:
     environment:
       APP_NAME: "Durable Workflow Server"
       APP_ENV: local
-      APP_KEY: "${APP_KEY}"
+      DW_SERVER_KEY: "${DW_SERVER_KEY:-}"
       APP_VERSION: "${APP_VERSION:-2.0.0}"
       APP_DEBUG: "false"
       DB_CONNECTION: mysql
@@ -92,7 +92,7 @@ services:
     environment:
       APP_NAME: "Durable Workflow Server"
       APP_ENV: local
-      APP_KEY: "${APP_KEY}"
+      DW_SERVER_KEY: "${DW_SERVER_KEY:-}"
       APP_VERSION: "${APP_VERSION:-2.0.0}"
       DB_CONNECTION: mysql
       DB_HOST: mysql
@@ -130,7 +130,7 @@ services:
     environment:
       APP_NAME: "Durable Workflow Server"
       APP_ENV: local
-      APP_KEY: "${APP_KEY}"
+      DW_SERVER_KEY: "${DW_SERVER_KEY:-}"
       APP_VERSION: "${APP_VERSION:-2.0.0}"
       DB_CONNECTION: mysql
       DB_HOST: mysql

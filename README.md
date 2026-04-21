@@ -62,7 +62,6 @@ curl -fsSLO https://raw.githubusercontent.com/durable-workflow/server/main/docke
 
 export DW_SERVER_TAG=0.2
 export DW_AUTH_TOKEN=dev-token
-export APP_KEY=base64:ZHVyYWJsZS13b3JrZmxvdy1zZXJ2ZXItZGV2LWtleSE=
 
 docker compose -f docker-compose.published.yml up -d --wait
 
@@ -79,10 +78,12 @@ curl -X POST http://localhost:8080/api/worker/register \
   -d '{"worker_id":"compose-worker","task_queue":"compose","runtime":"python"}'
 ```
 
-For non-local deployments, set a unique `APP_KEY`, role-specific auth tokens,
-database passwords, and an exact image tag or digest before starting the stack.
-The published-image Compose file exposes only the API port by default; MySQL
-and Redis stay internal to the Compose project.
+For non-local deployments, set role-specific auth tokens, database passwords,
+and an exact image tag or digest before starting the stack. The image generates
+an internal runtime key automatically; set `DW_SERVER_KEY` only if your
+deployment needs that key to remain stable across container replacement. The
+published-image Compose file exposes only the API port by default; MySQL and
+Redis stay internal to the Compose project.
 
 ### Docker Compose
 
@@ -833,6 +834,7 @@ every operator-facing variable the server honors.
 | --- | --- | --- |
 | `DW_MODE` | `service` | Server mode: "service" (external workers poll) or "embedded" (local queue). |
 | `DW_SERVER_ID` | `gethostname()` | Unique identifier for this server instance. |
+| `DW_SERVER_KEY` | generated at container boot | Optional server-internal runtime key. |
 | `DW_DEFAULT_NAMESPACE` | `default` | Namespace used when a request omits the namespace header. |
 | `DW_TASK_DISPATCH_MODE` | (unset) | Override for `workflows.v2.task_dispatch_mode`. Set to `queue` to dispatch locally in service mode. |
 | `DW_AUTH_PROVIDER` | (unset) | Optional FQCN implementing `App\Contracts\AuthProvider`; unset uses the built-in driver. |

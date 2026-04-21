@@ -16,9 +16,9 @@ PROMETHEUS_CONFIG_DIR=""
 
 mkdir -p "$ARTIFACT_DIR"
 
-if [ -z "${APP_KEY:-}" ]; then
-  APP_KEY="base64:$(openssl rand -base64 32)"
-  export APP_KEY
+if [ -z "${DW_SERVER_KEY:-}" ]; then
+  DW_SERVER_KEY="base64:$(openssl rand -base64 32)"
+  export DW_SERVER_KEY
 fi
 
 export APP_VERSION="${APP_VERSION:-2.0.0-perf}"

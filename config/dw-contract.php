@@ -26,10 +26,9 @@
 |      and `k8s/secret.yaml` via `tests/Unit/EnvContractTest.php` so the
 |      three surfaces cannot drift.
 |
-| Unprefixed Laravel framework env vars (APP_KEY, DB_*, REDIS_*, etc.) are
-| not operator-facing DW config — they are Laravel framework controls —
-| and are listed in `framework` purely so the audit does not warn about
-| them.
+| Non-DW runtime env vars (DB_*, REDIS_*, etc.) are infrastructure/runtime
+| controls, not operator-facing DW config. They are listed in `framework`
+| purely so the audit does not warn about them.
 |
 */
 
@@ -66,6 +65,11 @@ return [
             'default' => 'gethostname()',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_ID',
+        ],
+        'DW_SERVER_KEY' => [
+            'description' => 'Optional server-internal runtime key. Docker images generate one automatically when unset.',
+            'default' => 'generated at container boot',
+            'since' => '2.0.0',
         ],
         'DW_DEFAULT_NAMESPACE' => [
             'description' => 'Namespace used when a request does not carry the Durable-Workflow-Namespace header.',
@@ -649,7 +653,7 @@ return [
 
     /*
     | ----------------------------------------------------------------------
-    | Laravel framework env vars
+    | Runtime/framework env vars
     | ----------------------------------------------------------------------
     |
     | These are not DW_* operator controls but the audit recognizes them so
