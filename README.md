@@ -369,9 +369,10 @@ run-targeted command routes project the URL `run_id` in the response and
 `control_plane.run_id` so clients can distinguish instance-level commands from
 explicit selected-run commands.
 
-Only `GET /api/health` and `GET /api/cluster/info` are exempt — those two
-endpoints are intentionally version-free so clients can probe liveness and
-discover the supported control-plane version before adopting it.
+Only `GET /api/health`, `GET /api/ready`, and `GET /api/cluster/info` are
+exempt. They are intentionally version-free so probes can check liveness and
+readiness, and clients can discover the supported control-plane version before
+adopting it.
 
 Workflow control-plane responses, including run-history listing responses, also
 publish a nested, independently versioned `control_plane.contract` boundary
@@ -529,8 +530,8 @@ Requests that name a namespace which is not registered receive a `404` with
 `reason: "namespace_not_found"`; register the namespace via
 `POST /api/namespaces` before directing traffic to it. The namespace
 administration endpoints (`/api/namespaces/**`), cluster discovery
-(`/api/cluster/info`), and the unauthenticated `/api/health` probe are exempt
-from this check.
+(`/api/cluster/info`), and the unauthenticated `/api/health` and `/api/ready`
+probes are exempt from this check.
 
 ### Token Authentication
 
