@@ -13,9 +13,11 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 env:
-  IMAGE: durableworkflow/server
+  DOCKERHUB_IMAGE: durableworkflow/server
+  GHCR_IMAGE: ghcr.io/durable-workflow/server
 
 jobs:
   publish:
@@ -36,16 +38,29 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Extract image metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.IMAGE }}
+          images: |
+            ${{ env.DOCKERHUB_IMAGE }}
+            ${{ env.GHCR_IMAGE }}
           # On a release tag like 0.1.0, produces tags:
           #   durableworkflow/server:0.1.0
           #   durableworkflow/server:0.1
           #   durableworkflow/server:0
           #   durableworkflow/server:latest
+          #   ghcr.io/durable-workflow/server:0.1.0
+          #   ghcr.io/durable-workflow/server:0.1
+          #   ghcr.io/durable-workflow/server:0
+          #   ghcr.io/durable-workflow/server:latest
           # workflow_dispatch with an input uses that as a single tag.
           tags: |
             type=semver,pattern={{version}}
