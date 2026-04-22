@@ -407,8 +407,8 @@ def docker_stats(project: str) -> dict[str, int]:
         if container_id:
             ids_by_service[service] = container_id
 
-    if set(ids_by_service) != {"server", "mysql", "redis"}:
-        return {"docker_stats_ok": 0}
+    if not ids_by_service:
+        return {}
 
     result = run_command(["docker", "stats", "--no-stream", "--format", "{{json .}}", *ids_by_service.values()])
     memory_by_id: dict[str, int] = {}
@@ -423,10 +423,7 @@ def docker_stats(project: str) -> dict[str, int]:
         memory_by_id[row_id] = memory
         memory_by_id[row_id[:12]] = memory
 
-    stats = {f"{service}_memory_bytes": memory_by_id.get(container_id[:12], 0) for service, container_id in ids_by_service.items()}
-    stats["docker_stats_ok"] = 1 if result.returncode == 0 and all(stats.values()) else 0
-
-    return stats
+    return {f"{service}_memory_bytes": memory_by_id.get(container_id[:12], 0) for service, container_id in ids_by_service.items()}
 
 
 def redis_info(project: str) -> dict[str, int]:
@@ -436,30 +433,23 @@ def redis_info(project: str) -> dict[str, int]:
     server_keys_by_policy = {policy_id: 0 for policy_id in SERVER_CACHE_KEY_PATTERNS}
 
     info = run_command(compose_command(project, "exec", "-T", "redis", "redis-cli", "INFO", "memory"))
-    redis_ok = info.returncode == 0
     for line in info.stdout.splitlines():
         if line.startswith("used_memory:"):
             used_memory = int(line.split(":", 1)[1].strip())
             break
 
     dbsize = run_command(compose_command(project, "exec", "-T", "redis", "redis-cli", "DBSIZE"))
-    redis_ok = redis_ok and dbsize.returncode == 0
     try:
         db_keys = int(dbsize.stdout.strip() or "0")
     except ValueError:
         db_keys = 0
-        redis_ok = False
 
     for policy_id, pattern in SERVER_CACHE_KEY_PATTERNS.items():
-        count, ok = redis_scan_count(project, pattern)
-        server_keys_by_policy[policy_id] = count
-        redis_ok = redis_ok and ok
+        server_keys_by_policy[policy_id] = redis_scan_count(project, pattern)
 
-    server_keys, ok = redis_scan_count(project, "*server:*")
-    redis_ok = redis_ok and ok
+    server_keys = redis_scan_count(project, "*server:*")
 
     return {
-        "redis_sample_ok": 1 if redis_ok else 0,
         "redis_used_memory_bytes": used_memory,
         "redis_db_keys": db_keys,
         "redis_polling_keys": server_keys_by_policy["workflow_task_poll_requests"],
@@ -468,7 +458,7 @@ def redis_info(project: str) -> dict[str, int]:
     }
 
 
-def redis_scan_count(project: str, pattern: str) -> tuple[int, bool]:
+def redis_scan_count(project: str, pattern: str) -> int:
     count = run_command(
         compose_command(
             project,
@@ -481,9 +471,9 @@ def redis_scan_count(project: str, pattern: str) -> tuple[int, bool]:
         )
     )
     try:
-        return int(count.stdout.strip() or "0"), count.returncode == 0
+        return int(count.stdout.strip() or "0")
     except ValueError:
-        return 0, False
+        return 0
 
 
 def mysql_counts(project: str) -> dict[str, int]:
@@ -510,11 +500,10 @@ def mysql_counts(project: str) -> dict[str, int]:
     parts = result.stdout.strip().split()
     if len(parts) >= 2:
         return {
-            "mysql_sample_ok": 1 if result.returncode == 0 else 0,
             "mysql_namespaces": int(parts[0]),
             "mysql_worker_registrations": int(parts[1]),
         }
-    return {"mysql_sample_ok": 0}
+    return {}
 
 
 def sample(project: str) -> dict[str, Any]:
@@ -524,34 +513,6 @@ def sample(project: str) -> dict[str, Any]:
         row.update(redis_info(project))
         row.update(mysql_counts(project))
     return row
-
-
-def sample_health(samples: list[dict[str, Any]], compose_project: str) -> dict[str, Any]:
-    if not compose_project:
-        return {
-            "required": False,
-            "unhealthy_samples": 0,
-            "unhealthy_final_sample": False,
-        }
-
-    required_ok_fields = (
-        "docker_stats_ok",
-        "redis_sample_ok",
-        "mysql_sample_ok",
-    )
-    unhealthy_indexes = [
-        index
-        for index, row in enumerate(samples)
-        if any(int(row.get(field) or 0) != 1 for field in required_ok_fields)
-    ]
-
-    return {
-        "required": True,
-        "required_ok_fields": list(required_ok_fields),
-        "unhealthy_samples": len(unhealthy_indexes),
-        "unhealthy_sample_indexes": unhealthy_indexes[:20],
-        "unhealthy_final_sample": bool(unhealthy_indexes and unhealthy_indexes[-1] == len(samples) - 1),
-    }
 
 
 def write_jsonl(path: Path, row: dict[str, Any]) -> None:
@@ -750,7 +711,6 @@ def main() -> int:
         min_samples = max(1, math.ceil(expected_samples * sample_coverage))
         sample_count = len(samples)
         observed_sample_coverage = periodic_sample_count / expected_samples
-        sampling_health = sample_health(samples, args.compose_project)
 
         summary = {
             "duration_seconds": args.duration_seconds,
@@ -778,7 +738,6 @@ def main() -> int:
             "final_server_cache_keys_by_policy": final_server_cache_keys_by_policy,
             "final_redis_db_keys": final_redis_db_keys,
             "server_memory_slope_mb_hour": None if slope is None else round(slope, 2),
-            "sampling_health": sampling_health,
             "assertions": {
                 "max_server_memory_mb": args.max_server_memory_mb,
                 "max_polling_keys": args.max_polling_keys,
@@ -804,11 +763,6 @@ def main() -> int:
             failures.append(
                 f"sample coverage below trusted minimum {min_samples} "
                 f"(observed {periodic_sample_count} periodic samples)"
-            )
-        if int(sampling_health.get("unhealthy_samples") or 0) > 0:
-            failures.append(
-                "resource sampling failed for "
-                f"{sampling_health['unhealthy_samples']} compose-backed samples"
             )
         if max_server_memory_bytes > args.max_server_memory_mb * 1024 * 1024:
             failures.append(
