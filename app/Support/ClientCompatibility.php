@@ -31,6 +31,10 @@ final class ClientCompatibility
                 'worker_protocol' => [
                     'version' => (string) config('server.worker_protocol.version', WorkerProtocol::VERSION),
                     'header' => WorkerProtocol::HEADER,
+                    'external_task_input_contract' => [
+                        'schema' => ExternalTaskInputContract::SCHEMA,
+                        'version' => ExternalTaskInputContract::VERSION,
+                    ],
                 ],
             ],
             'clients' => [
@@ -47,6 +51,7 @@ final class ClientCompatibility
                         'control_plane.version',
                         'control_plane.request_contract',
                         'worker_protocol.version',
+                        'worker_protocol.external_task_input_contract',
                     ],
                 ],
             ],

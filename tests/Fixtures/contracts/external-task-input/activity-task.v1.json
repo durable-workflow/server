@@ -1,0 +1,38 @@
+{
+  "schema": "durable-workflow.v2.external-task-input",
+  "version": 1,
+  "task": {
+    "id": "acttask_01HV7D3G3G61TAH2YB5RK45XJS",
+    "kind": "activity_task",
+    "attempt": 1,
+    "activity_attempt_id": "attempt_01HV7D3KJ1C8WQNNY8MVM8J40X",
+    "task_queue": "billing-activities",
+    "handler": "billing.charge-card",
+    "connection": null,
+    "idempotency_key": "attempt_01HV7D3KJ1C8WQNNY8MVM8J40X"
+  },
+  "workflow": {
+    "id": "invoice-2026-0001",
+    "run_id": "run_01HV7D2M5N1HDZ4Z8XBQJY6P9R"
+  },
+  "lease": {
+    "owner": "worker-python-a",
+    "expires_at": "2026-04-22T01:10:00.000000Z",
+    "heartbeat_endpoint": "/api/worker/activity-tasks/acttask_01HV7D3G3G61TAH2YB5RK45XJS/heartbeat"
+  },
+  "payloads": {
+    "arguments": {
+      "codec": "avro",
+      "blob": "BASE64_AVRO_ARGUMENTS"
+    }
+  },
+  "deadlines": {
+    "schedule_to_start": "2026-04-22T01:02:00.000000Z",
+    "start_to_close": "2026-04-22T01:07:00.000000Z",
+    "schedule_to_close": "2026-04-22T01:12:00.000000Z",
+    "heartbeat": "2026-04-22T01:04:00.000000Z"
+  },
+  "headers": {
+    "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-7a085853722dc6d2-00"
+  }
+}

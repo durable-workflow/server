@@ -614,6 +614,15 @@ Server-owned cache keys and metric label sets are governed by the bounded-growth
 policy in `config/dw-bounded-growth.php`; the human-readable inventory lives in
 `docs/bounded-growth.md`.
 
+The carrier-neutral external task input envelope is published from
+`GET /api/cluster/info` at `worker_protocol.external_task_input_contract`.
+That manifest freezes the workflow-task and activity-task input shapes,
+including task identity, attempt, queue, handler, workflow/run context, lease
+metadata, deadlines, payload metadata, idempotency keys, and versioning rules.
+Shared JSON fixtures live under
+`tests/Fixtures/contracts/external-task-input/`, with a human-readable summary
+in `docs/contracts/external-task-input.md`.
+
 Within worker protocol version `1.0`, `worker_protocol.version`,
 `server_capabilities.long_poll_timeout`, and
 `server_capabilities.supported_workflow_task_commands` are stable contract

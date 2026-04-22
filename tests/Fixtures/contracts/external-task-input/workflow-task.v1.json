@@ -1,0 +1,67 @@
+{
+  "schema": "durable-workflow.v2.external-task-input",
+  "version": 1,
+  "task": {
+    "id": "wft_01HV7D2K3X9K2M7YVQ4T0A1B2C",
+    "kind": "workflow_task",
+    "attempt": 2,
+    "task_queue": "billing-workflows",
+    "handler": "billing.invoice.workflow",
+    "connection": null,
+    "compatibility": "build-2026-04-22",
+    "idempotency_key": "wft_01HV7D2K3X9K2M7YVQ4T0A1B2C:2"
+  },
+  "workflow": {
+    "id": "invoice-2026-0001",
+    "run_id": "run_01HV7D2M5N1HDZ4Z8XBQJY6P9R",
+    "status": "running",
+    "resume": {
+      "workflow_wait_kind": "activity",
+      "open_wait_id": "activity:act_01HV7D2N5E4RKDNCQ44B9DHD9W",
+      "resume_source_kind": "activity",
+      "resume_source_id": "act_01HV7D2N5E4RKDNCQ44B9DHD9W",
+      "workflow_update_id": null,
+      "workflow_signal_id": null,
+      "signal_name": null,
+      "signal_wait_id": null,
+      "workflow_command_id": "cmd_01HV7D2N19FHPK3K0V33DD8TM8",
+      "activity_execution_id": "act_01HV7D2N5E4RKDNCQ44B9DHD9W",
+      "activity_attempt_id": "attempt_01HV7D2Q8G6HXH5PF1MF4J7P6Z",
+      "activity_type": "billing.charge-card",
+      "child_call_id": null,
+      "child_workflow_run_id": null,
+      "workflow_sequence": 42,
+      "workflow_event_type": "ActivityCompleted",
+      "timer_id": null,
+      "condition_wait_id": null,
+      "condition_key": null,
+      "condition_definition_fingerprint": null
+    }
+  },
+  "lease": {
+    "owner": "worker-python-a",
+    "expires_at": "2026-04-22T01:05:00.000000Z",
+    "heartbeat_endpoint": "/api/worker/workflow-tasks/wft_01HV7D2K3X9K2M7YVQ4T0A1B2C/heartbeat"
+  },
+  "payloads": {
+    "arguments": {
+      "codec": "avro",
+      "blob": "BASE64_AVRO_ARGUMENTS"
+    }
+  },
+  "history": {
+    "events": [
+      {
+        "event_id": "evt_01HV7D2M7A72M5JHVR75MB4BF3",
+        "event_type": "WorkflowStarted",
+        "sequence": 1
+      }
+    ],
+    "last_sequence": 42,
+    "next_page_token": "eyJhZnRlcl9zZXF1ZW5jZSI6NDJ9",
+    "encoding": null
+  },
+  "headers": {
+    "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00"
+  }
+}
