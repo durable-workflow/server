@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Api;
 
 use App\Models\WorkerRegistration;
-use App\Support\HistoryRetentionEnforcer;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\QueryTaskQueueUnavailableException;
 use App\Support\WorkerProtocol;
@@ -251,12 +250,9 @@ class WorkerController
             buildId: is_string($worker->build_id) ? $worker->build_id : null,
         );
 
-        $retention = HistoryRetentionEnforcer::runInlinePass($namespace);
-
         return WorkerProtocol::json([
             'worker_id' => $worker->worker_id,
             'acknowledged' => true,
-            'retention' => $retention,
         ]);
     }
 

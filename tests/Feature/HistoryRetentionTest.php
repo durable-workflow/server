@@ -7,7 +7,6 @@ namespace Tests\Feature;
 use App\Models\WorkflowNamespace;
 use App\Support\NamespaceWorkflowScope;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
@@ -329,60 +328,6 @@ class HistoryRetentionTest extends TestCase
         $this->artisan('history:prune', ['--namespace' => 'ns-b'])
             ->assertExitCode(0)
             ->expectsOutputToContain('No expired runs to prune.');
-    }
-
-    public function test_worker_heartbeat_runs_bounded_inline_retention_pass(): void
-    {
-        Queue::fake();
-        Cache::flush();
-
-        $this->createNamespace('default');
-        $this->registerWorker('retention-worker', 'default');
-        $runId = $this->createExpiredClosedRun('default', 'wf-heartbeat-retention');
-
-        $this->assertNotNull(WorkflowRunSummary::find($runId));
-
-        $this->withHeaders($this->workerHeaders())
-            ->postJson('/api/worker/heartbeat', [
-                'worker_id' => 'retention-worker',
-            ])
-            ->assertOk()
-            ->assertJsonPath('acknowledged', true)
-            ->assertJsonPath('retention.throttled', false)
-            ->assertJsonPath('retention.processed', 1)
-            ->assertJsonPath('retention.pruned', 1);
-
-        $this->assertNull(WorkflowRunSummary::find($runId));
-        $this->assertSame(0, WorkflowHistoryEvent::where('workflow_run_id', $runId)->count());
-    }
-
-    public function test_worker_heartbeat_retention_pass_is_throttled_per_namespace(): void
-    {
-        Queue::fake();
-        Cache::flush();
-
-        $this->createNamespace('default');
-        $this->registerWorker('retention-worker', 'default');
-        $this->createExpiredClosedRun('default', 'wf-heartbeat-retention-a');
-        $secondRunId = $this->createExpiredClosedRun('default', 'wf-heartbeat-retention-b');
-
-        $this->withHeaders($this->workerHeaders())
-            ->postJson('/api/worker/heartbeat', [
-                'worker_id' => 'retention-worker',
-            ])
-            ->assertOk()
-            ->assertJsonPath('retention.throttled', false)
-            ->assertJsonPath('retention.pruned', 1);
-
-        $this->withHeaders($this->workerHeaders())
-            ->postJson('/api/worker/heartbeat', [
-                'worker_id' => 'retention-worker',
-            ])
-            ->assertOk()
-            ->assertJsonPath('retention.throttled', true)
-            ->assertJsonPath('retention.processed', 0);
-
-        $this->assertNotNull(WorkflowRunSummary::find($secondRunId));
     }
 
     // ── Cluster Info ───────────────────────────────────────────────

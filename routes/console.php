@@ -2,12 +2,13 @@
 
 use App\Models\WorkflowNamespace;
 use App\Support\EnvAuditor;
-use App\Support\HistoryRetentionEnforcer;
+use App\Support\NamespaceWorkflowScope;
 use Illuminate\Support\Facades\Artisan;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\ScheduleManager;
+use Workflow\V2\Support\WorkflowRunRetentionCleanup;
 
 Artisan::command('server:bootstrap {--force : Run bootstrap commands without a production prompt}', function (): int {
     $this->components->info('Running Durable Workflow server bootstrap...');
@@ -161,8 +162,18 @@ Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per
     $totalFailed = 0;
 
     foreach ($namespaces as $ns) {
-        $retentionDays = HistoryRetentionEnforcer::retentionDays($ns->name);
-        $expiredRunIds = HistoryRetentionEnforcer::expiredRunIds($ns->name, $limit);
+        $retentionDays = $ns->retention_days ?? (int) config('server.history.retention_days', 30);
+        $cutoff = now()->subDays($retentionDays);
+
+        $expiredRunIds = NamespaceWorkflowScope::runSummaryQuery($ns->name)
+            ->whereIn('workflow_run_summaries.status_bucket', ['completed', 'failed'])
+            ->whereNotNull('workflow_run_summaries.closed_at')
+            ->whereNull('workflow_run_summaries.archived_at')
+            ->where('workflow_run_summaries.closed_at', '<', $cutoff)
+            ->orderBy('workflow_run_summaries.closed_at')
+            ->limit($limit)
+            ->pluck('workflow_run_summaries.id')
+            ->all();
 
         if ($expiredRunIds === []) {
             continue;
@@ -204,15 +215,7 @@ Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per
                     continue;
                 }
 
-                $result = HistoryRetentionEnforcer::pruneRun($ns->name, $runId);
-
-                if (! $result['pruned']) {
-                    $totalSkipped++;
-
-                    continue;
-                }
-
-                $report = $result['deleted'];
+                $report = WorkflowRunRetentionCleanup::pruneRun($runId);
 
                 $this->components->twoColumnDetail(
                     $runId,
