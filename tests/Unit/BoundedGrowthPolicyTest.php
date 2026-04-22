@@ -413,6 +413,8 @@ class BoundedGrowthPolicyTest extends TestCase
     {
         return [
             ...$this->filesWithExtensions(self::$repoRoot.'/app', ['php']),
+            ...$this->filesWithExtensions(self::$repoRoot.'/routes', ['php']),
+            self::$repoRoot.'/config/dw-contract.php',
             ...$this->filesWithExtensions(self::$repoRoot.'/scripts/perf', ['py', 'sh']),
         ];
     }
