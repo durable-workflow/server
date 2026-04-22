@@ -155,6 +155,45 @@ class ServerPerfHarnessContractTest extends TestCase
         );
     }
 
+    public function test_ci_perf_trigger_paths_cover_bounded_growth_runtime_surfaces(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $workflow = file_get_contents($repoRoot.'/.github/workflows/server-perf.yml');
+        $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
+
+        $policy = require $repoRoot.'/config/dw-bounded-growth.php';
+        $paths = [
+            'app/Support/BoundedMetricPolicy.php',
+            'app/Http/Controllers/Api/SystemController.php',
+            'config/dw-bounded-growth.php',
+            'routes/api.php',
+            'scripts/perf/**',
+            'tests/Feature/SystemMetricsTest.php',
+            'tests/Unit/BoundedGrowthPolicyTest.php',
+            'tests/Unit/BoundedMetricPolicyTest.php',
+            'tests/Unit/ServerPerfHarnessContractTest.php',
+        ];
+
+        foreach ($policy['cache_keys'] ?? [] as $entry) {
+            $paths[] = $this->policyOwnerPath((string) ($entry['owner'] ?? ''));
+        }
+
+        foreach ($policy['metrics'] ?? [] as $entry) {
+            $paths[] = $this->policyOwnerPath((string) ($entry['owner'] ?? ''));
+        }
+
+        $paths = array_values(array_unique(array_filter($paths)));
+        sort($paths);
+
+        foreach ($paths as $path) {
+            $this->assertGreaterThanOrEqual(
+                2,
+                substr_count($workflow, '- "'.$path.'"'),
+                "Server Perf workflow must run on pull_request and push when {$path} changes.",
+            );
+        }
+    }
+
     /**
      * @return array<string, string>
      */
@@ -177,5 +216,22 @@ class ServerPerfHarnessContractTest extends TestCase
         }
 
         return $patterns;
+    }
+
+    private function policyOwnerPath(string $owner): ?string
+    {
+        if ($owner === '') {
+            return null;
+        }
+
+        if (str_starts_with($owner, 'App\\')) {
+            return str_replace('\\', '/', preg_replace('/^App\\\\/', 'app/', $owner)).'.php';
+        }
+
+        if (str_starts_with($owner, 'scripts/perf/')) {
+            return 'scripts/perf/**';
+        }
+
+        return $owner;
     }
 }
