@@ -73,6 +73,12 @@ class ServerPerfHarnessContractTest extends TestCase
             'requires_github_sha_match',
             'GitHub Actions SHA does not match checked-out source',
             'tracked working tree has uncommitted changes',
+            'requires_per_policy_cache_thresholds',
+            'per-policy max cache thresholds missing for:',
+            'per-policy final cache thresholds missing for:',
+            'per_policy_threshold_reasons',
+            'max_server_cache_keys_by_policy=args.max_server_cache_keys_by_policy',
+            'max_final_server_cache_keys_by_policy=args.max_final_server_cache_keys_by_policy',
             'duration below trusted long-soak minimum',
             'bounded-growth assertions failed',
         ] as $needle) {
@@ -145,6 +151,18 @@ class ServerPerfHarnessContractTest extends TestCase
 
         $this->assertStringContainsString('missing_policy_ids = sorted(policy_ids - set(limits))', $source);
         $this->assertStringContainsString('is missing cache policy thresholds for:', $source);
+    }
+
+    public function test_trusted_perf_evidence_requires_per_policy_cache_thresholds(): void
+    {
+        $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/server_soak.py');
+        $this->assertNotFalse($source, 'scripts/perf/server_soak.py must be readable');
+
+        $this->assertStringContainsString('def per_policy_threshold_reasons(', $source);
+        $this->assertStringContainsString('missing_max_policy_ids = sorted(policy_ids - set(max_server_cache_keys_by_policy))', $source);
+        $this->assertStringContainsString('missing_final_policy_ids = sorted(', $source);
+        $this->assertStringContainsString('policy_ids - set(max_final_server_cache_keys_by_policy)', $source);
+        $this->assertStringContainsString('"requires_per_policy_cache_thresholds": True', $source);
     }
 
     public function test_ci_perf_jobs_set_runner_environment_provenance(): void

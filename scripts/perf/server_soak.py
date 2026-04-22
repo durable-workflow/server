@@ -692,6 +692,8 @@ def evidence_trust_profile(
     periodic_sample_count: int,
     minimum_trusted_samples: int,
     sampling_health: dict[str, Any],
+    max_server_cache_keys_by_policy: dict[str, int],
+    max_final_server_cache_keys_by_policy: dict[str, int],
     failures: list[str],
 ) -> dict[str, Any]:
     minimum_duration_seconds = 3600
@@ -723,6 +725,12 @@ def evidence_trust_profile(
         reasons.append("periodic sample coverage below trusted minimum")
     if int(sampling_health.get("unhealthy_samples") or 0) > 0:
         reasons.append("compose-backed resource sampling has unhealthy samples")
+    reasons.extend(
+        per_policy_threshold_reasons(
+            max_server_cache_keys_by_policy=max_server_cache_keys_by_policy,
+            max_final_server_cache_keys_by_policy=max_final_server_cache_keys_by_policy,
+        )
+    )
     if failures:
         reasons.append("bounded-growth assertions failed")
 
@@ -739,8 +747,36 @@ def evidence_trust_profile(
         "requires_github_sha_match": True,
         "requires_compose_resource_sampling": True,
         "requires_clean_tracked_working_tree": True,
+        "requires_per_policy_cache_thresholds": True,
         "reasons": reasons,
     }
+
+
+def per_policy_threshold_reasons(
+    *,
+    max_server_cache_keys_by_policy: dict[str, int],
+    max_final_server_cache_keys_by_policy: dict[str, int],
+) -> list[str]:
+    policy_ids = set(SERVER_CACHE_KEY_PATTERNS)
+    reasons = []
+
+    missing_max_policy_ids = sorted(policy_ids - set(max_server_cache_keys_by_policy))
+    if missing_max_policy_ids:
+        reasons.append(
+            "per-policy max cache thresholds missing for: "
+            + ", ".join(missing_max_policy_ids)
+        )
+
+    missing_final_policy_ids = sorted(
+        policy_ids - set(max_final_server_cache_keys_by_policy)
+    )
+    if missing_final_policy_ids:
+        reasons.append(
+            "per-policy final cache thresholds missing for: "
+            + ", ".join(missing_final_policy_ids)
+        )
+
+    return reasons
 
 
 def github_actions_provenance_present(provenance: dict[str, Any]) -> bool:
@@ -975,6 +1011,8 @@ def main() -> int:
             periodic_sample_count=periodic_sample_count,
             minimum_trusted_samples=min_samples,
             sampling_health=sampling_health,
+            max_server_cache_keys_by_policy=args.max_server_cache_keys_by_policy,
+            max_final_server_cache_keys_by_policy=args.max_final_server_cache_keys_by_policy,
             failures=failures,
         )
 

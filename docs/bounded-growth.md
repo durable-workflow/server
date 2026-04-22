@@ -132,10 +132,12 @@ value, include GitHub Actions provenance (`GITHUB_REPOSITORY`, `GITHUB_REF`,
 come from the `Server Perf` workflow in `durable-workflow/server` on
 `refs/heads/main`, use a scheduled or manual dispatch event, have a clean
 tracked working tree, have `GITHUB_SHA` match the checked-out source commit,
-meet sample coverage, and have no bounded-growth assertion failures. A local
-run, pull-request smoke, unrelated workflow, or feature-branch workflow can
-still produce useful artifacts, but it cannot satisfy the trusted long-soak
-evidence profile just by setting `RUNNER_ENVIRONMENT=self-hosted`.
+meet sample coverage, include complete per-policy maximum and final cache
+threshold maps for every declared cache policy, and have no bounded-growth
+assertion failures. A local run, pull-request smoke, unrelated workflow, or
+feature-branch workflow can still produce useful artifacts, but it cannot
+satisfy the trusted long-soak evidence profile just by setting
+`RUNNER_ENVIRONMENT=self-hosted`.
 The CI smoke workflow sets `RUNNER_ENVIRONMENT=github-hosted` so those artifacts
 are traceable without being eligible for the trusted long-soak profile.
 
@@ -144,4 +146,6 @@ Per-policy limits can be enforced with JSON maps keyed by policy ID:
 `DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY` for post-drain keys. Unknown
 policy IDs, non-integer values, and negative limits fail before the soak starts
 so evidence cannot silently drift away from the inventory in
-`config/dw-bounded-growth.php`.
+`config/dw-bounded-growth.php`. Trusted long-soak evidence is also marked
+ineligible when either per-policy threshold map is omitted or incomplete, even
+if the aggregate cache-key ceilings pass.

@@ -101,9 +101,10 @@ limits in addition to the aggregate `server:*` cache ceiling. Each value must
 be a JSON object keyed by a `config/dw-bounded-growth.php` cache policy ID with
 non-negative integer limits. The map must include every declared cache policy;
 unknown policy IDs, missing policy IDs, and non-integer limits fail before load
-starts so a typo or partial map cannot silently weaken the evidence. The
-workflow file contains the canonical smoke and long-soak threshold maps, for
-example:
+starts so a typo or partial map cannot silently weaken the evidence. A trusted
+long-soak artifact is marked ineligible if either per-policy threshold map is
+omitted or incomplete. The workflow file contains the canonical smoke and
+long-soak threshold maps, for example:
 
 ```bash
 DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY='{"workflow_task_poll_requests":0,"long_poll_signals":0,"workflow_query_tasks":0,"task_queue_admission_locks":0,"task_queue_dispatch_counters":0,"workflow_task_expired_lease_recovery":0,"history_retention_inline":0,"readiness_probe":0}'
