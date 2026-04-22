@@ -374,6 +374,14 @@ class ClusterInfoTest extends TestCase
                 'logs_only_no_machine_meaning',
             )
             ->assertJsonPath(
+                'worker_protocol.external_task_result_contract.fixtures.success.artifact',
+                'durable-workflow.v2.external-task-result.success.v1',
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_task_result_contract.fixtures.handler_crash.example.failure.classification',
+                'handler_crash',
+            )
+            ->assertJsonPath(
                 'worker_protocol.server_capabilities.external_task_result.schema',
                 'durable-workflow.v2.external-task-result.contract',
             )

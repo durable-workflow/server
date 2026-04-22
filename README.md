@@ -637,6 +637,15 @@ Shared JSON fixtures are embedded in the manifest as artifact objects with
 stable artifact names, media types, SHA-256 digests, and examples. A
 human-readable summary lives in `docs/contracts/external-task-input.md`.
 
+The carrier-neutral external task result envelope is published from
+`GET /api/cluster/info` at `worker_protocol.external_task_result_contract`.
+That manifest freezes success, structured failure, malformed output,
+cancellation, handler crash, decode failure, and unsupported payload outcomes.
+Shared result fixtures use the same embedded artifact shape so CLI, SDK, and
+future carriers can validate parser behavior without repository-local fixture
+paths. A human-readable summary lives in
+`docs/contracts/external-task-result.md`.
+
 Within worker protocol version `1.0`, `worker_protocol.version`,
 `server_capabilities.long_poll_timeout`, and
 `server_capabilities.supported_workflow_task_commands` are stable contract

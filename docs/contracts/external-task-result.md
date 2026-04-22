@@ -16,6 +16,16 @@ The authoritative machine-readable contract is published from
 - `fixtures.success`
 - `fixtures.failure`
 - `fixtures.malformed_output`
+- `fixtures.cancellation`
+- `fixtures.handler_crash`
+- `fixtures.decode_failure`
+- `fixtures.unsupported_payload_codec`
+- `fixtures.unsupported_payload_reference`
+
+Each fixture is published as a consumable artifact object, not as a repository
+path. Carriers can read the `artifact`, `media_type`, `schema`, `version`,
+`sha256`, and embedded `example` fields from cluster info and validate their
+own parser behavior without cloning this repository or scraping prose.
 
 Version 1 defines named machine outcomes. A carrier can decide whether work
 succeeded, whether a failure is retryable, whether the outcome is timeout or
@@ -38,8 +48,13 @@ input payload codec must fail with `failure.kind: unsupported_payload` and
 resolve an external-storage payload reference must fail with
 `failure.classification: unsupported_payload_reference`.
 
-Stable fixtures live in:
+The stable fixture artifacts are:
 
-- `tests/Fixtures/contracts/external-task-result/success.v1.json`
-- `tests/Fixtures/contracts/external-task-result/failure.v1.json`
-- `tests/Fixtures/contracts/external-task-result/malformed-output.v1.json`
+- `durable-workflow.v2.external-task-result.success.v1`
+- `durable-workflow.v2.external-task-result.failure.v1`
+- `durable-workflow.v2.external-task-result.malformed-output.v1`
+- `durable-workflow.v2.external-task-result.cancellation.v1`
+- `durable-workflow.v2.external-task-result.handler-crash.v1`
+- `durable-workflow.v2.external-task-result.decode-failure.v1`
+- `durable-workflow.v2.external-task-result.unsupported-payload-codec.v1`
+- `durable-workflow.v2.external-task-result.unsupported-payload-reference.v1`

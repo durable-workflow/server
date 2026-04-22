@@ -1,0 +1,33 @@
+{
+  "schema": "durable-workflow.v2.external-task-result",
+  "version": 1,
+  "outcome": {
+    "status": "failed",
+    "retryable": false,
+    "recorded": true
+  },
+  "task": {
+    "id": "acttask_01HV7D3G3G61TAH2YB5RK45XJS",
+    "kind": "activity_task",
+    "attempt": 1,
+    "idempotency_key": "attempt_01HV7D3KJ1C8WQNNY8MVM8J40X"
+  },
+  "failure": {
+    "kind": "decode_failure",
+    "classification": "decode_failure",
+    "message": "Carrier could not decode handler output as UTF-8 JSON.",
+    "type": "OutputDecodeFailure",
+    "stack_trace": null,
+    "timeout_type": null,
+    "cancelled": false,
+    "details": {
+      "codec": "json/plain",
+      "blob": "eyJkZXRhaWwiOiJpbnZhbGlkIHV0Zi04In0="
+    }
+  },
+  "metadata": {
+    "handler": "billing.charge-card",
+    "carrier": "process-carrier",
+    "duration_ms": 18
+  }
+}

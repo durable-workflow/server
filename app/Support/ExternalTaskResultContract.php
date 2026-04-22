@@ -46,10 +46,55 @@ final class ExternalTaskResultContract
                 'malformed_output' => self::malformedOutputEnvelope(),
             ],
             'fixtures' => [
-                'success' => 'tests/Fixtures/contracts/external-task-result/success.v1.json',
-                'failure' => 'tests/Fixtures/contracts/external-task-result/failure.v1.json',
-                'malformed_output' => 'tests/Fixtures/contracts/external-task-result/malformed-output.v1.json',
+                'success' => self::fixtureArtifact(
+                    'durable-workflow.v2.external-task-result.success.v1',
+                    self::successFixture(),
+                ),
+                'failure' => self::fixtureArtifact(
+                    'durable-workflow.v2.external-task-result.failure.v1',
+                    self::failureFixture(),
+                ),
+                'malformed_output' => self::fixtureArtifact(
+                    'durable-workflow.v2.external-task-result.malformed-output.v1',
+                    self::malformedOutputFixture(),
+                ),
+                'cancellation' => self::fixtureArtifact(
+                    'durable-workflow.v2.external-task-result.cancellation.v1',
+                    self::cancellationFixture(),
+                ),
+                'handler_crash' => self::fixtureArtifact(
+                    'durable-workflow.v2.external-task-result.handler-crash.v1',
+                    self::handlerCrashFixture(),
+                ),
+                'decode_failure' => self::fixtureArtifact(
+                    'durable-workflow.v2.external-task-result.decode-failure.v1',
+                    self::decodeFailureFixture(),
+                ),
+                'unsupported_payload_codec' => self::fixtureArtifact(
+                    'durable-workflow.v2.external-task-result.unsupported-payload-codec.v1',
+                    self::unsupportedPayloadCodecFixture(),
+                ),
+                'unsupported_payload_reference' => self::fixtureArtifact(
+                    'durable-workflow.v2.external-task-result.unsupported-payload-reference.v1',
+                    self::unsupportedPayloadReferenceFixture(),
+                ),
             ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $example
+     * @return array<string, mixed>
+     */
+    private static function fixtureArtifact(string $artifact, array $example): array
+    {
+        return [
+            'artifact' => $artifact,
+            'media_type' => 'application/vnd.durable-workflow.external-task-result+json',
+            'schema' => 'durable-workflow.v2.external-task-result',
+            'version' => self::VERSION,
+            'sha256' => hash('sha256', (string) json_encode($example, JSON_UNESCAPED_SLASHES)),
+            'example' => $example,
         ];
     }
 
@@ -198,6 +243,249 @@ final class ExternalTaskResultContract
             'malformed_output',
             'unsupported_payload_codec',
             'unsupported_payload_reference',
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function successFixture(): array
+    {
+        return [
+            'schema' => 'durable-workflow.v2.external-task-result',
+            'version' => self::VERSION,
+            'outcome' => [
+                'status' => 'succeeded',
+                'recorded' => true,
+            ],
+            'task' => self::fixtureTask(),
+            'result' => [
+                'payload' => [
+                    'codec' => 'avro',
+                    'blob' => 'BASE64_AVRO_RESULT',
+                ],
+                'metadata' => [
+                    'content_type' => 'application/vnd.durable-workflow.result+json',
+                ],
+            ],
+            'metadata' => self::fixtureMetadata(184),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function failureFixture(): array
+    {
+        return self::failureResultFixture(
+            kind: 'timeout',
+            classification: 'deadline_exceeded',
+            message: 'Deadline exceeded while waiting for billing provider.',
+            type: 'ProviderTimeout',
+            retryable: true,
+            timeoutType: 'deadline_exceeded',
+            cancelled: false,
+            details: [
+                'codec' => 'avro',
+                'blob' => 'BASE64_AVRO_FAILURE_DETAILS',
+            ],
+            durationMs: 5000,
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function malformedOutputFixture(): array
+    {
+        return self::failureResultFixture(
+            kind: 'malformed_output',
+            classification: 'malformed_output',
+            message: 'Handler exited without producing a valid result envelope.',
+            type: 'MalformedExternalTaskOutput',
+            retryable: false,
+            timeoutType: null,
+            cancelled: false,
+            details: null,
+            durationMs: 22,
+            recorded: false,
+            rawOutput: [
+                'stdout_preview' => '{not json',
+                'stderr_preview' => 'deprecated flag ignored',
+                'exit_code' => 64,
+            ],
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function cancellationFixture(): array
+    {
+        return self::failureResultFixture(
+            kind: 'cancellation',
+            classification: 'cancelled',
+            message: 'Activity was cancelled before the handler completed.',
+            type: 'ActivityCancelled',
+            retryable: false,
+            timeoutType: null,
+            cancelled: true,
+            details: null,
+            durationMs: 610,
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function handlerCrashFixture(): array
+    {
+        return self::failureResultFixture(
+            kind: 'handler_crash',
+            classification: 'handler_crash',
+            message: 'Handler process exited before producing a valid envelope.',
+            type: 'HandlerRuntimeCrash',
+            retryable: true,
+            timeoutType: null,
+            cancelled: false,
+            details: null,
+            durationMs: 31,
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function decodeFailureFixture(): array
+    {
+        return self::failureResultFixture(
+            kind: 'decode_failure',
+            classification: 'decode_failure',
+            message: 'Carrier could not decode handler output as UTF-8 JSON.',
+            type: 'OutputDecodeFailure',
+            retryable: false,
+            timeoutType: null,
+            cancelled: false,
+            details: [
+                'codec' => 'json/plain',
+                'blob' => 'eyJkZXRhaWwiOiJpbnZhbGlkIHV0Zi04In0=',
+            ],
+            durationMs: 18,
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function unsupportedPayloadCodecFixture(): array
+    {
+        return self::failureResultFixture(
+            kind: 'unsupported_payload',
+            classification: 'unsupported_payload_codec',
+            message: 'Handler does not support the input payload codec.',
+            type: 'UnsupportedPayloadCodec',
+            retryable: false,
+            timeoutType: null,
+            cancelled: false,
+            details: [
+                'codec' => 'json/plain',
+                'blob' => 'eyJjb2RlYyI6ImF2cm8ifQ==',
+            ],
+            durationMs: 9,
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function unsupportedPayloadReferenceFixture(): array
+    {
+        return self::failureResultFixture(
+            kind: 'unsupported_payload',
+            classification: 'unsupported_payload_reference',
+            message: 'Handler cannot resolve the external storage payload reference.',
+            type: 'UnsupportedPayloadReference',
+            retryable: false,
+            timeoutType: null,
+            cancelled: false,
+            details: [
+                'codec' => 'json/plain',
+                'blob' => 'eyJwcm92aWRlciI6ImdzIn0=',
+            ],
+            durationMs: 12,
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $details
+     * @param  array<string, mixed>|null  $rawOutput
+     * @return array<string, mixed>
+     */
+    private static function failureResultFixture(
+        string $kind,
+        string $classification,
+        string $message,
+        string $type,
+        bool $retryable,
+        ?string $timeoutType,
+        bool $cancelled,
+        ?array $details,
+        int $durationMs,
+        bool $recorded = true,
+        ?array $rawOutput = null,
+    ): array {
+        $fixture = [
+            'schema' => 'durable-workflow.v2.external-task-result',
+            'version' => self::VERSION,
+            'outcome' => [
+                'status' => 'failed',
+                'retryable' => $retryable,
+                'recorded' => $recorded,
+            ],
+            'task' => self::fixtureTask(),
+            'failure' => [
+                'kind' => $kind,
+                'classification' => $classification,
+                'message' => $message,
+                'type' => $type,
+                'stack_trace' => null,
+                'timeout_type' => $timeoutType,
+                'cancelled' => $cancelled,
+                'details' => $details,
+            ],
+        ];
+
+        if ($rawOutput !== null) {
+            $fixture['raw_output'] = $rawOutput;
+        }
+
+        $fixture['metadata'] = self::fixtureMetadata($durationMs);
+
+        return $fixture;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function fixtureTask(): array
+    {
+        return [
+            'id' => 'acttask_01HV7D3G3G61TAH2YB5RK45XJS',
+            'kind' => 'activity_task',
+            'attempt' => 1,
+            'idempotency_key' => 'attempt_01HV7D3KJ1C8WQNNY8MVM8J40X',
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function fixtureMetadata(int $durationMs): array
+    {
+        return [
+            'handler' => 'billing.charge-card',
+            'carrier' => 'process-carrier',
+            'duration_ms' => $durationMs,
         ];
     }
 }
