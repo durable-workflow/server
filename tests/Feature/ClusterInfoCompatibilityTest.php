@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Support\AuthCompositionContract;
 use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
@@ -70,6 +71,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                 ],
                 'structural_limits',
                 'client_compatibility',
+                'auth_composition_contract',
                 'control_plane',
                 'worker_protocol',
                 'bridge_adapter_outcome_contract',
@@ -89,6 +91,14 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('client_compatibility.authority', 'protocol_manifests')
             ->assertJsonPath('client_compatibility.top_level_version_role', 'informational')
             ->assertJsonPath('client_compatibility.fail_closed', true)
+            ->assertJsonPath(
+                'client_compatibility.required_protocols.auth_composition.schema',
+                AuthCompositionContract::SCHEMA,
+            )
+            ->assertJsonPath(
+                'client_compatibility.required_protocols.auth_composition.version',
+                AuthCompositionContract::VERSION,
+            )
             ->assertJsonPath('client_compatibility.required_protocols.control_plane.version', ControlPlaneProtocol::VERSION)
             ->assertJsonPath('client_compatibility.required_protocols.control_plane.header', ControlPlaneProtocol::HEADER)
             ->assertJsonPath(
@@ -111,6 +121,15 @@ class ClusterInfoCompatibilityTest extends TestCase
             )
             ->assertJsonPath('client_compatibility.clients.cli.supported_versions', '0.1.x')
             ->assertJsonPath('client_compatibility.clients.sdk-python.supported_versions', '0.2.x');
+
+        $this->assertContains(
+            'auth_composition.version',
+            $response->json('client_compatibility.clients.cli.requires'),
+        );
+        $this->assertContains(
+            'auth_composition.version',
+            $response->json('client_compatibility.clients.sdk-python.requires'),
+        );
     }
 
     public function test_worker_protocol_manifest_is_sourced_from_the_package_contract(): void

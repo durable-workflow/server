@@ -20,6 +20,10 @@ final class ClientCompatibility
             'top_level_version_role' => 'informational',
             'fail_closed' => true,
             'required_protocols' => [
+                'auth_composition' => [
+                    'schema' => AuthCompositionContract::SCHEMA,
+                    'version' => AuthCompositionContract::VERSION,
+                ],
                 'control_plane' => [
                     'version' => ControlPlaneProtocol::VERSION,
                     'header' => ControlPlaneProtocol::HEADER,
@@ -49,6 +53,7 @@ final class ClientCompatibility
                 'cli' => [
                     'supported_versions' => '0.1.x',
                     'requires' => [
+                        'auth_composition.version',
                         'control_plane.version',
                         'control_plane.request_contract',
                     ],
@@ -56,6 +61,7 @@ final class ClientCompatibility
                 'sdk-python' => [
                     'supported_versions' => '0.2.x',
                     'requires' => [
+                        'auth_composition.version',
                         'control_plane.version',
                         'control_plane.request_contract',
                         'worker_protocol.version',

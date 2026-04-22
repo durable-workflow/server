@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Middleware\Authenticate;
+use App\Support\AuthCompositionContract;
 use App\Support\BridgeAdapterOutcomeContract;
 use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
@@ -119,6 +120,7 @@ class HealthController
             ],
             'structural_limits' => StructuralLimits::snapshot(),
             'client_compatibility' => ClientCompatibility::info(),
+            'auth_composition_contract' => AuthCompositionContract::manifest(),
             'control_plane' => ControlPlaneProtocol::info(),
             'worker_protocol' => WorkerProtocol::info(),
             'bridge_adapter_outcome_contract' => BridgeAdapterOutcomeContract::manifest(),

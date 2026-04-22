@@ -170,6 +170,27 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('capabilities.bridge_adapter_outcome_contract', true);
     }
 
+    public function test_it_publishes_auth_composition_contract_manifest(): void
+    {
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath(
+                'auth_composition_contract.schema',
+                'durable-workflow.v2.auth-composition.contract',
+            )
+            ->assertJsonPath('auth_composition_contract.version', 1)
+            ->assertJsonPath('auth_composition_contract.precedence.connection_values.0', 'flag')
+            ->assertJsonPath('auth_composition_contract.canonical_environment.server_url', 'DURABLE_WORKFLOW_SERVER_URL')
+            ->assertJsonPath('auth_composition_contract.auth_material.token.effective_config_value', 'redacted')
+            ->assertJsonPath('auth_composition_contract.auth_material.mtls.persisted_as', 'certificate_and_key_references')
+            ->assertJsonPath('auth_composition_contract.effective_config.required_fields.3', 'auth')
+            ->assertJsonPath('auth_composition_contract.redaction.never_echo.0', 'bearer_tokens')
+            ->assertJsonPath(
+                'client_compatibility.required_protocols.auth_composition.schema',
+                'durable-workflow.v2.auth-composition.contract',
+            );
+    }
+
     public function test_it_advertises_response_compression_in_capabilities(): void
     {
         $this->getJson('/api/cluster/info')
