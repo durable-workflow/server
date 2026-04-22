@@ -22,6 +22,10 @@ class ExternalExecutorConfigContractTest extends TestCase
         $this->assertSame('config_file', $manifest['steady_state_surface']);
         $this->assertSame('DW_EXTERNAL_EXECUTOR_CONFIG_PATH', $manifest['server_runtime']['config_path_env']);
         $this->assertSame('DW_EXTERNAL_EXECUTOR_CONFIG_OVERLAY', $manifest['server_runtime']['overlay_env']);
+        $this->assertSame(
+            'validation_discovery_and_activity_poll_resolution',
+            $manifest['server_runtime']['execution_status'],
+        );
         $this->assertContains('unknown_carrier', $manifest['validation']['named_errors']);
         $this->assertContains('unknown_handler', $manifest['validation']['named_errors']);
         $this->assertContains('unsupported_carrier_capability', $manifest['validation']['named_errors']);

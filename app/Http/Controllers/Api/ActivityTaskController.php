@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkerRegistration;
 use App\Support\ActivityTaskPoller;
+use App\Support\ExternalExecutorConfigContract;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerProtocol;
 use Illuminate\Http\JsonResponse;
@@ -85,6 +86,10 @@ class ActivityTaskController
                 'lease_owner' => $claim['lease_owner'],
                 'lease_expires_at' => $claim['lease_expires_at'],
                 'deadlines' => $this->executionDeadlines($claim['activity_execution_id'] ?? null),
+                'external_executor' => ExternalExecutorConfigContract::resolveActivityMapping(
+                    (string) $claim['queue'],
+                    (string) $claim['activity_type'],
+                ),
             ], static fn (mixed $v): bool => $v !== null),
         ]);
     }

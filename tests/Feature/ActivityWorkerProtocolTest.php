@@ -25,6 +25,22 @@ class ActivityWorkerProtocolTest extends TestCase
 {
     use RefreshDatabase;
 
+    /** @var list<string> */
+    private array $externalExecutorConfigFixturePaths = [];
+
+    protected function tearDown(): void
+    {
+        foreach ($this->externalExecutorConfigFixturePaths as $path) {
+            if (is_file($path)) {
+                @unlink($path);
+            }
+        }
+
+        $this->externalExecutorConfigFixturePaths = [];
+
+        parent::tearDown();
+    }
+
     public function test_it_leases_and_completes_external_activity_tasks_with_namespaced_history_visibility(): void
     {
         Queue::fake();
@@ -476,6 +492,80 @@ class ActivityWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');
     }
 
+    public function test_activity_poll_response_includes_matching_external_executor_config_mapping(): void
+    {
+        Queue::fake();
+
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $this->useExternalExecutorConfigFixture([
+            'schema' => 'durable-workflow.external-executor.config',
+            'version' => 1,
+            'defaults' => [
+                'task_queue' => 'external-activities',
+                'auth_ref' => 'ops-profile',
+            ],
+            'auth_refs' => [
+                'ops-profile' => [
+                    'type' => 'profile',
+                    'profile' => 'production',
+                    'token' => 'must-not-leak',
+                ],
+            ],
+            'carriers' => [
+                'artisan-operator' => [
+                    'type' => 'process',
+                    'command' => ['php', 'artisan', 'durable:external-handler'],
+                    'secret' => 'must-not-leak',
+                    'capabilities' => ['activity_task'],
+                ],
+            ],
+            'mappings' => [
+                [
+                    'name' => 'greeting.external',
+                    'kind' => 'activity',
+                    'activity_type' => 'tests.external-greeting-activity',
+                    'carrier' => 'artisan-operator',
+                    'handler' => 'App\\Durable\\Handlers\\Greeting',
+                ],
+            ],
+        ]);
+
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-activity-config-mapping');
+        $start = $workflow->start('Ada');
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
+
+        $this->runReadyWorkflowTask($start->runId());
+
+        $this->registerWorker(
+            'php-activity-config-mapping',
+            'external-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-activity-config-mapping',
+                'task_queue' => 'external-activities',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity')
+            ->assertJsonPath('task.external_executor.schema', 'durable-workflow.external-executor.config.mapping')
+            ->assertJsonPath('task.external_executor.name', 'greeting.external')
+            ->assertJsonPath('task.external_executor.task_queue', 'external-activities')
+            ->assertJsonPath('task.external_executor.handler', 'App\\Durable\\Handlers\\Greeting')
+            ->assertJsonPath('task.external_executor.auth_ref', 'ops-profile')
+            ->assertJsonPath('task.external_executor.auth.token', 'redacted')
+            ->assertJsonPath('task.external_executor.carrier.name', 'artisan-operator')
+            ->assertJsonPath('task.external_executor.carrier.type', 'process')
+            ->assertJsonPath('task.external_executor.carrier.target.command.2', 'durable:external-handler')
+            ->assertJsonPath('task.external_executor.carrier.target.secret', 'redacted');
+    }
+
     // ── Activity task failure reporting ──────────────────────────────
 
     public function test_fail_activity_task_succeeds_for_a_leased_task(): void
@@ -792,6 +882,31 @@ class ActivityWorkerProtocolTest extends TestCase
                 'status' => 'active',
             ],
         );
+    }
+
+    /**
+     * @param  array<string, mixed>  $document
+     */
+    private function useExternalExecutorConfigFixture(array $document): string
+    {
+        $path = tempnam(sys_get_temp_dir(), 'dw-executor-config-');
+
+        if ($path === false) {
+            $this->fail('Could not allocate a tempfile for the external executor config fixture.');
+        }
+
+        $contents = json_encode($document, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+
+        if (! is_string($contents)) {
+            $this->fail('Could not encode the external executor config fixture.');
+        }
+
+        file_put_contents($path, $contents);
+        config(['server.external_executor.config_path' => $path]);
+
+        $this->externalExecutorConfigFixturePaths[] = $path;
+
+        return $path;
     }
 
     private function workerHeaders(string $namespace = 'default'): array

@@ -166,6 +166,12 @@ final class ExternalTaskInputContract
                 'task_queue' => ['source' => 'task.task_queue', 'type' => 'string'],
                 'handler' => ['source' => 'task.activity_type', 'type' => 'string'],
                 'connection' => ['source' => 'task.connection', 'type' => 'string', 'nullable' => true],
+                'external_executor' => [
+                    'source' => 'task.external_executor',
+                    'type' => 'object',
+                    'nullable' => true,
+                    'meaning' => 'Resolved config-first handler mapping when DW_EXTERNAL_EXECUTOR_CONFIG_PATH matches this activity task.',
+                ],
                 'idempotency_key' => ['source' => 'task.activity_attempt_id', 'type' => 'string'],
             ],
             'workflow_fields' => [

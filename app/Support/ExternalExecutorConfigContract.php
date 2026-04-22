@@ -39,7 +39,7 @@ final class ExternalExecutorConfigContract
                 'config_path_env' => 'DW_EXTERNAL_EXECUTOR_CONFIG_PATH',
                 'overlay_env' => 'DW_EXTERNAL_EXECUTOR_CONFIG_OVERLAY',
                 'cluster_info_path' => 'worker_protocol.external_executor_config_contract.runtime',
-                'execution_status' => 'validation_and_discovery_only',
+                'execution_status' => 'validation_discovery_and_activity_poll_resolution',
             ],
             'validation' => [
                 'fail_closed' => true,
@@ -57,92 +57,67 @@ final class ExternalExecutorConfigContract
      */
     public static function runtime(): array
     {
-        $path = self::configuredPath();
+        return self::runtimeState()['runtime'];
+    }
 
-        if ($path === null) {
-            return [
-                'configured' => false,
-                'status' => 'not_configured',
-                'source' => null,
-                'overlay' => self::configuredOverlay(),
-                'summary' => self::emptySummary(),
-                'errors' => [],
-            ];
+    /**
+     * @return array<string, mixed>|null
+     */
+    public static function resolveActivityMapping(string $taskQueue, string $activityType): ?array
+    {
+        $state = self::runtimeState();
+        if ($state['runtime']['status'] !== 'valid' || ! is_array($state['document'])) {
+            return null;
         }
 
-        $source = self::sourceInfo($path);
+        /** @var array<string, mixed> $document */
+        $document = $state['document'];
+        $defaults = is_array($document['defaults'] ?? null) ? $document['defaults'] : [];
+        $carriers = is_array($document['carriers'] ?? null) ? $document['carriers'] : [];
+        $authRefs = is_array($document['auth_refs'] ?? null) ? $document['auth_refs'] : [];
+        $mappings = is_array($document['mappings'] ?? null) ? $document['mappings'] : [];
 
-        if (! is_file($path) || ! is_readable($path)) {
-            return [
-                'configured' => true,
-                'status' => 'invalid',
-                'source' => $source,
-                'overlay' => self::configuredOverlay(),
-                'summary' => self::emptySummary(),
-                'errors' => [
-                    self::error('unreadable_config', 'Configured external executor config file is not readable.'),
-                ],
-            ];
+        foreach ($mappings as $mapping) {
+            if (! is_array($mapping) || self::stringValue($mapping['kind'] ?? null) !== 'activity') {
+                continue;
+            }
+
+            $mappingQueue = self::stringValue($mapping['task_queue'] ?? $defaults['task_queue'] ?? null);
+            $mappingActivityType = self::stringValue($mapping['activity_type'] ?? null);
+
+            if ($mappingQueue !== $taskQueue || $mappingActivityType !== $activityType) {
+                continue;
+            }
+
+            $carrierName = self::stringValue($mapping['carrier'] ?? null);
+            $carrier = $carrierName !== null && is_array($carriers[$carrierName] ?? null)
+                ? $carriers[$carrierName]
+                : [];
+            $authRef = self::stringValue($mapping['auth_ref'] ?? $defaults['auth_ref'] ?? null);
+
+            return array_filter([
+                'schema' => self::CONFIG_SCHEMA.'.mapping',
+                'version' => self::CONFIG_VERSION,
+                'name' => self::stringValue($mapping['name'] ?? null),
+                'kind' => 'activity',
+                'activity_type' => $mappingActivityType,
+                'task_queue' => $mappingQueue,
+                'handler' => self::stringValue($mapping['handler'] ?? null),
+                'carrier' => self::resolvedCarrier($carrierName, $carrier),
+                'auth_ref' => $authRef,
+                'auth' => $authRef !== null && is_array($authRefs[$authRef] ?? null)
+                    ? self::redactValue($authRefs[$authRef])
+                    : null,
+                'rollout' => is_array($mapping['rollout'] ?? null)
+                    ? self::redactValue($mapping['rollout'])
+                    : null,
+                'metadata' => is_array($mapping['metadata'] ?? null)
+                    ? self::redactValue($mapping['metadata'])
+                    : null,
+            ], static fn (mixed $value): bool => $value !== null);
         }
 
-        $contents = file_get_contents($path);
-        if (! is_string($contents)) {
-            return [
-                'configured' => true,
-                'status' => 'invalid',
-                'source' => $source,
-                'overlay' => self::configuredOverlay(),
-                'summary' => self::emptySummary(),
-                'errors' => [
-                    self::error('unreadable_config', 'Configured external executor config file could not be read.'),
-                ],
-            ];
-        }
-
-        try {
-            $document = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
-        } catch (\JsonException $exception) {
-            return [
-                'configured' => true,
-                'status' => 'invalid',
-                'source' => $source,
-                'overlay' => self::configuredOverlay(),
-                'summary' => self::emptySummary(),
-                'errors' => [
-                    self::error('invalid_json', 'Configured external executor config is not valid JSON.', [
-                        'detail' => $exception->getMessage(),
-                    ]),
-                ],
-            ];
-        }
-
-        if (! is_array($document)) {
-            return [
-                'configured' => true,
-                'status' => 'invalid',
-                'source' => $source,
-                'overlay' => self::configuredOverlay(),
-                'summary' => self::emptySummary(),
-                'errors' => [
-                    self::error('invalid_schema', 'Configured external executor config must be a JSON object.'),
-                ],
-            ];
-        }
-
-        [$effective, $overlayError] = self::applyOverlay($document);
-        $errors = self::validate($effective);
-        if ($overlayError !== null) {
-            array_unshift($errors, $overlayError);
-        }
-
-        return [
-            'configured' => true,
-            'status' => $errors === [] ? 'valid' : 'invalid',
-            'source' => $source,
-            'overlay' => self::configuredOverlay(),
-            'summary' => self::summary($effective),
-            'errors' => $errors,
-        ];
+        return null;
     }
 
     /**
@@ -208,6 +183,114 @@ final class ExternalExecutorConfigContract
         }
 
         return [$document, null];
+    }
+
+    /**
+     * @return array{runtime: array<string, mixed>, document: array<string, mixed>|null}
+     */
+    private static function runtimeState(): array
+    {
+        $path = self::configuredPath();
+
+        if ($path === null) {
+            return [
+                'runtime' => [
+                    'configured' => false,
+                    'status' => 'not_configured',
+                    'source' => null,
+                    'overlay' => self::configuredOverlay(),
+                    'summary' => self::emptySummary(),
+                    'errors' => [],
+                ],
+                'document' => null,
+            ];
+        }
+
+        $source = self::sourceInfo($path);
+
+        if (! is_file($path) || ! is_readable($path)) {
+            return self::invalidRuntimeState($source, [
+                self::error('unreadable_config', 'Configured external executor config file is not readable.'),
+            ]);
+        }
+
+        $contents = file_get_contents($path);
+        if (! is_string($contents)) {
+            return self::invalidRuntimeState($source, [
+                self::error('unreadable_config', 'Configured external executor config file could not be read.'),
+            ]);
+        }
+
+        try {
+            $document = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $exception) {
+            return self::invalidRuntimeState($source, [
+                self::error('invalid_json', 'Configured external executor config is not valid JSON.', [
+                    'detail' => $exception->getMessage(),
+                ]),
+            ]);
+        }
+
+        if (! is_array($document)) {
+            return self::invalidRuntimeState($source, [
+                self::error('invalid_schema', 'Configured external executor config must be a JSON object.'),
+            ]);
+        }
+
+        [$effective, $overlayError] = self::applyOverlay($document);
+        $errors = self::validate($effective);
+        if ($overlayError !== null) {
+            array_unshift($errors, $overlayError);
+        }
+
+        return [
+            'runtime' => [
+                'configured' => true,
+                'status' => $errors === [] ? 'valid' : 'invalid',
+                'source' => $source,
+                'overlay' => self::configuredOverlay(),
+                'summary' => self::summary($effective),
+                'errors' => $errors,
+            ],
+            'document' => $errors === [] ? $effective : null,
+        ];
+    }
+
+    /**
+     * @param  array{type: string, basename: string, sha256: string}  $source
+     * @param  list<array<string, mixed>>  $errors
+     * @return array{runtime: array<string, mixed>, document: null}
+     */
+    private static function invalidRuntimeState(array $source, array $errors): array
+    {
+        return [
+            'runtime' => [
+                'configured' => true,
+                'status' => 'invalid',
+                'source' => $source,
+                'overlay' => self::configuredOverlay(),
+                'summary' => self::emptySummary(),
+                'errors' => $errors,
+            ],
+            'document' => null,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $carrier
+     * @return array<string, mixed>|null
+     */
+    private static function resolvedCarrier(?string $name, array $carrier): ?array
+    {
+        if ($name === null || $carrier === []) {
+            return null;
+        }
+
+        return array_filter([
+            'name' => $name,
+            'type' => self::stringValue($carrier['type'] ?? null),
+            'target' => self::redactValue($carrier),
+        ], static fn (mixed $value): bool => $value !== null);
     }
 
     /**
@@ -436,6 +519,26 @@ final class ExternalExecutorConfigContract
             }
 
             $redacted[$key] = $value;
+        }
+
+        return $redacted;
+    }
+
+    private static function redactValue(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        $redacted = [];
+        foreach ($value as $key => $item) {
+            if (preg_match('/token|secret|authorization|signature/i', (string) $key) === 1) {
+                $redacted[$key] = 'redacted';
+
+                continue;
+            }
+
+            $redacted[$key] = self::redactValue($item);
         }
 
         return $redacted;

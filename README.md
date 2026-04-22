@@ -627,6 +627,10 @@ Handler mappings are config-first: set `DW_EXTERNAL_EXECUTOR_CONFIG_PATH` to a
 `DW_EXTERNAL_EXECUTOR_CONFIG_OVERLAY` to apply an environment overlay before
 server validation. Cluster discovery publishes the config contract and redacted
 runtime diagnostics at `worker_protocol.external_executor_config_contract`.
+When a leased activity task matches a valid configured activity mapping by task
+queue and activity type, the activity poll response includes a redacted
+`task.external_executor` mapping block with the handler, carrier target, auth
+reference, rollout metadata, and config schema version.
 
 The carrier-neutral external task input envelope is published from
 `GET /api/cluster/info` at `worker_protocol.external_task_input_contract`.
