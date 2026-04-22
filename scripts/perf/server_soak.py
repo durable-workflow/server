@@ -203,56 +203,34 @@ def parse_args() -> argparse.Namespace:
         default=float(os.environ.get("DW_PERF_MAX_SERVER_MEMORY_SLOPE_MB_HOUR", "0")),
         help="If positive and duration is at least 10 minutes, fail when post-warmup server memory slope exceeds this value.",
     )
-    args = parser.parse_args()
-    policy_ids = set(SERVER_CACHE_KEY_PATTERNS)
-    args.max_server_cache_keys_by_policy = parse_policy_limit_map(
-        args.max_server_cache_keys_by_policy,
-        policy_ids,
-        "DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY",
-        parser,
-    )
-    args.max_final_server_cache_keys_by_policy = parse_policy_limit_map(
-        args.max_final_server_cache_keys_by_policy,
-        policy_ids,
-        "DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY",
-        parser,
-    )
-
-    return args
+    return parser.parse_args()
 
 
-def parse_policy_limit_map(
-    raw: str,
-    policy_ids: set[str],
-    source_name: str,
-    parser: argparse.ArgumentParser,
-) -> dict[str, int]:
-    if raw.strip() == "":
+def parse_policy_thresholds(raw: str, option_name: str) -> dict[str, int]:
+    if not raw.strip():
         return {}
 
     try:
         decoded = json.loads(raw)
     except json.JSONDecodeError as exc:
-        parser.error(f"{source_name} must be a JSON object: {exc.msg}")
+        raise ValueError(f"{option_name} must be a JSON object: {exc}") from exc
 
     if not isinstance(decoded, dict):
-        parser.error(f"{source_name} must be a JSON object keyed by bounded-growth cache policy ID.")
+        raise ValueError(f"{option_name} must be a JSON object")
 
-    limits: dict[str, int] = {}
-    for policy_id, limit in decoded.items():
-        if policy_id not in policy_ids:
-            allowed = ", ".join(sorted(policy_ids))
-            parser.error(f"{source_name} contains unknown cache policy {policy_id!r}; allowed: {allowed}")
+    thresholds: dict[str, int] = {}
+    allowed = set(SERVER_CACHE_KEY_PATTERNS)
 
-        if isinstance(limit, bool) or not isinstance(limit, int):
-            parser.error(f"{source_name}.{policy_id} must be a non-negative integer.")
+    for policy_id, value in decoded.items():
+        if policy_id not in allowed:
+            raise ValueError(f"{option_name} contains unknown cache policy {policy_id!r}")
+        if not isinstance(value, int):
+            raise ValueError(f"{option_name}.{policy_id} must be an integer")
+        if value < 0:
+            raise ValueError(f"{option_name}.{policy_id} must be non-negative")
+        thresholds[policy_id] = value
 
-        if limit < 0:
-            parser.error(f"{source_name}.{policy_id} must be a non-negative integer.")
-
-        limits[policy_id] = limit
-
-    return limits
+    return thresholds
 
 
 def http_json(method: str, url: str, headers: dict[str, str], payload: dict[str, Any] | None = None) -> tuple[int, Any]:
@@ -755,8 +733,8 @@ def main() -> int:
                 "max_final_polling_keys": args.max_final_polling_keys,
                 "max_server_cache_keys": args.max_server_cache_keys,
                 "max_final_server_cache_keys": args.max_final_server_cache_keys,
-                "max_server_cache_keys_by_policy": args.max_server_cache_keys_by_policy,
-                "max_final_server_cache_keys_by_policy": args.max_final_server_cache_keys_by_policy,
+                "max_server_cache_keys_by_policy": max_server_cache_keys_by_policy_limit,
+                "max_final_server_cache_keys_by_policy": max_final_server_cache_keys_by_policy_limit,
                 "max_server_memory_slope_mb_hour": args.max_server_memory_slope_mb_hour,
                 "min_sample_coverage": args.min_sample_coverage,
             },
@@ -797,14 +775,14 @@ def main() -> int:
                 f"server cache keys did not drain to {args.max_final_server_cache_keys} "
                 f"(observed {final_server_cache_keys})"
             )
-        for policy_id, limit in sorted(args.max_server_cache_keys_by_policy.items()):
+        for policy_id, limit in max_server_cache_keys_by_policy_limit.items():
             observed = max_server_cache_keys_by_policy.get(policy_id, 0)
             if observed > limit:
                 failures.append(
                     f"{policy_id} cache keys exceeded {limit} "
                     f"(observed {observed})"
                 )
-        for policy_id, limit in sorted(args.max_final_server_cache_keys_by_policy.items()):
+        for policy_id, limit in max_final_server_cache_keys_by_policy_limit.items():
             observed = final_server_cache_keys_by_policy.get(policy_id, 0)
             if observed > limit:
                 failures.append(
