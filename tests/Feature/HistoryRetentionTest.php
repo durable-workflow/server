@@ -8,10 +8,12 @@ use App\Models\WorkflowNamespace;
 use App\Support\NamespaceWorkflowScope;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowMemo;
@@ -236,6 +238,100 @@ class HistoryRetentionTest extends TestCase
         $this->assertNull(WorkflowRunSummary::find($runId));
     }
 
+    public function test_retention_pass_deletes_local_external_payload_references(): void
+    {
+        Queue::fake();
+
+        $storageDirectory = storage_path('framework/testing/retention-external-payloads');
+        File::deleteDirectory($storageDirectory);
+
+        $this->createNamespace('default');
+        WorkflowNamespace::where('name', 'default')->update([
+            'external_payload_storage' => [
+                'driver' => 'local',
+                'enabled' => true,
+                'config' => [
+                    'uri' => 'file://'.$storageDirectory,
+                ],
+            ],
+        ]);
+
+        $runId = $this->createExpiredClosedRun('default', 'wf-prune-external-payload');
+        $path = $storageDirectory.'/payloads/external-result.bin';
+        $payload = 'large encoded payload bytes';
+        File::ensureDirectoryExists(dirname($path));
+        file_put_contents($path, $payload);
+
+        WorkflowHistoryEvent::query()->create([
+            'workflow_run_id' => $runId,
+            'sequence' => 999,
+            'event_type' => HistoryEventType::ActivityCompleted->value,
+            'payload' => [
+                'result' => [
+                    'external_storage' => $this->externalStorageReference('file://'.$path, $payload),
+                ],
+            ],
+            'recorded_at' => now(),
+        ]);
+
+        $this->assertFileExists($path);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/retention/pass')
+            ->assertOk()
+            ->assertJsonPath('processed', 1)
+            ->assertJsonPath('pruned', 1)
+            ->assertJsonPath('results.0.external_payloads_deleted', 1);
+
+        $this->assertFileDoesNotExist($path);
+        $this->assertNull(WorkflowRunSummary::find($runId));
+
+        File::deleteDirectory($storageDirectory);
+    }
+
+    public function test_retention_pass_blocks_external_payload_prune_when_driver_is_unavailable(): void
+    {
+        Queue::fake();
+
+        $this->createNamespace('default');
+        WorkflowNamespace::where('name', 'default')->update([
+            'external_payload_storage' => [
+                'driver' => 's3',
+                'enabled' => true,
+                'config' => [
+                    'bucket' => 'dw-payloads',
+                    'prefix' => 'retention/',
+                ],
+            ],
+        ]);
+
+        $runId = $this->createExpiredClosedRun('default', 'wf-prune-external-s3');
+        $payload = 'large encoded payload bytes';
+
+        WorkflowHistoryEvent::query()->create([
+            'workflow_run_id' => $runId,
+            'sequence' => 999,
+            'event_type' => HistoryEventType::ActivityCompleted->value,
+            'payload' => [
+                'result' => [
+                    'external_storage' => $this->externalStorageReference('s3://dw-payloads/retention/result.bin', $payload),
+                ],
+            ],
+            'recorded_at' => now(),
+        ]);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/retention/pass')
+            ->assertOk()
+            ->assertJsonPath('processed', 1)
+            ->assertJsonPath('pruned', 0)
+            ->assertJsonPath('skipped', 1)
+            ->assertJsonPath('results.0.outcome', 'skipped')
+            ->assertJsonPath('results.0.reason', 'external_payload_storage_driver_unavailable');
+
+        $this->assertNotNull(WorkflowRunSummary::find($runId));
+    }
+
     public function test_retention_pass_with_specific_run_ids(): void
     {
         $this->createNamespace('default');
@@ -452,5 +548,19 @@ class HistoryRetentionTest extends TestCase
         }
 
         return $start->runId();
+    }
+
+    /**
+     * @return array{schema: string, uri: string, sha256: string, size_bytes: int, codec: string}
+     */
+    private function externalStorageReference(string $uri, string $payload): array
+    {
+        return [
+            'schema' => 'durable-workflow.v2.external-payload-reference.v1',
+            'uri' => $uri,
+            'sha256' => hash('sha256', $payload),
+            'size_bytes' => strlen($payload),
+            'codec' => 'avro',
+        ];
     }
 }

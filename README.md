@@ -500,7 +500,9 @@ server resolves `{codec, external_storage}` payload envelopes on workflow
 start, signal, query, update, bridge-adapter, and activity result/failure
 ingress. S3, GCS, and Azure policies can be stored for control-plane parity,
 but server-side dereference remains fail-closed until those runtime drivers
-ship.
+ship. History retention deletes referenced local external payload blobs before
+pruning an expired run, and leaves runs in place when a retained reference uses
+a provider this server cannot delete yet.
 
 ### Workflows
 - `GET /api/workflows` — List workflows (with filters)

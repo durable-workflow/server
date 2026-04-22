@@ -70,6 +70,7 @@ class HistoryRetentionEnforcer
                         'outcome' => 'pruned',
                         'history_events_deleted' => $result['history_events_deleted'],
                         'tasks_deleted' => $result['tasks_deleted'],
+                        'external_payloads_deleted' => $result['external_payloads_deleted'],
                         'deleted' => $result['deleted'],
                     ];
                 } else {
@@ -134,7 +135,7 @@ class HistoryRetentionEnforcer
     }
 
     /**
-     * @return array{pruned: bool, reason: string|null, history_events_deleted: int, tasks_deleted: int, deleted: array<string, int>}
+     * @return array{pruned: bool, reason: string|null, history_events_deleted: int, tasks_deleted: int, external_payloads_deleted: int, deleted: array<string, int>}
      */
     public static function pruneRun(string $namespace, string $runId): array
     {
@@ -157,6 +158,12 @@ class HistoryRetentionEnforcer
             return self::skippedRetentionResult('run_archived');
         }
 
+        $externalPayloads = app(ExternalPayloadRetentionCleanup::class)->deleteForRun($namespace, $runId);
+
+        if ($externalPayloads['blocked']) {
+            return self::skippedRetentionResult($externalPayloads['reason'] ?? 'external_payload_cleanup_blocked');
+        }
+
         Log::info('retention_prune_run', [
             'namespace' => $namespace,
             'run_id' => $runId,
@@ -173,12 +180,13 @@ class HistoryRetentionEnforcer
             'reason' => null,
             'history_events_deleted' => $report['history_events_deleted'] ?? 0,
             'tasks_deleted' => $report['tasks_deleted'] ?? 0,
+            'external_payloads_deleted' => $externalPayloads['deleted'],
             'deleted' => $report,
         ];
     }
 
     /**
-     * @return array{pruned: false, reason: string, history_events_deleted: 0, tasks_deleted: 0, deleted: array<string, int>}
+     * @return array{pruned: false, reason: string, history_events_deleted: 0, tasks_deleted: 0, external_payloads_deleted: 0, deleted: array<string, int>}
      */
     private static function skippedRetentionResult(string $reason): array
     {
@@ -187,6 +195,7 @@ class HistoryRetentionEnforcer
             'reason' => $reason,
             'history_events_deleted' => 0,
             'tasks_deleted' => 0,
+            'external_payloads_deleted' => 0,
             'deleted' => [],
         ];
     }
