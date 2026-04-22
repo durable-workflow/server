@@ -1,5 +1,6 @@
 <?php
 
+use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollSignalStore;
 use App\Support\ProjectionDriftMetrics;
 use App\Support\ServerReadiness;
@@ -114,6 +115,18 @@ return [
             'bound' => 'Recovery scans examine at most server.polling.expired_workflow_task_recovery_scan_limit tasks per poll path, default 5.',
             'admission' => 'Cache add suppresses duplicate recovery attempts for the same expired workflow task during the TTL window.',
             'eviction' => 'Cache TTL only. The durable task row remains the source of truth.',
+        ],
+
+        'history_retention_inline' => [
+            'owner' => HistoryRetentionEnforcer::class,
+            'prefix' => 'server:history-retention-inline:',
+            'dimensions' => [
+                'namespace_hash',
+            ],
+            'ttl' => '60 seconds.',
+            'bound' => 'One short-lived throttle key per namespace receiving worker heartbeats during the TTL window.',
+            'admission' => 'Cache add elects at most one worker heartbeat per namespace per minute to run a one-run retention pass.',
+            'eviction' => 'Cache TTL only. Expired run discovery stays in SQL and no cache index is retained.',
         ],
 
         'readiness_probe' => [

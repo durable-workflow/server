@@ -34,6 +34,7 @@ SERVER_CACHE_KEY_PATTERNS = {
     "task_queue_admission_locks": "*server:task-queue-admission:*",
     "task_queue_dispatch_counters": "*server:task-queue-dispatch:*",
     "workflow_task_expired_lease_recovery": "*server:workflow-task-expired-lease-recovery:*",
+    "history_retention_inline": "*server:history-retention-inline:*",
     "readiness_probe": "*server:readiness:*",
 }
 
