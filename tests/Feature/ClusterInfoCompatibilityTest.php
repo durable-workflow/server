@@ -99,6 +99,10 @@ class ClusterInfoCompatibilityTest extends TestCase
             )
             ->assertJsonPath('client_compatibility.required_protocols.worker_protocol.version', WorkerProtocol::VERSION)
             ->assertJsonPath('client_compatibility.required_protocols.worker_protocol.header', WorkerProtocol::HEADER)
+            ->assertJsonPath(
+                'client_compatibility.required_protocols.worker_protocol.external_task_result_contract.version',
+                1,
+            )
             ->assertJsonPath('client_compatibility.clients.cli.supported_versions', '0.1.x')
             ->assertJsonPath('client_compatibility.clients.sdk-python.supported_versions', '0.2.x');
     }

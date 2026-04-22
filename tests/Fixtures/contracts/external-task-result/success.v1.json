@@ -1,0 +1,28 @@
+{
+  "schema": "durable-workflow.v2.external-task-result",
+  "version": 1,
+  "outcome": {
+    "status": "succeeded",
+    "recorded": true
+  },
+  "task": {
+    "id": "acttask_01HV7D3G3G61TAH2YB5RK45XJS",
+    "kind": "activity_task",
+    "attempt": 1,
+    "idempotency_key": "attempt_01HV7D3KJ1C8WQNNY8MVM8J40X"
+  },
+  "result": {
+    "payload": {
+      "codec": "avro",
+      "blob": "BASE64_AVRO_RESULT"
+    },
+    "metadata": {
+      "content_type": "application/vnd.durable-workflow.result+json"
+    }
+  },
+  "metadata": {
+    "handler": "billing.charge-card",
+    "carrier": "process-carrier",
+    "duration_ms": 184
+  }
+}

@@ -90,6 +90,33 @@ class ClusterInfoTest extends TestCase
             );
     }
 
+    public function test_it_publishes_external_task_result_contract_manifest(): void
+    {
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath(
+                'worker_protocol.external_task_result_contract.schema',
+                'durable-workflow.v2.external-task-result.contract',
+            )
+            ->assertJsonPath('worker_protocol.external_task_result_contract.version', 1)
+            ->assertJsonPath(
+                'worker_protocol.external_task_result_contract.envelopes.failure.failure_fields.classification.values.6',
+                'malformed_output',
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_task_result_contract.stderr_policy',
+                'logs_only_no_machine_meaning',
+            )
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.external_task_result.schema',
+                'durable-workflow.v2.external-task-result.contract',
+            )
+            ->assertJsonPath(
+                'client_compatibility.required_protocols.worker_protocol.external_task_result_contract.version',
+                1,
+            );
+    }
+
     public function test_it_advertises_response_compression_in_capabilities(): void
     {
         $this->getJson('/api/cluster/info')

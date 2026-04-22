@@ -96,6 +96,7 @@ class WorkerProtocol
      *     response_compression: list<string>,
      *     history_compression: array{supported_encodings: list<string>, compression_threshold: int},
      *     external_task_input: array<string, mixed>,
+     *     external_task_result: array<string, mixed>,
      * }
      */
     public static function serverCapabilities(): array
@@ -133,6 +134,10 @@ class WorkerProtocol
                 'schema' => ExternalTaskInputContract::SCHEMA,
                 'version' => ExternalTaskInputContract::VERSION,
             ],
+            'external_task_result' => [
+                'schema' => ExternalTaskResultContract::SCHEMA,
+                'version' => ExternalTaskResultContract::VERSION,
+            ],
         ];
     }
 
@@ -152,6 +157,7 @@ class WorkerProtocol
             'version' => (string) config('server.worker_protocol.version', self::VERSION),
             'server_capabilities' => self::serverCapabilities(),
             'external_task_input_contract' => ExternalTaskInputContract::manifest(),
+            'external_task_result_contract' => ExternalTaskResultContract::manifest(),
         ];
     }
 

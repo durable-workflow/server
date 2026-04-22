@@ -35,6 +35,10 @@ final class ClientCompatibility
                         'schema' => ExternalTaskInputContract::SCHEMA,
                         'version' => ExternalTaskInputContract::VERSION,
                     ],
+                    'external_task_result_contract' => [
+                        'schema' => ExternalTaskResultContract::SCHEMA,
+                        'version' => ExternalTaskResultContract::VERSION,
+                    ],
                 ],
             ],
             'clients' => [
@@ -52,6 +56,7 @@ final class ClientCompatibility
                         'control_plane.request_contract',
                         'worker_protocol.version',
                         'worker_protocol.external_task_input_contract',
+                        'worker_protocol.external_task_result_contract',
                     ],
                 ],
             ],
