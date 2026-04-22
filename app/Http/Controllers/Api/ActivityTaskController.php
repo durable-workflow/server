@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Models\WorkerRegistration;
 use App\Support\ActivityTaskPoller;
 use App\Support\ExternalExecutorConfigContract;
+use App\Support\InvocableCarrierContract;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerProtocol;
@@ -69,6 +70,15 @@ class ActivityTaskController
             supportedActivityTypes: $this->nonEmptyStringArray($worker->supported_activity_types),
         );
 
+        $deadlines = $claim === null ? null : $this->executionDeadlines($claim['activity_execution_id'] ?? null);
+        $externalExecutor = $claim === null ? null : $this->externalExecutorMapping(
+            (string) $claim['queue'],
+            (string) $claim['activity_type'],
+            (string) $claim['task_id'],
+            (string) $claim['activity_attempt_id'],
+            $deadlines,
+        );
+
         return WorkerProtocol::json([
             'task' => $claim === null ? null : array_filter([
                 'task_id' => $claim['task_id'],
@@ -87,11 +97,8 @@ class ActivityTaskController
                 'connection' => $claim['connection'],
                 'lease_owner' => $claim['lease_owner'],
                 'lease_expires_at' => $claim['lease_expires_at'],
-                'deadlines' => $this->executionDeadlines($claim['activity_execution_id'] ?? null),
-                'external_executor' => ExternalExecutorConfigContract::resolveActivityMapping(
-                    (string) $claim['queue'],
-                    (string) $claim['activity_type'],
-                ),
+                'deadlines' => $deadlines,
+                'external_executor' => $externalExecutor,
             ], static fn (mixed $v): bool => $v !== null),
         ]);
     }
@@ -490,6 +497,52 @@ class ActivityTaskController
         ], static fn (mixed $v): bool => $v !== null);
 
         return $deadlines !== [] ? $deadlines : null;
+    }
+
+    /**
+     * @param  array<string, string>|null  $deadlines
+     * @return array<string, mixed>|null
+     */
+    private function externalExecutorMapping(
+        string $taskQueue,
+        string $activityType,
+        string $taskId,
+        string $activityAttemptId,
+        ?array $deadlines,
+    ): ?array {
+        $mapping = ExternalExecutorConfigContract::resolveActivityMapping($taskQueue, $activityType);
+        if ($mapping === null) {
+            return null;
+        }
+
+        $carrier = is_array($mapping['carrier'] ?? null) ? $mapping['carrier'] : [];
+        if (($carrier['type'] ?? null) !== InvocableCarrierContract::CARRIER_TYPE) {
+            return $mapping;
+        }
+
+        $target = is_array($carrier['target'] ?? null) ? $carrier['target'] : [];
+        $contract = InvocableCarrierContract::manifest();
+
+        $mapping['dispatch'] = array_filter([
+            'state' => 'poll_delivered',
+            'carrier_type' => InvocableCarrierContract::CARRIER_TYPE,
+            'method' => 'POST',
+            'request_content_type' => $contract['request']['content_type'],
+            'response_content_type' => $contract['response']['content_type'],
+            'timeout_seconds' => is_int($target['timeout_seconds'] ?? null) ? $target['timeout_seconds'] : null,
+            'task_deadline_fields' => $deadlines === null ? [] : array_keys($deadlines),
+            'idempotency_key' => $activityAttemptId,
+            'idempotency_key_source' => 'task.activity_attempt_id',
+            'retry_authority' => $contract['rollout_safety']['retry_authority'],
+            'failure_mapping' => $contract['failure_mapping'],
+            'result_reporting' => [
+                'complete_path' => "/api/worker/activity-tasks/{$taskId}/complete",
+                'fail_path' => "/api/worker/activity-tasks/{$taskId}/fail",
+                'ownership_fields' => ['activity_attempt_id', 'lease_owner'],
+            ],
+        ], static fn (mixed $value): bool => $value !== null);
+
+        return $mapping;
     }
 
     private function heartbeatProgress(array $validated): array

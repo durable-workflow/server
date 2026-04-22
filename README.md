@@ -677,6 +677,11 @@ result envelope. The server validates `invocable_http` carrier config
 fail-closed, including non-empty `url`, `POST` method, bounded
 `timeout_seconds`, and activity-only capabilities, before mapping it onto
 pollable activity tasks.
+For leased invocable mappings, `task.external_executor.dispatch` also exposes
+the attempt-level diagnostics needed to reason about one handler call: content
+types, configured transport timeout, task deadline fields, idempotency key
+source, durable retry authority, failure mapping, and the complete/fail result
+reporting paths.
 
 The carrier-neutral external task input envelope is published from
 `GET /api/cluster/info` at `worker_protocol.external_task_input_contract`.

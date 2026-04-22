@@ -517,8 +517,10 @@ class ActivityWorkerProtocolTest extends TestCase
             ],
             'carriers' => [
                 'artisan-operator' => [
-                    'type' => 'process',
-                    'command' => ['php', 'artisan', 'durable:external-handler'],
+                    'type' => 'invocable_http',
+                    'url' => 'https://handlers.example.test/durable/activity',
+                    'method' => 'POST',
+                    'timeout_seconds' => 45,
                     'secret' => 'must-not-leak',
                     'capabilities' => ['activity_task'],
                 ],
@@ -547,12 +549,16 @@ class ActivityWorkerProtocolTest extends TestCase
             supportedActivityTypes: ['tests.external-greeting-activity'],
         );
 
-        $this->withHeaders($this->workerHeaders())
+        $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/activity-tasks/poll', [
                 'worker_id' => 'php-activity-config-mapping',
                 'task_queue' => 'external-activities',
-            ])
-            ->assertOk()
+            ]);
+
+        $activityAttemptId = (string) $poll->json('task.activity_attempt_id');
+        $taskId = (string) $poll->json('task.task_id');
+
+        $poll->assertOk()
             ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity')
             ->assertJsonPath('task.external_executor.schema', 'durable-workflow.external-executor.config.mapping')
             ->assertJsonPath('task.external_executor.name', 'greeting.external')
@@ -561,9 +567,33 @@ class ActivityWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.external_executor.auth_ref', 'ops-profile')
             ->assertJsonPath('task.external_executor.auth.token', 'redacted')
             ->assertJsonPath('task.external_executor.carrier.name', 'artisan-operator')
-            ->assertJsonPath('task.external_executor.carrier.type', 'process')
-            ->assertJsonPath('task.external_executor.carrier.target.command.2', 'durable:external-handler')
-            ->assertJsonPath('task.external_executor.carrier.target.secret', 'redacted');
+            ->assertJsonPath('task.external_executor.carrier.type', 'invocable_http')
+            ->assertJsonPath('task.external_executor.carrier.target.url', 'https://handlers.example.test/durable/activity')
+            ->assertJsonPath('task.external_executor.carrier.target.secret', 'redacted')
+            ->assertJsonPath('task.external_executor.dispatch.state', 'poll_delivered')
+            ->assertJsonPath('task.external_executor.dispatch.carrier_type', 'invocable_http')
+            ->assertJsonPath('task.external_executor.dispatch.method', 'POST')
+            ->assertJsonPath('task.external_executor.dispatch.timeout_seconds', 45)
+            ->assertJsonPath(
+                'task.external_executor.dispatch.request_content_type',
+                'application/vnd.durable-workflow.external-task-input+json',
+            )
+            ->assertJsonPath(
+                'task.external_executor.dispatch.response_content_type',
+                'application/vnd.durable-workflow.external-task-result+json',
+            )
+            ->assertJsonPath('task.external_executor.dispatch.idempotency_key', $activityAttemptId)
+            ->assertJsonPath('task.external_executor.dispatch.idempotency_key_source', 'task.activity_attempt_id')
+            ->assertJsonPath(
+                'task.external_executor.dispatch.failure_mapping.transport_timeout',
+                'failure.kind=timeout classification=deadline_exceeded',
+            )
+            ->assertJsonPath(
+                'task.external_executor.dispatch.result_reporting.complete_path',
+                "/api/worker/activity-tasks/{$taskId}/complete",
+            )
+            ->assertJsonPath('task.external_executor.dispatch.result_reporting.ownership_fields.0', 'activity_attempt_id')
+            ->assertJsonPath('task.external_executor.dispatch.result_reporting.ownership_fields.1', 'lease_owner');
     }
 
     // ── Activity task failure reporting ──────────────────────────────
