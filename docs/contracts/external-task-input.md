@@ -15,6 +15,10 @@ The authoritative machine-readable contract is published from
 - `fixtures.workflow_task`
 - `fixtures.activity_task`
 
+Each fixture is published as a consumable artifact object, not as a repository
+path. Carriers can read the `artifact`, `media_type`, `schema`, `version`,
+`sha256`, and embedded `example` fields directly from cluster info.
+
 Version 1 exposes durable facts only: task identity, task kind, attempt number,
 task queue, handler name, workflow/run identity, lease owner and expiry,
 payload metadata, deadlines where relevant, headers, and an idempotency key.
@@ -32,7 +36,7 @@ external-storage payload reference for a provider it does not support must fail
 the task with `unsupported_payload_reference`; it must not silently treat the
 reference as an inline payload.
 
-Stable fixtures live in:
+The stable fixture artifacts are:
 
-- `tests/Fixtures/contracts/external-task-input/workflow-task.v1.json`
-- `tests/Fixtures/contracts/external-task-input/activity-task.v1.json`
+- `durable-workflow.v2.external-task-input.workflow-task.v1`
+- `durable-workflow.v2.external-task-input.activity-task.v1`

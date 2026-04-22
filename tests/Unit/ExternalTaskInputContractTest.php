@@ -21,6 +21,15 @@ class ExternalTaskInputContractTest extends TestCase
         $this->assertContains('lease', $manifest['envelopes']['workflow_task']['required_fields']);
         $this->assertContains('deadlines', $manifest['envelopes']['activity_task']['required_fields']);
         $this->assertArrayHasKey('external_storage', $manifest['payload_support']);
+        $this->assertSame(
+            'durable-workflow.v2.external-task-input.workflow-task.v1',
+            $manifest['fixtures']['workflow_task']['artifact'],
+        );
+        $this->assertSame(
+            'application/vnd.durable-workflow.external-task-input+json',
+            $manifest['fixtures']['activity_task']['media_type'],
+        );
+        $this->assertStringNotContainsString('tests/Fixtures', json_encode($manifest['fixtures']));
     }
 
     /**
@@ -29,12 +38,19 @@ class ExternalTaskInputContractTest extends TestCase
     public function test_fixtures_match_declared_required_fields(string $kind): void
     {
         $manifest = ExternalTaskInputContract::manifest();
-        $fixturePath = dirname(__DIR__, 2).'/'.$manifest['fixtures'][$kind];
+        $fixturePath = dirname(__DIR__, 2).'/tests/Fixtures/contracts/external-task-input/'.str_replace('_', '-', $kind).'.v1.json';
         $fixture = json_decode((string) file_get_contents($fixturePath), true);
 
         $this->assertIsArray($fixture);
+        $this->assertSame($fixture, $manifest['fixtures'][$kind]['example']);
+        $this->assertSame(
+            hash('sha256', (string) json_encode($fixture, JSON_UNESCAPED_SLASHES)),
+            $manifest['fixtures'][$kind]['sha256'],
+        );
         $this->assertSame('durable-workflow.v2.external-task-input', $fixture['schema']);
         $this->assertSame(1, $fixture['version']);
+        $this->assertSame($fixture['schema'], $manifest['fixtures'][$kind]['schema']);
+        $this->assertSame($fixture['version'], $manifest['fixtures'][$kind]['version']);
         $this->assertSame($manifest['envelopes'][$kind]['kind'], $fixture['task']['kind']);
 
         foreach ($manifest['envelopes'][$kind]['required_fields'] as $field) {

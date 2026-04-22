@@ -81,6 +81,14 @@ class ClusterInfoTest extends TestCase
                 'task.deadlines.heartbeat',
             )
             ->assertJsonPath(
+                'worker_protocol.external_task_input_contract.fixtures.workflow_task.artifact',
+                'durable-workflow.v2.external-task-input.workflow-task.v1',
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_task_input_contract.fixtures.activity_task.example.task.kind',
+                'activity_task',
+            )
+            ->assertJsonPath(
                 'worker_protocol.server_capabilities.external_task_input.schema',
                 'durable-workflow.v2.external-task-input.contract',
             )

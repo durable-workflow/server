@@ -628,9 +628,9 @@ The carrier-neutral external task input envelope is published from
 That manifest freezes the workflow-task and activity-task input shapes,
 including task identity, attempt, queue, handler, workflow/run context, lease
 metadata, deadlines, payload metadata, idempotency keys, and versioning rules.
-Shared JSON fixtures live under
-`tests/Fixtures/contracts/external-task-input/`, with a human-readable summary
-in `docs/contracts/external-task-input.md`.
+Shared JSON fixtures are embedded in the manifest as artifact objects with
+stable artifact names, media types, SHA-256 digests, and examples. A
+human-readable summary lives in `docs/contracts/external-task-input.md`.
 
 Within worker protocol version `1.0`, `worker_protocol.version`,
 `server_capabilities.long_poll_timeout`, and
