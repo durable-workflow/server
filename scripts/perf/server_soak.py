@@ -662,6 +662,7 @@ def evidence_provenance(base_url: str, compose_project: str) -> dict[str, Any]:
         "checked_out_sha": checked_out_sha,
         "github_sha_matches_checked_out": github_sha == checked_out_sha,
         "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
+        "event_name": os.environ.get("GITHUB_EVENT_NAME", ""),
         "run_id": os.environ.get("GITHUB_RUN_ID", ""),
         "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
         "runner_name": os.environ.get("RUNNER_NAME", ""),
@@ -705,6 +706,10 @@ def evidence_trust_profile(
         reasons.append("GitHub Actions repository is not durable-workflow/server")
     if str(provenance.get("ref") or "").strip() != "refs/heads/main":
         reasons.append("GitHub Actions ref is not refs/heads/main")
+    if str(provenance.get("workflow") or "").strip() != "Server Perf":
+        reasons.append("GitHub Actions workflow is not Server Perf")
+    if str(provenance.get("event_name") or "").strip() not in ("schedule", "workflow_dispatch"):
+        reasons.append("GitHub Actions event is not schedule or workflow_dispatch")
     if not bool(provenance.get("github_sha_matches_checked_out")):
         reasons.append("GitHub Actions SHA does not match checked-out source")
     if not tracked_working_tree_clean:
@@ -724,6 +729,8 @@ def evidence_trust_profile(
         "requires_self_hosted_runner": True,
         "requires_github_actions_provenance": True,
         "requires_server_main_ref": True,
+        "requires_server_perf_workflow": True,
+        "requires_trusted_event": True,
         "requires_github_sha_match": True,
         "requires_compose_resource_sampling": True,
         "requires_clean_tracked_working_tree": True,
@@ -737,6 +744,7 @@ def github_actions_provenance_present(provenance: dict[str, Any]) -> bool:
         "ref",
         "sha",
         "workflow",
+        "event_name",
         "run_id",
         "run_attempt",
     )
