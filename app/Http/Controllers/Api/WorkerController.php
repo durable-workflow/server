@@ -13,6 +13,7 @@ use App\Support\WorkflowTaskPoller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\WorkflowTask;
@@ -487,6 +488,8 @@ class WorkerController
             'commands.*.timeout_seconds' => ['nullable', 'integer', 'min:0'],
         ]);
 
+        $this->validateWorkflowTaskCommandScopes($validated['commands']);
+
         if ($response = $this->guardWorkflowTaskOwnership(
             $request,
             $namespace,
@@ -527,6 +530,122 @@ class WorkerController
             'created_task_ids' => $outcome['created_task_ids'] ?? [],
             'reason' => $outcome['reason'],
         ], $this->workflowOutcomeStatus($outcome['reason']));
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     *
+     * @throws ValidationException
+     */
+    private function validateWorkflowTaskCommandScopes(array $commands): void
+    {
+        $errors = [];
+
+        foreach ($commands as $index => $command) {
+            $type = $command['type'] ?? null;
+
+            if (! is_string($type)) {
+                continue;
+            }
+
+            if ($this->hasCommandValue($command, 'retry_policy')
+                && ! in_array($type, ['schedule_activity', 'start_child_workflow'], true)
+            ) {
+                $errors["commands.{$index}.retry_policy"][] =
+                    'retry_policy is only supported for schedule_activity and start_child_workflow commands.';
+            }
+
+            foreach (['start_to_close_timeout', 'schedule_to_start_timeout', 'schedule_to_close_timeout', 'heartbeat_timeout'] as $field) {
+                if ($this->hasCommandValue($command, $field) && $type !== 'schedule_activity') {
+                    $errors["commands.{$index}.{$field}"][] =
+                        "{$field} is only supported for schedule_activity commands.";
+                }
+            }
+
+            foreach (['execution_timeout_seconds', 'run_timeout_seconds'] as $field) {
+                if ($this->hasCommandValue($command, $field) && $type !== 'start_child_workflow') {
+                    $errors["commands.{$index}.{$field}"][] =
+                        "{$field} is only supported for start_child_workflow commands.";
+                }
+            }
+
+            if ($this->hasCommandValue($command, 'non_retryable')
+                && ! in_array($type, ['fail_workflow', 'fail_update'], true)
+            ) {
+                $errors["commands.{$index}.non_retryable"][] =
+                    'non_retryable is only supported for fail_workflow and fail_update commands.';
+            }
+
+            if ($type === 'schedule_activity') {
+                $this->validateActivityTimeoutEnvelope($command, $index, $errors);
+            }
+
+            if ($type === 'start_child_workflow') {
+                $this->validateChildWorkflowTimeoutEnvelope($command, $index, $errors);
+            }
+        }
+
+        if ($errors !== []) {
+            throw ValidationException::withMessages($errors);
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $command
+     */
+    private function hasCommandValue(array $command, string $field): bool
+    {
+        return array_key_exists($field, $command) && $command[$field] !== null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $command
+     * @param  array<string, list<string>>  $errors
+     */
+    private function validateActivityTimeoutEnvelope(array $command, int $index, array &$errors): void
+    {
+        $startToClose = $this->optionalCommandInt($command, 'start_to_close_timeout');
+        $scheduleToStart = $this->optionalCommandInt($command, 'schedule_to_start_timeout');
+        $scheduleToClose = $this->optionalCommandInt($command, 'schedule_to_close_timeout');
+        $heartbeat = $this->optionalCommandInt($command, 'heartbeat_timeout');
+
+        if ($heartbeat !== null && $startToClose !== null && $heartbeat > $startToClose) {
+            $errors["commands.{$index}.heartbeat_timeout"][] =
+                'heartbeat_timeout cannot exceed start_to_close_timeout.';
+        }
+
+        if ($startToClose !== null && $scheduleToClose !== null && $startToClose > $scheduleToClose) {
+            $errors["commands.{$index}.start_to_close_timeout"][] =
+                'start_to_close_timeout cannot exceed schedule_to_close_timeout.';
+        }
+
+        if ($scheduleToStart !== null && $scheduleToClose !== null && $scheduleToStart > $scheduleToClose) {
+            $errors["commands.{$index}.schedule_to_start_timeout"][] =
+                'schedule_to_start_timeout cannot exceed schedule_to_close_timeout.';
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $command
+     * @param  array<string, list<string>>  $errors
+     */
+    private function validateChildWorkflowTimeoutEnvelope(array $command, int $index, array &$errors): void
+    {
+        $executionTimeout = $this->optionalCommandInt($command, 'execution_timeout_seconds');
+        $runTimeout = $this->optionalCommandInt($command, 'run_timeout_seconds');
+
+        if ($executionTimeout !== null && $runTimeout !== null && $runTimeout > $executionTimeout) {
+            $errors["commands.{$index}.run_timeout_seconds"][] =
+                'run_timeout_seconds cannot exceed execution_timeout_seconds.';
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $command
+     */
+    private function optionalCommandInt(array $command, string $field): ?int
+    {
+        return is_int($command[$field] ?? null) ? $command[$field] : null;
     }
 
     /**

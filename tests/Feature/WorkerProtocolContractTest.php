@@ -105,6 +105,109 @@ class WorkerProtocolContractTest extends TestCase
     }
 
     /**
+     * @param  array<string, mixed>  $command
+     */
+    #[DataProvider('invalidWorkflowTaskCommandScopeProvider')]
+    public function test_workflow_task_command_rejects_retry_and_timeout_fields_outside_their_scope(
+        array $command,
+        string $errorField,
+        string $expectedMessage,
+    ): void {
+        $response = $this->withHeaders($this->workerHeaders() + [
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ])->postJson('/api/worker/workflow-tasks/missing-task/complete', [
+            'lease_owner' => 'command-scope-worker',
+            'workflow_task_attempt' => 1,
+            'commands' => [$command],
+        ]);
+
+        $response->assertStatus(422)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('reason', 'validation_failed')
+            ->assertJsonMissingPath('control_plane');
+
+        $this->assertSame(
+            $expectedMessage,
+            $response->json('validation_errors')[$errorField][0] ?? null,
+        );
+    }
+
+    /**
+     * @return array<string, array{command: array<string, mixed>, errorField: string, expectedMessage: string}>
+     */
+    public static function invalidWorkflowTaskCommandScopeProvider(): array
+    {
+        return [
+            'retry policy on completion' => [
+                'command' => [
+                    'type' => 'complete_workflow',
+                    'retry_policy' => ['max_attempts' => 2],
+                ],
+                'errorField' => 'commands.0.retry_policy',
+                'expectedMessage' => 'retry_policy is only supported for schedule_activity and start_child_workflow commands.',
+            ],
+            'activity timeout on child command' => [
+                'command' => [
+                    'type' => 'start_child_workflow',
+                    'workflow_type' => 'tests.external-child-workflow',
+                    'start_to_close_timeout' => 30,
+                ],
+                'errorField' => 'commands.0.start_to_close_timeout',
+                'expectedMessage' => 'start_to_close_timeout is only supported for schedule_activity commands.',
+            ],
+            'child timeout on activity command' => [
+                'command' => [
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'tests.external-activity',
+                    'run_timeout_seconds' => 30,
+                ],
+                'errorField' => 'commands.0.run_timeout_seconds',
+                'expectedMessage' => 'run_timeout_seconds is only supported for start_child_workflow commands.',
+            ],
+            'non retryable on completion' => [
+                'command' => [
+                    'type' => 'complete_workflow',
+                    'non_retryable' => true,
+                ],
+                'errorField' => 'commands.0.non_retryable',
+                'expectedMessage' => 'non_retryable is only supported for fail_workflow and fail_update commands.',
+            ],
+            'heartbeat exceeds start to close' => [
+                'command' => [
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'tests.external-activity',
+                    'start_to_close_timeout' => 10,
+                    'heartbeat_timeout' => 30,
+                ],
+                'errorField' => 'commands.0.heartbeat_timeout',
+                'expectedMessage' => 'heartbeat_timeout cannot exceed start_to_close_timeout.',
+            ],
+            'schedule to start exceeds schedule to close' => [
+                'command' => [
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'tests.external-activity',
+                    'schedule_to_start_timeout' => 60,
+                    'schedule_to_close_timeout' => 30,
+                ],
+                'errorField' => 'commands.0.schedule_to_start_timeout',
+                'expectedMessage' => 'schedule_to_start_timeout cannot exceed schedule_to_close_timeout.',
+            ],
+            'child run exceeds execution' => [
+                'command' => [
+                    'type' => 'start_child_workflow',
+                    'workflow_type' => 'tests.external-child-workflow',
+                    'execution_timeout_seconds' => 60,
+                    'run_timeout_seconds' => 120,
+                ],
+                'errorField' => 'commands.0.run_timeout_seconds',
+                'expectedMessage' => 'run_timeout_seconds cannot exceed execution_timeout_seconds.',
+            ],
+        ];
+    }
+
+    /**
      * @return array<string, array{path: string, body: array<string, mixed>, errorFields: list<string>}>
      */
     public static function workerValidationEndpointProvider(): array

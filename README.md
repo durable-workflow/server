@@ -476,6 +476,18 @@ curl "$SERVER/api/workflows/order-42/runs/abc123/history" \
 | `record_version_marker` | No | Record a version marker |
 | `upsert_search_attributes` | No | Update search attributes |
 
+Retry and timeout fields are scoped to the command layer they control.
+`schedule_activity` accepts activity `retry_policy`,
+`start_to_close_timeout`, `schedule_to_start_timeout`,
+`schedule_to_close_timeout`, and `heartbeat_timeout`; heartbeat, start, and
+schedule-to-start budgets cannot exceed schedule-to-close or start-to-close
+where those outer budgets are present. `start_child_workflow` accepts child
+workflow `retry_policy`, `execution_timeout_seconds`, and
+`run_timeout_seconds`; the run timeout cannot exceed the execution timeout.
+`non_retryable` is only a failure outcome flag on `fail_workflow` and
+`fail_update`. HTTP transport retry policy is configured by clients outside the
+workflow-task command payload.
+
 ## API Overview
 
 ### System
