@@ -21,9 +21,9 @@ added without a TTL, admission, or cardinality contract.
   suppression counters are documented.
 - New Prometheus or scrape-style surfaces must use the same policy file before
   exposing labels.
-- Prometheus label names emitted by the perf harness must exactly match the
-  declared metric dimensions, so adding a label requires a reviewed cardinality
-  policy in the same change.
+- Prometheus label names emitted by app code or the perf harness must exactly
+  match the declared metric dimensions, so adding a label requires a reviewed
+  cardinality policy in the same change.
 - Remote-write scrape labels must stay deployment-scoped. Per-run values such
   as `GITHUB_RUN_ID` and `RUNNER_NAME` belong in `summary.json` provenance, not
   in Prometheus labels that create new series for every soak.
@@ -64,8 +64,8 @@ added without a TTL, admission, or cardinality contract.
   `cache_keys` entry;
 - every `dw_*` metric name literal in `app/` and `scripts/perf/` must be
   covered by a `metrics` entry;
-- perf-harness Prometheus labels must exactly match the corresponding metric
-  dimensions declared in the policy;
+- Prometheus labels emitted by app or perf-harness source must exactly match
+  the corresponding metric dimensions declared in the policy;
 - perf-harness remote-write target labels must not include per-run or
   per-runner dimensions;
 - each policy entry must include the required review fields;

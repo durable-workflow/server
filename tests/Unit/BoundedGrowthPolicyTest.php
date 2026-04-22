@@ -167,12 +167,12 @@ class BoundedGrowthPolicyTest extends TestCase
         }
     }
 
-    public function test_perf_harness_prometheus_labels_match_metric_policy_dimensions(): void
+    public function test_prometheus_labels_in_bounded_growth_source_match_metric_policy_dimensions(): void
     {
         $declared = $this->policyMetrics();
 
-        foreach ($this->prometheusLabelsInPerfHarness() as $metric => $labels) {
-            $this->assertArrayHasKey($metric, $declared, "{$metric} appears in the perf harness but has no metric policy.");
+        foreach ($this->prometheusLabelsInBoundedGrowthSource() as $metric => $labels) {
+            $this->assertArrayHasKey($metric, $declared, "{$metric} exposes Prometheus labels but has no metric policy.");
 
             $declaredLabels = array_keys($declared[$metric]['dimensions'] ?? []);
             sort($declaredLabels);
@@ -337,11 +337,11 @@ class BoundedGrowthPolicyTest extends TestCase
     /**
      * @return array<string, list<string>>
      */
-    private function prometheusLabelsInPerfHarness(): array
+    private function prometheusLabelsInBoundedGrowthSource(): array
     {
         $labelsByMetric = [];
 
-        foreach ($this->filesWithExtensions(self::$repoRoot.'/scripts/perf', ['py', 'sh']) as $file) {
+        foreach ($this->metricSourceFiles() as $file) {
             $source = file_get_contents($file);
             $this->assertNotFalse($source, "{$file} must be readable");
 
