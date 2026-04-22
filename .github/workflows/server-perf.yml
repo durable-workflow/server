@@ -166,6 +166,7 @@ jobs:
           DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY: '{"workflow_task_poll_requests":2048,"long_poll_signals":2048,"workflow_query_tasks":128,"task_queue_admission_locks":256,"task_queue_dispatch_counters":256,"workflow_task_expired_lease_recovery":256,"history_retention_inline":128,"readiness_probe":32}'
           DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY: '{"workflow_task_poll_requests":0,"long_poll_signals":0,"workflow_query_tasks":0,"task_queue_admission_locks":0,"task_queue_dispatch_counters":0,"workflow_task_expired_lease_recovery":0,"history_retention_inline":0,"readiness_probe":0}'
           DW_PERF_MAX_SERVER_MEMORY_SLOPE_MB_HOUR: "128"
+          DW_PERF_REQUIRE_TRUSTED_EVIDENCE: "true"
           DW_PERF_REMOTE_WRITE_ENABLED: ${{ github.event_name != 'workflow_dispatch' || inputs.remote_write }}
           DW_PERF_REMOTE_WRITE_URL: ${{ vars.DW_PERF_REMOTE_WRITE_URL }}
           DW_PERF_REMOTE_WRITE_USERNAME: ${{ vars.DW_PERF_REMOTE_WRITE_USERNAME }}

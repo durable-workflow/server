@@ -63,7 +63,9 @@ signal meaningful.
 Both workflow modes pass explicit runner provenance into the artifact. Short
 smokes set `RUNNER_ENVIRONMENT=github-hosted`; long soaks set
 `RUNNER_ENVIRONMENT=self-hosted`, which is required before `summary.json` can be
-classified as trusted long-soak evidence.
+classified as trusted long-soak evidence. The self-hosted job also sets
+`DW_PERF_REQUIRE_TRUSTED_EVIDENCE=true`, so it fails if the run completes but the
+artifact is ineligible for `trusted_long_soak_v1`.
 
 ## Local Run
 
@@ -90,6 +92,8 @@ and requires a checked-out source commit matching `GITHUB_SHA`, so artifacts
 from uncommitted source, policy edits, feature branches, forks, unrelated
 workflows, pull-request smokes, misconfigured checkouts, or ad hoc local runs
 are marked ineligible for the trusted profile.
+When `DW_PERF_REQUIRE_TRUSTED_EVIDENCE=true`, the harness turns that ineligible
+profile into a failed run and records the profile reasons in `summary.json`.
 The harness fails when it cannot collect at least `DW_PERF_MIN_SAMPLE_COVERAGE`
 of the expected periodic samples, which defaults to 80%. The final post-drain
 sample is included in the artifact but does not count toward the periodic sample

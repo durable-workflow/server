@@ -139,7 +139,11 @@ feature-branch workflow can still produce useful artifacts, but it cannot
 satisfy the trusted long-soak evidence profile just by setting
 `RUNNER_ENVIRONMENT=self-hosted`.
 The CI smoke workflow sets `RUNNER_ENVIRONMENT=github-hosted` so those artifacts
-are traceable without being eligible for the trusted long-soak profile.
+are traceable without being eligible for the trusted long-soak profile. The
+self-hosted soak workflow sets `DW_PERF_REQUIRE_TRUSTED_EVIDENCE=true`, so a
+scheduled or manual soak fails if the artifact cannot satisfy
+`trusted_long_soak_v1` even when the load generator itself stayed inside the
+bounded-growth budgets.
 
 Per-policy limits can be enforced with JSON maps keyed by policy ID:
 `DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY` for maximum observed keys and

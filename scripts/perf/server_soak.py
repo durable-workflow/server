@@ -39,6 +39,14 @@ SERVER_CACHE_KEY_PATTERNS = {
 }
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
 class Metrics:
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -203,6 +211,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=float(os.environ.get("DW_PERF_MAX_SERVER_MEMORY_SLOPE_MB_HOUR", "0")),
         help="If positive and duration is at least 10 minutes, fail when post-warmup server memory slope exceeds this value.",
+    )
+    parser.add_argument(
+        "--require-trusted-evidence",
+        action="store_true",
+        default=env_bool("DW_PERF_REQUIRE_TRUSTED_EVIDENCE"),
+        help="Fail if the generated summary is not eligible for trusted_long_soak_v1 evidence.",
     )
     args = parser.parse_args()
     policy_ids = set(SERVER_CACHE_KEY_PATTERNS)
@@ -930,6 +944,7 @@ def main() -> int:
                 "max_final_server_cache_keys_by_policy": args.max_final_server_cache_keys_by_policy,
                 "max_server_memory_slope_mb_hour": args.max_server_memory_slope_mb_hour,
                 "min_sample_coverage": args.min_sample_coverage,
+                "require_trusted_evidence": args.require_trusted_evidence,
             },
             "evidence": {
                 "started_at": started_at.isoformat().replace("+00:00", "Z"),
@@ -1015,6 +1030,14 @@ def main() -> int:
             max_final_server_cache_keys_by_policy=args.max_final_server_cache_keys_by_policy,
             failures=failures,
         )
+        trust_reasons = summary["evidence"]["trust"].get("reasons") or []
+        if args.require_trusted_evidence and not summary["evidence"]["trust"].get("eligible"):
+            failures.append(
+                "trusted evidence profile is ineligible"
+                + (f": {trust_reasons}" if trust_reasons else "")
+            )
+            metrics.mark_assertion_failed()
+            summary["failures"] = failures
 
         metrics_path.write_text(metrics.prometheus(), encoding="utf-8")
         summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -79,6 +79,10 @@ class ServerPerfHarnessContractTest extends TestCase
             'per_policy_threshold_reasons',
             'max_server_cache_keys_by_policy=args.max_server_cache_keys_by_policy',
             'max_final_server_cache_keys_by_policy=args.max_final_server_cache_keys_by_policy',
+            'DW_PERF_REQUIRE_TRUSTED_EVIDENCE',
+            '--require-trusted-evidence',
+            'require_trusted_evidence',
+            'trusted evidence profile is ineligible',
             'duration below trusted long-soak minimum',
             'bounded-growth assertions failed',
         ] as $needle) {
@@ -180,6 +184,30 @@ class ServerPerfHarnessContractTest extends TestCase
             '/name:\s+Self-hosted polling cache soak.*?RUNNER_ENVIRONMENT:\s+"self-hosted"/s',
             $workflow,
             'Trusted long soaks must explicitly record self-hosted runner provenance.',
+        );
+    }
+
+    public function test_self_hosted_perf_soak_requires_trusted_evidence_eligibility(): void
+    {
+        $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
+        $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
+
+        $this->assertMatchesRegularExpression(
+            '/name:\s+Self-hosted polling cache soak.*?DW_PERF_REQUIRE_TRUSTED_EVIDENCE:\s+"true"/s',
+            $workflow,
+            'Self-hosted long soaks must fail instead of producing green ineligible trusted evidence.',
+        );
+
+        $this->assertMatchesRegularExpression(
+            '/name:\s+Polling cache bounded-growth smoke(?P<block>.*?)\n\s+soak:/s',
+            $workflow,
+            'Server Perf workflow must keep a distinct short smoke job before the long soak job.',
+        );
+        preg_match('/name:\s+Polling cache bounded-growth smoke(?P<block>.*?)\n\s+soak:/s', $workflow, $smokeMatch);
+        $this->assertStringNotContainsString(
+            'DW_PERF_REQUIRE_TRUSTED_EVIDENCE: "true"',
+            (string) ($smokeMatch['block'] ?? ''),
+            'Short perf smokes should remain useful but ineligible artifacts.',
         );
     }
 
