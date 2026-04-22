@@ -24,6 +24,9 @@ added without a TTL, admission, or cardinality contract.
 - Prometheus label names emitted by app code or the perf harness must exactly
   match the declared metric dimensions, so adding a label requires a reviewed
   cardinality policy in the same change.
+- Runtime metric cardinality disclosures must fail closed: a metric cannot
+  expose a label-set policy unless the metric and every disclosed dimension are
+  declared in `config/dw-bounded-growth.php`.
 - Remote-write scrape labels must stay deployment-scoped. Per-run values such
   as `GITHUB_RUN_ID` and `RUNNER_NAME` belong in `summary.json` provenance, not
   in Prometheus labels that create new series for every soak.
@@ -68,6 +71,8 @@ added without a TTL, admission, or cardinality contract.
   covered by a `metrics` entry;
 - Prometheus labels emitted by app or perf-harness source must exactly match
   the corresponding metric dimensions declared in the policy;
+- runtime metric disclosures reject unknown metrics or undeclared dimensions
+  before they can appear in `/api/system/metrics`;
 - perf-harness remote-write target labels must not include per-run or
   per-runner dimensions;
 - each policy entry must include the required review fields;
