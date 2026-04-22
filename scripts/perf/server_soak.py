@@ -697,6 +697,10 @@ def evidence_trust_profile(
         reasons.append(f"runner environment is {runner_environment}, not self-hosted")
     if not github_actions_provenance_present(provenance):
         reasons.append("GitHub Actions provenance is incomplete")
+    if str(provenance.get("repository") or "").strip() != "durable-workflow/server":
+        reasons.append("GitHub Actions repository is not durable-workflow/server")
+    if str(provenance.get("ref") or "").strip() != "refs/heads/main":
+        reasons.append("GitHub Actions ref is not refs/heads/main")
     if not tracked_working_tree_clean:
         reasons.append("tracked working tree has uncommitted changes")
     if periodic_sample_count < minimum_trusted_samples:
@@ -713,6 +717,7 @@ def evidence_trust_profile(
         "runner_environment": runner_environment,
         "requires_self_hosted_runner": True,
         "requires_github_actions_provenance": True,
+        "requires_server_main_ref": True,
         "requires_compose_resource_sampling": True,
         "requires_clean_tracked_working_tree": True,
         "reasons": reasons,
