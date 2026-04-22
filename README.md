@@ -507,14 +507,19 @@ workflow-task command payload.
 - `PUT /api/namespaces/{name}` — Update namespace
 - `PUT /api/namespaces/{name}/external-storage` — Configure external payload storage policy
 
-When a namespace enables the `local` external payload storage driver, the
-server resolves `{codec, external_storage}` payload envelopes on workflow
-start, signal, query, update, bridge-adapter, and activity result/failure
-ingress. S3, GCS, and Azure policies can be stored for control-plane parity,
-but server-side dereference remains fail-closed until those runtime drivers
-ship. History retention deletes referenced local external payload blobs before
-pruning an expired run, and leaves runs in place when a retained reference uses
-a provider this server cannot delete yet.
+When a namespace enables external payload storage, the server resolves
+`{codec, external_storage}` payload envelopes on workflow start, signal, query,
+update, bridge-adapter, and activity result/failure ingress. The `local` driver
+stores blobs below the configured `file://` URI or the namespace-scoped server
+storage path. S3, GCS, and Azure policies are available when the policy includes
+`config.disk` naming a configured Laravel filesystem disk plus `config.bucket`;
+the server emits provider URIs such as `s3://bucket/prefix/...` while using that
+disk for put/get/delete operations. Object-storage policies without a configured
+disk remain fail-closed so references are not silently accepted by a runtime
+that cannot dereference or delete them. History retention deletes referenced
+local and configured object-storage payload blobs before pruning an expired run,
+and leaves runs in place when a retained reference uses a provider this server
+cannot delete yet.
 
 ### Workflows
 - `GET /api/workflows` — List workflows (with filters)
@@ -544,6 +549,13 @@ is needed.
 
 ### External Payload Storage
 - `POST /api/storage/test` — Round-trip diagnostic for the selected namespace storage policy
+
+The storage diagnostic writes, reads, verifies, and deletes small and large test
+payloads through the namespace's configured policy. It supports `local` and
+configured-disk `s3`, `gcs`, and `azure` policies; it returns
+`storage_driver_unavailable` when the namespace only stores provider metadata
+and the current server runtime has no filesystem disk configured for that
+provider.
 
 Every non-health, non-discovery control-plane endpoint must send
 `X-Durable-Workflow-Control-Plane-Version: 2` on the request. That
