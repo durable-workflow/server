@@ -101,11 +101,7 @@ class HealthController
             'server_id' => config('server.server_id'),
             'version' => env('APP_VERSION', '2.0.0'),
             'default_namespace' => config('server.default_namespace'),
-            'supported_sdk_versions' => [
-                'php' => '>=1.0',
-                'python' => '>=0.2,<1.0',
-                'cli' => '>=0.1,<1.0',
-            ],
+            'supported_sdk_versions' => ClientCompatibility::supportedSdkVersions(),
             'capabilities' => $capabilities,
             'worker_fleet' => StandaloneWorkerVisibility::fleetSummary($namespace),
             'task_repair' => $this->taskRepairDiagnostics(),

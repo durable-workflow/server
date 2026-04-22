@@ -8,6 +8,20 @@ final class ClientCompatibility
 
     public const VERSION = 1;
 
+    private const SUPPORTED_SDK_VERSIONS = [
+        'php' => '>=1.0',
+        'python' => '>=0.2,<1.0',
+        'cli' => '>=0.1,<1.0',
+    ];
+
+    /**
+     * @return array{php: string, python: string, cli: string}
+     */
+    public static function supportedSdkVersions(): array
+    {
+        return self::SUPPORTED_SDK_VERSIONS;
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -55,7 +69,7 @@ final class ClientCompatibility
             ],
             'clients' => [
                 'cli' => [
-                    'supported_versions' => '0.1.x',
+                    'supported_versions' => self::SUPPORTED_SDK_VERSIONS['cli'],
                     'requires' => [
                         'auth_composition.version',
                         'control_plane.version',
@@ -63,7 +77,7 @@ final class ClientCompatibility
                     ],
                 ],
                 'sdk-python' => [
-                    'supported_versions' => '0.2.x',
+                    'supported_versions' => self::SUPPORTED_SDK_VERSIONS['python'],
                     'requires' => [
                         'auth_composition.version',
                         'control_plane.version',

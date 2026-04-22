@@ -119,8 +119,17 @@ class ClusterInfoCompatibilityTest extends TestCase
                 'client_compatibility.required_protocols.worker_protocol.external_task_result_contract.version',
                 1,
             )
-            ->assertJsonPath('client_compatibility.clients.cli.supported_versions', '0.1.x')
-            ->assertJsonPath('client_compatibility.clients.sdk-python.supported_versions', '0.2.x');
+            ->assertJsonPath('client_compatibility.clients.cli.supported_versions', '>=0.1,<1.0')
+            ->assertJsonPath('client_compatibility.clients.sdk-python.supported_versions', '>=0.2,<1.0');
+
+        $this->assertSame(
+            $response->json('supported_sdk_versions.cli'),
+            $response->json('client_compatibility.clients.cli.supported_versions'),
+        );
+        $this->assertSame(
+            $response->json('supported_sdk_versions.python'),
+            $response->json('client_compatibility.clients.sdk-python.supported_versions'),
+        );
 
         $this->assertContains(
             'auth_composition.version',
