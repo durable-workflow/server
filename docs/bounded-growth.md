@@ -90,6 +90,9 @@ service logs under `build/perf/`. A trusted bounded-growth run must include:
   key counts, per-policy server cache key counts, final drain counts, and, for
   runs of at least 10 minutes, the post-warmup memory slope when a slope limit
   is configured;
+- `sampling_health` showing every compose-backed Docker, Redis, and MySQL
+  sample was collected successfully; missing resource samples fail the run
+  instead of being recorded as zero-count evidence;
 - GitHub/runner provenance in `summary.json` (`GITHUB_SHA`, `GITHUB_RUN_ID`,
   runner name/OS/arch, Compose project, and the tested base URL when present);
 - the SHA-256 digest of `config/dw-bounded-growth.php` so the artifact can be
