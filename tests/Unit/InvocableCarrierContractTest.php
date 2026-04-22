@@ -24,5 +24,8 @@ class InvocableCarrierContractTest extends TestCase
         $this->assertSame(ExternalTaskInputContract::SCHEMA, $manifest['request']['body_schema']);
         $this->assertSame(ExternalTaskResultContract::SCHEMA, $manifest['response']['body_schema']);
         $this->assertSame('failure.kind=timeout classification=deadline_exceeded', $manifest['failure_mapping']['transport_timeout']);
+        $this->assertSame(5, $manifest['target_fields']['retry_policy']['fields']['max_attempts']['maximum']);
+        $this->assertSame([408, 429, '5xx'], $manifest['target_fields']['retry_policy']['fields']['retryable_status_codes']['default']);
+        $this->assertSame('carriers.<name>.retry_policy', $manifest['rollout_safety']['retry_policy_path']);
     }
 }

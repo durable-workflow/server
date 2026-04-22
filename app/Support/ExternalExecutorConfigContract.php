@@ -511,7 +511,90 @@ final class ExternalExecutorConfigContract
             }
         }
 
+        if (array_key_exists('retry_policy', $carrier)) {
+            array_push($errors, ...self::validateInvocableRetryPolicy($name, $carrier['retry_policy']));
+        }
+
         return $errors;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private static function validateInvocableRetryPolicy(?string $name, mixed $policy): array
+    {
+        if (! is_array($policy)) {
+            return [
+                self::error(
+                    'invalid_carrier_target',
+                    'Invocable HTTP carrier retry_policy must be an object.',
+                    ['carrier' => $name, 'field' => 'retry_policy'],
+                ),
+            ];
+        }
+
+        $errors = [];
+
+        if (array_key_exists('max_attempts', $policy)) {
+            $maxAttempts = $policy['max_attempts'];
+            if (! is_int($maxAttempts) || $maxAttempts < 1 || $maxAttempts > 5) {
+                $errors[] = self::error(
+                    'invalid_carrier_target',
+                    'Invocable HTTP carrier retry_policy.max_attempts must be an integer between 1 and 5.',
+                    ['carrier' => $name, 'field' => 'retry_policy.max_attempts'],
+                );
+            }
+        }
+
+        if (array_key_exists('backoff_seconds', $policy)) {
+            $backoff = $policy['backoff_seconds'];
+            if (! is_array($backoff) || count($backoff) > 5) {
+                $errors[] = self::error(
+                    'invalid_carrier_target',
+                    'Invocable HTTP carrier retry_policy.backoff_seconds must be an array of at most five integer seconds.',
+                    ['carrier' => $name, 'field' => 'retry_policy.backoff_seconds'],
+                );
+            } else {
+                foreach ($backoff as $index => $seconds) {
+                    if (! is_int($seconds) || $seconds < 0 || $seconds > 300) {
+                        $errors[] = self::error(
+                            'invalid_carrier_target',
+                            'Invocable HTTP carrier retry_policy.backoff_seconds entries must be integers between 0 and 300.',
+                            ['carrier' => $name, 'field' => "retry_policy.backoff_seconds.{$index}"],
+                        );
+                    }
+                }
+            }
+        }
+
+        if (array_key_exists('retryable_status_codes', $policy)) {
+            $statusCodes = $policy['retryable_status_codes'];
+            if (! is_array($statusCodes) || count($statusCodes) > 20) {
+                $errors[] = self::error(
+                    'invalid_carrier_target',
+                    'Invocable HTTP carrier retry_policy.retryable_status_codes must be an array of at most 20 HTTP status codes.',
+                    ['carrier' => $name, 'field' => 'retry_policy.retryable_status_codes'],
+                );
+            } else {
+                foreach ($statusCodes as $index => $statusCode) {
+                    if (! is_int($statusCode) || ! self::retryableStatusCodeAllowed($statusCode)) {
+                        $errors[] = self::error(
+                            'invalid_carrier_target',
+                            'Invocable HTTP carrier retry_policy.retryable_status_codes may include 408, 425, 429, or 5xx status codes only.',
+                            ['carrier' => $name, 'field' => "retry_policy.retryable_status_codes.{$index}"],
+                        );
+                    }
+                }
+            }
+        }
+
+        return $errors;
+    }
+
+    private static function retryableStatusCodeAllowed(int $statusCode): bool
+    {
+        return in_array($statusCode, [408, 425, 429], true)
+            || ($statusCode >= 500 && $statusCode <= 599);
     }
 
     private static function isAllowedInvocableUrl(string $url): bool

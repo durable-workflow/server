@@ -676,13 +676,16 @@ external task input envelope over `POST` and must return the external task
 result envelope. The server validates `invocable_http` carrier config
 fail-closed, including absolute HTTPS `url` targets, HTTP only for loopback
 development targets, no embedded URL credentials, `POST` method, bounded
-`timeout_seconds`, and activity-only capabilities, before mapping it onto
-pollable activity tasks.
+`timeout_seconds`, optional bounded `retry_policy`, and activity-only
+capabilities, before mapping it onto pollable activity tasks. The carrier
+retry policy is transport-only: it may repeat transient HTTP delivery before a
+result is reported, while durable activity retry remains owned by the
+server/runtime after complete/fail reporting.
 For leased invocable mappings, `task.external_executor.dispatch` also exposes
 the attempt-level diagnostics needed to reason about one handler call: content
 types, configured transport timeout, task deadline fields, idempotency key
-source, durable retry authority, failure mapping, and the complete/fail result
-reporting paths.
+source, normalized transport retry policy, durable retry authority, failure
+mapping, and the complete/fail result reporting paths.
 
 The carrier-neutral external task input envelope is published from
 `GET /api/cluster/info` at `worker_protocol.external_task_input_contract`.

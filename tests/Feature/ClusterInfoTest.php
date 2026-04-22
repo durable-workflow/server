@@ -377,6 +377,11 @@ class ClusterInfoTest extends TestCase
                     'url' => 'http://carrier.example.com/durable/activity',
                     'method' => 'GET',
                     'timeout_seconds' => true,
+                    'retry_policy' => [
+                        'max_attempts' => 10,
+                        'backoff_seconds' => [1, 600],
+                        'retryable_status_codes' => [400, 503],
+                    ],
                     'capabilities' => ['activity_task', 'workflow_task'],
                 ],
             ],

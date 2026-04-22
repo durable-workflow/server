@@ -57,6 +57,31 @@ final class InvocableCarrierContract
                     'maximum' => 900,
                     'meaning' => 'Transport deadline for one handler attempt; carriers must also respect task.deadlines.',
                 ],
+                'retry_policy' => [
+                    'type' => 'object',
+                    'required' => false,
+                    'meaning' => 'Optional carrier-owned transport retry budget for transient HTTP delivery failures only.',
+                    'fields' => [
+                        'max_attempts' => [
+                            'type' => 'integer',
+                            'minimum' => 1,
+                            'maximum' => 5,
+                            'default' => 1,
+                        ],
+                        'backoff_seconds' => [
+                            'type' => 'array<int>',
+                            'minimum_item' => 0,
+                            'maximum_item' => 300,
+                            'maximum_items' => 5,
+                        ],
+                        'retryable_status_codes' => [
+                            'type' => 'array<int>',
+                            'allowed' => [408, 425, 429, '5xx'],
+                            'default' => [408, 429, '5xx'],
+                        ],
+                    ],
+                    'authority_boundary' => 'Transport retry may repeat handler delivery before result reporting; durable activity retry remains server/runtime-owned after complete/fail reporting.',
+                ],
             ],
             'request' => [
                 'method' => 'POST',
@@ -88,6 +113,7 @@ final class InvocableCarrierContract
                 'coexistence' => 'poll_and_invocable_carriers_may_share_a_queue_only_when_mappings_are_activity_type_specific',
                 'drain_signal' => 'operators must remove or overlay-disable mappings before deleting endpoint credentials',
                 'retry_authority' => 'carrier policy may retry transport failures, but durable activity retry policy remains the server/runtime authority',
+                'retry_policy_path' => 'carriers.<name>.retry_policy',
             ],
         ];
     }

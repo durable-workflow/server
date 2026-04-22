@@ -521,6 +521,11 @@ class ActivityWorkerProtocolTest extends TestCase
                     'url' => 'https://handlers.example.test/durable/activity',
                     'method' => 'POST',
                     'timeout_seconds' => 45,
+                    'retry_policy' => [
+                        'max_attempts' => 3,
+                        'backoff_seconds' => [1, 3],
+                        'retryable_status_codes' => [408, 429, 503],
+                    ],
                     'secret' => 'must-not-leak',
                     'capabilities' => ['activity_task'],
                 ],
@@ -584,6 +589,14 @@ class ActivityWorkerProtocolTest extends TestCase
             )
             ->assertJsonPath('task.external_executor.dispatch.idempotency_key', $activityAttemptId)
             ->assertJsonPath('task.external_executor.dispatch.idempotency_key_source', 'task.activity_attempt_id')
+            ->assertJsonPath('task.external_executor.dispatch.transport_retry_policy.max_attempts', 3)
+            ->assertJsonPath('task.external_executor.dispatch.transport_retry_policy.backoff_seconds', [1, 3])
+            ->assertJsonPath('task.external_executor.dispatch.transport_retry_policy.retryable_status_codes', [408, 429, 503])
+            ->assertJsonPath('task.external_executor.dispatch.transport_retry_policy.authority', 'carrier_transport_only')
+            ->assertJsonPath(
+                'task.external_executor.dispatch.transport_retry_policy.durable_retry_boundary',
+                'activity_retry_policy_after_result_reporting',
+            )
             ->assertJsonPath(
                 'task.external_executor.dispatch.failure_mapping.transport_timeout',
                 'failure.kind=timeout classification=deadline_exceeded',

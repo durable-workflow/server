@@ -534,6 +534,7 @@ class ActivityTaskController
             'idempotency_key' => $activityAttemptId,
             'idempotency_key_source' => 'task.activity_attempt_id',
             'retry_authority' => $contract['rollout_safety']['retry_authority'],
+            'transport_retry_policy' => $this->invocableTransportRetryPolicy($target['retry_policy'] ?? null),
             'failure_mapping' => $contract['failure_mapping'],
             'result_reporting' => [
                 'complete_path' => "/api/worker/activity-tasks/{$taskId}/complete",
@@ -543,6 +544,34 @@ class ActivityTaskController
         ], static fn (mixed $value): bool => $value !== null);
 
         return $mapping;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function invocableTransportRetryPolicy(mixed $policy): ?array
+    {
+        if (! is_array($policy)) {
+            return null;
+        }
+
+        return array_filter([
+            'max_attempts' => is_int($policy['max_attempts'] ?? null) ? $policy['max_attempts'] : 1,
+            'backoff_seconds' => is_array($policy['backoff_seconds'] ?? null)
+                ? array_values(array_filter(
+                    $policy['backoff_seconds'],
+                    static fn (mixed $seconds): bool => is_int($seconds),
+                ))
+                : [],
+            'retryable_status_codes' => is_array($policy['retryable_status_codes'] ?? null)
+                ? array_values(array_filter(
+                    $policy['retryable_status_codes'],
+                    static fn (mixed $statusCode): bool => is_int($statusCode),
+                ))
+                : [408, 429, 500, 502, 503, 504],
+            'authority' => 'carrier_transport_only',
+            'durable_retry_boundary' => 'activity_retry_policy_after_result_reporting',
+        ], static fn (mixed $value): bool => $value !== null);
     }
 
     private function heartbeatProgress(array $validated): array
