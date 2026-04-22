@@ -90,6 +90,41 @@ class ClusterInfoTest extends TestCase
             );
     }
 
+    public function test_it_publishes_external_execution_surface_contract_manifest(): void
+    {
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath(
+                'worker_protocol.external_execution_surface_contract.schema',
+                'durable-workflow.v2.external-execution-surface.contract',
+            )
+            ->assertJsonPath('worker_protocol.external_execution_surface_contract.version', 1)
+            ->assertJsonPath(
+                'worker_protocol.external_execution_surface_contract.product_boundary.name',
+                'activity_grade_external_execution',
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_execution_surface_contract.product_boundary.primary_wedge',
+                'operator_platform_integration',
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_execution_surface_contract.contract_seams.input_envelope.status',
+                'published',
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_execution_surface_contract.contract_seams.bridge_adapters.status',
+                'planned',
+            )
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.external_execution_surface.schema',
+                'durable-workflow.v2.external-execution-surface.contract',
+            )
+            ->assertJsonPath(
+                'client_compatibility.required_protocols.worker_protocol.external_execution_surface_contract.version',
+                1,
+            );
+    }
+
     public function test_it_publishes_external_task_result_contract_manifest(): void
     {
         $this->getJson('/api/cluster/info')

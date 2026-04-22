@@ -614,6 +614,15 @@ Server-owned cache keys and metric label sets are governed by the bounded-growth
 policy in `config/dw-bounded-growth.php`; the human-readable inventory lives in
 `docs/bounded-growth.md`.
 
+The activity-grade external execution surface is published from
+`GET /api/cluster/info` at
+`worker_protocol.external_execution_surface_contract`. That manifest is the
+carrier-neutral umbrella for durable, bounded, external work: operator,
+platform, and integration automation first, with script or agent handlers as
+secondary consumers. It keeps workflow replay, ContinueAsNew, signal/update/query
+ordering, and event-history interpretation inside real runtimes. A
+human-readable summary lives in `docs/contracts/external-execution-surface.md`.
+
 The carrier-neutral external task input envelope is published from
 `GET /api/cluster/info` at `worker_protocol.external_task_input_contract`.
 That manifest freezes the workflow-task and activity-task input shapes,
