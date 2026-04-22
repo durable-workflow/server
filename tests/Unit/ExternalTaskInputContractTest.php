@@ -16,8 +16,20 @@ class ExternalTaskInputContractTest extends TestCase
         $this->assertSame('ignore_additive_reject_unknown_required', $manifest['unknown_field_policy']);
         $this->assertArrayHasKey('workflow_task', $manifest['envelopes']);
         $this->assertArrayHasKey('activity_task', $manifest['envelopes']);
+        $this->assertSame(['activity_task'], $manifest['scope']['activity_grade_external_execution']['task_kinds']);
+        $this->assertSame(['workflow_task'], $manifest['scope']['worker_protocol_runtime']['task_kinds']);
         $this->assertSame('workflow_task', $manifest['envelopes']['workflow_task']['kind']);
         $this->assertSame('activity_task', $manifest['envelopes']['activity_task']['kind']);
+        $this->assertSame('worker_protocol_runtime', $manifest['envelopes']['workflow_task']['scope']);
+        $this->assertSame(
+            'not_activity_grade_handler_input',
+            $manifest['envelopes']['workflow_task']['external_execution_role'],
+        );
+        $this->assertSame('activity_grade_external_execution', $manifest['envelopes']['activity_task']['scope']);
+        $this->assertSame(
+            'activity_grade_handler_input',
+            $manifest['envelopes']['activity_task']['external_execution_role'],
+        );
         $this->assertContains('lease', $manifest['envelopes']['workflow_task']['required_fields']);
         $this->assertContains('deadlines', $manifest['envelopes']['activity_task']['required_fields']);
         $this->assertArrayHasKey('external_storage', $manifest['payload_support']);

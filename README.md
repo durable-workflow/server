@@ -634,9 +634,12 @@ reference, rollout metadata, and config schema version.
 
 The carrier-neutral external task input envelope is published from
 `GET /api/cluster/info` at `worker_protocol.external_task_input_contract`.
-That manifest freezes the workflow-task and activity-task input shapes,
-including task identity, attempt, queue, handler, workflow/run context, lease
-metadata, deadlines, payload metadata, idempotency keys, and versioning rules.
+That manifest explicitly splits its scope: activity tasks are the
+activity-grade external-execution handler input, while workflow tasks are
+published for worker-protocol runtime compatibility and drift testing rather
+than as generic external handler work. Both shapes freeze task identity,
+attempt, queue, handler, workflow/run context, lease metadata, deadlines where
+relevant, payload metadata, idempotency keys, and versioning rules.
 Shared JSON fixtures are embedded in the manifest as artifact objects with
 stable artifact names, media types, SHA-256 digests, and examples. A
 human-readable summary lives in `docs/contracts/external-task-input.md`.

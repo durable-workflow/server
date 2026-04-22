@@ -10,10 +10,20 @@ The authoritative machine-readable contract is published from
 
 - `schema: durable-workflow.v2.external-task-input.contract`
 - `version: 1`
+- `scope.activity_grade_external_execution`
+- `scope.worker_protocol_runtime`
 - `envelopes.workflow_task`
 - `envelopes.activity_task`
 - `fixtures.workflow_task`
 - `fixtures.activity_task`
+
+The scope split is intentional. `activity_task` is the activity-grade external
+execution input that external carriers execute as bounded handler work and pair
+with the external task result envelope. `workflow_task` remains published in the
+same manifest for SDK/runtime compatibility and drift tests, but it belongs to
+the worker-protocol runtime scope. A carrier must not treat `workflow_task` as a
+generic external handler input unless that carrier is a workflow runtime that
+owns replay, history interpretation, ContinueAsNew, and command ordering.
 
 Each fixture is published as a consumable artifact object, not as a repository
 path. Carriers can read the `artifact`, `media_type`, `schema`, `version`,
@@ -22,8 +32,9 @@ path. Carriers can read the `artifact`, `media_type`, `schema`, `version`,
 Version 1 exposes durable facts only: task identity, task kind, attempt number,
 task queue, handler name, workflow/run identity, lease owner and expiry,
 payload metadata, deadlines where relevant, headers, and an idempotency key.
-Workflow tasks also include history paging metadata and the stable resume
-context fields already returned by the worker protocol.
+Activity-task inputs also expose configured external-executor mappings when the
+server resolves one. Workflow-task inputs include history paging metadata and the
+stable resume context fields already returned by the worker protocol.
 
 Unknown fields are additive. Handlers must ignore unknown optional fields, but
 they must fail closed when the contract advertises a required field for a schema

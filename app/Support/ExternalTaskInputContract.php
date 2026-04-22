@@ -28,6 +28,18 @@ final class ExternalTaskInputContract
                 'external_storage' => 'Handlers that do not support an external storage provider must fail the task with unsupported_payload_reference instead of dereferencing it.',
                 'unsupported_codec' => 'Handlers that cannot decode payload.codec must fail the task with unsupported_payload_codec.',
             ],
+            'scope' => [
+                'activity_grade_external_execution' => [
+                    'task_kinds' => ['activity_task'],
+                    'fixture_keys' => ['activity_task'],
+                    'carrier_expectation' => 'External carriers execute activity_task inputs as bounded handler invocations and return the external task result envelope.',
+                ],
+                'worker_protocol_runtime' => [
+                    'task_kinds' => ['workflow_task'],
+                    'fixture_keys' => ['workflow_task'],
+                    'carrier_expectation' => 'Workflow_task inputs are published for SDK/runtime compatibility and worker-protocol drift tests; they are not activity-grade external handler inputs.',
+                ],
+            ],
             'envelopes' => [
                 'workflow_task' => self::workflowTaskEnvelope(),
                 'activity_task' => self::activityTaskEnvelope(),
@@ -68,6 +80,8 @@ final class ExternalTaskInputContract
     {
         return [
             'kind' => 'workflow_task',
+            'scope' => 'worker_protocol_runtime',
+            'external_execution_role' => 'not_activity_grade_handler_input',
             'required_fields' => [
                 'schema',
                 'version',
@@ -138,6 +152,11 @@ final class ExternalTaskInputContract
                 'database primary keys not exposed as task or run identifiers',
                 'transport headers unrelated to durable task handling',
             ],
+            'boundary' => [
+                'workflow_replay' => 'owned_by_sdk_or_runtime_worker',
+                'history_interpretation' => 'owned_by_sdk_or_runtime_worker',
+                'external_carrier_use' => 'validate_shape_only_unless_the_carrier_is_a_workflow_runtime',
+            ],
         ];
     }
 
@@ -148,6 +167,8 @@ final class ExternalTaskInputContract
     {
         return [
             'kind' => 'activity_task',
+            'scope' => 'activity_grade_external_execution',
+            'external_execution_role' => 'activity_grade_handler_input',
             'required_fields' => [
                 'schema',
                 'version',
@@ -196,6 +217,11 @@ final class ExternalTaskInputContract
                 'workflow history events',
                 'server process identity',
                 'transport headers unrelated to durable task handling',
+            ],
+            'boundary' => [
+                'workflow_replay' => 'not_exposed_to_handler',
+                'history_interpretation' => 'not_exposed_to_handler',
+                'external_carrier_use' => 'execute_bounded_activity_handler_and_return_external_task_result',
             ],
         ];
     }
