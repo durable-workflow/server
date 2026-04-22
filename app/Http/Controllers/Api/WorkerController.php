@@ -488,7 +488,9 @@ class WorkerController
             'commands.*.timeout_seconds' => ['nullable', 'integer', 'min:0'],
         ]);
 
-        $this->validateWorkflowTaskCommandScopes($validated['commands']);
+        $commands = $this->normalizeWorkflowTaskCommandIntegerFields($validated['commands']);
+
+        $this->validateWorkflowTaskCommandScopes($commands);
 
         if ($response = $this->guardWorkflowTaskOwnership(
             $request,
@@ -500,7 +502,7 @@ class WorkerController
             return $response;
         }
 
-        $commands = WorkflowCommandNormalizer::normalize($validated['commands']);
+        $commands = WorkflowCommandNormalizer::normalize($commands);
 
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
@@ -596,6 +598,70 @@ class WorkerController
     private function hasCommandValue(array $command, string $field): bool
     {
         return array_key_exists($field, $command) && $command[$field] !== null;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     * @return list<array<string, mixed>>
+     */
+    private function normalizeWorkflowTaskCommandIntegerFields(array $commands): array
+    {
+        $integerFields = [
+            'start_to_close_timeout',
+            'schedule_to_start_timeout',
+            'schedule_to_close_timeout',
+            'heartbeat_timeout',
+            'execution_timeout_seconds',
+            'run_timeout_seconds',
+            'delay_seconds',
+            'version',
+            'min_supported',
+            'max_supported',
+            'timeout_seconds',
+        ];
+
+        foreach ($commands as $index => $command) {
+            foreach ($integerFields as $field) {
+                if (array_key_exists($field, $command)) {
+                    $commands[$index][$field] = $this->normalizeValidatedInteger($command[$field]);
+                }
+            }
+
+            $retryPolicy = $command['retry_policy'] ?? null;
+            if (! is_array($retryPolicy)) {
+                continue;
+            }
+
+            if (array_key_exists('max_attempts', $retryPolicy)) {
+                $retryPolicy['max_attempts'] = $this->normalizeValidatedInteger($retryPolicy['max_attempts']);
+            }
+
+            $backoffSeconds = $retryPolicy['backoff_seconds'] ?? null;
+            if (is_array($backoffSeconds)) {
+                foreach ($backoffSeconds as $backoffIndex => $backoffSecond) {
+                    $backoffSeconds[$backoffIndex] = $this->normalizeValidatedInteger($backoffSecond);
+                }
+
+                $retryPolicy['backoff_seconds'] = $backoffSeconds;
+            }
+
+            $commands[$index]['retry_policy'] = $retryPolicy;
+        }
+
+        return $commands;
+    }
+
+    private function normalizeValidatedInteger(mixed $value): mixed
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        if (is_string($value) && preg_match('/^-?\d+$/', $value) === 1) {
+            return (int) $value;
+        }
+
+        return $value;
     }
 
     /**

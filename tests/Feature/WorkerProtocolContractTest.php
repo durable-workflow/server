@@ -184,6 +184,16 @@ class WorkerProtocolContractTest extends TestCase
                 'errorField' => 'commands.0.heartbeat_timeout',
                 'expectedMessage' => 'heartbeat_timeout cannot exceed start_to_close_timeout.',
             ],
+            'string heartbeat exceeds string start to close' => [
+                'command' => [
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'tests.external-activity',
+                    'start_to_close_timeout' => '10',
+                    'heartbeat_timeout' => '30',
+                ],
+                'errorField' => 'commands.0.heartbeat_timeout',
+                'expectedMessage' => 'heartbeat_timeout cannot exceed start_to_close_timeout.',
+            ],
             'schedule to start exceeds schedule to close' => [
                 'command' => [
                     'type' => 'schedule_activity',
@@ -194,12 +204,42 @@ class WorkerProtocolContractTest extends TestCase
                 'errorField' => 'commands.0.schedule_to_start_timeout',
                 'expectedMessage' => 'schedule_to_start_timeout cannot exceed schedule_to_close_timeout.',
             ],
+            'string start to close exceeds string schedule to close' => [
+                'command' => [
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'tests.external-activity',
+                    'start_to_close_timeout' => '60',
+                    'schedule_to_close_timeout' => '30',
+                ],
+                'errorField' => 'commands.0.start_to_close_timeout',
+                'expectedMessage' => 'start_to_close_timeout cannot exceed schedule_to_close_timeout.',
+            ],
+            'string schedule to start exceeds string schedule to close' => [
+                'command' => [
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'tests.external-activity',
+                    'schedule_to_start_timeout' => '60',
+                    'schedule_to_close_timeout' => '30',
+                ],
+                'errorField' => 'commands.0.schedule_to_start_timeout',
+                'expectedMessage' => 'schedule_to_start_timeout cannot exceed schedule_to_close_timeout.',
+            ],
             'child run exceeds execution' => [
                 'command' => [
                     'type' => 'start_child_workflow',
                     'workflow_type' => 'tests.external-child-workflow',
                     'execution_timeout_seconds' => 60,
                     'run_timeout_seconds' => 120,
+                ],
+                'errorField' => 'commands.0.run_timeout_seconds',
+                'expectedMessage' => 'run_timeout_seconds cannot exceed execution_timeout_seconds.',
+            ],
+            'string child run exceeds string execution' => [
+                'command' => [
+                    'type' => 'start_child_workflow',
+                    'workflow_type' => 'tests.external-child-workflow',
+                    'execution_timeout_seconds' => '60',
+                    'run_timeout_seconds' => '120',
                 ],
                 'errorField' => 'commands.0.run_timeout_seconds',
                 'expectedMessage' => 'run_timeout_seconds cannot exceed execution_timeout_seconds.',
