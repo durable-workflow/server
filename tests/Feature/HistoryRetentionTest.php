@@ -10,6 +10,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Storage;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
@@ -330,6 +331,55 @@ class HistoryRetentionTest extends TestCase
             ->assertJsonPath('results.0.reason', 'external_payload_storage_driver_unavailable');
 
         $this->assertNotNull(WorkflowRunSummary::find($runId));
+    }
+
+    public function test_retention_pass_deletes_configured_object_storage_references(): void
+    {
+        Queue::fake();
+        Storage::fake('retention-object-payloads');
+
+        $this->createNamespace('default');
+        WorkflowNamespace::where('name', 'default')->update([
+            'external_payload_storage' => [
+                'driver' => 's3',
+                'enabled' => true,
+                'config' => [
+                    'disk' => 'retention-object-payloads',
+                    'bucket' => 'dw-payloads',
+                    'prefix' => 'retention/',
+                ],
+            ],
+        ]);
+
+        $runId = $this->createExpiredClosedRun('default', 'wf-prune-external-s3-configured');
+        $payload = 'large encoded payload bytes';
+        $key = 'retention/avro/'.substr(hash('sha256', $payload), 0, 2).'/'.hash('sha256', $payload);
+
+        Storage::disk('retention-object-payloads')->put($key, $payload);
+
+        WorkflowHistoryEvent::query()->create([
+            'workflow_run_id' => $runId,
+            'sequence' => 999,
+            'event_type' => HistoryEventType::ActivityCompleted->value,
+            'payload' => [
+                'result' => [
+                    'external_storage' => $this->externalStorageReference('s3://dw-payloads/'.$key, $payload),
+                ],
+            ],
+            'recorded_at' => now(),
+        ]);
+
+        Storage::disk('retention-object-payloads')->assertExists($key);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/retention/pass')
+            ->assertOk()
+            ->assertJsonPath('processed', 1)
+            ->assertJsonPath('pruned', 1)
+            ->assertJsonPath('results.0.external_payloads_deleted', 1);
+
+        Storage::disk('retention-object-payloads')->assertMissing($key);
+        $this->assertNull(WorkflowRunSummary::find($runId));
     }
 
     public function test_retention_pass_with_specific_run_ids(): void

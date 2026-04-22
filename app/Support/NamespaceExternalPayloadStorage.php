@@ -20,11 +20,27 @@ class NamespaceExternalPayloadStorage
 
         $driver = $policy['driver'] ?? null;
 
-        if ($driver !== 'local') {
-            return null;
+        if ($driver === 'local') {
+            return new LocalFilesystemExternalPayloadStorage($this->localRoot($policy, $namespace));
         }
 
-        return new LocalFilesystemExternalPayloadStorage($this->localRoot($policy, $namespace));
+        if (in_array($driver, ['s3', 'gcs', 'azure'], true)) {
+            $disk = $policy['config']['disk'] ?? null;
+            $bucket = $policy['config']['bucket'] ?? null;
+
+            if (! is_string($disk) || $disk === '' || ! is_string($bucket) || $bucket === '') {
+                return null;
+            }
+
+            return new FilesystemExternalPayloadStorage(
+                disk: $disk,
+                scheme: $driver,
+                bucket: $bucket,
+                prefix: $this->prefix($policy),
+            );
+        }
+
+        return null;
     }
 
     /**
@@ -39,5 +55,19 @@ class NamespaceExternalPayloadStorage
         }
 
         return storage_path('app/external-payloads/'.$namespace);
+    }
+
+    /**
+     * @param  array<string, mixed>  $policy
+     */
+    private function prefix(array $policy): string
+    {
+        $prefix = $policy['config']['prefix'] ?? '';
+
+        if (! is_string($prefix) || $prefix === '') {
+            return '';
+        }
+
+        return trim($prefix, '/').'/';
     }
 }

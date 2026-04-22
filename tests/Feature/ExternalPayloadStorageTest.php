@@ -6,6 +6,7 @@ use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class ExternalPayloadStorageTest extends TestCase
@@ -104,6 +105,41 @@ class ExternalPayloadStorageTest extends TestCase
             ->assertJsonPath('large_payload.sha256', hash('sha256', str_repeat('l', 64)));
 
         $this->assertSame([], glob($this->storageDirectory.'/storage-test-*.bin') ?: []);
+    }
+
+    public function test_configured_object_storage_diagnostic_round_trips_payloads(): void
+    {
+        Storage::fake('external-payload-objects');
+
+        $this->createNamespace('billing', [
+            'driver' => 's3',
+            'enabled' => true,
+            'threshold_bytes' => 32,
+            'config' => [
+                'disk' => 'external-payload-objects',
+                'bucket' => 'dw-payloads',
+                'prefix' => 'diagnostics/',
+            ],
+        ]);
+
+        $response = $this->postJson('/api/storage/test', [
+            'small_payload_bytes' => 16,
+            'large_payload_bytes' => 64,
+        ], ['X-Namespace' => 'billing']);
+
+        $smallHash = hash('sha256', str_repeat('s', 16));
+
+        $response->assertOk()
+            ->assertJsonPath('status', 'passed')
+            ->assertJsonPath('namespace', 'billing')
+            ->assertJsonPath('driver', 's3')
+            ->assertJsonPath('small_payload.status', 'passed')
+            ->assertJsonPath('small_payload.bytes', 16)
+            ->assertJsonPath('small_payload.reference_uri', 's3://dw-payloads/diagnostics/storage-test-small/'.substr($smallHash, 0, 2).'/'.$smallHash)
+            ->assertJsonPath('large_payload.status', 'passed')
+            ->assertJsonPath('large_payload.bytes', 64);
+
+        $this->assertSame([], Storage::disk('external-payload-objects')->allFiles());
     }
 
     public function test_storage_diagnostic_reports_unconfigured_and_unavailable_drivers(): void

@@ -141,6 +141,7 @@ class NamespaceController
             'config' => ['nullable', 'array'],
             'config.uri' => ['nullable', 'string', 'max:2048'],
             'config.bucket' => ['nullable', 'string', 'max:255'],
+            'config.disk' => ['nullable', 'string', 'max:255'],
             'config.prefix' => ['nullable', 'string', 'max:1024'],
             'config.region' => ['nullable', 'string', 'max:128'],
             'config.endpoint' => ['nullable', 'string', 'max:2048'],

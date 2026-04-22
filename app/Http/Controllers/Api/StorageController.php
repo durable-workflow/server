@@ -4,14 +4,18 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
+use App\Support\NamespaceExternalPayloadStorage;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\File;
-use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 
 class StorageController
 {
+    public function __construct(
+        private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
+    ) {}
+
     public function test(Request $request): JsonResponse
     {
         if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
@@ -37,24 +41,34 @@ class StorageController
             return $this->diagnosticError('external_storage_disabled', 'External payload storage is disabled for this namespace.', $namespace, $driver);
         }
 
-        if ($driver !== 'local') {
+        if ($driver !== ($policy['driver'] ?? null)) {
             return $this->diagnosticError(
                 'storage_driver_unavailable',
-                'The server can persist this storage policy, but only the local diagnostic driver can run a round-trip test in this release.',
+                'The requested external payload storage driver is not configured for this namespace.',
                 $namespace,
                 $driver,
                 ['supported_diagnostic_drivers' => ['local']],
             );
         }
 
-        $directory = $this->localDirectory($policy, $namespace);
+        $storage = $this->externalPayloadStorage->driverFor($namespace);
+
+        if ($storage === null) {
+            return $this->diagnosticError(
+                'storage_driver_unavailable',
+                'The server can persist this storage policy, but the configured storage driver is not available in this runtime.',
+                $namespace,
+                $driver,
+                ['supported_diagnostic_drivers' => ['local', 's3', 'gcs', 'azure']],
+            );
+        }
 
         return ControlPlaneProtocol::json([
             'status' => 'passed',
             'namespace' => $namespace,
             'driver' => $driver,
-            'small_payload' => $this->roundTrip($directory, 'small', (int) $validated['small_payload_bytes']),
-            'large_payload' => $this->roundTrip($directory, 'large', (int) $validated['large_payload_bytes']),
+            'small_payload' => $this->roundTrip($storage, 'small', (int) $validated['small_payload_bytes']),
+            'large_payload' => $this->roundTrip($storage, 'large', (int) $validated['large_payload_bytes']),
         ]);
     }
 
@@ -74,27 +88,13 @@ class StorageController
         ] + $extra, 422);
     }
 
-    private function localDirectory(array $policy, string $namespace): string
+    private function roundTrip(ExternalPayloadStorageDriver $storage, string $kind, int $bytes): array
     {
-        $uri = $policy['config']['uri'] ?? null;
-        if (is_string($uri) && str_starts_with($uri, 'file://')) {
-            return rtrim(substr($uri, 7), '/');
-        }
-
-        return storage_path('app/external-payloads/'.$namespace);
-    }
-
-    private function roundTrip(string $directory, string $kind, int $bytes): array
-    {
-        File::ensureDirectoryExists($directory);
-
-        $path = $directory.'/storage-test-'.$kind.'-'.(string) Str::uuid().'.bin';
         $payload = str_repeat($kind === 'small' ? 's' : 'l', $bytes);
         $expectedHash = hash('sha256', $payload);
-
-        file_put_contents($path, $payload);
-        $read = file_get_contents($path);
-        @unlink($path);
+        $uri = $storage->put($payload, $expectedHash, 'storage-test-'.$kind);
+        $read = $storage->get($uri);
+        $storage->delete($uri);
 
         if ($read !== $payload) {
             throw new \RuntimeException('External storage round trip failed integrity verification.');
@@ -104,7 +104,7 @@ class StorageController
             'status' => 'passed',
             'bytes' => $bytes,
             'sha256' => $expectedHash,
-            'reference_uri' => 'file://'.$path,
+            'reference_uri' => $uri,
         ];
     }
 }
