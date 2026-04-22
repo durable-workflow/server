@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\HistoryController;
 use App\Http\Controllers\Api\NamespaceController;
 use App\Http\Controllers\Api\ScheduleController;
 use App\Http\Controllers\Api\SearchAttributeController;
+use App\Http\Controllers\Api\StorageController;
 use App\Http\Controllers\Api\SystemController;
 use App\Http\Controllers\Api\TaskQueueController;
 use App\Http\Controllers\Api\WorkerController;
@@ -64,6 +65,12 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::post('/', [NamespaceController::class, 'store'])->middleware([$admin, $cpv, $ns]);
         Route::get('/{namespace}', [NamespaceController::class, 'show'])->middleware([$operator, $cpv, $ns]);
         Route::put('/{namespace}', [NamespaceController::class, 'update'])->middleware([$admin, $cpv, $ns]);
+        Route::put('/{namespace}/external-storage', [NamespaceController::class, 'updateExternalStorage'])->middleware([$admin, $cpv, $ns]);
+    });
+
+    // ── External Payload Storage ───────────────────────────────────
+    Route::prefix('storage')->middleware([$admin, $cpv, $ns])->group(function () {
+        Route::post('/test', [StorageController::class, 'test']);
     });
 
     // ── Workflows ────────────────────────────────────────────────────

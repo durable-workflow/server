@@ -6,6 +6,7 @@ use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class NamespaceController
 {
@@ -23,6 +24,7 @@ class NamespaceController
                 'description' => $ns->description,
                 'retention_days' => $ns->retention_days,
                 'status' => $ns->status,
+                'external_payload_storage' => $ns->external_payload_storage,
                 'created_at' => $ns->created_at?->toIso8601String(),
                 'updated_at' => $ns->updated_at?->toIso8601String(),
             ]),
@@ -63,6 +65,7 @@ class NamespaceController
             'description' => $namespace->description,
             'retention_days' => $namespace->retention_days,
             'status' => $namespace->status,
+            'external_payload_storage' => $namespace->external_payload_storage,
             'created_at' => $namespace->created_at?->toIso8601String(),
         ], 201);
     }
@@ -84,6 +87,7 @@ class NamespaceController
             'description' => $ns->description,
             'retention_days' => $ns->retention_days,
             'status' => $ns->status,
+            'external_payload_storage' => $ns->external_payload_storage,
             'created_at' => $ns->created_at?->toIso8601String(),
             'updated_at' => $ns->updated_at?->toIso8601String(),
         ]);
@@ -113,8 +117,57 @@ class NamespaceController
             'description' => $ns->description,
             'retention_days' => $ns->retention_days,
             'status' => $ns->status,
+            'external_payload_storage' => $ns->external_payload_storage,
             'updated_at' => $ns->updated_at?->toIso8601String(),
         ]);
+    }
+
+    public function updateExternalStorage(Request $request, string $namespace): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $ns = WorkflowNamespace::where('name', strtolower($namespace))->first();
+
+        if (! $ns) {
+            return $this->namespaceNotFound($namespace);
+        }
+
+        $validated = $request->validate([
+            'driver' => ['required', 'string', Rule::in(['local', 's3', 'gcs', 'azure'])],
+            'enabled' => ['sometimes', 'boolean'],
+            'threshold_bytes' => ['nullable', 'integer', 'min:1'],
+            'config' => ['nullable', 'array'],
+            'config.uri' => ['nullable', 'string', 'max:2048'],
+            'config.bucket' => ['nullable', 'string', 'max:255'],
+            'config.prefix' => ['nullable', 'string', 'max:1024'],
+            'config.region' => ['nullable', 'string', 'max:128'],
+            'config.endpoint' => ['nullable', 'string', 'max:2048'],
+            'config.auth_profile' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $policy = [
+            'driver' => $validated['driver'],
+            'enabled' => (bool) ($validated['enabled'] ?? true),
+        ];
+
+        if (array_key_exists('threshold_bytes', $validated) && $validated['threshold_bytes'] !== null) {
+            $policy['threshold_bytes'] = (int) $validated['threshold_bytes'];
+        }
+
+        $config = array_filter(
+            $validated['config'] ?? [],
+            static fn ($value): bool => $value !== null && $value !== '',
+        );
+
+        if ($config !== []) {
+            $policy['config'] = $config;
+        }
+
+        $ns->update(['external_payload_storage' => $policy]);
+
+        return ControlPlaneProtocol::json($this->serializeNamespace($ns->refresh()));
     }
 
     private function namespaceNotFound(string $namespace): JsonResponse
@@ -126,5 +179,18 @@ class NamespaceController
             'reason' => 'namespace_not_found',
             'namespace' => $normalized,
         ], 404);
+    }
+
+    private function serializeNamespace(WorkflowNamespace $ns): array
+    {
+        return [
+            'name' => $ns->name,
+            'description' => $ns->description,
+            'retention_days' => $ns->retention_days,
+            'status' => $ns->status,
+            'external_payload_storage' => $ns->external_payload_storage,
+            'created_at' => $ns->created_at?->toIso8601String(),
+            'updated_at' => $ns->updated_at?->toIso8601String(),
+        ];
     }
 }

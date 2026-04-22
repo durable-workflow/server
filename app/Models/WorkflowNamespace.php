@@ -13,6 +13,11 @@ class WorkflowNamespace extends Model
         'description',
         'retention_days',
         'status',
+        'external_payload_storage',
+    ];
+
+    protected $casts = [
+        'external_payload_storage' => 'array',
     ];
 
     public function setNameAttribute(string $value): void

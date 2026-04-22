@@ -493,6 +493,7 @@ curl "$SERVER/api/workflows/order-42/runs/abc123/history" \
 - `POST /api/namespaces` — Create namespace
 - `GET /api/namespaces/{name}` — Get namespace
 - `PUT /api/namespaces/{name}` — Update namespace
+- `PUT /api/namespaces/{name}/external-storage` — Configure external payload storage policy
 
 ### Workflows
 - `GET /api/workflows` — List workflows (with filters)
@@ -519,6 +520,9 @@ is needed.
 ### History
 - `GET /api/workflows/{id}/runs/{runId}/history` — Get event history
 - `GET /api/workflows/{id}/runs/{runId}/history/export` — Export replay bundle
+
+### External Payload Storage
+- `POST /api/storage/test` — Round-trip diagnostic for the selected namespace storage policy
 
 Every non-health, non-discovery control-plane endpoint must send
 `X-Durable-Workflow-Control-Plane-Version: 2` on the request. That
