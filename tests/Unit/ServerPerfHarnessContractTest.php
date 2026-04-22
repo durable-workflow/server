@@ -15,9 +15,11 @@ class ServerPerfHarnessContractTest extends TestCase
 
         foreach ([
             'sample_count',
+            'periodic_sample_count',
             'expected_periodic_samples',
+            'observed_sample_coverage',
             'minimum_trusted_samples',
-            'sample coverage below trusted minimum',
+            'observed {periodic_sample_count} periodic samples',
             'next_sample += sample_interval',
             'max_server_cache_keys',
             'final_server_cache_keys',

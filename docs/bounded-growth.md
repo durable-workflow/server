@@ -82,7 +82,8 @@ The perf harness writes `summary.json`, `samples.jsonl`, `metrics.prom`, and
 service logs under `build/perf/`. A trusted bounded-growth run must include:
 
 - enough periodic samples to cover at least `DW_PERF_MIN_SAMPLE_COVERAGE`
-  (default 80%) of the configured duration/sample-interval window;
+  (default 80%) of the configured duration/sample-interval window; the final
+  post-drain sample is reported separately and does not count toward coverage;
 - the maximum server memory, Redis key counts, server-owned `server:*` cache
   key counts, per-policy server cache key counts, final drain counts, and, for
   runs of at least 10 minutes, the post-warmup memory slope when a slope limit
@@ -92,8 +93,9 @@ service logs under `build/perf/`. A trusted bounded-growth run must include:
 - the SHA-256 digest of `config/dw-bounded-growth.php` so the artifact can be
   tied back to the policy that was active for the run.
 
-If sample coverage falls below the trusted minimum, the harness marks the run
-failed instead of uploading an incomplete artifact as passing evidence.
+If `periodic_sample_count` falls below `minimum_trusted_samples`, the harness
+marks the run failed instead of uploading an incomplete artifact as passing
+evidence.
 
 `summary.json` includes both aggregate server cache keys and
 `max_server_cache_keys_by_policy` / `final_server_cache_keys_by_policy`. Those

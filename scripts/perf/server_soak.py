@@ -572,6 +572,7 @@ def main() -> int:
         stop_at = time.monotonic() + max(1, args.duration_seconds)
         futures = []
         samples: list[dict[str, Any]] = []
+        periodic_sample_count = 0
 
         with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as executor:
             for index in range(max(1, args.concurrency)):
@@ -585,6 +586,7 @@ def main() -> int:
                 if time.monotonic() >= next_sample:
                     row = sample(args.compose_project)
                     samples.append(row)
+                    periodic_sample_count += 1
                     metrics.update_sample(row)
                     write_jsonl(samples_path, row)
                     next_sample += sample_interval
@@ -634,6 +636,7 @@ def main() -> int:
         sample_coverage = max(0.0, min(1.0, args.min_sample_coverage))
         min_samples = max(1, math.ceil(expected_samples * sample_coverage))
         sample_count = len(samples)
+        observed_sample_coverage = periodic_sample_count / expected_samples
 
         summary = {
             "duration_seconds": args.duration_seconds,
@@ -643,7 +646,9 @@ def main() -> int:
             "task_queues": len(queues),
             "sample_interval_seconds": args.sample_interval_seconds,
             "sample_count": sample_count,
+            "periodic_sample_count": periodic_sample_count,
             "expected_periodic_samples": expected_samples,
+            "observed_sample_coverage": round(observed_sample_coverage, 4),
             "minimum_trusted_samples": min_samples,
             "requests": dict(metrics.requests),
             "errors": metrics.errors,
@@ -678,8 +683,11 @@ def main() -> int:
         failures = []
         if metrics.errors > 0:
             failures.append(f"{metrics.errors} load-generator errors")
-        if sample_count < min_samples:
-            failures.append(f"sample coverage below trusted minimum {min_samples} (observed {sample_count})")
+        if periodic_sample_count < min_samples:
+            failures.append(
+                f"sample coverage below trusted minimum {min_samples} "
+                f"(observed {periodic_sample_count} periodic samples)"
+            )
         if max_server_memory_bytes > args.max_server_memory_mb * 1024 * 1024:
             failures.append(
                 f"server memory exceeded {args.max_server_memory_mb} MB "
