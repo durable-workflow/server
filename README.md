@@ -495,6 +495,13 @@ curl "$SERVER/api/workflows/order-42/runs/abc123/history" \
 - `PUT /api/namespaces/{name}` — Update namespace
 - `PUT /api/namespaces/{name}/external-storage` — Configure external payload storage policy
 
+When a namespace enables the `local` external payload storage driver, the
+server resolves `{codec, external_storage}` payload envelopes on workflow
+start, signal, query, update, bridge-adapter, and activity result/failure
+ingress. S3, GCS, and Azure policies can be stored for control-plane parity,
+but server-side dereference remains fail-closed until those runtime drivers
+ship.
+
 ### Workflows
 - `GET /api/workflows` — List workflows (with filters)
 - `POST /api/workflows` — Start a workflow

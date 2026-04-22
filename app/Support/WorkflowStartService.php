@@ -13,6 +13,7 @@ class WorkflowStartService
     public function __construct(
         private readonly WorkflowControlPlane $controlPlane,
         private readonly ConfiguredWorkflowTypeValidator $workflowTypes,
+        private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
     ) {}
 
     /**
@@ -66,7 +67,11 @@ class WorkflowStartService
         ?string $namespace = null,
         ?CommandContext $commandContext = null,
     ): array {
-        $envelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null);
+        $envelope = PayloadEnvelopeResolver::resolve(
+            $validated['input'] ?? null,
+            'input',
+            $this->externalPayloadStorage->driverFor($namespace),
+        );
 
         // When the client sends no input (or an empty array), emit a
         // default-codec-encoded empty arg list so the run's `arguments`

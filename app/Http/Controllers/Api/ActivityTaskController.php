@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Models\WorkerRegistration;
 use App\Support\ActivityTaskPoller;
 use App\Support\ExternalExecutorConfigContract;
+use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerProtocol;
 use Illuminate\Http\JsonResponse;
@@ -19,6 +20,7 @@ class ActivityTaskController
 {
     public function __construct(
         private readonly ActivityTaskPoller $activityTaskPoller,
+        private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
     ) {}
 
     /**
@@ -125,6 +127,7 @@ class ActivityTaskController
         $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
             $validated['result'] ?? null,
             'result',
+            $this->externalPayloadStorage->driverFor($namespace),
         );
         $outcome = $bridge->complete(
             $validated['activity_attempt_id'],
@@ -206,6 +209,7 @@ class ActivityTaskController
         $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
             $validated['failure']['details'] ?? null,
             'failure.details',
+            $this->externalPayloadStorage->driverFor($namespace),
         );
         $failure = $validated['failure'];
 

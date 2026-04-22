@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Support\BridgeAdapterOutcomeContract;
 use App\Support\ControlPlaneProtocol;
+use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkflowCommandContextFactory;
 use App\Support\WorkflowStartService;
@@ -22,6 +23,7 @@ class BridgeAdapterController
         private readonly WorkflowStartService $workflowStartService,
         private readonly WorkflowControlPlane $workflowControlPlane,
         private readonly WorkflowCommandContextFactory $commandContexts,
+        private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
     ) {}
 
     public function webhook(Request $request, string $adapter): JsonResponse
@@ -205,7 +207,8 @@ class BridgeAdapterController
             ]);
         }
 
-        $envelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input');
+        $externalStorage = $this->externalPayloadStorage->driverFor($namespace);
+        $envelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $externalStorage);
 
         $duplicate = $this->duplicateBridgeCommand(
             workflowId: $workflowId,
@@ -230,7 +233,7 @@ class BridgeAdapterController
         }
 
         $result = $this->workflowControlPlane->signal($workflowId, $signalName, [
-            'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input'),
+            'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
             'payload_codec' => $envelope['codec'],
             'payload_blob' => $envelope['blob'],
             'command_context' => $this->commandContexts->make(
@@ -315,7 +318,11 @@ class BridgeAdapterController
         }
 
         $result = $this->workflowControlPlane->update($workflowId, $updateName, [
-            'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input'),
+            'arguments' => PayloadEnvelopeResolver::resolveToArray(
+                $validated['input'] ?? null,
+                'input',
+                $this->externalPayloadStorage->driverFor($namespace),
+            ),
             'command_context' => $this->commandContexts->make(
                 $request,
                 workflowId: $workflowId,

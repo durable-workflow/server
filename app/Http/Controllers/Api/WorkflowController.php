@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneResponseContract;
 use App\Support\ControlPlaneResultMapper;
+use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkflowCommandContextFactory;
 use App\Support\WorkflowQueryTaskBroker;
@@ -30,6 +31,7 @@ class WorkflowController
         private readonly ControlPlaneResultMapper $resultMapper,
         private readonly WorkflowQueryTaskBroker $queryTasks,
         private readonly WorkflowRunDiagnostics $diagnostics,
+        private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -383,13 +385,14 @@ class WorkflowController
             'request_id' => ['nullable', 'string', 'max:255'],
         ]);
 
-        $envelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input');
+        $externalStorage = $this->externalPayloadStorage->driverFor($namespace);
+        $envelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $externalStorage);
 
         $result = $this->workflowControlPlane->signal(
             $workflowId,
             $signalName,
             [
-                'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input'),
+                'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
                 'payload_codec' => $envelope['codec'],
                 'payload_blob' => $envelope['blob'],
                 'command_context' => $this->commandContexts->make(
@@ -435,7 +438,8 @@ class WorkflowController
         ]);
 
         $run = NamespaceWorkflowScope::currentRun($namespace, $workflowId);
-        $queryEnvelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input');
+        $externalStorage = $this->externalPayloadStorage->driverFor($namespace);
+        $queryEnvelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $externalStorage);
 
         if ($run instanceof WorkflowRun && $this->queryTasks->hasWorkerFor($namespace, $run)) {
             return $this->resultMapper->query(
@@ -450,7 +454,7 @@ class WorkflowController
             $workflowId,
             $queryName,
             [
-                'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input'),
+                'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
                 'command_context' => $this->commandContexts->make(
                     $request,
                     workflowId: $workflowId,
@@ -496,12 +500,13 @@ class WorkflowController
         ]);
 
         $this->rejectLegacyUpdateFields($request);
+        $externalStorage = $this->externalPayloadStorage->driverFor($namespace);
 
         $result = $this->workflowControlPlane->update(
             $workflowId,
             $updateName,
             [
-                'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input'),
+                'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
                 'command_context' => $this->commandContexts->make(
                     $request,
                     workflowId: $workflowId,

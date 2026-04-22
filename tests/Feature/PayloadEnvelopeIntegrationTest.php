@@ -7,12 +7,14 @@ namespace Tests\Feature;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkflowExecutor;
@@ -21,13 +23,25 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 {
     use RefreshDatabase;
 
+    private string $externalStorageDirectory;
+
     protected function setUp(): void
     {
         parent::setUp();
 
+        $this->externalStorageDirectory = storage_path('framework/testing/payload-envelope-external-storage');
+        File::deleteDirectory($this->externalStorageDirectory);
+
         config([
             'cache.default' => 'file',
         ]);
+    }
+
+    protected function tearDown(): void
+    {
+        File::deleteDirectory($this->externalStorageDirectory);
+
+        parent::tearDown();
     }
 
     public function test_signal_accepts_avro_envelope_input(): void
@@ -64,6 +78,87 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         $query->assertOk()
             ->assertJsonPath('result.name', 'EnvelopeUser')
+            ->assertJsonPath('result.stage', 'waiting-for-finish');
+    }
+
+    public function test_start_accepts_configured_external_storage_envelope_input(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', [
+            'driver' => 'local',
+            'enabled' => true,
+            'config' => [
+                'uri' => 'file://'.$this->externalStorageDirectory,
+            ],
+        ]);
+
+        $payload = Serializer::serializeWithCodec('avro', ['ExternalAda']);
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-external-storage-start',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'input' => $this->externalStorageEnvelope('avro', $payload),
+            ]);
+
+        $start->assertCreated()
+            ->assertJsonPath('payload_codec', 'avro');
+
+        $run = WorkflowRun::query()->findOrFail((string) $start->json('run_id'));
+
+        $this->assertSame('avro', $run->payload_codec);
+        $this->assertSame($payload, $run->arguments);
+    }
+
+    public function test_signal_accepts_configured_external_storage_envelope_input(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', [
+            'driver' => 'local',
+            'enabled' => true,
+            'config' => [
+                'uri' => 'file://'.$this->externalStorageDirectory,
+            ],
+        ]);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-external-storage-signal',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ])
+            ->assertCreated();
+
+        $runId = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-external-storage-signal')
+            ->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $payload = Serializer::serializeWithCodec('avro', ['ExternalSignal']);
+        $signal = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-external-storage-signal/signal/advance', [
+                'input' => $this->externalStorageEnvelope('avro', $payload),
+            ]);
+
+        $signal->assertStatus(202)
+            ->assertJsonPath('signal_name', 'advance');
+
+        $recordedSignal = WorkflowSignal::query()
+            ->where('workflow_run_id', $runId)
+            ->where('signal_name', 'advance')
+            ->firstOrFail();
+
+        $this->assertSame('avro', $recordedSignal->payload_codec);
+        $this->assertSame($payload, $recordedSignal->arguments);
+
+        $this->runReadyWorkflowTask($runId);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-external-storage-signal/query/currentState')
+            ->assertOk()
+            ->assertJsonPath('result.name', 'ExternalSignal')
             ->assertJsonPath('result.stage', 'waiting-for-finish');
     }
 
@@ -845,7 +940,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         ]);
     }
 
-    private function createNamespace(string $name): void
+    private function createNamespace(string $name, ?array $externalPayloadStorage = null): void
     {
         WorkflowNamespace::query()->updateOrCreate(
             ['name' => $name],
@@ -853,6 +948,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
                 'description' => 'Test namespace',
                 'retention_days' => 30,
                 'status' => 'active',
+                'external_payload_storage' => $externalPayloadStorage,
             ],
         );
     }
@@ -881,6 +977,29 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         return [
             'codec' => 'avro',
             'blob' => Serializer::serializeWithCodec('avro', $payload),
+        ];
+    }
+
+    /**
+     * @return array{codec: string, external_storage: array{schema: string, uri: string, sha256: string, size_bytes: int, codec: string}}
+     */
+    private function externalStorageEnvelope(string $codec, string $payload): array
+    {
+        File::ensureDirectoryExists($this->externalStorageDirectory);
+
+        $sha256 = hash('sha256', $payload);
+        $path = $this->externalStorageDirectory.'/'.$codec.'-'.$sha256.'.bin';
+        file_put_contents($path, $payload);
+
+        return [
+            'codec' => $codec,
+            'external_storage' => [
+                'schema' => 'durable-workflow.v2.external-payload-reference.v1',
+                'uri' => 'file://'.$path,
+                'sha256' => $sha256,
+                'size_bytes' => strlen($payload),
+                'codec' => $codec,
+            ],
         ];
     }
 
