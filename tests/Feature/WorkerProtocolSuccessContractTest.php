@@ -1677,7 +1677,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('status', 'completed')
             ->assertJsonPath('search_attributes', [
                 'phase' => 'worker-contract',
-                'priority' => '3',
+                'priority' => 3,
                 'tenant' => 'acme',
             ]);
 
@@ -1697,14 +1697,14 @@ class WorkerProtocolSuccessContractTest extends TestCase
             [
                 'obsolete' => null,
                 'phase' => 'worker-contract',
-                'priority' => '3',
+                'priority' => 3,
             ],
             $events->get('SearchAttributesUpserted')['payload']['attributes'] ?? null,
         );
         $this->assertSame(
             [
                 'phase' => 'worker-contract',
-                'priority' => '3',
+                'priority' => 3,
                 'tenant' => 'acme',
             ],
             $events->get('SearchAttributesUpserted')['payload']['merged'] ?? null,
