@@ -25,6 +25,7 @@ class ServerPerfHarnessContractTest extends TestCase
             'final_server_cache_keys',
             'max_server_cache_keys_by_policy',
             'final_server_cache_keys_by_policy',
+            'dw_perf_redis_server_keys_by_policy',
             'DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY',
             'DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY',
             'parse_policy_thresholds',

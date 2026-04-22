@@ -219,6 +219,17 @@ return [
             'suppression' => 'No labels are exposed.',
         ],
 
+        'dw_perf_redis_server_keys_by_policy' => [
+            'owner' => 'scripts/perf/server_soak.py',
+            'surface' => 'Perf harness /metrics scrape; optional remote_write.',
+            'dimensions' => [
+                'policy' => 'finite_cache_policy_inventory',
+            ],
+            'cardinality' => 'policy series are fixed to the cache_keys inventory in this bounded-growth policy file.',
+            'selection' => 'latest sampled Redis keys for each declared server-owned cache policy.',
+            'suppression' => 'No suppression path is needed because the cache policy inventory is finite and reviewed.',
+        ],
+
         'dw_perf_redis_db_keys' => [
             'owner' => 'scripts/perf/server_soak.py',
             'surface' => 'Perf harness /metrics scrape; optional remote_write.',

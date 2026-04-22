@@ -53,6 +53,7 @@ added without a TTL, admission, or cardinality contract.
 | `dw_perf_redis_memory_bytes` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |
 | `dw_perf_redis_polling_keys` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |
 | `dw_perf_redis_server_keys` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. Counts all Redis keys in the server-owned `server:*` cache namespace, not only the workflow-task polling subset. |
+| `dw_perf_redis_server_keys_by_policy` | Perf harness `/metrics`; optional remote_write | The only label is `policy`, fixed to the reviewed `cache_keys` inventory in `config/dw-bounded-growth.php`. |
 | `dw_perf_redis_db_keys` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |
 | `dw_perf_assertion_failed` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |
 
@@ -101,7 +102,9 @@ evidence.
 `max_server_cache_keys_by_policy` / `final_server_cache_keys_by_policy`. Those
 per-policy maps mirror the `cache_keys` inventory so a long soak can show which
 bounded cache family produced growth instead of only reporting a total
-`server:*` count.
+`server:*` count. The same finite per-policy inventory is exposed as
+`dw_perf_redis_server_keys_by_policy{policy="..."}` for optional remote-write
+alerting.
 
 Per-policy limits can be enforced with JSON maps keyed by policy ID:
 `DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY` for maximum observed keys and

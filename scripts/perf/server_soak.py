@@ -51,6 +51,7 @@ class Metrics:
             "redis_db_keys": 0,
             "redis_polling_keys": 0,
             "redis_server_keys": 0,
+            "redis_server_keys_by_policy": {policy_id: 0 for policy_id in SERVER_CACHE_KEY_PATTERNS},
             "assertion_failed": 0,
         }
 
@@ -71,6 +72,12 @@ class Metrics:
             self.latest["redis_db_keys"] = int(sample.get("redis_db_keys") or 0)
             self.latest["redis_polling_keys"] = int(sample.get("redis_polling_keys") or 0)
             self.latest["redis_server_keys"] = int(sample.get("redis_server_keys") or 0)
+            by_policy = sample.get("redis_server_keys_by_policy")
+            if isinstance(by_policy, dict):
+                self.latest["redis_server_keys_by_policy"] = {
+                    policy_id: int(by_policy.get(policy_id) or 0)
+                    for policy_id in SERVER_CACHE_KEY_PATTERNS
+                }
 
     def mark_assertion_failed(self) -> None:
         with self.lock:
@@ -106,6 +113,12 @@ class Metrics:
                     "# HELP dw_perf_redis_server_keys Redis keys owned by the Durable Workflow server cache namespace.",
                     "# TYPE dw_perf_redis_server_keys gauge",
                     f"dw_perf_redis_server_keys {self.latest['redis_server_keys']}",
+                    "# HELP dw_perf_redis_server_keys_by_policy Redis keys owned by the Durable Workflow server cache namespace by bounded-growth policy.",
+                    "# TYPE dw_perf_redis_server_keys_by_policy gauge",
+                    *[
+                        f'dw_perf_redis_server_keys_by_policy{{policy="{policy_id}"}} {count}'
+                        for policy_id, count in sorted(self.latest["redis_server_keys_by_policy"].items())
+                    ],
                     "# HELP dw_perf_redis_db_keys Redis DBSIZE count.",
                     "# TYPE dw_perf_redis_db_keys gauge",
                     f"dw_perf_redis_db_keys {self.latest['redis_db_keys']}",
