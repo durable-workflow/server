@@ -523,6 +523,18 @@ class ActivityWorkerProtocolTest extends TestCase
 
                 $mock->shouldReceive('fail')
                     ->once()
+                    ->withArgs(static function (string $attemptId, array $failure, ?string $codec) {
+                        return $attemptId !== ''
+                            && $codec === null
+                            && ($failure['message'] ?? null) === 'Connection timeout calling external service.'
+                            && ($failure['type'] ?? null) === 'TimeoutException'
+                            && ($failure['kind'] ?? null) === 'timeout'
+                            && ($failure['retryable'] ?? null) === true
+                            && ($failure['non_retryable'] ?? null) === false
+                            && ($failure['timeout_type'] ?? null) === 'start_to_close'
+                            && ($failure['cancelled'] ?? null) === false
+                            && ($failure['malformed_output'] ?? null) === false;
+                    })
                     ->andReturn([
                         'recorded' => true,
                         'task_id' => 'ignored',
@@ -540,7 +552,12 @@ class ActivityWorkerProtocolTest extends TestCase
                     'message' => 'Connection timeout calling external service.',
                     'type' => 'TimeoutException',
                     'stack_trace' => 'at HttpClient::send(Client.php:120)',
+                    'kind' => 'timeout',
+                    'retryable' => true,
                     'non_retryable' => false,
+                    'timeout_type' => 'start_to_close',
+                    'cancelled' => false,
+                    'malformed_output' => false,
                 ],
             ]);
 
@@ -685,6 +702,28 @@ class ActivityWorkerProtocolTest extends TestCase
 
         $fail->assertStatus(422)
             ->assertJsonValidationErrors(['failure.message']);
+    }
+
+    public function test_fail_activity_task_validates_structured_failure_classification(): void
+    {
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $fail = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/some-task/fail', [
+                'activity_attempt_id' => 'attempt-1',
+                'lease_owner' => 'worker-1',
+                'failure' => [
+                    'message' => 'Malformed carrier output.',
+                    'kind' => 'unknown_kind',
+                    'timeout_type' => 'forever',
+                ],
+            ]);
+
+        $fail->assertStatus(422)
+            ->assertJsonValidationErrors(['failure.kind', 'failure.timeout_type']);
     }
 
     public function test_fail_activity_task_is_scoped_by_namespace(): void

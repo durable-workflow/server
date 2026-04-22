@@ -8,6 +8,7 @@ use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerProtocol;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
 use Workflow\V2\Models\ActivityExecution;
@@ -156,6 +157,33 @@ class ActivityTaskController
             'failure.type' => ['nullable', 'string'],
             'failure.stack_trace' => ['nullable', 'string'],
             'failure.non_retryable' => ['nullable', 'boolean'],
+            'failure.retryable' => ['nullable', 'boolean'],
+            'failure.kind' => [
+                'nullable',
+                'string',
+                Rule::in([
+                    'application',
+                    'timeout',
+                    'cancellation',
+                    'malformed_output',
+                    'handler_crash',
+                    'decode_failure',
+                    'unsupported_payload',
+                ]),
+            ],
+            'failure.timeout_type' => [
+                'nullable',
+                'string',
+                Rule::in([
+                    'schedule_to_start',
+                    'start_to_close',
+                    'schedule_to_close',
+                    'heartbeat',
+                    'deadline_exceeded',
+                ]),
+            ],
+            'failure.cancelled' => ['nullable', 'boolean'],
+            'failure.malformed_output' => ['nullable', 'boolean'],
             'failure.details' => ['nullable'],
         ]);
 
