@@ -80,6 +80,17 @@ cannot collect at least `DW_PERF_MIN_SAMPLE_COVERAGE` of the expected periodic
 samples, which defaults to 80%. The final post-drain sample is included in the
 artifact but does not count toward the periodic sample coverage gate.
 
+Use `DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY` and
+`DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY` to enforce per-cache-family
+limits in addition to the aggregate `server:*` cache ceiling. Each value must
+be a JSON object keyed by a `config/dw-bounded-growth.php` cache policy ID with
+non-negative integer limits, for example:
+
+```bash
+DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY='{"workflow_task_poll_requests":2048}'
+DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY='{"workflow_task_poll_requests":0}'
+```
+
 ## Safety Rules
 
 - Do not run the self-hosted soak job for pull requests from forks.

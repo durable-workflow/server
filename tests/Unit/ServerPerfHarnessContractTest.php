@@ -28,9 +28,9 @@ class ServerPerfHarnessContractTest extends TestCase
             'dw_perf_redis_server_keys_by_policy',
             'DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY',
             'DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY',
-            'parse_policy_thresholds',
+            'parse_policy_limit_map',
             'unknown cache policy',
-            'must be non-negative',
+            'must be a non-negative integer',
             'SERVER_CACHE_KEY_PATTERNS',
             'bounded_growth_policy_sha256',
             'GITHUB_RUN_ID',
@@ -72,6 +72,30 @@ class ServerPerfHarnessContractTest extends TestCase
             $this->serverCacheKeyPatterns($source),
             'Perf soak cache inventory must exactly mirror config/dw-bounded-growth.php cache_keys.',
         );
+    }
+
+    public function test_ci_perf_jobs_enforce_per_policy_cache_thresholds(): void
+    {
+        $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
+        $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
+
+        $policy = require dirname(__DIR__, 2).'/config/dw-bounded-growth.php';
+        $policyIds = array_keys($policy['cache_keys'] ?? []);
+
+        foreach ([
+            'DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY',
+            'DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY',
+        ] as $envName) {
+            $this->assertStringContainsString($envName, $workflow, "Server Perf workflow must set {$envName}.");
+
+            foreach ($policyIds as $policyId) {
+                $this->assertStringContainsString(
+                    '"'.$policyId.'":',
+                    $workflow,
+                    "{$envName} must include a threshold for {$policyId}.",
+                );
+            }
+        }
     }
 
     /**
