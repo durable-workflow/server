@@ -2,9 +2,12 @@
 
 namespace Tests\Unit;
 
+use App\Support\AuthCompositionContract;
+use App\Support\BridgeAdapterOutcomeContract;
 use App\Support\ExternalExecutionSurfaceContract;
 use App\Support\ExternalTaskInputContract;
 use App\Support\ExternalTaskResultContract;
+use App\Support\InvocableCarrierContract;
 use PHPUnit\Framework\TestCase;
 
 class ExternalExecutionSurfaceContractTest extends TestCase
@@ -40,15 +43,33 @@ class ExternalExecutionSurfaceContractTest extends TestCase
         $this->assertSame('published', $manifest['contract_seams']['result_envelope']['status']);
         $this->assertSame('published', $manifest['contract_seams']['handler_mappings']['status']);
         $this->assertSame('published', $manifest['contract_seams']['invocable_http_carrier']['status']);
+        $this->assertSame('published', $manifest['contract_seams']['bridge_adapters']['status']);
+        $this->assertSame('published', $manifest['contract_seams']['auth_profile_tls_composition']['status']);
         $this->assertSame(
             'durable-workflow.v2.external-executor-config.contract',
             $manifest['contract_seams']['handler_mappings']['schema'],
         );
         $this->assertSame(
-            'durable-workflow.v2.invocable-carrier.contract',
+            InvocableCarrierContract::SCHEMA,
             $manifest['contract_seams']['invocable_http_carrier']['schema'],
         );
-        $this->assertSame('planned', $manifest['contract_seams']['bridge_adapters']['status']);
+        $this->assertSame(
+            BridgeAdapterOutcomeContract::SCHEMA,
+            $manifest['contract_seams']['bridge_adapters']['schema'],
+        );
+        $this->assertSame(
+            'bridge_adapter_outcome_contract',
+            $manifest['contract_seams']['bridge_adapters']['cluster_info_path'],
+        );
+        $this->assertSame(
+            AuthCompositionContract::SCHEMA,
+            $manifest['contract_seams']['auth_profile_tls_composition']['schema'],
+        );
+        $this->assertSame(
+            'auth_composition_contract',
+            $manifest['contract_seams']['auth_profile_tls_composition']['cluster_info_path'],
+        );
+        $this->assertSame('planned', $manifest['contract_seams']['payload_external_storage']['status']);
     }
 
     public function test_document_mentions_every_contract_seam(): void
