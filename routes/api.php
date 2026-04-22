@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\ActivityTaskController;
+use App\Http\Controllers\Api\BridgeAdapterController;
 use App\Http\Controllers\Api\HealthController;
 use App\Http\Controllers\Api\HistoryController;
 use App\Http\Controllers\Api\NamespaceController;
@@ -94,6 +95,11 @@ Route::middleware([Authenticate::class])->group(function () {
         // History
         Route::get('/{workflowId}/runs/{runId}/history', [HistoryController::class, 'show']);
         Route::get('/{workflowId}/runs/{runId}/history/export', [HistoryController::class, 'export']);
+    });
+
+    // ── Bridge Adapters ──────────────────────────────────────────────
+    Route::prefix('bridge-adapters')->middleware([$operator, $cpv, $ns])->group(function () {
+        Route::post('/webhook/{adapter}', [BridgeAdapterController::class, 'webhook']);
     });
 
     // ── Worker Task Polling ──────────────────────────────────────────

@@ -61,6 +61,17 @@ class ControlPlaneVersionCoverageTest extends TestCase
             'history.show' => ['method' => 'get', 'path' => '/api/workflows/wf-any/runs/run-any/history'],
             'history.export' => ['method' => 'get', 'path' => '/api/workflows/wf-any/runs/run-any/history/export'],
 
+            // BridgeAdapterController
+            'bridge-adapters.webhook' => [
+                'method' => 'post',
+                'path' => '/api/bridge-adapters/webhook/github',
+                'body' => [
+                    'action' => 'start_workflow',
+                    'idempotency_key' => 'provider-event-1',
+                    'target' => ['workflow_type' => 'AnyWorkflow'],
+                ],
+            ],
+
             // ScheduleController
             'schedules.index' => ['method' => 'get', 'path' => '/api/schedules'],
             'schedules.store' => [
