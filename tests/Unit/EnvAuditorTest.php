@@ -28,7 +28,7 @@ class EnvAuditorTest extends TestCase
             'DW_TYPO_VAR' => '1',
             'WORKFLOW_SERVER_AUTH_DRIVER' => 'token',
             'APP_KEY' => 'base64:...',
-            'HOME' => '/home/vscode',
+            'HOME' => '/root',
         ], $contract);
 
         $this->assertSame(['DW_AUTH_DRIVER', 'DW_MODE', 'DW_SERVER_ID'], $report['known']);
