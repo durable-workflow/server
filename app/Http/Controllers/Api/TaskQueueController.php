@@ -66,6 +66,175 @@ class TaskQueueController
     }
 
     /**
+     * Aggregate worker registrations by build_id for one task queue.
+     *
+     * Operators use this to answer "which builds can still claim work, and
+     * is it safe to drain or remove the older build now?" before deleting
+     * stale worker rows or rolling forward to a new build_id. Workers with
+     * no build_id are reported under a null build_id row that represents
+     * the unversioned cohort (the pre-rollout default).
+     */
+    public function buildIds(Request $request, string $taskQueue): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = (string) $request->attributes->get('namespace');
+        $staleAfter = $this->workerStaleAfterSeconds();
+        $now = now();
+
+        $workers = WorkerRegistration::query()
+            ->where('namespace', $namespace)
+            ->where('task_queue', $taskQueue)
+            ->orderByDesc('last_heartbeat_at')
+            ->orderBy('worker_id')
+            ->get();
+
+        $groups = [];
+
+        foreach ($workers as $worker) {
+            $buildId = is_string($worker->build_id) && trim($worker->build_id) !== ''
+                ? trim($worker->build_id)
+                : null;
+            $key = $buildId ?? '__unversioned__';
+
+            $heartbeat = $worker->last_heartbeat_at;
+            $isStale = $heartbeat
+                && $heartbeat->lt($now->copy()->subSeconds($staleAfter));
+            $declaredStatus = is_string($worker->status) ? $worker->status : 'active';
+            $effectiveStatus = $isStale ? 'stale' : $declaredStatus;
+
+            $groups[$key] ??= [
+                'build_id' => $buildId,
+                'active_worker_count' => 0,
+                'stale_worker_count' => 0,
+                'draining_worker_count' => 0,
+                'total_worker_count' => 0,
+                'runtimes' => [],
+                'sdk_versions' => [],
+                'last_heartbeat_at' => null,
+                'first_seen_at' => null,
+            ];
+
+            $groups[$key]['total_worker_count']++;
+            if ($effectiveStatus === 'stale') {
+                $groups[$key]['stale_worker_count']++;
+            } elseif ($effectiveStatus === 'draining') {
+                $groups[$key]['draining_worker_count']++;
+            } else {
+                $groups[$key]['active_worker_count']++;
+            }
+
+            if (is_string($worker->runtime) && trim($worker->runtime) !== '') {
+                $groups[$key]['runtimes'][trim($worker->runtime)] = true;
+            }
+            if (is_string($worker->sdk_version) && trim($worker->sdk_version) !== '') {
+                $groups[$key]['sdk_versions'][trim($worker->sdk_version)] = true;
+            }
+
+            if ($heartbeat !== null) {
+                $existing = $groups[$key]['last_heartbeat_at'];
+                if ($existing === null || $heartbeat->gt($existing)) {
+                    $groups[$key]['last_heartbeat_at'] = $heartbeat;
+                }
+            }
+
+            $createdAt = $worker->created_at;
+            if ($createdAt !== null) {
+                $existing = $groups[$key]['first_seen_at'];
+                if ($existing === null || $createdAt->lt($existing)) {
+                    $groups[$key]['first_seen_at'] = $createdAt;
+                }
+            }
+        }
+
+        $buildIds = [];
+        foreach ($groups as $group) {
+            $runtimes = array_keys($group['runtimes']);
+            sort($runtimes);
+            $sdkVersions = array_keys($group['sdk_versions']);
+            sort($sdkVersions);
+
+            $buildIds[] = [
+                'build_id' => $group['build_id'],
+                'rollout_status' => $this->buildIdRolloutStatus(
+                    $group['active_worker_count'],
+                    $group['draining_worker_count'],
+                    $group['stale_worker_count'],
+                ),
+                'active_worker_count' => $group['active_worker_count'],
+                'draining_worker_count' => $group['draining_worker_count'],
+                'stale_worker_count' => $group['stale_worker_count'],
+                'total_worker_count' => $group['total_worker_count'],
+                'runtimes' => $runtimes,
+                'sdk_versions' => $sdkVersions,
+                'last_heartbeat_at' => $group['last_heartbeat_at']?->toJSON(),
+                'first_seen_at' => $group['first_seen_at']?->toJSON(),
+            ];
+        }
+
+        usort($buildIds, function (array $a, array $b): int {
+            $rankA = $this->buildIdRolloutRank($a);
+            $rankB = $this->buildIdRolloutRank($b);
+            if ($rankA !== $rankB) {
+                return $rankA <=> $rankB;
+            }
+            $heartA = $a['last_heartbeat_at'] ?? '';
+            $heartB = $b['last_heartbeat_at'] ?? '';
+
+            return strcmp($heartB, $heartA);
+        });
+
+        return ControlPlaneProtocol::json([
+            'namespace' => $namespace,
+            'task_queue' => $taskQueue,
+            'stale_after_seconds' => $staleAfter,
+            'build_ids' => $buildIds,
+        ]);
+    }
+
+    private function buildIdRolloutStatus(int $active, int $draining, int $stale): string
+    {
+        if ($active > 0) {
+            return $draining > 0 ? 'active_with_draining' : 'active';
+        }
+
+        if ($draining > 0) {
+            return 'draining';
+        }
+
+        return $stale > 0 ? 'stale_only' : 'no_workers';
+    }
+
+    /**
+     * Sort key: rollout-active builds first, then draining, then stale.
+     * Within each rollout-status bucket the unversioned cohort sorts last
+     * so the named builds an operator is rolling out are visible above
+     * the legacy default — but a stale named build still sorts below an
+     * active unversioned cohort.
+     *
+     * @param  array<string, mixed>  $entry
+     */
+    private function buildIdRolloutRank(array $entry): int
+    {
+        $statusRank = match ($entry['rollout_status'] ?? '') {
+            'active' => 0,
+            'active_with_draining' => 1,
+            'draining' => 2,
+            'stale_only' => 3,
+            default => 4,
+        };
+
+        $rank = $statusRank * 2;
+        if (($entry['build_id'] ?? null) === null) {
+            $rank += 1;
+        }
+
+        return $rank;
+    }
+
+    /**
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */

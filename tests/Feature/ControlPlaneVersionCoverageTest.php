@@ -95,6 +95,7 @@ class ControlPlaneVersionCoverageTest extends TestCase
             // TaskQueueController
             'task-queues.index' => ['method' => 'get', 'path' => '/api/task-queues'],
             'task-queues.show' => ['method' => 'get', 'path' => '/api/task-queues/default'],
+            'task-queues.build_ids' => ['method' => 'get', 'path' => '/api/task-queues/default/build-ids'],
 
             // WorkerManagementController
             'workers.index' => ['method' => 'get', 'path' => '/api/workers'],

@@ -79,6 +79,17 @@ class ControlPlaneOperationalSuccessContractTest extends TestCase
                     ],
                 ],
             ],
+            'task-queues.build_ids_empty_queue' => [
+                'method' => 'get',
+                'path' => '/api/task-queues/empty-queue/build-ids',
+                'body' => [],
+                'structure' => [
+                    'namespace',
+                    'task_queue',
+                    'stale_after_seconds',
+                    'build_ids',
+                ],
+            ],
             'system.metrics_empty' => [
                 'method' => 'get',
                 'path' => '/api/system/metrics',
