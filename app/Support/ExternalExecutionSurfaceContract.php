@@ -61,7 +61,10 @@ final class ExternalExecutionSurfaceContract
                     'cluster_info_path' => 'worker_protocol.external_task_result_contract',
                 ],
                 'auth_profile_tls_composition' => [
-                    'status' => 'planned',
+                    'schema' => AuthCompositionContract::SCHEMA,
+                    'version' => AuthCompositionContract::VERSION,
+                    'status' => 'published',
+                    'cluster_info_path' => 'auth_composition_contract',
                     'required_outcome' => 'deterministic credential, profile, environment, and TLS precedence for external carriers',
                 ],
                 'handler_mappings' => [
@@ -79,7 +82,10 @@ final class ExternalExecutionSurfaceContract
                     'required_outcome' => 'activity-only HTTP invocation contract with stable request, response, failure, auth, and rollout boundaries',
                 ],
                 'bridge_adapters' => [
-                    'status' => 'planned',
+                    'schema' => BridgeAdapterOutcomeContract::SCHEMA,
+                    'version' => BridgeAdapterOutcomeContract::VERSION,
+                    'status' => 'published',
+                    'cluster_info_path' => 'bridge_adapter_outcome_contract',
                     'required_outcome' => 'bounded ingress and handoff adapters with explicit duplicate, auth, malformed payload, and routing outcomes',
                 ],
                 'payload_external_storage' => [

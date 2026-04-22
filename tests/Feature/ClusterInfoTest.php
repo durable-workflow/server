@@ -170,6 +170,30 @@ class ClusterInfoTest extends TestCase
             )
             ->assertJsonPath(
                 'worker_protocol.external_execution_surface_contract.contract_seams.bridge_adapters.status',
+                'published',
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_execution_surface_contract.contract_seams.bridge_adapters.schema',
+                'durable-workflow.v2.bridge-adapter-outcome.contract',
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_execution_surface_contract.contract_seams.bridge_adapters.cluster_info_path',
+                'bridge_adapter_outcome_contract',
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_execution_surface_contract.contract_seams.auth_profile_tls_composition.status',
+                'published',
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_execution_surface_contract.contract_seams.auth_profile_tls_composition.schema',
+                'durable-workflow.v2.auth-composition.contract',
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_execution_surface_contract.contract_seams.auth_profile_tls_composition.cluster_info_path',
+                'auth_composition_contract',
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_execution_surface_contract.contract_seams.payload_external_storage.status',
                 'planned',
             )
             ->assertJsonPath(

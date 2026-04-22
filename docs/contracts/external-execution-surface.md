@@ -32,10 +32,10 @@ Version 1 names these contract seams:
 
 - `input_envelope`: `worker_protocol.external_task_input_contract`
 - `result_envelope`: `worker_protocol.external_task_result_contract`
-- `auth_profile_tls_composition`
+- `auth_profile_tls_composition`: `auth_composition_contract`
 - `handler_mappings`: `worker_protocol.external_executor_config_contract`
 - `invocable_http_carrier`: `worker_protocol.invocable_carrier_contract`
-- `bridge_adapters`
+- `bridge_adapters`: `bridge_adapter_outcome_contract`
 - `payload_external_storage`
 - `admission_and_rollout_safety`
 
