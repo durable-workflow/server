@@ -11,20 +11,11 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Workflow\V2\Enums\RunStatus;
-use Workflow\V2\Models\ActivityExecution;
-use Workflow\V2\Models\WorkflowCommand;
-use Workflow\V2\Models\WorkflowFailure;
-use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
-use Workflow\V2\Models\WorkflowRunWait;
-use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\Models\WorkflowTimelineEntry;
-use Workflow\V2\Models\WorkflowTimer;
-use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
+use Workflow\V2\Support\WorkflowRunRetentionCleanup;
 use Workflow\V2\TaskWatchdog;
 
 class SystemController
@@ -303,6 +294,7 @@ class SystemController
                         'outcome' => 'pruned',
                         'history_events_deleted' => $result['history_events_deleted'],
                         'tasks_deleted' => $result['tasks_deleted'],
+                        'deleted' => $result['deleted'],
                     ];
                 } else {
                     $skipped++;
@@ -334,7 +326,7 @@ class SystemController
     }
 
     /**
-     * @return array{pruned: bool, reason: string|null, history_events_deleted: int, tasks_deleted: int}
+     * @return array{pruned: bool, reason: string|null, history_events_deleted: int, tasks_deleted: int, deleted: array<string, int>}
      */
     private function pruneRun(string $namespace, string $runId): array
     {
@@ -344,17 +336,17 @@ class SystemController
             ->first();
 
         if (! $summary) {
-            return ['pruned' => false, 'reason' => 'run_not_found', 'history_events_deleted' => 0, 'tasks_deleted' => 0];
+            return $this->skippedRetentionResult('run_not_found');
         }
 
         $status = is_string($summary->status) ? RunStatus::tryFrom($summary->status) : null;
 
         if ($status === null || ! $status->isTerminal()) {
-            return ['pruned' => false, 'reason' => 'run_not_terminal', 'history_events_deleted' => 0, 'tasks_deleted' => 0];
+            return $this->skippedRetentionResult('run_not_terminal');
         }
 
         if ($summary->archived_at !== null) {
-            return ['pruned' => false, 'reason' => 'run_archived', 'history_events_deleted' => 0, 'tasks_deleted' => 0];
+            return $this->skippedRetentionResult('run_archived');
         }
 
         // Audit log before deletion
@@ -367,56 +359,28 @@ class SystemController
             'closed_at' => $summary->closed_at?->toIso8601String(),
         ]);
 
-        // Delete related records first
-        ActivityExecution::query()
-            ->where('workflow_run_id', $runId)
-            ->delete();
-
-        WorkflowCommand::query()
-            ->where('workflow_run_id', $runId)
-            ->delete();
-
-        WorkflowFailure::query()
-            ->where('workflow_run_id', $runId)
-            ->delete();
-
-        WorkflowTimelineEntry::query()
-            ->where('workflow_run_id', $runId)
-            ->delete();
-
-        WorkflowRunWait::query()
-            ->where('workflow_run_id', $runId)
-            ->delete();
-
-        WorkflowTimer::query()
-            ->where('workflow_run_id', $runId)
-            ->delete();
-
-        WorkflowRunLineageEntry::query()
-            ->where('workflow_run_id', $runId)
-            ->delete();
-
-        WorkflowUpdate::query()
-            ->where('workflow_run_id', $runId)
-            ->delete();
-
-        $historyDeleted = WorkflowHistoryEvent::query()
-            ->where('workflow_run_id', $runId)
-            ->delete();
-
-        $tasksDeleted = WorkflowTask::query()
-            ->where('workflow_run_id', $runId)
-            ->delete();
-
-        WorkflowRunSummary::query()
-            ->where('id', $runId)
-            ->delete();
+        $report = WorkflowRunRetentionCleanup::pruneRun($runId);
 
         return [
             'pruned' => true,
             'reason' => null,
-            'history_events_deleted' => $historyDeleted,
-            'tasks_deleted' => $tasksDeleted,
+            'history_events_deleted' => $report['history_events_deleted'] ?? 0,
+            'tasks_deleted' => $report['tasks_deleted'] ?? 0,
+            'deleted' => $report,
+        ];
+    }
+
+    /**
+     * @return array{pruned: false, reason: string, history_events_deleted: 0, tasks_deleted: 0, deleted: array<string, int>}
+     */
+    private function skippedRetentionResult(string $reason): array
+    {
+        return [
+            'pruned' => false,
+            'reason' => $reason,
+            'history_events_deleted' => 0,
+            'tasks_deleted' => 0,
+            'deleted' => [],
         ];
     }
 }

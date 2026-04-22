@@ -5,11 +5,10 @@ use App\Support\EnvAuditor;
 use App\Support\NamespaceWorkflowScope;
 use Illuminate\Support\Facades\Artisan;
 use Workflow\V2\Enums\RunStatus;
-use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRunSummary;
-use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\ScheduleManager;
+use Workflow\V2\Support\WorkflowRunRetentionCleanup;
 
 Artisan::command('server:bootstrap {--force : Run bootstrap commands without a production prompt}', function (): int {
     $this->components->info('Running Durable Workflow server bootstrap...');
@@ -169,6 +168,7 @@ Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per
         $expiredRunIds = NamespaceWorkflowScope::runSummaryQuery($ns->name)
             ->whereIn('workflow_run_summaries.status_bucket', ['completed', 'failed'])
             ->whereNotNull('workflow_run_summaries.closed_at')
+            ->whereNull('workflow_run_summaries.archived_at')
             ->where('workflow_run_summaries.closed_at', '<', $cutoff)
             ->orderBy('workflow_run_summaries.closed_at')
             ->limit($limit)
@@ -209,21 +209,22 @@ Artisan::command('history:prune {--limit=100 : Maximum expired runs to prune per
                     continue;
                 }
 
-                $historyDeleted = WorkflowHistoryEvent::query()
-                    ->where('workflow_run_id', $runId)
-                    ->delete();
+                if ($summary->archived_at !== null) {
+                    $totalSkipped++;
 
-                $tasksDeleted = WorkflowTask::query()
-                    ->where('workflow_run_id', $runId)
-                    ->delete();
+                    continue;
+                }
 
-                WorkflowRunSummary::query()
-                    ->where('id', $runId)
-                    ->delete();
+                $report = WorkflowRunRetentionCleanup::pruneRun($runId);
 
                 $this->components->twoColumnDetail(
                     $runId,
-                    sprintf('<fg=green>pruned</> (%d events, %d tasks)', $historyDeleted, $tasksDeleted),
+                    sprintf(
+                        '<fg=green>pruned</> (%d events, %d tasks, %d detail rows)',
+                        $report['history_events_deleted'] ?? 0,
+                        $report['tasks_deleted'] ?? 0,
+                        array_sum($report),
+                    ),
                 );
 
                 $totalPruned++;

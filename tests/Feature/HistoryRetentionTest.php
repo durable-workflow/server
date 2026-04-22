@@ -13,8 +13,12 @@ use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowMemo;
+use Workflow\V2\Models\WorkflowMessage;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowRunTimerEntry;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\WorkflowStub;
 
@@ -167,6 +171,67 @@ class HistoryRetentionTest extends TestCase
         $this->assertGreaterThanOrEqual(0, $results[0]['history_events_deleted']);
 
         $this->assertSame(0, WorkflowHistoryEvent::where('workflow_run_id', $runId)->count());
+        $this->assertNull(WorkflowRunSummary::find($runId));
+    }
+
+    public function test_retention_pass_prunes_extended_run_detail_rows_transactionally(): void
+    {
+        Queue::fake();
+
+        $this->createNamespace('default');
+        $runId = $this->createExpiredClosedRun('default', 'wf-prune-detail-rows');
+        $run = WorkflowRun::findOrFail($runId);
+
+        WorkflowMemo::query()->create([
+            'workflow_run_id' => $runId,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'key' => 'customer',
+            'value' => ['id' => 'cust-123'],
+            'upserted_at_sequence' => 1,
+        ]);
+
+        WorkflowSearchAttribute::query()->create([
+            'workflow_run_id' => $runId,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'key' => 'plan',
+            'type' => WorkflowSearchAttribute::TYPE_KEYWORD,
+            'value_keyword' => 'enterprise',
+            'upserted_at_sequence' => 1,
+        ]);
+
+        WorkflowMessage::query()->create([
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $runId,
+            'direction' => 'inbound',
+            'channel' => 'signal',
+            'stream_key' => 'signal:approve',
+            'sequence' => 999,
+            'consume_state' => 'pending',
+        ]);
+
+        WorkflowRunTimerEntry::query()->create([
+            'id' => 'retention-timer-'.$runId,
+            'workflow_run_id' => $runId,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'timer_id' => 'retention-timer',
+            'position' => 1,
+            'status' => 'scheduled',
+        ]);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/retention/pass')
+            ->assertOk()
+            ->assertJsonPath('processed', 1)
+            ->assertJsonPath('pruned', 1)
+            ->assertJsonPath('results.0.deleted.memos_deleted', 1)
+            ->assertJsonPath('results.0.deleted.search_attributes_deleted', 1)
+            ->assertJsonPath('results.0.deleted.messages_deleted', 1)
+            ->assertJsonPath('results.0.deleted.run_timer_entries_deleted', 1);
+
+        $this->assertSame(0, WorkflowMemo::where('workflow_run_id', $runId)->count());
+        $this->assertSame(0, WorkflowSearchAttribute::where('workflow_run_id', $runId)->count());
+        $this->assertSame(0, WorkflowMessage::where('workflow_run_id', $runId)->count());
+        $this->assertSame(0, WorkflowRunTimerEntry::where('workflow_run_id', $runId)->count());
         $this->assertNull(WorkflowRunSummary::find($runId));
     }
 
