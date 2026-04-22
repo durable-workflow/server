@@ -362,6 +362,14 @@ def command_output(command: list[str], timeout: int = 5) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def tracked_working_tree_changes() -> list[str]:
+    result = run_command(["git", "status", "--porcelain", "--untracked-files=no"], timeout=10)
+    if result.returncode != 0:
+        return ["git status failed"]
+
+    return [line for line in result.stdout.splitlines() if line.strip()]
+
+
 def file_sha256(path: Path) -> str:
     try:
         digest = hashlib.sha256()
@@ -643,6 +651,7 @@ def start_metrics_server(metrics: Metrics, port: int) -> ThreadingHTTPServer:
 def evidence_provenance(base_url: str, compose_project: str) -> dict[str, Any]:
     repo_root = Path(__file__).resolve().parents[2]
     policy_path = repo_root / "config" / "dw-bounded-growth.php"
+    tracked_changes = tracked_working_tree_changes()
 
     return {
         "repository": os.environ.get("GITHUB_REPOSITORY") or command_output(["git", "config", "--get", "remote.origin.url"]),
@@ -658,6 +667,8 @@ def evidence_provenance(base_url: str, compose_project: str) -> dict[str, Any]:
         "compose_project": compose_project,
         "base_url": base_url,
         "bounded_growth_policy_sha256": file_sha256(policy_path),
+        "tracked_working_tree_clean": len(tracked_changes) == 0,
+        "tracked_working_tree_change_count": len(tracked_changes),
     }
 
 
@@ -666,6 +677,7 @@ def evidence_trust_profile(
     duration_seconds: int,
     compose_project: str,
     runner_environment: str,
+    tracked_working_tree_clean: bool,
     periodic_sample_count: int,
     minimum_trusted_samples: int,
     sampling_health: dict[str, Any],
@@ -682,6 +694,8 @@ def evidence_trust_profile(
         reasons.append("runner environment is unknown")
     elif runner_environment != "self-hosted":
         reasons.append(f"runner environment is {runner_environment}, not self-hosted")
+    if not tracked_working_tree_clean:
+        reasons.append("tracked working tree has uncommitted changes")
     if periodic_sample_count < minimum_trusted_samples:
         reasons.append("periodic sample coverage below trusted minimum")
     if int(sampling_health.get("unhealthy_samples") or 0) > 0:
@@ -696,6 +710,7 @@ def evidence_trust_profile(
         "runner_environment": runner_environment,
         "requires_self_hosted_runner": True,
         "requires_compose_resource_sampling": True,
+        "requires_clean_tracked_working_tree": True,
         "reasons": reasons,
     }
 
@@ -913,6 +928,7 @@ def main() -> int:
             duration_seconds=args.duration_seconds,
             compose_project=args.compose_project,
             runner_environment=str(provenance.get("runner_environment") or ""),
+            tracked_working_tree_clean=bool(provenance.get("tracked_working_tree_clean")),
             periodic_sample_count=periodic_sample_count,
             minimum_trusted_samples=min_samples,
             sampling_health=sampling_health,

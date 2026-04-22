@@ -97,7 +97,10 @@ service logs under `build/perf/`. A trusted bounded-growth run must include:
   runner name/OS/arch/environment, Compose project, and the tested base URL
   when present);
 - the SHA-256 digest of `config/dw-bounded-growth.php` so the artifact can be
-  tied back to the policy that was active for the run.
+  tied back to the policy that was active for the run;
+- a clean tracked working tree, recorded as `tracked_working_tree_clean`, so a
+  trusted artifact cannot come from uncommitted source or policy edits that were
+  never reviewed in git.
 
 If `periodic_sample_count` falls below `minimum_trusted_samples`, the harness
 marks the run failed instead of uploading an incomplete artifact as passing
@@ -116,7 +119,8 @@ alerting.
 classified as ineligible for the issue-closing trusted evidence unless they run
 for at least one hour, use compose-backed resource sampling, run on a
 self-hosted runner with an explicit `RUNNER_ENVIRONMENT=self-hosted` provenance
-value, meet sample coverage, and have no bounded-growth assertion failures.
+value, have a clean tracked working tree, meet sample coverage, and have no
+bounded-growth assertion failures.
 The CI smoke workflow sets `RUNNER_ENVIRONMENT=github-hosted` so those artifacts
 are traceable without being eligible for the trusted long-soak profile.
 
