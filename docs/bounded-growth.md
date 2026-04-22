@@ -102,3 +102,10 @@ evidence.
 per-policy maps mirror the `cache_keys` inventory so a long soak can show which
 bounded cache family produced growth instead of only reporting a total
 `server:*` count.
+
+Per-policy limits can be enforced with JSON maps keyed by policy ID:
+`DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY` for maximum observed keys and
+`DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY` for post-drain keys. Unknown
+policy IDs, non-integer values, and negative limits fail before the soak starts
+so evidence cannot silently drift away from the inventory in
+`config/dw-bounded-growth.php`.
