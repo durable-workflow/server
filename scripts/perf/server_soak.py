@@ -654,9 +654,47 @@ def evidence_provenance(base_url: str, compose_project: str) -> dict[str, Any]:
         "runner_name": os.environ.get("RUNNER_NAME", ""),
         "runner_os": os.environ.get("RUNNER_OS", ""),
         "runner_arch": os.environ.get("RUNNER_ARCH", ""),
+        "runner_environment": os.environ.get("RUNNER_ENVIRONMENT", ""),
         "compose_project": compose_project,
         "base_url": base_url,
         "bounded_growth_policy_sha256": file_sha256(policy_path),
+    }
+
+
+def evidence_trust_profile(
+    *,
+    duration_seconds: int,
+    compose_project: str,
+    runner_environment: str,
+    periodic_sample_count: int,
+    minimum_trusted_samples: int,
+    sampling_health: dict[str, Any],
+    failures: list[str],
+) -> dict[str, Any]:
+    minimum_duration_seconds = 3600
+    reasons = []
+
+    if duration_seconds < minimum_duration_seconds:
+        reasons.append(f"duration below trusted long-soak minimum {minimum_duration_seconds}s")
+    if not compose_project:
+        reasons.append("compose-backed resource sampling was not configured")
+    if runner_environment and runner_environment != "self-hosted":
+        reasons.append(f"runner environment is {runner_environment}, not self-hosted")
+    if periodic_sample_count < minimum_trusted_samples:
+        reasons.append("periodic sample coverage below trusted minimum")
+    if int(sampling_health.get("unhealthy_samples") or 0) > 0:
+        reasons.append("compose-backed resource sampling has unhealthy samples")
+    if failures:
+        reasons.append("bounded-growth assertions failed")
+
+    return {
+        "profile": "trusted_long_soak_v1",
+        "eligible": len(reasons) == 0,
+        "minimum_duration_seconds": minimum_duration_seconds,
+        "runner_environment": runner_environment,
+        "requires_self_hosted_runner": True,
+        "requires_compose_resource_sampling": True,
+        "reasons": reasons,
     }
 
 
@@ -758,6 +796,8 @@ def main() -> int:
         observed_sample_coverage = periodic_sample_count / expected_samples
         sampling_health = sample_health(samples, args.compose_project)
 
+        provenance = evidence_provenance(base_url, args.compose_project)
+
         summary = {
             "duration_seconds": args.duration_seconds,
             "elapsed_seconds": round(elapsed_seconds, 2),
@@ -799,7 +839,7 @@ def main() -> int:
             "evidence": {
                 "started_at": started_at.isoformat().replace("+00:00", "Z"),
                 "finished_at": finished_at.isoformat().replace("+00:00", "Z"),
-                "provenance": evidence_provenance(base_url, args.compose_project),
+                "provenance": provenance,
             },
         }
 
@@ -866,6 +906,16 @@ def main() -> int:
         if failures:
             metrics.mark_assertion_failed()
             summary["failures"] = failures
+
+        summary["evidence"]["trust"] = evidence_trust_profile(
+            duration_seconds=args.duration_seconds,
+            compose_project=args.compose_project,
+            runner_environment=str(provenance.get("runner_environment") or ""),
+            periodic_sample_count=periodic_sample_count,
+            minimum_trusted_samples=min_samples,
+            sampling_health=sampling_health,
+            failures=failures,
+        )
 
         metrics_path.write_text(metrics.prometheus(), encoding="utf-8")
         summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -44,6 +44,14 @@ class ServerPerfHarnessContractTest extends TestCase
             'bounded_growth_policy_sha256',
             'GITHUB_RUN_ID',
             'RUNNER_NAME',
+            'RUNNER_ENVIRONMENT',
+            'evidence_trust_profile',
+            'trusted_long_soak_v1',
+            'minimum_duration_seconds',
+            'requires_self_hosted_runner',
+            'requires_compose_resource_sampling',
+            'duration below trusted long-soak minimum',
+            'bounded-growth assertions failed',
         ] as $needle) {
             $this->assertStringContainsString($needle, $source, "Perf soak summary must retain {$needle}");
         }

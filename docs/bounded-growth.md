@@ -94,7 +94,8 @@ service logs under `build/perf/`. A trusted bounded-growth run must include:
   sample was collected successfully; missing resource samples fail the run
   instead of being recorded as zero-count evidence;
 - GitHub/runner provenance in `summary.json` (`GITHUB_SHA`, `GITHUB_RUN_ID`,
-  runner name/OS/arch, Compose project, and the tested base URL when present);
+  runner name/OS/arch/environment, Compose project, and the tested base URL
+  when present);
 - the SHA-256 digest of `config/dw-bounded-growth.php` so the artifact can be
   tied back to the policy that was active for the run.
 
@@ -109,6 +110,13 @@ bounded cache family produced growth instead of only reporting a total
 `server:*` count. The same finite per-policy inventory is exposed as
 `dw_perf_redis_server_keys_by_policy{policy="..."}` for optional remote-write
 alerting.
+
+`summary.json` also includes `evidence.trust` with the
+`trusted_long_soak_v1` profile. Short CI smokes can still pass, but they are
+classified as ineligible for the issue-closing trusted evidence unless they run
+for at least one hour, use compose-backed resource sampling, run on a
+self-hosted runner when GitHub exposes the runner environment, meet sample
+coverage, and have no bounded-growth assertion failures.
 
 Per-policy limits can be enforced with JSON maps keyed by policy ID:
 `DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY` for maximum observed keys and
