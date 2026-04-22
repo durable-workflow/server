@@ -71,6 +71,13 @@ final class ExternalExecutionSurfaceContract
                     'cluster_info_path' => 'worker_protocol.external_executor_config_contract',
                     'required_outcome' => 'configuration-first mapping from task kind, queue, and handler name to an external carrier invocation',
                 ],
+                'invocable_http_carrier' => [
+                    'schema' => InvocableCarrierContract::SCHEMA,
+                    'version' => InvocableCarrierContract::VERSION,
+                    'status' => 'published',
+                    'cluster_info_path' => 'worker_protocol.invocable_carrier_contract',
+                    'required_outcome' => 'activity-only HTTP invocation contract with stable request, response, failure, auth, and rollout boundaries',
+                ],
                 'bridge_adapters' => [
                     'status' => 'planned',
                     'required_outcome' => 'bounded ingress and handoff adapters with explicit duplicate, auth, malformed payload, and routing outcomes',

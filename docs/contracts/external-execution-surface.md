@@ -34,6 +34,7 @@ Version 1 names these contract seams:
 - `result_envelope`: `worker_protocol.external_task_result_contract`
 - `auth_profile_tls_composition`
 - `handler_mappings`: `worker_protocol.external_executor_config_contract`
+- `invocable_http_carrier`: `worker_protocol.invocable_carrier_contract`
 - `bridge_adapters`
 - `payload_external_storage`
 - `admission_and_rollout_safety`
@@ -54,6 +55,15 @@ only when it preserves task identity, attempt, and idempotency key; emits the
 declared input schema; accepts the declared result schema; maps transport
 failures to structured failure or malformed-output outcomes; and resolves auth,
 TLS, profile, and environment inputs deterministically.
+
+The first concrete invocable carrier is `invocable_http`, published at
+`worker_protocol.invocable_carrier_contract`. It is activity-task only. Its
+config target must declare a URL, may declare `method: POST`, and may declare a
+bounded `timeout_seconds` value. The server validates malformed invocable
+carrier config fail-closed through `invalid_carrier_target` and
+`invalid_invocable_carrier_scope` before exposing mappings on activity poll
+responses. Actual dispatch still belongs to a carrier implementation; this
+contract freezes the request, response, auth, failure, and rollout boundary.
 
 Stable adjacent contract docs live in:
 

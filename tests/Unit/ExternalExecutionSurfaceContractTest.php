@@ -39,9 +39,14 @@ class ExternalExecutionSurfaceContractTest extends TestCase
         $this->assertSame('published', $manifest['contract_seams']['input_envelope']['status']);
         $this->assertSame('published', $manifest['contract_seams']['result_envelope']['status']);
         $this->assertSame('published', $manifest['contract_seams']['handler_mappings']['status']);
+        $this->assertSame('published', $manifest['contract_seams']['invocable_http_carrier']['status']);
         $this->assertSame(
             'durable-workflow.v2.external-executor-config.contract',
             $manifest['contract_seams']['handler_mappings']['schema'],
+        );
+        $this->assertSame(
+            'durable-workflow.v2.invocable-carrier.contract',
+            $manifest['contract_seams']['invocable_http_carrier']['schema'],
         );
         $this->assertSame('planned', $manifest['contract_seams']['bridge_adapters']['status']);
     }

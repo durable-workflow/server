@@ -97,6 +97,7 @@ class WorkerProtocol
      *     history_compression: array{supported_encodings: list<string>, compression_threshold: int},
      *     external_execution_surface: array<string, mixed>,
      *     external_executor_config: array<string, mixed>,
+     *     invocable_carrier: array<string, mixed>,
      *     external_task_input: array<string, mixed>,
      *     external_task_result: array<string, mixed>,
      * }
@@ -143,6 +144,11 @@ class WorkerProtocol
                 'config_schema' => ExternalExecutorConfigContract::CONFIG_SCHEMA,
                 'config_schema_version' => ExternalExecutorConfigContract::CONFIG_VERSION,
             ],
+            'invocable_carrier' => [
+                'schema' => InvocableCarrierContract::SCHEMA,
+                'version' => InvocableCarrierContract::VERSION,
+                'carrier_type' => InvocableCarrierContract::CARRIER_TYPE,
+            ],
             'external_task_input' => [
                 'schema' => ExternalTaskInputContract::SCHEMA,
                 'version' => ExternalTaskInputContract::VERSION,
@@ -174,6 +180,7 @@ class WorkerProtocol
                 ...ExternalExecutorConfigContract::manifest(),
                 'runtime' => ExternalExecutorConfigContract::runtime(),
             ],
+            'invocable_carrier_contract' => InvocableCarrierContract::manifest(),
             'external_task_input_contract' => ExternalTaskInputContract::manifest(),
             'external_task_result_contract' => ExternalTaskResultContract::manifest(),
         ];

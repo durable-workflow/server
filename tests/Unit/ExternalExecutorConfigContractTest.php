@@ -46,6 +46,8 @@ class ExternalExecutorConfigContractTest extends TestCase
             'invalid_queue_binding',
             'missing_handler_target',
             'unsupported_carrier_capability',
+            'invalid_carrier_target',
+            'invalid_invocable_carrier_scope',
         ], ExternalExecutorConfigContract::namedErrors());
     }
 }

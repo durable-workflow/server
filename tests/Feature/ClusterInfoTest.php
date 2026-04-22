@@ -165,6 +165,10 @@ class ClusterInfoTest extends TestCase
                 'durable-workflow.v2.external-executor-config.contract',
             )
             ->assertJsonPath(
+                'worker_protocol.external_execution_surface_contract.contract_seams.invocable_http_carrier.status',
+                'published',
+            )
+            ->assertJsonPath(
                 'worker_protocol.external_execution_surface_contract.contract_seams.bridge_adapters.status',
                 'planned',
             )
@@ -174,6 +178,35 @@ class ClusterInfoTest extends TestCase
             )
             ->assertJsonPath(
                 'client_compatibility.required_protocols.worker_protocol.external_execution_surface_contract.version',
+                1,
+            );
+    }
+
+    public function test_it_publishes_invocable_carrier_contract_manifest(): void
+    {
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath(
+                'worker_protocol.invocable_carrier_contract.schema',
+                'durable-workflow.v2.invocable-carrier.contract',
+            )
+            ->assertJsonPath('worker_protocol.invocable_carrier_contract.carrier_type', 'invocable_http')
+            ->assertJsonPath('worker_protocol.invocable_carrier_contract.scope.task_kinds.0', 'activity_task')
+            ->assertJsonPath(
+                'worker_protocol.invocable_carrier_contract.request.body_schema',
+                'durable-workflow.v2.external-task-input.contract',
+            )
+            ->assertJsonPath(
+                'worker_protocol.invocable_carrier_contract.response.body_schema',
+                'durable-workflow.v2.external-task-result.contract',
+            )
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.invocable_carrier.schema',
+                'durable-workflow.v2.invocable-carrier.contract',
+            )
+            ->assertJsonPath('capabilities.invocable_carrier_contract', true)
+            ->assertJsonPath(
+                'client_compatibility.required_protocols.worker_protocol.invocable_carrier_contract.version',
                 1,
             );
     }
@@ -303,6 +336,44 @@ class ClusterInfoTest extends TestCase
         $this->assertContains('invalid_queue_binding', $codes);
         $this->assertContains('missing_handler_target', $codes);
         $this->assertContains('unsupported_carrier_capability', $codes);
+        $response->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.status', 'invalid');
+    }
+
+    public function test_it_fails_closed_on_malformed_invocable_http_carrier_config(): void
+    {
+        $this->useExternalExecutorConfigFixture([
+            'schema' => 'durable-workflow.external-executor.config',
+            'version' => 1,
+            'defaults' => [
+                'task_queue' => 'operator-tasks',
+            ],
+            'carriers' => [
+                'bad-invocable' => [
+                    'type' => 'invocable_http',
+                    'method' => 'GET',
+                    'timeout_seconds' => true,
+                    'capabilities' => ['activity_task', 'workflow_task'],
+                ],
+            ],
+            'mappings' => [
+                [
+                    'name' => 'billing.backfill',
+                    'kind' => 'activity',
+                    'activity_type' => 'billing.backfill',
+                    'carrier' => 'bad-invocable',
+                    'handler' => 'billing.backfill',
+                ],
+            ],
+        ]);
+
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+        $codes = array_column(
+            $response->json('worker_protocol.external_executor_config_contract.runtime.errors'),
+            'code',
+        );
+
+        $this->assertContains('invalid_carrier_target', $codes);
+        $this->assertContains('invalid_invocable_carrier_scope', $codes);
         $response->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.status', 'invalid');
     }
 

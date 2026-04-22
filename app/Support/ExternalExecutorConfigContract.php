@@ -138,6 +138,8 @@ final class ExternalExecutorConfigContract
             'invalid_queue_binding',
             'missing_handler_target',
             'unsupported_carrier_capability',
+            'invalid_carrier_target',
+            'invalid_invocable_carrier_scope',
         ];
     }
 
@@ -326,6 +328,18 @@ final class ExternalExecutorConfigContract
         $defaults = is_array($document['defaults'] ?? null) ? $document['defaults'] : [];
         $seenNames = [];
 
+        foreach ($carriers as $name => $carrier) {
+            if (! is_array($carrier)) {
+                $errors[] = self::error('invalid_schema', 'External executor carrier must be an object.', [
+                    'carrier' => is_string($name) ? $name : null,
+                ]);
+
+                continue;
+            }
+
+            array_push($errors, ...self::validateCarrier(is_string($name) ? $name : null, $carrier));
+        }
+
         foreach ($mappings as $index => $mapping) {
             if (! is_array($mapping)) {
                 $errors[] = self::error('invalid_schema', 'External executor mapping must be an object.', [
@@ -434,6 +448,62 @@ final class ExternalExecutorConfigContract
         }
 
         return in_array($capability, $capabilities, true);
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private static function validateCarrier(?string $name, array $carrier): array
+    {
+        if (self::stringValue($carrier['type'] ?? null) !== InvocableCarrierContract::CARRIER_TYPE) {
+            return [];
+        }
+
+        $errors = [];
+        $capabilities = $carrier['capabilities'] ?? null;
+
+        if (is_array($capabilities)) {
+            $invalid = array_values(array_filter(
+                $capabilities,
+                static fn (mixed $capability): bool => $capability !== 'activity_task',
+            ));
+
+            if ($invalid !== []) {
+                $errors[] = self::error(
+                    'invalid_invocable_carrier_scope',
+                    'Invocable HTTP carriers are activity-task carriers only.',
+                    ['carrier' => $name, 'capabilities' => $invalid],
+                );
+            }
+        }
+
+        if (self::stringValue($carrier['url'] ?? null) === null) {
+            $errors[] = self::error('invalid_carrier_target', 'Invocable HTTP carriers must declare a non-empty url.', [
+                'carrier' => $name,
+                'field' => 'url',
+            ]);
+        }
+
+        $method = strtoupper(self::stringValue($carrier['method'] ?? 'POST') ?? 'POST');
+        if ($method !== 'POST') {
+            $errors[] = self::error('invalid_carrier_target', 'Invocable HTTP carriers only support POST.', [
+                'carrier' => $name,
+                'field' => 'method',
+            ]);
+        }
+
+        if (array_key_exists('timeout_seconds', $carrier)) {
+            $timeout = $carrier['timeout_seconds'];
+            if (! is_int($timeout) || $timeout < 1 || $timeout > 900) {
+                $errors[] = self::error(
+                    'invalid_carrier_target',
+                    'Invocable HTTP carrier timeout_seconds must be an integer between 1 and 900.',
+                    ['carrier' => $name, 'field' => 'timeout_seconds'],
+                );
+            }
+        }
+
+        return $errors;
     }
 
     /**

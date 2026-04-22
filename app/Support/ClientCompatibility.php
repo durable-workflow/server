@@ -57,6 +57,10 @@ final class ClientCompatibility
                         'schema' => ExternalExecutorConfigContract::CONTRACT_SCHEMA,
                         'version' => ExternalExecutorConfigContract::CONTRACT_VERSION,
                     ],
+                    'invocable_carrier_contract' => [
+                        'schema' => InvocableCarrierContract::SCHEMA,
+                        'version' => InvocableCarrierContract::VERSION,
+                    ],
                     'external_task_input_contract' => [
                         'schema' => ExternalTaskInputContract::SCHEMA,
                         'version' => ExternalTaskInputContract::VERSION,
@@ -85,6 +89,7 @@ final class ClientCompatibility
                         'worker_protocol.version',
                         'worker_protocol.external_execution_surface_contract',
                         'worker_protocol.external_executor_config_contract',
+                        'worker_protocol.invocable_carrier_contract',
                         'worker_protocol.external_task_input_contract',
                         'worker_protocol.external_task_result_contract',
                     ],

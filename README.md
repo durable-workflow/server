@@ -643,6 +643,15 @@ queue and activity type, the activity poll response includes a redacted
 `task.external_executor` mapping block with the handler, carrier target, auth
 reference, rollout metadata, and config schema version.
 
+The first concrete invocable carrier contract is published at
+`worker_protocol.invocable_carrier_contract` with carrier type
+`invocable_http`. It is activity-task only: the target endpoint receives the
+external task input envelope over `POST` and must return the external task
+result envelope. The server validates `invocable_http` carrier config
+fail-closed, including non-empty `url`, `POST` method, bounded
+`timeout_seconds`, and activity-only capabilities, before mapping it onto
+pollable activity tasks.
+
 The carrier-neutral external task input envelope is published from
 `GET /api/cluster/info` at `worker_protocol.external_task_input_contract`.
 That manifest explicitly splits its scope: activity tasks are the
