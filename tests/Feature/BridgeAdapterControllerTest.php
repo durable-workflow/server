@@ -118,6 +118,89 @@ class BridgeAdapterControllerTest extends TestCase
         $this->assertSame('signal_workflow', $context['server']['metadata']['action'] ?? null);
         $this->assertSame('shopify-event-2002', $context['server']['metadata']['idempotency_key'] ?? null);
         $this->assertSame('shopify-event-2002', $context['server']['metadata']['request_id'] ?? null);
+
+        $duplicate = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/bridge-adapters/webhook/shopify', [
+                'action' => 'signal_workflow',
+                'idempotency_key' => 'shopify-event-2002',
+                'target' => [
+                    'workflow_id' => 'wf-bridge-signal',
+                    'signal_name' => 'advance',
+                ],
+                'input' => ['Grace'],
+            ]);
+
+        $duplicate->assertOk()
+            ->assertJsonPath('accepted', false)
+            ->assertJsonPath('outcome', 'duplicate')
+            ->assertJsonPath('control_plane_outcome', 'deduped_existing_command')
+            ->assertJsonPath('workflow_id', 'wf-bridge-signal');
+
+        $this->assertSame(1, WorkflowCommand::query()
+            ->where('workflow_instance_id', 'wf-bridge-signal')
+            ->where('command_type', 'signal')
+            ->count());
+    }
+
+    public function test_webhook_bridge_dedupes_update_commands_by_provider_event(): void
+    {
+        Queue::fake();
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-bridge-update',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ]);
+
+        $start->assertCreated();
+        $this->runReadyWorkflowTask((string) $start->json('run_id'));
+
+        $payload = [
+            'action' => 'update_workflow',
+            'idempotency_key' => 'pagerduty-event-3003',
+            'target' => [
+                'workflow_id' => 'wf-bridge-update',
+                'update_name' => 'approve',
+            ],
+            'input' => [true, 'pagerduty'],
+        ];
+
+        $update = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/bridge-adapters/webhook/pagerduty', $payload);
+
+        $update->assertStatus(202)
+            ->assertJsonPath('adapter', 'pagerduty')
+            ->assertJsonPath('action', 'update_workflow')
+            ->assertJsonPath('accepted', true)
+            ->assertJsonPath('outcome', 'accepted')
+            ->assertJsonPath('workflow_id', 'wf-bridge-update')
+            ->assertJsonPath('target.update_name', 'approve');
+
+        $duplicate = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/bridge-adapters/webhook/pagerduty', [
+                ...$payload,
+                'input' => [false, 'duplicate'],
+            ]);
+
+        $duplicate->assertOk()
+            ->assertJsonPath('accepted', false)
+            ->assertJsonPath('outcome', 'duplicate')
+            ->assertJsonPath('control_plane_outcome', 'deduped_existing_command')
+            ->assertJsonPath('workflow_id', 'wf-bridge-update');
+
+        $command = WorkflowCommand::query()
+            ->where('workflow_instance_id', 'wf-bridge-update')
+            ->where('command_type', 'update')
+            ->firstOrFail();
+
+        $context = $command->context ?? [];
+
+        $this->assertSame('pagerduty-event-3003', $context['server']['metadata']['idempotency_key'] ?? null);
+        $this->assertSame('pagerduty-event-3003', $context['server']['metadata']['request_id'] ?? null);
+        $this->assertSame(1, WorkflowCommand::query()
+            ->where('workflow_instance_id', 'wf-bridge-update')
+            ->where('command_type', 'update')
+            ->count());
     }
 
     public function test_webhook_bridge_uses_named_rejections(): void

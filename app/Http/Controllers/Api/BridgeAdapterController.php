@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 use LogicException;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
 
 class BridgeAdapterController
@@ -205,6 +206,29 @@ class BridgeAdapterController
         }
 
         $envelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input');
+
+        $duplicate = $this->duplicateBridgeCommand(
+            workflowId: $workflowId,
+            commandType: 'signal',
+            adapter: $adapter,
+            action: 'signal_workflow',
+            idempotencyKey: $idempotencyKey,
+            targetField: 'signal_name',
+            targetName: $signalName,
+        );
+
+        if ($duplicate instanceof WorkflowCommand) {
+            return $this->duplicateCommandOutcome(
+                $request,
+                $adapter,
+                'signal_workflow',
+                $idempotencyKey,
+                $target,
+                $correlation,
+                $duplicate,
+            );
+        }
+
         $result = $this->workflowControlPlane->signal($workflowId, $signalName, [
             'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input'),
             'payload_codec' => $envelope['codec'],
@@ -268,6 +292,28 @@ class BridgeAdapterController
             ]);
         }
 
+        $duplicate = $this->duplicateBridgeCommand(
+            workflowId: $workflowId,
+            commandType: 'update',
+            adapter: $adapter,
+            action: 'update_workflow',
+            idempotencyKey: $idempotencyKey,
+            targetField: 'update_name',
+            targetName: $updateName,
+        );
+
+        if ($duplicate instanceof WorkflowCommand) {
+            return $this->duplicateCommandOutcome(
+                $request,
+                $adapter,
+                'update_workflow',
+                $idempotencyKey,
+                $target,
+                $correlation,
+                $duplicate,
+            );
+        }
+
         $result = $this->workflowControlPlane->update($workflowId, $updateName, [
             'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input'),
             'command_context' => $this->commandContexts->make(
@@ -289,6 +335,57 @@ class BridgeAdapterController
         ]);
 
         return $this->commandOutcome($request, $adapter, 'update_workflow', $idempotencyKey, $target, $correlation, $result);
+    }
+
+    private function duplicateBridgeCommand(
+        string $workflowId,
+        string $commandType,
+        string $adapter,
+        string $action,
+        string $idempotencyKey,
+        string $targetField,
+        string $targetName,
+    ): ?WorkflowCommand {
+        /** @var WorkflowCommand|null $command */
+        $command = WorkflowCommand::query()
+            ->where('workflow_instance_id', $workflowId)
+            ->where('command_type', $commandType)
+            ->where('status', 'accepted')
+            ->where('context->server->metadata->adapter', $adapter)
+            ->where('context->server->metadata->action', $action)
+            ->where('context->server->metadata->idempotency_key', $idempotencyKey)
+            ->where("context->server->metadata->{$targetField}", $targetName)
+            ->latest('created_at')
+            ->first();
+
+        return $command;
+    }
+
+    /**
+     * @param  array<string, mixed>  $target
+     * @param  array<string, mixed>|null  $correlation
+     */
+    private function duplicateCommandOutcome(
+        Request $request,
+        string $adapter,
+        string $action,
+        string $idempotencyKey,
+        array $target,
+        ?array $correlation,
+        WorkflowCommand $command,
+    ): JsonResponse {
+        return $this->outcome($request, [
+            'adapter' => $adapter,
+            'action' => $action,
+            'accepted' => false,
+            'outcome' => 'duplicate',
+            'idempotency_key' => $idempotencyKey,
+            'target' => $this->redactedTarget($target),
+            'correlation' => $correlation,
+            'workflow_id' => $target['workflow_id'] ?? $command->workflow_instance_id,
+            'run_id' => $command->resolved_workflow_run_id ?? $command->workflow_run_id,
+            'control_plane_outcome' => 'deduped_existing_command',
+        ], 200);
     }
 
     /**
