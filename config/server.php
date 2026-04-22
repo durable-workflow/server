@@ -59,6 +59,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | External Executor Config
+    |--------------------------------------------------------------------------
+    |
+    | Optional steady-state config for carrier-neutral external executor
+    | handler mappings. The server validates and advertises this config through
+    | cluster discovery; carriers still own actual handler invocation.
+    |
+    */
+
+    'external_executor' => [
+        'config_path' => EnvAuditor::env('DW_EXTERNAL_EXECUTOR_CONFIG_PATH', 'WORKFLOW_SERVER_EXTERNAL_EXECUTOR_CONFIG_PATH', null),
+        'overlay' => EnvAuditor::env('DW_EXTERNAL_EXECUTOR_CONFIG_OVERLAY', 'WORKFLOW_SERVER_EXTERNAL_EXECUTOR_CONFIG_OVERLAY', null),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Server Identity
     |--------------------------------------------------------------------------
     |

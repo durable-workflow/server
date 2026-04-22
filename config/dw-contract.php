@@ -83,6 +83,18 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_V2_TASK_DISPATCH_MODE',
         ],
+        'DW_EXTERNAL_EXECUTOR_CONFIG_PATH' => [
+            'description' => 'Optional path to a durable-workflow.external-executor.config JSON file for external executor handler mappings.',
+            'default' => null,
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_EXECUTOR_CONFIG_PATH',
+        ],
+        'DW_EXTERNAL_EXECUTOR_CONFIG_OVERLAY' => [
+            'description' => 'Optional overlay name from the external executor config file to apply before server validation and discovery.',
+            'default' => null,
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_EXTERNAL_EXECUTOR_CONFIG_OVERLAY',
+        ],
 
         // --- Authentication --------------------------------------------
 

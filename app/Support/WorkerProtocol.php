@@ -96,6 +96,7 @@ class WorkerProtocol
      *     response_compression: list<string>,
      *     history_compression: array{supported_encodings: list<string>, compression_threshold: int},
      *     external_execution_surface: array<string, mixed>,
+     *     external_executor_config: array<string, mixed>,
      *     external_task_input: array<string, mixed>,
      *     external_task_result: array<string, mixed>,
      * }
@@ -136,6 +137,12 @@ class WorkerProtocol
                 'version' => ExternalExecutionSurfaceContract::VERSION,
                 'name' => 'activity_grade_external_execution',
             ],
+            'external_executor_config' => [
+                'schema' => ExternalExecutorConfigContract::CONTRACT_SCHEMA,
+                'version' => ExternalExecutorConfigContract::CONTRACT_VERSION,
+                'config_schema' => ExternalExecutorConfigContract::CONFIG_SCHEMA,
+                'config_schema_version' => ExternalExecutorConfigContract::CONFIG_VERSION,
+            ],
             'external_task_input' => [
                 'schema' => ExternalTaskInputContract::SCHEMA,
                 'version' => ExternalTaskInputContract::VERSION,
@@ -163,6 +170,10 @@ class WorkerProtocol
             'version' => (string) config('server.worker_protocol.version', self::VERSION),
             'server_capabilities' => self::serverCapabilities(),
             'external_execution_surface_contract' => ExternalExecutionSurfaceContract::manifest(),
+            'external_executor_config_contract' => [
+                ...ExternalExecutorConfigContract::manifest(),
+                'runtime' => ExternalExecutorConfigContract::runtime(),
+            ],
             'external_task_input_contract' => ExternalTaskInputContract::manifest(),
             'external_task_result_contract' => ExternalTaskResultContract::manifest(),
         ];

@@ -11,13 +11,23 @@ class ClusterInfoTest extends TestCase
 
     private ?string $provenanceFixturePath = null;
 
+    /** @var list<string> */
+    private array $externalExecutorConfigFixturePaths = [];
+
     protected function tearDown(): void
     {
         if ($this->provenanceFixturePath !== null && is_file($this->provenanceFixturePath)) {
             @unlink($this->provenanceFixturePath);
         }
 
+        foreach ($this->externalExecutorConfigFixturePaths as $path) {
+            if (is_file($path)) {
+                @unlink($path);
+            }
+        }
+
         $this->provenanceFixturePath = null;
+        $this->externalExecutorConfigFixturePaths = [];
 
         parent::tearDown();
     }
@@ -42,6 +52,33 @@ class ClusterInfoTest extends TestCase
         config(['server.package_provenance_path' => $path]);
 
         return $this->provenanceFixturePath = $path;
+    }
+
+    /**
+     * @param  array<string, mixed>|string  $document
+     */
+    private function useExternalExecutorConfigFixture(array|string $document): string
+    {
+        $path = tempnam(sys_get_temp_dir(), 'dw-executor-config-');
+
+        if ($path === false) {
+            $this->fail('Could not allocate a tempfile for the external executor config fixture.');
+        }
+
+        $contents = is_array($document)
+            ? json_encode($document, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+            : $document;
+
+        if (! is_string($contents)) {
+            $this->fail('Could not encode the external executor config fixture.');
+        }
+
+        file_put_contents($path, $contents);
+        config(['server.external_executor.config_path' => $path]);
+
+        $this->externalExecutorConfigFixturePaths[] = $path;
+
+        return $path;
     }
 
     public function test_it_publishes_a_versioned_control_plane_request_contract_manifest(): void
@@ -120,6 +157,14 @@ class ClusterInfoTest extends TestCase
                 'published',
             )
             ->assertJsonPath(
+                'worker_protocol.external_execution_surface_contract.contract_seams.handler_mappings.status',
+                'published',
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_execution_surface_contract.contract_seams.handler_mappings.schema',
+                'durable-workflow.v2.external-executor-config.contract',
+            )
+            ->assertJsonPath(
                 'worker_protocol.external_execution_surface_contract.contract_seams.bridge_adapters.status',
                 'planned',
             )
@@ -131,6 +176,184 @@ class ClusterInfoTest extends TestCase
                 'client_compatibility.required_protocols.worker_protocol.external_execution_surface_contract.version',
                 1,
             );
+    }
+
+    public function test_it_publishes_external_executor_config_contract_when_no_config_is_set(): void
+    {
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath(
+                'worker_protocol.external_executor_config_contract.schema',
+                'durable-workflow.v2.external-executor-config.contract',
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_executor_config_contract.config_schema.schema',
+                'durable-workflow.external-executor.config',
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_executor_config_contract.runtime.configured',
+                false,
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_executor_config_contract.runtime.status',
+                'not_configured',
+            )
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.external_executor_config.config_schema',
+                'durable-workflow.external-executor.config',
+            )
+            ->assertJsonPath('capabilities.external_executor_config_contract', true)
+            ->assertJsonPath(
+                'client_compatibility.required_protocols.worker_protocol.external_executor_config_contract.schema',
+                'durable-workflow.v2.external-executor-config.contract',
+            );
+    }
+
+    public function test_it_validates_configured_external_executor_config_without_exposing_the_full_path(): void
+    {
+        $path = $this->useExternalExecutorConfigFixture([
+            'schema' => 'durable-workflow.external-executor.config',
+            'version' => 1,
+            'defaults' => [
+                'namespace' => 'operations',
+                'task_queue' => 'operator-tasks',
+                'auth_ref' => 'prod-profile',
+            ],
+            'auth_refs' => [
+                'prod-profile' => ['type' => 'profile', 'profile' => 'prod'],
+            ],
+            'carriers' => [
+                'artisan-operator' => [
+                    'type' => 'process',
+                    'command' => ['php', 'artisan', 'durable:external-handler'],
+                    'capabilities' => ['activity_task'],
+                ],
+            ],
+            'mappings' => [
+                [
+                    'name' => 'billing.backfill-invoices',
+                    'kind' => 'activity',
+                    'activity_type' => 'billing.backfill-invoices',
+                    'carrier' => 'artisan-operator',
+                    'handler' => 'App\\Durable\\Handlers\\BackfillInvoices',
+                ],
+            ],
+        ]);
+
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+
+        $response->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.configured', true)
+            ->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.status', 'valid')
+            ->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.source.type', 'file')
+            ->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.source.basename', basename($path))
+            ->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.summary.carrier_count', 1)
+            ->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.summary.mapping_count', 1)
+            ->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.summary.mapping_kinds.activity', 1)
+            ->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.errors', []);
+
+        $this->assertArrayNotHasKey(
+            'path',
+            $response->json('worker_protocol.external_executor_config_contract.runtime.source'),
+            'Cluster discovery must not expose the absolute external executor config path.',
+        );
+    }
+
+    public function test_it_reports_named_external_executor_config_validation_errors(): void
+    {
+        $this->useExternalExecutorConfigFixture([
+            'schema' => 'durable-workflow.external-executor.config',
+            'version' => 1,
+            'defaults' => [
+                'auth_ref' => 'missing-auth',
+            ],
+            'auth_refs' => [],
+            'carriers' => [
+                'http-bridge' => [
+                    'type' => 'http',
+                    'url' => 'https://bridge.example.com/durable/events',
+                    'capabilities' => ['workflow_signal'],
+                ],
+            ],
+            'mappings' => [
+                [
+                    'name' => 'duplicate',
+                    'kind' => 'activity',
+                    'activity_type' => 'billing.backfill-invoices',
+                    'carrier' => 'missing-carrier',
+                    'handler' => 'billing.backfill-invoices',
+                ],
+                [
+                    'name' => 'duplicate',
+                    'kind' => 'activity',
+                    'carrier' => 'http-bridge',
+                    'handler' => 'billing.other',
+                ],
+            ],
+        ]);
+
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+        $codes = array_column(
+            $response->json('worker_protocol.external_executor_config_contract.runtime.errors'),
+            'code',
+        );
+
+        $this->assertContains('unknown_carrier', $codes);
+        $this->assertContains('unknown_auth_ref', $codes);
+        $this->assertContains('duplicate_mapping_name', $codes);
+        $this->assertContains('invalid_queue_binding', $codes);
+        $this->assertContains('missing_handler_target', $codes);
+        $this->assertContains('unsupported_carrier_capability', $codes);
+        $response->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.status', 'invalid');
+    }
+
+    public function test_it_applies_named_external_executor_config_overlay_before_validation(): void
+    {
+        config(['server.external_executor.overlay' => 'prod']);
+
+        $this->useExternalExecutorConfigFixture([
+            'schema' => 'durable-workflow.external-executor.config',
+            'version' => 1,
+            'defaults' => [
+                'namespace' => 'staging',
+                'task_queue' => 'operator-tasks',
+            ],
+            'carriers' => [
+                'operator' => [
+                    'type' => 'process',
+                    'command' => ['php', 'artisan', 'durable:external-handler'],
+                    'capabilities' => ['activity_task'],
+                ],
+            ],
+            'mappings' => [
+                [
+                    'name' => 'staging.backfill',
+                    'kind' => 'activity',
+                    'activity_type' => 'billing.backfill-invoices',
+                    'carrier' => 'operator',
+                    'handler' => 'staging-handler',
+                ],
+            ],
+            'overlays' => [
+                'prod' => [
+                    'defaults' => ['namespace' => 'operations'],
+                    'mappings' => [
+                        [
+                            'name' => 'prod.backfill',
+                            'kind' => 'activity',
+                            'activity_type' => 'billing.backfill-invoices',
+                            'carrier' => 'operator',
+                            'handler' => 'prod-handler',
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.overlay', 'prod')
+            ->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.status', 'valid')
+            ->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.summary.mapping_count', 1);
     }
 
     public function test_it_publishes_external_task_result_contract_manifest(): void

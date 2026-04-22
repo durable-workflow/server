@@ -33,10 +33,20 @@ Version 1 names these contract seams:
 - `input_envelope`: `worker_protocol.external_task_input_contract`
 - `result_envelope`: `worker_protocol.external_task_result_contract`
 - `auth_profile_tls_composition`
-- `handler_mappings`
+- `handler_mappings`: `worker_protocol.external_executor_config_contract`
 - `bridge_adapters`
 - `payload_external_storage`
 - `admission_and_rollout_safety`
+
+Handler mappings are config-first. The server reads the optional
+`DW_EXTERNAL_EXECUTOR_CONFIG_PATH` JSON file using the shared
+`durable-workflow.external-executor.config` schema published by `dw
+schema:show external-executor-config`. `DW_EXTERNAL_EXECUTOR_CONFIG_OVERLAY`
+selects a named overlay before validation. Cluster discovery reports only the
+config basename and a path digest, plus mapping counts and named validation
+errors such as `unknown_carrier`, `unknown_auth_ref`,
+`unknown_handler`, `duplicate_mapping_name`, `invalid_queue_binding`,
+`missing_handler_target`, and `unsupported_carrier_capability`.
 
 Valid carriers include poll-based CLI or daemon handlers, HTTP handler
 invocation, queue-backed workers, and serverless invocation. A carrier is valid

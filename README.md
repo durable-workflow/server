@@ -622,6 +622,11 @@ platform, and integration automation first, with script or agent handlers as
 secondary consumers. It keeps workflow replay, ContinueAsNew, signal/update/query
 ordering, and event-history interpretation inside real runtimes. A
 human-readable summary lives in `docs/contracts/external-execution-surface.md`.
+Handler mappings are config-first: set `DW_EXTERNAL_EXECUTOR_CONFIG_PATH` to a
+`durable-workflow.external-executor.config` JSON file and, when needed, set
+`DW_EXTERNAL_EXECUTOR_CONFIG_OVERLAY` to apply an environment overlay before
+server validation. Cluster discovery publishes the config contract and redacted
+runtime diagnostics at `worker_protocol.external_executor_config_contract`.
 
 The carrier-neutral external task input envelope is published from
 `GET /api/cluster/info` at `worker_protocol.external_task_input_contract`.
@@ -1008,6 +1013,8 @@ every operator-facing variable the server honors.
 | `DW_SERVER_KEY` | generated at container boot | Optional server-internal runtime key. |
 | `DW_DEFAULT_NAMESPACE` | `default` | Namespace used when a request omits the namespace header. |
 | `DW_TASK_DISPATCH_MODE` | (unset) | Override for `workflows.v2.task_dispatch_mode`. Set to `queue` to dispatch locally in service mode. |
+| `DW_EXTERNAL_EXECUTOR_CONFIG_PATH` | (unset) | Optional path to an external executor handler-mapping JSON config. |
+| `DW_EXTERNAL_EXECUTOR_CONFIG_OVERLAY` | (unset) | Optional named overlay to apply before validating the external executor config. |
 | `DW_AUTH_PROVIDER` | (unset) | Optional FQCN implementing `App\Contracts\AuthProvider`; unset uses the built-in driver. |
 | `DW_AUTH_DRIVER` | `token` | `none`, `token`, or `signature`. |
 | `DW_AUTH_TOKEN` | (unset) | Single shared bearer token (backward-compat credential). |

@@ -65,7 +65,10 @@ final class ExternalExecutionSurfaceContract
                     'required_outcome' => 'deterministic credential, profile, environment, and TLS precedence for external carriers',
                 ],
                 'handler_mappings' => [
-                    'status' => 'planned',
+                    'schema' => ExternalExecutorConfigContract::CONTRACT_SCHEMA,
+                    'version' => ExternalExecutorConfigContract::CONTRACT_VERSION,
+                    'status' => 'published',
+                    'cluster_info_path' => 'worker_protocol.external_executor_config_contract',
                     'required_outcome' => 'configuration-first mapping from task kind, queue, and handler name to an external carrier invocation',
                 ],
                 'bridge_adapters' => [

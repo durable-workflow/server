@@ -39,6 +39,10 @@ final class ClientCompatibility
                         'schema' => ExternalExecutionSurfaceContract::SCHEMA,
                         'version' => ExternalExecutionSurfaceContract::VERSION,
                     ],
+                    'external_executor_config_contract' => [
+                        'schema' => ExternalExecutorConfigContract::CONTRACT_SCHEMA,
+                        'version' => ExternalExecutorConfigContract::CONTRACT_VERSION,
+                    ],
                     'external_task_input_contract' => [
                         'schema' => ExternalTaskInputContract::SCHEMA,
                         'version' => ExternalTaskInputContract::VERSION,
@@ -66,6 +70,7 @@ final class ClientCompatibility
                         'control_plane.request_contract',
                         'worker_protocol.version',
                         'worker_protocol.external_execution_surface_contract',
+                        'worker_protocol.external_executor_config_contract',
                         'worker_protocol.external_task_input_contract',
                         'worker_protocol.external_task_result_contract',
                     ],

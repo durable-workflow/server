@@ -85,6 +85,7 @@ class HealthController
             'payload_codec_envelope' => true,
             'payload_codec_envelope_responses' => true,
             'bridge_adapter_outcome_contract' => true,
+            'external_executor_config_contract' => true,
             'payload_codecs' => CodecRegistry::universal(),
             'response_compression' => (bool) config('server.compression.enabled', true)
                 ? ['gzip', 'deflate']
