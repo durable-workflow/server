@@ -117,6 +117,24 @@ class ClusterInfoTest extends TestCase
             );
     }
 
+    public function test_it_publishes_bridge_adapter_outcome_contract_manifest(): void
+    {
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath(
+                'bridge_adapter_outcome_contract.schema',
+                'durable-workflow.v2.bridge-adapter-outcome.contract',
+            )
+            ->assertJsonPath('bridge_adapter_outcome_contract.version', 1)
+            ->assertJsonPath('bridge_adapter_outcome_contract.boundary.not_a_workflow_runtime', true)
+            ->assertJsonPath('bridge_adapter_outcome_contract.patterns.webhook_receiver.allowed_actions.0', 'start_workflow')
+            ->assertJsonPath('bridge_adapter_outcome_contract.patterns.queue_backed_adapter.allowed_actions.0', 'handoff_external_task')
+            ->assertJsonPath('bridge_adapter_outcome_contract.idempotency.required', true)
+            ->assertJsonPath('bridge_adapter_outcome_contract.outcomes.accepted.http_status', 202)
+            ->assertJsonPath('bridge_adapter_outcome_contract.rejection_reasons.0', 'unknown_target')
+            ->assertJsonPath('capabilities.bridge_adapter_outcome_contract', true);
+    }
+
     public function test_it_advertises_response_compression_in_capabilities(): void
     {
         $this->getJson('/api/cluster/info')

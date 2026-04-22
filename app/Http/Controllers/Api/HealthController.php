@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Middleware\Authenticate;
+use App\Support\BridgeAdapterOutcomeContract;
 use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ServerReadiness;
@@ -82,6 +83,7 @@ class HealthController
             'history_retention' => true,
             'payload_codec_envelope' => true,
             'payload_codec_envelope_responses' => true,
+            'bridge_adapter_outcome_contract' => true,
             'payload_codecs' => CodecRegistry::universal(),
             'response_compression' => (bool) config('server.compression.enabled', true)
                 ? ['gzip', 'deflate']
@@ -119,6 +121,7 @@ class HealthController
             'client_compatibility' => ClientCompatibility::info(),
             'control_plane' => ControlPlaneProtocol::info(),
             'worker_protocol' => WorkerProtocol::info(),
+            'bridge_adapter_outcome_contract' => BridgeAdapterOutcomeContract::manifest(),
         ];
 
         if ($this->shouldExposePackageProvenance($request)) {

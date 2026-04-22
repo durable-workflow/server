@@ -45,6 +45,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'history_export',
                     'payload_codec_envelope',
                     'payload_codec_envelope_responses',
+                    'bridge_adapter_outcome_contract',
                     'payload_codecs',
                     'response_compression',
                 ],
@@ -71,6 +72,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                 'client_compatibility',
                 'control_plane',
                 'worker_protocol',
+                'bridge_adapter_outcome_contract',
             ])
             ->assertJsonPath('control_plane.version', ControlPlaneProtocol::VERSION)
             ->assertJsonPath('worker_protocol.version', WorkerProtocol::VERSION)
