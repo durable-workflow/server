@@ -652,11 +652,15 @@ def evidence_provenance(base_url: str, compose_project: str) -> dict[str, Any]:
     repo_root = Path(__file__).resolve().parents[2]
     policy_path = repo_root / "config" / "dw-bounded-growth.php"
     tracked_changes = tracked_working_tree_changes()
+    checked_out_sha = command_output(["git", "rev-parse", "HEAD"])
+    github_sha = os.environ.get("GITHUB_SHA") or checked_out_sha
 
     return {
         "repository": os.environ.get("GITHUB_REPOSITORY") or command_output(["git", "config", "--get", "remote.origin.url"]),
         "ref": os.environ.get("GITHUB_REF") or command_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]),
-        "sha": os.environ.get("GITHUB_SHA") or command_output(["git", "rev-parse", "HEAD"]),
+        "sha": github_sha,
+        "checked_out_sha": checked_out_sha,
+        "github_sha_matches_checked_out": github_sha == checked_out_sha,
         "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
         "run_id": os.environ.get("GITHUB_RUN_ID", ""),
         "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
@@ -701,6 +705,8 @@ def evidence_trust_profile(
         reasons.append("GitHub Actions repository is not durable-workflow/server")
     if str(provenance.get("ref") or "").strip() != "refs/heads/main":
         reasons.append("GitHub Actions ref is not refs/heads/main")
+    if not bool(provenance.get("github_sha_matches_checked_out")):
+        reasons.append("GitHub Actions SHA does not match checked-out source")
     if not tracked_working_tree_clean:
         reasons.append("tracked working tree has uncommitted changes")
     if periodic_sample_count < minimum_trusted_samples:
@@ -718,6 +724,7 @@ def evidence_trust_profile(
         "requires_self_hosted_runner": True,
         "requires_github_actions_provenance": True,
         "requires_server_main_ref": True,
+        "requires_github_sha_match": True,
         "requires_compose_resource_sampling": True,
         "requires_clean_tracked_working_tree": True,
         "reasons": reasons,

@@ -84,9 +84,10 @@ SHA-256 digest of `config/dw-bounded-growth.php`. Trusted long-soak evidence
 also requires `tracked_working_tree_clean=true` and GitHub Actions provenance
 (`GITHUB_REPOSITORY`, `GITHUB_REF`, `GITHUB_SHA`, `GITHUB_WORKFLOW`,
 `GITHUB_RUN_ID`, and `GITHUB_RUN_ATTEMPT`) from `durable-workflow/server` on
-`refs/heads/main`, so artifacts from uncommitted source, policy edits, feature
-branches, forks, or ad hoc local runs are marked ineligible for the trusted
-profile.
+`refs/heads/main`, and a checked-out source commit matching `GITHUB_SHA`, so
+artifacts from uncommitted source, policy edits, feature branches, forks,
+misconfigured checkouts, or ad hoc local runs are marked ineligible for the
+trusted profile.
 The harness fails when it cannot collect at least `DW_PERF_MIN_SAMPLE_COVERAGE`
 of the expected periodic samples, which defaults to 80%. The final post-drain
 sample is included in the artifact but does not count toward the periodic sample

@@ -96,6 +96,8 @@ service logs under `build/perf/`. A trusted bounded-growth run must include:
 - GitHub/runner provenance in `summary.json` (`GITHUB_SHA`, `GITHUB_RUN_ID`,
   runner name/OS/arch/environment, Compose project, and the tested base URL
   when present);
+- a checked-out git SHA that matches `GITHUB_SHA`, so a trusted artifact cannot
+  claim evidence for one commit while running another checkout;
 - the SHA-256 digest of `config/dw-bounded-growth.php` so the artifact can be
   tied back to the policy that was active for the run;
 - a clean tracked working tree, recorded as `tracked_working_tree_clean`, so a
@@ -122,8 +124,9 @@ self-hosted runner with an explicit `RUNNER_ENVIRONMENT=self-hosted` provenance
 value, include GitHub Actions provenance (`GITHUB_REPOSITORY`, `GITHUB_REF`,
 `GITHUB_SHA`, `GITHUB_WORKFLOW`, `GITHUB_RUN_ID`, and `GITHUB_RUN_ATTEMPT`),
 come from `durable-workflow/server` on `refs/heads/main`, have a clean tracked
-working tree, meet sample coverage, and have no bounded-growth assertion
-failures. A local run or feature-branch workflow can still produce useful
+working tree, have `GITHUB_SHA` match the checked-out source commit, meet sample
+coverage, and have no bounded-growth assertion failures. A local run or
+feature-branch workflow can still produce useful
 artifacts, but it cannot satisfy the trusted long-soak evidence profile just by
 setting `RUNNER_ENVIRONMENT=self-hosted`.
 The CI smoke workflow sets `RUNNER_ENVIRONMENT=github-hosted` so those artifacts
