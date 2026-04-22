@@ -99,11 +99,14 @@ Use `DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY` and
 `DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY` to enforce per-cache-family
 limits in addition to the aggregate `server:*` cache ceiling. Each value must
 be a JSON object keyed by a `config/dw-bounded-growth.php` cache policy ID with
-non-negative integer limits, for example:
+non-negative integer limits. The map must include every declared cache policy;
+unknown policy IDs, missing policy IDs, and non-integer limits fail before load
+starts so a typo or partial map cannot silently weaken the evidence. The
+workflow file contains the canonical smoke and long-soak threshold maps, for
+example:
 
 ```bash
-DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY='{"workflow_task_poll_requests":2048}'
-DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY='{"workflow_task_poll_requests":0}'
+DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY='{"workflow_task_poll_requests":0,"long_poll_signals":0,"workflow_query_tasks":0,"task_queue_admission_locks":0,"task_queue_dispatch_counters":0,"workflow_task_expired_lease_recovery":0,"history_retention_inline":0,"readiness_probe":0}'
 ```
 
 ## Safety Rules

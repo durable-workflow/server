@@ -38,6 +38,7 @@ class ServerPerfHarnessContractTest extends TestCase
             'DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY',
             'parse_policy_limit_map',
             'unknown cache policy',
+            'missing cache policy thresholds',
             'must be a non-negative integer',
             'isinstance(limit, bool)',
             'SERVER_CACHE_KEY_PATTERNS',
@@ -135,6 +136,15 @@ class ServerPerfHarnessContractTest extends TestCase
                 );
             }
         }
+    }
+
+    public function test_per_policy_cache_threshold_parser_rejects_partial_maps(): void
+    {
+        $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/server_soak.py');
+        $this->assertNotFalse($source, 'scripts/perf/server_soak.py must be readable');
+
+        $this->assertStringContainsString('missing_policy_ids = sorted(policy_ids - set(limits))', $source);
+        $this->assertStringContainsString('is missing cache policy thresholds for:', $source);
     }
 
     public function test_ci_perf_jobs_set_runner_environment_provenance(): void

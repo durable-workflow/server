@@ -253,6 +253,11 @@ def parse_policy_limit_map(
 
         limits[policy_id] = limit
 
+    missing_policy_ids = sorted(policy_ids - set(limits))
+    if missing_policy_ids:
+        missing = ", ".join(missing_policy_ids)
+        parser.error(f"{source_name} is missing cache policy thresholds for: {missing}")
+
     return limits
 
 
