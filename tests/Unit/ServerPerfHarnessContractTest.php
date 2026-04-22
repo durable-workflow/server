@@ -31,6 +31,7 @@ class ServerPerfHarnessContractTest extends TestCase
             'parse_policy_limit_map',
             'unknown cache policy',
             'must be a non-negative integer',
+            'isinstance(limit, bool)',
             'SERVER_CACHE_KEY_PATTERNS',
             'bounded_growth_policy_sha256',
             'GITHUB_RUN_ID',
