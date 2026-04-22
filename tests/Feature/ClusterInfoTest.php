@@ -406,6 +406,18 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('bridge_adapter_outcome_contract.idempotency.required', true)
             ->assertJsonPath('bridge_adapter_outcome_contract.outcomes.accepted.http_status', 202)
             ->assertJsonPath('bridge_adapter_outcome_contract.rejection_reasons.0', 'unknown_target')
+            ->assertJsonPath(
+                'bridge_adapter_outcome_contract.reference_journeys.incident_webhook_signals_workflow.request.action',
+                'signal_workflow',
+            )
+            ->assertJsonPath(
+                'bridge_adapter_outcome_contract.reference_journeys.incident_webhook_signals_workflow.expected_outcomes.redelivery.control_plane_outcome',
+                'deduped_existing_command',
+            )
+            ->assertJsonPath(
+                'bridge_adapter_outcome_contract.reference_journeys.commerce_event_starts_workflow.expected_outcomes.redelivery.reason',
+                'duplicate_start',
+            )
             ->assertJsonPath('capabilities.bridge_adapter_outcome_contract', true);
     }
 

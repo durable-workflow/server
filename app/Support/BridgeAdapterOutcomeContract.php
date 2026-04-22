@@ -128,6 +128,85 @@ final class BridgeAdapterOutcomeContract
                     'target' => ['task_queue', 'handler'],
                 ],
             ],
+            'reference_journeys' => [
+                'incident_webhook_signals_workflow' => [
+                    'pattern' => 'webhook_receiver',
+                    'operator_story' => 'An incident tool posts one provider event that signals an existing remediation workflow exactly once.',
+                    'request' => [
+                        'method' => 'POST',
+                        'path_template' => '/api/bridge-adapters/webhook/{adapter}',
+                        'adapter_example' => 'pagerduty',
+                        'action' => 'signal_workflow',
+                        'idempotency_key_source' => 'provider_event_id',
+                        'target' => [
+                            'workflow_id' => 'required existing workflow id',
+                            'signal_name' => 'required signal name',
+                        ],
+                        'input' => 'optional JSON array or object carried through the configured payload envelope',
+                    ],
+                    'expected_outcomes' => [
+                        'first_delivery' => [
+                            'http_status' => 202,
+                            'outcome' => 'accepted',
+                            'reason' => null,
+                        ],
+                        'redelivery' => [
+                            'http_status' => 200,
+                            'outcome' => 'duplicate',
+                            'control_plane_outcome' => 'deduped_existing_command',
+                        ],
+                        'missing_workflow' => [
+                            'http_status' => 422,
+                            'outcome' => 'rejected',
+                            'reason' => 'unknown_target',
+                        ],
+                    ],
+                    'visibility' => [
+                        'redacted_target_fields' => ['workflow_id', 'signal_name'],
+                        'command_context_metadata' => ['adapter', 'action', 'idempotency_key', 'request_id', 'signal_name'],
+                    ],
+                ],
+                'commerce_event_starts_workflow' => [
+                    'pattern' => 'webhook_receiver',
+                    'operator_story' => 'A commerce integration receives an order event and starts one durable workflow keyed by the provider event.',
+                    'request' => [
+                        'method' => 'POST',
+                        'path_template' => '/api/bridge-adapters/webhook/{adapter}',
+                        'adapter_example' => 'stripe',
+                        'action' => 'start_workflow',
+                        'idempotency_key_source' => 'provider_event_id',
+                        'target' => [
+                            'workflow_type' => 'required configured workflow type',
+                            'workflow_id' => 'optional explicit workflow id',
+                            'task_queue' => 'optional task queue override',
+                            'business_key' => 'optional user-visible dedupe or lookup key',
+                            'duplicate_policy' => ['reject_duplicate', 'use_existing'],
+                        ],
+                    ],
+                    'expected_outcomes' => [
+                        'first_delivery' => [
+                            'http_status' => 202,
+                            'outcome' => 'accepted',
+                            'control_plane_outcome' => 'started_new',
+                        ],
+                        'redelivery' => [
+                            'http_status' => 200,
+                            'outcome' => 'duplicate',
+                            'reason' => 'duplicate_start',
+                            'control_plane_outcome' => 'returned_existing_active',
+                        ],
+                        'unconfigured_workflow_type' => [
+                            'http_status' => 422,
+                            'outcome' => 'rejected',
+                            'reason' => 'unknown_target',
+                        ],
+                    ],
+                    'visibility' => [
+                        'redacted_target_fields' => ['workflow_id', 'workflow_type', 'task_queue', 'business_key'],
+                        'command_context_metadata' => ['adapter', 'action', 'idempotency_key'],
+                    ],
+                ],
+            ],
         ];
     }
 }

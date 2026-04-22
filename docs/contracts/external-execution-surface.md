@@ -57,5 +57,6 @@ TLS, profile, and environment inputs deterministically.
 
 Stable adjacent contract docs live in:
 
+- `docs/contracts/bridge-adapters.md`
 - `docs/contracts/external-task-input.md`
 - `docs/contracts/external-task-result.md`
