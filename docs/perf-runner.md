@@ -60,6 +60,11 @@ cache-key drain path. The long soak runs on the labeled self-hosted runner and
 enforces the memory slope budget after the run is long enough to make that
 signal meaningful.
 
+Both workflow modes pass explicit runner provenance into the artifact. Short
+smokes set `RUNNER_ENVIRONMENT=github-hosted`; long soaks set
+`RUNNER_ENVIRONMENT=self-hosted`, which is required before `summary.json` can be
+classified as trusted long-soak evidence.
+
 ## Local Run
 
 From the server repo:

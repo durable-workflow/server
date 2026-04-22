@@ -117,6 +117,8 @@ classified as ineligible for the issue-closing trusted evidence unless they run
 for at least one hour, use compose-backed resource sampling, run on a
 self-hosted runner with an explicit `RUNNER_ENVIRONMENT=self-hosted` provenance
 value, meet sample coverage, and have no bounded-growth assertion failures.
+The CI smoke workflow sets `RUNNER_ENVIRONMENT=github-hosted` so those artifacts
+are traceable without being eligible for the trusted long-soak profile.
 
 Per-policy limits can be enforced with JSON maps keyed by policy ID:
 `DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY` for maximum observed keys and

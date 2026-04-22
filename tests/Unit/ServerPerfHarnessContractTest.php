@@ -116,6 +116,24 @@ class ServerPerfHarnessContractTest extends TestCase
         }
     }
 
+    public function test_ci_perf_jobs_set_runner_environment_provenance(): void
+    {
+        $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
+        $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
+
+        $this->assertMatchesRegularExpression(
+            '/name:\s+Polling cache bounded-growth smoke.*?RUNNER_ENVIRONMENT:\s+"github-hosted"/s',
+            $workflow,
+            'Short perf smokes must record github-hosted runner provenance.',
+        );
+
+        $this->assertMatchesRegularExpression(
+            '/name:\s+Self-hosted polling cache soak.*?RUNNER_ENVIRONMENT:\s+"self-hosted"/s',
+            $workflow,
+            'Trusted long soaks must explicitly record self-hosted runner provenance.',
+        );
+    }
+
     /**
      * @return array<string, string>
      */
