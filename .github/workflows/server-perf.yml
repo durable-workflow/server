@@ -10,8 +10,12 @@ on:
       - "app/Support/ServerPollingCache.php"
       - "app/Support/WorkflowTaskPoller.php"
       - "app/Support/WorkflowTaskPollRequestStore.php"
+      - "config/dw-bounded-growth.php"
       - "config/server.php"
+      - "docs/bounded-growth.md"
       - "scripts/perf/**"
+      - "tests/Unit/BoundedGrowthPolicyTest.php"
+      - "tests/Unit/ServerPerfHarnessContractTest.php"
   push:
     branches: [main]
     paths:
@@ -21,8 +25,12 @@ on:
       - "app/Support/ServerPollingCache.php"
       - "app/Support/WorkflowTaskPoller.php"
       - "app/Support/WorkflowTaskPollRequestStore.php"
+      - "config/dw-bounded-growth.php"
       - "config/server.php"
+      - "docs/bounded-growth.md"
       - "scripts/perf/**"
+      - "tests/Unit/BoundedGrowthPolicyTest.php"
+      - "tests/Unit/ServerPerfHarnessContractTest.php"
   schedule:
     - cron: "17 7 * * *"
   workflow_dispatch:
@@ -49,9 +57,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  contract:
+    name: Bounded-growth contract
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout server
+        uses: actions/checkout@v6
+
+      - name: Checkout workflow package
+        uses: actions/checkout@v6
+        with:
+          repository: durable-workflow/workflow
+          ref: v2
+          path: workflow-package
+
+      - name: Run bounded-growth contract tests
+        run: |
+          docker run --rm \
+            -u "$(id -u):$(id -g)" \
+            -v "${PWD}:/app" \
+            -v "${PWD}/workflow-package:/workflow:ro" \
+            -w /app \
+            composer:2 \
+            sh -lc 'composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Unit/BoundedGrowthPolicyTest.php tests/Unit/ServerPerfHarnessContractTest.php --colors=never'
+
   smoke:
     name: Polling cache bounded-growth smoke
     if: github.event_name == 'pull_request' || github.event_name == 'push'
+    needs: contract
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
