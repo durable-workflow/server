@@ -531,6 +531,7 @@ def sample_health(samples: list[dict[str, Any]], compose_project: str) -> dict[s
         return {
             "required": False,
             "unhealthy_samples": 0,
+            "unhealthy_field_counts": {},
             "unhealthy_final_sample": False,
         }
 
@@ -539,6 +540,10 @@ def sample_health(samples: list[dict[str, Any]], compose_project: str) -> dict[s
         "redis_sample_ok",
         "mysql_sample_ok",
     )
+    unhealthy_field_counts = {
+        field: sum(1 for row in samples if int(row.get(field) or 0) != 1)
+        for field in required_ok_fields
+    }
     unhealthy_indexes = [
         index
         for index, row in enumerate(samples)
@@ -549,6 +554,7 @@ def sample_health(samples: list[dict[str, Any]], compose_project: str) -> dict[s
         "required": True,
         "required_ok_fields": list(required_ok_fields),
         "unhealthy_samples": len(unhealthy_indexes),
+        "unhealthy_field_counts": unhealthy_field_counts,
         "unhealthy_sample_indexes": unhealthy_indexes[:20],
         "unhealthy_final_sample": bool(unhealthy_indexes and unhealthy_indexes[-1] == len(samples) - 1),
     }
@@ -808,7 +814,8 @@ def main() -> int:
         if int(sampling_health.get("unhealthy_samples") or 0) > 0:
             failures.append(
                 "resource sampling failed for "
-                f"{sampling_health['unhealthy_samples']} compose-backed samples"
+                f"{sampling_health['unhealthy_samples']} compose-backed samples "
+                f"(field failures: {sampling_health.get('unhealthy_field_counts')})"
             )
         if max_server_memory_bytes > args.max_server_memory_mb * 1024 * 1024:
             failures.append(

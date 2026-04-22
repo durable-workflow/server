@@ -27,6 +27,8 @@ class ServerPerfHarnessContractTest extends TestCase
             'final_server_cache_keys_by_policy',
             'sampling_health',
             'resource sampling failed',
+            'unhealthy_field_counts',
+            'field failures:',
             'docker_stats_ok',
             'redis_sample_ok',
             'mysql_sample_ok',
