@@ -44,6 +44,7 @@ class ExternalExecutorConfigContractTest extends TestCase
             'unknown_handler',
             'duplicate_mapping_name',
             'invalid_queue_binding',
+            'missing_invocable_auth_ref',
             'missing_handler_target',
             'unsupported_carrier_capability',
             'invalid_carrier_target',

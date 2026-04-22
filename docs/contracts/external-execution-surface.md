@@ -61,14 +61,16 @@ The first concrete invocable carrier is `invocable_http`, published at
 config target must declare an absolute HTTPS URL, may use HTTP only for
 loopback development targets, must not embed URL credentials, may declare
 `method: POST`, may declare a bounded `timeout_seconds` value, and may declare
-a bounded transport-only `retry_policy`. Carrier retries are for transient HTTP
-delivery before result reporting; durable activity retry remains the
+a bounded transport-only `retry_policy`. Non-loopback mappings must resolve an
+`auth_ref`; unauthenticated invocable HTTP is limited to loopback development
+targets. Carrier retries are for transient HTTP delivery before result reporting;
+durable activity retry remains the
 server/runtime authority once a handler result is reported. The server validates
 malformed invocable carrier config fail-closed through
-`invalid_carrier_target` and `invalid_invocable_carrier_scope` before exposing
-mappings on activity poll responses. Actual dispatch still belongs to a carrier
-implementation; this contract freezes the request, response, auth, failure, and
-rollout boundary.
+`invalid_carrier_target`, `missing_invocable_auth_ref`, and
+`invalid_invocable_carrier_scope` before exposing mappings on activity poll
+responses. Actual dispatch still belongs to a carrier implementation; this
+contract freezes the request, response, auth, failure, and rollout boundary.
 
 Stable adjacent contract docs live in:
 

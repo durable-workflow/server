@@ -108,6 +108,7 @@ final class InvocableCarrierContract
                 'source' => 'external_executor_config.auth_refs',
                 'redaction' => 'tokens_secrets_signatures_never_echoed',
                 'determinism' => 'effective auth must be discoverable by redacted config diagnostics before dispatch',
+                'required' => 'required for non-loopback targets; loopback HTTP may omit auth only for local development',
             ],
             'rollout_safety' => [
                 'coexistence' => 'poll_and_invocable_carriers_may_share_a_queue_only_when_mappings_are_activity_type_specific',

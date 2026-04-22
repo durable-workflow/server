@@ -136,6 +136,7 @@ final class ExternalExecutorConfigContract
             'unknown_handler',
             'duplicate_mapping_name',
             'invalid_queue_binding',
+            'missing_invocable_auth_ref',
             'missing_handler_target',
             'unsupported_carrier_capability',
             'invalid_carrier_target',
@@ -381,6 +382,18 @@ final class ExternalExecutorConfigContract
                 ]);
             }
 
+            if ($carrier !== null
+                && self::stringValue($carrier['type'] ?? null) === InvocableCarrierContract::CARRIER_TYPE
+                && $authRef === null
+                && ! self::isLoopbackInvocableCarrier($carrier)
+            ) {
+                $errors[] = self::error(
+                    'missing_invocable_auth_ref',
+                    'Invocable HTTP mappings must declare auth_ref unless the carrier target is loopback HTTP for local development.',
+                    ['mapping' => $name, 'carrier' => $carrierName],
+                );
+            }
+
             if (self::stringValue($mapping['handler'] ?? null) === null) {
                 $errors[] = self::error('missing_handler_target', 'External executor mapping must declare a handler target.', [
                     'mapping' => $name,
@@ -619,6 +632,22 @@ final class ExternalExecutorConfigContract
             'http' => self::isLoopbackHost($host),
             default => false,
         };
+    }
+
+    private static function isLoopbackInvocableCarrier(array $carrier): bool
+    {
+        $url = self::stringValue($carrier['url'] ?? null);
+        if ($url === null) {
+            return false;
+        }
+
+        $parts = parse_url($url);
+        if (! is_array($parts)) {
+            return false;
+        }
+
+        return strtolower((string) ($parts['scheme'] ?? '')) === 'http'
+            && self::isLoopbackHost((string) ($parts['host'] ?? ''));
     }
 
     private static function isLoopbackHost(string $host): bool

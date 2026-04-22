@@ -414,6 +414,10 @@ class ClusterInfoTest extends TestCase
             'version' => 1,
             'defaults' => [
                 'task_queue' => 'operator-tasks',
+                'auth_ref' => 'prod-profile',
+            ],
+            'auth_refs' => [
+                'prod-profile' => ['type' => 'profile', 'profile' => 'prod'],
             ],
             'carriers' => [
                 'local-dev' => [
@@ -449,6 +453,53 @@ class ClusterInfoTest extends TestCase
             ->assertOk()
             ->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.status', 'valid')
             ->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.errors', []);
+    }
+
+    public function test_it_requires_auth_refs_for_non_loopback_invocable_http_mappings(): void
+    {
+        $this->useExternalExecutorConfigFixture([
+            'schema' => 'durable-workflow.external-executor.config',
+            'version' => 1,
+            'defaults' => [
+                'task_queue' => 'operator-tasks',
+            ],
+            'carriers' => [
+                'local-dev' => [
+                    'type' => 'invocable_http',
+                    'url' => 'http://localhost:8080/durable/activity',
+                    'capabilities' => ['activity_task'],
+                ],
+                'production' => [
+                    'type' => 'invocable_http',
+                    'url' => 'https://carrier.example.com/durable/activity',
+                    'capabilities' => ['activity_task'],
+                ],
+            ],
+            'mappings' => [
+                [
+                    'name' => 'billing.backfill.local',
+                    'kind' => 'activity',
+                    'activity_type' => 'billing.backfill.local',
+                    'carrier' => 'local-dev',
+                    'handler' => 'billing.backfill',
+                ],
+                [
+                    'name' => 'billing.backfill.production',
+                    'kind' => 'activity',
+                    'activity_type' => 'billing.backfill.production',
+                    'carrier' => 'production',
+                    'handler' => 'billing.backfill',
+                ],
+            ],
+        ]);
+
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+        $errors = $response->json('worker_protocol.external_executor_config_contract.runtime.errors');
+
+        $this->assertSame(['missing_invocable_auth_ref'], array_column($errors, 'code'));
+        $this->assertSame('billing.backfill.production', $errors[0]['context']['mapping']);
+        $this->assertSame('production', $errors[0]['context']['carrier']);
+        $response->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.status', 'invalid');
     }
 
     public function test_it_rejects_invocable_urls_with_embedded_credentials(): void

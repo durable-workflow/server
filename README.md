@@ -678,6 +678,9 @@ fail-closed, including absolute HTTPS `url` targets, HTTP only for loopback
 development targets, no embedded URL credentials, `POST` method, bounded
 `timeout_seconds`, optional bounded `retry_policy`, and activity-only
 capabilities, before mapping it onto pollable activity tasks. The carrier
+must also resolve an `auth_ref` for non-loopback targets; only loopback HTTP
+development targets may omit auth. Effective auth remains redacted in cluster
+diagnostics and activity poll responses.
 retry policy is transport-only: it may repeat transient HTTP delivery before a
 result is reported, while durable activity retry remains owned by the
 server/runtime after complete/fail reporting.
