@@ -115,8 +115,8 @@ alerting.
 `trusted_long_soak_v1` profile. Short CI smokes can still pass, but they are
 classified as ineligible for the issue-closing trusted evidence unless they run
 for at least one hour, use compose-backed resource sampling, run on a
-self-hosted runner when GitHub exposes the runner environment, meet sample
-coverage, and have no bounded-growth assertion failures.
+self-hosted runner with an explicit `RUNNER_ENVIRONMENT=self-hosted` provenance
+value, meet sample coverage, and have no bounded-growth assertion failures.
 
 Per-policy limits can be enforced with JSON maps keyed by policy ID:
 `DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY` for maximum observed keys and

@@ -50,6 +50,7 @@ class ServerPerfHarnessContractTest extends TestCase
             'minimum_duration_seconds',
             'requires_self_hosted_runner',
             'requires_compose_resource_sampling',
+            'runner environment is unknown',
             'duration below trusted long-soak minimum',
             'bounded-growth assertions failed',
         ] as $needle) {

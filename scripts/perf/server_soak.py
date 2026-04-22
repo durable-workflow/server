@@ -678,7 +678,9 @@ def evidence_trust_profile(
         reasons.append(f"duration below trusted long-soak minimum {minimum_duration_seconds}s")
     if not compose_project:
         reasons.append("compose-backed resource sampling was not configured")
-    if runner_environment and runner_environment != "self-hosted":
+    if not runner_environment:
+        reasons.append("runner environment is unknown")
+    elif runner_environment != "self-hosted":
         reasons.append(f"runner environment is {runner_environment}, not self-hosted")
     if periodic_sample_count < minimum_trusted_samples:
         reasons.append("periodic sample coverage below trusted minimum")
