@@ -74,13 +74,12 @@ final class WorkflowTaskFailureMetrics
             'workflow_types_truncated' => $workflowTypeCount > count($series),
             'suppressed_workflow_type_count' => max(0, $workflowTypeCount - count($series)),
             'suppressed_failed_task_count' => max(0, $failedTaskCount - $reportedFailedTasks),
-            'label_cardinality_policy' => [
-                'namespace' => 'request_scope_not_label',
+            'label_cardinality_policy' => BoundedMetricPolicy::labelSet(self::METRIC_NAME, [
                 'workflow_type' => [
                     'limit' => $limit,
                     'selection' => 'top_by_max_consecutive_failures_then_name',
                 ],
-            ],
+            ]),
             'by_workflow_type' => $series,
         ];
     }

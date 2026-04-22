@@ -153,7 +153,8 @@ class SystemMetricsTest extends TestCase
         );
 
         foreach ($systemMetrics as $metric) {
-            $declaredDimensions = array_keys($policy['metrics'][$metric]['dimensions'] ?? []);
+            $declaredDimensionPolicies = $policy['metrics'][$metric]['dimensions'] ?? [];
+            $declaredDimensions = array_keys($declaredDimensionPolicies);
             sort($declaredDimensions);
 
             $runtimeDimensions = array_keys($response->json("cardinality.metric_label_sets.{$metric}"));
@@ -164,7 +165,39 @@ class SystemMetricsTest extends TestCase
                 $runtimeDimensions,
                 "{$metric} runtime label-set disclosure must match the bounded-growth policy dimensions.",
             );
+
+            foreach ($declaredDimensionPolicies as $dimension => $cardinalityClass) {
+                $this->assertRuntimeDimensionDisclosesPolicyClass(
+                    $metric,
+                    (string) $dimension,
+                    (string) $cardinalityClass,
+                    $response->json("cardinality.metric_label_sets.{$metric}.{$dimension}"),
+                );
+            }
         }
+    }
+
+    private function assertRuntimeDimensionDisclosesPolicyClass(
+        string $metric,
+        string $dimension,
+        string $cardinalityClass,
+        mixed $runtimePolicy,
+    ): void {
+        if (is_array($runtimePolicy)) {
+            $this->assertSame(
+                $cardinalityClass,
+                $runtimePolicy['cardinality_class'] ?? null,
+                "{$metric}.{$dimension} runtime cardinality disclosure must include the declared policy class.",
+            );
+
+            return;
+        }
+
+        $this->assertSame(
+            $cardinalityClass,
+            $runtimePolicy,
+            "{$metric}.{$dimension} runtime cardinality disclosure must match the declared policy class.",
+        );
     }
 
     private function createWorkflowTaskMetricRow(

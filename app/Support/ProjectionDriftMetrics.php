@@ -52,13 +52,12 @@ final class ProjectionDriftMetrics
             'table_count' => count(self::TABLES),
             'tables_with_drift' => $tablesWithDrift,
             'scope' => 'server',
-            'label_cardinality_policy' => [
-                'namespace' => 'server_scope_no_label',
+            'label_cardinality_policy' => BoundedMetricPolicy::labelSet(self::METRIC_NAME, [
                 'table' => [
                     'values' => self::TABLES,
                     'selection' => 'fixed_projection_table_inventory',
                 ],
-            ],
+            ]),
             'by_table' => $series,
         ];
     }
