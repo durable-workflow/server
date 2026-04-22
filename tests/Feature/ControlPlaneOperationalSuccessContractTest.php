@@ -90,6 +90,30 @@ class ControlPlaneOperationalSuccessContractTest extends TestCase
                     'build_ids',
                 ],
             ],
+            'task-queues.build_ids_drain' => [
+                'method' => 'post',
+                'path' => '/api/task-queues/empty-queue/build-ids/drain',
+                'body' => ['build_id' => 'v-any'],
+                'structure' => [
+                    'namespace',
+                    'task_queue',
+                    'build_id',
+                    'drain_intent',
+                    'drained_at',
+                ],
+            ],
+            'task-queues.build_ids_resume' => [
+                'method' => 'post',
+                'path' => '/api/task-queues/empty-queue/build-ids/resume',
+                'body' => ['build_id' => 'v-any'],
+                'structure' => [
+                    'namespace',
+                    'task_queue',
+                    'build_id',
+                    'drain_intent',
+                    'drained_at',
+                ],
+            ],
             'system.metrics_empty' => [
                 'method' => 'get',
                 'path' => '/api/system/metrics',

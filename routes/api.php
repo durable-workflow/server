@@ -145,6 +145,8 @@ Route::middleware([Authenticate::class])->group(function () {
     Route::prefix('task-queues')->middleware([$operator, $cpv, $ns])->group(function () {
         Route::get('/', [TaskQueueController::class, 'index']);
         Route::get('/{taskQueue}/build-ids', [TaskQueueController::class, 'buildIds']);
+        Route::post('/{taskQueue}/build-ids/drain', [TaskQueueController::class, 'drainBuildId']);
+        Route::post('/{taskQueue}/build-ids/resume', [TaskQueueController::class, 'resumeBuildId']);
         Route::get('/{taskQueue}', [TaskQueueController::class, 'show']);
     });
 

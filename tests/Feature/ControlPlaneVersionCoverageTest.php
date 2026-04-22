@@ -96,6 +96,16 @@ class ControlPlaneVersionCoverageTest extends TestCase
             'task-queues.index' => ['method' => 'get', 'path' => '/api/task-queues'],
             'task-queues.show' => ['method' => 'get', 'path' => '/api/task-queues/default'],
             'task-queues.build_ids' => ['method' => 'get', 'path' => '/api/task-queues/default/build-ids'],
+            'task-queues.build_ids_drain' => [
+                'method' => 'post',
+                'path' => '/api/task-queues/default/build-ids/drain',
+                'body' => ['build_id' => 'v1'],
+            ],
+            'task-queues.build_ids_resume' => [
+                'method' => 'post',
+                'path' => '/api/task-queues/default/build-ids/resume',
+                'body' => ['build_id' => 'v1'],
+            ],
 
             // WorkerManagementController
             'workers.index' => ['method' => 'get', 'path' => '/api/workers'],

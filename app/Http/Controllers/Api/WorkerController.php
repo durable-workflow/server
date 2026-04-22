@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\NamespaceWorkflowScope;
@@ -98,6 +99,12 @@ class WorkerController
             );
         }
 
+        $registrationStatus = $this->workerRegistrationStatus(
+            $namespace,
+            $validated['task_queue'],
+            $validated['build_id'] ?? null,
+        );
+
         WorkerRegistration::updateOrCreate(
             [
                 'worker_id' => $workerId,
@@ -114,7 +121,7 @@ class WorkerController
                 'max_concurrent_workflow_tasks' => $validated['max_concurrent_workflow_tasks'] ?? 100,
                 'max_concurrent_activity_tasks' => $validated['max_concurrent_activity_tasks'] ?? 100,
                 'last_heartbeat_at' => now(),
-                'status' => 'active',
+                'status' => $registrationStatus,
             ]
         );
 
@@ -240,9 +247,15 @@ class WorkerController
             ], 404);
         }
 
+        $heartbeatStatus = $this->workerRegistrationStatus(
+            $worker->namespace,
+            $worker->task_queue,
+            is_string($worker->build_id) ? $worker->build_id : null,
+        );
+
         $worker->update([
             'last_heartbeat_at' => now(),
-            'status' => 'active',
+            'status' => $heartbeatStatus,
         ]);
 
         StandaloneWorkerVisibility::recordCompatibility(
@@ -1165,5 +1178,31 @@ class WorkerController
             'failed' => 'run_failed',
             default => 'run_closed',
         };
+    }
+
+    /**
+     * Derive the worker status to stamp on register/heartbeat from operator
+     * rollout intent. If an operator has marked this build_id cohort as
+     * draining, incoming worker rows stay draining across heartbeats so the
+     * drain intent cannot be clobbered by ordinary polling traffic.
+     */
+    private function workerRegistrationStatus(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+    ): string {
+        $key = WorkerBuildIdRollout::buildIdKey($buildId);
+
+        $rollout = WorkerBuildIdRollout::query()
+            ->where('namespace', $namespace)
+            ->where('task_queue', $taskQueue)
+            ->where('build_id', $key)
+            ->first();
+
+        if ($rollout instanceof WorkerBuildIdRollout && $rollout->isDraining()) {
+            return WorkerBuildIdRollout::DRAIN_INTENT_DRAINING;
+        }
+
+        return 'active';
     }
 }

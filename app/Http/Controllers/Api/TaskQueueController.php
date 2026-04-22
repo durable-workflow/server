@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneProtocol;
 use App\Support\TaskQueueAdmission;
@@ -149,6 +150,8 @@ class TaskQueueController
             }
         }
 
+        $rolloutMap = $this->rolloutsForTaskQueue($namespace, $taskQueue);
+
         $buildIds = [];
         foreach ($groups as $group) {
             $runtimes = array_keys($group['runtimes']);
@@ -156,13 +159,20 @@ class TaskQueueController
             $sdkVersions = array_keys($group['sdk_versions']);
             sort($sdkVersions);
 
+            $rolloutKey = WorkerBuildIdRollout::buildIdKey($group['build_id']);
+            $rollout = $rolloutMap[$rolloutKey] ?? null;
+            $drainIntent = $rollout?->drain_intent ?? WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE;
+
             $buildIds[] = [
                 'build_id' => $group['build_id'],
                 'rollout_status' => $this->buildIdRolloutStatus(
                     $group['active_worker_count'],
                     $group['draining_worker_count'],
                     $group['stale_worker_count'],
+                    $drainIntent,
                 ),
+                'drain_intent' => $drainIntent,
+                'drained_at' => $rollout?->drained_at?->toJSON(),
                 'active_worker_count' => $group['active_worker_count'],
                 'draining_worker_count' => $group['draining_worker_count'],
                 'stale_worker_count' => $group['stale_worker_count'],
@@ -171,6 +181,35 @@ class TaskQueueController
                 'sdk_versions' => $sdkVersions,
                 'last_heartbeat_at' => $group['last_heartbeat_at']?->toJSON(),
                 'first_seen_at' => $group['first_seen_at']?->toJSON(),
+            ];
+        }
+
+        // Surface rollout intent even for cohorts whose worker rows have
+        // been removed: operators still need to see "this build_id is
+        // marked draining" until they explicitly resume it.
+        foreach ($rolloutMap as $key => $rollout) {
+            if (isset($groups[$key === '' ? '__unversioned__' : $key])) {
+                continue;
+            }
+
+            $buildIds[] = [
+                'build_id' => $rollout->publicBuildId(),
+                'rollout_status' => $this->buildIdRolloutStatus(
+                    0,
+                    0,
+                    0,
+                    $rollout->drain_intent,
+                ),
+                'drain_intent' => $rollout->drain_intent,
+                'drained_at' => $rollout->drained_at?->toJSON(),
+                'active_worker_count' => 0,
+                'draining_worker_count' => 0,
+                'stale_worker_count' => 0,
+                'total_worker_count' => 0,
+                'runtimes' => [],
+                'sdk_versions' => [],
+                'last_heartbeat_at' => null,
+                'first_seen_at' => null,
             ];
         }
 
@@ -194,13 +233,134 @@ class TaskQueueController
         ]);
     }
 
-    private function buildIdRolloutStatus(int $active, int $draining, int $stale): string
+    /**
+     * Mark a build_id cohort as draining so operators can cut traffic off
+     * a build before deleting its workers. Passing null for build_id drains
+     * the unversioned cohort (the pre-rollout default). The call is
+     * idempotent: repeated drains return the existing rollout record.
+     */
+    public function drainBuildId(Request $request, string $taskQueue): JsonResponse
     {
+        return $this->setBuildIdDrainIntent(
+            $request,
+            $taskQueue,
+            WorkerBuildIdRollout::DRAIN_INTENT_DRAINING,
+        );
+    }
+
+    /**
+     * Revert an earlier drain so the build_id cohort can accept work again
+     * (rollback path). Passing null for build_id resumes the unversioned
+     * cohort. The call is idempotent.
+     */
+    public function resumeBuildId(Request $request, string $taskQueue): JsonResponse
+    {
+        return $this->setBuildIdDrainIntent(
+            $request,
+            $taskQueue,
+            WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE,
+        );
+    }
+
+    private function setBuildIdDrainIntent(Request $request, string $taskQueue, string $intent): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $validated = $request->validate([
+            'build_id' => ['present', 'nullable', 'string', 'max:255'],
+        ]);
+
+        $namespace = (string) $request->attributes->get('namespace');
+        $publicBuildId = is_string($validated['build_id']) && trim($validated['build_id']) !== ''
+            ? trim($validated['build_id'])
+            : null;
+        $key = WorkerBuildIdRollout::buildIdKey($publicBuildId);
+        $now = now();
+
+        $rollout = WorkerBuildIdRollout::query()->firstOrNew([
+            'namespace' => $namespace,
+            'task_queue' => $taskQueue,
+            'build_id' => $key,
+        ]);
+
+        $draining = $intent === WorkerBuildIdRollout::DRAIN_INTENT_DRAINING;
+        $wasDraining = $rollout->drain_intent === WorkerBuildIdRollout::DRAIN_INTENT_DRAINING;
+
+        $rollout->drain_intent = $intent;
+        $rollout->drained_at = $draining
+            ? ($wasDraining ? $rollout->drained_at : $now)
+            : null;
+        $rollout->save();
+
+        if (! $draining) {
+            // Clear the draining status we stamped on worker rows so the
+            // next heartbeat is not forced back to draining by the resume
+            // path. Workers that are still running will have their status
+            // restamped to active on their next heartbeat anyway, but
+            // clearing immediately keeps the read endpoint honest.
+            WorkerRegistration::query()
+                ->where('namespace', $namespace)
+                ->where('task_queue', $taskQueue)
+                ->when(
+                    $publicBuildId !== null,
+                    fn ($query) => $query->where('build_id', $publicBuildId),
+                    fn ($query) => $query->where(function ($q) {
+                        $q->whereNull('build_id')->orWhere('build_id', '');
+                    }),
+                )
+                ->where('status', WorkerBuildIdRollout::DRAIN_INTENT_DRAINING)
+                ->update(['status' => 'active']);
+        }
+
+        return ControlPlaneProtocol::json([
+            'namespace' => $namespace,
+            'task_queue' => $taskQueue,
+            'build_id' => $publicBuildId,
+            'drain_intent' => $rollout->drain_intent,
+            'drained_at' => $rollout->drained_at?->toJSON(),
+        ]);
+    }
+
+    /**
+     * @return array<string, WorkerBuildIdRollout>
+     */
+    private function rolloutsForTaskQueue(string $namespace, string $taskQueue): array
+    {
+        $rollouts = WorkerBuildIdRollout::query()
+            ->where('namespace', $namespace)
+            ->where('task_queue', $taskQueue)
+            ->get();
+
+        $map = [];
+        foreach ($rollouts as $rollout) {
+            $map[(string) $rollout->build_id] = $rollout;
+        }
+
+        return $map;
+    }
+
+    private function buildIdRolloutStatus(
+        int $active,
+        int $draining,
+        int $stale,
+        string $drainIntent = WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE,
+    ): string {
+        $intentDraining = $drainIntent === WorkerBuildIdRollout::DRAIN_INTENT_DRAINING;
+
         if ($active > 0) {
-            return $draining > 0 ? 'active_with_draining' : 'active';
+            return $intentDraining || $draining > 0 ? 'active_with_draining' : 'active';
         }
 
         if ($draining > 0) {
+            return 'draining';
+        }
+
+        if ($intentDraining) {
+            // Operator intent is to drain, but no live workers remain to
+            // acknowledge it. Keep the cohort visible as draining so the
+            // rollout state is clear even after stale workers are purged.
             return 'draining';
         }
 
