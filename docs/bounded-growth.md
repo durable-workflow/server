@@ -119,8 +119,12 @@ alerting.
 classified as ineligible for the issue-closing trusted evidence unless they run
 for at least one hour, use compose-backed resource sampling, run on a
 self-hosted runner with an explicit `RUNNER_ENVIRONMENT=self-hosted` provenance
-value, have a clean tracked working tree, meet sample coverage, and have no
-bounded-growth assertion failures.
+value, include GitHub Actions provenance (`GITHUB_REPOSITORY`, `GITHUB_REF`,
+`GITHUB_SHA`, `GITHUB_WORKFLOW`, `GITHUB_RUN_ID`, and `GITHUB_RUN_ATTEMPT`),
+have a clean tracked working tree, meet sample coverage, and have no
+bounded-growth assertion failures. A local run can still produce useful
+artifacts, but it cannot satisfy the trusted long-soak evidence profile just by
+setting `RUNNER_ENVIRONMENT=self-hosted`.
 The CI smoke workflow sets `RUNNER_ENVIRONMENT=github-hosted` so those artifacts
 are traceable without being eligible for the trusted long-soak profile.
 

@@ -81,11 +81,14 @@ Artifacts land in `build/perf/` by default. The script removes the Compose proje
 duration, elapsed time, request/error totals, memory and Redis key ceilings,
 final drain counts, sample coverage, GitHub runner provenance, and the
 SHA-256 digest of `config/dw-bounded-growth.php`. Trusted long-soak evidence
-also requires `tracked_working_tree_clean=true`, so artifacts from uncommitted
-source or policy edits are marked ineligible. The harness fails when it cannot
-collect at least `DW_PERF_MIN_SAMPLE_COVERAGE` of the expected periodic samples,
-which defaults to 80%. The final post-drain sample is included in the artifact
-but does not count toward the periodic sample coverage gate.
+also requires `tracked_working_tree_clean=true` and GitHub Actions provenance
+(`GITHUB_REPOSITORY`, `GITHUB_REF`, `GITHUB_SHA`, `GITHUB_WORKFLOW`,
+`GITHUB_RUN_ID`, and `GITHUB_RUN_ATTEMPT`), so artifacts from uncommitted source,
+policy edits, or ad hoc local runs are marked ineligible for the trusted profile.
+The harness fails when it cannot collect at least `DW_PERF_MIN_SAMPLE_COVERAGE`
+of the expected periodic samples, which defaults to 80%. The final post-drain
+sample is included in the artifact but does not count toward the periodic sample
+coverage gate.
 
 Use `DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY` and
 `DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY` to enforce per-cache-family

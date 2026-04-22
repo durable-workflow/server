@@ -676,6 +676,7 @@ def evidence_trust_profile(
     *,
     duration_seconds: int,
     compose_project: str,
+    provenance: dict[str, Any],
     runner_environment: str,
     tracked_working_tree_clean: bool,
     periodic_sample_count: int,
@@ -694,6 +695,8 @@ def evidence_trust_profile(
         reasons.append("runner environment is unknown")
     elif runner_environment != "self-hosted":
         reasons.append(f"runner environment is {runner_environment}, not self-hosted")
+    if not github_actions_provenance_present(provenance):
+        reasons.append("GitHub Actions provenance is incomplete")
     if not tracked_working_tree_clean:
         reasons.append("tracked working tree has uncommitted changes")
     if periodic_sample_count < minimum_trusted_samples:
@@ -709,10 +712,24 @@ def evidence_trust_profile(
         "minimum_duration_seconds": minimum_duration_seconds,
         "runner_environment": runner_environment,
         "requires_self_hosted_runner": True,
+        "requires_github_actions_provenance": True,
         "requires_compose_resource_sampling": True,
         "requires_clean_tracked_working_tree": True,
         "reasons": reasons,
     }
+
+
+def github_actions_provenance_present(provenance: dict[str, Any]) -> bool:
+    required_fields = (
+        "repository",
+        "ref",
+        "sha",
+        "workflow",
+        "run_id",
+        "run_attempt",
+    )
+
+    return all(str(provenance.get(field) or "").strip() for field in required_fields)
 
 
 def main() -> int:
@@ -927,6 +944,7 @@ def main() -> int:
         summary["evidence"]["trust"] = evidence_trust_profile(
             duration_seconds=args.duration_seconds,
             compose_project=args.compose_project,
+            provenance=provenance,
             runner_environment=str(provenance.get("runner_environment") or ""),
             tracked_working_tree_clean=bool(provenance.get("tracked_working_tree_clean")),
             periodic_sample_count=periodic_sample_count,
