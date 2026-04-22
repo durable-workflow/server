@@ -18,6 +18,8 @@ class InvocableCarrierContractTest extends TestCase
         $this->assertSame('invocable_http', $manifest['carrier_type']);
         $this->assertSame(['activity_task'], $manifest['scope']['task_kinds']);
         $this->assertContains('workflow_task_execution', $manifest['scope']['explicit_non_goals']);
+        $this->assertSame(['https', 'http_loopback'], $manifest['target_fields']['url']['allowed_schemes']);
+        $this->assertSame(['userinfo'], $manifest['target_fields']['url']['forbidden']);
         $this->assertSame('POST', $manifest['request']['method']);
         $this->assertSame(ExternalTaskInputContract::SCHEMA, $manifest['request']['body_schema']);
         $this->assertSame(ExternalTaskResultContract::SCHEMA, $manifest['response']['body_schema']);

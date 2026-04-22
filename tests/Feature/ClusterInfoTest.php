@@ -374,6 +374,7 @@ class ClusterInfoTest extends TestCase
             'carriers' => [
                 'bad-invocable' => [
                     'type' => 'invocable_http',
+                    'url' => 'http://carrier.example.com/durable/activity',
                     'method' => 'GET',
                     'timeout_seconds' => true,
                     'capabilities' => ['activity_task', 'workflow_task'],
@@ -398,6 +399,86 @@ class ClusterInfoTest extends TestCase
 
         $this->assertContains('invalid_carrier_target', $codes);
         $this->assertContains('invalid_invocable_carrier_scope', $codes);
+        $response->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.status', 'invalid');
+    }
+
+    public function test_it_allows_only_https_or_loopback_http_invocable_urls(): void
+    {
+        $this->useExternalExecutorConfigFixture([
+            'schema' => 'durable-workflow.external-executor.config',
+            'version' => 1,
+            'defaults' => [
+                'task_queue' => 'operator-tasks',
+            ],
+            'carriers' => [
+                'local-dev' => [
+                    'type' => 'invocable_http',
+                    'url' => 'http://127.0.0.1:8080/durable/activity',
+                    'capabilities' => ['activity_task'],
+                ],
+                'production' => [
+                    'type' => 'invocable_http',
+                    'url' => 'https://carrier.example.com/durable/activity',
+                    'capabilities' => ['activity_task'],
+                ],
+            ],
+            'mappings' => [
+                [
+                    'name' => 'billing.backfill.local',
+                    'kind' => 'activity',
+                    'activity_type' => 'billing.backfill.local',
+                    'carrier' => 'local-dev',
+                    'handler' => 'billing.backfill',
+                ],
+                [
+                    'name' => 'billing.backfill.production',
+                    'kind' => 'activity',
+                    'activity_type' => 'billing.backfill.production',
+                    'carrier' => 'production',
+                    'handler' => 'billing.backfill',
+                ],
+            ],
+        ]);
+
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.status', 'valid')
+            ->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.errors', []);
+    }
+
+    public function test_it_rejects_invocable_urls_with_embedded_credentials(): void
+    {
+        $this->useExternalExecutorConfigFixture([
+            'schema' => 'durable-workflow.external-executor.config',
+            'version' => 1,
+            'defaults' => [
+                'task_queue' => 'operator-tasks',
+            ],
+            'carriers' => [
+                'embedded-secret' => [
+                    'type' => 'invocable_http',
+                    'url' => 'https://user:secret@carrier.example.com/durable/activity',
+                    'capabilities' => ['activity_task'],
+                ],
+            ],
+            'mappings' => [
+                [
+                    'name' => 'billing.backfill',
+                    'kind' => 'activity',
+                    'activity_type' => 'billing.backfill',
+                    'carrier' => 'embedded-secret',
+                    'handler' => 'billing.backfill',
+                ],
+            ],
+        ]);
+
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+        $errors = $response->json('worker_protocol.external_executor_config_contract.runtime.errors');
+
+        $this->assertSame('invalid_carrier_target', $errors[0]['code']);
+        $this->assertSame('url', $errors[0]['context']['field']);
+        $this->assertArrayNotHasKey('user', $errors[0]['context']);
+        $this->assertArrayNotHasKey('pass', $errors[0]['context']);
         $response->assertJsonPath('worker_protocol.external_executor_config_contract.runtime.status', 'invalid');
     }
 

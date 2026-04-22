@@ -58,12 +58,14 @@ TLS, profile, and environment inputs deterministically.
 
 The first concrete invocable carrier is `invocable_http`, published at
 `worker_protocol.invocable_carrier_contract`. It is activity-task only. Its
-config target must declare a URL, may declare `method: POST`, and may declare a
-bounded `timeout_seconds` value. The server validates malformed invocable
-carrier config fail-closed through `invalid_carrier_target` and
-`invalid_invocable_carrier_scope` before exposing mappings on activity poll
-responses. Actual dispatch still belongs to a carrier implementation; this
-contract freezes the request, response, auth, failure, and rollout boundary.
+config target must declare an absolute HTTPS URL, may use HTTP only for
+loopback development targets, must not embed URL credentials, may declare
+`method: POST`, and may declare a bounded `timeout_seconds` value. The server
+validates malformed invocable carrier config fail-closed through
+`invalid_carrier_target` and `invalid_invocable_carrier_scope` before exposing
+mappings on activity poll responses. Actual dispatch still belongs to a carrier
+implementation; this contract freezes the request, response, auth, failure, and
+rollout boundary.
 
 Stable adjacent contract docs live in:
 

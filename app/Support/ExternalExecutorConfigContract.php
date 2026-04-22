@@ -477,10 +477,18 @@ final class ExternalExecutorConfigContract
             }
         }
 
-        if (self::stringValue($carrier['url'] ?? null) === null) {
+        $url = self::stringValue($carrier['url'] ?? null);
+        if ($url === null) {
             $errors[] = self::error('invalid_carrier_target', 'Invocable HTTP carriers must declare a non-empty url.', [
                 'carrier' => $name,
                 'field' => 'url',
+            ]);
+        } elseif (! self::isAllowedInvocableUrl($url)) {
+            $errors[] = self::error('invalid_carrier_target', 'Invocable HTTP carrier url must be absolute HTTPS, or HTTP only for loopback development targets, and must not embed credentials.', [
+                'carrier' => $name,
+                'field' => 'url',
+                'scheme' => parse_url($url, PHP_URL_SCHEME),
+                'host' => parse_url($url, PHP_URL_HOST),
             ]);
         }
 
@@ -504,6 +512,51 @@ final class ExternalExecutorConfigContract
         }
 
         return $errors;
+    }
+
+    private static function isAllowedInvocableUrl(string $url): bool
+    {
+        $parts = parse_url($url);
+        if (! is_array($parts)) {
+            return false;
+        }
+
+        $scheme = self::stringValue($parts['scheme'] ?? null);
+        $host = self::stringValue($parts['host'] ?? null);
+        if ($scheme === null || $host === null) {
+            return false;
+        }
+
+        if (array_key_exists('user', $parts) || array_key_exists('pass', $parts)) {
+            return false;
+        }
+
+        return match (strtolower($scheme)) {
+            'https' => true,
+            'http' => self::isLoopbackHost($host),
+            default => false,
+        };
+    }
+
+    private static function isLoopbackHost(string $host): bool
+    {
+        $normalized = strtolower(trim($host, '[]'));
+
+        if ($normalized === 'localhost' || str_ends_with($normalized, '.localhost')) {
+            return true;
+        }
+
+        if ($normalized === '::1') {
+            return true;
+        }
+
+        if (filter_var($normalized, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+            return false;
+        }
+
+        $address = ip2long($normalized);
+
+        return $address !== false && ($address & 0xFF000000) === 0x7F000000;
     }
 
     /**

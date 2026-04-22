@@ -40,6 +40,8 @@ final class InvocableCarrierContract
                 'url' => [
                     'type' => 'string',
                     'required' => true,
+                    'allowed_schemes' => ['https', 'http_loopback'],
+                    'forbidden' => ['userinfo'],
                     'meaning' => 'Absolute HTTPS URL for the activity handler endpoint; loopback HTTP is only for local development.',
                 ],
                 'method' => [

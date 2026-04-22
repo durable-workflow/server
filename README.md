@@ -674,7 +674,8 @@ The first concrete invocable carrier contract is published at
 `invocable_http`. It is activity-task only: the target endpoint receives the
 external task input envelope over `POST` and must return the external task
 result envelope. The server validates `invocable_http` carrier config
-fail-closed, including non-empty `url`, `POST` method, bounded
+fail-closed, including absolute HTTPS `url` targets, HTTP only for loopback
+development targets, no embedded URL credentials, `POST` method, bounded
 `timeout_seconds`, and activity-only capabilities, before mapping it onto
 pollable activity tasks.
 For leased invocable mappings, `task.external_executor.dispatch` also exposes
