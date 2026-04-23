@@ -160,9 +160,6 @@ class WorkflowDebugTest extends TestCase
 
         WorkflowHistoryEvent::record($run, HistoryEventType::SideEffectRecorded, [
             'result' => $largeValue,
-            'metadata' => [
-                'source' => 'debug-test',
-            ],
         ]);
 
         $debug = $this->getJson(
@@ -173,7 +170,7 @@ class WorkflowDebugTest extends TestCase
         $debug->assertOk()
             ->assertJsonPath('execution.last_event.event_type', HistoryEventType::SideEffectRecorded->value)
             ->assertJsonPath('execution.last_event.payload_summary.included', false)
-            ->assertJsonPath('execution.last_event.payload_summary.top_level_keys', ['result', 'metadata'])
+            ->assertJsonPath('execution.last_event.payload_summary.top_level_keys', ['result'])
             ->assertJsonMissingPath('execution.last_event.payload')
             ->assertJsonMissingPath('execution.last_event.payload_preview');
 

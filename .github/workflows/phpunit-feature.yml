@@ -1,0 +1,58 @@
+name: PHPUnit Feature
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/phpunit-feature.yml"
+      - "app/**"
+      - "bootstrap/**"
+      - "composer.json"
+      - "composer.lock"
+      - "config/**"
+      - "database/**"
+      - "phpunit.xml"
+      - "routes/**"
+      - "tests/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/phpunit-feature.yml"
+      - "app/**"
+      - "bootstrap/**"
+      - "composer.json"
+      - "composer.lock"
+      - "config/**"
+      - "database/**"
+      - "phpunit.xml"
+      - "routes/**"
+      - "tests/**"
+
+permissions:
+  contents: read
+
+jobs:
+  feature:
+    name: PHPUnit feature suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout server
+        uses: actions/checkout@v6
+
+      - name: Checkout workflow package
+        uses: actions/checkout@v6
+        with:
+          repository: durable-workflow/workflow
+          ref: v2
+          path: workflow-package
+
+      - name: Run feature suite
+        run: |
+          docker run --rm \
+            -u "$(id -u):$(id -g)" \
+            -v "${PWD}:/app" \
+            -v "${PWD}/workflow-package:/workflow:ro" \
+            -w /app \
+            composer:2 \
+            sh -lc 'composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Feature --no-progress --colors=never'
