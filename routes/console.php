@@ -3,14 +3,25 @@
 use App\Models\WorkflowNamespace;
 use App\Support\EnvAuditor;
 use App\Support\HistoryRetentionEnforcer;
+use App\Support\MigrationAdoption;
+use Illuminate\Database\Migrations\Migrator;
 use Illuminate\Support\Facades\Artisan;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\ScheduleManager;
 
-Artisan::command('server:bootstrap {--force : Run bootstrap commands without a production prompt}', function (): int {
+Artisan::command('server:bootstrap {--force : Run bootstrap commands without a production prompt}', function (Migrator $migrator): int {
     $this->components->info('Running Durable Workflow server bootstrap...');
+
+    $adopted = (new MigrationAdoption($migrator))->adopt();
+
+    foreach ($adopted as $name) {
+        $this->components->twoColumnDetail(
+            $name,
+            '<fg=yellow>adopted</> (table already existed)',
+        );
+    }
 
     $migrate = $this->call('migrate', [
         '--force' => (bool) $this->option('force'),
