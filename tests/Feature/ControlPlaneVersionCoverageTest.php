@@ -124,6 +124,7 @@ class ControlPlaneVersionCoverageTest extends TestCase
 
             // SystemController
             'system.metrics' => ['method' => 'get', 'path' => '/api/system/metrics'],
+            'system.operator_metrics' => ['method' => 'get', 'path' => '/api/system/operator-metrics'],
             'system.repair_status' => ['method' => 'get', 'path' => '/api/system/repair'],
             'system.repair_pass' => ['method' => 'post', 'path' => '/api/system/repair/pass'],
             'system.activity_timeout_status' => ['method' => 'get', 'path' => '/api/system/activity-timeouts'],

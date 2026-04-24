@@ -9,6 +9,7 @@ use App\Support\WorkflowTaskFailureMetrics;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
+use Workflow\V2\Support\OperatorMetrics;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
 use Workflow\V2\TaskWatchdog;
@@ -91,6 +92,21 @@ class SystemController
                     ProjectionDriftMetrics::METRIC_NAME => $projectionDrift['label_cardinality_policy'],
                 ],
             ],
+        ]);
+    }
+
+    public function operatorMetrics(Request $request): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = (string) $request->attributes->get('namespace');
+        $snapshot = OperatorMetrics::snapshot(null, $namespace);
+
+        return ControlPlaneProtocol::json([
+            'namespace' => $namespace,
+            'operator_metrics' => $snapshot,
         ]);
     }
 

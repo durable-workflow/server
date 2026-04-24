@@ -495,6 +495,7 @@ workflow-task command payload.
 - `GET /api/ready` — Readiness check for migrations, default namespace, cache, and auth config
 - `GET /api/cluster/info` — Server capabilities and version
 - `GET /api/system/metrics` — Server metrics including bounded stuck workflow-task diagnostics
+- `GET /api/system/operator-metrics` — Full operator metrics snapshot (runs, tasks, backlog, repair, workers/fleet, backend, structural limits) for rollout-safety coordination health
 - `GET /api/system/repair` — Task repair diagnostics
 - `POST /api/system/repair/pass` — Run task repair sweep
 - `GET /api/system/activity-timeouts` — Expired activity execution diagnostics

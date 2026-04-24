@@ -147,6 +147,34 @@ class ControlPlaneOperationalSuccessContractTest extends TestCase
                     ],
                 ],
             ],
+            'system.operator_metrics_empty' => [
+                'method' => 'get',
+                'path' => '/api/system/operator-metrics',
+                'body' => [],
+                'structure' => [
+                    'namespace',
+                    'operator_metrics' => [
+                        'generated_at',
+                        'runs',
+                        'tasks',
+                        'backlog',
+                        'repair',
+                        'workers' => [
+                            'required_compatibility',
+                            'active_workers',
+                            'active_worker_scopes',
+                            'active_workers_supporting_required',
+                            'fleet',
+                        ],
+                        'backend' => [
+                            'supported',
+                            'issues',
+                        ],
+                        'structural_limits',
+                        'repair_policy',
+                    ],
+                ],
+            ],
             'system.repair_status' => [
                 'method' => 'get',
                 'path' => '/api/system/repair',
