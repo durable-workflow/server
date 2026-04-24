@@ -690,6 +690,12 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_V2_CACHE_VALIDATION_MODE',
         ],
+        'DW_V2_FLEET_VALIDATION_MODE' => [
+            'description' => 'How to handle fleet-compatibility validation failures for worker compatibility checks and task dispatch: "warn" logs, "fail" blocks dispatch and fails closed when no compatible worker is available.',
+            'default' => 'warn',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_FLEET_VALIDATION_MODE',
+        ],
         'DW_SERIALIZER' => [
             'description' => 'Payload codec diagnostic input. Final v2 always resolves new-run payloads to "avro"; legacy values are surfaced by workflow:v2:doctor.',
             'default' => 'avro',

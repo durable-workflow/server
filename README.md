@@ -1187,6 +1187,7 @@ inside the package's `config/workflows.php` via
 | `DW_V2_MULTI_NODE` | `false` | Declare multi-node deployment so cache backends are validated for cross-node coordination. |
 | `DW_V2_VALIDATE_CACHE_BACKEND` | `true` | Validate the long-poll cache backend at boot. |
 | `DW_V2_CACHE_VALIDATION_MODE` | `warn` | Cache-backend validation failure handling: `fail`, `warn`, or `silent`. |
+| `DW_V2_FLEET_VALIDATION_MODE` | `warn` | Fleet-compatibility validation handling: `warn` logs, `fail` blocks dispatch and fails closed when no compatible worker is available. |
 | `DW_SERIALIZER` | `avro` | Payload codec diagnostic input. Legacy values are surfaced by `workflow:v2:doctor`; new-run v2 payloads always resolve to Avro. |
 
 Legacy `WORKFLOW_*` / `WORKFLOW_V2_*` / `ACTIVITY_*` names remain
