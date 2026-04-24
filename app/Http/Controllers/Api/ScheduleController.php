@@ -10,6 +10,7 @@ use Illuminate\Support\Str;
 use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Enums\ScheduleStatus;
 use Workflow\V2\Models\WorkflowSchedule;
+use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
 use Workflow\V2\Support\ScheduleManager;
 
 class ScheduleController
@@ -362,6 +363,116 @@ class ScheduleController
             'fires_attempted' => count($results),
             'results' => $results,
         ]);
+    }
+
+    public function history(Request $request, string $scheduleId): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = $request->attributes->get('namespace');
+
+        $schedule = WorkflowSchedule::query()
+            ->where('namespace', $namespace)
+            ->where('schedule_id', $scheduleId)
+            ->first();
+
+        if (! $schedule) {
+            return ControlPlaneProtocol::json([
+                'message' => sprintf(
+                    'Schedule [%s] not found in namespace [%s].',
+                    $scheduleId,
+                    $namespace,
+                ),
+                'reason' => 'schedule_not_found',
+            ], 404);
+        }
+
+        $limit = $this->parseHistoryLimit($request->query('limit'));
+        $afterSequence = $this->parseAfterSequence($request->query('after_sequence'));
+
+        if ($afterSequence === false) {
+            return ControlPlaneProtocol::json([
+                'message' => 'after_sequence must be a non-negative integer.',
+                'reason' => 'invalid_after_sequence',
+            ], 422);
+        }
+
+        $query = $schedule->historyEvents();
+
+        if ($afterSequence !== null) {
+            $query->where('sequence', '>', $afterSequence);
+        }
+
+        $events = $query->limit($limit + 1)->get();
+        $hasMore = $events->count() > $limit;
+        $events = $events->take($limit);
+
+        $nextCursor = $hasMore && $events->isNotEmpty()
+            ? (int) $events->last()->sequence
+            : null;
+
+        return ControlPlaneProtocol::json([
+            'schedule_id' => $schedule->schedule_id,
+            'namespace' => $schedule->namespace,
+            'events' => $events->map(static fn (WorkflowScheduleHistoryEvent $event): array => [
+                'id' => $event->id,
+                'sequence' => (int) $event->sequence,
+                'event_type' => $event->event_type?->value,
+                'payload' => is_array($event->payload) ? $event->payload : [],
+                'workflow_instance_id' => $event->workflow_instance_id,
+                'workflow_run_id' => $event->workflow_run_id,
+                'recorded_at' => $event->recorded_at?->toIso8601String(),
+            ])->values()->all(),
+            'next_cursor' => $nextCursor,
+            'has_more' => $hasMore,
+        ]);
+    }
+
+    private function parseHistoryLimit(mixed $raw): int
+    {
+        $default = 100;
+        $max = 500;
+
+        if (! is_string($raw) && ! is_int($raw)) {
+            return $default;
+        }
+
+        $value = (int) $raw;
+
+        if ($value <= 0) {
+            return $default;
+        }
+
+        return min($value, $max);
+    }
+
+    /**
+     * Returns null when absent, an int >= 0 when valid, or false when
+     * the supplied value is non-integer or negative.
+     */
+    private function parseAfterSequence(mixed $raw): int|false|null
+    {
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+
+        if (! is_string($raw) && ! is_int($raw)) {
+            return false;
+        }
+
+        if (is_string($raw) && ! preg_match('/^-?\d+$/', $raw)) {
+            return false;
+        }
+
+        $value = (int) $raw;
+
+        if ($value < 0) {
+            return false;
+        }
+
+        return $value;
     }
 
     /**

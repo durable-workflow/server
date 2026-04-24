@@ -155,6 +155,7 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::get('/', [ScheduleController::class, 'index']);
         Route::post('/', [ScheduleController::class, 'store']);
         Route::get('/{scheduleId}', [ScheduleController::class, 'show']);
+        Route::get('/{scheduleId}/history', [ScheduleController::class, 'history']);
         Route::put('/{scheduleId}', [ScheduleController::class, 'update']);
         Route::delete('/{scheduleId}', [ScheduleController::class, 'destroy']);
         Route::post('/{scheduleId}/pause', [ScheduleController::class, 'pause']);
