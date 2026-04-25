@@ -86,6 +86,13 @@ class MigrationAdoption
      * for migrations that do not create tables (ALTER-style, no-op tombstones,
      * dynamic names), which are left to the normal migrator.
      *
+     * The workflow package side of this contract is pinned by
+     * `Workflow\V2 MigrationsTest::testPackageMigrationCreateTablesAreDetectableByServerAdoptionPatterns`,
+     * which fails closed if any package migration's `Schema::create()` target
+     * falls outside the two patterns this method recognizes. Keep these
+     * regexes synchronized with that contract test or the BLK-S002 recovery
+     * regresses silently.
+     *
      * @return list<string>
      */
     private function createdTablesIn(string $path): array
