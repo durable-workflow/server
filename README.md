@@ -987,6 +987,23 @@ docker run --rm --name durable-workflow-matching \
   php artisan workflow:v2:repair-pass --loop
 ```
 
+For Compose deployments, layer the
+[`docker-compose.dedicated-matching.yml`](docker-compose.dedicated-matching.yml)
+override on top of `docker-compose.published.yml` to enable the same shape:
+
+```bash
+docker compose \
+  -f docker-compose.published.yml \
+  -f docker-compose.dedicated-matching.yml \
+  up
+```
+
+The override sets `DW_V2_MATCHING_ROLE_QUEUE_WAKE=false` on the `worker`
+service and adds a `matching` service running
+`php artisan workflow:v2:repair-pass --loop` so the broad sweep runs in a
+dedicated process operators can scale and supervise independently of API
+ingress and execution workers.
+
 The daemon respects the watchdog loop throttle on every iteration so multiple
 cooperating matching-role processes coexist without duplicating broad-poll
 work, sleeps for `DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS` between iterations

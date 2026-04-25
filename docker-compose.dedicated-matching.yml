@@ -1,0 +1,70 @@
+name: durable-workflow-server
+
+# Compose override that enables the dedicated matching-role daemon shape on
+# top of `docker-compose.published.yml`. The default shape runs the in-worker
+# matching-role wake on every Looping event, which is the right default for
+# small deployments. Larger deployments can opt execution-only workers out of
+# the broad-poll wake and let a single dedicated daemon own the sweep.
+#
+# Usage:
+#   docker compose \
+#     -f docker-compose.published.yml \
+#     -f docker-compose.dedicated-matching.yml \
+#     up
+#
+# This override:
+#   - sets DW_V2_MATCHING_ROLE_QUEUE_WAKE=false on the `worker` service so
+#     execution-only workers no longer broad-poll the durable task table on
+#     every Looping event
+#   - adds a `matching` service running `php artisan workflow:v2:repair-pass
+#     --loop` so the broad sweep runs in a dedicated process the operator can
+#     scale and observe independently
+#
+# Operators can confirm which shape each node is running through the
+# `matching_role` block on `POST /api/system/metrics`: the worker reports
+# `shape: in_worker` with `queue_wake_enabled: false`, and the matching
+# daemon reports `shape: dedicated`.
+
+x-server-image: &server-image ${DW_SERVER_IMAGE:-durableworkflow/server:${DW_SERVER_TAG:-0.2}}
+
+x-server-environment: &server-environment
+  APP_NAME: "Durable Workflow Server"
+  APP_ENV: ${APP_ENV:-local}
+  DW_SERVER_KEY: ${DW_SERVER_KEY:-}
+  APP_VERSION: ${APP_VERSION:-${DW_SERVER_TAG:-0.2}}
+  APP_DEBUG: ${APP_DEBUG:-false}
+  DB_CONNECTION: mysql
+  DB_HOST: mysql
+  DB_PORT: 3306
+  DB_DATABASE: ${DB_DATABASE:-durable_workflow}
+  DB_USERNAME: ${DB_USERNAME:-workflow}
+  DB_PASSWORD: ${DB_PASSWORD:-workflow}
+  REDIS_HOST: redis
+  QUEUE_CONNECTION: redis
+  CACHE_STORE: redis
+  DW_AUTH_DRIVER: ${DW_AUTH_DRIVER:-token}
+  DW_AUTH_TOKEN: ${DW_AUTH_TOKEN:-dev-token}
+  DW_WORKER_TOKEN: ${DW_WORKER_TOKEN:-}
+  DW_OPERATOR_TOKEN: ${DW_OPERATOR_TOKEN:-}
+  DW_ADMIN_TOKEN: ${DW_ADMIN_TOKEN:-}
+  DW_AUTH_BACKWARD_COMPATIBLE: ${DW_AUTH_BACKWARD_COMPATIBLE:-true}
+
+services:
+  worker:
+    environment:
+      DW_V2_MATCHING_ROLE_QUEUE_WAKE: "false"
+
+  matching:
+    image: *server-image
+    platform: ${DW_SERVER_PLATFORM:-}
+    init: true
+    command: php artisan workflow:v2:repair-pass --loop
+    environment:
+      <<: *server-environment
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
