@@ -648,6 +648,12 @@ return [
             'default' => 'queue',
             'since' => '2.0.0',
         ],
+        'DW_V2_MATCHING_ROLE_QUEUE_WAKE' => [
+            'description' => 'Whether queue workers run the in-worker matching-role wake on every Looping event (default true). Set to false to opt execution-only nodes out of the broad-poll wake when a dedicated `php artisan workflow:v2:repair-pass --loop` daemon owns the sweep instead.',
+            'default' => 'true',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_MATCHING_ROLE_QUEUE_WAKE',
+        ],
         'DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS' => [
             'description' => 'Seconds before an orphaned workflow task is redispatched by the repair loop.',
             'default' => '3',

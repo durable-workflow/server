@@ -966,6 +966,39 @@ is the same: run the image's `server-bootstrap` command once before starting the
 server and worker processes. `/api/health` is a liveness check; `/api/ready`
 is the readiness check to gate workers and load balancers.
 
+### Dedicated Matching-Role Daemon
+
+By default every queue worker also runs the in-worker matching-role wake on
+every Looping event, which keeps the broad-poll repair sweep close to the
+workers that consume tasks. This is the in-worker shape of the matching role
+described in `vendor/durable-workflow/workflow/docs/architecture/task-matching.md`
+and is the right default for small deployments.
+
+Larger deployments can opt execution-only nodes out of the in-worker wake and
+run the broad sweep as a dedicated process. Set
+`DW_V2_MATCHING_ROLE_QUEUE_WAKE=false` on the queue-worker pods or services so
+they stop broad-polling the durable task table, and run a single dedicated
+matching-role daemon alongside the cluster:
+
+```bash
+docker run --rm --name durable-workflow-matching \
+  --env-file .env \
+  durable-workflow-server \
+  php artisan workflow:v2:repair-pass --loop
+```
+
+The daemon respects the watchdog loop throttle on every iteration so multiple
+cooperating matching-role processes coexist without duplicating broad-poll
+work, sleeps for `DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS` between iterations
+(override with `--sleep-seconds=N`), and traps `SIGTERM`/`SIGINT` for graceful
+shutdown so process supervisors (systemd, supervisord, Docker, Kubernetes)
+can drain it cleanly between deployments.
+
+Operators can confirm which shape each node is running through the
+operator-metrics snapshot: the `matching_role` block on
+`POST /api/system/metrics` reports `queue_wake_enabled`, `shape` (`in_worker`
+or `dedicated`), and the configured `task_dispatch_mode` per process.
+
 ### Publishing Container Images
 
 The `Release` workflow publishes multi-arch images to
@@ -1180,6 +1213,7 @@ inside the package's `config/workflows.php` via
 | `DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE` | `5000` | Package-level history-transaction event ceiling. |
 | `DW_V2_LIMIT_WARNING_THRESHOLD_PERCENT` | `80` | Percent of a structural limit at which the package warns. |
 | `DW_V2_TASK_DISPATCH_MODE` | `queue` | Package-level workflow-task dispatch mode. Usually overridden by the server via `DW_TASK_DISPATCH_MODE`. |
+| `DW_V2_MATCHING_ROLE_QUEUE_WAKE` | `true` | Whether queue workers run the in-worker matching-role wake on every Looping event. Set to `false` to opt execution-only nodes out of the broad-poll wake when a dedicated `php artisan workflow:v2:repair-pass --loop` daemon owns the sweep. |
 | `DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS` | `3` | Seconds before an orphaned workflow task is redispatched. |
 | `DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS` | `5` | Minimum seconds between successive task-repair passes. |
 | `DW_V2_TASK_REPAIR_SCAN_LIMIT` | `25` | Maximum tasks considered per task-repair pass. |
