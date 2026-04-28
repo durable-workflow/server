@@ -537,6 +537,13 @@ cannot delete yet.
 - `POST /api/workflows/{id}/cancel` — Request cancellation
 - `POST /api/workflows/{id}/terminate` — Terminate immediately
 
+Workflow starts fail closed with `409` / `reason: "task_queue_draining"`
+when the requested task queue has been explicitly drained and no active worker
+cohort remains to claim new work. The response includes
+`routing_status`, worker counts, and `draining_build_ids` so operators can
+distinguish "wait for the active cohort to return" from "resume or replace the
+drained build cohort first."
+
 Workflow debug responses are capped support snapshots, not full run exports:
 the server fetches at most 25 pending workflow tasks, 25 pending activities
 with only each activity's current/latest attempt, and 10 recent failures. The

@@ -2,12 +2,15 @@
 
 namespace Tests\Feature;
 
+use App\Models\WorkerBuildIdRollout;
+use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneProtocol;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Feature\Concerns\ServerTestHelpers;
+use Tests\Fixtures\AwaitApprovalWorkflow;
 use Tests\TestCase;
 
 class ControlPlaneErrorContractTest extends TestCase
@@ -244,6 +247,57 @@ class ControlPlaneErrorContractTest extends TestCase
             ->assertJsonMissingPath('server_capabilities')
             ->assertJsonPath('reason', 'namespace_already_exists')
             ->assertJsonPath('namespace', 'default');
+    }
+
+    public function test_workflow_start_draining_queue_errors_are_machine_readable_and_versioned(): void
+    {
+        $this->configureWorkflowTypes([
+            'tests.await-approval-workflow' => AwaitApprovalWorkflow::class,
+        ]);
+
+        WorkerRegistration::query()->create([
+            'worker_id' => 'draining-worker',
+            'namespace' => 'default',
+            'task_queue' => 'drain-queue',
+            'runtime' => 'php',
+            'sdk_version' => '1.0.0',
+            'build_id' => 'build-draining',
+            'supported_workflow_types' => ['tests.await-approval-workflow'],
+            'workflow_definition_fingerprints' => [],
+            'supported_activity_types' => [],
+            'max_concurrent_workflow_tasks' => 100,
+            'max_concurrent_activity_tasks' => 100,
+            'last_heartbeat_at' => now(),
+            'status' => 'draining',
+        ]);
+
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'drain-queue',
+            'build_id' => 'build-draining',
+            'drain_intent' => 'draining',
+            'drained_at' => now(),
+        ]);
+
+        $response = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-drain-error',
+            'workflow_type' => 'tests.await-approval-workflow',
+            'task_queue' => 'drain-queue',
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
+
+        $response->assertStatus(409)
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertHeaderMissing(WorkerProtocol::HEADER)
+            ->assertJsonMissingPath('protocol_version')
+            ->assertJsonMissingPath('server_capabilities')
+            ->assertJsonPath('reason', 'task_queue_draining')
+            ->assertJsonPath('task_queue', 'drain-queue')
+            ->assertJsonPath('routing_status', 'draining')
+            ->assertJsonPath('draining_build_ids.0', 'build-draining')
+            ->assertJsonPath(
+                'message',
+                'Task queue [drain-queue] is draining and cannot accept new workflow starts until an active worker cohort is available.',
+            );
     }
 
     /**

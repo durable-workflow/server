@@ -2,20 +2,22 @@
 
 namespace Tests\Feature;
 
+use App\Models\WorkerBuildIdRollout;
+use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use Tests\Fixtures\AwaitApprovalWorkflow;
-use Tests\Fixtures\InternalParentWorkflow;
-use Tests\Fixtures\InternalChildWorkflow;
 use Tests\Fixtures\InteractiveCommandWorkflow;
+use Tests\Fixtures\InternalChildWorkflow;
+use Tests\Fixtures\InternalParentWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
-use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowTask;
@@ -276,6 +278,119 @@ class WorkflowControlPlaneTest extends TestCase
         $message = $collision->json('message');
         $this->assertStringNotContainsString('default', $message);
         $this->assertStringContainsString('another namespace', $message);
+    }
+
+    public function test_start_blocks_drained_task_queue_without_an_active_worker_cohort(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        WorkerRegistration::query()->create([
+            'worker_id' => 'draining-worker',
+            'namespace' => 'default',
+            'task_queue' => 'drain-queue',
+            'runtime' => 'php',
+            'sdk_version' => '1.0.0',
+            'build_id' => 'build-draining',
+            'supported_workflow_types' => ['tests.await-approval-workflow'],
+            'workflow_definition_fingerprints' => [],
+            'supported_activity_types' => [],
+            'max_concurrent_workflow_tasks' => 100,
+            'max_concurrent_activity_tasks' => 100,
+            'last_heartbeat_at' => now(),
+            'status' => 'draining',
+        ]);
+
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'drain-queue',
+            'build_id' => 'build-draining',
+            'drain_intent' => 'draining',
+            'drained_at' => now(),
+        ]);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-drained-start',
+                'workflow_type' => 'tests.await-approval-workflow',
+                'task_queue' => 'drain-queue',
+            ]);
+
+        $response->assertStatus(409)
+            ->assertJsonPath('workflow_id', 'wf-drained-start')
+            ->assertJsonPath('workflow_type', 'tests.await-approval-workflow')
+            ->assertJsonPath('task_queue', 'drain-queue')
+            ->assertJsonPath('reason', 'task_queue_draining')
+            ->assertJsonPath('routing_status', 'draining')
+            ->assertJsonPath('active_worker_count', 0)
+            ->assertJsonPath('draining_worker_count', 1)
+            ->assertJsonPath('stale_worker_count', 0)
+            ->assertJsonPath('draining_build_ids.0', 'build-draining')
+            ->assertJsonPath('drain_intent', 'draining');
+
+        $this->assertFalse(WorkflowInstance::query()->whereKey('wf-drained-start')->exists());
+    }
+
+    public function test_start_allows_queue_with_active_and_draining_worker_cohorts(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        WorkerRegistration::query()->create([
+            'worker_id' => 'active-worker',
+            'namespace' => 'default',
+            'task_queue' => 'mixed-queue',
+            'runtime' => 'php',
+            'sdk_version' => '1.0.0',
+            'build_id' => 'build-active',
+            'supported_workflow_types' => ['tests.await-approval-workflow'],
+            'workflow_definition_fingerprints' => [],
+            'supported_activity_types' => [],
+            'max_concurrent_workflow_tasks' => 100,
+            'max_concurrent_activity_tasks' => 100,
+            'last_heartbeat_at' => now(),
+            'status' => 'active',
+        ]);
+
+        WorkerRegistration::query()->create([
+            'worker_id' => 'draining-worker',
+            'namespace' => 'default',
+            'task_queue' => 'mixed-queue',
+            'runtime' => 'php',
+            'sdk_version' => '1.0.0',
+            'build_id' => 'build-draining',
+            'supported_workflow_types' => ['tests.await-approval-workflow'],
+            'workflow_definition_fingerprints' => [],
+            'supported_activity_types' => [],
+            'max_concurrent_workflow_tasks' => 100,
+            'max_concurrent_activity_tasks' => 100,
+            'last_heartbeat_at' => now(),
+            'status' => 'draining',
+        ]);
+
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'mixed-queue',
+            'build_id' => 'build-draining',
+            'drain_intent' => 'draining',
+            'drained_at' => now(),
+        ]);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-mixed-drain-start',
+                'workflow_type' => 'tests.await-approval-workflow',
+                'task_queue' => 'mixed-queue',
+            ]);
+
+        $response->assertCreated()
+            ->assertJsonPath('workflow_id', 'wf-mixed-drain-start')
+            ->assertJsonPath('workflow_type', 'tests.await-approval-workflow')
+            ->assertJsonPath('outcome', 'started_new');
     }
 
     public function test_signal_is_scoped_by_namespace(): void

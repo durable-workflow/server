@@ -7,6 +7,7 @@ use App\Support\ControlPlaneResponseContract;
 use App\Support\ControlPlaneResultMapper;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\TaskQueueRoutingGate;
 use App\Support\WorkflowCommandContextFactory;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowRunDiagnostics;
@@ -27,6 +28,7 @@ class WorkflowController
     public function __construct(
         private readonly WorkflowStartService $workflowStartService,
         private readonly WorkflowControlPlane $workflowControlPlane,
+        private readonly TaskQueueRoutingGate $taskQueueRoutingGate,
         private readonly WorkflowCommandContextFactory $commandContexts,
         private readonly ControlPlaneResultMapper $resultMapper,
         private readonly WorkflowQueryTaskBroker $queryTasks,
@@ -168,6 +170,33 @@ class WorkflowController
                 ),
                 'reason' => 'workflow_id_reserved_in_namespace',
             ], 409);
+        }
+
+        $taskQueue = isset($validated['task_queue']) && is_string($validated['task_queue'])
+            ? trim($validated['task_queue'])
+            : null;
+
+        if ($taskQueue !== null && $taskQueue !== '') {
+            $routingBlock = $this->taskQueueRoutingGate->workflowStartBlock((string) $namespace, $taskQueue);
+
+            if ($routingBlock !== null) {
+                return ControlPlaneProtocol::jsonForRequest($request, array_filter([
+                    'workflow_id' => $workflowId,
+                    'workflow_type' => $validated['workflow_type'],
+                    'task_queue' => $taskQueue,
+                    'message' => sprintf(
+                        'Task queue [%s] is draining and cannot accept new workflow starts until an active worker cohort is available.',
+                        $taskQueue,
+                    ),
+                    'reason' => 'task_queue_draining',
+                    'routing_status' => $routingBlock['routing_status'],
+                    'active_worker_count' => $routingBlock['active_worker_count'],
+                    'draining_worker_count' => $routingBlock['draining_worker_count'],
+                    'stale_worker_count' => $routingBlock['stale_worker_count'],
+                    'draining_build_ids' => $routingBlock['draining_build_ids'],
+                    'drain_intent' => 'draining',
+                ], static fn (mixed $value): bool => $value !== null), 409);
+            }
         }
 
         try {
