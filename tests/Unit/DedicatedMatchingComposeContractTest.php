@@ -58,6 +58,24 @@ class DedicatedMatchingComposeContractTest extends TestCase
         }
     }
 
+    public function test_published_compose_pins_topology_identity_for_supported_processes(): void
+    {
+        $published = $this->read('docker-compose.published.yml');
+
+        foreach ([
+            'DW_SERVER_TOPOLOGY_SHAPE: standalone_server',
+            'DW_SERVER_PROCESS_CLASS: server_http_node',
+            'DW_SERVER_PROCESS_CLASS: worker_node',
+            'DW_SERVER_PROCESS_CLASS: scheduler_node',
+        ] as $needle) {
+            $this->assertStringContainsString(
+                $needle,
+                $published,
+                "published compose must contain {$needle} so long-running services advertise their real role class",
+            );
+        }
+    }
+
     public function test_readme_documents_the_override_alongside_the_dedicated_daemon_section(): void
     {
         $readme = $this->read('README.md');
@@ -69,6 +87,8 @@ class DedicatedMatchingComposeContractTest extends TestCase
             '-f docker-compose.dedicated-matching.yml',
             'php artisan workflow:v2:repair-pass --loop',
             'DW_V2_MATCHING_ROLE_QUEUE_WAKE',
+            'DW_SERVER_TOPOLOGY_SHAPE',
+            'DW_SERVER_PROCESS_CLASS',
         ] as $needle) {
             $this->assertStringContainsString(
                 $needle,

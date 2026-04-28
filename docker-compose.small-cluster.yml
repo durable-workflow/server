@@ -51,6 +51,8 @@ services:
     environment:
       <<: *server-environment
       DW_SERVER_ID: server-a
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: server_http_node
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -70,6 +72,8 @@ services:
     environment:
       <<: *server-environment
       DW_SERVER_ID: server-b
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: server_http_node
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -90,6 +94,8 @@ services:
     environment:
       <<: *server-environment
       DW_SERVER_ID: scheduler
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: scheduler_node
     depends_on:
       bootstrap:
         condition: service_completed_successfully

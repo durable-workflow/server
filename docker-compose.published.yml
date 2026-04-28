@@ -44,6 +44,8 @@ services:
       - "${SERVER_PORT:-8080}:8080"
     environment:
       <<: *server-environment
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: server_http_node
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -63,6 +65,8 @@ services:
     command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
     environment:
       <<: *server-environment
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: worker_node
     depends_on:
       bootstrap:
         condition: service_completed_successfully
@@ -81,6 +85,8 @@ services:
       sh -c 'while true; do php artisan schedule:evaluate --limit=100; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done'
     environment:
       <<: *server-environment
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: scheduler_node
     depends_on:
       bootstrap:
         condition: service_completed_successfully

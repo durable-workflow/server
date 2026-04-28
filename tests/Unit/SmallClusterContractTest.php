@@ -61,6 +61,9 @@ class SmallClusterContractTest extends TestCase
             'pgsql:',
             'DW_SERVER_ID: server-a',
             'DW_SERVER_ID: server-b',
+            'DW_SERVER_TOPOLOGY_SHAPE: standalone_server',
+            'DW_SERVER_PROCESS_CLASS: server_http_node',
+            'DW_SERVER_PROCESS_CLASS: scheduler_node',
             'CACHE_STORE: redis',
             'QUEUE_CONNECTION: redis',
         ] as $needle) {

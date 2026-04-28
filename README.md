@@ -672,7 +672,10 @@ execution through local Laravel queue workers. Set
 `DW_SERVER_TOPOLOGY_SHAPE` and `DW_SERVER_PROCESS_CLASS` when a deployment
 splits scheduler, matching, or execution work away from the default
 `server_http_node` so discovery reports the live node identity instead of a
-generic HTTP shape. `topology.matching_role` adds the live matching-role
+generic HTTP shape. The published Compose artifacts set these per service for
+the supported `server`, `worker`, and `scheduler` nodes, so `GET /api/cluster/info`
+and local diagnostics report the same node class the operator actually
+deployed. `topology.matching_role` adds the live matching-role
 deployment knobs for that node: `queue_wake_enabled`, the matching-role
 `shape` (`in_worker` or `dedicated`), who owns the broad-poll wake
 (`worker_loop` or `dedicated_repair_pass`), the active `task_dispatch_mode`
