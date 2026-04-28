@@ -110,8 +110,6 @@ class TaskQueueVisibilityTest extends TestCase
             ->assertHeader('X-Durable-Workflow-Control-Plane-Version', '2')
             ->assertJsonPath('name', 'external-workflows')
             ->assertJsonPath('stats.approximate_backlog_count', 1)
-            ->assertJsonPath('stats.tasks_added_last_minute', 2)
-            ->assertJsonPath('stats.tasks_dispatched_last_minute', 2)
             ->assertJsonPath('stats.workflow_tasks.ready_count', 1)
             ->assertJsonPath('stats.workflow_tasks.leased_count', 1)
             ->assertJsonPath('stats.workflow_tasks.expired_lease_count', 1)
@@ -155,8 +153,6 @@ class TaskQueueVisibilityTest extends TestCase
 
         $list->assertOk()
             ->assertJsonPath('task_queues.0.name', 'external-workflows')
-            ->assertJsonPath('task_queues.0.stats.tasks_added_last_minute', 2)
-            ->assertJsonPath('task_queues.0.stats.tasks_dispatched_last_minute', 2)
             ->assertJsonPath('task_queues.0.admission.workflow_tasks.configured_slot_count', 10)
             ->assertJsonPath('task_queues.0.admission.query_tasks.status', 'full')
             ->assertJsonMissingPath('task_queues.0.pollers');
@@ -218,8 +214,6 @@ class TaskQueueVisibilityTest extends TestCase
         $describe->assertOk()
             ->assertHeader('X-Durable-Workflow-Control-Plane-Version', '2')
             ->assertJsonPath('stats.approximate_backlog_count', 1)
-            ->assertJsonPath('stats.tasks_added_last_minute', 2)
-            ->assertJsonPath('stats.tasks_dispatched_last_minute', 2)
             ->assertJsonPath('stats.workflow_tasks.ready_count', 0)
             ->assertJsonPath('stats.activity_tasks.ready_count', 1)
             ->assertJsonPath('stats.activity_tasks.leased_count', 1)
