@@ -6,7 +6,7 @@ final class ServerTopology
 {
     public const SCHEMA = 'durable-workflow.v2.role-topology';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     private const SUPPORTED_SHAPES = [
         'embedded',
@@ -31,20 +31,7 @@ final class ServerTopology
     ];
 
     /**
-     * @return array{
-     *     schema: string,
-     *     version: int,
-     *     supported_shapes: array<int, string>,
-     *     role_vocabulary: array<int, string>,
-     *     current_shape: string,
-     *     current_roles: array<int, string>,
-     *     execution_mode: string,
-     *     matching_role: array{
-     *         queue_wake_enabled: bool,
-     *         wake_owner: string,
-     *         task_dispatch_mode: string
-     *     }
-     * }
+     * @return array<string, mixed>
      */
     public static function info(): array
     {
@@ -57,6 +44,11 @@ final class ServerTopology
             'current_roles' => self::CURRENT_SERVER_NODE_ROLES,
             'execution_mode' => self::executionMode(),
             'matching_role' => self::matchingRole(),
+            'shape_assignments' => self::shapeAssignments(),
+            'authority_boundaries' => self::authorityBoundaries(),
+            'failure_domains' => self::failureDomains(),
+            'scaling_boundaries' => self::scalingBoundaries(),
+            'migration_path' => self::migrationPath(),
         ];
     }
 
@@ -86,6 +78,225 @@ final class ServerTopology
             'queue_wake_enabled' => $queueWakeEnabled,
             'wake_owner' => $queueWakeEnabled ? 'worker_loop' : 'dedicated_repair_pass',
             'task_dispatch_mode' => $dispatchMode,
+        ];
+    }
+
+    /**
+     * @return array<string, array{
+     *     process_classes: list<array{name: string, roles: list<string>}>
+     * }>
+     */
+    private static function shapeAssignments(): array
+    {
+        return [
+            'embedded' => [
+                'process_classes' => [
+                    [
+                        'name' => 'application_process',
+                        'roles' => [
+                            'control_plane',
+                            'matching',
+                            'history_projection',
+                            'scheduler',
+                            'execution_plane',
+                        ],
+                    ],
+                ],
+            ],
+            'standalone_server' => [
+                'process_classes' => [
+                    [
+                        'name' => 'server_http_node',
+                        'roles' => [
+                            'api_ingress',
+                            'control_plane',
+                            'matching',
+                            'history_projection',
+                        ],
+                    ],
+                    [
+                        'name' => 'scheduler_node',
+                        'roles' => [
+                            'scheduler',
+                        ],
+                    ],
+                    [
+                        'name' => 'worker_node',
+                        'roles' => [
+                            'execution_plane',
+                        ],
+                    ],
+                ],
+            ],
+            'split_control_execution' => [
+                'process_classes' => [
+                    [
+                        'name' => 'ingress_node',
+                        'roles' => [
+                            'api_ingress',
+                        ],
+                    ],
+                    [
+                        'name' => 'control_plane_node',
+                        'roles' => [
+                            'control_plane',
+                            'history_projection',
+                        ],
+                    ],
+                    [
+                        'name' => 'scheduler_node',
+                        'roles' => [
+                            'scheduler',
+                        ],
+                    ],
+                    [
+                        'name' => 'matching_node',
+                        'roles' => [
+                            'matching',
+                        ],
+                    ],
+                    [
+                        'name' => 'execution_node',
+                        'roles' => [
+                            'execution_plane',
+                        ],
+                    ],
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, array{writes: list<string>}>
+     */
+    private static function authorityBoundaries(): array
+    {
+        return [
+            'control_plane' => [
+                'writes' => [
+                    'workflow_instances',
+                    'workflow_runs.status',
+                    'workflow_tasks.lifecycle',
+                ],
+            ],
+            'execution_plane' => [
+                'writes' => [
+                    'workflow_tasks.outcomes',
+                    'activity_attempts',
+                    'worker_compatibility_heartbeats',
+                ],
+            ],
+            'matching' => [
+                'writes' => [
+                    'workflow_tasks.leases',
+                    'activity_tasks.leases',
+                ],
+            ],
+            'history_projection' => [
+                'writes' => [
+                    'history_events',
+                    'workflow_run_summaries',
+                    'workflow_history_exports',
+                ],
+            ],
+            'scheduler' => [
+                'writes' => [
+                    'workflow_schedules.fire_state',
+                    'workflow_starts.scheduled',
+                ],
+            ],
+            'api_ingress' => [
+                'writes' => [
+                    'worker_registrations',
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, array{
+     *     effect: string,
+     *     operator_signal: string
+     * }>
+     */
+    private static function failureDomains(): array
+    {
+        return [
+            'control_plane_down' => [
+                'effect' => 'workers_continue_claimed_tasks_only_until_lease_expiry',
+                'operator_signal' => 'operator_commands_fail_fast',
+            ],
+            'execution_plane_down' => [
+                'effect' => 'ready_tasks_accumulate_without_loss',
+                'operator_signal' => 'operators_see_ready_depth_growth',
+            ],
+            'matching_down' => [
+                'effect' => 'claim_falls_back_to_direct_ready_task_discovery',
+                'operator_signal' => 'ready_depth_rises_while_claim_rate_falls',
+            ],
+            'history_projection_down' => [
+                'effect' => 'projection_reads_may_stale_while_durable_writes_continue',
+                'operator_signal' => 'projection_lag_seconds_may_increase',
+            ],
+            'scheduler_down' => [
+                'effect' => 'scheduled_workflows_stop_firing_and_record_missed_runs',
+                'operator_signal' => 'operators_see_missed_schedule_state',
+            ],
+            'api_ingress_down' => [
+                'effect' => 'external_http_traffic_stops_at_the_edge',
+                'operator_signal' => 'embedded_in_process_calls_may_continue',
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private static function scalingBoundaries(): array
+    {
+        return [
+            'api_ingress' => 'incoming_http_request_rate',
+            'control_plane' => 'operator_commands_and_run_lifecycle_transitions',
+            'matching' => 'ready_task_rate_and_poller_count',
+            'history_projection' => 'durable_event_rate',
+            'scheduler' => 'active_schedule_count',
+            'execution_plane' => 'workflow_and_activity_task_rate',
+        ];
+    }
+
+    /**
+     * @return list<array{
+     *     step: string,
+     *     result: string
+     * }>
+     */
+    private static function migrationPath(): array
+    {
+        return [
+            [
+                'step' => 'audit_role_boundaries',
+                'result' => 'tooling flags cross-role writes before runtime shape changes',
+            ],
+            [
+                'step' => 'expose_role_bindings',
+                'result' => 'container seams allow out-of-process adapters without patching the package',
+            ],
+            [
+                'step' => 'introduce_dedicated_matching_shape',
+                'result' => 'matching can run as its own process class without changing the claim contract',
+            ],
+            [
+                'step' => 'split_history_projection',
+                'result' => 'history and projections can move out of process without introducing a second writer',
+            ],
+            [
+                'step' => 'split_scheduler',
+                'result' => 'schedule firing can move behind leader election while single-replica deployments stay legal',
+            ],
+            [
+                'step' => 'optional_execution_partitioning',
+                'result' => 'workers can partition by namespace, connection, queue, and compatibility',
+            ],
         ];
     }
 }

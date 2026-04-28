@@ -84,6 +84,11 @@ class ClusterInfoCompatibilityTest extends TestCase
                         'wake_owner',
                         'task_dispatch_mode',
                     ],
+                    'shape_assignments',
+                    'authority_boundaries',
+                    'failure_domains',
+                    'scaling_boundaries',
+                    'migration_path',
                 ],
                 'client_compatibility',
                 'auth_composition_contract',
@@ -94,6 +99,10 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('topology.schema', ServerTopology::SCHEMA)
             ->assertJsonPath('topology.version', ServerTopology::VERSION)
             ->assertJsonPath('topology.matching_role.task_dispatch_mode', 'poll')
+            ->assertJsonPath(
+                'topology.failure_domains.matching_down.effect',
+                'claim_falls_back_to_direct_ready_task_discovery',
+            )
             ->assertJsonPath('control_plane.version', ControlPlaneProtocol::VERSION)
             ->assertJsonPath('worker_protocol.version', WorkerProtocol::VERSION)
             ->assertJsonPath('client_compatibility.authority', 'protocol_manifests');

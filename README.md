@@ -663,7 +663,11 @@ default service-mode deployment and switches to `local_queue_worker` when
 Laravel queue workers. `topology.matching_role` adds the live matching-role
 deployment knobs for that node: `queue_wake_enabled`, who owns the broad-poll
 wake (`worker_loop` or `dedicated_repair_pass`), and the active
-`task_dispatch_mode` (`poll` or `queue`).
+`task_dispatch_mode` (`poll` or `queue`). The same manifest now also publishes
+the supported process-class assignments for each topology, the durable-write
+authority boundary for every role, the expected degraded behavior for each role
+failure domain, the scaling axis for each role, and the incremental migration
+steps from today's standalone shape to the split control/execution topology.
 
 The activity-grade external execution surface is published from
 `GET /api/cluster/info` at

@@ -155,7 +155,44 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('topology.role_vocabulary.5', 'execution_plane')
             ->assertJsonPath('topology.matching_role.queue_wake_enabled', true)
             ->assertJsonPath('topology.matching_role.wake_owner', 'worker_loop')
-            ->assertJsonPath('topology.matching_role.task_dispatch_mode', 'poll');
+            ->assertJsonPath('topology.matching_role.task_dispatch_mode', 'poll')
+            ->assertJsonPath(
+                'topology.shape_assignments.standalone_server.process_classes.0.name',
+                'server_http_node',
+            )
+            ->assertJsonPath(
+                'topology.shape_assignments.standalone_server.process_classes.0.roles.3',
+                'history_projection',
+            )
+            ->assertJsonPath(
+                'topology.shape_assignments.split_control_execution.process_classes.4.roles.0',
+                'execution_plane',
+            )
+            ->assertJsonPath(
+                'topology.authority_boundaries.control_plane.writes.1',
+                'workflow_runs.status',
+            )
+            ->assertJsonPath(
+                'topology.authority_boundaries.history_projection.writes.1',
+                'workflow_run_summaries',
+            )
+            ->assertJsonPath(
+                'topology.failure_domains.control_plane_down.operator_signal',
+                'operator_commands_fail_fast',
+            )
+            ->assertJsonPath(
+                'topology.failure_domains.scheduler_down.effect',
+                'scheduled_workflows_stop_firing_and_record_missed_runs',
+            )
+            ->assertJsonPath(
+                'topology.scaling_boundaries.execution_plane',
+                'workflow_and_activity_task_rate',
+            )
+            ->assertJsonPath('topology.migration_path.0.step', 'audit_role_boundaries')
+            ->assertJsonPath(
+                'topology.migration_path.5.step',
+                'optional_execution_partitioning',
+            );
     }
 
     public function test_it_switches_cluster_topology_execution_mode_when_embedded_dispatch_is_enabled(): void
