@@ -9,6 +9,7 @@ use App\Support\WorkflowTaskFailureMetrics;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
+use Workflow\V2\Support\HealthCheck;
 use Workflow\V2\Support\OperatorMetrics;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
@@ -93,6 +94,21 @@ class SystemController
                 ],
             ],
         ]);
+    }
+
+    public function health(Request $request): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = (string) $request->attributes->get('namespace');
+        $snapshot = HealthCheck::snapshot(null, $namespace);
+
+        return ControlPlaneProtocol::json([
+            'namespace' => $namespace,
+            'health' => $snapshot,
+        ], HealthCheck::httpStatus($snapshot));
     }
 
     public function operatorMetrics(Request $request): JsonResponse

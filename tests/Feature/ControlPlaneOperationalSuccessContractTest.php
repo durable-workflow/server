@@ -147,6 +147,23 @@ class ControlPlaneOperationalSuccessContractTest extends TestCase
                     ],
                 ],
             ],
+            'system.health_empty' => [
+                'method' => 'get',
+                'path' => '/api/system/health',
+                'body' => [],
+                'structure' => [
+                    'namespace',
+                    'health' => [
+                        'generated_at',
+                        'status',
+                        'healthy',
+                        'checks',
+                        'categories',
+                        'operator_metrics',
+                        'structural_limits',
+                    ],
+                ],
+            ],
             'system.operator_metrics_empty' => [
                 'method' => 'get',
                 'path' => '/api/system/operator-metrics',

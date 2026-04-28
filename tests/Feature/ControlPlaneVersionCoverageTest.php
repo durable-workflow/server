@@ -123,6 +123,7 @@ class ControlPlaneVersionCoverageTest extends TestCase
             'namespaces.update' => ['method' => 'put', 'path' => '/api/namespaces/default'],
 
             // SystemController
+            'system.health' => ['method' => 'get', 'path' => '/api/system/health'],
             'system.metrics' => ['method' => 'get', 'path' => '/api/system/metrics'],
             'system.operator_metrics' => ['method' => 'get', 'path' => '/api/system/operator-metrics'],
             'system.repair_status' => ['method' => 'get', 'path' => '/api/system/repair'],

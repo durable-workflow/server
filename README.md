@@ -494,6 +494,7 @@ workflow-task command payload.
 - `GET /api/health` — Health check
 - `GET /api/ready` — Readiness check for migrations, default namespace, cache, auth config, and workflow v2 rollout-safety health
 - `GET /api/cluster/info` — Server capabilities, role topology, coordination-health summary, and version
+- `GET /api/system/health` — Full rollout-safety health snapshot for the requested namespace, including check status, categories, operator metrics, and structural limits
 - `GET /api/system/metrics` — Server metrics including bounded stuck workflow-task diagnostics
 - `GET /api/system/operator-metrics` — Full operator metrics snapshot (runs, tasks, backlog, repair, workers/fleet, backend, structural limits) for rollout-safety coordination health
 - `GET /api/system/repair` — Task repair diagnostics

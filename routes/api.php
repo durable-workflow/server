@@ -173,6 +173,7 @@ Route::middleware([Authenticate::class])->group(function () {
 
     // ── System / Operations ─────────────────────────────────────────
     Route::prefix('system')->middleware([$admin, $cpv, $ns])->group(function () {
+        Route::get('/health', [SystemController::class, 'health']);
         Route::get('/metrics', [SystemController::class, 'metrics']);
         Route::get('/operator-metrics', [SystemController::class, 'operatorMetrics']);
         Route::get('/repair', [SystemController::class, 'repairStatus']);
