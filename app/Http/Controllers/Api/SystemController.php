@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Support\ControlPlaneProtocol;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\ProjectionDriftMetrics;
+use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\WorkflowTaskFailureMetrics;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -17,6 +18,10 @@ use Workflow\V2\TaskWatchdog;
 
 class SystemController
 {
+    public function __construct(
+        private readonly TaskQueueBuildIdRolloutSnapshot $buildIdRollouts,
+    ) {}
+
     public function repairPass(Request $request): JsonResponse
     {
         if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
@@ -104,6 +109,7 @@ class SystemController
 
         $namespace = (string) $request->attributes->get('namespace');
         $snapshot = HealthCheck::snapshot(null, $namespace);
+        $snapshot['routing_drains'] = $this->buildIdRollouts->routingDrains($namespace);
 
         return ControlPlaneProtocol::json([
             'namespace' => $namespace,

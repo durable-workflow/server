@@ -10,6 +10,7 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\CoordinationHealthContract;
 use App\Support\ServerReadiness;
 use App\Support\ServerTopology;
+use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\WorkerProtocol;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -26,6 +27,7 @@ class HealthController
 
     public function __construct(
         private readonly ServerReadiness $readiness,
+        private readonly TaskQueueBuildIdRolloutSnapshot $buildIdRollouts,
     ) {}
 
     public function check(): JsonResponse
@@ -120,7 +122,10 @@ class HealthController
             ],
             'structural_limits' => StructuralLimits::snapshot(),
             'topology' => ServerTopology::info(),
-            'coordination_health' => CoordinationHealthContract::manifest($this->readiness->workflowStatus()),
+            'coordination_health' => CoordinationHealthContract::manifest(
+                $this->readiness->workflowStatus(),
+                $this->buildIdRollouts->routingDrains(),
+            ),
             'client_compatibility' => ClientCompatibility::info(),
             'auth_composition_contract' => AuthCompositionContract::manifest(),
             'control_plane' => ControlPlaneProtocol::info(),

@@ -498,9 +498,9 @@ workflow-task command payload.
 - `GET /api/health` — Health check
 - `GET /api/ready` — Readiness check for migrations, default namespace, cache, auth config, and workflow v2 rollout-safety health
 - `GET /api/cluster/info` — Server capabilities, role topology, coordination-health summary, and version
-- `GET /api/system/health` — Full rollout-safety health snapshot for the requested namespace, including check status, categories, operator metrics, and structural limits
+- `GET /api/system/health` — Full rollout-safety health snapshot for the requested namespace, including check status, categories, routing-drain state, operator metrics, and structural limits
 - `GET /api/system/metrics` — Server metrics including bounded stuck workflow-task diagnostics
-- `GET /api/system/operator-metrics` — Full operator metrics snapshot (runs, tasks, backlog, repair, workers/fleet, backend, structural limits) for rollout-safety coordination health
+- `GET /api/system/operator-metrics` — Full operator metrics snapshot (runs, tasks, backlog, repair, workers/fleet, backend, structural limits) for namespace-scoped rollout-safety coordination health
 - `GET /api/system/repair` — Task repair diagnostics
 - `POST /api/system/repair/pass` — Run task repair sweep
 - `GET /api/system/activity-timeouts` — Expired activity execution diagnostics
@@ -696,11 +696,13 @@ control/execution topology.
 The same `GET /api/cluster/info` response now includes a versioned
 `coordination_health` manifest for rollout-safety coordination risk. It
 summarizes the current server-wide workflow v2 health status, warning and error
-check names, category counts, and the normalized check list that already powers
-the readiness gate. The manifest is intentionally `all_namespaces` scoped so it
-describes the server's fleet-wide coordination posture; use
-`GET /api/system/operator-metrics` when you need namespace-specific backlog and
-worker detail.
+check names, category counts, the normalized check list that already powers the
+readiness gate, and a `routing_drains` summary that lists namespaces and task
+queues with draining build-id cohorts. The manifest is intentionally
+`all_namespaces` scoped so it describes the server's fleet-wide coordination
+posture; use `GET /api/system/health` for the namespace-scoped
+`routing_drains` view and `GET /api/system/operator-metrics` when you need
+namespace-specific backlog and worker detail.
 
 The activity-grade external execution surface is published from
 `GET /api/cluster/info` at

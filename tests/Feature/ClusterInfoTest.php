@@ -2,6 +2,8 @@
 
 namespace Tests\Feature;
 
+use App\Models\WorkerBuildIdRollout;
+use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\CoordinationHealthContract;
 use App\Support\ServerTopology;
@@ -310,6 +312,71 @@ class ClusterInfoTest extends TestCase
         $this->assertIsArray($response->json('coordination_health.warning_checks'));
         $this->assertIsArray($response->json('coordination_health.error_checks'));
         $this->assertIsArray($response->json('coordination_health.checks'));
+        $this->assertIsArray($response->json('coordination_health.routing_drains.queues'));
+    }
+
+    public function test_it_surfaces_draining_build_id_cohorts_in_coordination_health(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+        WorkflowNamespace::query()->create([
+            'name' => 'other',
+            'description' => 'Other namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        WorkerRegistration::query()->create([
+            'worker_id' => 'worker-active',
+            'namespace' => 'default',
+            'task_queue' => 'orders',
+            'runtime' => 'php',
+            'build_id' => 'build-active',
+            'last_heartbeat_at' => now(),
+            'status' => 'active',
+        ]);
+        WorkerRegistration::query()->create([
+            'worker_id' => 'worker-draining',
+            'namespace' => 'default',
+            'task_queue' => 'orders',
+            'runtime' => 'php',
+            'build_id' => 'build-draining',
+            'last_heartbeat_at' => now(),
+            'status' => 'draining',
+        ]);
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'orders',
+            'build_id' => WorkerBuildIdRollout::buildIdKey('build-draining'),
+            'drain_intent' => WorkerBuildIdRollout::DRAIN_INTENT_DRAINING,
+            'drained_at' => now()->subMinute(),
+        ]);
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'other',
+            'task_queue' => 'payments',
+            'build_id' => WorkerBuildIdRollout::buildIdKey('build-ghost'),
+            'drain_intent' => WorkerBuildIdRollout::DRAIN_INTENT_DRAINING,
+            'drained_at' => now()->subMinutes(5),
+        ]);
+
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('coordination_health.routing_drains.queues_with_drains', 2)
+            ->assertJsonPath('coordination_health.routing_drains.draining_build_id_count', 2)
+            ->assertJsonPath('coordination_health.routing_drains.active_worker_count', 1)
+            ->assertJsonPath('coordination_health.routing_drains.draining_worker_count', 1)
+            ->assertJsonPath('coordination_health.routing_drains.stale_worker_count', 0)
+            ->assertJsonPath('coordination_health.routing_drains.queues.0.namespace', 'default')
+            ->assertJsonPath('coordination_health.routing_drains.queues.0.task_queue', 'orders')
+            ->assertJsonPath('coordination_health.routing_drains.queues.0.draining_build_id_count', 1)
+            ->assertJsonPath('coordination_health.routing_drains.queues.0.build_ids.0.build_id', 'build-draining')
+            ->assertJsonPath('coordination_health.routing_drains.queues.1.namespace', 'other')
+            ->assertJsonPath('coordination_health.routing_drains.queues.1.task_queue', 'payments')
+            ->assertJsonPath('coordination_health.routing_drains.queues.1.build_ids.0.build_id', 'build-ghost');
     }
 
     public function test_it_surfaces_worker_compatibility_warnings_in_coordination_health(): void

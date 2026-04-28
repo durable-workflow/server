@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Models\WorkerBuildIdRollout;
+use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
@@ -69,6 +71,7 @@ class SystemHealthTest extends TestCase
                     'healthy',
                     'checks',
                     'categories',
+                    'routing_drains',
                     'operator_metrics',
                     'structural_limits',
                 ],
@@ -84,7 +87,53 @@ class SystemHealthTest extends TestCase
             ->assertJsonPath('health.status', 'ok')
             ->assertJsonPath('health.operator_metrics.runs.total', 1)
             ->assertJsonPath('health.operator_metrics.tasks.ready_due', 1)
-            ->assertJsonPath('health.operator_metrics.tasks.oldest_ready_due_at', now()->subSeconds(10)->toJSON());
+            ->assertJsonPath('health.operator_metrics.tasks.oldest_ready_due_at', now()->subSeconds(10)->toJSON())
+            ->assertJsonPath('health.routing_drains.queues_with_drains', 0);
+    }
+
+    public function test_system_health_limits_routing_drains_to_requested_namespace(): void
+    {
+        WorkerRegistration::query()->create([
+            'worker_id' => 'worker-default',
+            'namespace' => 'default',
+            'task_queue' => 'orders',
+            'runtime' => 'php',
+            'build_id' => 'build-draining',
+            'last_heartbeat_at' => now(),
+            'status' => 'draining',
+        ]);
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'orders',
+            'build_id' => WorkerBuildIdRollout::buildIdKey('build-draining'),
+            'drain_intent' => WorkerBuildIdRollout::DRAIN_INTENT_DRAINING,
+            'drained_at' => now()->subMinute(),
+        ]);
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'other',
+            'task_queue' => 'payments',
+            'build_id' => WorkerBuildIdRollout::buildIdKey('build-ghost'),
+            'drain_intent' => WorkerBuildIdRollout::DRAIN_INTENT_DRAINING,
+            'drained_at' => now()->subMinutes(5),
+        ]);
+
+        $this->getJson('/api/system/health', $this->controlPlaneHeadersWithWorkerProtocol())
+            ->assertOk()
+            ->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('health.routing_drains.queues_with_drains', 1)
+            ->assertJsonPath('health.routing_drains.draining_build_id_count', 1)
+            ->assertJsonPath('health.routing_drains.queues.0.namespace', 'default')
+            ->assertJsonPath('health.routing_drains.queues.0.task_queue', 'orders')
+            ->assertJsonPath('health.routing_drains.queues.0.build_ids.0.build_id', 'build-draining');
+
+        $this->getJson('/api/system/health', $this->controlPlaneHeadersWithWorkerProtocol('other'))
+            ->assertOk()
+            ->assertJsonPath('namespace', 'other')
+            ->assertJsonPath('health.routing_drains.queues_with_drains', 1)
+            ->assertJsonPath('health.routing_drains.draining_build_id_count', 1)
+            ->assertJsonPath('health.routing_drains.queues.0.namespace', 'other')
+            ->assertJsonPath('health.routing_drains.queues.0.task_queue', 'payments')
+            ->assertJsonPath('health.routing_drains.queues.0.build_ids.0.build_id', 'build-ghost');
     }
 
     public function test_system_health_returns_service_unavailable_when_health_snapshot_errors(): void
