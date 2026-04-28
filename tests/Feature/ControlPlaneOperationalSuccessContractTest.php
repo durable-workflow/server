@@ -147,6 +147,39 @@ class ControlPlaneOperationalSuccessContractTest extends TestCase
                     ],
                 ],
             ],
+            'system.metrics_empty_post' => [
+                'method' => 'post',
+                'path' => '/api/system/metrics',
+                'body' => [],
+                'structure' => [
+                    'generated_at',
+                    'namespace',
+                    'metrics' => [
+                        'dw_workflow_task_consecutive_failures' => [
+                            'max_consecutive_failures',
+                            'failed_task_count',
+                            'workflow_type_count',
+                            'workflow_type_limit',
+                            'workflow_types_truncated',
+                            'suppressed_workflow_type_count',
+                            'suppressed_failed_task_count',
+                            'label_cardinality_policy',
+                            'by_workflow_type',
+                        ],
+                        'dw_projection_drift_total' => [
+                            'total',
+                            'table_count',
+                            'tables_with_drift',
+                            'scope',
+                            'label_cardinality_policy',
+                            'by_table',
+                        ],
+                    ],
+                    'cardinality' => [
+                        'metric_label_sets',
+                    ],
+                ],
+            ],
             'system.health_empty' => [
                 'method' => 'get',
                 'path' => '/api/system/health',

@@ -73,6 +73,26 @@ class SystemMetricsTest extends TestCase
         ], $response->json('metrics.dw_workflow_task_consecutive_failures.by_workflow_type'));
     }
 
+    public function test_system_metrics_accepts_post_requests_for_compatibility(): void
+    {
+        config(['server.metrics.workflow_task_failure_type_limit' => 2]);
+
+        $this->createWorkflowTaskMetricRow('tests.metric-high', 7);
+        $this->createWorkflowTaskMetricRow('tests.metric-middle', 3);
+
+        $getResponse = $this->getJson('/api/system/metrics', $this->controlPlaneHeadersWithWorkerProtocol());
+        $postResponse = $this->postJson('/api/system/metrics', [], $this->controlPlaneHeadersWithWorkerProtocol());
+
+        $getResponse->assertOk()
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION);
+        $postResponse->assertOk()
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('namespace', 'default');
+
+        $this->assertSame($getResponse->json('metrics'), $postResponse->json('metrics'));
+        $this->assertSame($getResponse->json('cardinality'), $postResponse->json('cardinality'));
+    }
+
     public function test_system_metrics_reports_projection_drift_by_fixed_table_inventory(): void
     {
         $this->createWorkflowTaskMetricRow('tests.projection-drift', 1);
