@@ -9,6 +9,8 @@ use App\Support\TaskQueueAdmission;
 use App\Support\WorkflowQueryTaskBroker;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
 
 class TaskQueueController
@@ -35,7 +37,7 @@ class TaskQueueController
         $payload = [
             'namespace' => $snapshot->namespace,
             'task_queues' => array_map(function ($detail) use ($namespace): array {
-                $summary = $detail->toSummaryArray();
+                $summary = $this->withRecentTaskFlow($namespace, $detail->name, $detail->toSummaryArray());
                 $summary['pollers'] = $detail->pollers();
                 $summary = $this->withAdmission($namespace, $summary);
                 unset($summary['pollers']);
@@ -56,13 +58,20 @@ class TaskQueueController
         $namespace = (string) $request->attributes->get('namespace');
 
         return ControlPlaneProtocol::json(
-            $this->withAdmission($namespace, StandaloneWorkerVisibility::queueDetail(
+            $this->withAdmission(
                 $namespace,
-                $taskQueue,
-                WorkerRegistration::class,
-                now(),
-                $this->workerStaleAfterSeconds(),
-            )->toArray()),
+                $this->withRecentTaskFlow(
+                    $namespace,
+                    $taskQueue,
+                    StandaloneWorkerVisibility::queueDetail(
+                        $namespace,
+                        $taskQueue,
+                        WorkerRegistration::class,
+                        now(),
+                        $this->workerStaleAfterSeconds(),
+                    )->toArray(),
+                ),
+            ),
         );
     }
 
@@ -539,6 +548,42 @@ class TaskQueueController
         }
 
         return $leasedCount >= $configuredSlots ? 'saturated' : 'accepting';
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function withRecentTaskFlow(string $namespace, string $taskQueue, array $payload): array
+    {
+        $stats = is_array($payload['stats'] ?? null) ? $payload['stats'] : [];
+        $stats = array_merge($stats, $this->recentTaskFlow($namespace, $taskQueue));
+        $payload['stats'] = $stats;
+
+        return $payload;
+    }
+
+    /**
+     * @return array{tasks_added_last_minute: int, tasks_dispatched_last_minute: int}
+     */
+    private function recentTaskFlow(string $namespace, string $taskQueue): array
+    {
+        $windowStart = now()->subMinute();
+
+        $query = WorkflowTask::query()
+            ->where('namespace', $namespace)
+            ->where('queue', $taskQueue)
+            ->whereIn('task_type', [TaskType::Workflow->value, TaskType::Activity->value]);
+
+        return [
+            'tasks_added_last_minute' => (clone $query)
+                ->where('created_at', '>=', $windowStart)
+                ->count(),
+            'tasks_dispatched_last_minute' => (clone $query)
+                ->whereNotNull('last_dispatched_at')
+                ->where('last_dispatched_at', '>=', $windowStart)
+                ->count(),
+        ];
     }
 
     private function workerStaleAfterSeconds(): int
