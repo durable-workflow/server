@@ -174,7 +174,17 @@ class ControlPlaneOperationalSuccessContractTest extends TestCase
                         'generated_at',
                         'runs',
                         'tasks',
-                        'backlog',
+                        'backlog' => [
+                            'runnable_tasks',
+                            'delayed_tasks',
+                            'leased_tasks',
+                            'tasks_added_last_minute',
+                            'tasks_dispatched_last_minute',
+                            'unhealthy_tasks',
+                            'repair_needed_runs',
+                            'claim_failed_runs',
+                            'compatibility_blocked_runs',
+                        ],
                         'repair',
                         'workers' => [
                             'required_compatibility',

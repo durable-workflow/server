@@ -43,6 +43,8 @@ class SystemOperatorMetricsTest extends TestCase
         $response->assertOk()
             ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
             ->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('operator_metrics.backlog.tasks_added_last_minute', 0)
+            ->assertJsonPath('operator_metrics.backlog.tasks_dispatched_last_minute', 0)
             ->assertJsonStructure([
                 'namespace',
                 'operator_metrics' => [
@@ -63,6 +65,8 @@ class SystemOperatorMetricsTest extends TestCase
                         'runnable_tasks',
                         'delayed_tasks',
                         'leased_tasks',
+                        'tasks_added_last_minute',
+                        'tasks_dispatched_last_minute',
                         'unhealthy_tasks',
                         'repair_needed_runs',
                         'claim_failed_runs',
