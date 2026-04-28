@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Support\ActivityTaskPoller;
 use App\Support\ExternalExecutorConfigContract;
@@ -353,6 +354,10 @@ class ActivityTaskController
             ], 409);
         }
 
+        if ($worker->status === WorkerBuildIdRollout::DRAIN_INTENT_DRAINING) {
+            return $this->drainingWorkerPollResponse($workerId, $taskQueue, $registeredBuildId);
+        }
+
         return $worker;
     }
 
@@ -374,6 +379,28 @@ class ActivityTaskController
         }
 
         return $result;
+    }
+
+    private function drainingWorkerPollResponse(
+        string $workerId,
+        string $taskQueue,
+        ?string $registeredBuildId,
+    ): JsonResponse {
+        return WorkerProtocol::json([
+            'task' => null,
+            'poll_status' => 'draining',
+            'error' => sprintf(
+                'Worker [%s] is marked draining for task queue [%s] and cannot claim new tasks until the cohort is resumed.',
+                $workerId,
+                $taskQueue,
+            ),
+            'reason' => 'worker_draining',
+            'worker_id' => $workerId,
+            'task_queue' => $taskQueue,
+            'registered_build_id' => $registeredBuildId,
+            'worker_status' => WorkerBuildIdRollout::DRAIN_INTENT_DRAINING,
+            'drain_intent' => WorkerBuildIdRollout::DRAIN_INTENT_DRAINING,
+        ], 409);
     }
 
     private function guardAttemptOwnership(

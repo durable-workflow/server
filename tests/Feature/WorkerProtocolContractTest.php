@@ -543,6 +543,75 @@ class WorkerProtocolContractTest extends TestCase
                     'requested_build_id' => 'build-requested',
                 ],
             ],
+            'workflow poll draining worker' => [
+                'path' => '/api/worker/workflow-tasks/poll',
+                'body' => [
+                    'worker_id' => 'workflow-draining',
+                    'task_queue' => 'contract-queue',
+                ],
+                'registration' => [
+                    'worker_id' => 'workflow-draining',
+                    'task_queue' => 'contract-queue',
+                    'build_id' => 'build-draining',
+                    'status' => 'draining',
+                ],
+                'status' => 409,
+                'reason' => 'worker_draining',
+                'paths' => [
+                    'poll_status' => 'draining',
+                    'worker_id' => 'workflow-draining',
+                    'task_queue' => 'contract-queue',
+                    'registered_build_id' => 'build-draining',
+                    'worker_status' => 'draining',
+                    'drain_intent' => 'draining',
+                ],
+            ],
+            'activity poll draining worker' => [
+                'path' => '/api/worker/activity-tasks/poll',
+                'body' => [
+                    'worker_id' => 'activity-draining',
+                    'task_queue' => 'contract-queue',
+                ],
+                'registration' => [
+                    'worker_id' => 'activity-draining',
+                    'task_queue' => 'contract-queue',
+                    'build_id' => 'build-draining',
+                    'status' => 'draining',
+                ],
+                'status' => 409,
+                'reason' => 'worker_draining',
+                'paths' => [
+                    'poll_status' => 'draining',
+                    'worker_id' => 'activity-draining',
+                    'task_queue' => 'contract-queue',
+                    'registered_build_id' => 'build-draining',
+                    'worker_status' => 'draining',
+                    'drain_intent' => 'draining',
+                ],
+            ],
+            'query poll draining worker' => [
+                'path' => '/api/worker/query-tasks/poll',
+                'body' => [
+                    'worker_id' => 'query-draining',
+                    'task_queue' => 'contract-queue',
+                ],
+                'registration' => [
+                    'worker_id' => 'query-draining',
+                    'task_queue' => 'contract-queue',
+                    'build_id' => 'build-draining',
+                    'status' => 'draining',
+                ],
+                'status' => 409,
+                'reason' => 'worker_draining',
+                'paths' => [
+                    'poll_status' => 'draining',
+                    'worker_id' => 'query-draining',
+                    'task_queue' => 'contract-queue',
+                    'registered_build_id' => 'build-draining',
+                    'worker_status' => 'draining',
+                    'drain_intent' => 'draining',
+                ],
+            ],
         ];
     }
 

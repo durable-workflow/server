@@ -255,6 +255,41 @@ class TaskQueueBuildIdDrainTest extends TestCase
         self::assertSame('draining', $worker->status);
     }
 
+    public function test_draining_workers_stop_polling_for_new_tasks_until_the_cohort_is_resumed(): void
+    {
+        WorkerRegistration::query()->create($this->workerAttributes('w-drain', 'ingest', build: 'v1'));
+
+        $this->postJson(
+            '/api/task-queues/ingest/build-ids/drain',
+            ['build_id' => 'v1'],
+            $this->apiHeaders(),
+        )->assertOk();
+
+        $this->postJson('/api/worker/heartbeat', [
+            'worker_id' => 'w-drain',
+        ], $this->workerHeaders())->assertOk();
+
+        $worker = WorkerRegistration::query()->where('worker_id', 'w-drain')->firstOrFail();
+        self::assertSame('draining', $worker->status);
+
+        foreach ([
+            ['/api/worker/workflow-tasks/poll', ['worker_id' => 'w-drain', 'task_queue' => 'ingest']],
+            ['/api/worker/activity-tasks/poll', ['worker_id' => 'w-drain', 'task_queue' => 'ingest']],
+            ['/api/worker/query-tasks/poll', ['worker_id' => 'w-drain', 'task_queue' => 'ingest']],
+        ] as [$path, $body]) {
+            $this->postJson($path, $body, $this->workerHeaders())
+                ->assertStatus(409)
+                ->assertJsonPath('task', null)
+                ->assertJsonPath('poll_status', 'draining')
+                ->assertJsonPath('reason', 'worker_draining')
+                ->assertJsonPath('worker_id', 'w-drain')
+                ->assertJsonPath('task_queue', 'ingest')
+                ->assertJsonPath('registered_build_id', 'v1')
+                ->assertJsonPath('worker_status', 'draining')
+                ->assertJsonPath('drain_intent', 'draining');
+        }
+    }
+
     public function test_heartbeat_restores_active_after_cohort_resumes(): void
     {
         WorkerRegistration::query()->create($this->workerAttributes(
