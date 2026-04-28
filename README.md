@@ -821,7 +821,7 @@ heartbeat, complete, and fail responses include `run_closed_reason` and
 
 ### Task Queues
 - `GET /api/task-queues` — List task queues
-- `GET /api/task-queues/{name}` — Task queue details and pollers
+- `GET /api/task-queues/{name}` — Task queue details, pollers, and recent add/dispatch flow
 
 Task queue responses include an `admission` object so operators can separate
 worker-local capacity from server-side queue and query-task admission limits. Workflow
