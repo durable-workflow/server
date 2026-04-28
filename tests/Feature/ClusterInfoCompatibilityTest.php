@@ -78,6 +78,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'supported_shapes',
                     'role_vocabulary',
                     'current_shape',
+                    'current_process_class',
                     'current_roles',
                     'execution_mode',
                     'matching_role' => [
@@ -85,10 +86,13 @@ class ClusterInfoCompatibilityTest extends TestCase
                         'wake_owner',
                         'task_dispatch_mode',
                     ],
+                    'role_catalog',
                     'shape_assignments',
                     'authority_boundaries',
+                    'authority_surfaces',
                     'failure_domains',
                     'scaling_boundaries',
+                    'supported_topologies',
                     'migration_path',
                 ],
                 'coordination_health' => [

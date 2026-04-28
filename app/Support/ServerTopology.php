@@ -6,7 +6,7 @@ final class ServerTopology
 {
     public const SCHEMA = 'durable-workflow.v2.role-topology';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     private const SUPPORTED_SHAPES = [
         'embedded',
@@ -41,13 +41,17 @@ final class ServerTopology
             'supported_shapes' => self::SUPPORTED_SHAPES,
             'role_vocabulary' => self::ROLE_VOCABULARY,
             'current_shape' => 'standalone_server',
+            'current_process_class' => 'server_http_node',
             'current_roles' => self::CURRENT_SERVER_NODE_ROLES,
             'execution_mode' => self::executionMode(),
             'matching_role' => self::matchingRole(),
+            'role_catalog' => self::roleCatalog(),
             'shape_assignments' => self::shapeAssignments(),
             'authority_boundaries' => self::authorityBoundaries(),
+            'authority_surfaces' => self::authoritySurfaces(),
             'failure_domains' => self::failureDomains(),
             'scaling_boundaries' => self::scalingBoundaries(),
+            'supported_topologies' => self::supportedTopologies(),
             'migration_path' => self::migrationPath(),
         ];
     }
@@ -78,6 +82,63 @@ final class ServerTopology
             'queue_wake_enabled' => $queueWakeEnabled,
             'wake_owner' => $queueWakeEnabled ? 'worker_loop' : 'dedicated_repair_pass',
             'task_dispatch_mode' => $dispatchMode,
+        ];
+    }
+
+    /**
+     * @return array<string, array{
+     *     plane: string,
+     *     hosted_by_current_node: bool,
+     *     runs_user_code: bool,
+     *     accepts_external_http: bool,
+     *     steady_state_interface: string
+     * }>
+     */
+    private static function roleCatalog(): array
+    {
+        return [
+            'api_ingress' => [
+                'plane' => 'control',
+                'hosted_by_current_node' => true,
+                'runs_user_code' => false,
+                'accepts_external_http' => true,
+                'steady_state_interface' => 'external_http',
+            ],
+            'control_plane' => [
+                'plane' => 'control',
+                'hosted_by_current_node' => true,
+                'runs_user_code' => false,
+                'accepts_external_http' => true,
+                'steady_state_interface' => 'control_plane_contract',
+            ],
+            'matching' => [
+                'plane' => 'control',
+                'hosted_by_current_node' => true,
+                'runs_user_code' => false,
+                'accepts_external_http' => true,
+                'steady_state_interface' => 'worker_poll_and_repair',
+            ],
+            'history_projection' => [
+                'plane' => 'control',
+                'hosted_by_current_node' => true,
+                'runs_user_code' => false,
+                'accepts_external_http' => false,
+                'steady_state_interface' => 'projection_writer',
+            ],
+            'scheduler' => [
+                'plane' => 'control',
+                'hosted_by_current_node' => false,
+                'runs_user_code' => false,
+                'accepts_external_http' => false,
+                'steady_state_interface' => 'schedule_runner',
+            ],
+            'execution_plane' => [
+                'plane' => 'execution',
+                'hosted_by_current_node' => false,
+                'runs_user_code' => true,
+                'accepts_external_http' => false,
+                'steady_state_interface' => 'worker_protocol',
+            ],
         ];
     }
 
@@ -214,6 +275,111 @@ final class ServerTopology
     }
 
     /**
+     * @return array<string, array{mutations: array<string, array{owning_roles: list<string>, read_roles: list<string>}>}>
+     */
+    private static function authoritySurfaces(): array
+    {
+        return [
+            'workflow_instances' => [
+                'mutations' => [
+                    'status_transitions' => [
+                        'owning_roles' => ['control_plane'],
+                        'read_roles' => ['history_projection', 'api_ingress'],
+                    ],
+                ],
+            ],
+            'workflow_runs' => [
+                'mutations' => [
+                    'status_transitions' => [
+                        'owning_roles' => ['control_plane'],
+                        'read_roles' => ['history_projection', 'api_ingress'],
+                    ],
+                ],
+            ],
+            'workflow_tasks' => [
+                'mutations' => [
+                    'create_retire' => [
+                        'owning_roles' => ['control_plane', 'history_projection'],
+                        'read_roles' => ['matching', 'execution_plane'],
+                    ],
+                    'lease_claim_release' => [
+                        'owning_roles' => ['matching'],
+                        'read_roles' => ['execution_plane', 'control_plane'],
+                    ],
+                ],
+            ],
+            'activity_executions' => [
+                'mutations' => [
+                    'create' => [
+                        'owning_roles' => ['control_plane'],
+                        'read_roles' => ['history_projection'],
+                    ],
+                    'outcomes' => [
+                        'owning_roles' => ['execution_plane'],
+                        'read_roles' => ['history_projection'],
+                    ],
+                ],
+            ],
+            'activity_attempts' => [
+                'mutations' => [
+                    'create' => [
+                        'owning_roles' => ['control_plane'],
+                        'read_roles' => ['history_projection'],
+                    ],
+                    'outcomes' => [
+                        'owning_roles' => ['execution_plane'],
+                        'read_roles' => ['history_projection'],
+                    ],
+                ],
+            ],
+            'history_events' => [
+                'mutations' => [
+                    'record' => [
+                        'owning_roles' => ['history_projection'],
+                        'read_roles' => ['control_plane', 'execution_plane', 'api_ingress'],
+                    ],
+                ],
+            ],
+            'run_summaries' => [
+                'mutations' => [
+                    'project' => [
+                        'owning_roles' => ['history_projection'],
+                        'read_roles' => ['control_plane', 'matching', 'api_ingress'],
+                    ],
+                ],
+            ],
+            'workflow_schedules' => [
+                'mutations' => [
+                    'crud' => [
+                        'owning_roles' => ['control_plane'],
+                        'read_roles' => ['api_ingress'],
+                    ],
+                    'fire' => [
+                        'owning_roles' => ['scheduler'],
+                        'read_roles' => ['api_ingress'],
+                    ],
+                ],
+            ],
+            'worker_compatibility_heartbeats' => [
+                'mutations' => [
+                    'heartbeat' => [
+                        'owning_roles' => ['execution_plane'],
+                        'read_roles' => ['matching', 'history_projection', 'api_ingress'],
+                    ],
+                ],
+            ],
+            'worker_registrations' => [
+                'mutations' => [
+                    'register_heartbeat' => [
+                        'owning_roles' => ['api_ingress'],
+                        'read_roles' => ['matching', 'control_plane', 'history_projection'],
+                    ],
+                ],
+            ],
+        ];
+    }
+
+    /**
      * @return array<string, array{
      *     effect: string,
      *     operator_signal: string
@@ -261,6 +427,71 @@ final class ServerTopology
             'history_projection' => 'durable_event_rate',
             'scheduler' => 'active_schedule_count',
             'execution_plane' => 'workflow_and_activity_task_rate',
+        ];
+    }
+
+    /**
+     * @return array<string, array{
+     *     execution_mode: string,
+     *     process_classes: array<string, array{roles: list<string>}>
+     * }>
+     */
+    private static function supportedTopologies(): array
+    {
+        return [
+            'embedded' => [
+                'execution_mode' => 'local_queue_worker',
+                'process_classes' => [
+                    'application_process' => [
+                        'roles' => [
+                            'control_plane',
+                            'matching',
+                            'history_projection',
+                            'scheduler',
+                            'execution_plane',
+                        ],
+                    ],
+                ],
+            ],
+            'standalone_server' => [
+                'execution_mode' => 'remote_worker_protocol',
+                'process_classes' => [
+                    'server_http_node' => [
+                        'roles' => [
+                            'api_ingress',
+                            'control_plane',
+                            'matching',
+                            'history_projection',
+                        ],
+                    ],
+                    'scheduler_node' => [
+                        'roles' => ['scheduler'],
+                    ],
+                    'worker_node' => [
+                        'roles' => ['execution_plane'],
+                    ],
+                ],
+            ],
+            'split_control_execution' => [
+                'execution_mode' => 'remote_worker_protocol',
+                'process_classes' => [
+                    'ingress_node' => [
+                        'roles' => ['api_ingress'],
+                    ],
+                    'control_plane_node' => [
+                        'roles' => ['control_plane', 'history_projection'],
+                    ],
+                    'scheduler_node' => [
+                        'roles' => ['scheduler'],
+                    ],
+                    'matching_node' => [
+                        'roles' => ['matching'],
+                    ],
+                    'execution_node' => [
+                        'roles' => ['execution_plane'],
+                    ],
+                ],
+            ],
         ];
     }
 

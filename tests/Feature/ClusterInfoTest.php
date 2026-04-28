@@ -146,6 +146,7 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('topology.schema', ServerTopology::SCHEMA)
             ->assertJsonPath('topology.version', ServerTopology::VERSION)
             ->assertJsonPath('topology.current_shape', 'standalone_server')
+            ->assertJsonPath('topology.current_process_class', 'server_http_node')
             ->assertJsonPath('topology.execution_mode', 'remote_worker_protocol')
             ->assertJsonPath('topology.current_roles.0', 'api_ingress')
             ->assertJsonPath('topology.current_roles.1', 'control_plane')
@@ -172,8 +173,24 @@ class ClusterInfoTest extends TestCase
                 'execution_plane',
             )
             ->assertJsonPath(
+                'topology.role_catalog.execution_plane.steady_state_interface',
+                'worker_protocol',
+            )
+            ->assertJsonPath(
+                'topology.role_catalog.matching.hosted_by_current_node',
+                true,
+            )
+            ->assertJsonPath(
                 'topology.authority_boundaries.control_plane.writes.1',
                 'workflow_runs.status',
+            )
+            ->assertJsonPath(
+                'topology.authority_surfaces.workflow_tasks.mutations.lease_claim_release.owning_roles.0',
+                'matching',
+            )
+            ->assertJsonPath(
+                'topology.authority_surfaces.worker_registrations.mutations.register_heartbeat.read_roles.1',
+                'control_plane',
             )
             ->assertJsonPath(
                 'topology.authority_boundaries.history_projection.writes.1',
@@ -190,6 +207,14 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath(
                 'topology.scaling_boundaries.execution_plane',
                 'workflow_and_activity_task_rate',
+            )
+            ->assertJsonPath(
+                'topology.supported_topologies.standalone_server.process_classes.worker_node.roles.0',
+                'execution_plane',
+            )
+            ->assertJsonPath(
+                'topology.supported_topologies.embedded.execution_mode',
+                'local_queue_worker',
             )
             ->assertJsonPath('topology.migration_path.0.step', 'audit_role_boundaries')
             ->assertJsonPath(
