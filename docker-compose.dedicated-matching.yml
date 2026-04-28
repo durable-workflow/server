@@ -21,7 +21,7 @@ name: durable-workflow-server
 #     scale and observe independently
 #
 # Operators can confirm which shape each node is running through the
-# `matching_role` block on `POST /api/system/metrics`: the worker reports
+# `matching_role` block on `GET /api/system/metrics`: the worker reports
 # `shape: in_worker` with `queue_wake_enabled: false`, and the matching
 # daemon reports `shape: dedicated`.
 

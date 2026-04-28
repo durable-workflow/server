@@ -1059,7 +1059,7 @@ can drain it cleanly between deployments.
 
 Operators can confirm which shape each node is running through the
 operator-metrics snapshot: the `matching_role` block on
-`POST /api/system/metrics` reports `queue_wake_enabled`, `shape` (`in_worker`
+`GET /api/system/metrics` reports `queue_wake_enabled`, `shape` (`in_worker`
 or `dedicated`), the configured `task_dispatch_mode`, the frozen
 `partition_primitives`, and the durable `backpressure_model` per process. The
 cluster-topology manifest reuses the same matching-role contract and adds
