@@ -20,7 +20,12 @@ class DedicatedMatchingComposeContractTest extends TestCase
         foreach ([
             'worker:',
             'DW_V2_MATCHING_ROLE_QUEUE_WAKE: "false"',
+            'DW_SERVER_TOPOLOGY_SHAPE: split_control_execution',
+            'DW_SERVER_PROCESS_CLASS: execution_node',
+            'scheduler:',
+            'DW_SERVER_PROCESS_CLASS: scheduler_node',
             'matching:',
+            'DW_SERVER_PROCESS_CLASS: matching_node',
             'command: php artisan workflow:v2:repair-pass --loop',
             'bootstrap:',
             'condition: service_completed_successfully',
@@ -72,6 +77,24 @@ class DedicatedMatchingComposeContractTest extends TestCase
                 $needle,
                 $published,
                 "published compose must contain {$needle} so long-running services advertise their real role class",
+            );
+        }
+    }
+
+    public function test_override_promotes_background_services_to_split_role_identity(): void
+    {
+        $override = $this->read('docker-compose.dedicated-matching.yml');
+
+        foreach ([
+            'DW_SERVER_TOPOLOGY_SHAPE: split_control_execution',
+            'DW_SERVER_PROCESS_CLASS: execution_node',
+            'DW_SERVER_PROCESS_CLASS: scheduler_node',
+            'DW_SERVER_PROCESS_CLASS: matching_node',
+        ] as $needle) {
+            $this->assertStringContainsString(
+                $needle,
+                $override,
+                "dedicated matching override must contain {$needle} so migration-shape diagnostics expose the split role class",
             );
         }
     }

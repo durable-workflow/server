@@ -53,6 +53,13 @@ services:
   worker:
     environment:
       DW_V2_MATCHING_ROLE_QUEUE_WAKE: "false"
+      DW_SERVER_TOPOLOGY_SHAPE: split_control_execution
+      DW_SERVER_PROCESS_CLASS: execution_node
+
+  scheduler:
+    environment:
+      DW_SERVER_TOPOLOGY_SHAPE: split_control_execution
+      DW_SERVER_PROCESS_CLASS: scheduler_node
 
   matching:
     image: *server-image
@@ -61,6 +68,8 @@ services:
     command: php artisan workflow:v2:repair-pass --loop
     environment:
       <<: *server-environment
+      DW_SERVER_TOPOLOGY_SHAPE: split_control_execution
+      DW_SERVER_PROCESS_CLASS: matching_node
     depends_on:
       bootstrap:
         condition: service_completed_successfully
