@@ -237,6 +237,42 @@ class EnvContractTest extends TestCase
         );
     }
 
+    public function test_local_docker_compose_pins_topology_identity_for_long_running_services(): void
+    {
+        $source = file_get_contents(self::$repoRoot.'/docker-compose.yml');
+        $this->assertNotFalse($source);
+
+        foreach ([
+            'DW_SERVER_TOPOLOGY_SHAPE: standalone_server',
+            'DW_SERVER_PROCESS_CLASS: server_http_node',
+            'DW_SERVER_PROCESS_CLASS: worker_node',
+            'DW_SERVER_PROCESS_CLASS: scheduler_node',
+        ] as $needle) {
+            $this->assertStringContainsString(
+                $needle,
+                $source,
+                "docker-compose.yml must contain {$needle} so local role surfaces match the running service class",
+            );
+        }
+    }
+
+    public function test_env_example_documents_topology_identity_defaults(): void
+    {
+        $source = file_get_contents(self::$repoRoot.'/.env.example');
+        $this->assertNotFalse($source);
+
+        foreach ([
+            'DW_SERVER_TOPOLOGY_SHAPE=standalone_server',
+            'DW_SERVER_PROCESS_CLASS=server_http_node',
+        ] as $needle) {
+            $this->assertStringContainsString(
+                $needle,
+                $source,
+                ".env.example must contain {$needle} so local operators can discover the topology identity contract",
+            );
+        }
+    }
+
     public function test_every_contract_entry_has_required_shape(): void
     {
         $this->assertArrayHasKey('prefix', self::$contract);

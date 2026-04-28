@@ -219,6 +219,10 @@ curl http://localhost:8080/api/ready
 Compose runs a one-shot `bootstrap` service before the API and worker
 containers start. That service calls the image's `server-bootstrap` command,
 which runs migrations and seeds the default namespace.
+The long-running `server`, `worker`, and `scheduler` services each pin
+`DW_SERVER_TOPOLOGY_SHAPE` and `DW_SERVER_PROCESS_CLASS` so
+`GET /api/cluster/info` reports the role class you actually launched during
+local split-role testing.
 The image build fetches the `durable-workflow/workflow` `v2` package source by
 default so `docker compose up --build` works from a clean checkout. Override
 `WORKFLOW_PACKAGE_SOURCE` or `WORKFLOW_PACKAGE_REF` if you need a different

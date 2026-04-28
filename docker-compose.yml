@@ -11,6 +11,8 @@ services:
       APP_NAME: "Durable Workflow Server"
       APP_ENV: local
       DW_SERVER_KEY: "${DW_SERVER_KEY:-}"
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: server_http_node
       APP_VERSION: "${APP_VERSION:-2.0.0}"
       APP_DEBUG: "false"
       DB_CONNECTION: mysql
@@ -93,6 +95,8 @@ services:
       APP_NAME: "Durable Workflow Server"
       APP_ENV: local
       DW_SERVER_KEY: "${DW_SERVER_KEY:-}"
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: worker_node
       APP_VERSION: "${APP_VERSION:-2.0.0}"
       DB_CONNECTION: mysql
       DB_HOST: mysql
@@ -131,6 +135,8 @@ services:
       APP_NAME: "Durable Workflow Server"
       APP_ENV: local
       DW_SERVER_KEY: "${DW_SERVER_KEY:-}"
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: scheduler_node
       APP_VERSION: "${APP_VERSION:-2.0.0}"
       DB_CONNECTION: mysql
       DB_HOST: mysql
