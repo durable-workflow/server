@@ -8,6 +8,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -113,6 +114,11 @@ class TransportRepairTest extends TestCase
             ->postJson('/api/system/repair/pass')
             ->assertOk()
             ->assertJsonStructure([
+                'connection',
+                'queue',
+                'run_ids',
+                'instance_id',
+                'respect_throttle',
                 'throttled',
                 'selected_existing_task_candidates',
                 'selected_missing_task_candidates',
@@ -135,6 +141,10 @@ class TransportRepairTest extends TestCase
             ->postJson('/api/system/repair/pass');
 
         $response->assertOk()
+            ->assertJsonPath('connection', null)
+            ->assertJsonPath('queue', null)
+            ->assertJsonPath('instance_id', null)
+            ->assertJsonPath('respect_throttle', false)
             ->assertJsonPath('throttled', false)
             ->assertJsonPath('selected_total_candidates', 0)
             ->assertJsonPath('repaired_existing_tasks', 0)
@@ -144,6 +154,7 @@ class TransportRepairTest extends TestCase
             ->assertJsonPath('backfilled_command_contracts', 0)
             ->assertJsonPath('command_contract_backfill_unavailable', 0);
 
+        $this->assertSame([], $response->json('run_ids'));
         $this->assertSame([], $response->json('existing_task_failures'));
         $this->assertSame([], $response->json('missing_run_failures'));
         $this->assertSame([], $response->json('command_contract_failures'));
@@ -156,6 +167,7 @@ class TransportRepairTest extends TestCase
                 'run_ids' => ['non-existent-run-id'],
             ])
             ->assertOk()
+            ->assertJsonPath('run_ids.0', 'non-existent-run-id')
             ->assertJsonPath('selected_total_candidates', 0);
     }
 
@@ -166,7 +178,91 @@ class TransportRepairTest extends TestCase
                 'instance_id' => 'non-existent-instance',
             ])
             ->assertOk()
+            ->assertJsonPath('instance_id', 'non-existent-instance')
             ->assertJsonPath('selected_total_candidates', 0);
+    }
+
+    public function test_system_repair_pass_uses_matching_role_binding_and_forwards_scope_options(): void
+    {
+        $fake = new class implements MatchingRole
+        {
+            /**
+             * @var array{connection: string|null, queue: string|null, respectThrottle: bool, runIds: list<string>, instanceId: string|null}|null
+             */
+            public ?array $lastRunPassArguments = null;
+
+            public function wake(?string $connection = null, ?string $queue = null): void {}
+
+            public function runPass(
+                ?string $connection = null,
+                ?string $queue = null,
+                bool $respectThrottle = false,
+                array $runIds = [],
+                ?string $instanceId = null,
+            ): array {
+                $this->lastRunPassArguments = [
+                    'connection' => $connection,
+                    'queue' => $queue,
+                    'respectThrottle' => $respectThrottle,
+                    'runIds' => $runIds,
+                    'instanceId' => $instanceId,
+                ];
+
+                return [
+                    'connection' => $connection,
+                    'queue' => $queue,
+                    'run_ids' => $runIds,
+                    'instance_id' => $instanceId,
+                    'respect_throttle' => $respectThrottle,
+                    'throttled' => false,
+                    'selected_existing_task_candidates' => 2,
+                    'selected_missing_task_candidates' => 1,
+                    'selected_total_candidates' => 3,
+                    'repaired_existing_tasks' => 2,
+                    'repaired_missing_tasks' => 1,
+                    'dispatched_tasks' => 3,
+                    'existing_task_failures' => [],
+                    'missing_run_failures' => [],
+                    'deadline_expired_candidates' => 0,
+                    'deadline_expired_tasks_created' => 0,
+                    'deadline_expired_failures' => [],
+                    'activity_timeout_candidates' => 0,
+                    'activity_timeouts_enforced' => 0,
+                    'activity_timeout_failures' => [],
+                ];
+            }
+        };
+
+        $this->app->instance(MatchingRole::class, $fake);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/repair/pass', [
+                'connection' => ' redis ',
+                'queue' => ' critical ',
+                'run_ids' => [' run-a ', 'run-b'],
+                'instance_id' => ' instance-42 ',
+                'respect_throttle' => true,
+            ]);
+
+        $response->assertOk()
+            ->assertJsonPath('connection', 'redis')
+            ->assertJsonPath('queue', 'critical')
+            ->assertJsonPath('run_ids.0', 'run-a')
+            ->assertJsonPath('run_ids.1', 'run-b')
+            ->assertJsonPath('instance_id', 'instance-42')
+            ->assertJsonPath('respect_throttle', true)
+            ->assertJsonPath('selected_total_candidates', 3)
+            ->assertJsonPath('repaired_existing_tasks', 2)
+            ->assertJsonPath('repaired_missing_tasks', 1)
+            ->assertJsonPath('dispatched_tasks', 3);
+
+        $this->assertSame([
+            'connection' => 'redis',
+            'queue' => 'critical',
+            'respectThrottle' => true,
+            'runIds' => ['run-a', 'run-b'],
+            'instanceId' => 'instance-42',
+        ], $fake->lastRunPassArguments);
     }
 
     public function test_system_repair_pass_recovers_expired_poll_mode_workflow_task_leases(): void

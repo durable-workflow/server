@@ -7,8 +7,10 @@ use ReflectionException;
 use ReflectionMethod;
 use RuntimeException;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
+use Workflow\V2\Support\DefaultMatchingRole;
 use Workflow\V2\Support\MatchingRoleSnapshot;
 
 /**
@@ -55,6 +57,19 @@ final class WorkflowPackageApiFloor
         // local WorkflowLink / WorkflowRunLineageEntry observer glue.
         [ChildWorkflowNamespaceProjection::class, 'projectLink'],
         [ChildWorkflowNamespaceProjection::class, 'projectLineageEntry'],
+        // Server control-plane repair passes resolve through the package's
+        // dedicated matching-role implementation instead of hard-coding the
+        // in-process watchdog.
+        [DefaultMatchingRole::class, 'wake'],
+        [DefaultMatchingRole::class, 'runPass'],
+    ];
+
+    /**
+     * Interface methods the server type-hints directly.
+     */
+    private const REQUIRED_INTERFACE_APIS = [
+        [MatchingRole::class, 'wake'],
+        [MatchingRole::class, 'runPass'],
     ];
 
     /**
@@ -96,6 +111,12 @@ final class WorkflowPackageApiFloor
             }
         }
 
+        foreach (self::REQUIRED_INTERFACE_APIS as [$class, $method]) {
+            if (! self::hasInterfaceMethod($class, $method)) {
+                $missing[] = sprintf('%s::%s()', $class, $method);
+            }
+        }
+
         if (! class_exists(self::POLL_MODE_DEMOTION_CLASS)) {
             $missing[] = self::POLL_MODE_DEMOTION_CLASS;
         } elseif (! self::confirmsPollModeDemotion(self::POLL_MODE_DEMOTION_CLASS, self::POLL_MODE_DEMOTION_METHOD)) {
@@ -114,8 +135,9 @@ final class WorkflowPackageApiFloor
             "Installed durable-workflow/workflow package is older than the server's API floor. "
             .'Missing: %s. Re-run `composer update durable-workflow/workflow` against a v2 snapshot that '
             .'includes CodecRegistry::universal(), CodecRegistry::engineSpecific(), MatchingRoleSnapshot::current(), '
-            .'and the poll-mode queue capability demotion, plus ChildWorkflowNamespaceProjection for package-owned '
-            .'child namespace propagation (see repos/workflow commits 8e132d0, cfd8e95, and f666b25, or newer).',
+            .'the poll-mode queue capability demotion, and the matching-role repair-pass contract, plus '
+            .'ChildWorkflowNamespaceProjection for package-owned child namespace propagation '
+            .'(see repos/workflow commits 8e132d0, cfd8e95, and f666b25, or newer).',
             implode(', ', $missing),
         ));
     }
@@ -139,6 +161,22 @@ final class WorkflowPackageApiFloor
     private static function hasInstanceMethod(string $class, string $method): bool
     {
         if (! class_exists($class)) {
+            return false;
+        }
+
+        try {
+            $reflection = new ReflectionClass($class);
+            $methodReflection = $reflection->getMethod($method);
+        } catch (ReflectionException) {
+            return false;
+        }
+
+        return $methodReflection->isPublic() && ! $methodReflection->isStatic();
+    }
+
+    private static function hasInterfaceMethod(string $class, string $method): bool
+    {
+        if (! interface_exists($class)) {
             return false;
         }
 

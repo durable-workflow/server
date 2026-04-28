@@ -9,17 +9,18 @@ use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\WorkflowTaskFailureMetrics;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\HealthCheck;
 use Workflow\V2\Support\OperatorMetrics;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
-use Workflow\V2\TaskWatchdog;
 
 class SystemController
 {
     public function __construct(
         private readonly TaskQueueBuildIdRolloutSnapshot $buildIdRollouts,
+        private readonly MatchingRole $matchingRole,
     ) {}
 
     public function repairPass(Request $request): JsonResponse
@@ -32,6 +33,9 @@ class SystemController
             'run_ids' => ['nullable', 'array', 'max:100'],
             'run_ids.*' => ['string', 'min:1', 'max:128'],
             'instance_id' => ['nullable', 'string', 'min:1', 'max:128'],
+            'connection' => ['nullable', 'string', 'max:128'],
+            'queue' => ['nullable', 'string', 'max:128'],
+            'respect_throttle' => ['nullable', 'boolean'],
         ]);
 
         $runIds = array_values(array_map(
@@ -39,15 +43,24 @@ class SystemController
             $validated['run_ids'] ?? [],
         ));
 
-        $instanceId = isset($validated['instance_id']) && is_string($validated['instance_id'])
-            ? trim($validated['instance_id'])
-            : null;
+        $instanceId = $this->trimmedString($validated['instance_id'] ?? null);
+        $connection = $this->trimmedString($validated['connection'] ?? null);
+        $queue = $this->trimmedString($validated['queue'] ?? null);
+        $respectThrottle = (bool) ($validated['respect_throttle'] ?? false);
 
-        $report = TaskWatchdog::runPass(
+        $report = $this->matchingRole->runPass(
+            connection: $connection,
+            queue: $queue,
+            respectThrottle: $respectThrottle,
             runIds: $runIds,
             instanceId: $instanceId,
         );
         $report = array_replace([
+            'connection' => $connection,
+            'queue' => $queue,
+            'run_ids' => $runIds,
+            'instance_id' => $instanceId,
+            'respect_throttle' => $respectThrottle,
             'selected_command_contract_candidates' => 0,
             'backfilled_command_contracts' => 0,
             'command_contract_backfill_unavailable' => 0,
@@ -280,5 +293,16 @@ class SystemController
         $hasFailures = $report['failed'] > 0;
 
         return ControlPlaneProtocol::json($report, $hasFailures ? 207 : 200);
+    }
+
+    private function trimmedString(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value === '' ? null : $value;
     }
 }

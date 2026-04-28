@@ -237,6 +237,11 @@ class ControlPlaneOperationalSuccessContractTest extends TestCase
                 'path' => '/api/system/repair/pass',
                 'body' => [],
                 'structure' => [
+                    'connection',
+                    'queue',
+                    'run_ids',
+                    'instance_id',
+                    'respect_throttle',
                     'throttled',
                     'selected_existing_task_candidates',
                     'selected_missing_task_candidates',

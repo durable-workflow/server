@@ -84,6 +84,13 @@ class ControlPlaneValidationContractTest extends TestCase
                 'errorField' => 'run_ids',
                 'controlOperation' => null,
             ],
+            'system.repair_pass_respect_throttle' => [
+                'method' => 'post',
+                'path' => '/api/system/repair/pass',
+                'body' => ['respect_throttle' => 'not-a-bool'],
+                'errorField' => 'respect_throttle',
+                'controlOperation' => null,
+            ],
             'system.activity_timeout_status' => [
                 'method' => 'get',
                 'path' => '/api/system/activity-timeouts?limit=0',

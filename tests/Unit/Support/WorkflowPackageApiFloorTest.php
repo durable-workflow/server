@@ -8,8 +8,10 @@ use ReflectionClass;
 use ReflectionMethod;
 use Tests\Fixtures\StaleBackendCapabilities;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
+use Workflow\V2\Support\DefaultMatchingRole;
 use Workflow\V2\Support\MatchingRoleSnapshot;
 
 /**
@@ -64,6 +66,30 @@ class WorkflowPackageApiFloorTest extends TestCase
         $reflection = new ReflectionClass(ChildWorkflowNamespaceProjection::class);
 
         foreach (['projectLink', 'projectLineageEntry'] as $methodName) {
+            $method = $reflection->getMethod($methodName);
+
+            $this->assertTrue($method->isPublic());
+            $this->assertFalse($method->isStatic());
+        }
+    }
+
+    public function test_matching_role_contract_is_public_instance_api(): void
+    {
+        $reflection = new ReflectionClass(MatchingRole::class);
+
+        foreach (['wake', 'runPass'] as $methodName) {
+            $method = $reflection->getMethod($methodName);
+
+            $this->assertTrue($method->isPublic());
+            $this->assertFalse($method->isStatic());
+        }
+    }
+
+    public function test_default_matching_role_exposes_public_instance_repair_methods(): void
+    {
+        $reflection = new ReflectionClass(DefaultMatchingRole::class);
+
+        foreach (['wake', 'runPass'] as $methodName) {
             $method = $reflection->getMethod($methodName);
 
             $this->assertTrue($method->isPublic());

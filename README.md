@@ -506,6 +506,11 @@ workflow-task command payload.
 - `GET /api/system/activity-timeouts` — Expired activity execution diagnostics
 - `POST /api/system/activity-timeouts/pass` — Enforce activity timeouts
 
+`POST /api/system/repair/pass` accepts optional `connection`, `queue`,
+`run_ids`, and `instance_id` filters. Set `respect_throttle=true` when a
+dedicated matching-role loop should skip a pass rather than duplicate work
+already covered by another matching-role process holding the repair throttle.
+
 ### Namespaces
 - `GET /api/namespaces` — List namespaces
 - `POST /api/namespaces` — Create namespace
