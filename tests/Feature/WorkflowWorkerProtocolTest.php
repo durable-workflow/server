@@ -578,7 +578,7 @@ class WorkflowWorkerProtocolTest extends TestCase
         ): void {
             $mock->shouldReceive('poll')
                 ->times(2)
-                ->with(null, 'external-workflows', 10, null, 'default', [])
+                ->with(null, 'external-workflows', 10, null, 'default')
                 ->andReturn(
                     [[
                         'task_id' => $task->id,
@@ -1390,7 +1390,7 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use ($recordedAt): void {
             $mock->shouldReceive('poll')
                 ->once()
-                ->with(null, 'external-workflows', 10, null, 'default', [])
+                ->with(null, 'external-workflows', 10, null, 'default')
                 ->andReturn([
                     [
                         'task_id' => 'wf-task-missing-row',
@@ -1461,7 +1461,7 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock): void {
             $mock->shouldReceive('poll')
                 ->once()
-                ->with(null, 'external-workflows', 10, null, 'default', [])
+                ->with(null, 'external-workflows', 10, null, 'default')
                 ->andReturn([]);
         });
 
@@ -1470,42 +1470,6 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'php-worker-bridge-only',
-                'task_queue' => 'external-workflows',
-            ])
-            ->assertOk()
-            ->assertJsonPath('task', null);
-    }
-
-    public function test_it_passes_supported_workflow_types_to_the_workflow_bridge_poll(): void
-    {
-        Queue::fake();
-
-        $this->configureWorkflowTypes();
-        $this->createNamespace('default', 'Default namespace');
-
-        $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('poll')
-                ->once()
-                ->with(
-                    null,
-                    'external-workflows',
-                    10,
-                    null,
-                    'default',
-                    ['tests.external-greeting-workflow'],
-                )
-                ->andReturn([]);
-        });
-
-        $this->registerWorker(
-            'php-worker-typed-bridge',
-            'external-workflows',
-            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
-        );
-
-        $this->withHeaders($this->workerHeaders())
-            ->postJson('/api/worker/workflow-tasks/poll', [
-                'worker_id' => 'php-worker-typed-bridge',
                 'task_queue' => 'external-workflows',
             ])
             ->assertOk()
