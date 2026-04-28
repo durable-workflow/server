@@ -6,6 +6,7 @@ use App\Support\AuthCompositionContract;
 use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
+use App\Support\CoordinationHealthContract;
 use App\Support\ServerTopology;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -90,6 +91,18 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'scaling_boundaries',
                     'migration_path',
                 ],
+                'coordination_health' => [
+                    'schema',
+                    'version',
+                    'namespace_scope',
+                    'status',
+                    'http_status',
+                    'generated_at',
+                    'categories',
+                    'warning_checks',
+                    'error_checks',
+                    'checks',
+                ],
                 'client_compatibility',
                 'auth_composition_contract',
                 'control_plane',
@@ -99,6 +112,9 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('topology.schema', ServerTopology::SCHEMA)
             ->assertJsonPath('topology.version', ServerTopology::VERSION)
             ->assertJsonPath('topology.matching_role.task_dispatch_mode', 'poll')
+            ->assertJsonPath('coordination_health.schema', CoordinationHealthContract::SCHEMA)
+            ->assertJsonPath('coordination_health.version', CoordinationHealthContract::VERSION)
+            ->assertJsonPath('coordination_health.namespace_scope', 'all_namespaces')
             ->assertJsonPath(
                 'topology.failure_domains.matching_down.effect',
                 'claim_falls_back_to_direct_ready_task_discovery',

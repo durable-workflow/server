@@ -7,8 +7,9 @@ use App\Support\AuthCompositionContract;
 use App\Support\BridgeAdapterOutcomeContract;
 use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
-use App\Support\ServerTopology;
+use App\Support\CoordinationHealthContract;
 use App\Support\ServerReadiness;
+use App\Support\ServerTopology;
 use App\Support\WorkerProtocol;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -119,6 +120,7 @@ class HealthController
             ],
             'structural_limits' => StructuralLimits::snapshot(),
             'topology' => ServerTopology::info(),
+            'coordination_health' => CoordinationHealthContract::manifest($this->readiness->workflowStatus()),
             'client_compatibility' => ClientCompatibility::info(),
             'auth_composition_contract' => AuthCompositionContract::manifest(),
             'control_plane' => ControlPlaneProtocol::info(),

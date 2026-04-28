@@ -493,7 +493,7 @@ workflow-task command payload.
 ### System
 - `GET /api/health` — Health check
 - `GET /api/ready` — Readiness check for migrations, default namespace, cache, auth config, and workflow v2 rollout-safety health
-- `GET /api/cluster/info` — Server capabilities, role topology, and version
+- `GET /api/cluster/info` — Server capabilities, role topology, coordination-health summary, and version
 - `GET /api/system/metrics` — Server metrics including bounded stuck workflow-task diagnostics
 - `GET /api/system/operator-metrics` — Full operator metrics snapshot (runs, tasks, backlog, repair, workers/fleet, backend, structural limits) for rollout-safety coordination health
 - `GET /api/system/repair` — Task repair diagnostics
@@ -668,6 +668,15 @@ the supported process-class assignments for each topology, the durable-write
 authority boundary for every role, the expected degraded behavior for each role
 failure domain, the scaling axis for each role, and the incremental migration
 steps from today's standalone shape to the split control/execution topology.
+
+The same `GET /api/cluster/info` response now includes a versioned
+`coordination_health` manifest for rollout-safety coordination risk. It
+summarizes the current server-wide workflow v2 health status, warning and error
+check names, category counts, and the normalized check list that already powers
+the readiness gate. The manifest is intentionally `all_namespaces` scoped so it
+describes the server's fleet-wide coordination posture; use
+`GET /api/system/operator-metrics` when you need namespace-specific backlog and
+worker detail.
 
 The activity-grade external execution surface is published from
 `GET /api/cluster/info` at

@@ -37,7 +37,7 @@ final class ServerReadiness
             'cache' => $this->cacheCheck(),
             'auth' => $this->authCheck(),
         ];
-        $checks['workflow_v2'] = $this->workflowCheck($checks);
+        $checks['workflow_v2'] = $this->workflowStatus($checks);
 
         return [
             'ready' => collect($checks)->every(
@@ -45,6 +45,20 @@ final class ServerReadiness
             ),
             'checks' => $checks,
         ];
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>|null  $checks
+     * @return array<string, mixed>
+     */
+    public function workflowStatus(?array $checks = null): array
+    {
+        $checks ??= [
+            'database' => $this->databaseCheck(),
+            'migrations' => $this->migrationCheck(),
+        ];
+
+        return $this->normalizeWorkflowCheck($this->workflowCheck($checks));
     }
 
     private static function statusAllowsReady(mixed $status): bool
@@ -332,5 +346,49 @@ final class ServerReadiness
             'error_checks' => $errorChecks,
             'checks' => $checksList,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $check
+     * @return array<string, mixed>
+     */
+    private function normalizeWorkflowCheck(array $check): array
+    {
+        $status = is_string($check['status'] ?? null) ? $check['status'] : 'error';
+
+        $normalized = [
+            'status' => $status,
+            'generated_at' => is_string($check['generated_at'] ?? null) ? $check['generated_at'] : null,
+            'http_status' => is_int($check['http_status'] ?? null)
+                ? $check['http_status']
+                : (self::statusAllowsReady($status) ? 200 : 503),
+            'categories' => is_array($check['categories'] ?? null) ? $check['categories'] : [],
+            'warning_checks' => $this->stringList($check['warning_checks'] ?? []),
+            'error_checks' => $this->stringList($check['error_checks'] ?? []),
+            'checks' => is_array($check['checks'] ?? null) ? array_values($check['checks']) : [],
+        ];
+
+        foreach (['blocked_by', 'message', 'remediation'] as $key) {
+            if (array_key_exists($key, $check)) {
+                $normalized[$key] = $check[$key];
+            }
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function stringList(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            $value,
+            static fn (mixed $item): bool => is_string($item) && $item !== '',
+        ));
     }
 }

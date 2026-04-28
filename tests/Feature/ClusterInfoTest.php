@@ -2,9 +2,12 @@
 
 namespace Tests\Feature;
 
+use App\Models\WorkflowNamespace;
+use App\Support\CoordinationHealthContract;
 use App\Support\ServerTopology;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class ClusterInfoTest extends TestCase
 {
@@ -203,6 +206,108 @@ class ClusterInfoTest extends TestCase
             ->assertOk()
             ->assertJsonPath('topology.current_shape', 'standalone_server')
             ->assertJsonPath('topology.execution_mode', 'local_queue_worker');
+    }
+
+    public function test_it_publishes_a_versioned_coordination_health_manifest(): void
+    {
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+
+        $response
+            ->assertJsonPath('coordination_health.schema', CoordinationHealthContract::SCHEMA)
+            ->assertJsonPath('coordination_health.version', CoordinationHealthContract::VERSION)
+            ->assertJsonPath('coordination_health.namespace_scope', 'all_namespaces')
+            ->assertJsonPath('coordination_health.http_status', 200);
+
+        $this->assertContains(
+            $response->json('coordination_health.status'),
+            ['ok', 'warning', 'error', 'blocked', 'unavailable'],
+        );
+        $this->assertIsArray($response->json('coordination_health.categories'));
+        $this->assertIsArray($response->json('coordination_health.warning_checks'));
+        $this->assertIsArray($response->json('coordination_health.error_checks'));
+        $this->assertIsArray($response->json('coordination_health.checks'));
+    }
+
+    public function test_it_surfaces_worker_compatibility_warnings_in_coordination_health(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        config([
+            'workflows.v2.compatibility.current' => 'build-a',
+            'workflows.v2.compatibility.supported' => ['build-a'],
+            'workflows.v2.compatibility.namespace' => 'default',
+            'workflows.v2.fleet.validation_mode' => 'warn',
+        ]);
+        WorkerCompatibilityFleet::clear();
+
+        try {
+            WorkerCompatibilityFleet::recordForNamespace(
+                'default',
+                ['build-b'],
+                'database',
+                'default',
+                'worker-b',
+            );
+
+            $response = $this->getJson('/api/cluster/info')->assertOk();
+
+            $response
+                ->assertJsonPath('coordination_health.status', 'warning')
+                ->assertJsonPath('coordination_health.http_status', 200);
+
+            $this->assertContains(
+                'worker_compatibility',
+                $response->json('coordination_health.warning_checks', []),
+            );
+        } finally {
+            WorkerCompatibilityFleet::clear();
+        }
+    }
+
+    public function test_it_fails_coordination_health_closed_when_fleet_validation_requires_compatible_workers(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        config([
+            'workflows.v2.compatibility.current' => 'build-a',
+            'workflows.v2.compatibility.supported' => ['build-a'],
+            'workflows.v2.compatibility.namespace' => 'default',
+            'workflows.v2.fleet.validation_mode' => 'fail',
+        ]);
+        WorkerCompatibilityFleet::clear();
+
+        try {
+            WorkerCompatibilityFleet::recordForNamespace(
+                'default',
+                ['build-b'],
+                'database',
+                'default',
+                'worker-b',
+            );
+
+            $response = $this->getJson('/api/cluster/info')->assertOk();
+
+            $response
+                ->assertJsonPath('coordination_health.status', 'error')
+                ->assertJsonPath('coordination_health.http_status', 503);
+
+            $this->assertContains(
+                'worker_compatibility',
+                $response->json('coordination_health.error_checks', []),
+            );
+        } finally {
+            WorkerCompatibilityFleet::clear();
+        }
     }
 
     public function test_it_publishes_matching_role_wake_ownership_for_dedicated_matching_shape(): void
