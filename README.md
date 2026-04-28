@@ -492,7 +492,7 @@ workflow-task command payload.
 
 ### System
 - `GET /api/health` — Health check
-- `GET /api/ready` — Readiness check for migrations, default namespace, cache, and auth config
+- `GET /api/ready` — Readiness check for migrations, default namespace, cache, auth config, and workflow v2 rollout-safety health
 - `GET /api/cluster/info` — Server capabilities, role topology, and version
 - `GET /api/system/metrics` — Server metrics including bounded stuck workflow-task diagnostics
 - `GET /api/system/operator-metrics` — Full operator metrics snapshot (runs, tasks, backlog, repair, workers/fleet, backend, structural limits) for rollout-safety coordination health
@@ -974,7 +974,10 @@ Override those framework variables for MySQL/PostgreSQL/Redis deployments.
 Across Compose, plain Docker, and Kubernetes, the supported bootstrap contract
 is the same: run the image's `server-bootstrap` command once before starting the
 server and worker processes. `/api/health` is a liveness check; `/api/ready`
-is the readiness check to gate workers and load balancers.
+is the readiness check to gate workers and load balancers. After bootstrap it
+also evaluates the workflow v2 rollout-safety snapshot, so fail-closed health
+such as `DW_V2_FLEET_VALIDATION_MODE=fail` and error-severity backend
+admission issues keep the server unready until corrected.
 
 ### Dedicated Matching-Role Daemon
 

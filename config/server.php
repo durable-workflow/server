@@ -59,6 +59,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Workflow Fleet Validation Mode
+    |--------------------------------------------------------------------------
+    |
+    | Mirrors the documented fleet-compatibility validation contract into the
+    | installed workflow package config at boot time so config:cache preserves
+    | the operator choice.
+    |
+    */
+
+    'fleet_validation_mode' => EnvAuditor::env('DW_V2_FLEET_VALIDATION_MODE', 'WORKFLOW_V2_FLEET_VALIDATION_MODE', 'warn'),
+
+    /*
+    |--------------------------------------------------------------------------
     | External Executor Config
     |--------------------------------------------------------------------------
     |

@@ -9,6 +9,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\Fixtures\HeaderAuthProvider;
 use Tests\TestCase;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class HealthControllerTest extends TestCase
 {
@@ -89,7 +90,9 @@ class HealthControllerTest extends TestCase
             ->assertJsonPath('checks.default_namespace.status', 'ok')
             ->assertJsonPath('checks.default_namespace.namespace', 'default')
             ->assertJsonPath('checks.cache.status', 'ok')
-            ->assertJsonPath('checks.auth.status', 'ok');
+            ->assertJsonPath('checks.auth.status', 'ok')
+            ->assertJsonPath('checks.workflow_v2.status', 'ok')
+            ->assertJsonPath('checks.workflow_v2.http_status', 200);
     }
 
     public function test_readiness_check_reports_missing_default_namespace_before_bootstrap_seed(): void
@@ -197,5 +200,90 @@ class HealthControllerTest extends TestCase
             ->assertJsonPath('checks.auth.driver', 'custom')
             ->assertJsonPath('checks.auth.provider', \stdClass::class)
             ->assertJsonPath('checks.auth.remediation', 'Set DW_AUTH_PROVIDER to a Laravel-resolvable class implementing App\Contracts\AuthProvider.');
+    }
+
+    public function test_readiness_check_stays_ready_when_workflow_health_only_warns(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        config([
+            'workflows.v2.compatibility.current' => 'build-a',
+            'workflows.v2.compatibility.supported' => ['build-a'],
+            'workflows.v2.compatibility.namespace' => 'default',
+            'workflows.v2.fleet.validation_mode' => 'warn',
+        ]);
+        WorkerCompatibilityFleet::clear();
+
+        try {
+            WorkerCompatibilityFleet::recordForNamespace(
+                'default',
+                ['build-b'],
+                'database',
+                'default',
+                'worker-b',
+            );
+
+            $response = $this->getJson('/api/ready');
+
+            $response->assertOk()
+                ->assertJsonPath('status', 'ready')
+                ->assertJsonPath('checks.workflow_v2.status', 'warning')
+                ->assertJsonPath('checks.workflow_v2.http_status', 200);
+
+            $this->assertContains(
+                'worker_compatibility',
+                $response->json('checks.workflow_v2.warning_checks', []),
+            );
+            $this->assertSame([], $response->json('checks.workflow_v2.error_checks', []));
+        } finally {
+            WorkerCompatibilityFleet::clear();
+        }
+    }
+
+    public function test_readiness_check_fails_closed_when_workflow_health_errors(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        config([
+            'workflows.v2.compatibility.current' => 'build-a',
+            'workflows.v2.compatibility.supported' => ['build-a'],
+            'workflows.v2.compatibility.namespace' => 'default',
+            'workflows.v2.fleet.validation_mode' => 'fail',
+        ]);
+        WorkerCompatibilityFleet::clear();
+
+        try {
+            WorkerCompatibilityFleet::recordForNamespace(
+                'default',
+                ['build-b'],
+                'database',
+                'default',
+                'worker-b',
+            );
+
+            $response = $this->getJson('/api/ready');
+
+            $response->assertStatus(503)
+                ->assertJsonPath('status', 'not_ready')
+                ->assertJsonPath('checks.workflow_v2.status', 'error')
+                ->assertJsonPath('checks.workflow_v2.http_status', 503);
+
+            $this->assertContains(
+                'worker_compatibility',
+                $response->json('checks.workflow_v2.error_checks', []),
+            );
+        } finally {
+            WorkerCompatibilityFleet::clear();
+        }
     }
 }

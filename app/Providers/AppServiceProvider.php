@@ -64,6 +64,10 @@ class AppServiceProvider extends ServiceProvider
         // failures in service mode.
         WorkflowPackageApiFloor::assert();
 
+        config([
+            'workflows.v2.fleet.validation_mode' => config('server.fleet_validation_mode', 'warn'),
+        ]);
+
         if (config('server.mode') === 'service') {
             $inner = $this->app->make(BusDispatcher::class);
             $this->app->instance(BusDispatcher::class, new ServiceModeBusDispatcher($inner));

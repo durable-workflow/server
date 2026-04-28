@@ -6,6 +6,7 @@ use App\Contracts\AuthProvider;
 use App\Models\WorkflowNamespace;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Workflow\V2\Support\HealthCheck;
 
 final class ServerReadiness
 {
@@ -36,13 +37,19 @@ final class ServerReadiness
             'cache' => $this->cacheCheck(),
             'auth' => $this->authCheck(),
         ];
+        $checks['workflow_v2'] = $this->workflowCheck($checks);
 
         return [
             'ready' => collect($checks)->every(
-                static fn (array $check): bool => ($check['status'] ?? null) === 'ok',
+                static fn (array $check): bool => self::statusAllowsReady($check['status'] ?? null),
             ),
             'checks' => $checks,
         ];
+    }
+
+    private static function statusAllowsReady(mixed $status): bool
+    {
+        return in_array($status, ['ok', 'warning'], true);
     }
 
     /**
@@ -237,6 +244,93 @@ final class ServerReadiness
             'status' => 'invalid',
             'driver' => $driver,
             'remediation' => 'Set DW_AUTH_DRIVER to none, token, or signature.',
+        ];
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $checks
+     * @return array<string, mixed>
+     */
+    private function workflowCheck(array $checks): array
+    {
+        $blockedBy = [];
+
+        foreach (['database', 'migrations'] as $key) {
+            if (! self::statusAllowsReady($checks[$key]['status'] ?? null)) {
+                $blockedBy[] = $key;
+            }
+        }
+
+        if ($blockedBy !== []) {
+            return [
+                'status' => 'blocked',
+                'blocked_by' => $blockedBy,
+                'remediation' => 'Restore database connectivity and migrate the workflow tables before relying on workflow v2 rollout-safety health.',
+            ];
+        }
+
+        try {
+            $snapshot = HealthCheck::snapshot();
+        } catch (\Throwable $exception) {
+            return [
+                'status' => 'unavailable',
+                'message' => $exception->getMessage(),
+            ];
+        }
+
+        $status = (string) ($snapshot['status'] ?? 'error');
+        $checksList = [];
+        $warningChecks = [];
+        $errorChecks = [];
+        $fleetValidationMode = config('workflows.v2.fleet.validation_mode', 'warn');
+
+        foreach (is_array($snapshot['checks'] ?? null) ? $snapshot['checks'] : [] as $check) {
+            if (! is_array($check)) {
+                continue;
+            }
+
+            $entry = [
+                'name' => is_string($check['name'] ?? null) ? $check['name'] : 'unknown',
+                'status' => is_string($check['status'] ?? null) ? $check['status'] : 'unknown',
+                'category' => is_string($check['category'] ?? null) ? $check['category'] : null,
+                'message' => is_string($check['message'] ?? null) ? $check['message'] : null,
+            ];
+
+            if (
+                $fleetValidationMode === 'fail'
+                && $entry['name'] === 'worker_compatibility'
+                && $entry['status'] === 'warning'
+            ) {
+                $entry['status'] = 'error';
+            }
+
+            $checksList[] = $entry;
+
+            if ($entry['status'] === 'warning') {
+                $warningChecks[] = $entry['name'];
+            }
+
+            if ($entry['status'] === 'error') {
+                $errorChecks[] = $entry['name'];
+            }
+        }
+
+        if ($errorChecks !== []) {
+            $status = 'error';
+        } elseif ($warningChecks !== []) {
+            $status = 'warning';
+        } else {
+            $status = 'ok';
+        }
+
+        return [
+            'status' => in_array($status, ['ok', 'warning'], true) ? $status : 'error',
+            'generated_at' => is_string($snapshot['generated_at'] ?? null) ? $snapshot['generated_at'] : null,
+            'http_status' => $status === 'error' ? 503 : 200,
+            'categories' => is_array($snapshot['categories'] ?? null) ? $snapshot['categories'] : [],
+            'warning_checks' => $warningChecks,
+            'error_checks' => $errorChecks,
+            'checks' => $checksList,
         ];
     }
 }
