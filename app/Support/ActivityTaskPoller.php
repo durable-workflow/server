@@ -18,6 +18,7 @@ final class ActivityTaskPoller
 
     /**
      * @param  list<string>  $supportedActivityTypes
+     * @return array{task: array<string, mixed>|null, poll_status: string}
      */
     public function poll(
         string $namespace,
@@ -25,11 +26,16 @@ final class ActivityTaskPoller
         string $leaseOwner,
         ?string $buildId,
         array $supportedActivityTypes = [],
-    ): ?array {
+    ): array {
         $limit = max(10, max(1, (int) config('server.polling.max_tasks_per_poll', 1)) * 10);
         $nextProbeAt = null;
+        $resolvedResult = [
+            'task' => null,
+            'poll_status' => 'empty',
+            'next_probe_at' => null,
+        ];
 
-        return $this->longPoller->until(
+        $task = $this->longPoller->until(
             function () use (
                 $namespace,
                 $taskQueue,
@@ -38,8 +44,9 @@ final class ActivityTaskPoller
                 $supportedActivityTypes,
                 $limit,
                 &$nextProbeAt,
+                &$resolvedResult,
             ): ?array {
-                $result = $this->nextTask(
+                $resolvedResult = $this->nextTask(
                     $namespace,
                     $taskQueue,
                     $leaseOwner,
@@ -47,9 +54,9 @@ final class ActivityTaskPoller
                     $limit,
                     $supportedActivityTypes,
                 );
-                $nextProbeAt = $result['next_probe_at'] ?? null;
+                $nextProbeAt = $resolvedResult['next_probe_at'] ?? null;
 
-                return $result['task'] ?? null;
+                return $resolvedResult['task'] ?? null;
             },
             static fn (?array $task): bool => is_array($task),
             wakeChannels: $this->signals->activityTaskPollChannels($namespace, null, $taskQueue),
@@ -57,10 +64,16 @@ final class ActivityTaskPoller
                 return $nextProbeAt;
             },
         );
+
+        return [
+            'task' => $task,
+            'poll_status' => $resolvedResult['poll_status'] ?? $this->defaultPollStatus($task),
+        ];
     }
 
     /**
      * @param  list<string>  $supportedActivityTypes
+     * @return array{task: array<string, mixed>|null, poll_status: string, next_probe_at: \DateTimeInterface|null}
      */
     private function nextTask(
         string $namespace,
@@ -81,6 +94,9 @@ final class ActivityTaskPoller
 
         return [
             'task' => $task,
+            'poll_status' => is_array($task)
+                ? 'leased'
+                : $this->emptyPollStatus($namespace, $taskQueue, TaskQueueAdmission::ACTIVITY_TASKS),
             'next_probe_at' => $task === null
                 ? $this->nextVisibleReadyAt($namespace, $taskQueue, $buildId)
                 : null,
@@ -164,5 +180,22 @@ final class ActivityTaskPoller
         $task = $query->first();
 
         return $task?->available_at;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $task
+     */
+    private function defaultPollStatus(?array $task): string
+    {
+        return is_array($task) ? 'leased' : 'empty';
+    }
+
+    private function emptyPollStatus(string $namespace, string $taskQueue, string $taskKind): string
+    {
+        $status = $this->admission->budget($namespace, $taskQueue, $taskKind)['status'] ?? null;
+
+        return in_array($status, ['throttled', 'unavailable'], true)
+            ? $status
+            : 'empty';
     }
 }

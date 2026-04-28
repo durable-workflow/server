@@ -62,13 +62,14 @@ class ActivityTaskController
             ? $worker->build_id
             : null;
 
-        $claim = $this->activityTaskPoller->poll(
+        $poll = $this->activityTaskPoller->poll(
             namespace: $namespace,
             taskQueue: $validated['task_queue'],
             leaseOwner: $validated['worker_id'],
             buildId: $registeredBuildId,
             supportedActivityTypes: $this->nonEmptyStringArray($worker->supported_activity_types),
         );
+        $claim = $poll['task'] ?? null;
 
         $deadlines = $claim === null ? null : $this->executionDeadlines($claim['activity_execution_id'] ?? null);
         $externalExecutor = $claim === null ? null : $this->externalExecutorMapping(
@@ -100,6 +101,9 @@ class ActivityTaskController
                 'deadlines' => $deadlines,
                 'external_executor' => $externalExecutor,
             ], static fn (mixed $v): bool => $v !== null),
+            'poll_status' => is_string($poll['poll_status'] ?? null)
+                ? $poll['poll_status']
+                : ($claim === null ? 'empty' : 'leased'),
         ]);
     }
 

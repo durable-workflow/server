@@ -28,7 +28,7 @@ class WorkflowTaskPollRequestStore
     }
 
     /**
-     * @return array{resolved: bool, task: array<string, mixed>|null}
+     * @return array{resolved: bool, task: array<string, mixed>|null, poll_status: string|null}
      */
     public function result(
         string $namespace,
@@ -45,19 +45,22 @@ class WorkflowTaskPollRequestStore
             return [
                 'resolved' => false,
                 'task' => null,
+                'poll_status' => null,
             ];
         }
 
         $task = $payload['task'] ?? null;
+        $pollStatus = $this->normalizePollStatus($payload['poll_status'] ?? null, $task);
 
         return [
             'resolved' => true,
             'task' => is_array($task) ? $task : null,
+            'poll_status' => $pollStatus,
         ];
     }
 
     /**
-     * @return array{resolved: bool, task: array<string, mixed>|null}
+     * @return array{resolved: bool, task: array<string, mixed>|null, poll_status: string|null}
      */
     public function waitForResult(
         string $namespace,
@@ -81,6 +84,7 @@ class WorkflowTaskPollRequestStore
                 return [
                     'resolved' => false,
                     'task' => null,
+                    'poll_status' => null,
                 ];
             }
 
@@ -100,12 +104,14 @@ class WorkflowTaskPollRequestStore
         string $leaseOwner,
         string $pollRequestId,
         ?array $task,
+        string $pollStatus,
     ): void {
         $this->store()->put(
             $this->resultKey($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId),
             [
                 'resolved' => true,
                 'task' => $task,
+                'poll_status' => $this->normalizePollStatus($pollStatus, $task),
             ],
             now()->addSeconds($this->resultTtlSeconds($task)),
         );
@@ -192,6 +198,18 @@ class WorkflowTaskPollRequestStore
         } catch (\Throwable) {
             return null;
         }
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $task
+     */
+    private function normalizePollStatus(mixed $pollStatus, ?array $task): string
+    {
+        if (is_string($pollStatus) && $pollStatus !== '') {
+            return $pollStatus;
+        }
+
+        return is_array($task) ? 'leased' : 'empty';
     }
 
     private function pendingKey(

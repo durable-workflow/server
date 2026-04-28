@@ -25,10 +25,8 @@ final class WorkflowTaskPoller
     ) {}
 
     /**
-     * @return array<string, mixed>|null
-     */
-    /**
      * @param  list<string>  $supportedWorkflowTypes
+     * @return array{task: array<string, mixed>|null, poll_status: string}
      */
     public function poll(
         Request $request,
@@ -40,7 +38,7 @@ final class WorkflowTaskPoller
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
-    ): ?array {
+    ): array {
         $pollRequestId = $this->nonEmptyString($pollRequestId);
 
         if ($pollRequestId === null) {
@@ -71,10 +69,8 @@ final class WorkflowTaskPoller
     }
 
     /**
-     * @return array<string, mixed>|null
-     */
-    /**
      * @param  list<string>  $supportedWorkflowTypes
+     * @return array{task: array<string, mixed>|null, poll_status: string}
      */
     private function coordinatedPoll(
         Request $request,
@@ -86,7 +82,7 @@ final class WorkflowTaskPoller
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
-    ): ?array {
+    ): array {
         for ($attempt = 0; $attempt < 3; $attempt++) {
             $cached = $this->cachedPollResult(
                 $namespace,
@@ -97,7 +93,10 @@ final class WorkflowTaskPoller
             );
 
             if ($cached['resolved']) {
-                return $cached['task'];
+                return [
+                    'task' => $cached['task'],
+                    'poll_status' => $cached['poll_status'] ?? $this->defaultPollStatus($cached['task']),
+                ];
             }
 
             if ($this->pollRequests->tryStart(
@@ -129,7 +128,10 @@ final class WorkflowTaskPoller
             );
 
             if ($observed['resolved']) {
-                return $observed['task'];
+                return [
+                    'task' => $observed['task'],
+                    'poll_status' => $observed['poll_status'] ?? $this->defaultPollStatus($observed['task']),
+                ];
             }
         }
 
@@ -141,11 +143,14 @@ final class WorkflowTaskPoller
             $pollRequestId,
         );
 
-        return $cached['task'];
+        return [
+            'task' => $cached['task'],
+            'poll_status' => $cached['poll_status'] ?? $this->defaultPollStatus($cached['task']),
+        ];
     }
 
     /**
-     * @return array{resolved: bool, task: array<string, mixed>|null}
+     * @return array{resolved: bool, task: array<string, mixed>|null, poll_status: string|null}
      */
     private function cachedPollResult(
         string $namespace,
@@ -186,12 +191,14 @@ final class WorkflowTaskPoller
                     $leaseOwner,
                     $pollRequestId,
                     $refreshedTask,
+                    $cached['poll_status'] ?? $this->defaultPollStatus($refreshedTask),
                 );
             }
 
             return [
                 'resolved' => true,
                 'task' => $refreshedTask,
+                'poll_status' => $cached['poll_status'] ?? $this->defaultPollStatus($refreshedTask),
             ];
         }
 
@@ -206,14 +213,13 @@ final class WorkflowTaskPoller
         return [
             'resolved' => false,
             'task' => null,
+            'poll_status' => null,
         ];
     }
 
     /**
-     * @return array<string, mixed>|null
-     */
-    /**
      * @param  list<string>  $supportedWorkflowTypes
+     * @return array{task: array<string, mixed>|null, poll_status: string}
      */
     private function runCoordinatedPollLeader(
         Request $request,
@@ -225,7 +231,7 @@ final class WorkflowTaskPoller
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
-    ): ?array {
+    ): array {
         try {
             $task = $this->performPoll(
                 request: $request,
@@ -256,17 +262,16 @@ final class WorkflowTaskPoller
             $buildId,
             $leaseOwner,
             $pollRequestId,
-            $task,
+            $task['task'] ?? null,
+            $task['poll_status'] ?? $this->defaultPollStatus($task['task'] ?? null),
         );
 
         return $task;
     }
 
     /**
-     * @return array<string, mixed>|null
-     */
-    /**
      * @param  list<string>  $supportedWorkflowTypes
+     * @return array{task: array<string, mixed>|null, poll_status: string}
      */
     private function performPoll(
         Request $request,
@@ -278,11 +283,16 @@ final class WorkflowTaskPoller
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
-    ): ?array {
+    ): array {
         $limit = max(10, max(1, (int) config('server.polling.max_tasks_per_poll', 1)) * 10);
         $nextProbeAt = null;
+        $resolvedResult = [
+            'task' => null,
+            'poll_status' => 'empty',
+            'next_probe_at' => null,
+        ];
 
-        return $this->longPoller->until(
+        $task = $this->longPoller->until(
             function () use (
                 $request,
                 $namespace,
@@ -294,8 +304,9 @@ final class WorkflowTaskPoller
                 $supportedWorkflowTypes,
                 $limit,
                 &$nextProbeAt,
+                &$resolvedResult,
             ): ?array {
-                $result = $this->nextTask(
+                $resolvedResult = $this->nextTask(
                     $request,
                     $namespace,
                     $taskQueue,
@@ -306,9 +317,9 @@ final class WorkflowTaskPoller
                     $acceptHistoryEncoding,
                     $supportedWorkflowTypes,
                 );
-                $nextProbeAt = $result['next_probe_at'] ?? null;
+                $nextProbeAt = $resolvedResult['next_probe_at'] ?? null;
 
-                return $result['task'] ?? null;
+                return $resolvedResult['task'] ?? null;
             },
             static fn (?array $task): bool => is_array($task),
             wakeChannels: $this->signals->workflowTaskPollChannels($namespace, null, $taskQueue),
@@ -316,13 +327,16 @@ final class WorkflowTaskPoller
                 return $nextProbeAt;
             },
         );
+
+        return [
+            'task' => $task,
+            'poll_status' => $resolvedResult['poll_status'] ?? $this->defaultPollStatus($task),
+        ];
     }
 
     /**
-     * @return array{task: array<string, mixed>|null, next_probe_at: \DateTimeInterface|null}
-     */
-    /**
      * @param  list<string>  $supportedWorkflowTypes
+     * @return array{task: array<string, mixed>|null, poll_status: string, next_probe_at: \DateTimeInterface|null}
      */
     private function nextTask(
         Request $request,
@@ -356,6 +370,7 @@ final class WorkflowTaskPoller
         if (is_array($task)) {
             return [
                 'task' => $task,
+                'poll_status' => 'leased',
                 'next_probe_at' => null,
             ];
         }
@@ -380,6 +395,7 @@ final class WorkflowTaskPoller
             if (is_array($task)) {
                 return [
                     'task' => $task,
+                    'poll_status' => 'leased',
                     'next_probe_at' => null,
                 ];
             }
@@ -387,6 +403,7 @@ final class WorkflowTaskPoller
 
         return [
             'task' => null,
+            'poll_status' => $this->emptyPollStatus($namespace, $taskQueue, TaskQueueAdmission::WORKFLOW_TASKS),
             'next_probe_at' => $this->nextVisibleReadyAt($namespace, $taskQueue, $buildId),
         ];
     }
@@ -952,5 +969,22 @@ final class WorkflowTaskPoller
         return is_string($value) && trim($value) !== ''
             ? trim($value)
             : null;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $task
+     */
+    private function defaultPollStatus(?array $task): string
+    {
+        return is_array($task) ? 'leased' : 'empty';
+    }
+
+    private function emptyPollStatus(string $namespace, string $taskQueue, string $taskKind): string
+    {
+        $status = $this->admission->budget($namespace, $taskQueue, $taskKind)['status'] ?? null;
+
+        return in_array($status, ['throttled', 'unavailable'], true)
+            ? $status
+            : 'empty';
     }
 }

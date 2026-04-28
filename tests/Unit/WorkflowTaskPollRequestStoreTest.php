@@ -39,16 +39,19 @@ class WorkflowTaskPollRequestStoreTest extends TestCase
             'worker-a',
             'poll-1',
             $task,
+            'leased',
         );
 
         $this->assertSame([
             'resolved' => true,
             'task' => $task,
+            'poll_status' => 'leased',
         ], $store->result('default', 'external-workflows', 'build-a', 'worker-a', 'poll-1'));
 
         $this->assertSame([
             'resolved' => false,
             'task' => null,
+            'poll_status' => null,
         ], $store->result('default', 'external-workflows', 'build-b', 'worker-a', 'poll-1'));
     }
 
@@ -82,7 +85,7 @@ class WorkflowTaskPollRequestStoreTest extends TestCase
 
         $store->afterPause = function (int $pauseCalls) use ($store, $task): void {
             if ($pauseCalls === 1) {
-                $store->rememberResult('default', 'external-workflows', null, 'worker-a', 'poll-2', $task);
+                $store->rememberResult('default', 'external-workflows', null, 'worker-a', 'poll-2', $task, 'leased');
             }
         };
 
@@ -92,6 +95,7 @@ class WorkflowTaskPollRequestStoreTest extends TestCase
         $this->assertSame([
             'resolved' => true,
             'task' => $task,
+            'poll_status' => 'leased',
         ], $result);
     }
 
@@ -128,11 +132,12 @@ class WorkflowTaskPollRequestStoreTest extends TestCase
 
         $this->assertTrue($store->tryStart('default', 'external-workflows', null, 'worker-a', 'poll-empty-result'));
 
-        $store->rememberResult('default', 'external-workflows', null, 'worker-a', 'poll-empty-result', null);
+        $store->rememberResult('default', 'external-workflows', null, 'worker-a', 'poll-empty-result', null, 'empty');
 
         $this->assertSame([
             'resolved' => true,
             'task' => null,
+            'poll_status' => 'empty',
         ], $store->result('default', 'external-workflows', null, 'worker-a', 'poll-empty-result'));
 
         $this->travel(7)->seconds();
@@ -140,6 +145,7 @@ class WorkflowTaskPollRequestStoreTest extends TestCase
         $this->assertSame([
             'resolved' => false,
             'task' => null,
+            'poll_status' => null,
         ], $store->result('default', 'external-workflows', null, 'worker-a', 'poll-empty-result'));
     }
 }

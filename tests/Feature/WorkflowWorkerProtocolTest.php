@@ -464,7 +464,39 @@ class WorkflowWorkerProtocolTest extends TestCase
                 'task_queue' => 'external-workflows',
             ])
             ->assertOk()
-            ->assertJsonPath('task', null);
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
+    }
+
+    public function test_duplicate_empty_poll_request_ids_replay_the_same_poll_status(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+        $this->registerWorker('php-worker-empty-poll', 'external-workflows');
+
+        $first = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-empty-poll',
+                'task_queue' => 'external-workflows',
+                'poll_request_id' => 'empty-poll-request-1',
+            ]);
+
+        $first->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
+
+        $second = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-empty-poll',
+                'task_queue' => 'external-workflows',
+                'poll_request_id' => 'empty-poll-request-1',
+            ]);
+
+        $second->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
     }
 
     public function test_it_uses_a_server_local_lease_counter_for_workflow_task_attempts(): void

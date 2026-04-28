@@ -61,7 +61,8 @@ class TaskQueueAdmissionTest extends TestCase
                 'task_queue' => 'external-workflows',
             ])
             ->assertOk()
-            ->assertJsonPath('task', null);
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'throttled');
 
         $this->withHeaders($this->apiHeaders())
             ->getJson('/api/task-queues/external-workflows')
@@ -381,7 +382,8 @@ class TaskQueueAdmissionTest extends TestCase
                 'task_queue' => 'external-activities',
             ])
             ->assertOk()
-            ->assertJsonPath('task', null);
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'throttled');
 
         $this->withHeaders($this->apiHeaders())
             ->getJson('/api/task-queues/external-activities')

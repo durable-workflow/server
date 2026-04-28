@@ -84,6 +84,7 @@ class WorkerProtocol
      *     long_poll_timeout: int,
      *     supported_workflow_task_commands: list<string>,
      *     workflow_task_poll_request_idempotency: bool,
+     *     poll_status: bool,
      *     history_page_size_default: int,
      *     history_page_size_max: int,
      *     query_tasks: bool,
@@ -111,6 +112,7 @@ class WorkerProtocol
             ),
             'supported_workflow_task_commands' => self::supportedWorkflowTaskCommands(),
             'workflow_task_poll_request_idempotency' => true,
+            'poll_status' => true,
             'history_page_size_default' => (int) config(
                 'server.worker_protocol.history_page_size_default',
                 WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,

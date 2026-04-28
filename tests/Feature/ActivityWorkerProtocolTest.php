@@ -473,7 +473,8 @@ class ActivityWorkerProtocolTest extends TestCase
                 'task_queue' => 'external-activities',
             ])
             ->assertOk()
-            ->assertJsonPath('task', null);
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
 
         // Worker registered for the matching activity type should receive the task.
         $this->registerWorker(

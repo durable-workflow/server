@@ -87,8 +87,8 @@ class WorkerProtocolSuccessContractTest extends TestCase
                     'poll_request_id' => 'poll-contract-1',
                 ],
                 'status' => 200,
-                'structure' => ['task', 'protocol_version', 'server_capabilities'],
-                'paths' => ['task' => null],
+                'structure' => ['task', 'poll_status', 'protocol_version', 'server_capabilities'],
+                'paths' => ['task' => null, 'poll_status' => 'empty'],
             ],
             'activity-tasks.poll_empty' => [
                 'case' => 'activity-tasks.poll_empty',
@@ -98,8 +98,8 @@ class WorkerProtocolSuccessContractTest extends TestCase
                     'task_queue' => 'contract-queue',
                 ],
                 'status' => 200,
-                'structure' => ['task', 'protocol_version', 'server_capabilities'],
-                'paths' => ['task' => null],
+                'structure' => ['task', 'poll_status', 'protocol_version', 'server_capabilities'],
+                'paths' => ['task' => null, 'poll_status' => 'empty'],
             ],
             'query-tasks.poll_empty' => [
                 'case' => 'query-tasks.poll_empty',
@@ -109,8 +109,8 @@ class WorkerProtocolSuccessContractTest extends TestCase
                     'task_queue' => 'contract-queue',
                 ],
                 'status' => 200,
-                'structure' => ['task', 'protocol_version', 'server_capabilities'],
-                'paths' => ['task' => null],
+                'structure' => ['task', 'poll_status', 'protocol_version', 'server_capabilities'],
+                'paths' => ['task' => null, 'poll_status' => 'empty'],
             ],
         ];
     }
@@ -138,6 +138,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
             ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
             ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
+            ->assertJsonPath('server_capabilities.poll_status', true)
             ->assertJsonPath('server_capabilities.supported_workflow_task_commands.0', 'complete_workflow')
             ->assertJsonPath('server_capabilities.activity_retry_policy', true)
             ->assertJsonPath('server_capabilities.activity_timeouts', true)
@@ -186,6 +187,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
         ], $this->workerProtocolHeaders());
 
         $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('poll_status', 'leased')
             ->assertJsonPath('task.workflow_id', 'wf-worker-success-contract')
             ->assertJsonPath('task.run_id', $runId)
             ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow')

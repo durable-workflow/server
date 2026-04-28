@@ -335,7 +335,7 @@ class WorkerController
             ? $worker->build_id
             : null;
 
-        $task = $this->workflowTaskPoller->poll(
+        $poll = $this->workflowTaskPoller->poll(
             request: $request,
             namespace: $namespace,
             taskQueue: $validated['task_queue'],
@@ -347,10 +347,13 @@ class WorkerController
             supportedWorkflowTypes: $this->nonEmptyStringArray($worker->supported_workflow_types),
         );
 
-        $task = $this->formatTaskHistoryPagination($task);
+        $task = $this->formatTaskHistoryPagination($poll['task'] ?? null);
 
         return WorkerProtocol::json([
             'task' => $task,
+            'poll_status' => is_string($poll['poll_status'] ?? null)
+                ? $poll['poll_status']
+                : ($task === null ? 'empty' : 'leased'),
         ]);
     }
 
@@ -841,6 +844,7 @@ class WorkerController
         } catch (QueryTaskQueueUnavailableException $exception) {
             return WorkerProtocol::json([
                 'task' => null,
+                'poll_status' => 'unavailable',
                 'error' => 'Query task queue is temporarily unavailable.',
                 'reason' => 'query_task_queue_unavailable',
                 'message' => $exception->getMessage(),
@@ -851,6 +855,7 @@ class WorkerController
 
         return WorkerProtocol::json([
             'task' => $task,
+            'poll_status' => is_array($task) ? 'leased' : 'empty',
         ]);
     }
 
