@@ -10,6 +10,8 @@ final class ServerTopology
 
     public const VERSION = 4;
 
+    private const DEFAULT_SHAPE = 'standalone_server';
+
     private const SUPPORTED_SHAPES = [
         'embedded',
         'standalone_server',
@@ -25,11 +27,10 @@ final class ServerTopology
         'execution_plane',
     ];
 
-    private const CURRENT_SERVER_NODE_ROLES = [
-        'api_ingress',
-        'control_plane',
-        'matching',
-        'history_projection',
+    private const DEFAULT_PROCESS_CLASS_BY_SHAPE = [
+        'embedded' => 'application_process',
+        'standalone_server' => 'server_http_node',
+        'split_control_execution' => 'control_plane_node',
     ];
 
     /**
@@ -37,18 +38,23 @@ final class ServerTopology
      */
     public static function info(): array
     {
+        $shapeAssignments = self::shapeAssignments();
+        $currentShape = self::currentShape();
+        $currentProcessClass = self::currentProcessClass($currentShape, $shapeAssignments);
+        $currentRoles = self::rolesForProcessClass($currentShape, $currentProcessClass, $shapeAssignments);
+
         return [
             'schema' => self::SCHEMA,
             'version' => self::VERSION,
             'supported_shapes' => self::SUPPORTED_SHAPES,
             'role_vocabulary' => self::ROLE_VOCABULARY,
-            'current_shape' => 'standalone_server',
-            'current_process_class' => 'server_http_node',
-            'current_roles' => self::CURRENT_SERVER_NODE_ROLES,
+            'current_shape' => $currentShape,
+            'current_process_class' => $currentProcessClass,
+            'current_roles' => $currentRoles,
             'execution_mode' => self::executionMode(),
             'matching_role' => self::matchingRole(),
-            'role_catalog' => self::roleCatalog(),
-            'shape_assignments' => self::shapeAssignments(),
+            'role_catalog' => self::roleCatalog($currentRoles),
+            'shape_assignments' => $shapeAssignments,
             'authority_boundaries' => self::authorityBoundaries(),
             'authority_surfaces' => self::authoritySurfaces(),
             'failure_domains' => self::failureDomains(),
@@ -112,52 +118,107 @@ final class ServerTopology
      *     steady_state_interface: string
      * }>
      */
-    private static function roleCatalog(): array
+    private static function roleCatalog(array $currentRoles): array
     {
         return [
             'api_ingress' => [
                 'plane' => 'control',
-                'hosted_by_current_node' => true,
+                'hosted_by_current_node' => in_array('api_ingress', $currentRoles, true),
                 'runs_user_code' => false,
                 'accepts_external_http' => true,
                 'steady_state_interface' => 'external_http',
             ],
             'control_plane' => [
                 'plane' => 'control',
-                'hosted_by_current_node' => true,
+                'hosted_by_current_node' => in_array('control_plane', $currentRoles, true),
                 'runs_user_code' => false,
                 'accepts_external_http' => true,
                 'steady_state_interface' => 'control_plane_contract',
             ],
             'matching' => [
                 'plane' => 'control',
-                'hosted_by_current_node' => true,
+                'hosted_by_current_node' => in_array('matching', $currentRoles, true),
                 'runs_user_code' => false,
                 'accepts_external_http' => true,
                 'steady_state_interface' => 'worker_poll_and_repair',
             ],
             'history_projection' => [
                 'plane' => 'control',
-                'hosted_by_current_node' => true,
+                'hosted_by_current_node' => in_array('history_projection', $currentRoles, true),
                 'runs_user_code' => false,
                 'accepts_external_http' => false,
                 'steady_state_interface' => 'projection_writer',
             ],
             'scheduler' => [
                 'plane' => 'control',
-                'hosted_by_current_node' => false,
+                'hosted_by_current_node' => in_array('scheduler', $currentRoles, true),
                 'runs_user_code' => false,
                 'accepts_external_http' => false,
                 'steady_state_interface' => 'schedule_runner',
             ],
             'execution_plane' => [
                 'plane' => 'execution',
-                'hosted_by_current_node' => false,
+                'hosted_by_current_node' => in_array('execution_plane', $currentRoles, true),
                 'runs_user_code' => true,
                 'accepts_external_http' => false,
                 'steady_state_interface' => 'worker_protocol',
             ],
         ];
+    }
+
+    private static function currentShape(): string
+    {
+        $shape = config('server.topology.shape');
+
+        if (is_string($shape) && in_array($shape, self::SUPPORTED_SHAPES, true)) {
+            return $shape;
+        }
+
+        return self::DEFAULT_SHAPE;
+    }
+
+    /**
+     * @param  array<string, array{process_classes: list<array{name: string, roles: list<string>}>}>  $shapeAssignments
+     */
+    private static function currentProcessClass(string $shape, array $shapeAssignments): string
+    {
+        $processClass = config('server.topology.process_class');
+
+        if (is_string($processClass) && $processClass !== '') {
+            $roles = self::rolesForProcessClass($shape, $processClass, $shapeAssignments);
+
+            if ($roles !== []) {
+                return $processClass;
+            }
+        }
+
+        return self::DEFAULT_PROCESS_CLASS_BY_SHAPE[$shape] ?? self::DEFAULT_PROCESS_CLASS_BY_SHAPE[self::DEFAULT_SHAPE];
+    }
+
+    /**
+     * @param  array<string, array{process_classes: list<array{name: string, roles: list<string>}>}>  $shapeAssignments
+     * @return list<string>
+     */
+    private static function rolesForProcessClass(string $shape, string $processClass, array $shapeAssignments): array
+    {
+        $shapeConfig = $shapeAssignments[$shape] ?? null;
+
+        if (! is_array($shapeConfig)) {
+            return [];
+        }
+
+        foreach ($shapeConfig['process_classes'] as $class) {
+            if (($class['name'] ?? null) !== $processClass) {
+                continue;
+            }
+
+            return array_values(array_filter(
+                $class['roles'] ?? [],
+                static fn (mixed $role): bool => is_string($role) && $role !== '',
+            ));
+        }
+
+        return [];
     }
 
     /**

@@ -664,11 +664,15 @@ Cluster discovery also publishes a `topology` manifest. It freezes the server's
 role vocabulary (`api_ingress`, `control_plane`, `matching`,
 `history_projection`, `scheduler`, `execution_plane`), the product's supported
 deployment shapes (`embedded`, `standalone_server`,
-`split_control_execution`), the roles currently hosted by the HTTP node, and
-the current execution mode. `execution_mode` is `remote_worker_protocol` in the
-default service-mode deployment and switches to `local_queue_worker` when
-`DW_MODE=embedded` routes workflow and activity task execution through local
-Laravel queue workers. `topology.matching_role` adds the live matching-role
+`split_control_execution`), the roles currently hosted by this node's
+configured process class, and the current execution mode. `execution_mode` is
+`remote_worker_protocol` in the default service-mode deployment and switches to
+`local_queue_worker` when `DW_MODE=embedded` routes workflow and activity task
+execution through local Laravel queue workers. Set
+`DW_SERVER_TOPOLOGY_SHAPE` and `DW_SERVER_PROCESS_CLASS` when a deployment
+splits scheduler, matching, or execution work away from the default
+`server_http_node` so discovery reports the live node identity instead of a
+generic HTTP shape. `topology.matching_role` adds the live matching-role
 deployment knobs for that node: `queue_wake_enabled`, the matching-role
 `shape` (`in_worker` or `dedicated`), who owns the broad-poll wake
 (`worker_loop` or `dedicated_repair_pass`), the active `task_dispatch_mode`

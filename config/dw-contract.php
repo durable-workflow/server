@@ -66,6 +66,18 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_ID',
         ],
+        'DW_SERVER_TOPOLOGY_SHAPE' => [
+            'description' => 'Advertised topology shape for this node in cluster discovery (`embedded`, `standalone_server`, or `split_control_execution`).',
+            'default' => 'standalone_server',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_TOPOLOGY_SHAPE',
+        ],
+        'DW_SERVER_PROCESS_CLASS' => [
+            'description' => 'Advertised process class for this node within the selected topology shape, such as `server_http_node` or `scheduler_node`.',
+            'default' => 'server_http_node',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_PROCESS_CLASS',
+        ],
         'DW_SERVER_KEY' => [
             'description' => 'Optional server-internal runtime key. Docker images generate one automatically when unset.',
             'default' => 'generated at container boot',

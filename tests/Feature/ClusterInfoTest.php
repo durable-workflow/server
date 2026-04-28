@@ -237,6 +237,61 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('topology.execution_mode', 'local_queue_worker');
     }
 
+    public function test_it_can_publish_a_scheduler_process_class_for_standalone_nodes(): void
+    {
+        config([
+            'server.topology.shape' => 'standalone_server',
+            'server.topology.process_class' => 'scheduler_node',
+        ]);
+
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+
+        $response
+            ->assertJsonPath('topology.current_shape', 'standalone_server')
+            ->assertJsonPath('topology.current_process_class', 'scheduler_node')
+            ->assertJsonPath('topology.current_roles.0', 'scheduler')
+            ->assertJsonCount(1, 'topology.current_roles')
+            ->assertJsonPath('topology.role_catalog.scheduler.hosted_by_current_node', true)
+            ->assertJsonPath('topology.role_catalog.matching.hosted_by_current_node', false)
+            ->assertJsonPath('topology.role_catalog.execution_plane.hosted_by_current_node', false);
+    }
+
+    public function test_it_can_publish_a_split_control_execution_process_class(): void
+    {
+        config([
+            'server.topology.shape' => 'split_control_execution',
+            'server.topology.process_class' => 'matching_node',
+        ]);
+
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+
+        $response
+            ->assertJsonPath('topology.current_shape', 'split_control_execution')
+            ->assertJsonPath('topology.current_process_class', 'matching_node')
+            ->assertJsonPath('topology.current_roles.0', 'matching')
+            ->assertJsonCount(1, 'topology.current_roles')
+            ->assertJsonPath('topology.role_catalog.matching.hosted_by_current_node', true)
+            ->assertJsonPath('topology.role_catalog.control_plane.hosted_by_current_node', false)
+            ->assertJsonPath('topology.role_catalog.api_ingress.hosted_by_current_node', false);
+    }
+
+    public function test_it_falls_back_to_the_default_process_class_when_the_configured_class_does_not_match_the_shape(): void
+    {
+        config([
+            'server.topology.shape' => 'standalone_server',
+            'server.topology.process_class' => 'matching_node',
+        ]);
+
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+
+        $response
+            ->assertJsonPath('topology.current_shape', 'standalone_server')
+            ->assertJsonPath('topology.current_process_class', 'server_http_node')
+            ->assertJsonPath('topology.current_roles.0', 'api_ingress')
+            ->assertJsonPath('topology.role_catalog.matching.hosted_by_current_node', true)
+            ->assertJsonPath('topology.role_catalog.scheduler.hosted_by_current_node', false);
+    }
+
     public function test_it_publishes_a_versioned_coordination_health_manifest(): void
     {
         $response = $this->getJson('/api/cluster/info')->assertOk();

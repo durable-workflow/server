@@ -100,6 +100,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Topology Identity
+    |--------------------------------------------------------------------------
+    |
+    | Cluster discovery advertises the current node's deployment shape and
+    | process class so split-role fleets can distinguish HTTP/control,
+    | scheduler, matching, and execution nodes without reading compose files.
+    | Invalid values fail back to the documented standalone HTTP defaults.
+    |
+    */
+
+    'topology' => [
+        'shape' => EnvAuditor::env('DW_SERVER_TOPOLOGY_SHAPE', 'WORKFLOW_SERVER_TOPOLOGY_SHAPE', 'standalone_server'),
+        'process_class' => EnvAuditor::env('DW_SERVER_PROCESS_CLASS', 'WORKFLOW_SERVER_PROCESS_CLASS', 'server_http_node'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Default Namespace
     |--------------------------------------------------------------------------
     |
