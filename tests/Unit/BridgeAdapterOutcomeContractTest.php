@@ -23,8 +23,11 @@ class BridgeAdapterOutcomeContractTest extends TestCase
         $this->assertContains('provider_event_id', $manifest['idempotency']['key_sources']);
         $this->assertArrayHasKey('accepted', $manifest['outcomes']);
         $this->assertArrayHasKey('duplicate', $manifest['outcomes']);
+        $this->assertContains('compatibility_blocked', $manifest['rejection_reasons']);
+        $this->assertContains('instance_already_started', $manifest['rejection_reasons']);
         $this->assertContains('unknown_target', $manifest['rejection_reasons']);
         $this->assertContains('unsupported_routing', $manifest['rejection_reasons']);
+        $this->assertContains('task_queue_draining', $manifest['rejection_reasons']);
         $this->assertArrayHasKey('incident_webhook_signals_workflow', $manifest['reference_journeys']);
         $this->assertArrayHasKey('commerce_event_starts_workflow', $manifest['reference_journeys']);
     }
@@ -62,6 +65,9 @@ class BridgeAdapterOutcomeContractTest extends TestCase
         $this->assertContains('use_existing', $commerce['request']['target']['duplicate_policy']);
         $this->assertSame('started_new', $commerce['expected_outcomes']['first_delivery']['control_plane_outcome']);
         $this->assertSame('duplicate_start', $commerce['expected_outcomes']['redelivery']['reason']);
+        $this->assertSame('compatibility_blocked', $commerce['expected_outcomes']['incompatible_fleet']['reason']);
+        $this->assertSame(422, $commerce['expected_outcomes']['incompatible_fleet']['http_status']);
+        $this->assertSame('rejected_compatibility_blocked', $commerce['expected_outcomes']['incompatible_fleet']['control_plane_outcome']);
         $this->assertContains('business_key', $commerce['visibility']['redacted_target_fields']);
     }
 }

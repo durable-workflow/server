@@ -2,12 +2,16 @@
 
 namespace Tests\Feature;
 
+use App\Models\WorkerBuildIdRollout;
+use App\Models\WorkerRegistration;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class BridgeAdapterControllerTest extends TestCase
 {
@@ -22,6 +26,14 @@ class BridgeAdapterControllerTest extends TestCase
         $this->configureWorkflowTypes([
             'tests.interactive-command-workflow' => InteractiveCommandWorkflow::class,
         ]);
+        WorkerCompatibilityFleet::clear();
+    }
+
+    protected function tearDown(): void
+    {
+        WorkerCompatibilityFleet::clear();
+
+        parent::tearDown();
     }
 
     public function test_webhook_bridge_starts_workflow_and_dedupes_by_provider_event(): void
@@ -228,5 +240,110 @@ class BridgeAdapterControllerTest extends TestCase
             ->assertJsonPath('outcome', 'rejected')
             ->assertJsonPath('reason', 'unsupported_action')
             ->assertJsonPath('action', 'not_supported');
+    }
+
+    public function test_webhook_bridge_blocks_drained_task_queue_starts_without_an_active_worker_cohort(): void
+    {
+        Queue::fake();
+
+        WorkerRegistration::query()->create([
+            'worker_id' => 'draining-worker',
+            'namespace' => 'default',
+            'task_queue' => 'drain-queue',
+            'runtime' => 'php',
+            'sdk_version' => '1.0.0',
+            'build_id' => 'build-draining',
+            'supported_workflow_types' => ['tests.interactive-command-workflow'],
+            'workflow_definition_fingerprints' => [],
+            'supported_activity_types' => [],
+            'max_concurrent_workflow_tasks' => 100,
+            'max_concurrent_activity_tasks' => 100,
+            'last_heartbeat_at' => now(),
+            'status' => 'draining',
+        ]);
+
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'drain-queue',
+            'build_id' => 'build-draining',
+            'drain_intent' => 'draining',
+            'drained_at' => now(),
+        ]);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/bridge-adapters/webhook/stripe', [
+                'action' => 'start_workflow',
+                'idempotency_key' => 'stripe-event-drain-1',
+                'target' => [
+                    'workflow_id' => 'wf-bridge-drained-start',
+                    'workflow_type' => 'tests.interactive-command-workflow',
+                    'task_queue' => 'drain-queue',
+                ],
+            ]);
+
+        $response->assertStatus(422)
+            ->assertJsonPath('adapter', 'stripe')
+            ->assertJsonPath('action', 'start_workflow')
+            ->assertJsonPath('accepted', false)
+            ->assertJsonPath('outcome', 'rejected')
+            ->assertJsonPath('reason', 'task_queue_draining')
+            ->assertJsonPath('workflow_id', 'wf-bridge-drained-start')
+            ->assertJsonPath('workflow_type', 'tests.interactive-command-workflow')
+            ->assertJsonPath('task_queue', 'drain-queue')
+            ->assertJsonPath('routing_status', 'draining')
+            ->assertJsonPath('active_worker_count', 0)
+            ->assertJsonPath('draining_worker_count', 1)
+            ->assertJsonPath('stale_worker_count', 0)
+            ->assertJsonPath('draining_build_ids.0', 'build-draining')
+            ->assertJsonPath('drain_intent', 'draining')
+            ->assertJsonPath(
+                'message',
+                'Task queue [drain-queue] is draining and cannot accept new workflow starts until an active worker cohort is available.',
+            );
+
+        $this->assertFalse(WorkflowRun::query()->exists());
+    }
+
+    public function test_webhook_bridge_surfaces_fail_closed_start_rejection_detail(): void
+    {
+        Queue::fake();
+
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()->set('workflows.v2.fleet.validation_mode', 'fail');
+
+        WorkerCompatibilityFleet::record(['build-b'], 'redis', 'default', 'worker-build-b');
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/bridge-adapters/webhook/stripe', [
+                'action' => 'start_workflow',
+                'idempotency_key' => 'stripe-event-compat-1',
+                'target' => [
+                    'workflow_id' => 'wf-bridge-compatibility-blocked',
+                    'workflow_type' => 'tests.interactive-command-workflow',
+                ],
+            ]);
+
+        $response->assertStatus(422)
+            ->assertJsonPath('adapter', 'stripe')
+            ->assertJsonPath('action', 'start_workflow')
+            ->assertJsonPath('accepted', false)
+            ->assertJsonPath('outcome', 'rejected')
+            ->assertJsonPath('reason', 'compatibility_blocked')
+            ->assertJsonPath('rejection_reason', 'compatibility_blocked')
+            ->assertJsonPath('workflow_id', 'wf-bridge-compatibility-blocked')
+            ->assertJsonPath('run_id', null)
+            ->assertJsonPath('workflow_type', 'tests.interactive-command-workflow')
+            ->assertJsonPath('control_plane_outcome', 'rejected_compatibility_blocked')
+            ->assertJsonPath(
+                'message',
+                'Workflow instance [wf-bridge-compatibility-blocked] cannot start. Start blocked under fail validation mode. '
+                .'No active worker heartbeat advertises compatibility [build-a]. '
+                .'Active workers there advertise [build-b].',
+            );
+
+        $this->assertSame(0, WorkflowRun::query()->count());
     }
 }

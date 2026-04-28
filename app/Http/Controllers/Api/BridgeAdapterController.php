@@ -6,6 +6,7 @@ use App\Support\BridgeAdapterOutcomeContract;
 use App\Support\ControlPlaneProtocol;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\TaskQueueRoutingGate;
 use App\Support\WorkflowCommandContextFactory;
 use App\Support\WorkflowStartService;
 use Illuminate\Http\JsonResponse;
@@ -22,6 +23,7 @@ class BridgeAdapterController
     public function __construct(
         private readonly WorkflowStartService $workflowStartService,
         private readonly WorkflowControlPlane $workflowControlPlane,
+        private readonly TaskQueueRoutingGate $taskQueueRoutingGate,
         private readonly WorkflowCommandContextFactory $commandContexts,
         private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
     ) {}
@@ -111,6 +113,33 @@ class BridgeAdapterController
         $workflowId = is_string($startTarget['workflow_id'] ?? null)
             ? $startTarget['workflow_id']
             : $this->workflowIdFor($adapter, $idempotencyKey);
+        $taskQueue = is_string($startTarget['task_queue'] ?? null)
+            ? trim($startTarget['task_queue'])
+            : null;
+
+        if ($taskQueue !== null && $taskQueue !== '') {
+            $routingBlock = $this->taskQueueRoutingGate->workflowStartBlock((string) $namespace, $taskQueue);
+
+            if ($routingBlock !== null) {
+                return $this->rejected($request, $adapter, 'start_workflow', $idempotencyKey, 'task_queue_draining', array_filter([
+                    'message' => sprintf(
+                        'Task queue [%s] is draining and cannot accept new workflow starts until an active worker cohort is available.',
+                        $taskQueue,
+                    ),
+                    'target' => $this->redactedTarget($target + ['workflow_id' => $workflowId]),
+                    'correlation' => $correlation,
+                    'workflow_id' => $workflowId,
+                    'workflow_type' => $startTarget['workflow_type'],
+                    'task_queue' => $taskQueue,
+                    'routing_status' => $routingBlock['routing_status'],
+                    'active_worker_count' => $routingBlock['active_worker_count'],
+                    'draining_worker_count' => $routingBlock['draining_worker_count'],
+                    'stale_worker_count' => $routingBlock['stale_worker_count'],
+                    'draining_build_ids' => $routingBlock['draining_build_ids'],
+                    'drain_intent' => 'draining',
+                ], static fn (mixed $value): bool => $value !== null));
+            }
+        }
 
         try {
             $start = $this->workflowStartService->start(
@@ -150,7 +179,28 @@ class BridgeAdapterController
 
         NamespaceWorkflowScope::bind($namespace, $start['workflow_id'], $start['workflow_type']);
 
+        $started = (bool) ($start['started'] ?? false);
         $duplicate = $start['outcome'] === 'returned_existing_active';
+
+        if (! $started && ! $duplicate) {
+            return $this->rejected(
+                $request,
+                $adapter,
+                'start_workflow',
+                $idempotencyKey,
+                $start['rejection_reason'] ?? $start['reason'] ?? 'unsupported_routing',
+                array_filter([
+                    'message' => $start['message'] ?? null,
+                    'target' => $this->redactedTarget($target + ['workflow_id' => $start['workflow_id']]),
+                    'correlation' => $correlation,
+                    'workflow_id' => $start['workflow_id'],
+                    'run_id' => $start['run_id'],
+                    'workflow_type' => $start['workflow_type'],
+                    'rejection_reason' => $start['rejection_reason'] ?? null,
+                    'control_plane_outcome' => $start['outcome'],
+                ], static fn (mixed $value): bool => $value !== null),
+            );
+        }
 
         return $this->outcome($request, [
             'adapter' => $adapter,

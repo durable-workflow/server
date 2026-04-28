@@ -221,6 +221,7 @@ class WorkflowController
         }
 
         $workflowId = $start['workflow_id'];
+        $started = (bool) ($start['started'] ?? false);
 
         NamespaceWorkflowScope::bind(
             $namespace,
@@ -239,6 +240,11 @@ class WorkflowController
             'business_key' => $run?->business_key,
             'payload_codec' => $run?->payload_codec,
             'outcome' => $start['outcome'],
+            'command_status' => $started ? 'accepted' : 'rejected',
+            'command_source' => 'control_plane',
+            'reason' => $start['reason'],
+            'rejection_reason' => $start['rejection_reason'],
+            'message' => $start['message'],
         ], $this->startStatusCode($start['outcome']));
     }
 

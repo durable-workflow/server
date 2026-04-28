@@ -19,11 +19,14 @@ class WorkflowStartService
     /**
      * @param  array<string, mixed>  $validated
      * @return array{
+     *     started: bool,
      *     workflow_id: string,
      *     run_id: string|null,
      *     workflow_type: string,
      *     outcome: string|null,
      *     reason: string|null,
+     *     rejection_reason: string|null,
+     *     message: string|null,
      * }
      */
     public function start(
@@ -43,21 +46,27 @@ class WorkflowStartService
     /**
      * @param  array<string, mixed>  $validated
      * @return array{
+     *     started: bool,
      *     workflow_id: string,
      *     run_id: string|null,
      *     workflow_type: string,
      *     outcome: string|null,
      *     reason: string|null,
+     *     rejection_reason: string|null,
+     *     message: string|null,
      * }
      */
     /**
      * @param  array<string, mixed>  $validated
      * @return array{
+     *     started: bool,
      *     workflow_id: string,
      *     run_id: string|null,
      *     workflow_type: string,
      *     outcome: string|null,
      *     reason: string|null,
+     *     rejection_reason: string|null,
+     *     message: string|null,
      * }
      */
     private function startRemoteWorkflow(
@@ -99,12 +108,23 @@ class WorkflowStartService
             'command_context' => $commandContext,
         ], static fn (mixed $value): bool => $value !== null));
 
+        $started = (bool) ($result['started'] ?? false);
+        $reason = isset($result['reason']) && is_string($result['reason'])
+            ? $result['reason']
+            : null;
+        $message = isset($result['message']) && is_string($result['message'])
+            ? $result['message']
+            : null;
+
         return [
+            'started' => $started,
             'workflow_id' => $result['workflow_instance_id'],
             'run_id' => $result['workflow_run_id'],
             'workflow_type' => $result['workflow_type'],
             'outcome' => $result['outcome'],
-            'reason' => $result['reason'],
+            'reason' => $reason,
+            'rejection_reason' => $started ? null : $reason,
+            'message' => $message,
         ];
     }
 

@@ -19,9 +19,11 @@ use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkflowExecutor;
 
 class WorkflowControlPlaneTest extends TestCase
@@ -895,6 +897,64 @@ class WorkflowControlPlaneTest extends TestCase
         $this->assertSame(1, WorkflowTask::query()
             ->where('workflow_run_id', $runId)
             ->count());
+    }
+
+    public function test_start_projects_compatibility_blocked_rejection_detail_when_no_compatible_worker_is_live(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        WorkerCompatibilityFleet::clear();
+
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()->set('workflows.v2.compatibility.supported', ['build-a']);
+        config()->set('workflows.v2.fleet.validation_mode', 'fail');
+
+        WorkerCompatibilityFleet::record(['build-b'], 'redis', 'default', 'worker-build-b');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-control-plane-start-compatibility-blocked',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertStatus(409)
+            ->assertHeader('X-Durable-Workflow-Control-Plane-Version', '2')
+            ->assertJsonPath('workflow_id', 'wf-control-plane-start-compatibility-blocked')
+            ->assertJsonPath('run_id', null)
+            ->assertJsonPath('status', null)
+            ->assertJsonPath('outcome', 'rejected_compatibility_blocked')
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('command_source', 'control_plane')
+            ->assertJsonPath('reason', 'compatibility_blocked')
+            ->assertJsonPath('rejection_reason', 'compatibility_blocked')
+            ->assertJsonPath(
+                'message',
+                'Workflow instance [wf-control-plane-start-compatibility-blocked] cannot start. Start blocked under fail validation mode. '
+                .'No active worker heartbeat advertises compatibility [build-a]. '
+                .'Active workers there advertise [build-b].',
+            )
+            ->assertJsonPath('control_plane.operation', 'start')
+            ->assertJsonPath('control_plane.outcome', 'rejected_compatibility_blocked')
+            ->assertJsonPath('control_plane.command_status', 'rejected')
+            ->assertJsonPath('control_plane.reason', 'compatibility_blocked')
+            ->assertJsonPath('control_plane.rejection_reason', 'compatibility_blocked');
+
+        $this->assertSame(0, WorkflowRun::query()->count());
+        $this->assertDatabaseHas('workflow_commands', [
+            'workflow_instance_id' => 'wf-control-plane-start-compatibility-blocked',
+            'workflow_run_id' => null,
+            'command_type' => 'start',
+            'status' => 'rejected',
+            'outcome' => 'rejected_compatibility_blocked',
+            'rejection_reason' => 'compatibility_blocked',
+        ]);
+
+        WorkerCompatibilityFleet::clear();
     }
 
     public function test_start_rejects_the_legacy_underscore_duplicate_policy_alias(): void
