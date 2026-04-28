@@ -6,6 +6,10 @@ use ReflectionClass;
 use ReflectionException;
 use ReflectionMethod;
 use RuntimeException;
+use Workflow\Serializers\CodecRegistry;
+use Workflow\V2\Support\BackendCapabilities;
+use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
+use Workflow\V2\Support\MatchingRoleSnapshot;
 
 /**
  * Enforces the minimum `durable-workflow/workflow` API surface the server
@@ -34,8 +38,12 @@ final class WorkflowPackageApiFloor
         // CodecRegistry::universal() and engineSpecific() — commit 8e132d0.
         // Polyglot codec split used by /api/cluster/info and the embedded
         // control-plane request contract.
-        [\Workflow\Serializers\CodecRegistry::class, 'universal'],
-        [\Workflow\Serializers\CodecRegistry::class, 'engineSpecific'],
+        [CodecRegistry::class, 'universal'],
+        [CodecRegistry::class, 'engineSpecific'],
+        // MatchingRoleSnapshot::current() — commit cfd8e95.
+        // Cluster discovery now reuses the package-owned matching-role
+        // contract instead of duplicating the routing fields in server code.
+        [MatchingRoleSnapshot::class, 'current'],
     ];
 
     /**
@@ -45,8 +53,8 @@ final class WorkflowPackageApiFloor
     private const REQUIRED_INSTANCE_APIS = [
         // Package-owned child namespace projection lets the server remove its
         // local WorkflowLink / WorkflowRunLineageEntry observer glue.
-        [\Workflow\V2\Support\ChildWorkflowNamespaceProjection::class, 'projectLink'],
-        [\Workflow\V2\Support\ChildWorkflowNamespaceProjection::class, 'projectLineageEntry'],
+        [ChildWorkflowNamespaceProjection::class, 'projectLink'],
+        [ChildWorkflowNamespaceProjection::class, 'projectLineageEntry'],
     ];
 
     /**
@@ -59,7 +67,7 @@ final class WorkflowPackageApiFloor
      * that poll mode downgrades those to 'info' so the server can run on a
      * sync/missing queue driver without being reported as unsupported.
      */
-    public const POLL_MODE_DEMOTION_CLASS = \Workflow\V2\Support\BackendCapabilities::class;
+    public const POLL_MODE_DEMOTION_CLASS = BackendCapabilities::class;
 
     /**
      * Method on {@see self::POLL_MODE_DEMOTION_CLASS} whose body is inspected
@@ -104,10 +112,10 @@ final class WorkflowPackageApiFloor
 
         throw new RuntimeException(sprintf(
             "Installed durable-workflow/workflow package is older than the server's API floor. "
-            ."Missing: %s. Re-run `composer update durable-workflow/workflow` against a v2 snapshot that "
-            .'includes CodecRegistry::universal(), CodecRegistry::engineSpecific(), and the '
-            .'poll-mode queue capability demotion, plus ChildWorkflowNamespaceProjection for package-owned '
-            .'child namespace propagation (see repos/workflow commits 8e132d0 and f666b25, or newer).',
+            .'Missing: %s. Re-run `composer update durable-workflow/workflow` against a v2 snapshot that '
+            .'includes CodecRegistry::universal(), CodecRegistry::engineSpecific(), MatchingRoleSnapshot::current(), '
+            .'and the poll-mode queue capability demotion, plus ChildWorkflowNamespaceProjection for package-owned '
+            .'child namespace propagation (see repos/workflow commits 8e132d0, cfd8e95, and f666b25, or newer).',
             implode(', ', $missing),
         ));
     }

@@ -83,8 +83,11 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'execution_mode',
                     'matching_role' => [
                         'queue_wake_enabled',
+                        'shape',
                         'wake_owner',
                         'task_dispatch_mode',
+                        'partition_primitives',
+                        'backpressure_model',
                     ],
                     'role_catalog',
                     'shape_assignments',
@@ -115,7 +118,10 @@ class ClusterInfoCompatibilityTest extends TestCase
             ])
             ->assertJsonPath('topology.schema', ServerTopology::SCHEMA)
             ->assertJsonPath('topology.version', ServerTopology::VERSION)
+            ->assertJsonPath('topology.matching_role.shape', 'in_worker')
             ->assertJsonPath('topology.matching_role.task_dispatch_mode', 'poll')
+            ->assertJsonPath('topology.matching_role.partition_primitives.2', 'compatibility')
+            ->assertJsonPath('topology.matching_role.backpressure_model', 'lease_ownership')
             ->assertJsonPath('coordination_health.schema', CoordinationHealthContract::SCHEMA)
             ->assertJsonPath('coordination_health.version', CoordinationHealthContract::VERSION)
             ->assertJsonPath('coordination_health.namespace_scope', 'all_namespaces')

@@ -662,9 +662,12 @@ the current execution mode. `execution_mode` is `remote_worker_protocol` in the
 default service-mode deployment and switches to `local_queue_worker` when
 `DW_MODE=embedded` routes workflow and activity task execution through local
 Laravel queue workers. `topology.matching_role` adds the live matching-role
-deployment knobs for that node: `queue_wake_enabled`, who owns the broad-poll
-wake (`worker_loop` or `dedicated_repair_pass`), and the active
-`task_dispatch_mode` (`poll` or `queue`). The same manifest now also publishes
+deployment knobs for that node: `queue_wake_enabled`, the matching-role
+`shape` (`in_worker` or `dedicated`), who owns the broad-poll wake
+(`worker_loop` or `dedicated_repair_pass`), the active `task_dispatch_mode`
+(`poll` or `queue`), the frozen `partition_primitives`
+(`connection`, `queue`, `compatibility`, `namespace`), and the durable
+`backpressure_model` (`lease_ownership`). The same manifest now also publishes
 `role_catalog` for the current node, the supported process-class assignments
 for each topology, the durable-write authority boundary for every role, the
 surface-by-surface authority map for durable tables, the expected degraded
@@ -1046,7 +1049,10 @@ can drain it cleanly between deployments.
 Operators can confirm which shape each node is running through the
 operator-metrics snapshot: the `matching_role` block on
 `POST /api/system/metrics` reports `queue_wake_enabled`, `shape` (`in_worker`
-or `dedicated`), and the configured `task_dispatch_mode` per process.
+or `dedicated`), the configured `task_dispatch_mode`, the frozen
+`partition_primitives`, and the durable `backpressure_model` per process. The
+cluster-topology manifest reuses the same matching-role contract and adds
+`wake_owner` so operators can see which process class owns the broad-poll wake.
 
 ### Publishing Container Images
 

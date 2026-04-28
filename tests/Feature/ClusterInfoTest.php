@@ -158,8 +158,12 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('topology.role_vocabulary.4', 'scheduler')
             ->assertJsonPath('topology.role_vocabulary.5', 'execution_plane')
             ->assertJsonPath('topology.matching_role.queue_wake_enabled', true)
+            ->assertJsonPath('topology.matching_role.shape', 'in_worker')
             ->assertJsonPath('topology.matching_role.wake_owner', 'worker_loop')
             ->assertJsonPath('topology.matching_role.task_dispatch_mode', 'poll')
+            ->assertJsonPath('topology.matching_role.partition_primitives.0', 'connection')
+            ->assertJsonPath('topology.matching_role.partition_primitives.3', 'namespace')
+            ->assertJsonPath('topology.matching_role.backpressure_model', 'lease_ownership')
             ->assertJsonPath(
                 'topology.shape_assignments.standalone_server.process_classes.0.name',
                 'server_http_node',
@@ -345,8 +349,11 @@ class ClusterInfoTest extends TestCase
         $this->getJson('/api/cluster/info')
             ->assertOk()
             ->assertJsonPath('topology.matching_role.queue_wake_enabled', false)
+            ->assertJsonPath('topology.matching_role.shape', 'dedicated')
             ->assertJsonPath('topology.matching_role.wake_owner', 'dedicated_repair_pass')
-            ->assertJsonPath('topology.matching_role.task_dispatch_mode', 'queue');
+            ->assertJsonPath('topology.matching_role.task_dispatch_mode', 'queue')
+            ->assertJsonPath('topology.matching_role.partition_primitives.1', 'queue')
+            ->assertJsonPath('topology.matching_role.backpressure_model', 'lease_ownership');
     }
 
     public function test_it_publishes_external_execution_surface_contract_manifest(): void

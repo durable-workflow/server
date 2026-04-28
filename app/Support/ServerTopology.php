@@ -2,11 +2,13 @@
 
 namespace App\Support;
 
+use Workflow\V2\Support\MatchingRoleSnapshot;
+
 final class ServerTopology
 {
     public const SCHEMA = 'durable-workflow.v2.role-topology';
 
-    public const VERSION = 3;
+    public const VERSION = 4;
 
     private const SUPPORTED_SHAPES = [
         'embedded',
@@ -66,22 +68,38 @@ final class ServerTopology
     /**
      * @return array{
      *     queue_wake_enabled: bool,
+     *     shape: string,
      *     wake_owner: string,
-     *     task_dispatch_mode: string
+     *     task_dispatch_mode: string,
+     *     partition_primitives: list<string>,
+     *     backpressure_model: string
      * }
      */
     private static function matchingRole(): array
     {
-        $queueWakeEnabled = (bool) config('workflows.v2.matching_role.queue_wake_enabled', true);
-        $dispatchModeConfig = config('workflows.v2.task_dispatch_mode', 'queue');
-        $dispatchMode = is_string($dispatchModeConfig) && $dispatchModeConfig !== ''
-            ? $dispatchModeConfig
+        $snapshot = MatchingRoleSnapshot::current();
+        $queueWakeEnabled = ($snapshot['queue_wake_enabled'] ?? false) === true;
+        $shape = is_string($snapshot['shape'] ?? null) && $snapshot['shape'] !== ''
+            ? $snapshot['shape']
+            : ($queueWakeEnabled ? 'in_worker' : 'dedicated');
+        $taskDispatchMode = is_string($snapshot['task_dispatch_mode'] ?? null) && $snapshot['task_dispatch_mode'] !== ''
+            ? $snapshot['task_dispatch_mode']
             : 'queue';
+        $partitionPrimitives = array_values(array_filter(
+            is_array($snapshot['partition_primitives'] ?? null) ? $snapshot['partition_primitives'] : [],
+            static fn (mixed $primitive): bool => is_string($primitive) && $primitive !== '',
+        ));
+        $backpressureModel = is_string($snapshot['backpressure_model'] ?? null) && $snapshot['backpressure_model'] !== ''
+            ? $snapshot['backpressure_model']
+            : 'lease_ownership';
 
         return [
             'queue_wake_enabled' => $queueWakeEnabled,
+            'shape' => $shape,
             'wake_owner' => $queueWakeEnabled ? 'worker_loop' : 'dedicated_repair_pass',
-            'task_dispatch_mode' => $dispatchMode,
+            'task_dispatch_mode' => $taskDispatchMode,
+            'partition_primitives' => $partitionPrimitives,
+            'backpressure_model' => $backpressureModel,
         ];
     }
 

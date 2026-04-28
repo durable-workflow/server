@@ -10,6 +10,7 @@ use Tests\Fixtures\StaleBackendCapabilities;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
+use Workflow\V2\Support\MatchingRoleSnapshot;
 
 /**
  * Pins the API floor contract the server relies on from
@@ -39,6 +40,15 @@ class WorkflowPackageApiFloorTest extends TestCase
     {
         $reflection = new ReflectionClass(CodecRegistry::class);
         $method = $reflection->getMethod('engineSpecific');
+
+        $this->assertTrue($method->isPublic());
+        $this->assertTrue($method->isStatic());
+    }
+
+    public function test_matching_role_snapshot_current_is_public_static(): void
+    {
+        $reflection = new ReflectionClass(MatchingRoleSnapshot::class);
+        $method = $reflection->getMethod('current');
 
         $this->assertTrue($method->isPublic());
         $this->assertTrue($method->isStatic());
