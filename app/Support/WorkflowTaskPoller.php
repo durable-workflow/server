@@ -430,6 +430,7 @@ final class WorkflowTaskPoller
             limit: $limit,
             compatibility: null,
             namespace: $namespace,
+            workflowTypes: $supportedWorkflowTypes,
         );
 
         \Log::info('[WorkflowTaskPoller] claimReadyTask called', [
@@ -477,16 +478,6 @@ final class WorkflowTaskPoller
                     'taskId' => $readyTask['task_id'] ?? null,
                     'workerBuildId' => $buildId,
                     'taskCompatibility' => $readyTask['compatibility'] ?? null,
-                ]);
-
-                continue;
-            }
-
-            if (! $this->matchesWorkflowType($supportedWorkflowTypes, $readyTask['workflow_type'] ?? null)) {
-                \Log::debug('[WorkflowTaskPoller] Skipping task: workflow type not supported', [
-                    'taskId' => $readyTask['task_id'] ?? null,
-                    'taskWorkflowType' => $readyTask['workflow_type'] ?? null,
-                    'supportedWorkflowTypes' => $supportedWorkflowTypes,
                 ]);
 
                 continue;
@@ -618,34 +609,6 @@ final class WorkflowTaskPoller
         }
 
         return $buildId !== null && $compatibility === $buildId;
-    }
-
-    /**
-     * @param  list<string>  $supportedTypes
-     */
-    /**
-     * Check if a task's workflow type matches the worker's supported types.
-     *
-     * - If worker supports all types (empty list), match any task
-     * - If worker supports specific types, only match tasks with those types
-     * - Tasks with missing/empty workflow_type only match "all types" workers
-     *
-     * @param  list<string>  $supportedTypes
-     */
-    private function matchesWorkflowType(array $supportedTypes, mixed $workflowType): bool
-    {
-        // Worker supports all workflow types
-        if ($supportedTypes === []) {
-            return true;
-        }
-
-        // Task has no workflow type - only matches workers that accept all types
-        if (! is_string($workflowType) || trim($workflowType) === '') {
-            return false;
-        }
-
-        // Check if task's workflow type is in worker's supported list
-        return in_array($workflowType, $supportedTypes, true);
     }
 
     private function nextVisibleReadyAt(string $namespace, string $taskQueue, ?string $buildId): ?\DateTimeInterface
