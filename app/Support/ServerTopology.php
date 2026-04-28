@@ -38,7 +38,12 @@ final class ServerTopology
      *     role_vocabulary: array<int, string>,
      *     current_shape: string,
      *     current_roles: array<int, string>,
-     *     execution_mode: string
+     *     execution_mode: string,
+     *     matching_role: array{
+     *         queue_wake_enabled: bool,
+     *         wake_owner: string,
+     *         task_dispatch_mode: string
+     *     }
      * }
      */
     public static function info(): array
@@ -51,6 +56,7 @@ final class ServerTopology
             'current_shape' => 'standalone_server',
             'current_roles' => self::CURRENT_SERVER_NODE_ROLES,
             'execution_mode' => self::executionMode(),
+            'matching_role' => self::matchingRole(),
         ];
     }
 
@@ -59,5 +65,27 @@ final class ServerTopology
         return config('server.mode') === 'embedded'
             ? 'local_queue_worker'
             : 'remote_worker_protocol';
+    }
+
+    /**
+     * @return array{
+     *     queue_wake_enabled: bool,
+     *     wake_owner: string,
+     *     task_dispatch_mode: string
+     * }
+     */
+    private static function matchingRole(): array
+    {
+        $queueWakeEnabled = (bool) config('workflows.v2.matching_role.queue_wake_enabled', true);
+        $dispatchModeConfig = config('workflows.v2.task_dispatch_mode', 'queue');
+        $dispatchMode = is_string($dispatchModeConfig) && $dispatchModeConfig !== ''
+            ? $dispatchModeConfig
+            : 'queue';
+
+        return [
+            'queue_wake_enabled' => $queueWakeEnabled,
+            'wake_owner' => $queueWakeEnabled ? 'worker_loop' : 'dedicated_repair_pass',
+            'task_dispatch_mode' => $dispatchMode,
+        ];
     }
 }

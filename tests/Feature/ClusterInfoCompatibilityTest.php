@@ -79,6 +79,11 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'current_shape',
                     'current_roles',
                     'execution_mode',
+                    'matching_role' => [
+                        'queue_wake_enabled',
+                        'wake_owner',
+                        'task_dispatch_mode',
+                    ],
                 ],
                 'client_compatibility',
                 'auth_composition_contract',
@@ -88,6 +93,7 @@ class ClusterInfoCompatibilityTest extends TestCase
             ])
             ->assertJsonPath('topology.schema', ServerTopology::SCHEMA)
             ->assertJsonPath('topology.version', ServerTopology::VERSION)
+            ->assertJsonPath('topology.matching_role.task_dispatch_mode', 'poll')
             ->assertJsonPath('control_plane.version', ControlPlaneProtocol::VERSION)
             ->assertJsonPath('worker_protocol.version', WorkerProtocol::VERSION)
             ->assertJsonPath('client_compatibility.authority', 'protocol_manifests');

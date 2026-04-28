@@ -152,7 +152,10 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('topology.supported_shapes.1', 'standalone_server')
             ->assertJsonPath('topology.supported_shapes.2', 'split_control_execution')
             ->assertJsonPath('topology.role_vocabulary.4', 'scheduler')
-            ->assertJsonPath('topology.role_vocabulary.5', 'execution_plane');
+            ->assertJsonPath('topology.role_vocabulary.5', 'execution_plane')
+            ->assertJsonPath('topology.matching_role.queue_wake_enabled', true)
+            ->assertJsonPath('topology.matching_role.wake_owner', 'worker_loop')
+            ->assertJsonPath('topology.matching_role.task_dispatch_mode', 'poll');
     }
 
     public function test_it_switches_cluster_topology_execution_mode_when_embedded_dispatch_is_enabled(): void
@@ -163,6 +166,20 @@ class ClusterInfoTest extends TestCase
             ->assertOk()
             ->assertJsonPath('topology.current_shape', 'standalone_server')
             ->assertJsonPath('topology.execution_mode', 'local_queue_worker');
+    }
+
+    public function test_it_publishes_matching_role_wake_ownership_for_dedicated_matching_shape(): void
+    {
+        config([
+            'workflows.v2.matching_role.queue_wake_enabled' => false,
+            'workflows.v2.task_dispatch_mode' => 'queue',
+        ]);
+
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('topology.matching_role.queue_wake_enabled', false)
+            ->assertJsonPath('topology.matching_role.wake_owner', 'dedicated_repair_pass')
+            ->assertJsonPath('topology.matching_role.task_dispatch_mode', 'queue');
     }
 
     public function test_it_publishes_external_execution_surface_contract_manifest(): void

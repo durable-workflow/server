@@ -660,7 +660,10 @@ deployment shapes (`embedded`, `standalone_server`,
 the current execution mode. `execution_mode` is `remote_worker_protocol` in the
 default service-mode deployment and switches to `local_queue_worker` when
 `DW_MODE=embedded` routes workflow and activity task execution through local
-Laravel queue workers.
+Laravel queue workers. `topology.matching_role` adds the live matching-role
+deployment knobs for that node: `queue_wake_enabled`, who owns the broad-poll
+wake (`worker_loop` or `dedicated_repair_pass`), and the active
+`task_dispatch_mode` (`poll` or `queue`).
 
 The activity-grade external execution surface is published from
 `GET /api/cluster/info` at
