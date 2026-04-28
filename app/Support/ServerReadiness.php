@@ -47,6 +47,11 @@ final class ServerReadiness
         ];
     }
 
+    private static function statusAllowsReady(mixed $status): bool
+    {
+        return in_array($status, ['ok', 'warning'], true);
+    }
+
     /**
      * @param  array<string, array<string, mixed>>|null  $checks
      * @return array<string, mixed>
@@ -61,14 +66,6 @@ final class ServerReadiness
         return $this->normalizeWorkflowCheck($this->workflowCheck($checks));
     }
 
-    private static function statusAllowsReady(mixed $status): bool
-    {
-        return in_array($status, ['ok', 'warning'], true);
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
     private function databaseCheck(): array
     {
         try {
@@ -309,7 +306,6 @@ final class ServerReadiness
                 'category' => is_string($check['category'] ?? null) ? $check['category'] : null,
                 'message' => is_string($check['message'] ?? null) ? $check['message'] : null,
             ];
-
             if (
                 $fleetValidationMode === 'fail'
                 && $entry['name'] === 'worker_compatibility'
@@ -317,7 +313,6 @@ final class ServerReadiness
             ) {
                 $entry['status'] = 'error';
             }
-
             $checksList[] = $entry;
 
             if ($entry['status'] === 'warning') {
