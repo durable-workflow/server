@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Support\ServerTopology;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -133,6 +134,35 @@ class ClusterInfoTest extends TestCase
                 'client_compatibility.required_protocols.worker_protocol.external_task_input_contract.version',
                 1,
             );
+    }
+
+    public function test_it_publishes_role_topology_for_the_current_server_node(): void
+    {
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('topology.schema', ServerTopology::SCHEMA)
+            ->assertJsonPath('topology.version', ServerTopology::VERSION)
+            ->assertJsonPath('topology.current_shape', 'standalone_server')
+            ->assertJsonPath('topology.execution_mode', 'remote_worker_protocol')
+            ->assertJsonPath('topology.current_roles.0', 'api_ingress')
+            ->assertJsonPath('topology.current_roles.1', 'control_plane')
+            ->assertJsonPath('topology.current_roles.2', 'matching')
+            ->assertJsonPath('topology.current_roles.3', 'history_projection')
+            ->assertJsonPath('topology.supported_shapes.0', 'embedded')
+            ->assertJsonPath('topology.supported_shapes.1', 'standalone_server')
+            ->assertJsonPath('topology.supported_shapes.2', 'split_control_execution')
+            ->assertJsonPath('topology.role_vocabulary.4', 'scheduler')
+            ->assertJsonPath('topology.role_vocabulary.5', 'execution_plane');
+    }
+
+    public function test_it_switches_cluster_topology_execution_mode_when_embedded_dispatch_is_enabled(): void
+    {
+        config(['server.mode' => 'embedded']);
+
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('topology.current_shape', 'standalone_server')
+            ->assertJsonPath('topology.execution_mode', 'local_queue_worker');
     }
 
     public function test_it_publishes_external_execution_surface_contract_manifest(): void

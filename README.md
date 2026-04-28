@@ -493,7 +493,7 @@ workflow-task command payload.
 ### System
 - `GET /api/health` — Health check
 - `GET /api/ready` — Readiness check for migrations, default namespace, cache, and auth config
-- `GET /api/cluster/info` — Server capabilities and version
+- `GET /api/cluster/info` — Server capabilities, role topology, and version
 - `GET /api/system/metrics` — Server metrics including bounded stuck workflow-task diagnostics
 - `GET /api/system/operator-metrics` — Full operator metrics snapshot (runs, tasks, backlog, repair, workers/fleet, backend, structural limits) for rollout-safety coordination health
 - `GET /api/system/repair` — Task repair diagnostics
@@ -651,6 +651,16 @@ interval.
 Server-owned cache keys and metric label sets are governed by the bounded-growth
 policy in `config/dw-bounded-growth.php`; the human-readable inventory lives in
 `docs/bounded-growth.md`.
+
+Cluster discovery also publishes a `topology` manifest. It freezes the server's
+role vocabulary (`api_ingress`, `control_plane`, `matching`,
+`history_projection`, `scheduler`, `execution_plane`), the product's supported
+deployment shapes (`embedded`, `standalone_server`,
+`split_control_execution`), the roles currently hosted by the HTTP node, and
+the current execution mode. `execution_mode` is `remote_worker_protocol` in the
+default service-mode deployment and switches to `local_queue_worker` when
+`DW_MODE=embedded` routes workflow and activity task execution through local
+Laravel queue workers.
 
 The activity-grade external execution surface is published from
 `GET /api/cluster/info` at

@@ -6,6 +6,7 @@ use App\Support\AuthCompositionContract;
 use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
+use App\Support\ServerTopology;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -70,12 +71,23 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'max_pending_children',
                 ],
                 'structural_limits',
+                'topology' => [
+                    'schema',
+                    'version',
+                    'supported_shapes',
+                    'role_vocabulary',
+                    'current_shape',
+                    'current_roles',
+                    'execution_mode',
+                ],
                 'client_compatibility',
                 'auth_composition_contract',
                 'control_plane',
                 'worker_protocol',
                 'bridge_adapter_outcome_contract',
             ])
+            ->assertJsonPath('topology.schema', ServerTopology::SCHEMA)
+            ->assertJsonPath('topology.version', ServerTopology::VERSION)
             ->assertJsonPath('control_plane.version', ControlPlaneProtocol::VERSION)
             ->assertJsonPath('worker_protocol.version', WorkerProtocol::VERSION)
             ->assertJsonPath('client_compatibility.authority', 'protocol_manifests');

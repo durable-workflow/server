@@ -7,6 +7,7 @@ use App\Support\AuthCompositionContract;
 use App\Support\BridgeAdapterOutcomeContract;
 use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
+use App\Support\ServerTopology;
 use App\Support\ServerReadiness;
 use App\Support\WorkerProtocol;
 use Illuminate\Http\JsonResponse;
@@ -117,6 +118,7 @@ class HealthController
                 'max_pending_children' => (int) config('server.limits.max_pending_children', 2000),
             ],
             'structural_limits' => StructuralLimits::snapshot(),
+            'topology' => ServerTopology::info(),
             'client_compatibility' => ClientCompatibility::info(),
             'auth_composition_contract' => AuthCompositionContract::manifest(),
             'control_plane' => ControlPlaneProtocol::info(),
