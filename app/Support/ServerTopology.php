@@ -279,6 +279,7 @@ final class ServerTopology
                     [
                         'name' => 'control_plane_node',
                         'roles' => [
+                            'api_ingress',
                             'control_plane',
                             'history_projection',
                         ],
@@ -558,7 +559,7 @@ final class ServerTopology
                         'roles' => ['api_ingress'],
                     ],
                     'control_plane_node' => [
-                        'roles' => ['control_plane', 'history_projection'],
+                        'roles' => ['api_ingress', 'control_plane', 'history_projection'],
                     ],
                     'scheduler_node' => [
                         'roles' => ['scheduler'],

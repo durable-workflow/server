@@ -18,6 +18,8 @@ class DedicatedMatchingComposeContractTest extends TestCase
         $compose = $this->read('docker-compose.dedicated-matching.yml');
 
         foreach ([
+            'server:',
+            'DW_SERVER_PROCESS_CLASS: control_plane_node',
             'worker:',
             'DW_V2_MATCHING_ROLE_QUEUE_WAKE: "false"',
             'DW_SERVER_TOPOLOGY_SHAPE: split_control_execution',
@@ -81,12 +83,13 @@ class DedicatedMatchingComposeContractTest extends TestCase
         }
     }
 
-    public function test_override_promotes_background_services_to_split_role_identity(): void
+    public function test_override_promotes_all_long_running_services_to_split_role_identity(): void
     {
         $override = $this->read('docker-compose.dedicated-matching.yml');
 
         foreach ([
             'DW_SERVER_TOPOLOGY_SHAPE: split_control_execution',
+            'DW_SERVER_PROCESS_CLASS: control_plane_node',
             'DW_SERVER_PROCESS_CLASS: execution_node',
             'DW_SERVER_PROCESS_CLASS: scheduler_node',
             'DW_SERVER_PROCESS_CLASS: matching_node',
@@ -112,6 +115,7 @@ class DedicatedMatchingComposeContractTest extends TestCase
             'DW_V2_MATCHING_ROLE_QUEUE_WAKE',
             'DW_SERVER_TOPOLOGY_SHAPE',
             'DW_SERVER_PROCESS_CLASS',
+            'control_plane_node',
         ] as $needle) {
             $this->assertStringContainsString(
                 $needle,

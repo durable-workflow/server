@@ -175,6 +175,10 @@ class ClusterInfoTest extends TestCase
                 'history_projection',
             )
             ->assertJsonPath(
+                'topology.shape_assignments.split_control_execution.process_classes.1.roles.0',
+                'api_ingress',
+            )
+            ->assertJsonPath(
                 'topology.shape_assignments.split_control_execution.process_classes.4.roles.0',
                 'execution_plane',
             )
@@ -275,6 +279,28 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('topology.role_catalog.matching.hosted_by_current_node', true)
             ->assertJsonPath('topology.role_catalog.control_plane.hosted_by_current_node', false)
             ->assertJsonPath('topology.role_catalog.api_ingress.hosted_by_current_node', false);
+    }
+
+    public function test_it_can_publish_a_split_control_execution_control_plane_node(): void
+    {
+        config([
+            'server.topology.shape' => 'split_control_execution',
+            'server.topology.process_class' => 'control_plane_node',
+        ]);
+
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+
+        $response
+            ->assertJsonPath('topology.current_shape', 'split_control_execution')
+            ->assertJsonPath('topology.current_process_class', 'control_plane_node')
+            ->assertJsonPath('topology.current_roles.0', 'api_ingress')
+            ->assertJsonPath('topology.current_roles.1', 'control_plane')
+            ->assertJsonPath('topology.current_roles.2', 'history_projection')
+            ->assertJsonCount(3, 'topology.current_roles')
+            ->assertJsonPath('topology.role_catalog.api_ingress.hosted_by_current_node', true)
+            ->assertJsonPath('topology.role_catalog.control_plane.hosted_by_current_node', true)
+            ->assertJsonPath('topology.role_catalog.history_projection.hosted_by_current_node', true)
+            ->assertJsonPath('topology.role_catalog.matching.hosted_by_current_node', false);
     }
 
     public function test_it_falls_back_to_the_default_process_class_when_the_configured_class_does_not_match_the_shape(): void

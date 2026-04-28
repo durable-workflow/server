@@ -679,10 +679,10 @@ configured process class, and the current execution mode. `execution_mode` is
 `local_queue_worker` when `DW_MODE=embedded` routes workflow and activity task
 execution through local Laravel queue workers. Set
 `DW_SERVER_TOPOLOGY_SHAPE` and `DW_SERVER_PROCESS_CLASS` when a deployment
-splits scheduler, matching, or execution work away from the default
-`server_http_node` so discovery reports the live node identity instead of a
-generic HTTP shape. The published Compose artifacts set these per service for
-the supported `server`, `worker`, and `scheduler` nodes, so `GET /api/cluster/info`
+splits control-plane, scheduler, matching, or execution work away from the
+default `server_http_node` so discovery reports the live node identity instead
+of a generic HTTP shape. The published Compose artifacts set these per service
+for the supported `server`, `worker`, and `scheduler` nodes, so `GET /api/cluster/info`
 and local diagnostics report the same node class the operator actually
 deployed. `topology.matching_role` adds the live matching-role
 deployment knobs for that node: `queue_wake_enabled`, the matching-role
@@ -1063,11 +1063,12 @@ service and adds a `matching` service running
 `php artisan workflow:v2:repair-pass --loop` so the broad sweep runs in a
 dedicated process operators can scale and supervise independently of API
 ingress and execution workers. It also pins
-`DW_SERVER_TOPOLOGY_SHAPE=split_control_execution` on the `worker`,
+`DW_SERVER_TOPOLOGY_SHAPE=split_control_execution` on the `server`, `worker`,
 `scheduler`, and `matching` services, with `DW_SERVER_PROCESS_CLASS`
-respectively set to `execution_node`, `scheduler_node`, and `matching_node`,
-so migration-shape diagnostics report the live background role instead of the
-standalone defaults while the HTTP server remains the `server_http_node`.
+respectively set to `control_plane_node`, `execution_node`,
+`scheduler_node`, and `matching_node`. That lets the public HTTP service
+advertise the split control-plane shape while execution, scheduler, and
+matching nodes each report their own independent role class.
 
 The daemon respects the watchdog loop throttle on every iteration so multiple
 cooperating matching-role processes coexist without duplicating broad-poll
