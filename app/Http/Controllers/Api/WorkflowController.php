@@ -993,18 +993,21 @@ class WorkflowController
                 continue;
             }
 
-            $atoms = is_array($value) ? $value : [$value];
+            if ($value !== null && ! is_scalar($value)) {
+                $messages[] = sprintf(
+                    'Search attribute [%s] must be a scalar value or null.',
+                    $key,
+                );
 
-            foreach ($atoms as $atom) {
-                if (is_string($atom) && $maxValueBytes > 0 && strlen($atom) > $maxValueBytes) {
-                    $messages[] = sprintf(
-                        'Search attribute [%s] value exceeds the maximum of %d bytes.',
-                        $key,
-                        $maxValueBytes,
-                    );
+                continue;
+            }
 
-                    break;
-                }
+            if (is_string($value) && $maxValueBytes > 0 && strlen($value) > $maxValueBytes) {
+                $messages[] = sprintf(
+                    'Search attribute [%s] value exceeds the maximum of %d bytes.',
+                    $key,
+                    $maxValueBytes,
+                );
             }
         }
 

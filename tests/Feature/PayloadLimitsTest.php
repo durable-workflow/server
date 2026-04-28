@@ -374,22 +374,20 @@ class PayloadLimitsTest extends TestCase
             );
     }
 
-    public function test_workflow_start_rejects_search_attribute_array_with_oversized_element(): void
+    public function test_workflow_start_rejects_non_scalar_search_attribute_values(): void
     {
-        config(['server.limits.max_search_attribute_value_bytes' => 32]);
-
         $this->configureWorkflowTypes([
             ExternalGreetingWorkflow::class,
         ]);
 
         $this->postJson('/api/workflows', [
             'workflow_type' => 'ExternalGreetingWorkflow',
-            'search_attributes' => ['Tags' => ['short', str_repeat('y', 200)]],
+            'search_attributes' => ['Tags' => ['alpha', 'beta']],
         ], $this->apiHeaders())
             ->assertStatus(422)
             ->assertJsonPath(
                 'validation_errors.search_attributes.0',
-                fn (string $msg): bool => str_contains($msg, 'Tags') && str_contains($msg, '32'),
+                fn (string $msg): bool => str_contains($msg, 'Tags') && str_contains($msg, 'scalar value or null'),
             );
     }
 
@@ -404,7 +402,7 @@ class PayloadLimitsTest extends TestCase
             'search_attributes' => [
                 'Region' => 'us-east-1',
                 'Priority' => 5,
-                'Tags' => ['alpha', 'beta'],
+                'TagsCount' => 2,
             ],
         ], $this->apiHeaders())
             ->assertSuccessful();
