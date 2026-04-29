@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\HistoryController;
 use App\Http\Controllers\Api\NamespaceController;
 use App\Http\Controllers\Api\ScheduleController;
 use App\Http\Controllers\Api\SearchAttributeController;
+use App\Http\Controllers\Api\ServiceCatalogController;
 use App\Http\Controllers\Api\StorageController;
 use App\Http\Controllers\Api\SystemController;
 use App\Http\Controllers\Api\TaskQueueController;
@@ -169,6 +170,27 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::get('/', [SearchAttributeController::class, 'index']);
         Route::post('/', [SearchAttributeController::class, 'store']);
         Route::delete('/{name}', [SearchAttributeController::class, 'destroy']);
+    });
+
+    // ── Service Catalog ──────────────────────────────────────────────
+    Route::prefix('service-endpoints')->middleware([$admin, $cpv, $ns])->group(function () {
+        Route::get('/', [ServiceCatalogController::class, 'endpointIndex']);
+        Route::post('/', [ServiceCatalogController::class, 'endpointStore']);
+        Route::get('/{endpointName}', [ServiceCatalogController::class, 'endpointShow']);
+        Route::put('/{endpointName}', [ServiceCatalogController::class, 'endpointUpdate']);
+        Route::delete('/{endpointName}', [ServiceCatalogController::class, 'endpointDestroy']);
+
+        Route::get('/{endpointName}/services', [ServiceCatalogController::class, 'serviceIndex']);
+        Route::post('/{endpointName}/services', [ServiceCatalogController::class, 'serviceStore']);
+        Route::get('/{endpointName}/services/{serviceName}', [ServiceCatalogController::class, 'serviceShow']);
+        Route::put('/{endpointName}/services/{serviceName}', [ServiceCatalogController::class, 'serviceUpdate']);
+        Route::delete('/{endpointName}/services/{serviceName}', [ServiceCatalogController::class, 'serviceDestroy']);
+
+        Route::get('/{endpointName}/services/{serviceName}/operations', [ServiceCatalogController::class, 'operationIndex']);
+        Route::post('/{endpointName}/services/{serviceName}/operations', [ServiceCatalogController::class, 'operationStore']);
+        Route::get('/{endpointName}/services/{serviceName}/operations/{operationName}', [ServiceCatalogController::class, 'operationShow']);
+        Route::put('/{endpointName}/services/{serviceName}/operations/{operationName}', [ServiceCatalogController::class, 'operationUpdate']);
+        Route::delete('/{endpointName}/services/{serviceName}/operations/{operationName}', [ServiceCatalogController::class, 'operationDestroy']);
     });
 
     // ── System / Operations ─────────────────────────────────────────

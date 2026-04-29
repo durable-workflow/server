@@ -1,0 +1,443 @@
+<?php
+
+namespace Tests\Feature;
+
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Tests\Feature\Concerns\ServerTestHelpers;
+use Tests\TestCase;
+use Workflow\V2\Models\WorkflowService;
+use Workflow\V2\Models\WorkflowServiceCall;
+use Workflow\V2\Models\WorkflowServiceEndpoint;
+use Workflow\V2\Models\WorkflowServiceOperation;
+
+class ServiceCatalogControllerTest extends TestCase
+{
+    use RefreshDatabase;
+    use ServerTestHelpers;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->createNamespace('default');
+    }
+
+    public function test_it_lists_empty_service_endpoints_for_a_new_namespace(): void
+    {
+        $response = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/service-endpoints');
+
+        $response->assertOk()
+            ->assertJsonPath('service_endpoints', []);
+    }
+
+    public function test_it_creates_and_shows_a_service_endpoint(): void
+    {
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints', [
+                'endpoint_name' => 'Billing.API',
+                'description' => 'Billing endpoint',
+                'metadata' => ['owner' => 'payments'],
+            ]);
+
+        $response->assertCreated()
+            ->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('endpoint_name', 'billing.api')
+            ->assertJsonPath('description', 'Billing endpoint')
+            ->assertJsonPath('metadata.owner', 'payments');
+
+        $this->assertDatabaseHas('workflow_service_endpoints', [
+            'namespace' => 'default',
+            'endpoint_name' => 'billing.api',
+            'description' => 'Billing endpoint',
+        ]);
+
+        $showResponse = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/service-endpoints/BILLING.API');
+
+        $showResponse->assertOk()
+            ->assertJsonPath('endpoint_name', 'billing.api')
+            ->assertJsonPath('metadata.owner', 'payments');
+    }
+
+    public function test_it_scopes_service_endpoints_to_the_current_namespace(): void
+    {
+        $this->createNamespace('other');
+
+        WorkflowServiceEndpoint::query()->create([
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+        ]);
+
+        WorkflowServiceEndpoint::query()->create([
+            'namespace' => 'other',
+            'endpoint_name' => 'inventory',
+        ]);
+
+        $defaultResponse = $this->withHeaders($this->apiHeaders('default'))
+            ->getJson('/api/service-endpoints');
+
+        $defaultResponse->assertOk()
+            ->assertJsonCount(1, 'service_endpoints')
+            ->assertJsonPath('service_endpoints.0.endpoint_name', 'billing');
+
+        $otherResponse = $this->withHeaders($this->apiHeaders('other'))
+            ->getJson('/api/service-endpoints');
+
+        $otherResponse->assertOk()
+            ->assertJsonCount(1, 'service_endpoints')
+            ->assertJsonPath('service_endpoints.0.endpoint_name', 'inventory');
+    }
+
+    public function test_it_rejects_duplicate_endpoint_names_in_the_same_namespace(): void
+    {
+        WorkflowServiceEndpoint::query()->create([
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+        ]);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints', [
+                'endpoint_name' => 'BILLING',
+            ]);
+
+        $response->assertStatus(409)
+            ->assertJsonPath('reason', 'endpoint_already_exists')
+            ->assertJsonPath('endpoint_name', 'billing');
+    }
+
+    public function test_it_creates_lists_shows_and_updates_services_within_an_endpoint(): void
+    {
+        $endpoint = WorkflowServiceEndpoint::query()->create([
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+            'description' => 'Billing',
+        ]);
+
+        $createResponse = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services', [
+                'service_name' => 'Invoicing',
+                'description' => 'Invoice service',
+                'metadata' => ['tier' => 'gold'],
+            ]);
+
+        $createResponse->assertCreated()
+            ->assertJsonPath('endpoint_name', 'billing')
+            ->assertJsonPath('service_name', 'invoicing')
+            ->assertJsonPath('metadata.tier', 'gold');
+
+        $this->assertDatabaseHas('workflow_services', [
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'service_name' => 'invoicing',
+        ]);
+
+        $listResponse = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/service-endpoints/billing/services');
+
+        $listResponse->assertOk()
+            ->assertJsonCount(1, 'services')
+            ->assertJsonPath('services.0.service_name', 'invoicing');
+
+        $showResponse = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/service-endpoints/BILLING/services/INVOICING');
+
+        $showResponse->assertOk()
+            ->assertJsonPath('service_name', 'invoicing')
+            ->assertJsonPath('description', 'Invoice service');
+
+        $updateResponse = $this->withHeaders($this->apiHeaders())
+            ->putJson('/api/service-endpoints/billing/services/invoicing', [
+                'description' => 'Invoice orchestration service',
+                'metadata' => ['tier' => 'platinum'],
+            ]);
+
+        $updateResponse->assertOk()
+            ->assertJsonPath('description', 'Invoice orchestration service')
+            ->assertJsonPath('metadata.tier', 'platinum');
+
+        $this->assertDatabaseHas('workflow_services', [
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'service_name' => 'invoicing',
+            'description' => 'Invoice orchestration service',
+        ]);
+    }
+
+    public function test_it_rejects_duplicate_service_names_within_the_same_endpoint(): void
+    {
+        $endpoint = WorkflowServiceEndpoint::query()->create([
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+        ]);
+
+        WorkflowService::query()->create([
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'service_name' => 'invoicing',
+        ]);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services', [
+                'service_name' => 'INVOICING',
+            ]);
+
+        $response->assertStatus(409)
+            ->assertJsonPath('reason', 'service_already_exists')
+            ->assertJsonPath('service_name', 'invoicing');
+    }
+
+    public function test_it_creates_lists_shows_and_updates_operations(): void
+    {
+        $endpoint = WorkflowServiceEndpoint::query()->create([
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+        ]);
+
+        $service = WorkflowService::query()->create([
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'service_name' => 'invoicing',
+        ]);
+
+        $createResponse = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services/invoicing/operations', [
+                'operation_name' => 'CreateInvoice',
+                'description' => 'Create a new invoice',
+                'operation_mode' => 'sync',
+                'handler_binding_kind' => 'start_workflow',
+                'handler_target_reference' => 'workflows.invoice.create',
+                'handler_binding' => ['workflow_type' => 'InvoiceWorkflow'],
+                'deadline_policy' => ['timeout_seconds' => 30],
+                'idempotency_policy' => ['required' => true],
+                'cancellation_policy' => ['mode' => 'allow'],
+                'retry_policy' => ['max_attempts' => 3],
+                'boundary_policy' => ['visibility' => 'service'],
+                'metadata' => ['team' => 'billing'],
+            ]);
+
+        $createResponse->assertCreated()
+            ->assertJsonPath('endpoint_name', 'billing')
+            ->assertJsonPath('service_name', 'invoicing')
+            ->assertJsonPath('operation_name', 'createinvoice')
+            ->assertJsonPath('operation_mode', 'sync')
+            ->assertJsonPath('handler_binding_kind', 'start_workflow')
+            ->assertJsonPath('handler_target_reference', 'workflows.invoice.create')
+            ->assertJsonPath('handler_binding.workflow_type', 'InvoiceWorkflow')
+            ->assertJsonPath('retry_policy.max_attempts', 3);
+
+        $operation = WorkflowServiceOperation::query()->where('operation_name', 'createinvoice')->first();
+        $this->assertNotNull($operation);
+
+        $listResponse = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/service-endpoints/billing/services/invoicing/operations');
+
+        $listResponse->assertOk()
+            ->assertJsonCount(1, 'operations')
+            ->assertJsonPath('operations.0.operation_name', 'createinvoice');
+
+        $showResponse = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/service-endpoints/BILLING/services/INVOICING/operations/CREATEINVOICE');
+
+        $showResponse->assertOk()
+            ->assertJsonPath('operation_name', 'createinvoice')
+            ->assertJsonPath('deadline_policy.timeout_seconds', 30);
+
+        $updateResponse = $this->withHeaders($this->apiHeaders())
+            ->putJson('/api/service-endpoints/billing/services/invoicing/operations/createinvoice', [
+                'operation_mode' => 'async',
+                'handler_binding_kind' => 'update_workflow',
+                'handler_target_reference' => 'updates.invoice.submit',
+                'handler_binding' => ['update_name' => 'submitInvoice'],
+                'retry_policy' => ['max_attempts' => 5],
+            ]);
+
+        $updateResponse->assertOk()
+            ->assertJsonPath('operation_mode', 'async')
+            ->assertJsonPath('handler_binding_kind', 'update_workflow')
+            ->assertJsonPath('handler_target_reference', 'updates.invoice.submit')
+            ->assertJsonPath('handler_binding.update_name', 'submitInvoice')
+            ->assertJsonPath('retry_policy.max_attempts', 5);
+
+        $this->assertDatabaseHas('workflow_service_operations', [
+            'id' => $operation->id,
+            'operation_mode' => 'async',
+            'handler_binding_kind' => 'update_workflow',
+            'handler_target_reference' => 'updates.invoice.submit',
+        ]);
+
+        $this->assertSame(
+            ['update_name' => 'submitInvoice'],
+            $operation->refresh()->handler_binding,
+        );
+    }
+
+    public function test_it_rejects_duplicate_operation_names_within_the_same_service(): void
+    {
+        $endpoint = WorkflowServiceEndpoint::query()->create([
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+        ]);
+
+        $service = WorkflowService::query()->create([
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'service_name' => 'invoicing',
+        ]);
+
+        WorkflowServiceOperation::query()->create([
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'workflow_service_id' => $service->id,
+            'operation_name' => 'createinvoice',
+            'operation_mode' => 'sync',
+            'handler_binding_kind' => 'start_workflow',
+            'handler_target_reference' => 'workflows.invoice.create',
+        ]);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services/invoicing/operations', [
+                'operation_name' => 'CREATEINVOICE',
+                'operation_mode' => 'sync',
+                'handler_binding_kind' => 'start_workflow',
+                'handler_target_reference' => 'workflows.invoice.create',
+            ]);
+
+        $response->assertStatus(409)
+            ->assertJsonPath('reason', 'operation_already_exists')
+            ->assertJsonPath('operation_name', 'createinvoice');
+    }
+
+    public function test_it_requires_a_handler_target_reference_or_non_empty_handler_binding_for_operations(): void
+    {
+        $endpoint = WorkflowServiceEndpoint::query()->create([
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+        ]);
+
+        WorkflowService::query()->create([
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'service_name' => 'invoicing',
+        ]);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services/invoicing/operations', [
+                'operation_name' => 'createinvoice',
+                'operation_mode' => 'sync',
+                'handler_binding_kind' => 'start_workflow',
+            ]);
+
+        $response->assertStatus(422)
+            ->assertJsonValidationErrors('handler_target_reference');
+    }
+
+    public function test_it_blocks_deleting_service_and_operation_resources_that_still_have_dependents(): void
+    {
+        $endpoint = WorkflowServiceEndpoint::query()->create([
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+        ]);
+
+        $service = WorkflowService::query()->create([
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'service_name' => 'invoicing',
+        ]);
+
+        $operation = WorkflowServiceOperation::query()->create([
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'workflow_service_id' => $service->id,
+            'operation_name' => 'createinvoice',
+            'operation_mode' => 'sync',
+            'handler_binding_kind' => 'start_workflow',
+            'handler_target_reference' => 'workflows.invoice.create',
+        ]);
+
+        WorkflowServiceCall::query()->create([
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'workflow_service_id' => $service->id,
+            'workflow_service_operation_id' => $operation->id,
+            'endpoint_name' => 'billing',
+            'service_name' => 'invoicing',
+            'operation_name' => 'createinvoice',
+            'target_namespace' => 'default',
+            'status' => 'accepted',
+            'operation_mode' => 'sync',
+            'resolved_binding_kind' => 'start_workflow',
+            'accepted_at' => now(),
+        ]);
+
+        $this->withHeaders($this->apiHeaders())
+            ->deleteJson('/api/service-endpoints/billing')
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'endpoint_has_services');
+
+        $this->withHeaders($this->apiHeaders())
+            ->deleteJson('/api/service-endpoints/billing/services/invoicing')
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'service_has_operations');
+
+        $this->withHeaders($this->apiHeaders())
+            ->deleteJson('/api/service-endpoints/billing/services/invoicing/operations/createinvoice')
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'operation_has_service_calls');
+    }
+
+    public function test_it_deletes_unused_operations_services_and_endpoints(): void
+    {
+        $endpoint = WorkflowServiceEndpoint::query()->create([
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+        ]);
+
+        $service = WorkflowService::query()->create([
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'service_name' => 'invoicing',
+        ]);
+
+        WorkflowServiceOperation::query()->create([
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'workflow_service_id' => $service->id,
+            'operation_name' => 'createinvoice',
+            'operation_mode' => 'sync',
+            'handler_binding_kind' => 'start_workflow',
+            'handler_target_reference' => 'workflows.invoice.create',
+        ]);
+
+        $this->withHeaders($this->apiHeaders())
+            ->deleteJson('/api/service-endpoints/billing/services/invoicing/operations/createinvoice')
+            ->assertOk()
+            ->assertJsonPath('operation_name', 'createinvoice')
+            ->assertJsonPath('outcome', 'deleted');
+
+        $this->withHeaders($this->apiHeaders())
+            ->deleteJson('/api/service-endpoints/billing/services/invoicing')
+            ->assertOk()
+            ->assertJsonPath('service_name', 'invoicing')
+            ->assertJsonPath('outcome', 'deleted');
+
+        $this->withHeaders($this->apiHeaders())
+            ->deleteJson('/api/service-endpoints/billing')
+            ->assertOk()
+            ->assertJsonPath('endpoint_name', 'billing')
+            ->assertJsonPath('outcome', 'deleted');
+
+        $this->assertDatabaseMissing('workflow_service_operations', [
+            'namespace' => 'default',
+            'operation_name' => 'createinvoice',
+        ]);
+        $this->assertDatabaseMissing('workflow_services', [
+            'namespace' => 'default',
+            'service_name' => 'invoicing',
+        ]);
+        $this->assertDatabaseMissing('workflow_service_endpoints', [
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+        ]);
+    }
+}
