@@ -552,31 +552,14 @@ final class WorkflowTaskPoller
         int $limit,
         array $supportedWorkflowTypes = [],
     ): array {
-        $poll = new \ReflectionMethod($this->bridge, 'poll');
-        $arguments = [null, $taskQueue, $limit, null, $namespace];
-
-        // Older workflow package installs do not expose the workflow-type
-        // filter parameter yet. Fall back to broad polling plus the existing
-        // local filter so the server stays compatible while newer installs can
-        // narrow the bridge query up front.
-        if (self::bridgePollSupportsWorkflowTypes($poll)) {
-            $arguments[] = $supportedWorkflowTypes;
-        }
-
-        $readyTasks = $poll->invokeArgs($this->bridge, $arguments);
-
-        return is_array($readyTasks) ? $readyTasks : [];
-    }
-
-    private static function bridgePollSupportsWorkflowTypes(\ReflectionMethod $poll): bool
-    {
-        $parameters = $poll->getParameters();
-
-        if (! array_key_exists(5, $parameters)) {
-            return false;
-        }
-
-        return $parameters[5]->getName() === 'workflowTypes';
+        return $this->bridge->poll(
+            null,
+            $taskQueue,
+            $limit,
+            null,
+            $namespace,
+            $supportedWorkflowTypes,
+        );
     }
 
     private function recoverExpiredLeases(

@@ -8,6 +8,7 @@ use ReflectionMethod;
 use RuntimeException;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\MatchingRole;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
 use Workflow\V2\Support\DefaultMatchingRole;
@@ -21,8 +22,9 @@ use Workflow\V2\Support\MatchingRoleSnapshot;
  * `dev-v2` path/Git source. A stale build or cached install can resolve to
  * an older v2 snapshot that lacks APIs the server assumes are present,
  * producing hard-to-diagnose fatals on `/api/cluster/info` (missing
- * `CodecRegistry::universal()`) or service-mode queue capability failures
- * (missing poll-mode queue demotion).
+ * `CodecRegistry::universal()`), workflow-task polling regressions
+ * (missing workflow-type filtering), or service-mode queue capability
+ * failures (missing poll-mode queue demotion).
  *
  * Rather than fail at first request, assert the floor at boot so broken
  * installs surface a clear diagnostic during `php artisan package:discover`
@@ -73,6 +75,15 @@ final class WorkflowPackageApiFloor
     ];
 
     /**
+     * Workflow-task polling contract — commit a1d442d. The server now depends
+     * on the bridge itself accepting the workflow-type filter instead of
+     * reflecting over older package baselines and broad-polling locally.
+     */
+    private const WORKFLOW_TASK_POLL_CLASS = WorkflowTaskBridge::class;
+
+    private const WORKFLOW_TASK_POLL_METHOD = 'poll';
+
+    /**
      * Poll-mode queue capability demotion — commit f666b25. Detected
      * functionally because it is expressed as data in
      * BackendCapabilities::snapshot(), not a new method signature.
@@ -117,6 +128,14 @@ final class WorkflowPackageApiFloor
             }
         }
 
+        if (! self::confirmsWorkflowTaskPollSignature(self::WORKFLOW_TASK_POLL_CLASS, self::WORKFLOW_TASK_POLL_METHOD)) {
+            $missing[] = sprintf(
+                '%s::%s() with workflow-type filtering',
+                self::WORKFLOW_TASK_POLL_CLASS,
+                self::WORKFLOW_TASK_POLL_METHOD,
+            );
+        }
+
         if (! class_exists(self::POLL_MODE_DEMOTION_CLASS)) {
             $missing[] = self::POLL_MODE_DEMOTION_CLASS;
         } elseif (! self::confirmsPollModeDemotion(self::POLL_MODE_DEMOTION_CLASS, self::POLL_MODE_DEMOTION_METHOD)) {
@@ -135,9 +154,10 @@ final class WorkflowPackageApiFloor
             "Installed durable-workflow/workflow package is older than the server's API floor. "
             .'Missing: %s. Re-run `composer update durable-workflow/workflow` against a v2 snapshot that '
             .'includes CodecRegistry::universal(), CodecRegistry::engineSpecific(), MatchingRoleSnapshot::current(), '
+            .'the filtered WorkflowTaskBridge::poll() contract, '
             .'the poll-mode queue capability demotion, and the matching-role repair-pass contract, plus '
             .'ChildWorkflowNamespaceProjection for package-owned child namespace propagation '
-            .'(see repos/workflow commits 8e132d0, cfd8e95, and f666b25, or newer).',
+            .'(see repos/workflow commits 8e132d0, cfd8e95, a1d442d, and f666b25, or newer).',
             implode(', ', $missing),
         ));
     }
@@ -188,6 +208,69 @@ final class WorkflowPackageApiFloor
         }
 
         return $methodReflection->isPublic() && ! $methodReflection->isStatic();
+    }
+
+    private static function confirmsWorkflowTaskPollSignature(string $class, string $method): bool
+    {
+        if (! interface_exists($class) && ! class_exists($class)) {
+            return false;
+        }
+
+        try {
+            $reflection = new ReflectionMethod($class, $method);
+        } catch (ReflectionException) {
+            return false;
+        }
+
+        if (! $reflection->isPublic() || $reflection->isStatic()) {
+            return false;
+        }
+
+        $returnType = $reflection->getReturnType();
+        if (! $returnType instanceof \ReflectionNamedType || $returnType->allowsNull() || $returnType->getName() !== 'array') {
+            return false;
+        }
+
+        $parameters = $reflection->getParameters();
+
+        if (count($parameters) !== 6) {
+            return false;
+        }
+
+        return self::matchesParameter($parameters[0], 'connection', 'string', true, false, null)
+            && self::matchesParameter($parameters[1], 'queue', 'string', true, false, null)
+            && self::matchesParameter($parameters[2], 'limit', 'int', false, true, 1)
+            && self::matchesParameter($parameters[3], 'compatibility', 'string', true, true, null)
+            && self::matchesParameter($parameters[4], 'namespace', 'string', true, true, null)
+            && self::matchesParameter($parameters[5], 'workflowTypes', 'array', false, true, []);
+    }
+
+    private static function matchesParameter(
+        \ReflectionParameter $parameter,
+        string $name,
+        string $type,
+        bool $allowsNull,
+        bool $hasDefault,
+        mixed $default,
+    ): bool {
+        $parameterType = $parameter->getType();
+
+        if (! $parameterType instanceof \ReflectionNamedType) {
+            return false;
+        }
+
+        if ($parameter->getName() !== $name
+            || $parameterType->getName() !== $type
+            || $parameterType->allowsNull() !== $allowsNull
+            || $parameter->isDefaultValueAvailable() !== $hasDefault) {
+            return false;
+        }
+
+        if (! $hasDefault) {
+            return true;
+        }
+
+        return $parameter->getDefaultValue() === $default;
     }
 
     /**
