@@ -705,6 +705,12 @@ of pretending to be interchangeable HTTP peers. `GET /api/cluster/info`,
 `/api/health`, and `/api/ready` stay available for discovery and liveness even
 on scheduler-only, execution-only, or matching-only nodes.
 
+Those runtime-serving workflow routes also fail closed on bootstrap blockers.
+If database connectivity or workflow-table migrations are not ready, hosted
+workflow and worker-protocol routes return `503` with
+`reason: "workflow_v2_blocked"` plus `blocked_by` and `remediation` instead of
+accepting traffic that depends on an incomplete rollout state.
+
 The same `GET /api/cluster/info` response now includes a versioned
 `coordination_health` manifest for rollout-safety coordination risk. It
 summarizes the current server-wide workflow v2 health status, warning and error

@@ -18,6 +18,7 @@ use App\Http\Middleware\Authenticate;
 use App\Http\Middleware\ControlPlaneVersionResolver;
 use App\Http\Middleware\NamespaceResolver;
 use App\Http\Middleware\RequireRole;
+use App\Http\Middleware\RequireWorkflowBootstrapReady;
 use App\Http\Middleware\RequireTopologyRoles;
 use App\Http\Middleware\WorkerProtocolVersionResolver;
 use Illuminate\Support\Facades\Route;
@@ -51,6 +52,11 @@ Route::get('/ready', [HealthController::class, 'ready']);
 // NamespaceResolver on hosted routes so wrong-node requests fail closed with a
 // machine-readable topology reason without leaking namespace existence.
 //
+// RequireWorkflowBootstrapReady sits in the same slot for runtime-serving
+// workflow routes. It only blocks on explicit database/migration bootstrap
+// blockers so routes fail closed during rollout/schema drift without locking
+// out recovery paths such as compatible worker registration.
+//
 // WorkerProtocolVersionResolver follows the same ordering for worker-plane
 // routes, keeping protocol skew and namespace errors in the worker envelope.
 Route::middleware([Authenticate::class])->group(function () {
@@ -62,6 +68,7 @@ Route::middleware([Authenticate::class])->group(function () {
     $cpv = ControlPlaneVersionResolver::class;
     $httpControl = RequireTopologyRoles::class.':api_ingress,control_plane';
     $httpWorker = RequireTopologyRoles::class.':api_ingress,control_plane';
+    $workflowBootstrap = RequireWorkflowBootstrapReady::class;
     $wpv = WorkerProtocolVersionResolver::class;
 
     // ── System ───────────────────────────────────────────────────────
@@ -82,7 +89,7 @@ Route::middleware([Authenticate::class])->group(function () {
     });
 
     // ── Workflows ────────────────────────────────────────────────────
-    Route::prefix('workflows')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
+    Route::prefix('workflows')->middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns])->group(function () {
         Route::get('/', [WorkflowController::class, 'index']);
         Route::post('/', [WorkflowController::class, 'start']);
         Route::get('/{workflowId}', [WorkflowController::class, 'show']);
@@ -113,12 +120,12 @@ Route::middleware([Authenticate::class])->group(function () {
     });
 
     // ── Bridge Adapters ──────────────────────────────────────────────
-    Route::prefix('bridge-adapters')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
+    Route::prefix('bridge-adapters')->middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns])->group(function () {
         Route::post('/webhook/{adapter}', [BridgeAdapterController::class, 'webhook']);
     });
 
     // ── Worker Task Polling ──────────────────────────────────────────
-    Route::prefix('worker')->middleware([$worker, $wpv, $httpWorker, $ns])->group(function () {
+    Route::prefix('worker')->middleware([$worker, $wpv, $httpWorker, $workflowBootstrap, $ns])->group(function () {
         // Registration
         Route::post('/register', [WorkerController::class, 'register']);
         Route::post('/heartbeat', [WorkerController::class, 'heartbeat']);

@@ -223,6 +223,34 @@ class ScheduleEvaluateTest extends TestCase
         $this->assertSame([], $schedule->recent_actions ?? []);
     }
 
+    public function test_it_skips_due_schedules_when_workflow_bootstrap_is_blocked(): void
+    {
+        DB::table('migrations')
+            ->where('migration', '2026_04_21_000300_add_workflow_definition_fingerprints_to_worker_registrations')
+            ->delete();
+
+        WorkflowSchedule::create([
+            'schedule_id' => 'skip-bootstrap-blocked',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['* * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'next_fire_at' => now()->subMinute(),
+        ]);
+
+        $this->artisan('schedule:evaluate')
+            ->assertExitCode(0)
+            ->expectsOutputToContain('skipped');
+
+        $schedule = WorkflowSchedule::where('schedule_id', 'skip-bootstrap-blocked')->firstOrFail();
+        $this->assertSame('workflow_v2_blocked', $schedule->last_skip_reason);
+        $this->assertSame(1, (int) $schedule->skipped_trigger_count);
+        $this->assertSame(0, (int) $schedule->fires_count);
+        $this->assertSame(0, (int) $schedule->failures_count);
+        $this->assertNull($schedule->last_fired_at);
+        $this->assertNull($schedule->latest_workflow_instance_id);
+        $this->assertSame([], $schedule->recent_actions ?? []);
+    }
+
     // ── next_fire_at advancement ────────────────────────────────────
 
     public function test_it_advances_next_fire_at_after_successful_fire(): void
