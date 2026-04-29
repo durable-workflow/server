@@ -304,6 +304,71 @@ class BridgeAdapterControllerTest extends TestCase
         $this->assertFalse(WorkflowRun::query()->exists());
     }
 
+    public function test_webhook_bridge_rejects_start_when_the_implicit_default_queue_is_draining(): void
+    {
+        Queue::fake();
+
+        config()->set('queue.default', 'redis');
+        config()->set('queue.connections.redis.driver', 'redis');
+        config()->set('queue.connections.redis.queue', 'default');
+
+        WorkerRegistration::query()->create([
+            'worker_id' => 'worker-default-draining',
+            'namespace' => 'default',
+            'task_queue' => 'default',
+            'runtime' => 'php',
+            'sdk_version' => '1.0.0',
+            'build_id' => 'build-default-draining',
+            'supported_workflow_types' => [],
+            'workflow_definition_fingerprints' => [],
+            'supported_activity_types' => [],
+            'max_concurrent_workflow_tasks' => 100,
+            'max_concurrent_activity_tasks' => 100,
+            'last_heartbeat_at' => now(),
+            'status' => 'draining',
+        ]);
+
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'default',
+            'build_id' => 'build-default-draining',
+            'drain_intent' => 'draining',
+            'drained_at' => now(),
+        ]);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/bridge-adapters/webhook/stripe', [
+                'action' => 'start_workflow',
+                'idempotency_key' => 'stripe-event-default-drain-1',
+                'target' => [
+                    'workflow_id' => 'wf-bridge-drained-default-start',
+                    'workflow_type' => 'tests.interactive-command-workflow',
+                ],
+            ]);
+
+        $response->assertStatus(422)
+            ->assertJsonPath('adapter', 'stripe')
+            ->assertJsonPath('action', 'start_workflow')
+            ->assertJsonPath('accepted', false)
+            ->assertJsonPath('outcome', 'rejected')
+            ->assertJsonPath('reason', 'task_queue_draining')
+            ->assertJsonPath('workflow_id', 'wf-bridge-drained-default-start')
+            ->assertJsonPath('workflow_type', 'tests.interactive-command-workflow')
+            ->assertJsonPath('task_queue', 'default')
+            ->assertJsonPath('routing_status', 'draining')
+            ->assertJsonPath('active_worker_count', 0)
+            ->assertJsonPath('draining_worker_count', 1)
+            ->assertJsonPath('stale_worker_count', 0)
+            ->assertJsonPath('draining_build_ids.0', 'build-default-draining')
+            ->assertJsonPath('drain_intent', 'draining')
+            ->assertJsonPath(
+                'message',
+                'Task queue [default] is draining and cannot accept new workflow starts until an active worker cohort is available.',
+            );
+
+        $this->assertFalse(WorkflowRun::query()->exists());
+    }
+
     public function test_webhook_bridge_surfaces_fail_closed_start_rejection_detail(): void
     {
         Queue::fake();
@@ -340,7 +405,7 @@ class BridgeAdapterControllerTest extends TestCase
             ->assertJsonPath(
                 'message',
                 'Workflow instance [wf-bridge-compatibility-blocked] cannot start. Start blocked under fail validation mode. '
-                .'No active worker heartbeat advertises compatibility [build-a]. '
+                .'No active worker heartbeat for queue [default] advertises compatibility [build-a]. '
                 .'Active workers there advertise [build-b].',
             );
 

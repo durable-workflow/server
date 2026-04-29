@@ -172,31 +172,36 @@ class WorkflowController
             ], 409);
         }
 
-        $taskQueue = isset($validated['task_queue']) && is_string($validated['task_queue'])
-            ? trim($validated['task_queue'])
-            : null;
+        try {
+            $taskQueue = $this->workflowStartService->resolveTaskQueue(
+                $validated['workflow_type'],
+                $validated['task_queue'] ?? null,
+            );
+        } catch (LogicException $exception) {
+            throw ValidationException::withMessages([
+                'workflow_type' => [$exception->getMessage()],
+            ]);
+        }
 
-        if ($taskQueue !== null && $taskQueue !== '') {
-            $routingBlock = $this->taskQueueRoutingGate->workflowStartBlock((string) $namespace, $taskQueue);
+        $routingBlock = $this->taskQueueRoutingGate->workflowStartBlock((string) $namespace, $taskQueue);
 
-            if ($routingBlock !== null) {
-                return ControlPlaneProtocol::jsonForRequest($request, array_filter([
-                    'workflow_id' => $workflowId,
-                    'workflow_type' => $validated['workflow_type'],
-                    'task_queue' => $taskQueue,
-                    'message' => sprintf(
-                        'Task queue [%s] is draining and cannot accept new workflow starts until an active worker cohort is available.',
-                        $taskQueue,
-                    ),
-                    'reason' => 'task_queue_draining',
-                    'routing_status' => $routingBlock['routing_status'],
-                    'active_worker_count' => $routingBlock['active_worker_count'],
-                    'draining_worker_count' => $routingBlock['draining_worker_count'],
-                    'stale_worker_count' => $routingBlock['stale_worker_count'],
-                    'draining_build_ids' => $routingBlock['draining_build_ids'],
-                    'drain_intent' => 'draining',
-                ], static fn (mixed $value): bool => $value !== null), 409);
-            }
+        if ($routingBlock !== null) {
+            return ControlPlaneProtocol::jsonForRequest($request, array_filter([
+                'workflow_id' => $workflowId,
+                'workflow_type' => $validated['workflow_type'],
+                'task_queue' => $taskQueue,
+                'message' => sprintf(
+                    'Task queue [%s] is draining and cannot accept new workflow starts until an active worker cohort is available.',
+                    $taskQueue,
+                ),
+                'reason' => 'task_queue_draining',
+                'routing_status' => $routingBlock['routing_status'],
+                'active_worker_count' => $routingBlock['active_worker_count'],
+                'draining_worker_count' => $routingBlock['draining_worker_count'],
+                'stale_worker_count' => $routingBlock['stale_worker_count'],
+                'draining_build_ids' => $routingBlock['draining_build_ids'],
+                'drain_intent' => 'draining',
+            ], static fn (mixed $value): bool => $value !== null), 409);
         }
 
         try {
@@ -209,7 +214,7 @@ class WorkflowController
                     commandName: 'start',
                     metadata: array_filter([
                         'workflow_type' => $validated['workflow_type'],
-                        'task_queue' => $validated['task_queue'] ?? null,
+                        'task_queue' => $taskQueue,
                         'duplicate_policy' => $validated['duplicate_policy'] ?? null,
                     ], static fn (mixed $value): bool => $value !== null),
                 ),
