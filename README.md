@@ -495,8 +495,8 @@ workflow-task command payload.
 ## API Overview
 
 ### System
-- `GET /api/health` — Health check
-- `GET /api/ready` — Readiness check for migrations, default namespace, cache, auth config, and workflow v2 rollout-safety health
+- `GET /api/health` — Health check plus a machine-readable topology summary for the current node
+- `GET /api/ready` — Readiness check for migrations, default namespace, cache, auth config, workflow v2 rollout-safety health, and the current node topology summary
 - `GET /api/cluster/info` — Server capabilities, role topology, coordination-health summary, and version
 - `GET /api/system/health` — Full rollout-safety health snapshot for the requested namespace, including check status, categories, routing-drain state, operator metrics, and structural limits
 - `GET /api/system/metrics` — Server metrics including bounded stuck workflow-task diagnostics
@@ -703,7 +703,12 @@ class. Nodes that do not host the server's current HTTP control surface return
 `503` with `reason: "topology_role_unavailable"` on role-gated routes instead
 of pretending to be interchangeable HTTP peers. `GET /api/cluster/info`,
 `/api/health`, and `/api/ready` stay available for discovery and liveness even
-on scheduler-only, execution-only, or matching-only nodes.
+on scheduler-only, execution-only, or matching-only nodes. The unauthenticated
+health and readiness probes publish the current node's topology summary
+(`schema`, `version`, `current_shape`, `current_process_class`,
+`current_roles`, `execution_mode`, and `matching_role`) so operators can
+identify split-role nodes without authenticating into the broader
+`/api/cluster/info` manifest.
 
 Those runtime-serving write and poll routes also fail closed on bootstrap
 blockers. If database connectivity or workflow-table migrations are not ready,

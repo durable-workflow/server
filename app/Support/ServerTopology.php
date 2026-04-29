@@ -63,6 +63,24 @@ final class ServerTopology
     }
 
     /**
+     * @return array<string, mixed>
+     */
+    public static function healthSummary(): array
+    {
+        $currentNode = self::currentNode();
+
+        return [
+            'schema' => self::SCHEMA,
+            'version' => self::VERSION,
+            'current_shape' => $currentNode['shape'],
+            'current_process_class' => $currentNode['process_class'],
+            'current_roles' => $currentNode['roles'],
+            'execution_mode' => self::executionMode(),
+            'matching_role' => self::matchingRole(),
+        ];
+    }
+
+    /**
      * @param  array<string, array{process_classes: list<array{name: string, roles: list<string>}>}>|null  $shapeAssignments
      * @return array{shape: string, process_class: string, roles: list<string>}
      */

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
+use App\Support\ServerTopology;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -23,7 +24,33 @@ class HealthControllerTest extends TestCase
         $response->assertOk()
             ->assertJsonPath('status', 'serving')
             ->assertJsonPath('checks.database', 'ok')
-            ->assertJsonStructure(['status', 'timestamp', 'checks' => ['database']]);
+            ->assertJsonPath('topology.schema', ServerTopology::SCHEMA)
+            ->assertJsonPath('topology.version', ServerTopology::VERSION)
+            ->assertJsonPath('topology.current_shape', 'standalone_server')
+            ->assertJsonPath('topology.current_process_class', 'server_http_node')
+            ->assertJsonPath('topology.execution_mode', 'remote_worker_protocol')
+            ->assertJsonPath('topology.matching_role.shape', 'in_worker')
+            ->assertJsonStructure([
+                'status',
+                'timestamp',
+                'checks' => ['database'],
+                'topology' => [
+                    'schema',
+                    'version',
+                    'current_shape',
+                    'current_process_class',
+                    'current_roles',
+                    'execution_mode',
+                    'matching_role' => [
+                        'queue_wake_enabled',
+                        'shape',
+                        'wake_owner',
+                        'task_dispatch_mode',
+                        'partition_primitives',
+                        'backpressure_model',
+                    ],
+                ],
+            ]);
     }
 
     public function test_health_check_returns_degraded_when_database_is_unavailable(): void
@@ -95,7 +122,45 @@ class HealthControllerTest extends TestCase
             ->assertJsonPath('checks.cache.status', 'ok')
             ->assertJsonPath('checks.auth.status', 'ok')
             ->assertJsonPath('checks.workflow_v2.status', 'ok')
-            ->assertJsonPath('checks.workflow_v2.http_status', 200);
+            ->assertJsonPath('checks.workflow_v2.http_status', 200)
+            ->assertJsonPath('topology.schema', ServerTopology::SCHEMA)
+            ->assertJsonPath('topology.version', ServerTopology::VERSION)
+            ->assertJsonPath('topology.current_shape', 'standalone_server')
+            ->assertJsonPath('topology.current_process_class', 'server_http_node')
+            ->assertJsonPath('topology.execution_mode', 'remote_worker_protocol')
+            ->assertJsonPath('topology.matching_role.task_dispatch_mode', 'poll');
+    }
+
+    public function test_public_health_endpoints_publish_topology_for_split_execution_nodes(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        config([
+            'server.topology.shape' => 'split_control_execution',
+            'server.topology.process_class' => 'execution_node',
+        ]);
+
+        $this->getJson('/api/health')
+            ->assertOk()
+            ->assertJsonPath('topology.schema', ServerTopology::SCHEMA)
+            ->assertJsonPath('topology.current_shape', 'split_control_execution')
+            ->assertJsonPath('topology.current_process_class', 'execution_node')
+            ->assertJsonPath('topology.current_roles.0', 'execution_plane')
+            ->assertJsonPath('topology.execution_mode', 'remote_worker_protocol')
+            ->assertJsonPath('topology.matching_role.backpressure_model', 'lease_ownership');
+
+        $this->getJson('/api/ready')
+            ->assertOk()
+            ->assertJsonPath('topology.schema', ServerTopology::SCHEMA)
+            ->assertJsonPath('topology.current_shape', 'split_control_execution')
+            ->assertJsonPath('topology.current_process_class', 'execution_node')
+            ->assertJsonPath('topology.current_roles.0', 'execution_plane')
+            ->assertJsonPath('topology.matching_role.shape', 'in_worker');
     }
 
     public function test_readiness_check_warns_when_existing_create_table_migration_only_needs_adoption(): void

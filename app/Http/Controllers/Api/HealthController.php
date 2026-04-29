@@ -47,6 +47,7 @@ class HealthController
             'checks' => [
                 'database' => $dbHealthy ? 'ok' : 'unavailable',
             ],
+            'topology' => ServerTopology::healthSummary(),
         ], $dbHealthy ? 200 : 503);
     }
 
@@ -59,6 +60,7 @@ class HealthController
             'status' => $ready ? 'ready' : 'not_ready',
             'timestamp' => now()->toIso8601String(),
             'checks' => $snapshot['checks'],
+            'topology' => ServerTopology::healthSummary(),
         ], $ready ? 200 : 503);
     }
 
