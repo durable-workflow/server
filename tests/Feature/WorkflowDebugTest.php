@@ -194,6 +194,28 @@ class WorkflowDebugTest extends TestCase
         $this->assertStringNotContainsString(str_repeat('x', 8192), $withPreview->getContent());
     }
 
+    public function test_debug_diagnostics_remain_available_when_bootstrap_migrations_are_pending(): void
+    {
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-debug-bootstrap-gate',
+            'workflow_type' => 'tests.await-approval-workflow',
+            'task_queue' => 'debug-queue',
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
+
+        $start->assertCreated();
+
+        DB::table('migrations')
+            ->where('migration', '2026_04_21_000300_add_workflow_definition_fingerprints_to_worker_registrations')
+            ->delete();
+
+        $this->getJson(
+            '/api/workflows/wf-debug-bootstrap-gate/debug',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        )->assertOk()
+            ->assertJsonPath('workflow_id', 'wf-debug-bootstrap-gate')
+            ->assertJsonMissing(['reason' => 'workflow_v2_blocked']);
+    }
+
     public function test_debug_diagnostics_do_not_load_unbounded_historical_task_graphs(): void
     {
         $start = $this->postJson('/api/workflows', [

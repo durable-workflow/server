@@ -16,6 +16,7 @@ final class RemoteScheduleStarter implements ScheduleWorkflowStarter
 {
     public function __construct(
         private readonly WorkflowStartService $startService,
+        private readonly ServerReadiness $readiness,
     ) {}
 
     public function start(
@@ -24,6 +25,20 @@ final class RemoteScheduleStarter implements ScheduleWorkflowStarter
         string $outcome,
         ?string $effectiveOverlapPolicy = null,
     ): ScheduleStartResult {
+        $workflowStatus = $this->readiness->workflowStatus();
+        $blockedBy = is_array($workflowStatus['blocked_by'] ?? null)
+            ? array_values(array_filter($workflowStatus['blocked_by'], static fn (mixed $value): bool => is_string($value) && $value !== ''))
+            : [];
+
+        if (($workflowStatus['status'] ?? null) === 'blocked' && $blockedBy !== []) {
+            throw new WorkflowExecutionUnavailableException(
+                'schedule_start',
+                $schedule->schedule_id,
+                'workflow_v2_blocked',
+                'Workflow v2 bootstrap blockers must clear before scheduled workflows can start.',
+            );
+        }
+
         $action = WorkflowSchedule::normalizeActionTimeouts(
             is_array($schedule->action) ? $schedule->action : [],
         );
