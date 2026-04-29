@@ -8,6 +8,30 @@ use Workflow\V2\Workflow;
 final class ConfiguredWorkflowTypeValidator
 {
     /**
+     * @return class-string<Workflow>|null
+     */
+    public function resolveWorkflowClass(string $workflowType): ?string
+    {
+        if (class_exists($workflowType) && is_subclass_of($workflowType, Workflow::class)) {
+            return $workflowType;
+        }
+
+        $configured = config('workflows.v2.types.workflows', []);
+
+        if (! is_array($configured) || ! array_key_exists($workflowType, $configured)) {
+            return null;
+        }
+
+        $workflowClass = $configured[$workflowType];
+
+        if (! is_string($workflowClass) || ! class_exists($workflowClass) || ! is_subclass_of($workflowClass, Workflow::class)) {
+            return null;
+        }
+
+        return $workflowClass;
+    }
+
+    /**
      * @throws LogicException
      */
     public function assertLoadable(string $workflowType): void
@@ -25,7 +49,7 @@ final class ConfiguredWorkflowTypeValidator
             return null;
         }
 
-        if (class_exists($workflowType) && is_subclass_of($workflowType, Workflow::class)) {
+        if ($this->resolveWorkflowClass($workflowType) !== null) {
             return null;
         }
 

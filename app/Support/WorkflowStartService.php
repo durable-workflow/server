@@ -7,6 +7,8 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
+use Workflow\V2\Support\RoutingResolver;
+use Workflow\WorkflowMetadata;
 
 class WorkflowStartService
 {
@@ -38,9 +40,37 @@ class WorkflowStartService
         $workflowId = isset($validated['workflow_id']) && is_string($validated['workflow_id'])
             ? $validated['workflow_id']
             : null;
+        $taskQueue = $this->resolveTaskQueue($workflowType, $validated['task_queue'] ?? null);
+
+        return $this->startRemoteWorkflow(
+            $workflowType,
+            $workflowId,
+            $taskQueue,
+            $validated,
+            $namespace,
+            $commandContext,
+        );
+    }
+
+    public function resolveTaskQueue(string $workflowType, mixed $requestedTaskQueue = null): string
+    {
         $this->workflowTypes->assertLoadable($workflowType);
 
-        return $this->startRemoteWorkflow($workflowType, $workflowId, $validated, $namespace, $commandContext);
+        if (is_string($requestedTaskQueue) && trim($requestedTaskQueue) !== '') {
+            return trim($requestedTaskQueue);
+        }
+
+        $workflowClass = $this->workflowTypes->resolveWorkflowClass($workflowType);
+
+        if ($workflowClass !== null) {
+            $resolvedQueue = RoutingResolver::workflowQueue($workflowClass, new WorkflowMetadata([]));
+
+            if (is_string($resolvedQueue) && trim($resolvedQueue) !== '') {
+                return trim($resolvedQueue);
+            }
+        }
+
+        return $this->defaultTaskQueue();
     }
 
     /**
@@ -72,6 +102,7 @@ class WorkflowStartService
     private function startRemoteWorkflow(
         string $workflowType,
         ?string $workflowId,
+        string $taskQueue,
         array $validated,
         ?string $namespace = null,
         ?CommandContext $commandContext = null,
@@ -92,9 +123,7 @@ class WorkflowStartService
         $result = $this->controlPlane->start($workflowType, $workflowId, array_filter([
             'arguments' => $arguments,
             'payload_codec' => $payloadCodec,
-            'queue' => isset($validated['task_queue']) && is_string($validated['task_queue'])
-                ? $validated['task_queue']
-                : null,
+            'queue' => $taskQueue,
             'business_key' => isset($validated['business_key']) && is_string($validated['business_key'])
                 ? $validated['business_key']
                 : null,
@@ -155,5 +184,20 @@ class WorkflowStartService
         $value = $validated[$key] ?? null;
 
         return is_int($value) ? $value : null;
+    }
+
+    private function defaultTaskQueue(): string
+    {
+        $connection = config('queue.default');
+
+        if (! is_string($connection) || trim($connection) === '') {
+            return 'default';
+        }
+
+        $queue = config('queue.connections.'.trim($connection).'.queue', 'default');
+
+        return is_string($queue) && trim($queue) !== ''
+            ? trim($queue)
+            : 'default';
     }
 }
