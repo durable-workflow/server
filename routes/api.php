@@ -18,6 +18,7 @@ use App\Http\Middleware\Authenticate;
 use App\Http\Middleware\ControlPlaneVersionResolver;
 use App\Http\Middleware\NamespaceResolver;
 use App\Http\Middleware\RequireRole;
+use App\Http\Middleware\RequireTopologyRoles;
 use App\Http\Middleware\WorkerProtocolVersionResolver;
 use Illuminate\Support\Facades\Route;
 
@@ -46,6 +47,10 @@ Route::get('/ready', [HealthController::class, 'ready']);
 // omitted — it is the version-advertising endpoint and must remain callable
 // without the header.
 //
+// RequireTopologyRoles sits after protocol validation and before
+// NamespaceResolver on hosted routes so wrong-node requests fail closed with a
+// machine-readable topology reason without leaking namespace existence.
+//
 // WorkerProtocolVersionResolver follows the same ordering for worker-plane
 // routes, keeping protocol skew and namespace errors in the worker envelope.
 Route::middleware([Authenticate::class])->group(function () {
@@ -55,27 +60,29 @@ Route::middleware([Authenticate::class])->group(function () {
     $authenticated = RequireRole::class.':worker,operator,admin';
     $ns = NamespaceResolver::class;
     $cpv = ControlPlaneVersionResolver::class;
+    $httpControl = RequireTopologyRoles::class.':api_ingress,control_plane';
+    $httpWorker = RequireTopologyRoles::class.':api_ingress,control_plane';
     $wpv = WorkerProtocolVersionResolver::class;
 
     // ── System ───────────────────────────────────────────────────────
     Route::get('/cluster/info', [HealthController::class, 'clusterInfo'])->middleware([$authenticated, $ns]);
 
     // ── Namespaces ───────────────────────────────────────────────────
-    Route::prefix('namespaces')->group(function () use ($admin, $operator, $ns, $cpv) {
-        Route::get('/', [NamespaceController::class, 'index'])->middleware([$operator, $cpv, $ns]);
-        Route::post('/', [NamespaceController::class, 'store'])->middleware([$admin, $cpv, $ns]);
-        Route::get('/{namespace}', [NamespaceController::class, 'show'])->middleware([$operator, $cpv, $ns]);
-        Route::put('/{namespace}', [NamespaceController::class, 'update'])->middleware([$admin, $cpv, $ns]);
-        Route::put('/{namespace}/external-storage', [NamespaceController::class, 'updateExternalStorage'])->middleware([$admin, $cpv, $ns]);
+    Route::prefix('namespaces')->group(function () use ($admin, $operator, $ns, $cpv, $httpControl) {
+        Route::get('/', [NamespaceController::class, 'index'])->middleware([$operator, $cpv, $httpControl, $ns]);
+        Route::post('/', [NamespaceController::class, 'store'])->middleware([$admin, $cpv, $httpControl, $ns]);
+        Route::get('/{namespace}', [NamespaceController::class, 'show'])->middleware([$operator, $cpv, $httpControl, $ns]);
+        Route::put('/{namespace}', [NamespaceController::class, 'update'])->middleware([$admin, $cpv, $httpControl, $ns]);
+        Route::put('/{namespace}/external-storage', [NamespaceController::class, 'updateExternalStorage'])->middleware([$admin, $cpv, $httpControl, $ns]);
     });
 
     // ── External Payload Storage ───────────────────────────────────
-    Route::prefix('storage')->middleware([$admin, $cpv, $ns])->group(function () {
+    Route::prefix('storage')->middleware([$admin, $cpv, $httpControl, $ns])->group(function () {
         Route::post('/test', [StorageController::class, 'test']);
     });
 
     // ── Workflows ────────────────────────────────────────────────────
-    Route::prefix('workflows')->middleware([$operator, $cpv, $ns])->group(function () {
+    Route::prefix('workflows')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
         Route::get('/', [WorkflowController::class, 'index']);
         Route::post('/', [WorkflowController::class, 'start']);
         Route::get('/{workflowId}', [WorkflowController::class, 'show']);
@@ -106,12 +113,12 @@ Route::middleware([Authenticate::class])->group(function () {
     });
 
     // ── Bridge Adapters ──────────────────────────────────────────────
-    Route::prefix('bridge-adapters')->middleware([$operator, $cpv, $ns])->group(function () {
+    Route::prefix('bridge-adapters')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
         Route::post('/webhook/{adapter}', [BridgeAdapterController::class, 'webhook']);
     });
 
     // ── Worker Task Polling ──────────────────────────────────────────
-    Route::prefix('worker')->middleware([$worker, $wpv, $ns])->group(function () {
+    Route::prefix('worker')->middleware([$worker, $wpv, $httpWorker, $ns])->group(function () {
         // Registration
         Route::post('/register', [WorkerController::class, 'register']);
         Route::post('/heartbeat', [WorkerController::class, 'heartbeat']);
@@ -136,14 +143,14 @@ Route::middleware([Authenticate::class])->group(function () {
     });
 
     // ── Workers (Management) ──────────────────────────────────────────
-    Route::prefix('workers')->group(function () use ($admin, $operator, $ns, $cpv) {
-        Route::get('/', [WorkerManagementController::class, 'index'])->middleware([$operator, $cpv, $ns]);
-        Route::get('/{workerId}', [WorkerManagementController::class, 'show'])->middleware([$operator, $cpv, $ns]);
-        Route::delete('/{workerId}', [WorkerManagementController::class, 'destroy'])->middleware([$admin, $cpv, $ns]);
+    Route::prefix('workers')->group(function () use ($admin, $operator, $ns, $cpv, $httpControl) {
+        Route::get('/', [WorkerManagementController::class, 'index'])->middleware([$operator, $cpv, $httpControl, $ns]);
+        Route::get('/{workerId}', [WorkerManagementController::class, 'show'])->middleware([$operator, $cpv, $httpControl, $ns]);
+        Route::delete('/{workerId}', [WorkerManagementController::class, 'destroy'])->middleware([$admin, $cpv, $httpControl, $ns]);
     });
 
     // ── Task Queues ──────────────────────────────────────────────────
-    Route::prefix('task-queues')->middleware([$operator, $cpv, $ns])->group(function () {
+    Route::prefix('task-queues')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
         Route::get('/', [TaskQueueController::class, 'index']);
         Route::get('/{taskQueue}/build-ids', [TaskQueueController::class, 'buildIds']);
         Route::post('/{taskQueue}/build-ids/drain', [TaskQueueController::class, 'drainBuildId']);
@@ -152,7 +159,7 @@ Route::middleware([Authenticate::class])->group(function () {
     });
 
     // ── Schedules ────────────────────────────────────────────────────
-    Route::prefix('schedules')->middleware([$operator, $cpv, $ns])->group(function () {
+    Route::prefix('schedules')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
         Route::get('/', [ScheduleController::class, 'index']);
         Route::post('/', [ScheduleController::class, 'store']);
         Route::get('/{scheduleId}', [ScheduleController::class, 'show']);
@@ -166,14 +173,14 @@ Route::middleware([Authenticate::class])->group(function () {
     });
 
     // ── Search Attributes ────────────────────────────────────────────
-    Route::prefix('search-attributes')->middleware([$operator, $cpv, $ns])->group(function () {
+    Route::prefix('search-attributes')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
         Route::get('/', [SearchAttributeController::class, 'index']);
         Route::post('/', [SearchAttributeController::class, 'store']);
         Route::delete('/{name}', [SearchAttributeController::class, 'destroy']);
     });
 
     // ── Service Catalog ──────────────────────────────────────────────
-    Route::prefix('service-endpoints')->middleware([$admin, $cpv, $ns])->group(function () {
+    Route::prefix('service-endpoints')->middleware([$admin, $cpv, $httpControl, $ns])->group(function () {
         Route::get('/', [ServiceCatalogController::class, 'endpointIndex']);
         Route::post('/', [ServiceCatalogController::class, 'endpointStore']);
         Route::get('/{endpointName}', [ServiceCatalogController::class, 'endpointShow']);
@@ -194,7 +201,7 @@ Route::middleware([Authenticate::class])->group(function () {
     });
 
     // ── System / Operations ─────────────────────────────────────────
-    Route::prefix('system')->middleware([$admin, $cpv, $ns])->group(function () {
+    Route::prefix('system')->middleware([$admin, $cpv, $httpControl, $ns])->group(function () {
         Route::get('/health', [SystemController::class, 'health']);
         Route::match(['get', 'post'], '/metrics', [SystemController::class, 'metrics']);
         Route::get('/operator-metrics', [SystemController::class, 'operatorMetrics']);

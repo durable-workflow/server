@@ -698,6 +698,13 @@ behavior for each role failure domain, the scaling axis for each role, and the
 incremental migration steps from today's standalone shape to the split
 control/execution topology.
 
+Authenticated API routes now also fail closed against that advertised process
+class. Nodes that do not host the server's current HTTP control surface return
+`503` with `reason: "topology_role_unavailable"` on role-gated routes instead
+of pretending to be interchangeable HTTP peers. `GET /api/cluster/info`,
+`/api/health`, and `/api/ready` stay available for discovery and liveness even
+on scheduler-only, execution-only, or matching-only nodes.
+
 The same `GET /api/cluster/info` response now includes a versioned
 `coordination_health` manifest for rollout-safety coordination risk. It
 summarizes the current server-wide workflow v2 health status, warning and error

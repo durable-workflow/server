@@ -39,21 +39,19 @@ final class ServerTopology
     public static function info(): array
     {
         $shapeAssignments = self::shapeAssignments();
-        $currentShape = self::currentShape();
-        $currentProcessClass = self::currentProcessClass($currentShape, $shapeAssignments);
-        $currentRoles = self::rolesForProcessClass($currentShape, $currentProcessClass, $shapeAssignments);
+        $currentNode = self::currentNode($shapeAssignments);
 
         return [
             'schema' => self::SCHEMA,
             'version' => self::VERSION,
             'supported_shapes' => self::SUPPORTED_SHAPES,
             'role_vocabulary' => self::ROLE_VOCABULARY,
-            'current_shape' => $currentShape,
-            'current_process_class' => $currentProcessClass,
-            'current_roles' => $currentRoles,
+            'current_shape' => $currentNode['shape'],
+            'current_process_class' => $currentNode['process_class'],
+            'current_roles' => $currentNode['roles'],
             'execution_mode' => self::executionMode(),
             'matching_role' => self::matchingRole(),
-            'role_catalog' => self::roleCatalog($currentRoles),
+            'role_catalog' => self::roleCatalog($currentNode['roles']),
             'shape_assignments' => $shapeAssignments,
             'authority_boundaries' => self::authorityBoundaries(),
             'authority_surfaces' => self::authoritySurfaces(),
@@ -61,6 +59,23 @@ final class ServerTopology
             'scaling_boundaries' => self::scalingBoundaries(),
             'supported_topologies' => self::supportedTopologies(),
             'migration_path' => self::migrationPath(),
+        ];
+    }
+
+    /**
+     * @param  array<string, array{process_classes: list<array{name: string, roles: list<string>}>}>|null  $shapeAssignments
+     * @return array{shape: string, process_class: string, roles: list<string>}
+     */
+    public static function currentNode(?array $shapeAssignments = null): array
+    {
+        $shapeAssignments ??= self::shapeAssignments();
+        $shape = self::currentShape();
+        $processClass = self::currentProcessClass($shape, $shapeAssignments);
+
+        return [
+            'shape' => $shape,
+            'process_class' => $processClass,
+            'roles' => self::rolesForProcessClass($shape, $processClass, $shapeAssignments),
         ];
     }
 
