@@ -18,8 +18,8 @@ use App\Http\Middleware\Authenticate;
 use App\Http\Middleware\ControlPlaneVersionResolver;
 use App\Http\Middleware\NamespaceResolver;
 use App\Http\Middleware\RequireRole;
-use App\Http\Middleware\RequireWorkflowBootstrapReady;
 use App\Http\Middleware\RequireTopologyRoles;
+use App\Http\Middleware\RequireWorkflowBootstrapReady;
 use App\Http\Middleware\WorkerProtocolVersionResolver;
 use Illuminate\Support\Facades\Route;
 
@@ -170,17 +170,22 @@ Route::middleware([Authenticate::class])->group(function () {
     });
 
     // ── Schedules ────────────────────────────────────────────────────
-    Route::prefix('schedules')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
-        Route::get('/', [ScheduleController::class, 'index']);
-        Route::post('/', [ScheduleController::class, 'store']);
-        Route::get('/{scheduleId}', [ScheduleController::class, 'show']);
-        Route::get('/{scheduleId}/history', [ScheduleController::class, 'history']);
-        Route::put('/{scheduleId}', [ScheduleController::class, 'update']);
-        Route::delete('/{scheduleId}', [ScheduleController::class, 'destroy']);
-        Route::post('/{scheduleId}/pause', [ScheduleController::class, 'pause']);
-        Route::post('/{scheduleId}/resume', [ScheduleController::class, 'resume']);
-        Route::post('/{scheduleId}/trigger', [ScheduleController::class, 'trigger']);
-        Route::post('/{scheduleId}/backfill', [ScheduleController::class, 'backfill']);
+    Route::prefix('schedules')->group(function () use ($operator, $cpv, $httpControl, $workflowBootstrap, $ns) {
+        Route::middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
+            Route::get('/', [ScheduleController::class, 'index']);
+            Route::get('/{scheduleId}', [ScheduleController::class, 'show']);
+            Route::get('/{scheduleId}/history', [ScheduleController::class, 'history']);
+        });
+
+        Route::middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns])->group(function () {
+            Route::post('/', [ScheduleController::class, 'store']);
+            Route::put('/{scheduleId}', [ScheduleController::class, 'update']);
+            Route::delete('/{scheduleId}', [ScheduleController::class, 'destroy']);
+            Route::post('/{scheduleId}/pause', [ScheduleController::class, 'pause']);
+            Route::post('/{scheduleId}/resume', [ScheduleController::class, 'resume']);
+            Route::post('/{scheduleId}/trigger', [ScheduleController::class, 'trigger']);
+            Route::post('/{scheduleId}/backfill', [ScheduleController::class, 'backfill']);
+        });
     });
 
     // ── Search Attributes ────────────────────────────────────────────

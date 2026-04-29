@@ -8,7 +8,10 @@ use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
+use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class WorkflowBootstrapRouteGatingTest extends TestCase
@@ -84,6 +87,52 @@ class WorkflowBootstrapRouteGatingTest extends TestCase
             ->assertJsonMissing(['reason' => 'namespace_not_found']);
     }
 
+    public function test_pending_rollout_safety_migrations_block_schedule_mutation_routes(): void
+    {
+        $this->createSchedule('bootstrap-blocked-schedule');
+        $this->blockWorkflowBootstrap();
+
+        foreach ($this->blockedScheduleMutations() as [$method, $path, $body]) {
+            $response = $this->sendControlPlaneJson($method, $path, $body);
+
+            $response->assertStatus(503)
+                ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+                ->assertJsonPath('reason', 'workflow_v2_blocked')
+                ->assertJsonPath('blocked_by.0', 'migrations');
+        }
+    }
+
+    public function test_schedule_read_routes_remain_available_when_bootstrap_is_blocked(): void
+    {
+        $this->createSchedule('bootstrap-readable-schedule');
+        $this->blockWorkflowBootstrap();
+
+        $this->withHeaders($this->controlHeaders('operator-token'))
+            ->getJson('/api/schedules')
+            ->assertOk()
+            ->assertJsonPath('schedules.0.schedule_id', 'bootstrap-readable-schedule');
+
+        $this->withHeaders($this->controlHeaders('operator-token'))
+            ->getJson('/api/schedules/bootstrap-readable-schedule')
+            ->assertOk()
+            ->assertJsonPath('schedule_id', 'bootstrap-readable-schedule');
+    }
+
+    public function test_bootstrap_gate_runs_before_namespace_resolution_on_schedule_mutation_routes(): void
+    {
+        $this->blockWorkflowBootstrap();
+
+        $response = $this->sendControlPlaneJson('POST', '/api/schedules', [
+            'schedule_id' => 'ghost-namespace-schedule',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'GhostNamespaceWorkflow'],
+        ], 'ghost-namespace');
+
+        $response->assertStatus(503)
+            ->assertJsonPath('reason', 'workflow_v2_blocked')
+            ->assertJsonMissing(['reason' => 'namespace_not_found']);
+    }
+
     public function test_worker_registration_can_recover_fail_mode_compatibility_health(): void
     {
         config()->set('queue.default', 'redis');
@@ -111,9 +160,72 @@ class WorkflowBootstrapRouteGatingTest extends TestCase
 
     private function blockWorkflowBootstrap(): void
     {
-        \Illuminate\Support\Facades\DB::table('migrations')
+        DB::table('migrations')
             ->where('migration', '2026_04_21_000300_add_workflow_definition_fingerprints_to_worker_registrations')
             ->delete();
+    }
+
+    /**
+     * @return list<array{0: string, 1: string, 2: array<string, mixed>}>
+     */
+    private function blockedScheduleMutations(): array
+    {
+        return [
+            [
+                'POST',
+                '/api/schedules',
+                [
+                    'schedule_id' => 'bootstrap-created-schedule',
+                    'spec' => ['cron_expressions' => ['0 * * * *']],
+                    'action' => ['workflow_type' => 'BootstrapWorkflow'],
+                ],
+            ],
+            [
+                'PUT',
+                '/api/schedules/bootstrap-blocked-schedule',
+                ['note' => 'Blocked update'],
+            ],
+            [
+                'DELETE',
+                '/api/schedules/bootstrap-blocked-schedule',
+                [],
+            ],
+            [
+                'POST',
+                '/api/schedules/bootstrap-blocked-schedule/pause',
+                ['note' => 'Blocked pause'],
+            ],
+            [
+                'POST',
+                '/api/schedules/bootstrap-blocked-schedule/resume',
+                ['note' => 'Blocked resume'],
+            ],
+            [
+                'POST',
+                '/api/schedules/bootstrap-blocked-schedule/trigger',
+                [],
+            ],
+            [
+                'POST',
+                '/api/schedules/bootstrap-blocked-schedule/backfill',
+                [
+                    'start_time' => '2026-04-18T10:00:00Z',
+                    'end_time' => '2026-04-18T11:00:00Z',
+                ],
+            ],
+        ];
+    }
+
+    private function createSchedule(string $scheduleId): WorkflowSchedule
+    {
+        return WorkflowSchedule::query()->create([
+            'schedule_id' => $scheduleId,
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *'], 'timezone' => 'UTC'],
+            'action' => ['workflow_type' => 'BootstrapWorkflow'],
+            'overlap_policy' => 'skip',
+            'status' => 'active',
+        ]);
     }
 
     /**
@@ -138,5 +250,17 @@ class WorkflowBootstrapRouteGatingTest extends TestCase
             'X-Namespace' => $namespace,
             ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $body
+     */
+    private function sendControlPlaneJson(
+        string $method,
+        string $path,
+        array $body = [],
+        string $namespace = 'default',
+    ): TestResponse {
+        return $this->json($method, $path, $body, $this->controlHeaders('operator-token', $namespace));
     }
 }
