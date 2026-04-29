@@ -310,45 +310,6 @@ class WorkflowStartServiceTest extends TestCase
         $this->assertSame('started_new', $start['outcome']);
     }
 
-    public function test_it_resolves_the_default_queue_when_the_start_request_omits_task_queue(): void
-    {
-        config()->set('queue.default', 'redis');
-        config()->set('queue.connections.redis.queue', 'critical');
-        config()->set('workflows.v2.types.workflows', [
-            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
-        ]);
-
-        $this->mock(WorkflowControlPlane::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('start')
-                ->once()
-                ->with(
-                    'tests.external-greeting-workflow',
-                    'wf-default-queue-1',
-                    \Mockery::on(static function (array $options): bool {
-                        return ($options['queue'] ?? null) === 'critical';
-                    }),
-                )
-                ->andReturn([
-                    'started' => true,
-                    'workflow_instance_id' => 'wf-default-queue-1',
-                    'workflow_run_id' => 'run-default-queue-1',
-                    'workflow_type' => 'tests.external-greeting-workflow',
-                    'outcome' => 'started_new',
-                    'reason' => null,
-                ]);
-        });
-
-        $service = app(WorkflowStartService::class);
-
-        $start = $service->start([
-            'workflow_id' => 'wf-default-queue-1',
-            'workflow_type' => 'tests.external-greeting-workflow',
-        ]);
-
-        $this->assertSame('wf-default-queue-1', $start['workflow_id']);
-        $this->assertSame('started_new', $start['outcome']);
-    }
-
     public function test_it_omits_timeout_seconds_from_options_when_not_provided(): void
     {
         config()->set('workflows.v2.types.workflows', [

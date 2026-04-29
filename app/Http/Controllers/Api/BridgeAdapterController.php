@@ -113,40 +113,32 @@ class BridgeAdapterController
         $workflowId = is_string($startTarget['workflow_id'] ?? null)
             ? $startTarget['workflow_id']
             : $this->workflowIdFor($adapter, $idempotencyKey);
+        $taskQueue = is_string($startTarget['task_queue'] ?? null)
+            ? trim($startTarget['task_queue'])
+            : null;
 
-        try {
-            $taskQueue = $this->workflowStartService->resolveTaskQueue(
-                $startTarget['workflow_type'],
-                $startTarget['task_queue'] ?? null,
-            );
-        } catch (LogicException $exception) {
-            return $this->rejected($request, $adapter, 'start_workflow', $idempotencyKey, 'unknown_target', [
-                'message' => $exception->getMessage(),
-                'target' => $this->redactedTarget($target),
-                'correlation' => $correlation,
-            ]);
-        }
+        if ($taskQueue !== null && $taskQueue !== '') {
+            $routingBlock = $this->taskQueueRoutingGate->workflowStartBlock((string) $namespace, $taskQueue);
 
-        $routingBlock = $this->taskQueueRoutingGate->workflowStartBlock((string) $namespace, $taskQueue);
-
-        if ($routingBlock !== null) {
-            return $this->rejected($request, $adapter, 'start_workflow', $idempotencyKey, 'task_queue_draining', array_filter([
-                'message' => sprintf(
-                    'Task queue [%s] is draining and cannot accept new workflow starts until an active worker cohort is available.',
-                    $taskQueue,
-                ),
-                'target' => $this->redactedTarget($target + ['workflow_id' => $workflowId]),
-                'correlation' => $correlation,
-                'workflow_id' => $workflowId,
-                'workflow_type' => $startTarget['workflow_type'],
-                'task_queue' => $taskQueue,
-                'routing_status' => $routingBlock['routing_status'],
-                'active_worker_count' => $routingBlock['active_worker_count'],
-                'draining_worker_count' => $routingBlock['draining_worker_count'],
-                'stale_worker_count' => $routingBlock['stale_worker_count'],
-                'draining_build_ids' => $routingBlock['draining_build_ids'],
-                'drain_intent' => 'draining',
-            ], static fn (mixed $value): bool => $value !== null));
+            if ($routingBlock !== null) {
+                return $this->rejected($request, $adapter, 'start_workflow', $idempotencyKey, 'task_queue_draining', array_filter([
+                    'message' => sprintf(
+                        'Task queue [%s] is draining and cannot accept new workflow starts until an active worker cohort is available.',
+                        $taskQueue,
+                    ),
+                    'target' => $this->redactedTarget($target + ['workflow_id' => $workflowId]),
+                    'correlation' => $correlation,
+                    'workflow_id' => $workflowId,
+                    'workflow_type' => $startTarget['workflow_type'],
+                    'task_queue' => $taskQueue,
+                    'routing_status' => $routingBlock['routing_status'],
+                    'active_worker_count' => $routingBlock['active_worker_count'],
+                    'draining_worker_count' => $routingBlock['draining_worker_count'],
+                    'stale_worker_count' => $routingBlock['stale_worker_count'],
+                    'draining_build_ids' => $routingBlock['draining_build_ids'],
+                    'drain_intent' => 'draining',
+                ], static fn (mixed $value): bool => $value !== null));
+            }
         }
 
         try {
@@ -168,7 +160,6 @@ class BridgeAdapterController
                         'adapter' => $adapter,
                         'action' => 'start_workflow',
                         'idempotency_key' => $idempotencyKey,
-                        'task_queue' => $taskQueue,
                     ],
                 ),
             );
