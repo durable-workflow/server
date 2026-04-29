@@ -545,6 +545,37 @@ class AuthNamespaceProtocolOrderingContractTest extends TestCase
         $this->assertSame('restricted-queue', $resource['task_queue'] ?? null);
     }
 
+    public function test_custom_provider_can_authorize_service_routes_with_service_identifiers(): void
+    {
+        ResourceAwareAuthProvider::reset();
+
+        config(['server.auth.provider' => ResourceAwareAuthProvider::class]);
+
+        $response = $this->withHeaders([
+            'X-Test-Subject' => 'service-admin',
+            'X-Test-Roles' => 'admin',
+            'X-Test-Deny-Operation-Family' => 'service',
+            'X-Namespace' => 'default',
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ])->getJson('/api/service-endpoints/BILLING/services/INVOICING/operations/CREATEINVOICE/service-calls/01JTM2YJJW9K9M8M4J4H1B8S1S');
+
+        $response->assertForbidden()
+            ->assertJsonPath('reason', 'forbidden');
+
+        $this->assertNoProtocolOrNamespaceReasonLeaked($response);
+
+        $resource = ResourceAwareAuthProvider::$lastResource;
+
+        $this->assertSame('service', $resource['operation_family'] ?? null);
+        $this->assertSame('service_call_show', $resource['operation_name'] ?? null);
+        $this->assertSame('default', $resource['requested_namespace'] ?? null);
+        $this->assertSame('default', $resource['namespace'] ?? null);
+        $this->assertSame('billing', $resource['service_endpoint_name'] ?? null);
+        $this->assertSame('invoicing', $resource['service_name'] ?? null);
+        $this->assertSame('createinvoice', $resource['service_operation_name'] ?? null);
+        $this->assertSame('01JTM2YJJW9K9M8M4J4H1B8S1S', $resource['service_call_id'] ?? null);
+    }
+
     private function configureRoleTokens(): void
     {
         config([

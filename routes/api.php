@@ -212,6 +212,7 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::get('/{endpointName}/services/{serviceName}/operations', [ServiceCatalogController::class, 'operationIndex']);
         Route::post('/{endpointName}/services/{serviceName}/operations', [ServiceCatalogController::class, 'operationStore']);
         Route::get('/{endpointName}/services/{serviceName}/operations/{operationName}', [ServiceCatalogController::class, 'operationShow']);
+        Route::get('/{endpointName}/services/{serviceName}/operations/{operationName}/service-calls/{serviceCallId}', [ServiceCatalogController::class, 'serviceCallShow']);
         Route::put('/{endpointName}/services/{serviceName}/operations/{operationName}', [ServiceCatalogController::class, 'operationUpdate']);
         Route::delete('/{endpointName}/services/{serviceName}/operations/{operationName}', [ServiceCatalogController::class, 'operationDestroy']);
     });

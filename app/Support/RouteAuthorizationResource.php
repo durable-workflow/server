@@ -167,6 +167,24 @@ final class RouteAuthorizationResource
             $fields['search_attribute_name'] = $identifiers['name'];
         }
 
+        if ($operationFamily === 'service') {
+            if (array_key_exists('endpoint_name', $identifiers)) {
+                $fields['service_endpoint_name'] = strtolower((string) $identifiers['endpoint_name']);
+            }
+
+            if (array_key_exists('service_name', $identifiers)) {
+                $fields['service_name'] = strtolower((string) $identifiers['service_name']);
+            }
+
+            if (array_key_exists('operation_name', $identifiers)) {
+                $fields['service_operation_name'] = strtolower((string) $identifiers['operation_name']);
+            }
+
+            if (array_key_exists('service_call_id', $identifiers)) {
+                $fields['service_call_id'] = (string) $identifiers['service_call_id'];
+            }
+        }
+
         if (array_key_exists('query_name', $identifiers)) {
             $fields['query_name'] = $identifiers['query_name'];
         }
@@ -205,6 +223,7 @@ final class RouteAuthorizationResource
             'task-queues' => 'task_queue',
             'schedules' => 'schedule',
             'search-attributes' => 'search_attribute',
+            'service-endpoints' => 'service',
             'system' => 'system',
             default => null,
         };

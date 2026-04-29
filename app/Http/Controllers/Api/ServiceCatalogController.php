@@ -593,6 +593,44 @@ class ServiceCatalogController
         return ControlPlaneProtocol::json($this->serializeOperation($operation->refresh(), $endpoint, $service));
     }
 
+    public function serviceCallShow(
+        Request $request,
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        string $serviceCallId,
+    ): JsonResponse {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $endpoint = $this->findEndpoint($request, $endpointName);
+
+        if (! $endpoint) {
+            return $this->endpointNotFound($request, $endpointName);
+        }
+
+        $service = $this->findService($request, $endpoint, $serviceName);
+
+        if (! $service) {
+            return $this->serviceNotFound($endpoint, $serviceName);
+        }
+
+        $operation = $this->findOperation($request, $service, $operationName);
+
+        if (! $operation) {
+            return $this->operationNotFound($endpoint, $service, $operationName);
+        }
+
+        $serviceCall = $this->findServiceCall($request, $operation, $serviceCallId);
+
+        if (! $serviceCall) {
+            return $this->serviceCallNotFound($endpoint, $service, $operation, $serviceCallId);
+        }
+
+        return ControlPlaneProtocol::json($this->serializeServiceCall($serviceCall, $endpoint, $service, $operation));
+    }
+
     public function operationDestroy(
         Request $request,
         string $endpointName,
@@ -750,6 +788,18 @@ class ServiceCatalogController
             ->first();
     }
 
+    private function findServiceCall(
+        Request $request,
+        WorkflowServiceOperation $operation,
+        string $serviceCallId,
+    ): ?WorkflowServiceCall {
+        return WorkflowServiceCall::query()
+            ->where('namespace', $this->namespace($request))
+            ->where('workflow_service_operation_id', $operation->id)
+            ->where('id', trim($serviceCallId))
+            ->first();
+    }
+
     private function endpointNotFound(Request $request, string $endpointName): JsonResponse
     {
         $namespace = $this->namespace($request);
@@ -805,6 +855,32 @@ class ServiceCatalogController
             'endpoint_name' => $endpoint->endpoint_name,
             'service_name' => $service->service_name,
             'operation_name' => $normalized,
+        ], 404);
+    }
+
+    private function serviceCallNotFound(
+        WorkflowServiceEndpoint $endpoint,
+        WorkflowService $service,
+        WorkflowServiceOperation $operation,
+        string $serviceCallId,
+    ): JsonResponse {
+        $normalizedId = trim($serviceCallId);
+
+        return ControlPlaneProtocol::json([
+            'message' => sprintf(
+                'Service call [%s] not found under operation [%s] for service [%s] at endpoint [%s] in namespace [%s].',
+                $normalizedId,
+                $operation->operation_name,
+                $service->service_name,
+                $endpoint->endpoint_name,
+                $service->namespace,
+            ),
+            'reason' => 'service_call_not_found',
+            'namespace' => $service->namespace,
+            'endpoint_name' => $endpoint->endpoint_name,
+            'service_name' => $service->service_name,
+            'operation_name' => $operation->operation_name,
+            'service_call_id' => $normalizedId,
         ], 404);
     }
 
@@ -871,6 +947,57 @@ class ServiceCatalogController
             'metadata' => $operation->metadata,
             'created_at' => $operation->created_at?->toIso8601String(),
             'updated_at' => $operation->updated_at?->toIso8601String(),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function serializeServiceCall(
+        WorkflowServiceCall $serviceCall,
+        WorkflowServiceEndpoint $endpoint,
+        WorkflowService $service,
+        WorkflowServiceOperation $operation,
+    ): array {
+        return [
+            'id' => $serviceCall->id,
+            'namespace' => $serviceCall->namespace,
+            'endpoint_id' => $endpoint->id,
+            'endpoint_name' => $endpoint->endpoint_name,
+            'service_id' => $service->id,
+            'service_name' => $service->service_name,
+            'operation_id' => $operation->id,
+            'operation_name' => $operation->operation_name,
+            'caller_namespace' => $serviceCall->caller_namespace,
+            'caller_workflow_instance_id' => $serviceCall->caller_workflow_instance_id,
+            'caller_workflow_run_id' => $serviceCall->caller_workflow_run_id,
+            'target_namespace' => $serviceCall->target_namespace,
+            'linked_workflow_instance_id' => $serviceCall->linked_workflow_instance_id,
+            'linked_workflow_run_id' => $serviceCall->linked_workflow_run_id,
+            'linked_workflow_update_id' => $serviceCall->linked_workflow_update_id,
+            'status' => $serviceCall->status,
+            'operation_mode' => $serviceCall->operation_mode,
+            'resolved_binding_kind' => $serviceCall->resolved_binding_kind,
+            'resolved_target_reference' => $serviceCall->resolved_target_reference,
+            'payload_codec' => $serviceCall->payload_codec,
+            'input_payload_reference' => $serviceCall->input_payload_reference,
+            'output_payload_reference' => $serviceCall->output_payload_reference,
+            'failure_payload_reference' => $serviceCall->failure_payload_reference,
+            'failure_message' => $serviceCall->failure_message,
+            'idempotency_key' => $serviceCall->idempotency_key,
+            'deadline_policy' => $serviceCall->deadline_policy,
+            'idempotency_policy' => $serviceCall->idempotency_policy,
+            'cancellation_policy' => $serviceCall->cancellation_policy,
+            'retry_policy' => $serviceCall->retry_policy,
+            'boundary_policy' => $serviceCall->boundary_policy,
+            'metadata' => $serviceCall->metadata,
+            'accepted_at' => $serviceCall->accepted_at?->toIso8601String(),
+            'started_at' => $serviceCall->started_at?->toIso8601String(),
+            'completed_at' => $serviceCall->completed_at?->toIso8601String(),
+            'failed_at' => $serviceCall->failed_at?->toIso8601String(),
+            'cancelled_at' => $serviceCall->cancelled_at?->toIso8601String(),
+            'created_at' => $serviceCall->created_at?->toIso8601String(),
+            'updated_at' => $serviceCall->updated_at?->toIso8601String(),
         ];
     }
 

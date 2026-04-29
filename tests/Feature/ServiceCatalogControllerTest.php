@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Str;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowService;
@@ -306,6 +307,94 @@ class ServiceCatalogControllerTest extends TestCase
         $response->assertStatus(409)
             ->assertJsonPath('reason', 'operation_already_exists')
             ->assertJsonPath('operation_name', 'createinvoice');
+    }
+
+    public function test_it_shows_a_durable_service_call_snapshot(): void
+    {
+        $endpoint = WorkflowServiceEndpoint::query()->create([
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+        ]);
+
+        $service = WorkflowService::query()->create([
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'service_name' => 'invoicing',
+        ]);
+
+        $operation = WorkflowServiceOperation::query()->create([
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'workflow_service_id' => $service->id,
+            'operation_name' => 'createinvoice',
+            'operation_mode' => 'async',
+            'handler_binding_kind' => 'update_workflow',
+            'handler_target_reference' => 'updates.invoice.submit',
+        ]);
+
+        $serviceCall = WorkflowServiceCall::query()->create([
+            'namespace' => 'default',
+            'workflow_service_endpoint_id' => $endpoint->id,
+            'workflow_service_id' => $service->id,
+            'workflow_service_operation_id' => $operation->id,
+            'endpoint_name' => $endpoint->endpoint_name,
+            'service_name' => $service->service_name,
+            'operation_name' => $operation->operation_name,
+            'caller_namespace' => 'finance',
+            'caller_workflow_instance_id' => 'caller-invoice-workflow',
+            'caller_workflow_run_id' => (string) Str::ulid(),
+            'target_namespace' => 'default',
+            'linked_workflow_instance_id' => 'invoice-target-workflow',
+            'linked_workflow_run_id' => (string) Str::ulid(),
+            'linked_workflow_update_id' => (string) Str::ulid(),
+            'status' => 'running',
+            'operation_mode' => 'async',
+            'resolved_binding_kind' => 'update_workflow',
+            'resolved_target_reference' => 'updates.invoice.submit',
+            'payload_codec' => 'json',
+            'input_payload_reference' => 'payloads/service-calls/input-1.json',
+            'output_payload_reference' => 'payloads/service-calls/output-1.json',
+            'idempotency_key' => 'invoice-123',
+            'deadline_policy' => ['timeout_seconds' => 60],
+            'idempotency_policy' => ['scope' => 'caller'],
+            'cancellation_policy' => ['mode' => 'allow'],
+            'retry_policy' => ['max_attempts' => 5],
+            'boundary_policy' => ['visibility' => 'service'],
+            'metadata' => ['ticket' => 'svc-1'],
+            'accepted_at' => now()->subMinute(),
+            'started_at' => now()->subSeconds(15),
+        ]);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->getJson(sprintf(
+                '/api/service-endpoints/BILLING/services/INVOICING/operations/CREATEINVOICE/service-calls/%s',
+                $serviceCall->id,
+            ));
+
+        $response->assertOk()
+            ->assertJsonPath('id', $serviceCall->id)
+            ->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('endpoint_name', 'billing')
+            ->assertJsonPath('service_name', 'invoicing')
+            ->assertJsonPath('operation_name', 'createinvoice')
+            ->assertJsonPath('caller_namespace', 'finance')
+            ->assertJsonPath('target_namespace', 'default')
+            ->assertJsonPath('status', 'running')
+            ->assertJsonPath('operation_mode', 'async')
+            ->assertJsonPath('resolved_binding_kind', 'update_workflow')
+            ->assertJsonPath('resolved_target_reference', 'updates.invoice.submit')
+            ->assertJsonPath('payload_codec', 'json')
+            ->assertJsonPath('input_payload_reference', 'payloads/service-calls/input-1.json')
+            ->assertJsonPath('output_payload_reference', 'payloads/service-calls/output-1.json')
+            ->assertJsonPath('idempotency_key', 'invoice-123')
+            ->assertJsonPath('deadline_policy.timeout_seconds', 60)
+            ->assertJsonPath('idempotency_policy.scope', 'caller')
+            ->assertJsonPath('cancellation_policy.mode', 'allow')
+            ->assertJsonPath('retry_policy.max_attempts', 5)
+            ->assertJsonPath('boundary_policy.visibility', 'service')
+            ->assertJsonPath('metadata.ticket', 'svc-1')
+            ->assertJsonPath('accepted_at', $serviceCall->accepted_at?->toIso8601String())
+            ->assertJsonPath('started_at', $serviceCall->started_at?->toIso8601String());
     }
 
     public function test_it_requires_a_handler_target_reference_or_non_empty_handler_binding_for_operations(): void
