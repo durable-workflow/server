@@ -8,6 +8,7 @@ use App\Models\WorkflowNamespace;
 use App\Support\CoordinationHealthContract;
 use App\Support\ServerTopology;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
@@ -339,6 +340,31 @@ class ClusterInfoTest extends TestCase
         $this->assertIsArray($response->json('coordination_health.error_checks'));
         $this->assertIsArray($response->json('coordination_health.checks'));
         $this->assertIsArray($response->json('coordination_health.routing_drains.queues'));
+    }
+
+    public function test_it_surfaces_readiness_blockers_in_coordination_health(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        DB::table('migrations')
+            ->where('migration', '2026_04_21_000300_add_workflow_definition_fingerprints_to_worker_registrations')
+            ->delete();
+
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+
+        $response
+            ->assertJsonPath('coordination_health.status', 'blocked')
+            ->assertJsonPath('coordination_health.http_status', 503)
+            ->assertJsonPath('coordination_health.blocked_by.0', 'migrations')
+            ->assertJsonPath(
+                'coordination_health.remediation',
+                'Restore database connectivity and migrate the workflow tables before relying on workflow v2 rollout-safety health.',
+            );
     }
 
     public function test_it_surfaces_draining_build_id_cohorts_in_coordination_health(): void

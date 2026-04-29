@@ -14,7 +14,7 @@ final class CoordinationHealthContract
      */
     public static function manifest(array $workflowCheck, ?array $routingDrains = null): array
     {
-        return [
+        $manifest = [
             'schema' => self::SCHEMA,
             'version' => self::VERSION,
             'namespace_scope' => 'all_namespaces',
@@ -27,6 +27,14 @@ final class CoordinationHealthContract
             'checks' => self::checkList($workflowCheck['checks'] ?? []),
             'routing_drains' => self::routingDrains($routingDrains),
         ];
+
+        foreach (['blocked_by', 'message', 'remediation'] as $key) {
+            if (array_key_exists($key, $workflowCheck)) {
+                $manifest[$key] = $workflowCheck[$key];
+            }
+        }
+
+        return $manifest;
     }
 
     /**

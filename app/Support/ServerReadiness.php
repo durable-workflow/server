@@ -7,22 +7,14 @@ use App\Models\WorkflowNamespace;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Workflow\V2\Support\HealthCheck;
+use Workflow\V2\Support\ReadinessContract;
+use Workflow\V2\Support\WaterlineEngineSource;
 
 final class ServerReadiness
 {
-    private const REQUIRED_TABLES = [
-        'migrations',
-        'workflow_namespaces',
-        'workflow_instances',
-        'workflow_runs',
-        'workflow_tasks',
-        'workflow_history_events',
-        'workflow_worker_registrations',
-        'search_attribute_definitions',
-    ];
-
     public function __construct(
         private readonly ServerPollingCache $cache,
+        private readonly MigrationAdoption $migrationAdoption,
     ) {}
 
     /**
@@ -86,10 +78,9 @@ final class ServerReadiness
     private function migrationCheck(): array
     {
         try {
-            $missing = array_values(array_filter(
-                self::REQUIRED_TABLES,
-                static fn (string $table): bool => ! Schema::hasTable($table),
-            ));
+            $inspection = $this->migrationAdoption->inspect();
+            $contract = ReadinessContract::definition();
+            $operatorSurface = WaterlineEngineSource::status();
         } catch (\Throwable $exception) {
             return [
                 'status' => 'unavailable',
@@ -97,15 +88,62 @@ final class ServerReadiness
             ];
         }
 
-        if ($missing !== []) {
-            return [
+        $operatorSurfaceMissingTables = $this->operatorSurfaceMissingTables($operatorSurface['required_tables'] ?? []);
+        $blockingMissingTables = $this->migrationMissingTables($inspection['blocking_migrations'] ?? []);
+        $missingTables = array_values(array_unique(array_merge(
+            $blockingMissingTables,
+            $operatorSurfaceMissingTables,
+            ($inspection['repository_exists'] ?? false) ? [] : ['migrations'],
+        )));
+        $check = [
+            'repository_exists' => (bool) ($inspection['repository_exists'] ?? false),
+            'pending_migrations' => is_array($inspection['pending_migrations'] ?? null)
+                ? array_values($inspection['pending_migrations'])
+                : [],
+            'adoptable_migrations' => $this->stringList($inspection['adoptable_migrations'] ?? []),
+            'blocking_migrations' => is_array($inspection['blocking_migrations'] ?? null)
+                ? array_values($inspection['blocking_migrations'])
+                : [],
+            'missing_tables' => $missingTables,
+            'operator_surface' => [
+                'authority' => $contract['surfaces']['boot_install']['authority'] ?? WaterlineEngineSource::class.'::status',
+                'readiness_key' => $contract['surfaces']['boot_install']['readiness_key'] ?? 'v2_operator_surface_available',
+                'available' => (bool) ($operatorSurface['v2_operator_surface_available'] ?? false),
+                'required_tables' => is_array($operatorSurface['required_tables'] ?? null)
+                    ? array_values($operatorSurface['required_tables'])
+                    : [],
+                'issues' => is_array($operatorSurface['issues'] ?? null)
+                    ? array_values($operatorSurface['issues'])
+                    : [],
+            ],
+            'readiness_contract' => [
+                'version' => is_int($contract['version'] ?? null) ? $contract['version'] : null,
+                'release_state' => is_string($contract['release_state'] ?? null) ? $contract['release_state'] : null,
+            ],
+        ];
+
+        if ($missingTables !== []) {
+            return $check + [
                 'status' => 'missing',
-                'missing_tables' => $missing,
                 'remediation' => 'Run server-bootstrap before routing workers or SDKs to this server.',
             ];
         }
 
-        return ['status' => 'ok'];
+        if (($inspection['blocking_migrations'] ?? []) !== []) {
+            return $check + [
+                'status' => 'pending',
+                'remediation' => 'Run server-bootstrap before routing workers or SDKs to this server.',
+            ];
+        }
+
+        if (($inspection['adoptable_migrations'] ?? []) !== []) {
+            return $check + [
+                'status' => 'warning',
+                'remediation' => 'Run server-bootstrap to adopt existing workflow tables into migration history before the next migrate pass.',
+            ];
+        }
+
+        return $check + ['status' => 'ok'];
     }
 
     /**
@@ -385,5 +423,56 @@ final class ServerReadiness
             $value,
             static fn (mixed $item): bool => is_string($item) && $item !== '',
         ));
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $value
+     * @return list<string>
+     */
+    private function migrationMissingTables(array $value): array
+    {
+        $tables = [];
+
+        foreach ($value as $entry) {
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            foreach ($this->stringList($entry['missing_tables'] ?? []) as $table) {
+                $tables[] = $table;
+            }
+        }
+
+        return array_values(array_unique($tables));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function operatorSurfaceMissingTables(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $missing = [];
+
+        foreach ($value as $entry) {
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            if (($entry['available'] ?? false) === true) {
+                continue;
+            }
+
+            $table = $entry['table'] ?? null;
+
+            if (is_string($table) && $table !== '') {
+                $missing[] = $table;
+            }
+        }
+
+        return array_values(array_unique($missing));
     }
 }

@@ -7,6 +7,7 @@ namespace Tests\Feature;
 use App\Models\WorkflowNamespace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Tests\Fixtures\HeaderAuthProvider;
 use Tests\TestCase;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
@@ -87,12 +88,86 @@ class HealthControllerTest extends TestCase
             ->assertJsonPath('status', 'ready')
             ->assertJsonPath('checks.database.status', 'ok')
             ->assertJsonPath('checks.migrations.status', 'ok')
+            ->assertJsonPath('checks.migrations.operator_surface.available', true)
+            ->assertJsonPath('checks.migrations.readiness_contract.version', 1)
             ->assertJsonPath('checks.default_namespace.status', 'ok')
             ->assertJsonPath('checks.default_namespace.namespace', 'default')
             ->assertJsonPath('checks.cache.status', 'ok')
             ->assertJsonPath('checks.auth.status', 'ok')
             ->assertJsonPath('checks.workflow_v2.status', 'ok')
             ->assertJsonPath('checks.workflow_v2.http_status', 200);
+    }
+
+    public function test_readiness_check_warns_when_existing_create_table_migration_only_needs_adoption(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        DB::table('migrations')
+            ->where('migration', '2026_04_16_000180_create_workflow_schedule_history_events_table')
+            ->delete();
+
+        $response = $this->getJson('/api/ready');
+
+        $response->assertOk()
+            ->assertJsonPath('status', 'ready')
+            ->assertJsonPath('checks.migrations.status', 'warning')
+            ->assertJsonPath(
+                'checks.migrations.adoptable_migrations.0',
+                '2026_04_16_000180_create_workflow_schedule_history_events_table',
+            )
+            ->assertJsonPath('checks.workflow_v2.status', 'ok');
+    }
+
+    public function test_readiness_check_blocks_pending_rollout_safety_migration_records(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        DB::table('migrations')
+            ->where('migration', '2026_04_21_000300_add_workflow_definition_fingerprints_to_worker_registrations')
+            ->delete();
+
+        $response = $this->getJson('/api/ready');
+
+        $response->assertStatus(503)
+            ->assertJsonPath('status', 'not_ready')
+            ->assertJsonPath('checks.migrations.status', 'pending')
+            ->assertJsonPath(
+                'checks.migrations.blocking_migrations.0.migration',
+                '2026_04_21_000300_add_workflow_definition_fingerprints_to_worker_registrations',
+            )
+            ->assertJsonPath('checks.workflow_v2.status', 'blocked')
+            ->assertJsonPath('checks.workflow_v2.blocked_by.0', 'migrations');
+    }
+
+    public function test_readiness_check_blocks_when_v2_operator_surface_tables_are_missing(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        Schema::drop('workflow_run_summaries');
+
+        $response = $this->getJson('/api/ready');
+
+        $response->assertStatus(503)
+            ->assertJsonPath('status', 'not_ready')
+            ->assertJsonPath('checks.migrations.status', 'missing')
+            ->assertJsonPath('checks.migrations.operator_surface.available', false)
+            ->assertJsonPath('checks.migrations.missing_tables.0', 'workflow_run_summaries')
+            ->assertJsonPath('checks.workflow_v2.status', 'blocked');
     }
 
     public function test_readiness_check_reports_missing_default_namespace_before_bootstrap_seed(): void

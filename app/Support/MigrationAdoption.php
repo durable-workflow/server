@@ -26,8 +26,7 @@ class MigrationAdoption
 {
     public function __construct(
         private readonly Migrator $migrator,
-    ) {
-    }
+    ) {}
 
     /**
      * @return list<string> names of migrations that were adopted
@@ -40,36 +39,18 @@ class MigrationAdoption
             $repository->createRepository();
         }
 
-        $paths = array_merge(
-            [database_path('migrations')],
-            $this->migrator->paths(),
-        );
-
-        $files = $this->migrator->getMigrationFiles($paths);
-
-        if ($files === []) {
-            return [];
-        }
-
-        $ran = $repository->getRan();
+        $inspection = $this->inspect();
         $batch = $repository->getNextBatchNumber();
         $adopted = [];
 
-        foreach ($files as $name => $path) {
-            if (in_array($name, $ran, true)) {
+        foreach ($inspection['pending_migrations'] as $entry) {
+            if (! ($entry['adoptable'] ?? false)) {
                 continue;
             }
 
-            $tables = $this->createdTablesIn($path);
-
-            if ($tables === []) {
+            $name = $entry['migration'] ?? null;
+            if (! is_string($name) || $name === '') {
                 continue;
-            }
-
-            foreach ($tables as $table) {
-                if (! Schema::hasTable($table)) {
-                    continue 2;
-                }
             }
 
             $repository->log($name, $batch);
@@ -77,6 +58,84 @@ class MigrationAdoption
         }
 
         return $adopted;
+    }
+
+    /**
+     * @return array{
+     *     repository_exists: bool,
+     *     pending_migrations: list<array{
+     *         migration: string,
+     *         type: string,
+     *         tables: list<string>,
+     *         missing_tables: list<string>,
+     *         adoptable: bool
+     *     }>,
+     *     adoptable_migrations: list<string>,
+     *     blocking_migrations: list<array{
+     *         migration: string,
+     *         type: string,
+     *         tables: list<string>,
+     *         missing_tables: list<string>,
+     *         adoptable: bool
+     *     }>
+     * }
+     */
+    public function inspect(): array
+    {
+        $repository = $this->migrator->getRepository();
+        $repositoryExists = $repository->repositoryExists();
+        $files = $this->migrator->getMigrationFiles($this->migrationPaths());
+        $ran = $repositoryExists ? $repository->getRan() : [];
+        $pending = [];
+        $adoptable = [];
+        $blocking = [];
+
+        foreach ($files as $name => $path) {
+            if (in_array($name, $ran, true)) {
+                continue;
+            }
+
+            $tables = $this->createdTablesIn($path);
+            $missingTables = array_values(array_filter(
+                $tables,
+                static fn (string $table): bool => ! Schema::hasTable($table),
+            ));
+            $entry = [
+                'migration' => $name,
+                'type' => $tables === [] ? 'non_create' : 'create_table',
+                'tables' => $tables,
+                'missing_tables' => $missingTables,
+                'adoptable' => $tables !== [] && $missingTables === [],
+            ];
+
+            $pending[] = $entry;
+
+            if ($entry['adoptable']) {
+                $adoptable[] = $name;
+
+                continue;
+            }
+
+            $blocking[] = $entry;
+        }
+
+        return [
+            'repository_exists' => $repositoryExists,
+            'pending_migrations' => $pending,
+            'adoptable_migrations' => $adoptable,
+            'blocking_migrations' => $blocking,
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function migrationPaths(): array
+    {
+        return array_merge(
+            [database_path('migrations')],
+            $this->migrator->paths(),
+        );
     }
 
     /**
