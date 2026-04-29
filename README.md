@@ -1058,17 +1058,19 @@ docker compose \
   up
 ```
 
-The override sets `DW_V2_MATCHING_ROLE_QUEUE_WAKE=false` on the `worker`
-service and adds a `matching` service running
-`php artisan workflow:v2:repair-pass --loop` so the broad sweep runs in a
-dedicated process operators can scale and supervise independently of API
-ingress and execution workers. It also pins
+The override sets `DW_V2_MATCHING_ROLE_QUEUE_WAKE=false` on the `server`,
+`worker`, `scheduler`, and `matching` services so every long-running process
+reports the dedicated repair pass as the broad-poll wake owner. It adds a
+`matching` service running `php artisan workflow:v2:repair-pass --loop` so the
+broad sweep runs in a dedicated process operators can scale and supervise
+independently of API ingress and execution workers. It also pins
 `DW_SERVER_TOPOLOGY_SHAPE=split_control_execution` on the `server`, `worker`,
 `scheduler`, and `matching` services, with `DW_SERVER_PROCESS_CLASS`
 respectively set to `control_plane_node`, `execution_node`,
 `scheduler_node`, and `matching_node`. That lets the public HTTP service
 advertise the split control-plane shape while execution, scheduler, and
-matching nodes each report their own independent role class.
+matching nodes each report their own independent role class and a consistent
+`wake_owner=dedicated_repair_pass` contract.
 
 The daemon respects the watchdog loop throttle on every iteration so multiple
 cooperating matching-role processes coexist without duplicating broad-poll

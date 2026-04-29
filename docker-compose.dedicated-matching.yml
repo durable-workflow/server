@@ -16,9 +16,12 @@ name: durable-workflow-server
 #   - promotes the public HTTP server into the split control-plane class so
 #     every long-running service in the deployment reports the same
 #     `split_control_execution` topology family
-#   - sets DW_V2_MATCHING_ROLE_QUEUE_WAKE=false on the `worker` service so
-#     execution-only workers no longer broad-poll the durable task table on
-#     every Looping event
+#   - sets DW_V2_MATCHING_ROLE_QUEUE_WAKE=false on every long-running service
+#     so process-local matching-role diagnostics consistently report the
+#     dedicated repair pass as the broad-poll wake owner instead of implying
+#     an in-worker wake loop on HTTP, scheduler, or matching-only nodes
+#   - execution-only workers therefore no longer broad-poll the durable task
+#     table on every Looping event
 #   - adds a `matching` service running `php artisan workflow:v2:repair-pass
 #     --loop` so the broad sweep runs in a dedicated process the operator can
 #     scale and observe independently
@@ -55,6 +58,7 @@ x-server-environment: &server-environment
 services:
   server:
     environment:
+      DW_V2_MATCHING_ROLE_QUEUE_WAKE: "false"
       DW_SERVER_TOPOLOGY_SHAPE: split_control_execution
       DW_SERVER_PROCESS_CLASS: control_plane_node
 
@@ -66,6 +70,7 @@ services:
 
   scheduler:
     environment:
+      DW_V2_MATCHING_ROLE_QUEUE_WAKE: "false"
       DW_SERVER_TOPOLOGY_SHAPE: split_control_execution
       DW_SERVER_PROCESS_CLASS: scheduler_node
 
@@ -76,6 +81,7 @@ services:
     command: php artisan workflow:v2:repair-pass --loop
     environment:
       <<: *server-environment
+      DW_V2_MATCHING_ROLE_QUEUE_WAKE: "false"
       DW_SERVER_TOPOLOGY_SHAPE: split_control_execution
       DW_SERVER_PROCESS_CLASS: matching_node
     depends_on:

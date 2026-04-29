@@ -44,6 +44,17 @@ class DedicatedMatchingComposeContractTest extends TestCase
         }
     }
 
+    public function test_override_disables_in_worker_matching_wake_on_every_long_running_service(): void
+    {
+        $compose = $this->read('docker-compose.dedicated-matching.yml');
+
+        $this->assertSame(
+            4,
+            substr_count($compose, 'DW_V2_MATCHING_ROLE_QUEUE_WAKE: "false"'),
+            'dedicated matching override must disable queue-wake ownership on server, worker, scheduler, and matching services so their process-local diagnostics all report the dedicated repair pass as the wake owner',
+        );
+    }
+
     public function test_override_uses_the_same_image_alias_as_published_compose(): void
     {
         $override = $this->read('docker-compose.dedicated-matching.yml');
@@ -116,6 +127,7 @@ class DedicatedMatchingComposeContractTest extends TestCase
             'DW_SERVER_TOPOLOGY_SHAPE',
             'DW_SERVER_PROCESS_CLASS',
             'control_plane_node',
+            'dedicated_repair_pass',
         ] as $needle) {
             $this->assertStringContainsString(
                 $needle,
