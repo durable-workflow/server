@@ -4,6 +4,7 @@ namespace App\Support;
 
 use DateTimeInterface;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
+use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Support\ScheduleStartResult;
 
@@ -45,6 +46,29 @@ final class RemoteScheduleStarter implements ScheduleWorkflowStarter
         ], static fn (mixed $v): bool => $v !== null);
 
         $result = $this->startService->start($payload, $schedule->namespace);
+        $started = is_bool($result['started'] ?? null)
+            ? $result['started']
+            : ($result['reason'] ?? null) === null;
+
+        if (! $started) {
+            $blockedReason = is_string($result['reason'] ?? null) && trim($result['reason']) !== ''
+                ? trim($result['reason'])
+                : 'start_rejected';
+            $message = is_string($result['message'] ?? null) && trim($result['message']) !== ''
+                ? trim($result['message'])
+                : sprintf(
+                    'Schedule [%s] could not start workflow type [%s].',
+                    $schedule->schedule_id,
+                    $action['workflow_type'] ?? 'unknown',
+                );
+
+            throw new WorkflowExecutionUnavailableException(
+                'schedule_start',
+                $schedule->schedule_id,
+                $blockedReason,
+                $message,
+            );
+        }
 
         return new ScheduleStartResult(
             instanceId: (string) $result['workflow_id'],

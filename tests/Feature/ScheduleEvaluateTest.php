@@ -5,9 +5,9 @@ namespace Tests\Feature;
 use App\Models\WorkflowNamespace;
 use App\Support\WorkflowStartService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Mockery\MockInterface;
 use Tests\TestCase;
-use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSchedule;
@@ -186,6 +186,41 @@ class ScheduleEvaluateTest extends TestCase
         $lastAction = end($actions);
         $this->assertEquals('failed', $lastAction['outcome']);
         $this->assertStringContainsString('Workflow type not found', $lastAction['reason']);
+    }
+
+    public function test_it_records_rollout_safety_start_rejections_as_skips(): void
+    {
+        $this->fakeStartService(result: [
+            'started' => false,
+            'workflow_id' => 'wf-skip-compatibility-blocked',
+            'run_id' => null,
+            'workflow_type' => 'TestWorkflow',
+            'outcome' => 'rejected_compatibility_blocked',
+            'reason' => 'compatibility_blocked',
+            'rejection_reason' => 'compatibility_blocked',
+            'message' => 'Workflow instance [wf-skip-compatibility-blocked] cannot start.',
+        ]);
+
+        WorkflowSchedule::create([
+            'schedule_id' => 'skip-compatibility-blocked',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['* * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'next_fire_at' => now()->subMinute(),
+        ]);
+
+        $this->artisan('schedule:evaluate')
+            ->assertExitCode(0)
+            ->expectsOutputToContain('skipped');
+
+        $schedule = WorkflowSchedule::where('schedule_id', 'skip-compatibility-blocked')->firstOrFail();
+        $this->assertSame('compatibility_blocked', $schedule->last_skip_reason);
+        $this->assertSame(1, (int) $schedule->skipped_trigger_count);
+        $this->assertSame(0, (int) $schedule->fires_count);
+        $this->assertSame(0, (int) $schedule->failures_count);
+        $this->assertNull($schedule->last_fired_at);
+        $this->assertNull($schedule->latest_workflow_instance_id);
+        $this->assertSame([], $schedule->recent_actions ?? []);
     }
 
     // ── next_fire_at advancement ────────────────────────────────────
@@ -552,7 +587,7 @@ class ScheduleEvaluateTest extends TestCase
         ]);
 
         // Bypass the model accessor to write raw legacy JSON
-        \Illuminate\Support\Facades\DB::table('workflow_schedules')
+        DB::table('workflow_schedules')
             ->where('id', $schedule->id)
             ->update(['action' => json_encode([
                 'workflow_type' => 'TestWorkflow',
@@ -605,7 +640,7 @@ class ScheduleEvaluateTest extends TestCase
         ]);
 
         // Write raw legacy JSON directly
-        \Illuminate\Support\Facades\DB::table('workflow_schedules')
+        DB::table('workflow_schedules')
             ->where('id', $schedule->id)
             ->update(['action' => json_encode([
                 'workflow_type' => 'TestWorkflow',
