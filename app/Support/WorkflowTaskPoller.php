@@ -424,13 +424,11 @@ final class WorkflowTaskPoller
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
     ): ?array {
-        $readyTasks = $this->bridge->poll(
-            connection: null,
-            queue: $taskQueue,
-            limit: $limit,
-            compatibility: null,
+        $readyTasks = $this->pollReadyTasks(
             namespace: $namespace,
-            workflowTypes: $supportedWorkflowTypes,
+            taskQueue: $taskQueue,
+            limit: $limit,
+            supportedWorkflowTypes: $supportedWorkflowTypes,
         );
 
         \Log::info('[WorkflowTaskPoller] claimReadyTask called', [
@@ -542,6 +540,43 @@ final class WorkflowTaskPoller
         \Log::debug('[WorkflowTaskPoller] No tasks claimed (examined all ready tasks)');
 
         return null;
+    }
+
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     * @return list<array<string, mixed>>
+     */
+    private function pollReadyTasks(
+        string $namespace,
+        string $taskQueue,
+        int $limit,
+        array $supportedWorkflowTypes = [],
+    ): array {
+        $poll = new \ReflectionMethod($this->bridge, 'poll');
+        $arguments = [null, $taskQueue, $limit, null, $namespace];
+
+        // Older workflow package installs do not expose the workflow-type
+        // filter parameter yet. Fall back to broad polling plus the existing
+        // local filter so the server stays compatible while newer installs can
+        // narrow the bridge query up front.
+        if (self::bridgePollSupportsWorkflowTypes($poll)) {
+            $arguments[] = $supportedWorkflowTypes;
+        }
+
+        $readyTasks = $poll->invokeArgs($this->bridge, $arguments);
+
+        return is_array($readyTasks) ? $readyTasks : [];
+    }
+
+    private static function bridgePollSupportsWorkflowTypes(\ReflectionMethod $poll): bool
+    {
+        $parameters = $poll->getParameters();
+
+        if (! array_key_exists(5, $parameters)) {
+            return false;
+        }
+
+        return $parameters[5]->getName() === 'workflowTypes';
     }
 
     private function recoverExpiredLeases(

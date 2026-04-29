@@ -1,0 +1,126 @@
+<?php
+
+namespace Tests\Unit;
+
+use App\Support\LongPoller;
+use App\Support\LongPollSignalStore;
+use App\Support\ServerPollingCache;
+use App\Support\TaskQueueAdmission;
+use App\Support\WorkflowTaskLeaseRecovery;
+use App\Support\WorkflowTaskPoller;
+use App\Support\WorkflowTaskPollRequestStore;
+use ReflectionMethod;
+use Tests\TestCase;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
+
+class WorkflowTaskPollerTest extends TestCase
+{
+    public function test_bridge_poll_support_check_accepts_the_current_workflow_type_filter_signature(): void
+    {
+        $supports = $this->invokeBridgePollSupportsWorkflowTypes(
+            new ReflectionMethod(WorkflowTaskBridge::class, 'poll'),
+        );
+
+        $this->assertTrue($supports);
+    }
+
+    public function test_bridge_poll_support_check_rejects_a_legacy_poll_signature_without_workflow_type_filter(): void
+    {
+        $legacyBridge = new class
+        {
+            public function poll(
+                ?string $connection,
+                ?string $queue,
+                int $limit = 1,
+                ?string $compatibility = null,
+                ?string $namespace = null,
+            ): array {
+                return [];
+            }
+        };
+
+        $supports = $this->invokeBridgePollSupportsWorkflowTypes(
+            new ReflectionMethod($legacyBridge, 'poll'),
+        );
+
+        $this->assertFalse($supports);
+    }
+
+    public function test_claim_ready_task_forwards_supported_workflow_types_when_bridge_supports_filtering(): void
+    {
+        $bridge = \Mockery::mock(WorkflowTaskBridge::class);
+        $bridge->shouldReceive('poll')
+            ->once()
+            ->with(null, 'default', 1, null, 'default', ['tests.matched-workflow'])
+            ->andReturn([]);
+
+        $poller = new WorkflowTaskPoller(
+            app(LongPoller::class),
+            $bridge,
+            app(LongPollSignalStore::class),
+            app(WorkflowTaskLeaseRecovery::class),
+            app(WorkflowTaskPollRequestStore::class),
+            app(ServerPollingCache::class),
+            app(TaskQueueAdmission::class),
+        );
+
+        $result = $this->invokeClaimReadyTask(
+            $poller,
+            namespace: 'default',
+            taskQueue: 'default',
+            leaseOwner: 'worker-1',
+            buildId: null,
+            limit: 1,
+            historyPageSize: null,
+            acceptHistoryEncoding: null,
+            supportedWorkflowTypes: ['tests.matched-workflow'],
+        );
+
+        $this->assertNull($result);
+    }
+
+    private function invokeBridgePollSupportsWorkflowTypes(ReflectionMethod $poll): bool
+    {
+        $reflection = new ReflectionMethod(WorkflowTaskPoller::class, 'bridgePollSupportsWorkflowTypes');
+        $reflection->setAccessible(true);
+
+        /** @var bool $supports */
+        $supports = $reflection->invoke(null, $poll);
+
+        return $supports;
+    }
+
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     * @return array<string, mixed>|null
+     */
+    private function invokeClaimReadyTask(
+        WorkflowTaskPoller $poller,
+        string $namespace,
+        string $taskQueue,
+        string $leaseOwner,
+        ?string $buildId,
+        int $limit,
+        ?int $historyPageSize,
+        ?string $acceptHistoryEncoding,
+        array $supportedWorkflowTypes,
+    ): ?array {
+        $reflection = new ReflectionMethod(WorkflowTaskPoller::class, 'claimReadyTask');
+        $reflection->setAccessible(true);
+
+        /** @var array<string, mixed>|null $result */
+        $result = $reflection->invoke(
+            $poller,
+            $namespace,
+            $taskQueue,
+            $leaseOwner,
+            $buildId,
+            $limit,
+            $historyPageSize,
+            $acceptHistoryEncoding,
+            $supportedWorkflowTypes,
+        );
+
+        return $result;
+    }
+}
