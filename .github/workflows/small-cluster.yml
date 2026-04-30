@@ -1,42 +1,7 @@
 name: Small Cluster Smoke
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/small-cluster.yml"
-      - "Dockerfile"
-      - "docker-compose.small-cluster.yml"
-      - "docker/**"
-      - "app/**"
-      - "bootstrap/**"
-      - "config/**"
-      - "database/**"
-      - "routes/**"
-      - "scripts/smoke-small-cluster.sh"
-      - "composer.json"
-      - "composer.lock"
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/small-cluster.yml"
-      - "Dockerfile"
-      - "docker-compose.small-cluster.yml"
-      - "docker/**"
-      - "app/**"
-      - "bootstrap/**"
-      - "config/**"
-      - "database/**"
-      - "routes/**"
-      - "scripts/smoke-small-cluster.sh"
-      - "composer.json"
-      - "composer.lock"
   workflow_dispatch:
-    inputs:
-      databases:
-        description: "Comma-separated database backends to validate"
-        required: false
-        default: "mysql,pgsql"
 
 permissions:
   contents: read

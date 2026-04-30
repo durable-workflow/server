@@ -1,32 +1,7 @@
 name: Kubernetes Manifest Validation
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/kubernetes-validation.yml"
-      - "app/**"
-      - "config/**"
-      - "Dockerfile"
-      - "docker/**"
-      - "k8s/**"
-      - "routes/**"
-      - "scripts/k8s-kind-smoke.sh"
-      - "composer.json"
-      - "composer.lock"
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/kubernetes-validation.yml"
-      - "app/**"
-      - "config/**"
-      - "Dockerfile"
-      - "docker/**"
-      - "k8s/**"
-      - "routes/**"
-      - "scripts/k8s-kind-smoke.sh"
-      - "composer.json"
-      - "composer.lock"
+  workflow_dispatch:
 
 permissions:
   contents: read

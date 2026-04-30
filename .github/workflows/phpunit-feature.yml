@@ -1,31 +1,7 @@
 name: PHPUnit Feature
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/phpunit-feature.yml"
-      - "app/**"
-      - "bootstrap/**"
-      - "composer.json"
-      - "composer.lock"
-      - "config/**"
-      - "database/**"
-      - "phpunit.xml"
-      - "routes/**"
-      - "tests/**"
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/phpunit-feature.yml"
-      - "app/**"
-      - "bootstrap/**"
-      - "composer.json"
-      - "composer.lock"
-      - "config/**"
-      - "database/**"
-      - "phpunit.xml"
-      - "routes/**"
-      - "tests/**"
+  workflow_dispatch:
 
 permissions:
   contents: read

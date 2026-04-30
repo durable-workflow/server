@@ -1,77 +1,7 @@
 name: Server Perf
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/server-perf.yml"
-      - "Dockerfile"
-      - "docker-compose.yml"
-      - "app/Support/HistoryRetentionEnforcer.php"
-      - "app/Support/BoundedMetricPolicy.php"
-      - "app/Support/LongPollSignalStore.php"
-      - "app/Support/ProjectionDriftMetrics.php"
-      - "app/Support/ServerReadiness.php"
-      - "app/Support/ServerPollingCache.php"
-      - "app/Support/TaskQueueAdmission.php"
-      - "app/Support/WorkflowQueryTaskBroker.php"
-      - "app/Support/WorkflowTaskFailureMetrics.php"
-      - "app/Support/WorkflowTaskPoller.php"
-      - "app/Support/WorkflowTaskPollRequestStore.php"
-      - "app/Http/Controllers/Api/SystemController.php"
-      - "config/dw-bounded-growth.php"
-      - "config/server.php"
-      - "docs/bounded-growth.md"
-      - "routes/api.php"
-      - "scripts/perf/**"
-      - "tests/Unit/BoundedGrowthPolicyTest.php"
-      - "tests/Unit/BoundedMetricPolicyTest.php"
-      - "tests/Unit/ServerPerfHarnessContractTest.php"
-      - "tests/Feature/SystemMetricsTest.php"
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/server-perf.yml"
-      - "Dockerfile"
-      - "docker-compose.yml"
-      - "app/Support/HistoryRetentionEnforcer.php"
-      - "app/Support/BoundedMetricPolicy.php"
-      - "app/Support/LongPollSignalStore.php"
-      - "app/Support/ProjectionDriftMetrics.php"
-      - "app/Support/ServerReadiness.php"
-      - "app/Support/ServerPollingCache.php"
-      - "app/Support/TaskQueueAdmission.php"
-      - "app/Support/WorkflowQueryTaskBroker.php"
-      - "app/Support/WorkflowTaskFailureMetrics.php"
-      - "app/Support/WorkflowTaskPoller.php"
-      - "app/Support/WorkflowTaskPollRequestStore.php"
-      - "app/Http/Controllers/Api/SystemController.php"
-      - "config/dw-bounded-growth.php"
-      - "config/server.php"
-      - "docs/bounded-growth.md"
-      - "routes/api.php"
-      - "scripts/perf/**"
-      - "tests/Unit/BoundedGrowthPolicyTest.php"
-      - "tests/Unit/BoundedMetricPolicyTest.php"
-      - "tests/Unit/ServerPerfHarnessContractTest.php"
-      - "tests/Feature/SystemMetricsTest.php"
-  schedule:
-    - cron: "17 7 * * *"
   workflow_dispatch:
-    inputs:
-      duration_seconds:
-        description: "Soak duration in seconds"
-        required: false
-        default: "7200"
-      concurrency:
-        description: "Concurrent long-poll workers"
-        required: false
-        default: "24"
-      remote_write:
-        description: "Enable Prometheus remote_write when variables/secrets are configured"
-        required: false
-        type: boolean
-        default: true
 
 permissions:
   contents: read

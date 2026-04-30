@@ -1,0 +1,110 @@
+when:
+  - event: [push, pull_request, manual, cron]
+
+steps:
+  phpunit-feature:
+    image: composer:2
+    when:
+      - event: [push, pull_request, manual]
+    commands:
+      - |
+        if [ -n "$${CI_NETRC_MACHINE:-}" ] && [ -n "$${CI_NETRC_USERNAME:-}" ] && [ -n "$${CI_NETRC_PASSWORD:-}" ]; then
+          cat > "$HOME/.netrc" <<EOF
+        machine $${CI_NETRC_MACHINE}
+          login $${CI_NETRC_USERNAME}
+          password $${CI_NETRC_PASSWORD}
+        EOF
+          chmod 600 "$HOME/.netrc"
+        fi
+      - export FORGE_BASE="$${CI_FORGE_URL%/}"
+      - repo_parent="$(dirname "$PWD")"
+      - rm -rf "$repo_parent/workflow"
+      - git clone --depth 1 --branch v2 "$${FORGE_BASE}/$${CI_REPO_OWNER}/workflow.git" "$repo_parent/workflow"
+      - composer install --no-interaction --no-progress --prefer-dist
+      - vendor/bin/phpunit tests/Feature --no-progress --colors=never
+
+  kubernetes-manifests:
+    image: docker:27-cli
+    when:
+      - event: [push, pull_request, manual]
+    commands:
+      - docker run --rm -v "$PWD:/work:ro" ghcr.io/yannh/kubeconform:v0.6.7 -strict -summary -kubernetes-version 1.29.0 /work/k8s
+
+  kind-smoke:
+    image: docker:27-cli
+    privileged: true
+    when:
+      - event: [push, pull_request, manual]
+    commands:
+      - apk add --no-cache bash curl openssl
+      - install_dir=/tmp/bin && mkdir -p "$install_dir"
+      - curl -fsSL -o "$install_dir/kind" https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+      - chmod +x "$install_dir/kind"
+      - curl -fsSL -o "$install_dir/kubectl" https://dl.k8s.io/release/v1.29.9/bin/linux/amd64/kubectl
+      - chmod +x "$install_dir/kubectl"
+      - export PATH="$install_dir:$PATH"
+      - export K8S_SMOKE_CLUSTER="durable-workflow-server-$${CI_PIPELINE_NUMBER:-local}-$${CI_STEP_NUMBER:-0}"
+      - export K8S_SMOKE_IMAGE="durableworkflow/server:k8s-smoke-$${CI_PIPELINE_NUMBER:-local}-$${CI_STEP_NUMBER:-0}"
+      - scripts/k8s-kind-smoke.sh
+
+  small-cluster:
+    image: docker:27-cli
+    privileged: true
+    when:
+      - event: [push, pull_request, manual]
+    commands:
+      - apk add --no-cache bash git python3 py3-pip docker-cli-compose
+      - |
+        if [ -n "$${CI_NETRC_MACHINE:-}" ] && [ -n "$${CI_NETRC_USERNAME:-}" ] && [ -n "$${CI_NETRC_PASSWORD:-}" ]; then
+          cat > "$HOME/.netrc" <<EOF
+        machine $${CI_NETRC_MACHINE}
+          login $${CI_NETRC_USERNAME}
+          password $${CI_NETRC_PASSWORD}
+        EOF
+          chmod 600 "$HOME/.netrc"
+        fi
+      - export FORGE_BASE="$${CI_FORGE_URL%/}"
+      - export WORKFLOW_PACKAGE_SOURCE="$${FORGE_BASE}/$${CI_REPO_OWNER}/workflow.git"
+      - export WORKFLOW_PACKAGE_REF=v2
+      - export DW_SMALL_CLUSTER_DATABASES=mysql,pgsql
+      - export DW_SMALL_CLUSTER_IMAGE="durable-workflow/server-small-cluster:$${CI_PIPELINE_NUMBER:-local}-$${CI_STEP_NUMBER:-0}"
+      - scripts/smoke-small-cluster.sh
+
+  server-perf-smoke:
+    image: docker:27-cli
+    privileged: true
+    when:
+      - event: [push, pull_request, manual]
+    commands:
+      - apk add --no-cache bash git python3 py3-pip docker-cli-compose
+      - |
+        if [ -n "$${CI_NETRC_MACHINE:-}" ] && [ -n "$${CI_NETRC_USERNAME:-}" ] && [ -n "$${CI_NETRC_PASSWORD:-}" ]; then
+          cat > "$HOME/.netrc" <<EOF
+        machine $${CI_NETRC_MACHINE}
+          login $${CI_NETRC_USERNAME}
+          password $${CI_NETRC_PASSWORD}
+        EOF
+          chmod 600 "$HOME/.netrc"
+        fi
+      - export FORGE_BASE="$${CI_FORGE_URL%/}"
+      - export WORKFLOW_PACKAGE_SOURCE="$${FORGE_BASE}/$${CI_REPO_OWNER}/workflow.git"
+      - export WORKFLOW_PACKAGE_REF=v2
+      - export DW_PERF_DURATION_SECONDS=120
+      - export DW_PERF_CONCURRENCY=8
+      - export DW_PERF_NAMESPACES=4
+      - export DW_PERF_TASK_QUEUES=8
+      - export DW_PERF_MAX_SERVER_MEMORY_MB=768
+      - export DW_PERF_MAX_POLLING_KEYS=512
+      - export DW_PERF_MAX_FINAL_POLLING_KEYS=0
+      - export DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY='{"workflow_task_poll_requests":512,"long_poll_signals":512,"workflow_query_tasks":64,"task_queue_admission_locks":128,"task_queue_dispatch_counters":128,"workflow_task_expired_lease_recovery":128,"history_retention_inline":64,"readiness_probe":16}'
+      - export DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY='{"workflow_task_poll_requests":0,"long_poll_signals":0,"workflow_query_tasks":0,"task_queue_admission_locks":0,"task_queue_dispatch_counters":0,"workflow_task_expired_lease_recovery":0,"history_retention_inline":0,"readiness_probe":0}'
+      - scripts/perf/run-server-soak.sh
+
+  public-boundary:
+    image: composer:2
+    when:
+      - event: [push, pull_request, manual]
+    commands:
+      - export PUBLIC_BOUNDARY_GIT_RANGE="$${CI_COMMIT_SHA}^..$${CI_COMMIT_SHA}"
+      - if [ -n "$${CI_PREV_COMMIT_SHA:-}" ]; then export PUBLIC_BOUNDARY_GIT_RANGE="$${CI_PREV_COMMIT_SHA}..$${CI_COMMIT_SHA}"; fi
+      - scripts/check-public-boundary.sh
