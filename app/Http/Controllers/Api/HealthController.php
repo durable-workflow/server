@@ -23,6 +23,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Support\ExternalPayloadReference;
+use Workflow\V2\Support\OperatorMetrics;
 use Workflow\V2\Support\PlatformConformanceSuite;
 use Workflow\V2\Support\PlatformProtocolSpecs;
 use Workflow\V2\Support\SdkNeutralityContract;
@@ -135,6 +136,7 @@ class HealthController
             'supported_sdk_versions' => ClientCompatibility::supportedSdkVersions(),
             'capabilities' => $capabilities,
             'worker_fleet' => StandaloneWorkerVisibility::fleetSummary($namespace),
+            'operator_metrics' => OperatorMetrics::snapshot(null, $namespace),
             'task_repair' => $this->taskRepairDiagnostics(),
             'limits' => [
                 'max_payload_bytes' => (int) config('server.limits.max_payload_bytes', 2 * 1024 * 1024),

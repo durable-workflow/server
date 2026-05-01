@@ -510,7 +510,7 @@ workflow-task command payload.
 ### System
 - `GET /api/health` — Health check plus a machine-readable topology summary for the current node
 - `GET /api/ready` — Readiness check for migrations, default namespace, cache, auth config, workflow v2 rollout-safety health, and the current node topology summary
-- `GET /api/cluster/info` — Server capabilities, role topology, coordination-health summary, and version
+- `GET /api/cluster/info` — Server capabilities, role topology, coordination-health summary, full operator metrics snapshot, and version
 - `GET /api/system/health` — Full rollout-safety health snapshot for the requested namespace, including check status, categories, routing-drain state, operator metrics, and structural limits
 - `GET /api/system/metrics` — Server metrics including bounded stuck workflow-task diagnostics
 - `GET /api/system/operator-metrics` — Full operator metrics snapshot (runs, tasks, backlog, repair, workers/fleet, backend, structural limits) for namespace-scoped rollout-safety coordination health
@@ -764,8 +764,19 @@ readiness gate, and a `routing_drains` summary that lists namespaces and task
 queues with draining build-id cohorts. The manifest is intentionally
 `all_namespaces` scoped so it describes the server's fleet-wide coordination
 posture; use `GET /api/system/health` for the namespace-scoped
-`routing_drains` view and `GET /api/system/operator-metrics` when you need
-namespace-specific backlog and worker detail.
+`routing_drains` view.
+
+Cluster discovery also publishes the full operator metrics snapshot at
+`operator_metrics`, scoped to the requested namespace (or
+`server.default_namespace` when no `X-Namespace` header is supplied). The
+snapshot mirrors the shape served by `GET /api/system/operator-metrics` —
+`runs`, `tasks`, `backlog`, `repair`, `workers` (including the live `fleet`
+detail), `backend`, `structural_limits`, and `repair_policy` — so the
+standalone server's discovery surface carries namespace-specific backlog,
+worker, and repair detail alongside the fleet-wide `coordination_health`
+manifest. Use the dedicated `GET /api/system/operator-metrics` endpoint when
+operators need an admin-gated, control-plane-versioned read of the same
+snapshot.
 
 The activity-grade external execution surface is published from
 `GET /api/cluster/info` at

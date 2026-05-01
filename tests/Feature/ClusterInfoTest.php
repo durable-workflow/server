@@ -1459,6 +1459,118 @@ class ClusterInfoTest extends TestCase
         $this->assertGreaterThan(0, $limits['history_transaction_size']);
     }
 
+    public function test_it_publishes_the_full_operator_metrics_snapshot(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        $response = $this->getJson('/api/cluster/info');
+
+        $response->assertOk()
+            ->assertJsonStructure([
+                'operator_metrics' => [
+                    'generated_at',
+                    'runs' => [
+                        'repair_needed',
+                        'claim_failed',
+                        'compatibility_blocked',
+                    ],
+                    'tasks' => [
+                        'ready',
+                        'ready_due',
+                        'delayed',
+                        'leased',
+                        'dispatch_failed',
+                        'claim_failed',
+                        'dispatch_overdue',
+                        'lease_expired',
+                        'unhealthy',
+                    ],
+                    'backlog' => [
+                        'runnable_tasks',
+                        'delayed_tasks',
+                        'leased_tasks',
+                        'tasks_added_last_minute',
+                        'tasks_dispatched_last_minute',
+                        'unhealthy_tasks',
+                        'repair_needed_runs',
+                        'claim_failed_runs',
+                        'compatibility_blocked_runs',
+                    ],
+                    'repair' => [
+                        'missing_task_candidates',
+                        'selected_missing_task_candidates',
+                        'oldest_missing_run_started_at',
+                        'max_missing_run_age_ms',
+                    ],
+                    'workers' => [
+                        'required_compatibility',
+                        'active_workers',
+                        'active_worker_scopes',
+                        'active_workers_supporting_required',
+                        'fleet',
+                    ],
+                    'backend' => [
+                        'supported',
+                        'issues',
+                    ],
+                    'structural_limits',
+                    'repair_policy' => [
+                        'redispatch_after_seconds',
+                        'loop_throttle_seconds',
+                        'scan_limit',
+                        'failure_backoff_max_seconds',
+                    ],
+                ],
+            ]);
+
+        $this->assertIsArray($response->json('operator_metrics.workers.fleet'));
+    }
+
+    public function test_operator_metrics_defaults_to_the_configured_default_namespace(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        config(['server.default_namespace' => 'default']);
+
+        $response = $this->getJson('/api/cluster/info');
+
+        $response->assertOk()
+            ->assertJsonPath('default_namespace', 'default')
+            ->assertJsonPath('operator_metrics.runs.total', 0);
+    }
+
+    public function test_operator_metrics_scopes_to_the_x_namespace_header(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        WorkflowNamespace::query()->create([
+            'name' => 'imports',
+            'description' => 'Imports namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        $response = $this->getJson('/api/cluster/info', ['X-Namespace' => 'imports']);
+
+        $response->assertOk()
+            ->assertJsonPath('operator_metrics.runs.total', 0);
+    }
+
     public function test_structural_limits_reflect_custom_configuration(): void
     {
         config([
