@@ -140,6 +140,8 @@ class BridgeAdapterController
                 'workflow_id' => $workflowId,
                 'workflow_type' => $startTarget['workflow_type'],
                 'task_queue' => $taskQueue,
+                'rejection_reason' => 'task_queue_draining',
+                'control_plane_outcome' => 'rejected_task_queue_draining',
                 'routing_status' => $routingBlock['routing_status'],
                 'active_worker_count' => $routingBlock['active_worker_count'],
                 'draining_worker_count' => $routingBlock['draining_worker_count'],

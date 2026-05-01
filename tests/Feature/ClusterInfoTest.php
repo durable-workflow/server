@@ -107,6 +107,31 @@ class ClusterInfoTest extends TestCase
             );
     }
 
+    public function test_it_publishes_a_workflow_start_rejection_contract_in_the_response_manifest(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath(
+                'control_plane.response_contract.schema',
+                'durable-workflow.v2.control-plane-response',
+            )
+            ->assertJsonPath('control_plane.response_contract.version', 1);
+
+        $startContract = $response->json('control_plane.response_contract.operations.start');
+
+        $this->assertIsArray($startContract);
+        $this->assertContains('workflow_id', $startContract['rejection_fields']);
+        $this->assertContains('command_status', $startContract['rejection_fields']);
+        $this->assertContains('command_source', $startContract['rejection_fields']);
+        $this->assertContains('rejection_reason', $startContract['rejection_fields']);
+        $this->assertContains('outcome', $startContract['rejection_fields']);
+        $this->assertContains('reason', $startContract['rejection_fields']);
+        $this->assertContains('message', $startContract['rejection_fields']);
+        $this->assertContains('workflow_id_reserved_in_namespace', $startContract['rejection_reasons']);
+        $this->assertContains('task_queue_draining', $startContract['rejection_reasons']);
+        $this->assertContains('compatibility_blocked', $startContract['rejection_reasons']);
+    }
+
     public function test_it_publishes_external_task_input_contract_manifest(): void
     {
         $this->getJson('/api/cluster/info')

@@ -68,6 +68,9 @@ class BridgeAdapterOutcomeContractTest extends TestCase
         $this->assertSame('compatibility_blocked', $commerce['expected_outcomes']['incompatible_fleet']['reason']);
         $this->assertSame(422, $commerce['expected_outcomes']['incompatible_fleet']['http_status']);
         $this->assertSame('rejected_compatibility_blocked', $commerce['expected_outcomes']['incompatible_fleet']['control_plane_outcome']);
+        $this->assertSame('task_queue_draining', $commerce['expected_outcomes']['draining_task_queue']['reason']);
+        $this->assertSame(422, $commerce['expected_outcomes']['draining_task_queue']['http_status']);
+        $this->assertSame('rejected_task_queue_draining', $commerce['expected_outcomes']['draining_task_queue']['control_plane_outcome']);
         $this->assertContains('business_key', $commerce['visibility']['redacted_target_fields']);
     }
 }

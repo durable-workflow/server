@@ -210,6 +210,12 @@ final class BridgeAdapterOutcomeContract
                             'reason' => 'compatibility_blocked',
                             'control_plane_outcome' => 'rejected_compatibility_blocked',
                         ],
+                        'draining_task_queue' => [
+                            'http_status' => 422,
+                            'outcome' => 'rejected',
+                            'reason' => 'task_queue_draining',
+                            'control_plane_outcome' => 'rejected_task_queue_draining',
+                        ],
                         'unconfigured_workflow_type' => [
                             'http_status' => 422,
                             'outcome' => 'rejected',

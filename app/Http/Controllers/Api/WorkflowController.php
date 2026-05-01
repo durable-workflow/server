@@ -162,14 +162,19 @@ class WorkflowController
         $workflowId = $validated['workflow_id'] ?? null;
 
         if ($workflowId !== null && $this->workflowIdReservedElsewhere($namespace, $workflowId)) {
-            return ControlPlaneProtocol::jsonForRequest($request, [
-                'workflow_id' => $workflowId,
-                'message' => sprintf(
-                    'Workflow [%s] is already reserved in another namespace.',
-                    $workflowId,
+            return ControlPlaneProtocol::jsonForRequest(
+                $request,
+                $this->startRejectionPayload(
+                    workflowId: $workflowId,
+                    reason: 'workflow_id_reserved_in_namespace',
+                    outcome: 'rejected_workflow_id_reserved_in_namespace',
+                    message: sprintf(
+                        'Workflow [%s] is already reserved in another namespace.',
+                        $workflowId,
+                    ),
                 ),
-                'reason' => 'workflow_id_reserved_in_namespace',
-            ], 409);
+                409,
+            );
         }
 
         try {
@@ -186,22 +191,29 @@ class WorkflowController
         $routingBlock = $this->taskQueueRoutingGate->workflowStartBlock((string) $namespace, $taskQueue);
 
         if ($routingBlock !== null) {
-            return ControlPlaneProtocol::jsonForRequest($request, array_filter([
-                'workflow_id' => $workflowId,
-                'workflow_type' => $validated['workflow_type'],
-                'task_queue' => $taskQueue,
-                'message' => sprintf(
-                    'Task queue [%s] is draining and cannot accept new workflow starts until an active worker cohort is available.',
-                    $taskQueue,
+            return ControlPlaneProtocol::jsonForRequest(
+                $request,
+                $this->startRejectionPayload(
+                    workflowId: $workflowId,
+                    reason: 'task_queue_draining',
+                    outcome: 'rejected_task_queue_draining',
+                    message: sprintf(
+                        'Task queue [%s] is draining and cannot accept new workflow starts until an active worker cohort is available.',
+                        $taskQueue,
+                    ),
+                    extra: [
+                        'workflow_type' => $validated['workflow_type'],
+                        'task_queue' => $taskQueue,
+                        'routing_status' => $routingBlock['routing_status'],
+                        'active_worker_count' => $routingBlock['active_worker_count'],
+                        'draining_worker_count' => $routingBlock['draining_worker_count'],
+                        'stale_worker_count' => $routingBlock['stale_worker_count'],
+                        'draining_build_ids' => $routingBlock['draining_build_ids'],
+                        'drain_intent' => 'draining',
+                    ],
                 ),
-                'reason' => 'task_queue_draining',
-                'routing_status' => $routingBlock['routing_status'],
-                'active_worker_count' => $routingBlock['active_worker_count'],
-                'draining_worker_count' => $routingBlock['draining_worker_count'],
-                'stale_worker_count' => $routingBlock['stale_worker_count'],
-                'draining_build_ids' => $routingBlock['draining_build_ids'],
-                'drain_intent' => 'draining',
-            ], static fn (mixed $value): bool => $value !== null), 409);
+                409,
+            );
         }
 
         try {
@@ -936,6 +948,29 @@ class WorkflowController
             'returned_existing_active' => 200,
             default => 409,
         };
+    }
+
+    /**
+     * @param  array<string, mixed>  $extra
+     * @return array<string, mixed>
+     */
+    private function startRejectionPayload(
+        ?string $workflowId,
+        string $reason,
+        string $outcome,
+        string $message,
+        array $extra = [],
+    ): array {
+        return array_filter([
+            'workflow_id' => $workflowId,
+            'command_status' => 'rejected',
+            'command_source' => 'control_plane',
+            'outcome' => $outcome,
+            'reason' => $reason,
+            'rejection_reason' => $reason,
+            'message' => $message,
+            ...$extra,
+        ], static fn (mixed $value): bool => $value !== null);
     }
 
     private function workflowIdReservedElsewhere(string $namespace, string $workflowId): bool

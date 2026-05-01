@@ -25,7 +25,7 @@ final class ControlPlaneResponseContract
     ];
 
     /**
-     * @var array<string, array{operation_name_field: string|null, required_fields: list<string>, success_fields: list<string>}>
+     * @var array<string, array{operation_name_field: string|null, required_fields: list<string>, success_fields: list<string>, rejection_fields?: list<string>, rejection_reasons?: list<string>}>
      */
     private const OPERATION_CONTRACTS = [
         'list' => [
@@ -37,6 +37,20 @@ final class ControlPlaneResponseContract
             'operation_name_field' => null,
             'required_fields' => [],
             'success_fields' => ['workflow_id', 'outcome'],
+            'rejection_fields' => [
+                'workflow_id',
+                'command_status',
+                'command_source',
+                'outcome',
+                'reason',
+                'rejection_reason',
+                'message',
+            ],
+            'rejection_reasons' => [
+                'workflow_id_reserved_in_namespace',
+                'task_queue_draining',
+                'compatibility_blocked',
+            ],
         ],
         'describe' => [
             'operation_name_field' => null,
@@ -150,19 +164,29 @@ final class ControlPlaneResponseContract
     public static function attach(string $operation, ?string $operationName, array $payload): array
     {
         $definition = self::definition($operation);
+        $contractDefinition = [
+            'schema' => self::CONTRACT_SCHEMA,
+            'version' => self::CONTRACT_VERSION,
+            'legacy_field_policy' => self::LEGACY_FIELD_POLICY,
+            'legacy_fields' => self::LEGACY_FIELDS,
+            'required_fields' => $definition['required_fields'],
+            'success_fields' => $definition['success_fields'],
+        ];
+
+        if (($definition['rejection_fields'] ?? []) !== []) {
+            $contractDefinition['rejection_fields'] = $definition['rejection_fields'];
+        }
+
+        if (($definition['rejection_reasons'] ?? []) !== []) {
+            $contractDefinition['rejection_reasons'] = $definition['rejection_reasons'];
+        }
+
         $contract = [
             'schema' => self::SCHEMA,
             'version' => self::VERSION,
             'operation' => $operation,
             'workflow_id' => $payload['workflow_id'] ?? null,
-            'contract' => [
-                'schema' => self::CONTRACT_SCHEMA,
-                'version' => self::CONTRACT_VERSION,
-                'legacy_field_policy' => self::LEGACY_FIELD_POLICY,
-                'legacy_fields' => self::LEGACY_FIELDS,
-                'required_fields' => $definition['required_fields'],
-                'success_fields' => $definition['success_fields'],
-            ],
+            'contract' => $contractDefinition,
         ];
 
         $operationNameField = $definition['operation_name_field'];
@@ -198,6 +222,8 @@ final class ControlPlaneResponseContract
      *         operation_name_field: string|null,
      *         required_fields: list<string>,
      *         success_fields: list<string>,
+     *         rejection_fields?: list<string>,
+     *         rejection_reasons?: list<string>,
      *     }>,
      * }
      */
@@ -218,7 +244,7 @@ final class ControlPlaneResponseContract
     }
 
     /**
-     * @return array{operation_name_field: string|null, required_fields: list<string>, success_fields: list<string>}
+     * @return array{operation_name_field: string|null, required_fields: list<string>, success_fields: list<string>, rejection_fields?: list<string>, rejection_reasons?: list<string>}
      */
     private static function definition(string $operation): array
     {

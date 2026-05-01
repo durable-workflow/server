@@ -117,6 +117,14 @@ Expected outcomes:
   `reason: unknown_target`
 - unsupported action: HTTP 422, `outcome: rejected`,
   `reason: unsupported_action`
+- incompatible fleet: HTTP 422, `outcome: rejected`,
+  `reason: compatibility_blocked`,
+  `rejection_reason: compatibility_blocked`,
+  `control_plane_outcome: rejected_compatibility_blocked`
+- draining task queue: HTTP 422, `outcome: rejected`,
+  `reason: task_queue_draining`,
+  `rejection_reason: task_queue_draining`,
+  `control_plane_outcome: rejected_task_queue_draining`
 
 When no explicit `workflow_id` is supplied, the server derives a stable
 `bridge-{adapter}-{hash}` workflow id from the adapter and idempotency key.
