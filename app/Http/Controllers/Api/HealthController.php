@@ -8,6 +8,7 @@ use App\Support\BridgeAdapterOutcomeContract;
 use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
 use App\Support\CoordinationHealthContract;
+use App\Support\ReplayVerificationContract;
 use App\Support\ServerReadiness;
 use App\Support\ServerTopology;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
@@ -94,6 +95,7 @@ class HealthController
             'bridge_adapter_outcome_contract' => true,
             'external_executor_config_contract' => true,
             'invocable_carrier_contract' => true,
+            'replay_verification_contract' => true,
             'payload_codecs' => CodecRegistry::universal(),
             'response_compression' => (bool) config('server.compression.enabled', true)
                 ? ['gzip', 'deflate']
@@ -135,6 +137,7 @@ class HealthController
             'control_plane' => ControlPlaneProtocol::info(),
             'worker_protocol' => WorkerProtocol::info(),
             'bridge_adapter_outcome_contract' => BridgeAdapterOutcomeContract::manifest(),
+            'replay_verification_contract' => ReplayVerificationContract::manifest(),
         ];
 
         if ($this->shouldExposePackageProvenance($request)) {
