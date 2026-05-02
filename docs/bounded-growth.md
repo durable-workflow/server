@@ -27,6 +27,11 @@ added without a TTL, admission, or cardinality contract.
 - Runtime metric cardinality disclosures must fail closed: a metric cannot
   expose a label-set policy unless the metric and every disclosed dimension are
   declared in `config/dw-bounded-growth.php`.
+- Every declared metric dimension must use one of the reviewed cardinality
+  taxonomy classes (`bounded_*`, `finite_*`, `request_scope_*`, or `*_no_label`)
+  so a future scrape or export surface cannot introduce a user-controlled label
+  with an ad hoc cardinality string. The dimension name does not have to appear
+  on the explicit user-controlled list to be gated.
 - Remote-write scrape labels must stay deployment-scoped. Per-run values such
   as `GITHUB_RUN_ID` and `RUNNER_NAME` belong in `summary.json` provenance, not
   in Prometheus labels that create new series for every soak.
@@ -73,6 +78,9 @@ added without a TTL, admission, or cardinality contract.
   the corresponding metric dimensions declared in the policy;
 - runtime metric disclosures reject unknown metrics or undeclared dimensions
   before they can appear in `/api/system/metrics`;
+- every declared metric dimension must use a `bounded_*`, `finite_*`,
+  `request_scope_*`, or `*_no_label` cardinality class so unbounded label sets
+  cannot ship even when a new dimension name is not on the user-controlled list;
 - perf-harness remote-write target labels must not include per-run or
   per-runner dimensions;
 - each policy entry must include the required review fields;

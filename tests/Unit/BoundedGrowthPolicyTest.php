@@ -167,6 +167,28 @@ class BoundedGrowthPolicyTest extends TestCase
         }
     }
 
+    public function test_every_metric_dimension_uses_bounded_growth_taxonomy(): void
+    {
+        foreach ($this->policyMetrics() as $metric => $entry) {
+            $dimensions = $entry['dimensions'] ?? [];
+            $this->assertIsArray($dimensions, "{$metric}.dimensions must be an array");
+
+            foreach ($dimensions as $dimension => $cardinalityClass) {
+                $this->assertIsString(
+                    $cardinalityClass,
+                    "{$metric}.dimensions.{$dimension} cardinality class must be a string",
+                );
+                $this->assertMatchesRegularExpression(
+                    '/(^|_)(bounded|finite|request_scope|no_label)($|_)/',
+                    $cardinalityClass,
+                    "{$metric}.dimensions.{$dimension} must declare a bounded, finite, request_scope, "
+                    .'or no_label cardinality class so future scrape/export metrics cannot ship with '
+                    .'unbounded labels even when the dimension name is not on the user-controlled list.',
+                );
+            }
+        }
+    }
+
     public function test_prometheus_labels_in_bounded_growth_source_match_metric_policy_dimensions(): void
     {
         $declared = $this->policyMetrics();
