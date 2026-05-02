@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\ActivityTaskController;
 use App\Http\Controllers\Api\BridgeAdapterController;
+use App\Http\Controllers\Api\DeploymentController;
 use App\Http\Controllers\Api\HealthController;
 use App\Http\Controllers\Api\HistoryController;
 use App\Http\Controllers\Api\NamespaceController;
@@ -167,6 +168,30 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::post('/{taskQueue}/build-ids/drain', [TaskQueueController::class, 'drainBuildId']);
         Route::post('/{taskQueue}/build-ids/resume', [TaskQueueController::class, 'resumeBuildId']);
         Route::get('/{taskQueue}', [TaskQueueController::class, 'show']);
+    });
+
+    // ── Worker Deployments ───────────────────────────────────────────
+    // First-class deployment lifecycle surface. Promote, drain, resume,
+    // and rollback are exposed against deployment names of the form
+    // `namespace/task_queue@build_id` (or `@unversioned` for the
+    // pre-rollout cohort). Refusals carry a machine-readable
+    // DeploymentBlockage list with a 409. The legacy
+    // /api/task-queues/{taskQueue}/build-ids/{drain|resume} routes
+    // continue to work unchanged; this surface layers on top.
+    Route::prefix('deployments')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
+        Route::get('/', [DeploymentController::class, 'index']);
+
+        // Lifecycle actions are registered before the catch-all show
+        // route so the .+ constraint on `{name}` (which lets the name
+        // contain slashes for the namespace/task_queue@build_id format)
+        // does not swallow `/promote`, `/drain`, `/resume`, and
+        // `/rollback` segments.
+        Route::post('/{name}/promote', [DeploymentController::class, 'promote'])->where('name', '.+');
+        Route::post('/{name}/drain', [DeploymentController::class, 'drain'])->where('name', '.+');
+        Route::post('/{name}/resume', [DeploymentController::class, 'resume'])->where('name', '.+');
+        Route::post('/{name}/rollback', [DeploymentController::class, 'rollback'])->where('name', '.+');
+
+        Route::get('/{name}', [DeploymentController::class, 'show'])->where('name', '.+');
     });
 
     // ── Schedules ────────────────────────────────────────────────────

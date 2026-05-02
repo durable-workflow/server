@@ -20,12 +20,21 @@ class WorkerBuildIdRollout extends Model
         'build_id',
         'drain_intent',
         'drained_at',
+        'promoted_at',
+        'rolled_back_at',
+        'required_compatibility',
+        'recorded_fingerprint',
+        'compatibility_policy',
+        'workflow_types',
     ];
 
     protected function casts(): array
     {
         return [
             'drained_at' => 'datetime',
+            'promoted_at' => 'datetime',
+            'rolled_back_at' => 'datetime',
+            'workflow_types' => 'array',
         ];
     }
 
