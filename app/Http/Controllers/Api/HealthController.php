@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\DB;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\StructuralLimits;
+use Workflow\V2\Support\SurfaceStabilityContract;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
 
@@ -129,6 +130,7 @@ class HealthController
                 $this->buildIdRollouts->routingDrains(),
             ),
             'client_compatibility' => ClientCompatibility::info(),
+            'surface_stability_contract' => SurfaceStabilityContract::manifest(),
             'auth_composition_contract' => AuthCompositionContract::manifest(),
             'control_plane' => ControlPlaneProtocol::info(),
             'worker_protocol' => WorkerProtocol::info(),

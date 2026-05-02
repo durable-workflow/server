@@ -11,6 +11,7 @@ use App\Support\ServerTopology;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
+use Workflow\V2\Support\SurfaceStabilityContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
 class ClusterInfoCompatibilityTest extends TestCase
@@ -119,6 +120,16 @@ class ClusterInfoCompatibilityTest extends TestCase
                     ],
                 ],
                 'client_compatibility',
+                'surface_stability_contract' => [
+                    'schema',
+                    'version',
+                    'authority_url',
+                    'stability_levels',
+                    'release_rules',
+                    'field_visibility_rule',
+                    'surface_families',
+                    'release_check',
+                ],
                 'auth_composition_contract',
                 'control_plane',
                 'worker_protocol',
@@ -139,7 +150,55 @@ class ClusterInfoCompatibilityTest extends TestCase
             )
             ->assertJsonPath('control_plane.version', ControlPlaneProtocol::VERSION)
             ->assertJsonPath('worker_protocol.version', WorkerProtocol::VERSION)
-            ->assertJsonPath('client_compatibility.authority', 'protocol_manifests');
+            ->assertJsonPath('client_compatibility.authority', 'protocol_manifests')
+            ->assertJsonPath('surface_stability_contract.schema', SurfaceStabilityContract::SCHEMA)
+            ->assertJsonPath('surface_stability_contract.version', SurfaceStabilityContract::VERSION)
+            ->assertJsonPath(
+                'surface_stability_contract.authority_url',
+                SurfaceStabilityContract::AUTHORITY_URL,
+            );
+    }
+
+    public function test_cluster_info_publishes_the_canonical_surface_stability_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+
+        $this->assertSame(
+            SurfaceStabilityContract::manifest(),
+            $response->json('surface_stability_contract'),
+            'cluster info must re-export the workflow package surface-stability manifest verbatim',
+        );
+
+        $families = $response->json('surface_stability_contract.surface_families');
+        $this->assertIsArray($families);
+        foreach ([
+            'server_api',
+            'worker_protocol',
+            'cli_json',
+            'waterline_api',
+            'mcp_discovery_results',
+            'official_sdks',
+            'history_event_wire_formats',
+            'cluster_info_manifests',
+        ] as $expectedFamily) {
+            $this->assertArrayHasKey(
+                $expectedFamily,
+                $families,
+                "surface_stability_contract.surface_families must include $expectedFamily",
+            );
+            $this->assertContains(
+                $families[$expectedFamily]['stability_level'],
+                SurfaceStabilityContract::stabilityLevelValues(),
+                "$expectedFamily stability_level must be one of " .
+                    implode(', ', SurfaceStabilityContract::stabilityLevelValues()),
+            );
+        }
+
+        $this->assertSame(
+            'frozen',
+            $families['history_event_wire_formats']['stability_level'],
+            'history-event wire formats are frozen for the workflow lifetime',
+        );
     }
 
     public function test_cluster_info_names_protocol_manifests_as_client_compatibility_authority(): void
