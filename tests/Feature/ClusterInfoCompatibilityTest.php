@@ -11,6 +11,7 @@ use App\Support\ServerTopology;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
+use Workflow\V2\Support\PlatformProtocolSpecs;
 use Workflow\V2\Support\SurfaceStabilityContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
@@ -130,6 +131,17 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'surface_families',
                     'release_check',
                 ],
+                'platform_protocol_specs' => [
+                    'schema',
+                    'version',
+                    'authority_url',
+                    'formats',
+                    'owner_repos',
+                    'status_levels',
+                    'evolution_rules',
+                    'specs',
+                    'release_check',
+                ],
                 'auth_composition_contract',
                 'control_plane',
                 'worker_protocol',
@@ -156,6 +168,12 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath(
                 'surface_stability_contract.authority_url',
                 SurfaceStabilityContract::AUTHORITY_URL,
+            )
+            ->assertJsonPath('platform_protocol_specs.schema', PlatformProtocolSpecs::SCHEMA)
+            ->assertJsonPath('platform_protocol_specs.version', PlatformProtocolSpecs::VERSION)
+            ->assertJsonPath(
+                'platform_protocol_specs.authority_url',
+                PlatformProtocolSpecs::AUTHORITY_URL,
             );
     }
 
@@ -199,6 +217,67 @@ class ClusterInfoCompatibilityTest extends TestCase
             $families['history_event_wire_formats']['stability_level'],
             'history-event wire formats are frozen for the workflow lifetime',
         );
+    }
+
+    public function test_cluster_info_publishes_the_canonical_platform_protocol_specs_catalog(): void
+    {
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+
+        $this->assertSame(
+            PlatformProtocolSpecs::manifest(),
+            $response->json('platform_protocol_specs'),
+            'cluster info must re-export the workflow package platform-protocol-specs catalog verbatim',
+        );
+
+        $specs = $response->json('platform_protocol_specs.specs');
+        $this->assertIsArray($specs);
+
+        $expectedDeliverableSpecs = [
+            'control_plane_api',
+            'worker_protocol_api',
+            'worker_protocol_stream',
+            'history_event_payloads',
+            'history_export_bundle',
+            'replay_bundle',
+            'waterline_read_api',
+            'waterline_diagnostic_objects',
+            'repair_actionability_objects',
+            'mcp_discovery',
+            'mcp_tool_results',
+            'cluster_info_envelope',
+        ];
+        foreach ($expectedDeliverableSpecs as $expectedSpec) {
+            $this->assertArrayHasKey(
+                $expectedSpec,
+                $specs,
+                "platform_protocol_specs.specs must include $expectedSpec to cover the deliverable surface set",
+            );
+            $this->assertContains(
+                $specs[$expectedSpec]['format'],
+                PlatformProtocolSpecs::formatValues(),
+                "$expectedSpec format must be one of " . implode(', ', PlatformProtocolSpecs::formatValues()),
+            );
+            $this->assertContains(
+                $specs[$expectedSpec]['owner_repo'],
+                PlatformProtocolSpecs::ownerRepoValues(),
+                "$expectedSpec owner_repo must be one of " . implode(', ', PlatformProtocolSpecs::ownerRepoValues()),
+            );
+            $this->assertContains(
+                $specs[$expectedSpec]['status'],
+                PlatformProtocolSpecs::statusValues(),
+                "$expectedSpec status must be one of " . implode(', ', PlatformProtocolSpecs::statusValues()),
+            );
+        }
+
+        $surfaceFamilies = $response->json('surface_stability_contract.surface_families');
+        $this->assertIsArray($surfaceFamilies);
+        foreach ($specs as $name => $spec) {
+            $this->assertArrayHasKey(
+                $spec['surface_family'],
+                $surfaceFamilies,
+                "platform_protocol_specs entry $name references unknown surface_family {$spec['surface_family']}",
+            );
+        }
     }
 
     public function test_cluster_info_names_protocol_manifests_as_client_compatibility_authority(): void
