@@ -38,6 +38,10 @@ final class ReplayVerificationContract
 
     public const REPLAY_DIFF_SCHEMA_VERSION = 1;
 
+    public const VERIFICATION_REPORT_SCHEMA = 'durable-workflow.v2.replay-verification.report';
+
+    public const VERIFICATION_REPORT_SCHEMA_VERSION = 1;
+
     public const GOLDEN_HISTORY_FIXTURE_SCHEMA = 'durable-workflow.golden-history.v1';
 
     /**
@@ -133,6 +137,23 @@ final class ReplayVerificationContract
                     'replay_error',
                     'bundle_invalid',
                 ],
+                'shape_mismatch_fields' => [
+                    'workflow_sequence',
+                    'expected_shape',
+                    'recorded_event_types',
+                ],
+            ],
+            'verification_report' => [
+                'schema' => self::VERIFICATION_REPORT_SCHEMA,
+                'schema_version' => self::VERIFICATION_REPORT_SCHEMA_VERSION,
+                'fields' => [
+                    'verdict',
+                    'promotion_decision',
+                    'bundle_path',
+                    'integrity',
+                    'replay_diff',
+                ],
+                'verdicts' => ['ok', 'warning', 'drifted', 'failed'],
             ],
             'verdicts' => [
                 'ok' => [

@@ -16,7 +16,11 @@ The authoritative machine-readable contract is published from
 - `offline_cli` — the Artisan command, its inputs, and its exit codes.
 - `integrity` — canonicalization, checksum, and signature primitives.
 - `integrity_report` — the report schema, severities, and rule names.
-- `replay_diff` — the diff schema, statuses, and reasons.
+- `replay_diff` — the diff schema, statuses, reasons, and the
+  `shape_mismatch` fields verifiers expose for drift diagnostics.
+- `verification_report` — the composite report schema the offline CLI
+  emits, wrapping the integrity report and replay diff under a single
+  `verdict` and `promotion_decision`.
 - `verdicts` — the four overall verdicts and the promotion decision each
   implies.
 - `golden_history` — the cross-runtime fixture schema and required
@@ -50,9 +54,20 @@ php artisan workflow:v2:replay-verify <bundle.json> \
     [--signing-key=<KEY>] [--skip-replay] [--strict-warnings] [--json] [--output=<PATH>]
 ```
 
-The command emits a single JSON report (when `--json` or `--output` is
-set) shaped by `replay_verification_contract`. The command's exit code is
-the gate signal:
+The command emits a single JSON document shaped by
+`replay_verification_contract.verification_report`
+(`schema: durable-workflow.v2.replay-verification.report`). It carries:
+
+- `verdict` — one of `ok`, `warning`, `drifted`, `failed`.
+- `promotion_decision` — the promotion gate's recommendation (see below).
+- `integrity` — the
+  `durable-workflow.v2.history-bundle-verification` report (rules,
+  severities, integrity status).
+- `replay_diff` — the
+  `durable-workflow.v2.replay-diff` report (replay status, reason,
+  drift fields).
+
+The command's exit code is the gate signal:
 
 - `0` — `ok` or `warning` (without `--strict-warnings`).
 - `1` — `warning` with `--strict-warnings`, `drifted`, or `failed`.

@@ -65,6 +65,29 @@ class ReplayVerificationContractTest extends TestCase
         foreach (['none', 'shape_mismatch', 'replay_error', 'bundle_invalid'] as $reason) {
             $this->assertContains($reason, $manifest['replay_diff']['reasons']);
         }
+
+        foreach (['workflow_sequence', 'expected_shape', 'recorded_event_types'] as $field) {
+            $this->assertContains($field, $manifest['replay_diff']['shape_mismatch_fields']);
+        }
+    }
+
+    public function test_manifest_publishes_composite_verification_report_schema(): void
+    {
+        $manifest = ReplayVerificationContract::manifest();
+
+        $this->assertSame(
+            'durable-workflow.v2.replay-verification.report',
+            $manifest['verification_report']['schema'],
+        );
+        $this->assertSame(1, $manifest['verification_report']['schema_version']);
+
+        foreach (['verdict', 'promotion_decision', 'bundle_path', 'integrity', 'replay_diff'] as $field) {
+            $this->assertContains($field, $manifest['verification_report']['fields']);
+        }
+
+        foreach (['ok', 'warning', 'drifted', 'failed'] as $verdict) {
+            $this->assertContains($verdict, $manifest['verification_report']['verdicts']);
+        }
     }
 
     public function test_verdicts_map_to_promotion_decisions(): void
