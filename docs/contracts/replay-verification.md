@@ -21,6 +21,13 @@ The authoritative machine-readable contract is published from
 - `verification_report` — the composite report schema the offline CLI
   emits, wrapping the integrity report and replay diff under a single
   `verdict` and `promotion_decision`.
+- `simulation_report` — the aggregated batch report shape emitted by the
+  agent/CI-friendly batch CLI; reduces a directory of bundles to one
+  overall verdict and `promotion_decision`.
+- `batch_cli` — the Artisan command that consumes a directory of bundles
+  and emits the simulation report, plus its inputs and exit codes.
+- `promotion_gate` — the server-side helper that translates either
+  report into a `pass` / `review` / `block` gate decision.
 - `verdicts` — the four overall verdicts and the promotion decision each
   implies.
 - `golden_history` — the cross-runtime fixture schema and required
@@ -72,6 +79,53 @@ The command's exit code is the gate signal:
 - `0` — `ok` or `warning` (without `--strict-warnings`).
 - `1` — `warning` with `--strict-warnings`, `drifted`, or `failed`.
 
+## Batch / agent-friendly CLI
+
+CI pipelines and rollout controllers usually have more than one bundle to
+gate on at a time. The batch command runs the same per-bundle checks as
+`workflow:v2:replay-verify` across every `*.json` bundle in a directory
+and emits one aggregated promotion verdict:
+
+```text
+php artisan workflow:v2:replay-simulate <bundle-dir> \
+    [--signing-key=<KEY>] [--skip-replay] [--strict-warnings] [--output=<PATH>]
+```
+
+The aggregated report carries
+`schema: durable-workflow.v2.replay-simulation.report` and the same
+`verdict` + `promotion_decision` vocabulary as the single-bundle report.
+Each per-bundle entry under `bundles[]` keeps its own verdict and
+promotion decision so a CI runner can render which bundle held up the
+gate. The aggregation rule is **strictest verdict wins**: any per-bundle
+`failed` pins the overall to `failed`; otherwise any `drifted` pins to
+`drifted`; otherwise any `warning` pins to `warning`; otherwise `ok`. An
+empty directory aggregates to `failed` because a gate with no evidence
+is never safe to promote.
+
+Exit code: `0` when the overall verdict is `ok` or `warning`; `1` for
+`drifted` or `failed`. Sampling-based rollout controllers should batch
+recent histories into one directory and gate on this single command's
+exit code.
+
+## Promotion gate (server side)
+
+Server-side controllers consume either report through the helper
+`App\Support\ReplayPromotionGate`. The helper returns a normalized
+`gate_status` (`pass` / `review` / `block`) so a deployment lifecycle or
+rollout endpoint can act on a verify or simulation report without
+re-implementing the verdict-to-decision table:
+
+| verdict   | promotion decision        | gate status |
+|-----------|---------------------------|-------------|
+| `ok`      | `safe_to_promote`         | `pass`      |
+| `warning` | `review_before_promote`   | `review`    |
+| `drifted` | `block_until_compatible`  | `block`     |
+| `failed`  | `block_and_investigate`   | `block`     |
+
+`ReplayPromotionGate::aggregate()` reduces a list of reports with the
+same strictest-verdict-wins rule as the batch CLI, so any caller that
+sees multiple reports can collapse them to one decision deterministically.
+
 ## Verdicts and promotion
 
 | verdict   | meaning                                                                                  | promotion decision         |
@@ -116,3 +170,10 @@ each runtime (`tests/Fixtures/V2/GoldenHistory` for `workflow-php`,
 each runtime's replay test suite. New official runtimes must extend the
 fixture set with their own emitter version and replay every required
 family.
+
+The `sdk-python` runtime ships an equivalent batch surface as
+`python -m durable_workflow.replay_verify --simulate-bundles <dir>`,
+which emits the same `durable-workflow.v2.replay-simulation.report`
+shape as the PHP `workflow:v2:replay-simulate` command. A multi-runtime
+rollout pipeline can therefore parse one schema regardless of which
+runtime produced the report.
