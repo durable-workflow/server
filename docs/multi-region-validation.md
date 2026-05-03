@@ -12,6 +12,13 @@ This document is the server-side view of the workflow library contract in
 The library contract names the engine guarantees; this document names the
 operator contract for the standalone server image and Compose recipes.
 
+The single-region HA contract — managed-database failover, managed-Redis
+failover, API-node loss, worker loss, and scheduler-runner restart inside
+one region — is documented separately in
+[`docs/ha-failover-validation.md`](ha-failover-validation.md). The
+multi-region contract assumes the single-region HA contract holds inside
+the active region and does not duplicate its rules.
+
 ## Decision
 
 Proceed with a narrow active/passive multi-region contract.
@@ -174,8 +181,11 @@ These remain outside the public multi-region support boundary:
   cross-region history merge.
 - Region-pinned task queues or region-aware namespaces as a routing
   axis enforced by the engine.
-- Multi-cluster Helm charts and provider-specific managed-database
-  failover automation.
+- Multi-cluster Helm charts and active/active cross-region database
+  topologies. Provider-specific managed-database failover *inside* one
+  region (RDS Multi-AZ, Aurora cluster failover, Cloud SQL HA, and
+  equivalents) is supported by the single-region HA contract in
+  [`docs/ha-failover-validation.md`](ha-failover-validation.md).
 - Strong cross-region SLA promises beyond the documented active/passive
   failover behavior.
 

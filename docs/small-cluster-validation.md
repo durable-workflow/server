@@ -97,7 +97,13 @@ These remain outside the public support boundary:
   these boundaries.
 - Arbitrary process supervisors or orchestrators.
 - Helm charts and provider-specific managed-Kubernetes validation.
-- Strong HA/SLA promises beyond the documented small-cluster failure behavior.
+- Strong "five-nines" or "zero-downtime" SLA claims. Single-region HA
+  failover behavior — managed-database failover, managed-Redis failover,
+  API-node loss, worker loss, and scheduler-runner restart — is its own
+  self-serve contract layered on top of this one and is documented in
+  [`docs/ha-failover-validation.md`](ha-failover-validation.md). Marketing
+  uptime claims beyond the bounded recovery times in that contract remain
+  outside this support boundary.
 
 ## Operator Contract Draft
 
