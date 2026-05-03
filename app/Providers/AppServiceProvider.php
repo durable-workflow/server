@@ -7,13 +7,17 @@ use App\Contracts\AuthProvider;
 use App\Observers\WorkflowHistoryEventObserver;
 use App\Observers\WorkflowTaskObserver;
 use App\Support\RemoteScheduleStarter;
+use App\Support\ServiceCallBoundary;
 use App\Support\ServiceModeBusDispatcher;
 use App\Support\WorkflowPackageApiFloor;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
 use Illuminate\Support\ServiceProvider;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
+use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
+use Workflow\V2\Support\ServiceBoundaryAuditRecorder;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -42,6 +46,25 @@ class AppServiceProvider extends ServiceProvider
         });
 
         $this->app->singleton(ScheduleWorkflowStarter::class, RemoteScheduleStarter::class);
+
+        // Cross-namespace service-call boundary. The server's
+        // service_boundary config block layers on top of the workflow
+        // package's defaults; merge them so operators can tune
+        // namespace, rate, concurrency, and circuit-break policy from
+        // the server image's environment without forking the workflow
+        // package config.
+        $this->app->singleton(ServiceBoundaryPolicy::class, function ($app): ServiceBoundaryPolicy {
+            $rules = array_replace_recursive(
+                (array) config('workflows.v2.service_boundary.rules', []),
+                (array) config('server.service_boundary.rules', []),
+            );
+
+            return new DefaultServiceBoundaryPolicy($rules);
+        });
+
+        $this->app->singleton(ServiceBoundaryAuditRecorder::class);
+
+        $this->app->singleton(ServiceCallBoundary::class);
     }
 
     private function normalizeRedisPorts(): void

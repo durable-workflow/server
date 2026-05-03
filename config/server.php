@@ -484,6 +484,50 @@ return [
     |--------------------------------------------------------------------------
     */
 
+    /*
+    |--------------------------------------------------------------------------
+    | Service-Call Boundary
+    |--------------------------------------------------------------------------
+    |
+    | Cross-namespace service calls run through a single boundary policy
+    | before handler dispatch. The rules below merge on top of the
+    | workflow package defaults (workflows.v2.service_boundary.rules), so
+    | operators can keep the package defaults and only override the
+    | knobs that matter for the current cluster.
+    |
+    | See Workflow\V2\Support\DefaultServiceBoundaryPolicy for the full
+    | rule schema. The default posture is "allow" so introducing the
+    | boundary does not silently disable existing service calls; tighten
+    | this in environments that should fail closed.
+    |
+    */
+
+    'service_boundary' => [
+        'rules' => [
+            'namespaces' => [
+                'cross_namespace_default' => EnvAuditor::env(
+                    'DW_SERVICE_BOUNDARY_CROSS_NAMESPACE_DEFAULT',
+                    'WORKFLOW_SERVER_SERVICE_BOUNDARY_CROSS_NAMESPACE_DEFAULT',
+                    'allow',
+                ),
+            ],
+            'rate_limit' => [
+                'requests_per_minute' => EnvAuditor::env(
+                    'DW_SERVICE_BOUNDARY_RATE_LIMIT_PER_MINUTE',
+                    'WORKFLOW_SERVER_SERVICE_BOUNDARY_RATE_LIMIT_PER_MINUTE',
+                    null,
+                ),
+            ],
+            'concurrency' => [
+                'max_in_flight' => EnvAuditor::env(
+                    'DW_SERVICE_BOUNDARY_MAX_IN_FLIGHT',
+                    'WORKFLOW_SERVER_SERVICE_BOUNDARY_MAX_IN_FLIGHT',
+                    null,
+                ),
+            ],
+        ],
+    ],
+
     'limits' => [
         'max_payload_bytes' => (int) EnvAuditor::env('DW_MAX_PAYLOAD_BYTES', 'WORKFLOW_MAX_PAYLOAD_BYTES', 2 * 1024 * 1024),
         'max_memo_bytes' => (int) EnvAuditor::env('DW_MAX_MEMO_BYTES', 'WORKFLOW_MAX_MEMO_BYTES', 256 * 1024),
