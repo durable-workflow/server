@@ -99,6 +99,55 @@ class ReplayVerificationContractTest extends TestCase
         $this->assertSame('block_and_investigate', $manifest['verdicts']['failed']['promotion_decision']);
     }
 
+    public function test_manifest_publishes_batch_simulation_cli_surface(): void
+    {
+        $manifest = ReplayVerificationContract::manifest();
+
+        $this->assertArrayHasKey('batch_cli', $manifest);
+        $this->assertSame('workflow:v2:replay-simulate', $manifest['batch_cli']['command']);
+        $this->assertSame(0, $manifest['batch_cli']['exit_codes']['ok']);
+        $this->assertSame(1, $manifest['batch_cli']['exit_codes']['drifted']);
+        $this->assertSame(1, $manifest['batch_cli']['exit_codes']['failed']);
+        $this->assertSame(
+            'durable-workflow.v2.replay-simulation.report',
+            $manifest['batch_cli']['report_schema'],
+        );
+        $this->assertSame(1, $manifest['batch_cli']['report_schema_version']);
+    }
+
+    public function test_manifest_publishes_simulation_report_and_aggregation_rule(): void
+    {
+        $manifest = ReplayVerificationContract::manifest();
+
+        $this->assertArrayHasKey('simulation_report', $manifest);
+        $this->assertSame(
+            'durable-workflow.v2.replay-simulation.report',
+            $manifest['simulation_report']['schema'],
+        );
+        $this->assertSame(1, $manifest['simulation_report']['schema_version']);
+        $this->assertSame('strictest_verdict_wins', $manifest['simulation_report']['aggregation_rule']);
+
+        foreach (['verdict', 'promotion_decision', 'summary', 'bundles', 'missing_bundles'] as $field) {
+            $this->assertContains($field, $manifest['simulation_report']['fields']);
+        }
+    }
+
+    public function test_manifest_publishes_promotion_gate_mapping(): void
+    {
+        $manifest = ReplayVerificationContract::manifest();
+
+        $this->assertArrayHasKey('promotion_gate', $manifest);
+
+        foreach (['pass', 'review', 'block'] as $status) {
+            $this->assertContains($status, $manifest['promotion_gate']['gate_statuses']);
+        }
+
+        $this->assertSame('pass', $manifest['promotion_gate']['verdict_to_gate_status']['ok']);
+        $this->assertSame('review', $manifest['promotion_gate']['verdict_to_gate_status']['warning']);
+        $this->assertSame('block', $manifest['promotion_gate']['verdict_to_gate_status']['drifted']);
+        $this->assertSame('block', $manifest['promotion_gate']['verdict_to_gate_status']['failed']);
+    }
+
     public function test_golden_history_pins_required_families_across_runtimes(): void
     {
         $manifest = ReplayVerificationContract::manifest();

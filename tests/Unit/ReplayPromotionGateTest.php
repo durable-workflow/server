@@ -1,0 +1,102 @@
+<?php
+
+namespace Tests\Unit;
+
+use App\Support\ReplayPromotionGate;
+use PHPUnit\Framework\TestCase;
+
+class ReplayPromotionGateTest extends TestCase
+{
+    public function test_evaluate_maps_verdicts_to_canonical_promotion_decisions(): void
+    {
+        $cases = [
+            'ok' => [ReplayPromotionGate::SAFE_TO_PROMOTE, ReplayPromotionGate::STATUS_PASS],
+            'warning' => [ReplayPromotionGate::REVIEW_BEFORE_PROMOTE, ReplayPromotionGate::STATUS_REVIEW],
+            'drifted' => [ReplayPromotionGate::BLOCK_UNTIL_COMPATIBLE, ReplayPromotionGate::STATUS_BLOCK],
+            'failed' => [ReplayPromotionGate::BLOCK_AND_INVESTIGATE, ReplayPromotionGate::STATUS_BLOCK],
+        ];
+
+        foreach ($cases as $verdict => [$expectedDecision, $expectedStatus]) {
+            $result = ReplayPromotionGate::evaluate(['verdict' => $verdict]);
+
+            $this->assertSame($verdict, $result['verdict']);
+            $this->assertSame($expectedDecision, $result['promotion_decision']);
+            $this->assertSame($expectedStatus, $result['gate_status']);
+            $this->assertNotEmpty($result['reason']);
+        }
+    }
+
+    public function test_evaluate_treats_missing_or_unknown_verdict_as_failed(): void
+    {
+        $result = ReplayPromotionGate::evaluate([]);
+
+        $this->assertSame('failed', $result['verdict']);
+        $this->assertSame(ReplayPromotionGate::BLOCK_AND_INVESTIGATE, $result['promotion_decision']);
+        $this->assertSame(ReplayPromotionGate::STATUS_BLOCK, $result['gate_status']);
+
+        $bogus = ReplayPromotionGate::evaluate(['verdict' => 'something-new']);
+        $this->assertSame(ReplayPromotionGate::BLOCK_AND_INVESTIGATE, $bogus['promotion_decision']);
+        $this->assertSame('unknown_verdict', $bogus['reason']);
+    }
+
+    public function test_aggregate_picks_strictest_verdict_across_reports(): void
+    {
+        $aggregate = ReplayPromotionGate::aggregate([
+            ['verdict' => 'ok'],
+            ['verdict' => 'warning'],
+            ['verdict' => 'drifted'],
+            ['verdict' => 'ok'],
+        ]);
+
+        $this->assertSame('drifted', $aggregate['verdict']);
+        $this->assertSame(ReplayPromotionGate::BLOCK_UNTIL_COMPATIBLE, $aggregate['promotion_decision']);
+        $this->assertSame(ReplayPromotionGate::STATUS_BLOCK, $aggregate['gate_status']);
+        $this->assertSame(4, $aggregate['evaluated']);
+    }
+
+    public function test_aggregate_promotes_when_all_clean(): void
+    {
+        $aggregate = ReplayPromotionGate::aggregate([
+            ['verdict' => 'ok'],
+            ['verdict' => 'ok'],
+        ]);
+
+        $this->assertSame('ok', $aggregate['verdict']);
+        $this->assertSame(ReplayPromotionGate::SAFE_TO_PROMOTE, $aggregate['promotion_decision']);
+        $this->assertSame(ReplayPromotionGate::STATUS_PASS, $aggregate['gate_status']);
+    }
+
+    public function test_aggregate_of_empty_list_blocks_promotion(): void
+    {
+        $aggregate = ReplayPromotionGate::aggregate([]);
+
+        $this->assertSame('failed', $aggregate['verdict']);
+        $this->assertSame(ReplayPromotionGate::BLOCK_AND_INVESTIGATE, $aggregate['promotion_decision']);
+        $this->assertSame(ReplayPromotionGate::STATUS_BLOCK, $aggregate['gate_status']);
+        $this->assertSame('no_reports', $aggregate['reason']);
+        $this->assertSame(0, $aggregate['evaluated']);
+    }
+
+    public function test_aggregate_treats_unknown_verdicts_as_failed(): void
+    {
+        $aggregate = ReplayPromotionGate::aggregate([
+            ['verdict' => 'ok'],
+            ['verdict' => 'totally-bogus'],
+        ]);
+
+        $this->assertSame('failed', $aggregate['verdict']);
+        $this->assertSame(ReplayPromotionGate::BLOCK_AND_INVESTIGATE, $aggregate['promotion_decision']);
+    }
+
+    public function test_evaluate_carries_report_schema_through(): void
+    {
+        $result = ReplayPromotionGate::evaluate([
+            'schema' => 'durable-workflow.v2.replay-verify-report',
+            'schema_version' => 1,
+            'verdict' => 'ok',
+        ]);
+
+        $this->assertSame('durable-workflow.v2.replay-verify-report', $result['report_schema']);
+        $this->assertSame(1, $result['report_schema_version']);
+    }
+}

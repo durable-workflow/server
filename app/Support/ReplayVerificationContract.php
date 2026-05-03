@@ -42,6 +42,10 @@ final class ReplayVerificationContract
 
     public const VERIFICATION_REPORT_SCHEMA_VERSION = 1;
 
+    public const SIMULATION_REPORT_SCHEMA = 'durable-workflow.v2.replay-simulation.report';
+
+    public const SIMULATION_REPORT_SCHEMA_VERSION = 1;
+
     public const GOLDEN_HISTORY_FIXTURE_SCHEMA = 'durable-workflow.golden-history.v1';
 
     /**
@@ -75,6 +79,25 @@ final class ReplayVerificationContract
                     'drifted' => 1,
                     'failed' => 1,
                 ],
+            ],
+            'batch_cli' => [
+                'command' => 'workflow:v2:replay-simulate',
+                'description' => 'Replay-verify every bundle in a directory and emit one CI/agent-friendly promotion verdict.',
+                'inputs' => [
+                    'directory' => 'Directory of workflow:v2:history-export bundles to verify together.',
+                    '--signing-key' => 'HMAC verification key; falls back to workflows.v2.history_export.signing_key.',
+                    '--skip-replay' => 'Verify integrity only — do not replay against current code.',
+                    '--strict-warnings' => 'Treat structural warnings as per-bundle failures and block promotion.',
+                    '--output' => 'Write the JSON simulation report to a file.',
+                ],
+                'exit_codes' => [
+                    'ok' => 0,
+                    'warning' => 0,
+                    'drifted' => 1,
+                    'failed' => 1,
+                ],
+                'report_schema' => self::SIMULATION_REPORT_SCHEMA,
+                'report_schema_version' => self::SIMULATION_REPORT_SCHEMA_VERSION,
             ],
             'integrity' => [
                 'canonicalization' => 'json-recursive-ksort-v1',
@@ -154,6 +177,30 @@ final class ReplayVerificationContract
                     'replay_diff',
                 ],
                 'verdicts' => ['ok', 'warning', 'drifted', 'failed'],
+            ],
+            'simulation_report' => [
+                'schema' => self::SIMULATION_REPORT_SCHEMA,
+                'schema_version' => self::SIMULATION_REPORT_SCHEMA_VERSION,
+                'description' => 'Aggregate report emitted by workflow:v2:replay-simulate; every per-bundle entry carries its own verdict + promotion_decision and the top-level verdict reduces to the strictest entry.',
+                'fields' => [
+                    'verdict',
+                    'promotion_decision',
+                    'summary',
+                    'bundles',
+                    'missing_bundles',
+                ],
+                'aggregation_rule' => 'strictest_verdict_wins',
+                'verdicts' => ['ok', 'warning', 'drifted', 'failed'],
+            ],
+            'promotion_gate' => [
+                'description' => 'Server-side helper App\\Support\\ReplayPromotionGate consumes either a verify or simulation report and returns a normalized gate decision (pass / review / block).',
+                'gate_statuses' => ['pass', 'review', 'block'],
+                'verdict_to_gate_status' => [
+                    'ok' => 'pass',
+                    'warning' => 'review',
+                    'drifted' => 'block',
+                    'failed' => 'block',
+                ],
             ],
             'verdicts' => [
                 'ok' => [
