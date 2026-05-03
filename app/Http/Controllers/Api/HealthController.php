@@ -17,6 +17,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\V2\Support\PlatformConformanceSuite;
 use Workflow\V2\Support\PlatformProtocolSpecs;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\StructuralLimits;
@@ -135,6 +136,7 @@ class HealthController
             'client_compatibility' => ClientCompatibility::info(),
             'surface_stability_contract' => SurfaceStabilityContract::manifest(),
             'platform_protocol_specs' => PlatformProtocolSpecs::manifest(),
+            'platform_conformance_suite' => PlatformConformanceSuite::manifest(),
             'auth_composition_contract' => AuthCompositionContract::manifest(),
             'control_plane' => ControlPlaneProtocol::info(),
             'worker_protocol' => WorkerProtocol::info(),

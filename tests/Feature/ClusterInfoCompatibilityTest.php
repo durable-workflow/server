@@ -11,6 +11,7 @@ use App\Support\ServerTopology;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
+use Workflow\V2\Support\PlatformConformanceSuite;
 use Workflow\V2\Support\PlatformProtocolSpecs;
 use Workflow\V2\Support\SurfaceStabilityContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
@@ -142,6 +143,20 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'specs',
                     'release_check',
                 ],
+                'platform_conformance_suite' => [
+                    'schema',
+                    'version',
+                    'authority_doc',
+                    'surface_stability_authority',
+                    'result_schema',
+                    'result_version',
+                    'conformance_levels',
+                    'targets',
+                    'fixture_catalog',
+                    'pass_fail_rules',
+                    'harness_contract',
+                    'release_gates',
+                ],
                 'auth_composition_contract',
                 'control_plane',
                 'worker_protocol',
@@ -174,6 +189,12 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath(
                 'platform_protocol_specs.authority_url',
                 PlatformProtocolSpecs::AUTHORITY_URL,
+            )
+            ->assertJsonPath('platform_conformance_suite.schema', PlatformConformanceSuite::SCHEMA)
+            ->assertJsonPath('platform_conformance_suite.version', PlatformConformanceSuite::VERSION)
+            ->assertJsonPath(
+                'platform_conformance_suite.surface_stability_authority',
+                SurfaceStabilityContract::SCHEMA,
             );
     }
 
@@ -278,6 +299,73 @@ class ClusterInfoCompatibilityTest extends TestCase
                 "platform_protocol_specs entry $name references unknown surface_family {$spec['surface_family']}",
             );
         }
+    }
+
+    public function test_cluster_info_publishes_the_canonical_platform_conformance_suite(): void
+    {
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+
+        $this->assertSame(
+            PlatformConformanceSuite::manifest(),
+            $response->json('platform_conformance_suite'),
+            'cluster info must re-export the workflow package platform-conformance-suite manifest verbatim',
+        );
+
+        $manifest = $response->json('platform_conformance_suite');
+        $this->assertIsArray($manifest);
+
+        $expectedTargets = [
+            'standalone_server',
+            'official_sdk',
+            'worker_protocol_implementation',
+            'cli_json_client',
+            'waterline_contract_surface',
+            'repair_actionability_surface',
+            'mcp_discovery_surface',
+        ];
+        foreach ($expectedTargets as $target) {
+            $this->assertArrayHasKey(
+                $target,
+                $manifest['targets'],
+                "platform_conformance_suite.targets must include $target",
+            );
+        }
+
+        $surfaceFamilies = $response->json('surface_stability_contract.surface_families');
+        $this->assertIsArray($surfaceFamilies);
+        foreach ($manifest['targets'] as $name => $target) {
+            foreach ($target['required_surface_families'] as $family) {
+                $this->assertArrayHasKey(
+                    $family,
+                    $surfaceFamilies,
+                    "platform_conformance_suite target $name references unknown surface_family $family",
+                );
+            }
+            foreach ($target['required_fixture_categories'] as $category) {
+                $this->assertArrayHasKey(
+                    $category,
+                    $manifest['fixture_catalog'],
+                    "platform_conformance_suite target $name references unknown fixture category $category",
+                );
+            }
+        }
+
+        $this->assertContains(
+            PlatformConformanceSuite::CONFORMANCE_LEVEL_NONCONFORMING,
+            $manifest['conformance_levels'],
+            'the conformance level set must include `nonconforming` so the harness exit code is meaningful',
+        );
+
+        $this->assertTrue(
+            $manifest['release_gates']['enforcement']['block_on_nonconforming'],
+            'a nonconforming harness result must block first-party releases',
+        );
+
+        $this->assertArrayHasKey(
+            'durable-workflow/server',
+            $manifest['release_gates']['gates'],
+            'the standalone server must be enumerated in the release gate set',
+        );
     }
 
     public function test_cluster_info_names_protocol_manifests_as_client_compatibility_authority(): void

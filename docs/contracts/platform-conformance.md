@@ -57,9 +57,13 @@ category emits a warning and does not block.
 - Authority manifest class: `Workflow\V2\Support\PlatformConformanceSuite`
 - Surface stability authority: `Workflow\V2\Support\SurfaceStabilityContract`
   re-exported by this server from `GET /api/cluster/info` under
-  `surface_stability_contract`. The conformance suite key
-  (`platform_conformance_suite`) is wired into `cluster_info` in a
-  follow-up once the manifest class lands in a tagged workflow release.
+  `surface_stability_contract`. The conformance suite manifest is
+  re-exported from the same endpoint under `platform_conformance_suite`,
+  carrying the target matrix, fixture catalog, pass / fail rules,
+  harness contract, and release gate set verbatim from
+  `Workflow\V2\Support\PlatformConformanceSuite`. Third-party harnesses
+  that target this server can read the suite manifest live without
+  vendoring the static mirror.
 - Public docs page: <https://durable-workflow.github.io/docs/2.0/compatibility>
 - Existing per-route contract docs: `docs/contracts/external-task-input.md`,
   `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`,
