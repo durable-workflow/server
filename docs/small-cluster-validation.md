@@ -90,7 +90,11 @@ These remain outside the public support boundary:
 - Duplicate scheduler or maintenance runners.
 - Redis-less multi-node mode.
 - Rolling upgrades.
-- Multi-region deployments.
+- Active/active multi-region deployments. Active/passive multi-region with
+  operator-driven regional failover is documented separately in
+  [`docs/multi-region-validation.md`](multi-region-validation.md); it
+  extends the small-cluster contract per region and does not weaken any of
+  these boundaries.
 - Arbitrary process supervisors or orchestrators.
 - Helm charts and provider-specific managed-Kubernetes validation.
 - Strong HA/SLA promises beyond the documented small-cluster failure behavior.

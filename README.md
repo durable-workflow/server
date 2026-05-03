@@ -187,9 +187,9 @@ support boundary, not as a general HA promise. The current supported shape uses
 external MySQL or PostgreSQL plus 2 or 3 API nodes behind a stateless load
 balancer, shared Redis, and independently scaled external workers. The first
 contract requires exactly one scheduler or maintenance runner. SQLite,
-Redis-less multi-node mode, duplicate schedulers, rolling upgrades, multi-region
-deployments, Helm charts, and provider-specific failover semantics are not part
-of that first contract.
+Redis-less multi-node mode, duplicate schedulers, rolling upgrades,
+active/active multi-region, Helm charts, and provider-specific failover
+semantics are not part of that first contract.
 
 The CI harness in `docker-compose.small-cluster.yml` runs the MySQL and
 PostgreSQL variants with two API nodes, one bootstrap job, one scheduler, shared
@@ -197,6 +197,19 @@ Redis, load-balanced health/readiness/cluster-info checks, external worker
 registration, and a workflow-task poll on one API node followed by completion
 on the other. The Phase 0 rationale and harness details live in
 [`docs/small-cluster-validation.md`](docs/small-cluster-validation.md).
+
+### Multi-Region Status
+
+Active/passive multi-region with operator-driven regional failover is a
+self-serve contract. One region runs the validated single-region or
+small-cluster shape, and one standby region holds an asynchronously
+replicated standby database, optional standby Redis, and idle API/worker
+containers. The singleton scheduler/maintenance runner runs in the active
+region only; failover starts it in the promoted region after the database
+is promoted. Active/active multi-region, automatic regional failover, and
+synchronous cross-region replication remain support-led. The contract,
+operator runbook, and rehearsal expectations live in
+[`docs/multi-region-validation.md`](docs/multi-region-validation.md).
 
 ### Docker Compose
 

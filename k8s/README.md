@@ -45,9 +45,14 @@ The included contract is deliberately bounded:
 - `k8s/secret.yaml` separates public config from app-level secrets and refers
   to externally managed database and Redis credentials.
 
-Helm charts, managed-Kubernetes provider validation, advanced HA, multi-region,
-custom operators, storage classes, network policies, and environment-specific
-security hardening are support-led or tracked separately. Use overlays or direct
+Helm charts, managed-Kubernetes provider validation, advanced HA, active/active
+multi-region, custom operators, storage classes, network policies, and
+environment-specific security hardening are support-led or tracked separately.
+Active/passive multi-region with operator-driven regional failover follows the
+contract in [`docs/multi-region-validation.md`](../docs/multi-region-validation.md);
+each region still runs the documented single-region or small-cluster shape, and
+this manifest contract does not add automatic cross-region orchestration. Use
+overlays or direct
 patches for namespace, image, resource, replica, ingress, and secret-manager
 integration choices.
 
