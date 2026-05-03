@@ -221,6 +221,11 @@ Route::middleware([Authenticate::class])->group(function () {
     });
 
     // ── Service Catalog ──────────────────────────────────────────────
+    // Catalog admin (CRUD on endpoints/services/operations) is admin-gated.
+    // The execute-operation and service-call cancel surfaces below are
+    // operator-gated because they are runtime call surfaces, not registry
+    // mutations — the same role that drives ordinary workflow signals and
+    // queries should be able to dispatch service operations.
     Route::prefix('service-endpoints')->middleware([$admin, $cpv, $httpControl, $ns])->group(function () {
         Route::get('/', [ServiceCatalogController::class, 'endpointIndex']);
         Route::post('/', [ServiceCatalogController::class, 'endpointStore']);
@@ -240,6 +245,21 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::get('/{endpointName}/services/{serviceName}/operations/{operationName}/service-calls/{serviceCallId}', [ServiceCatalogController::class, 'serviceCallShow']);
         Route::put('/{endpointName}/services/{serviceName}/operations/{operationName}', [ServiceCatalogController::class, 'operationUpdate']);
         Route::delete('/{endpointName}/services/{serviceName}/operations/{operationName}', [ServiceCatalogController::class, 'operationDestroy']);
+    });
+
+    // Service-execution surface — runtime call to a registered operation.
+    // The workflowBootstrap gate is included because dispatch may end up
+    // creating a workflow, signal, update, or activity row, and those
+    // surfaces refuse traffic during schema rollout.
+    Route::prefix('service-endpoints')->middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns])->group(function () {
+        Route::post(
+            '/{endpointName}/services/{serviceName}/operations/{operationName}/execute',
+            [ServiceCatalogController::class, 'executeOperation'],
+        );
+        Route::post(
+            '/{endpointName}/services/{serviceName}/operations/{operationName}/service-calls/{serviceCallId}/cancel',
+            [ServiceCatalogController::class, 'serviceCallCancel'],
+        );
     });
 
     // ── System / Operations ─────────────────────────────────────────

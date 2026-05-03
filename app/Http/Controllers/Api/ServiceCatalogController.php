@@ -6,6 +6,7 @@ use App\Support\ControlPlaneProtocol;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
+use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
@@ -25,6 +26,11 @@ class ServiceCatalogController
         'activity_execution',
         'invocable_http',
     ];
+
+    public function __construct(
+        private readonly ServiceControlPlane $serviceControlPlane,
+    ) {
+    }
 
     public function endpointIndex(Request $request): JsonResponse
     {
@@ -591,6 +597,146 @@ class ServiceCatalogController
         }
 
         return ControlPlaneProtocol::json($this->serializeOperation($operation->refresh(), $endpoint, $service));
+    }
+
+    public function executeOperation(
+        Request $request,
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+    ): JsonResponse {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $endpoint = $this->findEndpoint($request, $endpointName);
+
+        if (! $endpoint) {
+            return $this->endpointNotFound($request, $endpointName);
+        }
+
+        $service = $this->findService($request, $endpoint, $serviceName);
+
+        if (! $service) {
+            return $this->serviceNotFound($endpoint, $serviceName);
+        }
+
+        $operation = $this->findOperation($request, $service, $operationName);
+
+        if (! $operation) {
+            return $this->operationNotFound($endpoint, $service, $operationName);
+        }
+
+        $validated = $request->validate([
+            'arguments' => ['nullable'],
+            'payload_codec' => ['nullable', 'string', 'max:191'],
+            'mode_override' => ['nullable', 'string', 'in:'.implode(',', self::OPERATION_MODES)],
+            'wait_for' => ['nullable', 'string', 'in:accepted,completed'],
+            'wait_timeout_seconds' => ['nullable', 'integer', 'min:0', 'max:86400'],
+            'idempotency_key' => ['nullable', 'string', 'max:191'],
+            'caller_namespace' => ['nullable', 'string', 'max:255'],
+            'caller_workflow_instance_id' => ['nullable', 'string', 'max:191'],
+            'caller_workflow_run_id' => ['nullable', 'string', 'max:26'],
+            'target_workflow_instance_id' => ['nullable', 'string', 'max:191'],
+            'connection' => ['nullable', 'string', 'max:191'],
+            'queue' => ['nullable', 'string', 'max:191'],
+            'business_key' => ['nullable', 'string', 'max:191'],
+            'labels' => ['nullable', 'array'],
+            'memo' => ['nullable', 'array'],
+            'search_attributes' => ['nullable', 'array'],
+            'duplicate_start_policy' => [
+                'nullable',
+                'string',
+                'in:reject_duplicate,return_existing_active',
+            ],
+        ]);
+
+        $options = array_filter(
+            [
+                'namespace' => $this->namespace($request),
+                'arguments' => $validated['arguments'] ?? null,
+                'payload_codec' => $validated['payload_codec'] ?? null,
+                'mode_override' => $validated['mode_override'] ?? null,
+                'wait_for' => $validated['wait_for'] ?? null,
+                'wait_timeout_seconds' => $validated['wait_timeout_seconds'] ?? null,
+                'idempotency_key' => $validated['idempotency_key'] ?? null,
+                'caller_namespace' => $validated['caller_namespace'] ?? null,
+                'caller_workflow_instance_id' => $validated['caller_workflow_instance_id'] ?? null,
+                'caller_workflow_run_id' => $validated['caller_workflow_run_id'] ?? null,
+                'target_workflow_instance_id' => $validated['target_workflow_instance_id'] ?? null,
+                'connection' => $validated['connection'] ?? null,
+                'queue' => $validated['queue'] ?? null,
+                'business_key' => $validated['business_key'] ?? null,
+                'labels' => $validated['labels'] ?? null,
+                'memo' => $validated['memo'] ?? null,
+                'search_attributes' => $validated['search_attributes'] ?? null,
+                'duplicate_start_policy' => $validated['duplicate_start_policy'] ?? null,
+            ],
+            static fn (mixed $value): bool => $value !== null,
+        );
+
+        $result = $this->serviceControlPlane->execute(
+            $endpoint->endpoint_name,
+            $service->service_name,
+            $operation->operation_name,
+            $options,
+        );
+
+        $status = ($result['accepted'] ?? false) === true ? 200 : 409;
+
+        return ControlPlaneProtocol::json($result, $status);
+    }
+
+    public function serviceCallCancel(
+        Request $request,
+        string $endpointName,
+        string $serviceName,
+        string $operationName,
+        string $serviceCallId,
+    ): JsonResponse {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $endpoint = $this->findEndpoint($request, $endpointName);
+
+        if (! $endpoint) {
+            return $this->endpointNotFound($request, $endpointName);
+        }
+
+        $service = $this->findService($request, $endpoint, $serviceName);
+
+        if (! $service) {
+            return $this->serviceNotFound($endpoint, $serviceName);
+        }
+
+        $operation = $this->findOperation($request, $service, $operationName);
+
+        if (! $operation) {
+            return $this->operationNotFound($endpoint, $service, $operationName);
+        }
+
+        $serviceCall = $this->findServiceCall($request, $operation, $serviceCallId);
+
+        if (! $serviceCall) {
+            return $this->serviceCallNotFound($endpoint, $service, $operation, $serviceCallId);
+        }
+
+        $validated = $request->validate([
+            'reason' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $result = $this->serviceControlPlane->cancelCall(
+            $serviceCall->id,
+            array_filter([
+                'namespace' => $this->namespace($request),
+                'reason' => $validated['reason'] ?? null,
+            ], static fn (mixed $value): bool => $value !== null),
+        );
+
+        $status = ($result['accepted'] ?? false) === true ? 200 : 409;
+
+        return ControlPlaneProtocol::json($result, $status);
     }
 
     public function serviceCallShow(
