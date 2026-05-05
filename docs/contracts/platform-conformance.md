@@ -69,8 +69,10 @@ category emits a warning and does not block.
   <https://durable-workflow.github.io/docs/2.0/platform-protocol-specs>.
   The catalog links the server-owned OpenAPI documents for the control-plane
   API and worker protocol, the JSON Schema for `cluster_info`, and the MCP
-  discovery/result schemas. Server route docs are explanatory; the catalog is
-  the machine-readable authority for SDKs and validation tooling.
+  discovery/result schemas. It also names the object families each server
+  surface governs and the schema/version authority for those families.
+  Server route docs are explanatory; the catalog is the machine-readable
+  authority for SDKs and validation tooling.
 - Existing per-route contract docs: `docs/contracts/external-task-input.md`,
   `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`,
   `docs/contracts/external-execution-surface.md`,
