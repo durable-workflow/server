@@ -295,6 +295,11 @@ class ClusterInfoCompatibilityTest extends TestCase
             );
         }
 
+        $expectedBreakingChangeReleaseByRule = [
+            'additive_minor_breaking_major' => 'major',
+            'parallel_primitive_only' => 'parallel_primitive_only',
+            'experimental_any_release' => 'experimental_any_release',
+        ];
         $surfaceFamilies = $response->json('surface_stability_contract.surface_families');
         $this->assertIsArray($surfaceFamilies);
         foreach ($specs as $name => $spec) {
@@ -303,6 +308,60 @@ class ClusterInfoCompatibilityTest extends TestCase
                 $surfaceFamilies,
                 "platform_protocol_specs entry $name references unknown surface_family {$spec['surface_family']}",
             );
+            $this->assertArrayHasKey(
+                $spec['evolution_rule'],
+                $expectedBreakingChangeReleaseByRule,
+                "platform_protocol_specs entry $name uses an unknown evolution_rule",
+            );
+            $this->assertSame(
+                $expectedBreakingChangeReleaseByRule[$spec['evolution_rule']],
+                $spec['breaking_change_release'],
+                "platform_protocol_specs entry $name breaking_change_release must match its evolution_rule",
+            );
+            $this->assertIsArray(
+                $spec['object_families'] ?? null,
+                "platform_protocol_specs entry $name must declare object_families",
+            );
+            $this->assertNotSame(
+                [],
+                $spec['object_families'],
+                "platform_protocol_specs entry $name must declare at least one object family",
+            );
+
+            $seenFamilies = [];
+            foreach ($spec['object_families'] as $family) {
+                $this->assertIsArray(
+                    $family,
+                    "platform_protocol_specs entry $name object family must be an object",
+                );
+                foreach (['name', 'owner_repo', 'schema_authority', 'version_authority'] as $field) {
+                    $this->assertArrayHasKey(
+                        $field,
+                        $family,
+                        "platform_protocol_specs entry $name object family must declare $field",
+                    );
+                    $this->assertIsString(
+                        $family[$field],
+                        "platform_protocol_specs entry $name object family $field must be a string",
+                    );
+                    $this->assertNotSame(
+                        '',
+                        $family[$field],
+                        "platform_protocol_specs entry $name object family $field must be non-empty",
+                    );
+                }
+                $this->assertContains(
+                    $family['owner_repo'],
+                    PlatformProtocolSpecs::ownerRepoValues(),
+                    "platform_protocol_specs entry $name object family {$family['name']} owner_repo must be known",
+                );
+                $this->assertNotContains(
+                    $family['name'],
+                    $seenFamilies,
+                    "platform_protocol_specs entry $name object family {$family['name']} must not be duplicated",
+                );
+                $seenFamilies[] = $family['name'];
+            }
         }
     }
 
