@@ -78,9 +78,11 @@ jobs:
       - name: Get latest workflow package version
         id: workflow
         run: |
-          # Fetch latest pre-release tag from workflow repo (2.0.0-alpha.x, 2.0.0-beta.x)
+          # Fetch latest numeric pre-release tag from workflow repo.
+          # Ignore malformed tags like 2.0.0-alpha.<sha>, which sort after
+          # numeric alphas but do not represent the latest published prerelease.
           LATEST_TAG=$(git ls-remote --tags --refs --sort=v:refname https://github.com/durable-workflow/workflow.git \
-            | grep -E 'refs/tags/2\.0\.0-(alpha|beta)\.' \
+            | grep -E 'refs/tags/2\.0\.0-(alpha|beta)\.[0-9]+$' \
             | tail -1 \
             | sed 's/.*refs\/tags\///')
 
