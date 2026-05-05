@@ -2,7 +2,11 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Auth\Principal;
+use App\Http\Middleware\Authenticate;
 use App\Support\ControlPlaneProtocol;
+use App\Support\ServiceCallAdmission;
+use App\Support\ServiceCallBoundary;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
@@ -29,6 +33,7 @@ class ServiceCatalogController
 
     public function __construct(
         private readonly ServiceControlPlane $serviceControlPlane,
+        private readonly ServiceCallBoundary $serviceCallBoundary,
     ) {
     }
 
@@ -675,12 +680,47 @@ class ServiceCatalogController
             static fn (mixed $value): bool => $value !== null,
         );
 
-        $result = $this->serviceControlPlane->execute(
-            $endpoint->endpoint_name,
-            $service->service_name,
-            $operation->operation_name,
-            $options,
+        $admission = $this->serviceCallBoundary->admitFor(
+            principal: $this->principal($request),
+            callerNamespace: $validated['caller_namespace'] ?? $this->namespace($request),
+            operation: $operation,
+            endpointName: $endpoint->endpoint_name,
+            serviceName: $service->service_name,
+            callerWorkflowInstanceId: $validated['caller_workflow_instance_id'] ?? null,
+            callerWorkflowRunId: $validated['caller_workflow_run_id'] ?? null,
+            idempotencyKey: $validated['idempotency_key'] ?? null,
+            operationModeOverride: $validated['mode_override'] ?? null,
+            endpointBoundaryPolicy: $this->arrayValue($endpoint->boundary_policy),
+            serviceBoundaryPolicy: $this->arrayValue($service->boundary_policy),
+            operationBoundaryPolicy: $this->arrayValue($operation->boundary_policy),
+            deadlinePolicy: $this->arrayValueOrNull($operation->deadline_policy),
+            idempotencyPolicy: $this->arrayValueOrNull($operation->idempotency_policy),
+            cancellationPolicy: $this->arrayValueOrNull($operation->cancellation_policy),
+            retryPolicy: $this->arrayValueOrNull($operation->retry_policy),
         );
+
+        if ($admission->rejected()) {
+            return ControlPlaneProtocol::json(
+                $this->serializeAdmissionRejection($admission, $endpoint, $service, $operation),
+                $admission->httpStatus(),
+            );
+        }
+
+        $options['service_call_id'] = $admission->call->id;
+        $options['boundary_policy_outcome'] = $admission->decision->outcome->value;
+
+        try {
+            $result = $this->serviceControlPlane->execute(
+                $endpoint->endpoint_name,
+                $service->service_name,
+                $operation->operation_name,
+                $options,
+            );
+        } finally {
+            if ($admission->request->operationMode->value === 'sync') {
+                $this->serviceCallBoundary->release($admission->request);
+            }
+        }
 
         $status = ($result['accepted'] ?? false) === true ? 200 : 409;
 
@@ -837,6 +877,69 @@ class ServiceCatalogController
     private function namespace(Request $request): string
     {
         return (string) $request->attributes->get('namespace');
+    }
+
+    private function principal(Request $request): Principal
+    {
+        return Authenticate::principal($request)
+            ?? Principal::role('operator', 'none', subject: 'unknown');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function arrayValue(mixed $value): array
+    {
+        return is_array($value) ? $value : [];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function arrayValueOrNull(mixed $value): ?array
+    {
+        return is_array($value) ? $value : null;
+    }
+
+    private function scalarValue(mixed $value): mixed
+    {
+        return $value instanceof \BackedEnum ? $value->value : $value;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function serializeAdmissionRejection(
+        ServiceCallAdmission $admission,
+        WorkflowServiceEndpoint $endpoint,
+        WorkflowService $service,
+        WorkflowServiceOperation $operation,
+    ): array {
+        return [
+            'accepted' => false,
+            'service_call_id' => $admission->call->id,
+            'namespace' => $admission->call->namespace,
+            'endpoint_id' => $endpoint->id,
+            'endpoint_name' => $endpoint->endpoint_name,
+            'service_id' => $service->id,
+            'service_name' => $service->service_name,
+            'operation_id' => $operation->id,
+            'operation_name' => $operation->operation_name,
+            'operation_mode' => $admission->call->operation_mode,
+            'status' => $admission->call->status,
+            'outcome' => $admission->decision->outcome->value,
+            'outcome_category' => $admission->call->outcome_category,
+            'reason' => $admission->decision->reason,
+            'message' => $admission->decision->message,
+            'retry_after_seconds' => $admission->decision->retryAfterSeconds,
+            'policy_name' => $admission->decision->policyName,
+            'outcome_metadata' => $admission->decision->metadata,
+            'caller_namespace' => $admission->call->caller_namespace,
+            'caller_principal_subject' => $admission->call->caller_principal_subject,
+            'linked_workflow_instance_id' => null,
+            'linked_workflow_run_id' => null,
+            'linked_workflow_update_id' => null,
+        ];
     }
 
     /**
@@ -1122,9 +1225,21 @@ class ServiceCatalogController
             'linked_workflow_run_id' => $serviceCall->linked_workflow_run_id,
             'linked_workflow_update_id' => $serviceCall->linked_workflow_update_id,
             'status' => $serviceCall->status,
+            'outcome' => $this->scalarValue($serviceCall->outcome),
+            'outcome_category' => $serviceCall->outcome_category,
+            'outcome_reason' => $serviceCall->outcome_reason,
+            'outcome_message' => $serviceCall->outcome_message,
+            'outcome_metadata' => $serviceCall->outcome_metadata,
+            'policy_name' => $serviceCall->policy_name,
+            'retry_after_seconds' => $serviceCall->retry_after_seconds,
             'operation_mode' => $serviceCall->operation_mode,
             'resolved_binding_kind' => $serviceCall->resolved_binding_kind,
             'resolved_target_reference' => $serviceCall->resolved_target_reference,
+            'caller_principal_subject' => $serviceCall->caller_principal_subject,
+            'caller_principal_method' => $serviceCall->caller_principal_method,
+            'caller_principal_roles' => $serviceCall->caller_principal_roles,
+            'caller_principal_tenant' => $serviceCall->caller_principal_tenant,
+            'caller_principal_claims' => $serviceCall->caller_principal_claims,
             'payload_codec' => $serviceCall->payload_codec,
             'input_payload_reference' => $serviceCall->input_payload_reference,
             'output_payload_reference' => $serviceCall->output_payload_reference,

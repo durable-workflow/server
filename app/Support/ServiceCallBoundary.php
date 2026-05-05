@@ -24,10 +24,7 @@ use Workflow\V2\Support\ServiceCallPrincipal;
  *
  * The audit row is written for both accepted and rejected admissions.
  * Operators querying for a caller's recent activity see the same row
- * shape regardless of outcome — only `outcome`, `outcome_reason`, and
- * `outcome_metadata` differ. This is the contract `#605` calls out as
- * "audit data is stored and exposed consistently for accepted and
- * rejected calls".
+ * shape regardless of outcome; only the durable outcome fields differ.
  *
  * Concurrency tracking uses the policy's in-process counter; the
  * default implementation `release()`s the counter when a handler
@@ -75,6 +72,14 @@ final class ServiceCallBoundary
         ?string $linkedWorkflowRunId = null,
         ?string $linkedWorkflowUpdateId = null,
         ?string $idempotencyKey = null,
+        ?string $operationModeOverride = null,
+        array $endpointBoundaryPolicy = [],
+        array $serviceBoundaryPolicy = [],
+        array $operationBoundaryPolicy = [],
+        ?array $deadlinePolicy = null,
+        ?array $idempotencyPolicy = null,
+        ?array $cancellationPolicy = null,
+        ?array $retryPolicy = null,
     ): ServiceCallAdmission {
         $request = new ServiceBoundaryRequest(
             principal: self::principalFromAuth($principal),
@@ -83,7 +88,8 @@ final class ServiceCallBoundary
             endpointName: $endpointName,
             serviceName: $serviceName,
             operationName: (string) $operation->operation_name,
-            operationMode: ServiceCallOperationMode::tryFromCatalog($operation->operation_mode)
+            operationMode: ServiceCallOperationMode::tryFromCatalog($operationModeOverride)
+                ?? ServiceCallOperationMode::tryFromCatalog($operation->operation_mode)
                 ?? ServiceCallOperationMode::Async,
             resolvedBindingKind: (string) $operation->handler_binding_kind,
             resolvedTargetReference: $operation->handler_target_reference,
@@ -93,6 +99,13 @@ final class ServiceCallBoundary
             linkedWorkflowRunId: $linkedWorkflowRunId,
             linkedWorkflowUpdateId: $linkedWorkflowUpdateId,
             idempotencyKey: $idempotencyKey,
+            endpointBoundaryPolicy: $endpointBoundaryPolicy,
+            serviceBoundaryPolicy: $serviceBoundaryPolicy,
+            operationBoundaryPolicy: $operationBoundaryPolicy,
+            deadlinePolicy: $deadlinePolicy,
+            idempotencyPolicy: $idempotencyPolicy,
+            cancellationPolicy: $cancellationPolicy,
+            retryPolicy: $retryPolicy,
         );
 
         return $this->admit($request);
@@ -121,4 +134,3 @@ final class ServiceCallBoundary
         );
     }
 }
-

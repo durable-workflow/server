@@ -51,8 +51,8 @@ class ServiceCallBoundaryTest extends TestCase
         );
 
         $this->assertTrue($admission->accepted());
-        $this->assertSame(ServiceCallOutcome::Allowed, $admission->decision->outcome);
-        $this->assertSame('admitted', $admission->call->status);
+        $this->assertSame(ServiceCallOutcome::Accepted, $admission->decision->outcome);
+        $this->assertSame('accepted', $admission->call->status);
         $this->assertSame('analytics', $admission->call->caller_namespace);
         $this->assertSame('finance', $admission->call->target_namespace);
         $this->assertSame('worker', $admission->call->caller_principal_roles[0]);
@@ -61,7 +61,7 @@ class ServiceCallBoundaryTest extends TestCase
 
         $this->assertDatabaseHas('workflow_service_calls', [
             'id' => $admission->call->id,
-            'outcome' => 'allowed',
+            'outcome' => 'accepted',
             'outcome_category' => 'accepted',
             'caller_principal_subject' => 'role:worker',
         ]);
@@ -85,16 +85,16 @@ class ServiceCallBoundaryTest extends TestCase
         );
 
         $this->assertTrue($admission->rejected());
-        $this->assertSame(ServiceCallOutcome::DeniedNamespacePolicy, $admission->decision->outcome);
+        $this->assertSame(ServiceCallOutcome::RejectedForbidden, $admission->decision->outcome);
         $this->assertSame(403, $admission->httpStatus());
-        $this->assertSame('rejected', $admission->call->status);
+        $this->assertSame('failed', $admission->call->status);
         $this->assertSame('caller_namespace_denied', $admission->call->outcome_reason);
         $this->assertNotNull($admission->call->failed_at);
         $this->assertNull($admission->call->accepted_at);
 
         $this->assertDatabaseHas('workflow_service_calls', [
             'id' => $admission->call->id,
-            'outcome' => 'denied_namespace_policy',
+            'outcome' => 'rejected_forbidden',
             'outcome_category' => 'rejected',
             'caller_namespace' => 'untrusted',
         ]);
@@ -114,7 +114,7 @@ class ServiceCallBoundaryTest extends TestCase
 
         $this->assertTrue($first->accepted());
         $this->assertTrue($second->rejected());
-        $this->assertSame(ServiceCallOutcome::DeniedRateLimit, $second->decision->outcome);
+        $this->assertSame(ServiceCallOutcome::RejectedThrottled, $second->decision->outcome);
         $this->assertSame(429, $second->httpStatus());
         $this->assertSame(5, $second->call->retry_after_seconds);
         $this->assertSame(1, $second->call->outcome_metadata['requests_per_minute']);
@@ -134,7 +134,7 @@ class ServiceCallBoundaryTest extends TestCase
 
         $this->assertTrue($first->accepted());
         $this->assertTrue($second->rejected());
-        $this->assertSame(ServiceCallOutcome::DeniedConcurrency, $second->decision->outcome);
+        $this->assertSame(ServiceCallOutcome::RejectedConcurrencyLimited, $second->decision->outcome);
         $this->assertSame(429, $second->httpStatus());
         $this->assertSame(2, $second->call->retry_after_seconds);
 

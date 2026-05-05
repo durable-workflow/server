@@ -45,10 +45,10 @@ final class ServiceCallAdmission
         }
 
         return match ($this->decision->outcome->value) {
-            'denied_authorization' => 403,
-            'denied_namespace_policy' => 403,
-            'denied_unknown_target' => 404,
-            'denied_rate_limit', 'denied_concurrency', 'denied_circuit_open' => 429,
+            'rejected_forbidden' => 403,
+            'rejected_not_found' => 404,
+            'rejected_throttled', 'rejected_concurrency_limited' => 429,
+            'rejected_circuit_open' => 503,
             default => 409,
         };
     }

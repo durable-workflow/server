@@ -131,6 +131,65 @@ class ServiceExecutionRoutesTest extends TestCase
         $this->assertSame('codec:json:WyJUYXlsb3IiXQ==', $stub->captured['options']['arguments']);
         $this->assertSame('async', $stub->captured['options']['mode_override']);
         $this->assertSame('idem-1', $stub->captured['options']['idempotency_key']);
+        $this->assertArrayHasKey('service_call_id', $stub->captured['options']);
+    }
+
+    public function test_execute_rejects_boundary_policy_before_control_plane_dispatch(): void
+    {
+        [, , $operation] = $this->seedCatalog();
+        $operation->update([
+            'boundary_policy' => [
+                'authorization' => [
+                    'caller_namespaces' => ['deny' => ['analytics']],
+                ],
+            ],
+        ]);
+
+        $stub = new class implements ServiceControlPlane
+        {
+            public bool $executed = false;
+
+            public function execute(string $endpointName, string $serviceName, string $operationName, array $options = []): array
+            {
+                $this->executed = true;
+
+                return ['accepted' => true];
+            }
+
+            public function describeCall(string $serviceCallId, array $options = []): array
+            {
+                return ['found' => false, 'service_call_id' => $serviceCallId];
+            }
+
+            public function cancelCall(string $serviceCallId, array $options = []): array
+            {
+                return ['accepted' => false, 'service_call_id' => $serviceCallId];
+            }
+        };
+
+        $this->app->instance(ServiceControlPlane::class, $stub);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services/invoicing/operations/createinvoice/execute', [
+                'caller_namespace' => 'analytics',
+            ]);
+
+        $response->assertStatus(403)
+            ->assertJsonPath('accepted', false)
+            ->assertJsonPath('outcome', 'rejected_forbidden')
+            ->assertJsonPath('reason', 'caller_namespace_denied')
+            ->assertJsonPath('caller_namespace', 'analytics');
+
+        $this->assertFalse($stub->executed);
+        $this->assertDatabaseHas('workflow_service_calls', [
+            'namespace' => 'default',
+            'caller_namespace' => 'analytics',
+            'endpoint_name' => 'billing',
+            'service_name' => 'invoicing',
+            'operation_name' => 'createinvoice',
+            'status' => 'failed',
+            'outcome' => 'rejected_forbidden',
+        ]);
     }
 
     public function test_cancel_route_routes_through_service_control_plane(): void
