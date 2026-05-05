@@ -115,6 +115,7 @@ class ServiceExecutionRoutesTest extends TestCase
                 'arguments' => 'codec:json:WyJUYXlsb3IiXQ==',
                 'mode_override' => 'async',
                 'idempotency_key' => 'idem-1',
+                'target_workflow_run_id' => 'run-target-1',
             ]);
 
         $response->assertOk()
@@ -131,6 +132,7 @@ class ServiceExecutionRoutesTest extends TestCase
         $this->assertSame('codec:json:WyJUYXlsb3IiXQ==', $stub->captured['options']['arguments']);
         $this->assertSame('async', $stub->captured['options']['mode_override']);
         $this->assertSame('idem-1', $stub->captured['options']['idempotency_key']);
+        $this->assertSame('run-target-1', $stub->captured['options']['target_workflow_run_id']);
         $this->assertArrayHasKey('service_call_id', $stub->captured['options']);
     }
 
