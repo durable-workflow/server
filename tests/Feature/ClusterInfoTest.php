@@ -655,6 +655,29 @@ class ClusterInfoTest extends TestCase
             );
     }
 
+    public function test_it_publishes_service_execution_contract_manifest(): void
+    {
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('capabilities.service_catalog', true)
+            ->assertJsonPath('capabilities.service_execution', true)
+            ->assertJsonPath(
+                'service_execution_contract.schema',
+                'durable-workflow.v2.service-execution.contract',
+            )
+            ->assertJsonPath('service_execution_contract.version', 1)
+            ->assertJsonPath('service_execution_contract.handler_binding_kinds.0', 'start_workflow')
+            ->assertJsonPath('service_execution_contract.handler_binding_kinds.5', 'invocable_http')
+            ->assertJsonPath(
+                'service_execution_contract.durable_response_fields.0',
+                'service_call_id',
+            )
+            ->assertJsonPath(
+                'control_plane.request_contract.operations.service_execute.durable_response_fields.0',
+                'service_call_id',
+            );
+    }
+
     public function test_it_publishes_external_executor_config_contract_when_no_config_is_set(): void
     {
         $this->getJson('/api/cluster/info')

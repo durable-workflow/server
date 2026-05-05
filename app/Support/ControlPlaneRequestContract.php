@@ -87,6 +87,42 @@ final class ControlPlaneRequestContract
                         'wait_policy' => 'Use wait_for.',
                     ],
                 ],
+                'service_execute' => [
+                    'addressing' => 'service endpoint, service, and operation path segments resolve the handler binding',
+                    'fields' => [
+                        'mode_override' => [
+                            'canonical_values' => ['sync', 'async'],
+                        ],
+                        'wait_for' => [
+                            'canonical_values' => ['accepted', 'completed'],
+                        ],
+                        'target_workflow_instance_id' => [
+                            'type' => 'string',
+                            'required' => false,
+                            'description' => 'Workflow target for signal, update, query, activity, or carrier-backed operations when not fixed by the operation binding.',
+                        ],
+                        'target_workflow_run_id' => [
+                            'type' => 'string',
+                            'required' => false,
+                            'description' => 'Run target for activity or carrier-backed operations when not fixed by the operation binding.',
+                        ],
+                        'idempotency_key' => [
+                            'type' => 'string',
+                            'required' => false,
+                            'description' => 'Caller retry key that reuses the durable service-call id for the same resolved operation.',
+                        ],
+                    ],
+                    'durable_response_fields' => [
+                        'service_call_id',
+                        'status',
+                        'outcome',
+                        'resolved_binding_kind',
+                        'resolved_target_reference',
+                        'linked_workflow_instance_id',
+                        'linked_workflow_run_id',
+                        'linked_workflow_update_id',
+                    ],
+                ],
             ],
         ];
     }

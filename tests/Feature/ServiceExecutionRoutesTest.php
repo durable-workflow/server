@@ -266,6 +266,83 @@ class ServiceExecutionRoutesTest extends TestCase
         $this->assertSame('caller-abandoned', $stub->captured['options']['reason']);
     }
 
+    public function test_service_call_show_routes_through_service_control_plane_describe(): void
+    {
+        [, , $operation] = $this->seedCatalog();
+
+        $serviceCall = WorkflowServiceCall::query()->create([
+            'workflow_service_endpoint_id' => $operation->workflow_service_endpoint_id,
+            'workflow_service_id' => $operation->workflow_service_id,
+            'workflow_service_operation_id' => $operation->id,
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+            'service_name' => 'invoicing',
+            'operation_name' => 'createinvoice',
+            'status' => 'started',
+            'operation_mode' => 'async',
+            'resolved_binding_kind' => 'start_workflow',
+            'resolved_target_reference' => '01JSVCCALLRUN00000000004',
+            'linked_workflow_instance_id' => 'invoice-4',
+            'linked_workflow_run_id' => '01JSVCCALLRUN00000000004',
+        ]);
+
+        $stub = new class implements ServiceControlPlane
+        {
+            public ?array $captured = null;
+
+            public function execute(string $endpointName, string $serviceName, string $operationName, array $options = []): array
+            {
+                return [];
+            }
+
+            public function describeCall(string $serviceCallId, array $options = []): array
+            {
+                $this->captured = [
+                    'service_call_id' => $serviceCallId,
+                    'options' => $options,
+                ];
+
+                return [
+                    'found' => true,
+                    'service_call_id' => $serviceCallId,
+                    'namespace' => $options['namespace'] ?? null,
+                    'status' => 'started',
+                    'outcome' => 'accepted',
+                    'linked_workflow_instance_id' => 'invoice-4',
+                    'linked_workflow_run_id' => '01JSVCCALLRUN00000000004',
+                    'linked_workflow_update_id' => null,
+                    'resolved_binding_kind' => 'start_workflow',
+                    'resolved_target_reference' => '01JSVCCALLRUN00000000004',
+                    'reason' => null,
+                ];
+            }
+
+            public function cancelCall(string $serviceCallId, array $options = []): array
+            {
+                return [];
+            }
+        };
+
+        $this->app->instance(ServiceControlPlane::class, $stub);
+
+        $url = sprintf(
+            '/api/service-endpoints/billing/services/invoicing/operations/createinvoice/service-calls/%s',
+            $serviceCall->id,
+        );
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->getJson($url);
+
+        $response->assertOk()
+            ->assertJsonPath('found', true)
+            ->assertJsonPath('service_call_id', $serviceCall->id)
+            ->assertJsonPath('linked_workflow_instance_id', 'invoice-4');
+
+        $this->assertNotNull($stub->captured);
+        $this->assertSame($serviceCall->id, $stub->captured['service_call_id']);
+        $this->assertSame('default', $stub->captured['options']['namespace']);
+    }
+
     /**
      * @return array{0: WorkflowServiceEndpoint, 1: WorkflowService, 2: WorkflowServiceOperation}
      */

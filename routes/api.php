@@ -227,7 +227,7 @@ Route::middleware([Authenticate::class])->group(function () {
 
     // ── Service Catalog ──────────────────────────────────────────────
     // Catalog admin (CRUD on endpoints/services/operations) is admin-gated.
-    // The execute-operation and service-call cancel surfaces below are
+    // The execute-operation and service-call describe/cancel surfaces below are
     // operator-gated because they are runtime call surfaces, not registry
     // mutations — the same role that drives ordinary workflow signals and
     // queries should be able to dispatch service operations.
@@ -247,9 +247,17 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::get('/{endpointName}/services/{serviceName}/operations', [ServiceCatalogController::class, 'operationIndex']);
         Route::post('/{endpointName}/services/{serviceName}/operations', [ServiceCatalogController::class, 'operationStore']);
         Route::get('/{endpointName}/services/{serviceName}/operations/{operationName}', [ServiceCatalogController::class, 'operationShow']);
-        Route::get('/{endpointName}/services/{serviceName}/operations/{operationName}/service-calls/{serviceCallId}', [ServiceCatalogController::class, 'serviceCallShow']);
         Route::put('/{endpointName}/services/{serviceName}/operations/{operationName}', [ServiceCatalogController::class, 'operationUpdate']);
         Route::delete('/{endpointName}/services/{serviceName}/operations/{operationName}', [ServiceCatalogController::class, 'operationDestroy']);
+    });
+
+    // Service-call read surface stays available during rollout/schema drift
+    // for observability of already-recorded durable calls.
+    Route::prefix('service-endpoints')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
+        Route::get(
+            '/{endpointName}/services/{serviceName}/operations/{operationName}/service-calls/{serviceCallId}',
+            [ServiceCatalogController::class, 'serviceCallShow'],
+        );
     });
 
     // Service-execution surface — runtime call to a registered operation.

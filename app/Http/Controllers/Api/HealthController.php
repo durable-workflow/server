@@ -73,7 +73,9 @@ class HealthController
         $namespace = (string) ($request->attributes->get('namespace') ?: config('server.default_namespace'));
         $embeddedV2Importer = 'Workflow\\V2\\Support\\EmbeddedV2HistoryImport';
         $embeddedV2ImportContract = 'Workflow\\V2\\Support\\EmbeddedV2ImportContract';
+        $serviceExecutionContract = 'Workflow\\V2\\Support\\ServiceExecutionContract';
         $embeddedV2ImportAvailable = class_exists($embeddedV2Importer);
+        $serviceExecutionAvailable = class_exists($serviceExecutionContract);
 
         $capabilities = [
             'workflow_tasks' => true,
@@ -100,6 +102,8 @@ class HealthController
             'bridge_adapter_outcome_contract' => true,
             'external_executor_config_contract' => true,
             'invocable_carrier_contract' => true,
+            'service_catalog' => true,
+            'service_execution' => $serviceExecutionAvailable,
             'replay_verification_contract' => true,
             'embedded_v2_import' => $embeddedV2ImportAvailable,
             'payload_codecs' => CodecRegistry::universal(),
@@ -150,6 +154,10 @@ class HealthController
 
         if (class_exists($embeddedV2ImportContract)) {
             $response['embedded_v2_import_contract'] = $embeddedV2ImportContract::manifest();
+        }
+
+        if ($serviceExecutionAvailable) {
+            $response['service_execution_contract'] = $serviceExecutionContract::manifest();
         }
 
         if ($this->shouldExposePackageProvenance($request)) {

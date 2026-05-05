@@ -643,6 +643,7 @@ class ServiceCatalogController
             'caller_workflow_instance_id' => ['nullable', 'string', 'max:191'],
             'caller_workflow_run_id' => ['nullable', 'string', 'max:26'],
             'target_workflow_instance_id' => ['nullable', 'string', 'max:191'],
+            'target_workflow_run_id' => ['nullable', 'string', 'max:26'],
             'connection' => ['nullable', 'string', 'max:191'],
             'queue' => ['nullable', 'string', 'max:191'],
             'business_key' => ['nullable', 'string', 'max:191'],
@@ -669,6 +670,7 @@ class ServiceCatalogController
                 'caller_workflow_instance_id' => $validated['caller_workflow_instance_id'] ?? null,
                 'caller_workflow_run_id' => $validated['caller_workflow_run_id'] ?? null,
                 'target_workflow_instance_id' => $validated['target_workflow_instance_id'] ?? null,
+                'target_workflow_run_id' => $validated['target_workflow_run_id'] ?? null,
                 'connection' => $validated['connection'] ?? null,
                 'queue' => $validated['queue'] ?? null,
                 'business_key' => $validated['business_key'] ?? null,
@@ -814,7 +816,17 @@ class ServiceCatalogController
             return $this->serviceCallNotFound($endpoint, $service, $operation, $serviceCallId);
         }
 
-        return ControlPlaneProtocol::json($this->serializeServiceCall($serviceCall, $endpoint, $service, $operation));
+        $result = $this->serviceControlPlane->describeCall($serviceCall->id, [
+            'namespace' => $this->namespace($request),
+        ]);
+
+        return ControlPlaneProtocol::json(
+            array_replace(
+                $this->serializeServiceCall($serviceCall, $endpoint, $service, $operation),
+                $result,
+            ),
+            ($result['found'] ?? false) === false ? 404 : 200,
+        );
     }
 
     public function operationDestroy(
