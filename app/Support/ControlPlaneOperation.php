@@ -25,6 +25,10 @@ final class ControlPlaneOperation
             return new self('start', null, null);
         }
 
+        if ($request->isMethod('POST') && $path === '/api/workflows/import/embedded-v2') {
+            return new self('import_embedded_v2', null, null);
+        }
+
         if ($request->isMethod('GET') && preg_match('#^/api/workflows/([^/]+)/runs/([^/]+)$#', $path, $matches) === 1) {
             return new self(
                 'describe_run',

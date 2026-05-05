@@ -71,6 +71,9 @@ class HealthController
     public function clusterInfo(Request $request): JsonResponse
     {
         $namespace = (string) ($request->attributes->get('namespace') ?: config('server.default_namespace'));
+        $embeddedV2Importer = 'Workflow\\V2\\Support\\EmbeddedV2HistoryImport';
+        $embeddedV2ImportContract = 'Workflow\\V2\\Support\\EmbeddedV2ImportContract';
+        $embeddedV2ImportAvailable = class_exists($embeddedV2Importer);
 
         $capabilities = [
             'workflow_tasks' => true,
@@ -98,6 +101,7 @@ class HealthController
             'external_executor_config_contract' => true,
             'invocable_carrier_contract' => true,
             'replay_verification_contract' => true,
+            'embedded_v2_import' => $embeddedV2ImportAvailable,
             'payload_codecs' => CodecRegistry::universal(),
             'response_compression' => (bool) config('server.compression.enabled', true)
                 ? ['gzip', 'deflate']
@@ -143,6 +147,10 @@ class HealthController
             'bridge_adapter_outcome_contract' => BridgeAdapterOutcomeContract::manifest(),
             'replay_verification_contract' => ReplayVerificationContract::manifest(),
         ];
+
+        if (class_exists($embeddedV2ImportContract)) {
+            $response['embedded_v2_import_contract'] = $embeddedV2ImportContract::manifest();
+        }
 
         if ($this->shouldExposePackageProvenance($request)) {
             $provenance = $this->packageProvenance();

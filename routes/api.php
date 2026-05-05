@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\ActivityTaskController;
 use App\Http\Controllers\Api\BridgeAdapterController;
 use App\Http\Controllers\Api\DeploymentController;
+use App\Http\Controllers\Api\EmbeddedV2ImportController;
 use App\Http\Controllers\Api\HealthController;
 use App\Http\Controllers\Api\HistoryController;
 use App\Http\Controllers\Api\NamespaceController;
@@ -91,6 +92,10 @@ Route::middleware([Authenticate::class])->group(function () {
     });
 
     // ── Workflows ────────────────────────────────────────────────────
+    Route::prefix('workflows')->middleware([$admin, $cpv, $httpControl, $workflowBootstrap, $ns])->group(function () {
+        Route::post('/import/embedded-v2', [EmbeddedV2ImportController::class, 'store']);
+    });
+
     Route::prefix('workflows')->middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns])->group(function () {
         Route::get('/', [WorkflowController::class, 'index']);
         Route::post('/', [WorkflowController::class, 'start']);
