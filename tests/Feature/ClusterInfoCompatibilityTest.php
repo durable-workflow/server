@@ -288,6 +288,11 @@ class ClusterInfoCompatibilityTest extends TestCase
                 PlatformProtocolSpecs::statusValues(),
                 "$expectedSpec status must be one of " . implode(', ', PlatformProtocolSpecs::statusValues()),
             );
+            $this->assertSame(
+                PlatformProtocolSpecs::STATUS_PUBLISHED,
+                $specs[$expectedSpec]['status'],
+                "$expectedSpec must remain published in cluster_info because issue #690 requires every public machine-facing surface to have a normative spec",
+            );
         }
 
         $surfaceFamilies = $response->json('surface_stability_contract.surface_families');
