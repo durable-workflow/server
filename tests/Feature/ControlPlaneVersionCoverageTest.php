@@ -9,10 +9,10 @@ use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 /**
- * Pins coverage for #301 — every non-health API controller must reject
- * requests that arrive without the control-plane version header or with
- * an unsupported version. Previously, 6 controllers silently accepted
- * any/no version header; this test guards against regression.
+ * Pins coverage for the control-plane version contract: every non-health API
+ * controller must reject requests that arrive without the control-plane version
+ * header or with an unsupported version. Previously, 6 controllers silently
+ * accepted any/no version header; this test guards against regression.
  */
 class ControlPlaneVersionCoverageTest extends TestCase
 {
@@ -58,6 +58,8 @@ class ControlPlaneVersionCoverageTest extends TestCase
             'workflows.update_run' => ['method' => 'post', 'path' => '/api/workflows/wf-any/runs/run-any/update/approve'],
             'workflows.cancel_run' => ['method' => 'post', 'path' => '/api/workflows/wf-any/runs/run-any/cancel'],
             'workflows.terminate_run' => ['method' => 'post', 'path' => '/api/workflows/wf-any/runs/run-any/terminate'],
+            'workflows.repair_run' => ['method' => 'post', 'path' => '/api/workflows/wf-any/runs/run-any/repair'],
+            'workflows.archive_run' => ['method' => 'post', 'path' => '/api/workflows/wf-any/runs/run-any/archive'],
             'history.show' => ['method' => 'get', 'path' => '/api/workflows/wf-any/runs/run-any/history'],
             'history.export' => ['method' => 'get', 'path' => '/api/workflows/wf-any/runs/run-any/history/export'],
 

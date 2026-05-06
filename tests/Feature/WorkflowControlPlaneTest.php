@@ -1313,6 +1313,75 @@ class WorkflowControlPlaneTest extends TestCase
             ->assertJsonPath('control_plane.operation_name', 'advance');
     }
 
+    public function test_run_targeted_repair_on_current_run_succeeds(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-run-target-repair',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $repair = $this->withHeaders($this->apiHeaders())
+            ->postJson("/api/workflows/wf-run-target-repair/runs/{$runId}/repair", [
+                'request_id' => 'run-target-repair-1',
+            ]);
+
+        $repair->assertOk()
+            ->assertJsonPath('workflow_id', 'wf-run-target-repair')
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('control_plane.operation', 'repair');
+    }
+
+    public function test_run_targeted_archive_on_current_run_succeeds(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-run-target-archive',
+                'workflow_type' => 'tests.await-approval-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-run-target-archive/cancel', [
+                'reason' => 'prepare run-targeted archive',
+            ])
+            ->assertOk();
+
+        $archive = $this->withHeaders($this->apiHeaders())
+            ->postJson("/api/workflows/wf-run-target-archive/runs/{$runId}/archive", [
+                'reason' => 'run-targeted archive',
+                'request_id' => 'run-target-archive-1',
+            ]);
+
+        $archive->assertOk()
+            ->assertJsonPath('workflow_id', 'wf-run-target-archive')
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('outcome', 'archived')
+            ->assertJsonPath('control_plane.operation', 'archive');
+    }
+
     public function test_run_targeted_commands_reject_historical_runs(): void
     {
         Queue::fake();
@@ -1366,6 +1435,24 @@ class WorkflowControlPlaneTest extends TestCase
         $terminate->assertStatus(409)
             ->assertJsonPath('reason', 'historical_run_command_rejected')
             ->assertJsonPath('control_plane.operation', 'terminate');
+
+        // Repair against a non-current run should be rejected
+        $repair = $this->withHeaders($this->apiHeaders())
+            ->postJson("/api/workflows/wf-run-target-reject/runs/{$fakeHistoricalRunId}/repair");
+
+        $repair->assertStatus(409)
+            ->assertJsonPath('reason', 'historical_run_command_rejected')
+            ->assertJsonPath('control_plane.operation', 'repair');
+
+        // Archive against a non-current run should be rejected
+        $archive = $this->withHeaders($this->apiHeaders())
+            ->postJson("/api/workflows/wf-run-target-reject/runs/{$fakeHistoricalRunId}/archive", [
+                'reason' => 'test archive',
+            ]);
+
+        $archive->assertStatus(409)
+            ->assertJsonPath('reason', 'historical_run_command_rejected')
+            ->assertJsonPath('control_plane.operation', 'archive');
     }
 
     public function test_run_targeted_commands_reject_unknown_workflows(): void

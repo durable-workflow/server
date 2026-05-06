@@ -111,13 +111,13 @@ final class ControlPlaneResultMapper
     /**
      * @param  array<string, mixed>  $result
      */
-    public function repair(string $workflowId, array $result): JsonResponse
+    public function repair(string $workflowId, array $result, ?string $runId = null): JsonResponse
     {
         return $this->commandResponse(
             operation: 'repair',
             operationName: null,
             workflowId: $workflowId,
-            runId: null,
+            runId: $runId,
             result: $result,
             defaultStatus: 200,
             fallbackFields: [],
@@ -128,13 +128,13 @@ final class ControlPlaneResultMapper
     /**
      * @param  array<string, mixed>  $result
      */
-    public function archive(string $workflowId, array $result): JsonResponse
+    public function archive(string $workflowId, array $result, ?string $runId = null): JsonResponse
     {
         return $this->commandResponse(
             operation: 'archive',
             operationName: null,
             workflowId: $workflowId,
-            runId: null,
+            runId: $runId,
             result: $result,
             defaultStatus: 200,
             fallbackFields: [],

@@ -116,6 +116,8 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::post('/{workflowId}/runs/{runId}/update/{updateName}', [WorkflowController::class, 'updateRun']);
         Route::post('/{workflowId}/runs/{runId}/cancel', [WorkflowController::class, 'cancelRun']);
         Route::post('/{workflowId}/runs/{runId}/terminate', [WorkflowController::class, 'terminateRun']);
+        Route::post('/{workflowId}/runs/{runId}/repair', [WorkflowController::class, 'repairRun']);
+        Route::post('/{workflowId}/runs/{runId}/archive', [WorkflowController::class, 'archiveRun']);
     });
 
     Route::prefix('workflows')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {

@@ -121,6 +121,18 @@ class ControlPlaneErrorContractTest extends TestCase
                 'body' => [],
                 'reason' => 'instance_not_found',
             ],
+            'workflows.run_repair_missing' => [
+                'method' => 'post',
+                'path' => '/api/workflows/ghost-workflow/runs/run-missing/repair',
+                'body' => [],
+                'reason' => 'instance_not_found',
+            ],
+            'workflows.run_archive_missing' => [
+                'method' => 'post',
+                'path' => '/api/workflows/ghost-workflow/runs/run-missing/archive',
+                'body' => [],
+                'reason' => 'instance_not_found',
+            ],
             'namespaces.show_missing' => [
                 'method' => 'get',
                 'path' => '/api/namespaces/ghost',

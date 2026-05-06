@@ -558,6 +558,15 @@ cannot delete yet.
 - `POST /api/workflows/{id}/update/{name}` — Execute an update
 - `POST /api/workflows/{id}/cancel` — Request cancellation
 - `POST /api/workflows/{id}/terminate` — Terminate immediately
+- `POST /api/workflows/{id}/repair` — Request repair for retryable stuck state
+- `POST /api/workflows/{id}/archive` — Archive a closed workflow run
+
+Instance-targeted signal, query, update, cancel, terminate, repair, and archive
+routes operate on the current run for the workflow id. Run-targeted command
+variants under `/api/workflows/{id}/runs/{runId}/...` are available for
+signal, query, update, cancel, terminate, repair, and archive; they only forward
+when `{runId}` is the current run and reject historical-run commands with `409`
+and `reason: "historical_run_command_rejected"`.
 
 Workflow starts fail closed with `409` / `reason: "task_queue_draining"`
 when the requested task queue has been explicitly drained and no active worker

@@ -706,7 +706,11 @@ class WorkflowController
             ],
         );
 
-        return $this->resultMapper->repair($workflowId, $result);
+        return $this->resultMapper->repair(
+            $workflowId,
+            $result,
+            $this->controlPlaneRunId($request),
+        );
     }
 
     public function archive(Request $request, string $workflowId): JsonResponse
@@ -746,7 +750,11 @@ class WorkflowController
             ],
         );
 
-        return $this->resultMapper->archive($workflowId, $result);
+        return $this->resultMapper->archive(
+            $workflowId,
+            $result,
+            $this->controlPlaneRunId($request),
+        );
     }
 
     // ── Run-Targeted Commands ────────────────────────────────────────
@@ -788,6 +796,20 @@ class WorkflowController
     {
         return $this->withCurrentRunGuard($request, $workflowId, $runId, 'terminate', null, function () use ($request, $workflowId) {
             return $this->terminate($request, $workflowId);
+        });
+    }
+
+    public function repairRun(Request $request, string $workflowId, string $runId): JsonResponse
+    {
+        return $this->withCurrentRunGuard($request, $workflowId, $runId, 'repair', null, function () use ($request, $workflowId) {
+            return $this->repair($request, $workflowId);
+        });
+    }
+
+    public function archiveRun(Request $request, string $workflowId, string $runId): JsonResponse
+    {
+        return $this->withCurrentRunGuard($request, $workflowId, $runId, 'archive', null, function () use ($request, $workflowId) {
+            return $this->archive($request, $workflowId);
         });
     }
 
