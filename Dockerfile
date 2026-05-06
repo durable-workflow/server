@@ -74,7 +74,16 @@ RUN chmod +x /usr/local/bin/server-bootstrap /usr/local/bin/server-ensure-sqlite
 
 # Route cache is safe at build time (no env dependency).
 # Config cache is deferred to the entrypoint so runtime env vars take effect.
-RUN php artisan route:cache
+RUN php artisan route:cache \
+    && mkdir -p \
+        storage/logs \
+        storage/framework/cache/data \
+        storage/framework/sessions \
+        storage/framework/views \
+        storage/framework/testing \
+        bootstrap/cache \
+    && chown -R 1000:1000 storage bootstrap/cache \
+    && chmod -R ug+rwX storage bootstrap/cache
 
 LABEL org.opencontainers.image.title="Durable Workflow Server" \
       org.opencontainers.image.description="Standalone Durable Workflow server" \

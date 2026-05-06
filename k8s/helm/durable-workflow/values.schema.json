@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "durable-workflow chart values",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["image", "externalDatabase", "externalRedis"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": ["repository"],
+      "properties": {
+        "registry":   { "type": "string" },
+        "repository": { "type": "string", "minLength": 1 },
+        "tag":        { "type": "string" },
+        "digest":     { "type": "string" },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
+        "pullSecrets":{ "type": "array",  "items": { "type": "object" } }
+      }
+    },
+    "externalDatabase": {
+      "type": "object",
+      "required": ["connection", "database"],
+      "properties": {
+        "connection": { "type": "string", "enum": ["mysql", "mariadb", "pgsql"] },
+        "host":       { "type": "string" },
+        "port":       { "type": ["integer", "string"] },
+        "database":   { "type": "string", "minLength": 1 },
+        "socket":     { "type": "string" },
+        "sslMode":    { "type": "string" },
+        "existingSecret":              { "type": "string" },
+        "existingSecretUsernameKey":   { "type": "string" },
+        "existingSecretPasswordKey":   { "type": "string" },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "username": { "type": "string" },
+            "password": { "type": "string" }
+          }
+        }
+      }
+    },
+    "externalRedis": {
+      "type": "object",
+      "properties": {
+        "host":     { "type": "string" },
+        "port":     { "type": ["integer", "string"] },
+        "database": { "type": ["integer", "string"] },
+        "tls":      { "type": "boolean" },
+        "existingSecret":              { "type": "string" },
+        "existingSecretUsernameKey":   { "type": "string" },
+        "existingSecretPasswordKey":   { "type": "string" },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "username": { "type": "string" },
+            "password": { "type": "string" }
+          }
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "existingSecret": { "type": "string" },
+        "serverKey":      { "type": "string" },
+        "authToken":      { "type": "string" },
+        "workerToken":    { "type": "string" },
+        "operatorToken":  { "type": "string" },
+        "adminToken":     { "type": "string" },
+        "extra":          { "type": "object" }
+      }
+    },
+    "scheduler": {
+      "type": "object",
+      "properties": {
+        "enabled":           { "type": "boolean" },
+        "schedule":          { "type": "string" },
+        "concurrencyPolicy": {
+          "type": "string",
+          "enum": ["Forbid"],
+          "description": "The single-region HA contract requires a singleton scheduler. Allow only Forbid; Allow/Replace would let multiple scheduler runs overlap and would silently break engine guarantees."
+        }
+      }
+    }
+  }
+}

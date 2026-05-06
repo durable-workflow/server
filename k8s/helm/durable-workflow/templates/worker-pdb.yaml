@@ -1,0 +1,18 @@
+{{- if and .Values.worker.enabled .Values.worker.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "durable-workflow.workerDeploymentName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "durable-workflow.componentLabels" (dict "context" . "component" "worker") | nindent 4 }}
+spec:
+  {{- if .Values.worker.pdb.maxUnavailable }}
+  maxUnavailable: {{ .Values.worker.pdb.maxUnavailable }}
+  {{- else }}
+  minAvailable: {{ .Values.worker.pdb.minAvailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "durable-workflow.componentSelectorLabels" (dict "context" . "component" "worker") | nindent 6 }}
+{{- end }}

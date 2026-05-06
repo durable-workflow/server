@@ -1,0 +1,34 @@
+apiVersion: v2
+name: durable-workflow
+description: Durable Workflow self-hosted server, worker, scheduler/maintenance runner, and bootstrap job for Kubernetes.
+type: application
+# The chart's own semver version. Bumped on every chart release; treated as
+# independent of the server image version (appVersion). Breaking-change rules
+# for this version live in docs/helm-upgrading.md alongside the chart.
+version: 0.1.0
+# The default Durable Workflow server image tag this chart targets. Operators
+# pin .image.tag (or .image.digest) in values.yaml; appVersion is informational.
+appVersion: "0.2"
+kubeVersion: ">=1.27.0-0"
+home: https://durable-workflow.github.io/docs/2.0/deployment
+sources:
+  - https://github.com/durable-workflow/server
+  - https://github.com/durable-workflow/workflow
+keywords:
+  - workflow
+  - durable-workflow
+  - workflows
+  - orchestration
+  - laravel
+maintainers:
+  - name: Durable Workflow
+    url: https://durable-workflow.github.io
+icon: https://durable-workflow.github.io/img/logo.svg
+annotations:
+  artifacthub.io/license: MIT
+  artifacthub.io/category: integration-delivery
+  # Free-form changelog used by Artifact Hub. Keep the most recent chart-version
+  # entry first; do not rewrite past entries.
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial self-serve Helm chart for Durable Workflow server, worker, scheduler/maintenance runner, and bootstrap job.

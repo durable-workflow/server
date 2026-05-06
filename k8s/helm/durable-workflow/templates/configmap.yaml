@@ -1,0 +1,41 @@
+{{- include "durable-workflow.validateExternalPersistence" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "durable-workflow.configMapName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "durable-workflow.labels" . | nindent 4 }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  APP_NAME: {{ .Values.config.appName | quote }}
+  APP_VERSION: {{ default .Chart.AppVersion .Values.config.appVersion | quote }}
+  APP_ENV: {{ .Values.config.appEnv | quote }}
+  APP_DEBUG: {{ .Values.config.appDebug | quote }}
+  DB_CONNECTION: {{ .Values.externalDatabase.connection | quote }}
+  DB_HOST: {{ .Values.externalDatabase.host | quote }}
+  DB_PORT: {{ .Values.externalDatabase.port | quote }}
+  DB_DATABASE: {{ .Values.externalDatabase.database | quote }}
+  {{- with .Values.externalDatabase.socket }}
+  DB_SOCKET: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.externalDatabase.sslMode }}
+  DB_SSL_MODE: {{ . | quote }}
+  {{- end }}
+  REDIS_HOST: {{ .Values.externalRedis.host | quote }}
+  REDIS_PORT: {{ .Values.externalRedis.port | quote }}
+  REDIS_DB: {{ .Values.externalRedis.database | quote }}
+  {{- if .Values.externalRedis.tls }}
+  REDIS_SCHEME: "tls"
+  {{- end }}
+  QUEUE_CONNECTION: "redis"
+  CACHE_STORE: "redis"
+  DW_AUTH_DRIVER: {{ .Values.config.auth.driver | quote }}
+  DW_AUTH_BACKWARD_COMPATIBLE: {{ .Values.config.auth.backwardCompatible | quote }}
+  DW_METRICS_WORKFLOW_TASK_FAILURE_TYPE_LIMIT: {{ .Values.config.metrics.workflowTaskFailureTypeLimit | quote }}
+  {{- range $k, $v := .Values.config.extraEnv }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}

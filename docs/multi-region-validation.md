@@ -181,11 +181,12 @@ These remain outside the public multi-region support boundary:
   cross-region history merge.
 - Region-pinned task queues or region-aware namespaces as a routing
   axis enforced by the engine.
-- Multi-cluster Helm charts and active/active cross-region database
-  topologies. Provider-specific managed-database failover *inside* one
-  region (RDS Multi-AZ, Aurora cluster failover, Cloud SQL HA, and
-  equivalents) is supported by the single-region HA contract in
-  [`docs/ha-failover-validation.md`](ha-failover-validation.md).
+- Multi-cluster Helm topologies and active/active cross-region database
+  topologies. The single-cluster self-serve Helm contract lives in
+  [`docs/helm-validation.md`](helm-validation.md); provider-specific
+  managed-database failover *inside* one region (RDS Multi-AZ, Aurora cluster
+  failover, Cloud SQL HA, and equivalents) is supported by the single-region
+  HA contract in [`docs/ha-failover-validation.md`](ha-failover-validation.md).
 - Strong cross-region SLA promises beyond the documented active/passive
   failover behavior.
 

@@ -1,8 +1,13 @@
 # Raw Kubernetes Manifests
 
-These manifests are the self-serve Kubernetes starting point for teams that
-already operate Kubernetes. They are intentionally raw, inspectable resources
-instead of a Helm chart.
+These manifests are the inspectable, low-level self-serve Kubernetes starting
+point. The published [Durable Workflow Helm chart](helm/durable-workflow/) is
+the recommended path for most operators; the raw manifests stay supported for
+teams that intentionally do not want Helm in the rollout.
+
+Both paths share the same external-persistence contract, the same singleton
+scheduler invariant, and the same `/api/ready`-based readiness contract.
+Pick one or the other per environment, not both.
 
 The default image is pinned to the public Docker Hub release tag:
 
@@ -45,9 +50,10 @@ The included contract is deliberately bounded:
 - `k8s/secret.yaml` separates public config from app-level secrets and refers
   to externally managed database and Redis credentials.
 
-Helm charts, managed-Kubernetes provider validation, advanced HA, active/active
-multi-region, custom operators, storage classes, network policies, and
-environment-specific security hardening are support-led or tracked separately.
+Helm charts are now self-serve via [`helm/durable-workflow/`](helm/durable-workflow/);
+managed-Kubernetes provider validation, advanced HA, active/active multi-region,
+custom operators, storage classes, network policies, and environment-specific
+security hardening are support-led or tracked separately.
 Active/passive multi-region with operator-driven regional failover follows the
 contract in [`docs/multi-region-validation.md`](../docs/multi-region-validation.md);
 each region still runs the documented single-region or small-cluster shape, and

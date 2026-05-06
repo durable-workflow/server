@@ -188,7 +188,7 @@ external MySQL or PostgreSQL plus 2 or 3 API nodes behind a stateless load
 balancer, shared Redis, and independently scaled external workers. The first
 contract requires exactly one scheduler or maintenance runner. SQLite,
 Redis-less multi-node mode, duplicate schedulers, rolling upgrades,
-active/active multi-region, Helm charts, and provider-specific failover
+active/active multi-region, Helm-based Kubernetes deployments, and provider-specific failover
 semantics are not part of that first contract.
 
 The CI harness in `docker-compose.small-cluster.yml` runs the MySQL and
@@ -1159,16 +1159,23 @@ docker run --rm --entrypoint sh ghcr.io/durable-workflow/server:0.2.0 -lc \
 
 ### Kubernetes
 
-The raw manifests intentionally stay Kubernetes-native instead of shipping a
-Helm chart. Use Kustomize overlays or direct patches for environment-specific
-names, images, registry secrets, and scaling policy; revisit Helm only when an
-operator needs chart versioning and a chart/image compatibility matrix.
+The published Helm chart in [`k8s/helm/durable-workflow/`](k8s/helm/durable-workflow/)
+is the recommended self-serve path for Kubernetes deployments. The raw
+manifests remain the inspectable low-level alternative for teams that
+intentionally do not want Helm in the rollout.
+
+Both paths share the same external-persistence, singleton-scheduler, and
+`/api/ready` readiness contracts. Use Helm values, Kustomize overlays, or
+direct patches for environment-specific names, images, registry secrets, and
+scaling policy.
 
 The public manifests default to the pinned Docker Hub image
 `durableworkflow/server:0.2`. For production, patch every workload to the exact
 Docker Hub or GHCR tag or digest you intend to run before applying it. See
-[`k8s/README.md`](k8s/README.md) for the raw-manifest support boundary and
-image-pinning contract.
+[`k8s/README.md`](k8s/README.md) for the raw-manifest support boundary,
+[`docs/helm-validation.md`](docs/helm-validation.md) for the Helm contract and
+validation harness, and [`k8s/helm/durable-workflow/docs/UPGRADING.md`](k8s/helm/durable-workflow/docs/UPGRADING.md)
+for chart upgrade steps.
 
 The supported apply order is configuration first, migration second, and
 long-running workloads last. The helper script enforces that order, deletes any

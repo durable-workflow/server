@@ -68,7 +68,7 @@ jobs:
 
       - name: Upload perf artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v3.2.2
         with:
           name: server-perf-smoke
           path: build/perf/
@@ -106,7 +106,7 @@ jobs:
 
       - name: Upload perf artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v3.2.2
         with:
           name: server-perf-soak
           path: build/perf/

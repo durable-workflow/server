@@ -1,0 +1,62 @@
+Durable Workflow {{ .Chart.AppVersion }} (chart {{ .Chart.Version }}) was installed
+into namespace "{{ .Release.Namespace }}" as release "{{ .Release.Name }}".
+
+What just happened
+------------------
+{{- if .Values.bootstrap.enabled }}
+1. The bootstrap Job "{{ include "durable-workflow.bootstrapJobName" . }}" ran
+   server-bootstrap (migrations, default namespace, role bootstrap) before any
+   workload pods accepted traffic.
+{{- end }}
+{{- if .Values.server.enabled }}
+2. The API Deployment "{{ include "durable-workflow.serverDeploymentName" . }}"
+   came up with {{ .Values.server.replicaCount }} replicas behind the
+   ClusterIP Service "{{ include "durable-workflow.serverDeploymentName" . }}"
+   on port {{ .Values.server.service.port }}.
+{{- end }}
+{{- if .Values.worker.enabled }}
+3. The worker Deployment "{{ include "durable-workflow.workerDeploymentName" . }}"
+   came up with {{ .Values.worker.replicaCount }} replicas.
+{{- end }}
+{{- if .Values.scheduler.enabled }}
+4. The singleton scheduler/maintenance runner is the CronJob
+   "{{ include "durable-workflow.schedulerCronJobName" . }}" with
+   concurrencyPolicy={{ .Values.scheduler.concurrencyPolicy }} so that schedule
+   evaluation, activity-timeout enforcement, and history pruning never overlap.
+{{- end }}
+
+Verify the deployment
+---------------------
+  kubectl -n {{ .Release.Namespace }} get pods,svc,pdb
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "durable-workflow.serverDeploymentName" . }}
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "durable-workflow.workerDeploymentName" . }}
+
+Probe the readiness contract (must return 200 once migrations finish):
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "durable-workflow.serverDeploymentName" . }} 8080:{{ .Values.server.service.port }}
+  curl http://localhost:8080/api/health
+  curl http://localhost:8080/api/ready
+
+If you have an admin token, confirm the topology manifest:
+
+  curl -H "Authorization: Bearer $DW_ADMIN_TOKEN" http://localhost:8080/api/cluster/info
+
+What you still own
+------------------
+* External MySQL/PostgreSQL: {{ .Values.externalDatabase.host }}:{{ .Values.externalDatabase.port }} ({{ .Values.externalDatabase.connection }})
+* External Redis: {{ .Values.externalRedis.host }}:{{ .Values.externalRedis.port }}
+* TLS termination, ingress, and request logging — left to your platform.
+* Backup/restore, recovery-packet rehearsal, and disaster-recovery runbooks
+  per https://durable-workflow.github.io/docs/2.0/operator-operating-envelope
+
+The single-region HA failover contract applies to this chart on the rules
+documented at:
+  https://durable-workflow.github.io/docs/2.0/deployment#single-region-high-availability-and-failover
+
+Upgrading
+---------
+* Read the chart upgrading guide before crossing any chart minor or major
+  version boundary:
+  https://github.com/durable-workflow/server/blob/main/k8s/helm/durable-workflow/docs/UPGRADING.md
+* The chart version ({{ .Chart.Version }}) is independent of the server image
+  ({{ .Chart.AppVersion }}). Both follow semver.

@@ -1,0 +1,57 @@
+# Development reference values. Inline secrets are acceptable here because
+# the deployment is short-lived and not internet-facing. DO NOT use this
+# shape in production.
+
+image:
+  tag: "0.2"
+
+externalDatabase:
+  connection: mysql
+  host: mysql.dev.svc.cluster.local
+  port: 3306
+  database: durable_workflow
+  auth:
+    username: workflow
+    password: dev-only-password
+
+externalRedis:
+  host: redis.dev.svc.cluster.local
+  port: 6379
+
+auth:
+  serverKey: "base64:dev-server-key-change-me"
+  authToken: "dev-compat-token"
+  workerToken: "dev-worker-token"
+  operatorToken: "dev-operator-token"
+  adminToken: "dev-admin-token"
+
+server:
+  replicaCount: 1
+  pdb:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+worker:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+scheduler:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi

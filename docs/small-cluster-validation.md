@@ -79,8 +79,9 @@ worker lease and completion state survives API-node crossing without sticky
 sessions.
 
 The harness remains boring Docker Compose. It avoids provider-specific
-orchestration and does not imply Helm, Kubernetes, multi-region, automated
-database failover, rolling upgrades, or SLA-grade HA.
+orchestration and does not prove the separately documented Helm or raw-manifest
+Kubernetes contracts, nor imply multi-region, automated database failover,
+rolling upgrades, or SLA-grade HA.
 
 ## Unsupported Until Proven
 
@@ -96,7 +97,9 @@ These remain outside the public support boundary:
   extends the small-cluster contract per region and does not weaken any of
   these boundaries.
 - Arbitrary process supervisors or orchestrators.
-- Helm charts and provider-specific managed-Kubernetes validation.
+- Self-serve Helm charts and provider-specific managed-Kubernetes validation.
+  Those Kubernetes deployment contracts are documented separately and are not
+  proven by this Compose harness.
 - Strong "five-nines" or "zero-downtime" SLA claims. Single-region HA
   failover behavior — managed-database failover, managed-Redis failover,
   API-node loss, worker loss, and scheduler-runner restart — is its own

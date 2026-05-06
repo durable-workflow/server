@@ -1,0 +1,92 @@
+{{- /*
+Singleton scheduler/maintenance runner.
+
+The single-region HA contract requires exactly one scheduler in flight at a
+time (https://durable-workflow.github.io/docs/2.0/deployment#single-region-high-availability-and-failover).
+The chart enforces this two ways:
+  1. concurrencyPolicy is locked to "Forbid" by default.
+  2. The CronJob is the only chart-rendered scheduler resource — there is
+     intentionally no scheduler Deployment or StatefulSet template.
+Operators who need duplicate scheduler runners as a steady-state topology
+must contact support; that path is outside this chart's contract.
+*/ -}}
+{{- if .Values.scheduler.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "durable-workflow.schedulerCronJobName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "durable-workflow.componentLabels" (dict "context" . "component" "scheduler") | nindent 4 }}
+  annotations:
+    {{- include "durable-workflow.argoWorkloadAnnotations" . | nindent 4 }}
+    {{- include "durable-workflow.fluxDependsOnAnnotation" . | nindent 4 }}
+    {{- with .Values.commonAnnotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  schedule: {{ .Values.scheduler.schedule | quote }}
+  concurrencyPolicy: {{ .Values.scheduler.concurrencyPolicy }}
+  successfulJobsHistoryLimit: {{ .Values.scheduler.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.scheduler.failedJobsHistoryLimit }}
+  startingDeadlineSeconds: {{ .Values.scheduler.startingDeadlineSeconds }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.scheduler.backoffLimit }}
+      activeDeadlineSeconds: {{ .Values.scheduler.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            {{- include "durable-workflow.componentLabels" (dict "context" . "component" "scheduler") | nindent 12 }}
+            {{- with .Values.scheduler.podLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          annotations:
+            {{- include "durable-workflow.configChecksumAnnotations" . | nindent 12 }}
+            {{- with .Values.scheduler.podAnnotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "durable-workflow.serviceAccountName" . }}
+          {{- with .Values.image.pullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.priorityClassName }}
+          priorityClassName: {{ . }}
+          {{- end }}
+          {{- with .Values.scheduler.podSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: scheduler
+              image: {{ include "durable-workflow.image" . | quote }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["server-entrypoint"]
+              args:
+                {{- toYaml .Values.scheduler.args | nindent 16 }}
+              envFrom:
+                {{- include "durable-workflow.standardEnvFrom" . | nindent 16 }}
+              env:
+                {{- include "durable-workflow.standardEnv" . | nindent 16 }}
+              resources:
+                {{- toYaml .Values.scheduler.resources | nindent 16 }}
+              {{- with .Values.scheduler.containerSecurityContext }}
+              securityContext:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+          {{- with .Values.scheduler.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.scheduler.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.scheduler.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

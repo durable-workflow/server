@@ -1,0 +1,51 @@
+# CI fixture: ingress + autoscaling enabled. Exercises optional templates.
+image:
+  tag: "0.2"
+
+externalDatabase:
+  connection: mysql
+  host: db.example.internal
+  port: 3306
+  database: durable_workflow
+  existingSecret: durable-workflow-db-credentials
+
+externalRedis:
+  host: redis.example.internal
+  port: 6379
+
+auth:
+  existingSecret: durable-workflow-app-credentials
+
+server:
+  replicaCount: 3
+  ingress:
+    enabled: true
+    className: nginx
+    hosts:
+      - host: workflow.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: workflow-tls
+        hosts:
+          - workflow.example.com
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 8
+
+worker:
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 12
+  pdb:
+    enabled: true
+
+networkPolicy:
+  enabled: true
+  ingressFrom:
+    - namespaceSelector:
+        matchLabels:
+          team: platform-ingress

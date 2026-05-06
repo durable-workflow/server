@@ -70,6 +70,20 @@ class KubernetesManifestContractTest extends TestCase
         }
     }
 
+    public function test_top_level_readme_points_to_the_self_serve_helm_contract(): void
+    {
+        $source = $this->read('README.md');
+
+        foreach ([
+            'k8s/helm/durable-workflow/',
+            'recommended self-serve path for Kubernetes deployments',
+            'docs/helm-validation.md',
+            'k8s/helm/durable-workflow/docs/UPGRADING.md',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $source);
+        }
+    }
+
     public function test_kubernetes_validation_workflow_runs_static_schema_and_kind_smoke(): void
     {
         $source = $this->read('.github/workflows/kubernetes-validation.yml');

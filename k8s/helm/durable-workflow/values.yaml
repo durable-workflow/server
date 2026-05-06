@@ -1,0 +1,483 @@
+# Default values for the durable-workflow Helm chart.
+#
+# Defaults match the small-cluster shape documented at
+# https://durable-workflow.github.io/docs/2.0/deployment :
+#   * stateless API replicas behind a ClusterIP Service
+#   * a separately-scaled worker Deployment
+#   * exactly one scheduler/maintenance runner (CronJob with concurrencyPolicy=Forbid)
+#   * a bootstrap Job that runs once per release before the new pods take traffic
+#
+# This chart deliberately does NOT bundle MySQL/PostgreSQL or Redis. External
+# persistence is a first-class contract: point .externalDatabase and .externalRedis
+# at the endpoints you already operate (RDS, Cloud SQL, Aurora, ElastiCache,
+# Memorystore, Sentinel, etc.). For local exercise, the kind smoke harness in
+# scripts/k8s-helm-kind-smoke.sh provisions disposable in-cluster services.
+
+# ---------------------------------------------------------------------------
+# Image and global identity
+# ---------------------------------------------------------------------------
+
+image:
+  registry: docker.io
+  repository: durableworkflow/server
+  # Pin a published version tag in production. The chart appVersion documents
+  # the tag the chart was tested against; override here when you upgrade.
+  tag: ""
+  # Optional digest pin. When set, takes precedence over tag for change control.
+  # Example: "sha256:abc123..."
+  digest: ""
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+  # imagePullSecrets:
+  # - name: my-registry-secret
+
+# Override fully-qualified resource names. Defaults derive from .Release.Name
+# and the chart name. nameOverride affects only the chart-name portion of
+# generated names; fullnameOverride replaces the whole prefix.
+nameOverride: ""
+fullnameOverride: ""
+
+# ServiceAccount used by every workload in this chart. Disable to inherit the
+# namespace default; supply a name to consume one you already manage.
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: true
+
+# Common labels applied to every rendered resource.
+commonLabels: {}
+commonAnnotations: {}
+
+# ---------------------------------------------------------------------------
+# Durable Workflow application configuration
+# ---------------------------------------------------------------------------
+
+# Application-level configuration baked into the shared ConfigMap. Keys mirror
+# environment variables consumed by server/worker/scheduler/migrate containers.
+config:
+  appName: "Durable Workflow Server"
+  appEnv: "production"
+  appDebug: "false"
+  appVersion: ""  # Defaults to .Chart.AppVersion when empty.
+
+  auth:
+    driver: "token"
+    # Set false for production to disable the legacy unscoped DW_AUTH_TOKEN
+    # path. Existing Compose deployments often start with this true; the
+    # chart defaults to the production posture.
+    backwardCompatible: "false"
+
+  metrics:
+    workflowTaskFailureTypeLimit: "20"
+
+  # Free-form ConfigMap entries appended verbatim. Use this for environment
+  # tuning that the chart does not expose as first-class settings (e.g.
+  # DW_V2_MATCHING_ROLE_QUEUE_WAKE for dedicated matching rollouts).
+  extraEnv: {}
+  # extraEnv:
+  #   DW_V2_MATCHING_ROLE_QUEUE_WAKE: "0"
+  #   DW_LOG_FORMAT: "json"
+
+# ---------------------------------------------------------------------------
+# External persistence (REQUIRED — no in-cluster database is bundled)
+# ---------------------------------------------------------------------------
+
+# Workflow database. The chart does not provision a database; pass connection
+# info for the database your platform team already operates. Either set
+# .externalDatabase.existingSecret to consume credentials managed by your
+# secret store (External Secrets Operator, Vault, Secrets Store CSI, etc.) or
+# fill .auth.username / .auth.password to have the chart create a Secret.
+externalDatabase:
+  # Required. mysql, mariadb, or pgsql.
+  connection: "mysql"
+  host: ""
+  port: 3306
+  database: "durable_workflow"
+  # Optional connection-string overrides for proxies (RDS Proxy, ProxySQL,
+  # PgBouncer). When set, the engine sees this connection rather than the
+  # raw managed endpoint.
+  socket: ""
+  sslMode: ""
+  # Credentials. existingSecret takes precedence over auth.{username,password}.
+  existingSecret: ""
+  existingSecretUsernameKey: "DB_USERNAME"
+  existingSecretPasswordKey: "DB_PASSWORD"
+  auth:
+    username: ""
+    password: ""
+
+# Redis acceleration layer. Required for multi-node correctness contract
+# (see workflow/docs/deployment/multi-node-requirements.md). Configure either
+# an existingSecret or inline credentials. Anonymous Redis is permitted; in
+# that case leave existingSecret empty and credentials blank.
+externalRedis:
+  host: ""
+  port: 6379
+  database: "0"
+  tls: false
+  # Credentials are optional — set existingSecret when your Redis enforces
+  # AUTH or RBAC. Keys default to REDIS_USERNAME / REDIS_PASSWORD and are
+  # mounted as optional secret refs so an unauthenticated Redis still works.
+  existingSecret: ""
+  existingSecretUsernameKey: "REDIS_USERNAME"
+  existingSecretPasswordKey: "REDIS_PASSWORD"
+  auth:
+    username: ""
+    password: ""
+
+# ---------------------------------------------------------------------------
+# Application secrets (engine signing key + role-scoped tokens)
+# ---------------------------------------------------------------------------
+
+# Either point this chart at a Secret you already manage (existingSecret) or
+# let the chart create one from inline values. The "GitOps with externally
+# managed secrets" path is existingSecret — never commit real tokens here.
+auth:
+  existingSecret: ""
+  # When existingSecret is empty, the chart renders a Secret using these keys.
+  # In production, prefer existingSecret with values populated by your secret
+  # manager (Vault, AWS Secrets Manager, GCP Secret Manager, etc.).
+  serverKey: ""               # DW_SERVER_KEY (base64:...)
+  authToken: ""               # DW_AUTH_TOKEN — legacy unscoped token
+  workerToken: ""             # DW_WORKER_TOKEN
+  operatorToken: ""           # DW_OPERATOR_TOKEN
+  adminToken: ""              # DW_ADMIN_TOKEN
+  # Map of arbitrary additional secret entries to add to the rendered Secret.
+  # Ignored when existingSecret is set.
+  extra: {}
+  # extra:
+  #   DW_PAYLOAD_CODEC_KEY: "base64:..."
+
+# ---------------------------------------------------------------------------
+# Bootstrap / migration job
+# ---------------------------------------------------------------------------
+
+bootstrap:
+  enabled: true
+  # Helm hook ordering. The default — pre-install,pre-upgrade with
+  # before-hook-creation,hook-succeeded — keeps pods from rolling forward
+  # until migrations finish. GitOps controllers (Argo CD, Flux) that don't
+  # honour Helm hooks should keep argocd.useSyncWaves: true so this Job
+  # gets the lower sync-wave annotation instead.
+  useHelmHooks: true
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  # Extra entrypoint args for migration. The default runs server-bootstrap.
+  args:
+    - "server-bootstrap"
+  podAnnotations: {}
+  podLabels: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  securityContext: {}
+  containerSecurityContext: {}
+
+# ---------------------------------------------------------------------------
+# Server (API) deployment
+# ---------------------------------------------------------------------------
+
+server:
+  enabled: true
+  replicaCount: 2
+
+  # Strategy controls. Default RollingUpdate with maxUnavailable=0 enforces
+  # the rolling-upgrade contract (https://durable-workflow.github.io/docs/2.0/rolling-upgrades).
+  # Set strategy.type=Recreate for stop-the-world deployments.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+
+  # Optional pacing knob: minReadySeconds delays "ready" until the pod has
+  # been healthy for this long. Useful when /api/ready flips green before
+  # cluster discovery propagates through your load balancer.
+  minReadySeconds: 0
+  progressDeadlineSeconds: 600
+  revisionHistoryLimit: 5
+
+  service:
+    type: ClusterIP
+    port: 8080
+    annotations: {}
+    # Set to true to expose a NodePort or LoadBalancer; production should
+    # terminate TLS at the ingress, not on the Service.
+    nodePort: ""
+    loadBalancerSourceRanges: []
+    sessionAffinity: ""
+
+  # Probes. Defaults preserve the small-cluster contract: liveness on
+  # /api/health, readiness on /api/ready (which tests DB+Redis usability).
+  # Changing readinessProbe.path away from /api/ready breaks the
+  # single-region HA contract.
+  livenessProbe:
+    httpGet:
+      path: /api/health
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /api/ready
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 2
+    successThreshold: 1
+  startupProbe: {}
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+  # PodDisruptionBudget. Honoured by node drains and rolling upgrades.
+  pdb:
+    enabled: true
+    minAvailable: 1
+    # Set maxUnavailable instead of minAvailable when the chart user prefers
+    # the alternate constraint. Only one of the two should be set.
+    maxUnavailable: ""
+
+  podLabels: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # Topology spread defaults to a soft anti-affinity hint per zone. Set to []
+  # to disable.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/component: server
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop: ["ALL"]
+
+  # Optional ingress in front of the API Service. Disabled by default; many
+  # clusters route through a platform-managed gateway instead.
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: durable-workflow.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+    # tls:
+    #   - secretName: durable-workflow-tls
+    #     hosts:
+    #       - durable-workflow.example.com
+
+  # Horizontal Pod Autoscaler. Disabled by default — the engine's preferred
+  # scaling axis is replicas + queue admission, not raw CPU.
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 75
+    targetMemoryUtilizationPercentage: ""
+
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# ---------------------------------------------------------------------------
+# Worker deployment
+# ---------------------------------------------------------------------------
+
+worker:
+  enabled: true
+  replicaCount: 2
+
+  # Worker process command. Default runs Laravel queue worker.
+  command:
+    - "server-entrypoint"
+  args:
+    - "php"
+    - "artisan"
+    - "queue:work"
+    - "--sleep=1"
+    - "--tries=3"
+    - "--max-time=3600"
+
+  livenessProbe:
+    exec:
+      command: ["php", "artisan", "queue:monitor", "default"]
+    initialDelaySeconds: 15
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe: {}
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+
+  pdb:
+    enabled: false
+    minAvailable: 1
+    maxUnavailable: ""
+
+  podLabels: {}
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop: ["ALL"]
+
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 75
+
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# ---------------------------------------------------------------------------
+# Scheduler / maintenance runner
+# ---------------------------------------------------------------------------
+
+# CRITICAL: the scheduler is a singleton. Helm enforces this by setting
+# concurrencyPolicy: Forbid on the CronJob and by refusing to render more than
+# one CronJob. Do NOT add a parallel scheduler Deployment without rereading
+# https://durable-workflow.github.io/docs/2.0/deployment#single-region-high-availability-and-failover.
+scheduler:
+  enabled: true
+  schedule: "* * * * *"
+  concurrencyPolicy: "Forbid"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 60
+  activeDeadlineSeconds: 55
+  backoffLimit: 1
+
+  # Default command runs schedule eval + activity timeouts + history pruning.
+  args:
+    - "sh"
+    - "-c"
+    - "php artisan schedule:evaluate --limit=100; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop: ["ALL"]
+
+# ---------------------------------------------------------------------------
+# GitOps controller compatibility
+# ---------------------------------------------------------------------------
+
+# Argo CD / Flux do not always honour Helm hook annotations. Setting these
+# adds sync-wave / depends-on annotations so the bootstrap Job runs before
+# the server/worker/scheduler workloads.
+argocd:
+  useSyncWaves: true
+  bootstrapWave: "-5"
+  workloadWave: "0"
+
+flux:
+  # When true, adds kustomize.toolkit.fluxcd.io/depends-on annotations on
+  # workloads so Flux waits for the bootstrap Job to settle. The chart relies
+  # on the bootstrap Job's name being deterministic.
+  useDependsOn: true
+
+# ---------------------------------------------------------------------------
+# Network policy (egress to DB/Redis is required; left to platform team)
+# ---------------------------------------------------------------------------
+
+networkPolicy:
+  enabled: false
+  # When enabled, allows traffic from these sources to reach the API Service
+  # on the configured server port. Egress is left for platform policy.
+  ingressFrom: []
+  # ingressFrom:
+  # - namespaceSelector:
+  #     matchLabels:
+  #       team: platform-ingress
+
+# ---------------------------------------------------------------------------
+# Pod-level extras
+# ---------------------------------------------------------------------------
+
+# Pod priority class for the workflow workloads. Production clusters often
+# pin schedulers/migrations to a higher class than the API/worker pool.
+priorityClassName: ""
+
+# Optional sidecar containers injected on every pod (server, worker,
+# scheduler, bootstrap). Use sparingly — the engine's contract is that the
+# main container talks to DB and Redis directly.
+sidecars: []

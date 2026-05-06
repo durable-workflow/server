@@ -326,11 +326,11 @@ pass; the topology itself is part of the product risk:
 - Synchronous cross-region database replication (RPO=0).
 - Duplicate scheduler/maintenance runners as a steady-state topology.
 - Engine-enforced region-pinned task queues as a routing axis.
-- Multi-cluster Helm charts and provider-specific managed-Kubernetes
-  validation. The
-  [`k8s/`](https://github.com/durable-workflow/server/tree/main/k8s)
-  manifests stay raw and inspectable; provider-specific HA on top of
-  them remains a support-led design pass.
+- Multi-cluster Helm topologies and provider-specific managed-Kubernetes
+  validation. The single-cluster self-serve Helm contract lives in
+  [`docs/helm-validation.md`](helm-validation.md) and
+  [`k8s/helm/durable-workflow/`](../k8s/helm/durable-workflow/); provider-specific
+  or multi-cluster HA on top of it remains a support-led design pass.
 - Strong "five-nines" or "zero-downtime" SLA promises beyond the
   bounded recovery times above. The contract is *bounded recovery
   during named events*, not an uptime promise that depends on the

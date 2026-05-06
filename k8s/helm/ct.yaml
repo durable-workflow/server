@@ -1,0 +1,12 @@
+# chart-testing configuration. Used by ct lint-and-install in CI.
+# https://github.com/helm/chart-testing
+chart-dirs:
+  - k8s/helm
+chart-repos: []
+helm-extra-args: --timeout 5m
+check-version-increment: true
+debug: false
+target-branch: main
+validate-maintainers: false
+validate-chart-schema: true
+validate-yaml: true
