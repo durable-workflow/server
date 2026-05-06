@@ -291,7 +291,7 @@ class ClusterInfoCompatibilityTest extends TestCase
             $this->assertSame(
                 PlatformProtocolSpecs::STATUS_PUBLISHED,
                 $specs[$expectedSpec]['status'],
-                "$expectedSpec must remain published in cluster_info because issue #690 requires every public machine-facing surface to have a normative spec",
+                "$expectedSpec must remain published in cluster_info because every public machine-facing surface must have a normative spec",
             );
         }
 
