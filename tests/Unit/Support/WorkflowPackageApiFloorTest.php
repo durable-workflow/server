@@ -10,11 +10,13 @@ use Tests\Fixtures\LegacyWorkflowTaskBridgePollSignature;
 use Tests\Fixtures\StaleBackendCapabilities;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\MatchingRole;
+use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
 use Workflow\V2\Support\DefaultMatchingRole;
 use Workflow\V2\Support\MatchingRoleSnapshot;
+use Workflow\V2\Support\ServiceExecutionContract;
 
 /**
  * Pins the API floor contract the server relies on from
@@ -85,6 +87,33 @@ class WorkflowPackageApiFloorTest extends TestCase
             $this->assertTrue($method->isPublic());
             $this->assertFalse($method->isStatic());
         }
+    }
+
+    public function test_service_control_plane_contract_is_public_instance_api(): void
+    {
+        $reflection = new ReflectionClass(ServiceControlPlane::class);
+
+        foreach (['execute', 'describeCall', 'cancelCall'] as $methodName) {
+            $method = $reflection->getMethod($methodName);
+
+            $this->assertTrue($method->isPublic());
+            $this->assertFalse($method->isStatic());
+        }
+    }
+
+    public function test_service_execution_contract_manifest_is_public_static(): void
+    {
+        $reflection = new ReflectionClass(ServiceExecutionContract::class);
+        $method = $reflection->getMethod('manifest');
+
+        $this->assertTrue($method->isPublic());
+        $this->assertTrue($method->isStatic());
+
+        $manifest = ServiceExecutionContract::manifest();
+
+        $this->assertSame('durable-workflow.v2.service-execution.contract', $manifest['schema'] ?? null);
+        $this->assertContains('start_workflow', $manifest['handler_binding_kinds'] ?? []);
+        $this->assertContains('invocable_http', $manifest['handler_binding_kinds'] ?? []);
     }
 
     public function test_workflow_task_bridge_poll_signature_matches_api_floor(): void

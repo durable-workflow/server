@@ -8,11 +8,13 @@ use ReflectionMethod;
 use RuntimeException;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\MatchingRole;
+use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
 use Workflow\V2\Support\DefaultMatchingRole;
 use Workflow\V2\Support\MatchingRoleSnapshot;
+use Workflow\V2\Support\ServiceExecutionContract;
 
 /**
  * Enforces the minimum `durable-workflow/workflow` API surface the server
@@ -48,6 +50,9 @@ final class WorkflowPackageApiFloor
         // Cluster discovery now reuses the package-owned matching-role
         // contract instead of duplicating the routing fields in server code.
         [MatchingRoleSnapshot::class, 'current'],
+        // ServiceExecutionContract::manifest() publishes the service-layer
+        // execution contract that /api/cluster/info re-exports.
+        [ServiceExecutionContract::class, 'manifest'],
     ];
 
     /**
@@ -72,6 +77,9 @@ final class WorkflowPackageApiFloor
     private const REQUIRED_INTERFACE_APIS = [
         [MatchingRole::class, 'wake'],
         [MatchingRole::class, 'runPass'],
+        [ServiceControlPlane::class, 'execute'],
+        [ServiceControlPlane::class, 'describeCall'],
+        [ServiceControlPlane::class, 'cancelCall'],
     ];
 
     /**
@@ -155,7 +163,8 @@ final class WorkflowPackageApiFloor
             .'Missing: %s. Re-run `composer update durable-workflow/workflow` against a v2 snapshot that '
             .'includes CodecRegistry::universal(), CodecRegistry::engineSpecific(), MatchingRoleSnapshot::current(), '
             .'the filtered WorkflowTaskBridge::poll() contract, '
-            .'the poll-mode queue capability demotion, and the matching-role repair-pass contract, plus '
+            .'the poll-mode queue capability demotion, the matching-role repair-pass contract, '
+            .'the service execution control-plane contract, plus '
             .'ChildWorkflowNamespaceProjection for package-owned child namespace propagation '
             .'(see repos/workflow commits 8e132d0, cfd8e95, a1d442d, and f666b25, or newer).',
             implode(', ', $missing),
