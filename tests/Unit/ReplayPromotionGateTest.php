@@ -91,12 +91,12 @@ class ReplayPromotionGateTest extends TestCase
     public function test_evaluate_carries_report_schema_through(): void
     {
         $result = ReplayPromotionGate::evaluate([
-            'schema' => 'durable-workflow.v2.replay-verify-report',
+            'schema' => 'durable-workflow.v2.replay-verification.report',
             'schema_version' => 1,
             'verdict' => 'ok',
         ]);
 
-        $this->assertSame('durable-workflow.v2.replay-verify-report', $result['report_schema']);
+        $this->assertSame('durable-workflow.v2.replay-verification.report', $result['report_schema']);
         $this->assertSame(1, $result['report_schema_version']);
     }
 }

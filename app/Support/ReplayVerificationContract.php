@@ -88,6 +88,7 @@ final class ReplayVerificationContract
                     '--signing-key' => 'HMAC verification key; falls back to workflows.v2.history_export.signing_key.',
                     '--skip-replay' => 'Verify integrity only — do not replay against current code.',
                     '--strict-warnings' => 'Treat structural warnings as per-bundle failures and block promotion.',
+                    '--json' => 'Emit the report as a single JSON document on stdout.',
                     '--output' => 'Write the JSON simulation report to a file.',
                 ],
                 'exit_codes' => [

@@ -105,6 +105,7 @@ class ReplayVerificationContractTest extends TestCase
 
         $this->assertArrayHasKey('batch_cli', $manifest);
         $this->assertSame('workflow:v2:replay-simulate', $manifest['batch_cli']['command']);
+        $this->assertArrayHasKey('--json', $manifest['batch_cli']['inputs']);
         $this->assertSame(0, $manifest['batch_cli']['exit_codes']['ok']);
         $this->assertSame(1, $manifest['batch_cli']['exit_codes']['drifted']);
         $this->assertSame(1, $manifest['batch_cli']['exit_codes']['failed']);

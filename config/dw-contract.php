@@ -517,6 +517,24 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_V2_NAMESPACE',
         ],
+        'DW_V2_TENANCY_ORGANIZATION' => [
+            'description' => 'Optional organization segment for the workflow package tenancy hierarchy exposed to readiness, discovery, and operator surfaces.',
+            'default' => null,
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_TENANCY_ORGANIZATION',
+        ],
+        'DW_V2_TENANCY_PROJECT' => [
+            'description' => 'Optional project segment for the workflow package tenancy hierarchy exposed to readiness, discovery, and operator surfaces.',
+            'default' => null,
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_TENANCY_PROJECT',
+        ],
+        'DW_V2_TENANCY_ENVIRONMENT' => [
+            'description' => 'Optional environment segment for the workflow package tenancy hierarchy exposed to readiness, discovery, and operator surfaces.',
+            'default' => null,
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_V2_TENANCY_ENVIRONMENT',
+        ],
         'DW_V2_CURRENT_COMPATIBILITY' => [
             'description' => 'Worker-compatibility marker this worker advertises (e.g. "build-2026-04-17"). Null means no marker.',
             'default' => null,

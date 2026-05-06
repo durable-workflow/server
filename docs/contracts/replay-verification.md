@@ -88,7 +88,7 @@ and emits one aggregated promotion verdict:
 
 ```text
 php artisan workflow:v2:replay-simulate <bundle-dir> \
-    [--signing-key=<KEY>] [--skip-replay] [--strict-warnings] [--output=<PATH>]
+    [--signing-key=<KEY>] [--skip-replay] [--strict-warnings] [--json] [--output=<PATH>]
 ```
 
 The aggregated report carries

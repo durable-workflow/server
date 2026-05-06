@@ -5,8 +5,8 @@ namespace App\Support;
 /**
  * Apply the platform-level replay-verification promotion gate.
  *
- * The gate consumes a `durable-workflow.v2.replay-verify-report` (single
- * bundle) or a `durable-workflow.v2.replay-simulation.report` (batch)
+ * The gate consumes a `durable-workflow.v2.replay-verification.report`
+ * (single bundle) or a `durable-workflow.v2.replay-simulation.report` (batch)
  * and returns one of the canonical promotion decisions published by
  * {@see ReplayVerificationContract}: `safe_to_promote`,
  * `review_before_promote`, `block_until_compatible`, or
