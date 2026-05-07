@@ -19,6 +19,7 @@ use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\HistoryPayloadCompression;
+use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
@@ -967,13 +968,27 @@ class WorkerController
             'result_envelope.blob' => ['required_with:result_envelope', 'string'],
         ]);
 
+        $resultEnvelope = null;
+
+        if (($validated['result_envelope'] ?? null) !== null) {
+            $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec([
+                'codec' => $validated['result_envelope']['codec'] ?? null,
+                'blob' => $validated['result_envelope']['blob'] ?? null,
+            ], 'result_envelope');
+
+            $resultEnvelope = [
+                'codec' => $resolved['codec'],
+                'blob' => $resolved['payload'],
+            ];
+        }
+
         $outcome = $this->queryTasks->complete(
             $namespace,
             $queryTaskId,
             $validated['lease_owner'],
             (int) $validated['query_task_attempt'],
             $validated['result'] ?? null,
-            $validated['result_envelope'] ?? null,
+            $resultEnvelope,
         );
 
         return WorkerProtocol::json(
