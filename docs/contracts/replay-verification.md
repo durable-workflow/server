@@ -133,9 +133,11 @@ re-implementing the verdict-to-decision table:
 same strictest-verdict-wins rule as the batch CLI, so any caller that
 sees multiple reports can collapse them to one decision deterministically.
 Known v1 verify and simulation reports must include their `evidence`
-block; a clean verdict with missing evidence blocks promotion, and a
-single-bundle report that intentionally used `--skip-replay` is reduced
-to `review_before_promote` rather than `safe_to_promote`.
+block. A clean verdict with missing evidence blocks promotion; a report
+that intentionally used `--skip-replay` is reduced to
+`review_before_promote`; and a simulation report that did not replay
+every bundle without declaring a skip blocks promotion as incomplete
+evidence.
 
 ## Verdicts and promotion
 

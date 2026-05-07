@@ -222,7 +222,7 @@ final class ReplayVerificationContract
             'promotion_gate' => [
                 'description' => 'Server-side helper App\\Support\\ReplayPromotionGate consumes either a verify or simulation report and returns a normalized gate decision (pass / review / block).',
                 'gate_statuses' => ['pass', 'review', 'block'],
-                'evidence_policy' => 'Known v1 verify and simulation reports must include the evidence block; a clean verdict with missing or incomplete evidence is downgraded before promotion.',
+                'evidence_policy' => 'Known v1 verify and simulation reports must include the evidence block; a clean verdict with missing, incomplete, or intentionally skipped replay evidence is downgraded before promotion.',
                 'verdict_to_gate_status' => [
                     'ok' => 'pass',
                     'warning' => 'review',

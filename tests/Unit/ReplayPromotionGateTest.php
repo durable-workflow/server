@@ -165,4 +165,64 @@ class ReplayPromotionGateTest extends TestCase
         $this->assertFalse($aggregate['evidence_complete']);
         $this->assertSame(['evidence_missing'], $aggregate['evidence_issues']);
     }
+
+    public function test_known_simulation_report_with_complete_evidence_can_pass(): void
+    {
+        $result = ReplayPromotionGate::evaluate([
+            'schema' => 'durable-workflow.v2.replay-simulation.report',
+            'schema_version' => 1,
+            'verdict' => 'ok',
+            'evidence' => [
+                'bundle_count' => 2,
+                'missing_bundle_count' => 0,
+                'integrity_checked_count' => 2,
+                'replay_checked_count' => 2,
+                'replay_skipped' => false,
+            ],
+        ]);
+
+        $this->assertSame(ReplayPromotionGate::SAFE_TO_PROMOTE, $result['promotion_decision']);
+        $this->assertSame(ReplayPromotionGate::STATUS_PASS, $result['gate_status']);
+        $this->assertTrue($result['evidence_complete']);
+    }
+
+    public function test_clean_simulation_report_with_skipped_replay_requires_review(): void
+    {
+        $result = ReplayPromotionGate::evaluate([
+            'schema' => 'durable-workflow.v2.replay-simulation.report',
+            'schema_version' => 1,
+            'verdict' => 'ok',
+            'evidence' => [
+                'bundle_count' => 2,
+                'missing_bundle_count' => 0,
+                'integrity_checked_count' => 2,
+                'replay_checked_count' => 0,
+                'replay_skipped' => true,
+            ],
+        ]);
+
+        $this->assertSame(ReplayPromotionGate::REVIEW_BEFORE_PROMOTE, $result['promotion_decision']);
+        $this->assertSame(ReplayPromotionGate::STATUS_REVIEW, $result['gate_status']);
+        $this->assertSame(['replay_skipped'], $result['evidence_issues']);
+    }
+
+    public function test_clean_simulation_report_without_replay_count_blocks(): void
+    {
+        $result = ReplayPromotionGate::evaluate([
+            'schema' => 'durable-workflow.v2.replay-simulation.report',
+            'schema_version' => 1,
+            'verdict' => 'ok',
+            'evidence' => [
+                'bundle_count' => 2,
+                'missing_bundle_count' => 0,
+                'integrity_checked_count' => 2,
+                'replay_checked_count' => 1,
+                'replay_skipped' => false,
+            ],
+        ]);
+
+        $this->assertSame(ReplayPromotionGate::BLOCK_AND_INVESTIGATE, $result['promotion_decision']);
+        $this->assertSame(ReplayPromotionGate::STATUS_BLOCK, $result['gate_status']);
+        $this->assertSame(['replay_diff_missing'], $result['evidence_issues']);
+    }
 }

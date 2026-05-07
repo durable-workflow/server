@@ -250,6 +250,8 @@ final class ReplayPromotionGate
         $bundleCount = self::intOrNull($evidence['bundle_count'] ?? null);
         $missingBundleCount = self::intOrNull($evidence['missing_bundle_count'] ?? null);
         $integrityCheckedCount = self::intOrNull($evidence['integrity_checked_count'] ?? null);
+        $replayCheckedCount = self::intOrNull($evidence['replay_checked_count'] ?? null);
+        $replaySkipped = ($evidence['replay_skipped'] ?? null) === true;
 
         if ($bundleCount === null || $bundleCount <= 0) {
             $issues[] = 'no_bundles';
@@ -261,6 +263,12 @@ final class ReplayPromotionGate
 
         if ($bundleCount !== null && $bundleCount > 0 && $integrityCheckedCount !== $bundleCount) {
             $issues[] = 'integrity_evidence_missing';
+        }
+
+        if ($replaySkipped) {
+            $issues[] = 'replay_skipped';
+        } elseif ($bundleCount !== null && $bundleCount > 0 && $replayCheckedCount !== $bundleCount) {
+            $issues[] = 'replay_diff_missing';
         }
 
         return $issues;
