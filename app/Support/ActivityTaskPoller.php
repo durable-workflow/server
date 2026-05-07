@@ -153,34 +153,42 @@ final class ActivityTaskPoller
                 continue;
             }
 
-            $claim = DB::transaction(function () use ($namespace, $worker, $readyTask, $taskId, $leaseOwner): ?array {
-                $workerSession = $this->workerSessions->optionsForExecution(
-                    is_string($readyTask['activity_execution_id'] ?? null)
-                        ? $readyTask['activity_execution_id']
-                        : null,
-                );
+            try {
+                $claim = DB::transaction(function () use ($namespace, $worker, $taskId, $leaseOwner): ?array {
+                    $claim = $this->bridge->claimStatus($taskId, $leaseOwner);
 
-                if ($workerSession !== null) {
-                    if (! WorkerProtocol::workerSessionsSupported()) {
+                    if (($claim['claimed'] ?? false) !== true) {
                         return null;
                     }
 
-                    $admission = $this->workerSessions->admitActivity(
-                        $namespace,
-                        $worker,
-                        $workerSession,
-                        $taskId,
+                    $workerSession = $this->workerSessions->optionsForExecution(
+                        is_string($claim['activity_execution_id'] ?? null)
+                            ? $claim['activity_execution_id']
+                            : null,
                     );
 
-                    if (($admission['admitted'] ?? false) !== true) {
-                        return null;
+                    if ($workerSession !== null) {
+                        if (! WorkerProtocol::workerSessionsSupported()) {
+                            throw new ActivityTaskClaimRolledBack;
+                        }
+
+                        $admission = $this->workerSessions->admitActivity(
+                            $namespace,
+                            $worker,
+                            $workerSession,
+                            $taskId,
+                        );
+
+                        if (($admission['admitted'] ?? false) !== true) {
+                            throw new ActivityTaskClaimRolledBack;
+                        }
                     }
-                }
 
-                $claim = $this->bridge->claimStatus($taskId, $leaseOwner);
-
-                return ($claim['claimed'] ?? false) === true ? $claim : null;
-            });
+                    return $claim;
+                });
+            } catch (ActivityTaskClaimRolledBack) {
+                $claim = null;
+            }
 
             if ($claim !== null) {
                 return $claim;
