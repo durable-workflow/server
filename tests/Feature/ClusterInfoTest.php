@@ -1137,6 +1137,20 @@ class ClusterInfoTest extends TestCase
             ->assertOk()
             ->assertJsonPath('worker_protocol.server_capabilities.activity_retry_policy', true)
             ->assertJsonPath('worker_protocol.server_capabilities.activity_timeouts', true)
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.local_activities.schema',
+                'durable-workflow.v2.local-activity.contract',
+            )
+            ->assertJsonPath('worker_protocol.server_capabilities.local_activities.version', 1)
+            ->assertJsonPath('worker_protocol.server_capabilities.local_activities.execution.mode', 'local')
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.local_activities.execution.ordinary_activity_task_created',
+                false,
+            )
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.local_activities.routing.rejected_options',
+                ['connection', 'queue', 'worker_session', 'schedule_to_start_timeout'],
+            )
             ->assertJsonPath('worker_protocol.server_capabilities.child_workflow_retry_policy', true)
             ->assertJsonPath('worker_protocol.server_capabilities.child_workflow_timeouts', true)
             ->assertJsonPath('worker_protocol.server_capabilities.parent_close_policy', true)

@@ -90,6 +90,7 @@ class WorkerProtocol
      *     query_tasks: bool,
      *     activity_retry_policy: bool,
      *     activity_timeouts: bool,
+     *     local_activities: array<string, mixed>,
      *     worker_session_verbs: list<string>,
      *     worker_sessions: array<string, mixed>,
      *     child_workflow_retry_policy: bool,
@@ -126,6 +127,7 @@ class WorkerProtocol
             'query_tasks' => true,
             'activity_retry_policy' => true,
             'activity_timeouts' => true,
+            'local_activities' => self::localActivitySemantics(),
             'worker_session_verbs' => method_exists(WorkerProtocolVersion::class, 'workerSessionVerbs')
                 ? WorkerProtocolVersion::workerSessionVerbs()
                 : ['create', 'heartbeat', 'close'],
@@ -172,6 +174,52 @@ class WorkerProtocol
             'external_task_result' => [
                 'schema' => ExternalTaskResultContract::SCHEMA,
                 'version' => ExternalTaskResultContract::VERSION,
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function localActivitySemantics(): array
+    {
+        if (method_exists(WorkerProtocolVersion::class, 'localActivitySemantics')) {
+            return WorkerProtocolVersion::localActivitySemantics();
+        }
+
+        return [
+            'schema' => 'durable-workflow.v2.local-activity.contract',
+            'version' => 1,
+            'supported' => false,
+            'api' => [
+                'functions' => ['Workflow\\V2\\localActivity'],
+                'workflow_facade' => [
+                    'Workflow\\V2\\Workflow::localActivity',
+                    'Workflow\\V2\\Workflow::executeLocalActivity',
+                ],
+                'options' => 'Workflow\\V2\\Support\\LocalActivityOptions',
+            ],
+            'execution' => [
+                'mode' => 'local',
+                'same_process' => true,
+                'ordinary_activity_task_created' => false,
+                'history_marker' => [
+                    'execution_mode' => 'local',
+                    'local_activity' => true,
+                ],
+            ],
+            'routing' => [
+                'admission' => 'activity_class_must_resolve_in_the_workflow_worker_process',
+                'queue_bypassed' => true,
+                'rejected_options' => ['connection', 'queue', 'worker_session', 'schedule_to_start_timeout'],
+            ],
+            'retry' => [
+                'cold_replay_reason' => 'cold_replay',
+            ],
+            'visibility' => [
+                'activity_execution_marker' => 'activity_options.execution_mode',
+                'history_marker' => 'payload.execution_mode',
+                'metrics_marker' => 'activities.local_*',
             ],
         ];
     }

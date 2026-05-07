@@ -142,6 +142,16 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('server_capabilities.supported_workflow_task_commands.0', 'complete_workflow')
             ->assertJsonPath('server_capabilities.activity_retry_policy', true)
             ->assertJsonPath('server_capabilities.activity_timeouts', true)
+            ->assertJsonPath(
+                'server_capabilities.local_activities.schema',
+                'durable-workflow.v2.local-activity.contract',
+            )
+            ->assertJsonPath('server_capabilities.local_activities.version', 1)
+            ->assertJsonPath('server_capabilities.local_activities.execution.mode', 'local')
+            ->assertJsonPath(
+                'server_capabilities.local_activities.execution.ordinary_activity_task_created',
+                false,
+            )
             ->assertJsonPath('server_capabilities.child_workflow_retry_policy', true)
             ->assertJsonPath('server_capabilities.child_workflow_timeouts', true)
             ->assertJsonPath('server_capabilities.parent_close_policy', true)
