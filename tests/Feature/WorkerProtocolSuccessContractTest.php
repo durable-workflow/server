@@ -165,6 +165,51 @@ class WorkerProtocolSuccessContractTest extends TestCase
         }
     }
 
+    public function test_worker_protocol_1_1_registration_advertises_feature_floor_without_worker_sessions(): void
+    {
+        $protocolVersion = '1.1';
+
+        $this->assertTrue(
+            version_compare($protocolVersion, WorkerProtocol::workerSessionMinimumProtocolVersion(), '<'),
+            'This test assumes worker sessions are gated above the protocol 1.1 feature floor.',
+        );
+
+        config(['server.worker_protocol.version' => $protocolVersion]);
+
+        $response = $this->postJson('/api/worker/register', [
+            'worker_id' => 'worker-protocol-1-1',
+            'task_queue' => 'contract-queue',
+            'runtime' => 'python',
+            'sdk_version' => '1.1.0',
+        ], [
+            'X-Namespace' => 'default',
+            WorkerProtocol::HEADER => $protocolVersion,
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ]);
+
+        $response->assertCreated()
+            ->assertHeader(WorkerProtocol::HEADER, $protocolVersion)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertJsonPath('protocol_version', $protocolVersion)
+            ->assertJsonPath('registered', true)
+            ->assertJsonPath('server_capabilities.query_tasks', true)
+            ->assertJsonPath(
+                'server_capabilities.local_activities.schema',
+                'durable-workflow.v2.local-activity.contract',
+            )
+            ->assertJsonPath('server_capabilities.worker_session_verbs', [])
+            ->assertJsonPath('server_capabilities.worker_sessions.supported', false)
+            ->assertJsonPath(
+                'server_capabilities.worker_sessions.minimum_protocol_version',
+                WorkerProtocol::workerSessionMinimumProtocolVersion(),
+            )
+            ->assertJsonPath(
+                'server_capabilities.worker_sessions.unavailable_reason',
+                'worker_protocol_version_below_worker_session_minimum',
+            )
+            ->assertJsonMissingPath('control_plane');
+    }
+
     public function test_leased_workflow_task_success_responses_use_worker_protocol_contract(): void
     {
         Queue::fake();

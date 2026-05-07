@@ -11,6 +11,7 @@ use App\Support\ServerTopology;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Support\PlatformConformanceSuite;
 use Workflow\V2\Support\PlatformProtocolSpecs;
 use Workflow\V2\Support\SurfaceStabilityContract;
@@ -523,5 +524,39 @@ class ClusterInfoCompatibilityTest extends TestCase
             WorkerProtocolVersion::supportedHistoryEncodings(),
             $response->json('worker_protocol.server_capabilities.history_compression.supported_encodings'),
         );
+    }
+
+    public function test_cluster_info_advertises_worker_protocol_1_1_feature_floor_without_worker_sessions(): void
+    {
+        $protocolVersion = '1.1';
+
+        $this->assertTrue(
+            version_compare($protocolVersion, WorkerProtocol::workerSessionMinimumProtocolVersion(), '<'),
+            'This test assumes worker sessions are gated above the protocol 1.1 feature floor.',
+        );
+
+        config(['server.worker_protocol.version' => $protocolVersion]);
+
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+
+        $response->assertJsonPath('worker_protocol.version', $protocolVersion)
+            ->assertJsonPath('client_compatibility.required_protocols.worker_protocol.version', $protocolVersion)
+            ->assertJsonPath('capabilities.payload_codecs', CodecRegistry::universal())
+            ->assertJsonPath('capabilities.worker_sessions', false)
+            ->assertJsonPath('worker_protocol.server_capabilities.query_tasks', true)
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.local_activities.schema',
+                'durable-workflow.v2.local-activity.contract',
+            )
+            ->assertJsonPath('worker_protocol.server_capabilities.worker_session_verbs', [])
+            ->assertJsonPath('worker_protocol.server_capabilities.worker_sessions.supported', false)
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.worker_sessions.minimum_protocol_version',
+                WorkerProtocol::workerSessionMinimumProtocolVersion(),
+            )
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.worker_sessions.unavailable_reason',
+                'worker_protocol_version_below_worker_session_minimum',
+            );
     }
 }
