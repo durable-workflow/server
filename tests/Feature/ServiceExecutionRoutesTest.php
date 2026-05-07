@@ -60,7 +60,7 @@ class ServiceExecutionRoutesTest extends TestCase
                     'service_name' => $serviceName,
                     'operation_name' => $operationName,
                     'operation_mode' => 'async',
-                    'resolved_binding_kind' => 'start_workflow',
+                    'resolved_binding_kind' => 'workflow_run',
                     'resolved_target_reference' => 'workflows.invoice.create',
                     'status' => 'accepted',
                     'linked_workflow_instance_id' => 'invoice-1',
@@ -122,7 +122,7 @@ class ServiceExecutionRoutesTest extends TestCase
             ->assertJsonPath('accepted', true)
             ->assertJsonPath('service_call_id', '01JEXECUTECALL000000000000')
             ->assertJsonPath('linked_workflow_instance_id', 'invoice-1')
-            ->assertJsonPath('resolved_binding_kind', 'start_workflow');
+            ->assertJsonPath('resolved_binding_kind', 'workflow_run');
 
         $this->assertNotNull($stub->captured);
         $this->assertSame('billing', $stub->captured['endpoint']);
@@ -208,7 +208,7 @@ class ServiceExecutionRoutesTest extends TestCase
             'operation_name' => 'createinvoice',
             'status' => 'accepted',
             'operation_mode' => 'async',
-            'resolved_binding_kind' => 'start_workflow',
+            'resolved_binding_kind' => 'workflow_run',
             'resolved_target_reference' => 'workflows.invoice.create',
         ]);
 
@@ -282,7 +282,7 @@ class ServiceExecutionRoutesTest extends TestCase
             'operation_name' => 'createinvoice',
             'status' => 'started',
             'operation_mode' => 'async',
-            'resolved_binding_kind' => 'start_workflow',
+            'resolved_binding_kind' => 'workflow_run',
             'resolved_target_reference' => '01JSVCCALLRUN00000000004',
             'linked_workflow_instance_id' => 'invoice-4',
             'linked_workflow_run_id' => '01JSVCCALLRUN00000000004',
@@ -313,7 +313,7 @@ class ServiceExecutionRoutesTest extends TestCase
                     'linked_workflow_instance_id' => 'invoice-4',
                     'linked_workflow_run_id' => '01JSVCCALLRUN00000000004',
                     'linked_workflow_update_id' => null,
-                    'resolved_binding_kind' => 'start_workflow',
+                    'resolved_binding_kind' => 'workflow_run',
                     'resolved_target_reference' => '01JSVCCALLRUN00000000004',
                     'reason' => null,
                 ];

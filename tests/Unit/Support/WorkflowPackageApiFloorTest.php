@@ -115,6 +115,8 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertSame('durable-workflow.v2.service-execution.contract', $manifest['schema'] ?? null);
         $this->assertContains('start_workflow', $manifest['handler_binding_kinds'] ?? []);
         $this->assertContains('invocable_http', $manifest['handler_binding_kinds'] ?? []);
+        $this->assertArrayHasKey('workflow_run', $manifest['resolved_target_binding_kinds'] ?? []);
+        $this->assertArrayHasKey('invocable_carrier_request', $manifest['resolved_target_binding_kinds'] ?? []);
     }
 
     public function test_worker_session_protocol_contract_is_public_static(): void

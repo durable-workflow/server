@@ -9,6 +9,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
+use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
@@ -55,6 +56,7 @@ class ServiceCallBoundaryTest extends TestCase
         $this->assertSame('accepted', $admission->call->status);
         $this->assertSame('analytics', $admission->call->caller_namespace);
         $this->assertSame('finance', $admission->call->target_namespace);
+        $this->assertSame(ServiceCallBindingKind::WorkflowUpdate->value, $admission->call->resolved_binding_kind);
         $this->assertSame('worker', $admission->call->caller_principal_roles[0]);
         $this->assertNotNull($admission->call->accepted_at);
         $this->assertNull($admission->call->failed_at);
@@ -65,6 +67,32 @@ class ServiceCallBoundaryTest extends TestCase
             'outcome_category' => 'accepted',
             'caller_principal_subject' => 'role:worker',
         ]);
+    }
+
+    public function test_admit_fails_closed_when_handler_binding_kind_is_unknown(): void
+    {
+        $operation = $this->seedOperation();
+        $operation->update(['handler_binding_kind' => 'unsupported_handler']);
+
+        /** @var ServiceCallBoundary $boundary */
+        $boundary = $this->app->make(ServiceCallBoundary::class);
+
+        $admission = $boundary->admitFor(
+            principal: Principal::role('worker', 'token'),
+            callerNamespace: 'analytics',
+            operation: $operation,
+            endpointName: 'billing',
+            serviceName: 'invoicing',
+        );
+
+        $this->assertTrue($admission->rejected());
+        $this->assertSame(ServiceCallOutcome::RejectedNotFound, $admission->decision->outcome);
+        $this->assertSame('unknown_binding_kind', $admission->decision->reason);
+        $this->assertSame('failed', $admission->call->status);
+        $this->assertSame('unresolved', $admission->call->resolved_binding_kind);
+        $this->assertNull($admission->call->resolved_target_reference);
+        $this->assertSame('handler_binding_kind', $admission->call->outcome_metadata['resolution_failed_at']);
+        $this->assertNull($admission->call->accepted_at);
     }
 
     public function test_admit_blocks_call_when_caller_namespace_is_denied(): void

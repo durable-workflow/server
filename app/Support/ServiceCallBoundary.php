@@ -4,10 +4,13 @@ namespace App\Support;
 
 use App\Auth\Principal;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
+use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOperationMode;
+use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
 use Workflow\V2\Support\ServiceBoundaryAuditRecorder;
+use Workflow\V2\Support\ServiceBoundaryDecision;
 use Workflow\V2\Support\ServiceBoundaryRequest;
 use Workflow\V2\Support\ServiceCallPrincipal;
 
@@ -81,6 +84,8 @@ final class ServiceCallBoundary
         ?array $cancellationPolicy = null,
         ?array $retryPolicy = null,
     ): ServiceCallAdmission {
+        $resolvedBindingKind = self::resolvedBindingKind($operation);
+
         $request = new ServiceBoundaryRequest(
             principal: self::principalFromAuth($principal),
             callerNamespace: $callerNamespace,
@@ -91,8 +96,8 @@ final class ServiceCallBoundary
             operationMode: ServiceCallOperationMode::tryFromCatalog($operationModeOverride)
                 ?? ServiceCallOperationMode::tryFromCatalog($operation->operation_mode)
                 ?? ServiceCallOperationMode::Async,
-            resolvedBindingKind: (string) $operation->handler_binding_kind,
-            resolvedTargetReference: $operation->handler_target_reference,
+            resolvedBindingKind: $resolvedBindingKind,
+            resolvedTargetReference: $resolvedBindingKind === null ? null : $operation->handler_target_reference,
             callerWorkflowInstanceId: $callerWorkflowInstanceId,
             callerWorkflowRunId: $callerWorkflowRunId,
             linkedWorkflowInstanceId: $linkedWorkflowInstanceId,
@@ -107,6 +112,27 @@ final class ServiceCallBoundary
             cancellationPolicy: $cancellationPolicy,
             retryPolicy: $retryPolicy,
         );
+
+        if ($resolvedBindingKind === null) {
+            $decision = new ServiceBoundaryDecision(
+                outcome: ServiceCallOutcome::RejectedNotFound,
+                reason: 'unknown_binding_kind',
+                message: sprintf(
+                    'Service operation [%s] has unknown handler binding kind [%s].',
+                    $operation->operation_name,
+                    $operation->handler_binding_kind,
+                ),
+                policyName: 'default',
+                metadata: [
+                    'failure_reason' => 'resolution_failure',
+                    'resolution_failed_at' => 'handler_binding_kind',
+                    'handler_binding_kind' => (string) $operation->handler_binding_kind,
+                ],
+            );
+            $call = $this->recorder->record($request, $decision);
+
+            return new ServiceCallAdmission($decision, $call, $request);
+        }
 
         return $this->admit($request);
     }
@@ -132,5 +158,24 @@ final class ServiceCallBoundary
             tenant: $principal->tenant(),
             claims: $principal->claims(),
         );
+    }
+
+    private static function resolvedBindingKind(WorkflowServiceOperation $operation): ?string
+    {
+        return match (strtolower(trim((string) $operation->handler_binding_kind))) {
+            ServiceCallBindingKind::WorkflowRun->value,
+            'start_workflow',
+            'workflow_class' => ServiceCallBindingKind::WorkflowRun->value,
+            ServiceCallBindingKind::WorkflowUpdate->value,
+            'update_workflow' => ServiceCallBindingKind::WorkflowUpdate->value,
+            ServiceCallBindingKind::WorkflowSignal->value,
+            'signal_workflow' => ServiceCallBindingKind::WorkflowSignal->value,
+            ServiceCallBindingKind::WorkflowQuery->value,
+            'query_workflow' => ServiceCallBindingKind::WorkflowQuery->value,
+            ServiceCallBindingKind::ActivityExecution->value => ServiceCallBindingKind::ActivityExecution->value,
+            ServiceCallBindingKind::InvocableCarrierRequest->value,
+            'invocable_http' => ServiceCallBindingKind::InvocableCarrierRequest->value,
+            default => null,
+        };
     }
 }

@@ -349,7 +349,7 @@ class ServiceCatalogControllerTest extends TestCase
             'linked_workflow_update_id' => (string) Str::ulid(),
             'status' => 'running',
             'operation_mode' => 'async',
-            'resolved_binding_kind' => 'update_workflow',
+            'resolved_binding_kind' => 'workflow_update',
             'resolved_target_reference' => 'updates.invoice.submit',
             'payload_codec' => 'json',
             'input_payload_reference' => 'payloads/service-calls/input-1.json',
@@ -381,7 +381,7 @@ class ServiceCatalogControllerTest extends TestCase
             ->assertJsonPath('target_namespace', 'default')
             ->assertJsonPath('status', 'running')
             ->assertJsonPath('operation_mode', 'async')
-            ->assertJsonPath('resolved_binding_kind', 'update_workflow')
+            ->assertJsonPath('resolved_binding_kind', 'workflow_update')
             ->assertJsonPath('resolved_target_reference', 'updates.invoice.submit')
             ->assertJsonPath('payload_codec', 'json')
             ->assertJsonPath('input_payload_reference', 'payloads/service-calls/input-1.json')
@@ -455,7 +455,7 @@ class ServiceCatalogControllerTest extends TestCase
             'target_namespace' => 'default',
             'status' => 'accepted',
             'operation_mode' => 'sync',
-            'resolved_binding_kind' => 'start_workflow',
+            'resolved_binding_kind' => 'workflow_run',
             'accepted_at' => now(),
         ]);
 

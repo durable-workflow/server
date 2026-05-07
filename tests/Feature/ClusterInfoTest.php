@@ -669,6 +669,14 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('service_execution_contract.handler_binding_kinds.0', 'start_workflow')
             ->assertJsonPath('service_execution_contract.handler_binding_kinds.5', 'invocable_http')
             ->assertJsonPath(
+                'service_execution_contract.resolved_target_binding_kinds.workflow_run.terminal_link_reference',
+                'workflow_run_id',
+            )
+            ->assertJsonPath(
+                'service_execution_contract.resolved_target_binding_kinds.invocable_carrier_request.terminal_link_reference',
+                'carrier_request_id',
+            )
+            ->assertJsonPath(
                 'service_execution_contract.durable_response_fields.0',
                 'service_call_id',
             )
