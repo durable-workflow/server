@@ -15,6 +15,7 @@ use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
+use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowTask;
 
@@ -354,6 +355,118 @@ class WorkerSessionProtocolTest extends TestCase
                 ->where('session_id', 'gpu-lost-claim')
                 ->exists(),
         );
+    }
+
+    public function test_activity_heartbeat_reports_worker_session_renewal_failure(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-session-heartbeat-renewal',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'external-workflows',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $this->registerWorkerThroughProtocol(
+            workerId: 'workflow-heartbeat-renewal-worker',
+            taskQueue: 'external-workflows',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $workflowPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'workflow-heartbeat-renewal-worker',
+            'task_queue' => 'external-workflows',
+        ], $this->workerHeaders());
+
+        $workflowPoll->assertOk();
+
+        $this->postJson(
+            sprintf('/api/worker/workflow-tasks/%s/complete', $workflowPoll->json('task.task_id')),
+            [
+                'lease_owner' => $workflowPoll->json('task.lease_owner'),
+                'workflow_task_attempt' => $workflowPoll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'schedule_activity',
+                        'activity_type' => 'tests.external-greeting-activity',
+                        'arguments' => Serializer::serializeWithCodec(
+                            (string) config('workflows.serializer'),
+                            ['Ada'],
+                        ),
+                        'worker_session' => [
+                            'session_id' => 'gpu-heartbeat-renewal',
+                            'queue' => 'gpu-activities',
+                            'requirements' => ['gpu:nvidia-l4'],
+                            'lease_seconds' => 120,
+                            'ttl_seconds' => 600,
+                        ],
+                    ],
+                ],
+            ],
+            $this->workerHeaders(),
+        )->assertOk();
+
+        $this->registerWorkerThroughProtocol(
+            workerId: 'gpu-heartbeat-renewal-worker',
+            taskQueue: 'gpu-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+            capabilities: ['gpu:nvidia-l4'],
+        );
+
+        $activityPoll = $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'gpu-heartbeat-renewal-worker',
+            'task_queue' => 'gpu-activities',
+        ], $this->workerHeaders());
+
+        $activityPoll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.worker_session.session_id', 'gpu-heartbeat-renewal')
+            ->assertJsonPath('task.worker_session.lease_owner', 'gpu-heartbeat-renewal-worker');
+
+        $this->registerWorkerThroughProtocol(
+            workerId: 'gpu-heartbeat-renewal-other-worker',
+            taskQueue: 'gpu-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+            capabilities: ['gpu:nvidia-l4'],
+        );
+
+        WorkerSessionLease::query()
+            ->where('namespace', 'default')
+            ->where('session_id', 'gpu-heartbeat-renewal')
+            ->update(['lease_owner' => 'gpu-heartbeat-renewal-other-worker']);
+
+        $taskId = (string) $activityPoll->json('task.task_id');
+        $attemptId = (string) $activityPoll->json('task.activity_attempt_id');
+
+        $heartbeat = $this->postJson("/api/worker/activity-tasks/{$taskId}/heartbeat", [
+            'activity_attempt_id' => $attemptId,
+            'lease_owner' => 'gpu-heartbeat-renewal-worker',
+            'message' => 'renewing session-bound work',
+        ], $this->workerHeaders());
+
+        $heartbeat->assertStatus(409)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('activity_attempt_id', $attemptId)
+            ->assertJsonPath('lease_owner', 'gpu-heartbeat-renewal-worker')
+            ->assertJsonPath('can_continue', false)
+            ->assertJsonPath('heartbeat_recorded', false)
+            ->assertJsonPath('reason', 'session_owner_mismatch')
+            ->assertJsonPath('error', 'Worker session lease is owned by another worker.')
+            ->assertJsonPath('worker_session.session_id', 'gpu-heartbeat-renewal')
+            ->assertJsonPath('worker_session.status', 'active')
+            ->assertJsonPath('worker_session.lease_owner', 'gpu-heartbeat-renewal-other-worker')
+            ->assertJsonPath('worker_session_renewal.admitted', false)
+            ->assertJsonPath('worker_session_renewal.reason', 'session_owner_mismatch');
+
+        $this->assertNull(ActivityAttempt::query()->find($attemptId)?->last_heartbeat_at);
     }
 
     public function test_worker_session_activity_commands_are_protocol_fenced_for_mixed_server_rollouts(): void

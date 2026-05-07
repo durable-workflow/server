@@ -289,14 +289,37 @@ class ActivityTaskController
 
         /** @var ActivityTaskBridgeContract $bridge */
         $bridge = app(ActivityTaskBridgeContract::class);
-        $status = $bridge->heartbeat(
-            $validated['activity_attempt_id'],
-            $this->heartbeatProgress($validated),
-        );
+
         $workerSession = $this->workerSessions->heartbeatForAttempt(
             $namespace,
             $validated['activity_attempt_id'],
             $validated['lease_owner'],
+        );
+
+        if ($workerSession !== null && ($workerSession['admitted'] ?? false) !== true) {
+            $status = $bridge->status($validated['activity_attempt_id']);
+
+            return WorkerProtocol::json([
+                'task_id' => $taskId,
+                'activity_attempt_id' => $validated['activity_attempt_id'],
+                'lease_owner' => $status['lease_owner'] ?? $validated['lease_owner'],
+                'cancel_requested' => (bool) ($status['cancel_requested'] ?? false),
+                'can_continue' => false,
+                'reason' => $workerSession['reason'] ?? 'worker_session_renewal_failed',
+                'run_closed_reason' => $status['run_closed_reason'] ?? null,
+                'run_closed_at' => $status['run_closed_at'] ?? null,
+                'heartbeat_recorded' => false,
+                'lease_expires_at' => $status['lease_expires_at'] ?? null,
+                'last_heartbeat_at' => $status['last_heartbeat_at'] ?? null,
+                'error' => $workerSession['error'] ?? 'Worker session renewal failed.',
+                'worker_session' => $this->workerSessionSnapshotFromRenewal($workerSession),
+                'worker_session_renewal' => $this->workerSessionRenewalStatusPayload($workerSession),
+            ], $this->workerSessionRenewalHttpStatus($workerSession));
+        }
+
+        $status = $bridge->heartbeat(
+            $validated['activity_attempt_id'],
+            $this->heartbeatProgress($validated),
         );
 
         return WorkerProtocol::json([
@@ -515,9 +538,56 @@ class ActivityTaskController
     }
 
     /**
-     * @param  array<string, mixed>  $validated
+     * @param  array<string, mixed>  $workerSession
      * @return array<string, mixed>
      */
+    private function workerSessionRenewalStatusPayload(array $workerSession): array
+    {
+        return array_filter([
+            'admitted' => $workerSession['admitted'] ?? false,
+            'outcome' => $workerSession['outcome'] ?? null,
+            'reason' => $workerSession['reason'] ?? null,
+            'error' => $workerSession['error'] ?? null,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * @param  array<string, mixed>  $workerSession
+     * @return array<string, mixed>|null
+     */
+    private function workerSessionSnapshotFromRenewal(array $workerSession): ?array
+    {
+        if (is_array($workerSession['session'] ?? null)) {
+            return $workerSession['session'];
+        }
+
+        $excluded = [
+            'admitted',
+            'outcome',
+            'error',
+            'reason',
+            'activity_task_id',
+        ];
+
+        if (! is_string($workerSession['status'] ?? null)) {
+            $excluded[] = 'status';
+        }
+
+        $snapshot = array_diff_key($workerSession, array_flip($excluded));
+
+        return $snapshot === [] ? null : $snapshot;
+    }
+
+    /**
+     * @param  array<string, mixed>  $workerSession
+     */
+    private function workerSessionRenewalHttpStatus(array $workerSession): int
+    {
+        return is_int($workerSession['status'] ?? null)
+            ? $workerSession['status']
+            : 409;
+    }
+
     /**
      * @return array<string, string>|null
      */
