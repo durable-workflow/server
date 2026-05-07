@@ -90,6 +90,8 @@ class WorkerProtocol
      *     query_tasks: bool,
      *     activity_retry_policy: bool,
      *     activity_timeouts: bool,
+     *     worker_session_verbs: list<string>,
+     *     worker_sessions: array<string, mixed>,
      *     child_workflow_retry_policy: bool,
      *     child_workflow_timeouts: bool,
      *     parent_close_policy: bool,
@@ -124,6 +126,18 @@ class WorkerProtocol
             'query_tasks' => true,
             'activity_retry_policy' => true,
             'activity_timeouts' => true,
+            'worker_session_verbs' => method_exists(WorkerProtocolVersion::class, 'workerSessionVerbs')
+                ? WorkerProtocolVersion::workerSessionVerbs()
+                : ['create', 'heartbeat', 'close'],
+            'worker_sessions' => method_exists(WorkerProtocolVersion::class, 'workerSessionSemantics')
+                ? WorkerProtocolVersion::workerSessionSemantics()
+                : [
+                    'command_field' => 'worker_session',
+                    'activity_options_field' => 'worker_session',
+                    'lifecycle' => 'lazy_create_on_first_admitted_activity',
+                    'ownership' => 'single_worker_lease_owner',
+                    'verbs' => ['create', 'heartbeat', 'close'],
+                ],
             'child_workflow_retry_policy' => true,
             'child_workflow_timeouts' => true,
             'parent_close_policy' => true,

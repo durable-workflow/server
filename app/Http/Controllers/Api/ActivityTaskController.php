@@ -10,6 +10,7 @@ use App\Support\InvocableCarrierContract;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerProtocol;
+use App\Support\WorkerSessionRegistry;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -23,6 +24,7 @@ class ActivityTaskController
     public function __construct(
         private readonly ActivityTaskPoller $activityTaskPoller,
         private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
+        private readonly WorkerSessionRegistry $workerSessions,
     ) {}
 
     /**
@@ -68,6 +70,7 @@ class ActivityTaskController
             taskQueue: $validated['task_queue'],
             leaseOwner: $validated['worker_id'],
             buildId: $registeredBuildId,
+            worker: $worker,
             supportedActivityTypes: $this->nonEmptyStringArray($worker->supported_activity_types),
         );
         $claim = $poll['task'] ?? null;
@@ -100,6 +103,11 @@ class ActivityTaskController
                 'lease_owner' => $claim['lease_owner'],
                 'lease_expires_at' => $claim['lease_expires_at'],
                 'deadlines' => $deadlines,
+                'worker_session' => $this->workerSessions->workerSessionForExecution(
+                    is_string($claim['activity_execution_id'] ?? null)
+                        ? $claim['activity_execution_id']
+                        : null,
+                ),
                 'external_executor' => $externalExecutor,
             ], static fn (mixed $v): bool => $v !== null),
             'poll_status' => is_string($poll['poll_status'] ?? null)
@@ -285,6 +293,11 @@ class ActivityTaskController
             $validated['activity_attempt_id'],
             $this->heartbeatProgress($validated),
         );
+        $workerSession = $this->workerSessions->heartbeatForAttempt(
+            $namespace,
+            $validated['activity_attempt_id'],
+            $validated['lease_owner'],
+        );
 
         return WorkerProtocol::json([
             'task_id' => $taskId,
@@ -298,6 +311,7 @@ class ActivityTaskController
             'heartbeat_recorded' => $status['heartbeat_recorded'],
             'lease_expires_at' => $status['lease_expires_at'],
             'last_heartbeat_at' => $status['last_heartbeat_at'],
+            'worker_session' => $workerSession['session'] ?? null,
         ], ($status['reason'] ?? null) === 'attempt_not_found' ? 404 : 200);
     }
 

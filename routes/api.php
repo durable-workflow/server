@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\SystemController;
 use App\Http\Controllers\Api\TaskQueueController;
 use App\Http\Controllers\Api\WorkerController;
 use App\Http\Controllers\Api\WorkerManagementController;
+use App\Http\Controllers\Api\WorkerSessionController;
 use App\Http\Controllers\Api\WorkflowController;
 use App\Http\Middleware\Authenticate;
 use App\Http\Middleware\ControlPlaneVersionResolver;
@@ -142,6 +143,11 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::post('/register', [WorkerController::class, 'register']);
         Route::post('/heartbeat', [WorkerController::class, 'heartbeat']);
 
+        // Worker sessions
+        Route::post('/sessions', [WorkerSessionController::class, 'create']);
+        Route::post('/sessions/{sessionId}/heartbeat', [WorkerSessionController::class, 'heartbeat']);
+        Route::delete('/sessions/{sessionId}', [WorkerSessionController::class, 'close']);
+
         // Workflow tasks (long-poll)
         Route::post('/workflow-tasks/poll', [WorkerController::class, 'pollWorkflowTasks']);
         Route::post('/workflow-tasks/{taskId}/history', [WorkerController::class, 'workflowTaskHistory']);
@@ -166,6 +172,12 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::get('/', [WorkerManagementController::class, 'index'])->middleware([$operator, $cpv, $httpControl, $ns]);
         Route::get('/{workerId}', [WorkerManagementController::class, 'show'])->middleware([$operator, $cpv, $httpControl, $ns]);
         Route::delete('/{workerId}', [WorkerManagementController::class, 'destroy'])->middleware([$admin, $cpv, $httpControl, $ns]);
+    });
+
+    // ── Worker Sessions (Management) ────────────────────────────────
+    Route::prefix('worker-sessions')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
+        Route::get('/', [WorkerSessionController::class, 'index']);
+        Route::get('/{sessionId}', [WorkerSessionController::class, 'show']);
     });
 
     // ── Task Queues ──────────────────────────────────────────────────

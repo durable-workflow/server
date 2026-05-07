@@ -15,6 +15,7 @@ use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
 use Workflow\V2\Support\DefaultMatchingRole;
 use Workflow\V2\Support\MatchingRoleSnapshot;
 use Workflow\V2\Support\ServiceExecutionContract;
+use Workflow\V2\Support\WorkerProtocolVersion;
 
 /**
  * Enforces the minimum `durable-workflow/workflow` API surface the server
@@ -53,6 +54,10 @@ final class WorkflowPackageApiFloor
         // ServiceExecutionContract::manifest() publishes the service-layer
         // execution contract that /api/cluster/info re-exports.
         [ServiceExecutionContract::class, 'manifest'],
+        // Worker-session protocol contract: worker-plane capabilities and
+        // cluster info re-export the package-owned runtime semantics.
+        [WorkerProtocolVersion::class, 'workerSessionVerbs'],
+        [WorkerProtocolVersion::class, 'workerSessionSemantics'],
     ];
 
     /**
@@ -164,9 +169,9 @@ final class WorkflowPackageApiFloor
             .'includes CodecRegistry::universal(), CodecRegistry::engineSpecific(), MatchingRoleSnapshot::current(), '
             .'the filtered WorkflowTaskBridge::poll() contract, '
             .'the poll-mode queue capability demotion, the matching-role repair-pass contract, '
-            .'the service execution control-plane contract, plus '
+            .'the service execution control-plane contract, the worker-session protocol contract, plus '
             .'ChildWorkflowNamespaceProjection for package-owned child namespace propagation '
-            .'(see repos/workflow commits 8e132d0, cfd8e95, a1d442d, and f666b25, or newer).',
+            .'(install a current v2 workflow package snapshot or newer).',
             implode(', ', $missing),
         ));
     }

@@ -96,6 +96,7 @@ class HealthController
             'child_workflow_timeouts' => true,
             'parent_close_policy' => true,
             'non_retryable_failures' => true,
+            'worker_sessions' => true,
             'history_retention' => true,
             'payload_codec_envelope' => true,
             'payload_codec_envelope_responses' => true,

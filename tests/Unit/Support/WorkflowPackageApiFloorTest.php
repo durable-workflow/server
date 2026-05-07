@@ -17,6 +17,7 @@ use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
 use Workflow\V2\Support\DefaultMatchingRole;
 use Workflow\V2\Support\MatchingRoleSnapshot;
 use Workflow\V2\Support\ServiceExecutionContract;
+use Workflow\V2\Support\WorkerProtocolVersion;
 
 /**
  * Pins the API floor contract the server relies on from
@@ -114,6 +115,21 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertSame('durable-workflow.v2.service-execution.contract', $manifest['schema'] ?? null);
         $this->assertContains('start_workflow', $manifest['handler_binding_kinds'] ?? []);
         $this->assertContains('invocable_http', $manifest['handler_binding_kinds'] ?? []);
+    }
+
+    public function test_worker_session_protocol_contract_is_public_static(): void
+    {
+        $reflection = new ReflectionClass(WorkerProtocolVersion::class);
+
+        foreach (['workerSessionVerbs', 'workerSessionSemantics'] as $methodName) {
+            $method = $reflection->getMethod($methodName);
+
+            $this->assertTrue($method->isPublic());
+            $this->assertTrue($method->isStatic());
+        }
+
+        $this->assertSame(['create', 'heartbeat', 'close'], WorkerProtocolVersion::workerSessionVerbs());
+        $this->assertSame('worker_session', WorkerProtocolVersion::workerSessionSemantics()['command_field'] ?? null);
     }
 
     public function test_workflow_task_bridge_poll_signature_matches_api_floor(): void

@@ -2,6 +2,8 @@
 
 namespace App\Support;
 
+use App\Models\WorkerRegistration;
+use Illuminate\Support\Facades\DB;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -14,6 +16,7 @@ final class ActivityTaskPoller
         private readonly ActivityTaskBridgeContract $bridge,
         private readonly LongPollSignalStore $signals,
         private readonly TaskQueueAdmission $admission,
+        private readonly WorkerSessionRegistry $workerSessions,
     ) {}
 
     /**
@@ -25,6 +28,7 @@ final class ActivityTaskPoller
         string $taskQueue,
         string $leaseOwner,
         ?string $buildId,
+        WorkerRegistration $worker,
         array $supportedActivityTypes = [],
     ): array {
         $limit = max(10, max(1, (int) config('server.polling.max_tasks_per_poll', 1)) * 10);
@@ -41,6 +45,7 @@ final class ActivityTaskPoller
                 $taskQueue,
                 $leaseOwner,
                 $buildId,
+                $worker,
                 $supportedActivityTypes,
                 $limit,
                 &$nextProbeAt,
@@ -51,6 +56,7 @@ final class ActivityTaskPoller
                     $taskQueue,
                     $leaseOwner,
                     $buildId,
+                    $worker,
                     $limit,
                     $supportedActivityTypes,
                 );
@@ -80,6 +86,7 @@ final class ActivityTaskPoller
         string $taskQueue,
         string $leaseOwner,
         ?string $buildId,
+        WorkerRegistration $worker,
         int $limit,
         array $supportedActivityTypes = [],
     ): array {
@@ -89,7 +96,15 @@ final class ActivityTaskPoller
             $namespace,
             $taskQueue,
             TaskQueueAdmission::ACTIVITY_TASKS,
-            fn (): ?array => $this->claimReadyTask($namespace, $taskQueue, $leaseOwner, $buildId, $limit, $supportedActivityTypes),
+            fn (): ?array => $this->claimReadyTask(
+                $namespace,
+                $taskQueue,
+                $leaseOwner,
+                $buildId,
+                $worker,
+                $limit,
+                $supportedActivityTypes,
+            ),
         );
 
         return [
@@ -116,6 +131,7 @@ final class ActivityTaskPoller
         string $taskQueue,
         string $leaseOwner,
         ?string $buildId,
+        WorkerRegistration $worker,
         int $limit,
         array $supportedActivityTypes = [],
     ): ?array {
@@ -137,9 +153,32 @@ final class ActivityTaskPoller
                 continue;
             }
 
-            $claim = $this->bridge->claimStatus($taskId, $leaseOwner);
+            $claim = DB::transaction(function () use ($namespace, $worker, $readyTask, $taskId, $leaseOwner): ?array {
+                $workerSession = $this->workerSessions->optionsForExecution(
+                    is_string($readyTask['activity_execution_id'] ?? null)
+                        ? $readyTask['activity_execution_id']
+                        : null,
+                );
 
-            if (($claim['claimed'] ?? false) === true) {
+                if ($workerSession !== null) {
+                    $admission = $this->workerSessions->admitActivity(
+                        $namespace,
+                        $worker,
+                        $workerSession,
+                        $taskId,
+                    );
+
+                    if (($admission['admitted'] ?? false) !== true) {
+                        return null;
+                    }
+                }
+
+                $claim = $this->bridge->claimStatus($taskId, $leaseOwner);
+
+                return ($claim['claimed'] ?? false) === true ? $claim : null;
+            });
+
+            if ($claim !== null) {
                 return $claim;
             }
         }

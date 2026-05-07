@@ -6,6 +6,7 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\ProjectionDriftMetrics;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
+use App\Support\WorkerSessionRegistry;
 use App\Support\WorkflowTaskFailureMetrics;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -21,6 +22,7 @@ class SystemController
     public function __construct(
         private readonly TaskQueueBuildIdRolloutSnapshot $buildIdRollouts,
         private readonly MatchingRole $matchingRole,
+        private readonly WorkerSessionRegistry $workerSessions,
     ) {}
 
     public function repairPass(Request $request): JsonResponse
@@ -138,6 +140,7 @@ class SystemController
 
         $namespace = (string) $request->attributes->get('namespace');
         $snapshot = OperatorMetrics::snapshot(null, $namespace);
+        $snapshot['worker_sessions'] = $this->workerSessions->metrics($namespace);
 
         return ControlPlaneProtocol::json([
             'namespace' => $namespace,

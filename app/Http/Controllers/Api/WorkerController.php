@@ -60,8 +60,11 @@ class WorkerController
             'workflow_definition_fingerprints.*' => ['string', 'max:255'],
             'supported_activity_types' => ['nullable', 'array'],
             'supported_activity_types.*' => ['string'],
+            'capabilities' => ['nullable', 'array'],
+            'capabilities.*' => ['string', 'max:255'],
             'max_concurrent_workflow_tasks' => ['nullable', 'integer', 'min:1'],
             'max_concurrent_activity_tasks' => ['nullable', 'integer', 'min:1'],
+            'max_concurrent_worker_sessions' => ['nullable', 'integer', 'min:1'],
         ]);
 
         $workerId = $validated['worker_id'] ?? Str::ulid()->toBase32();
@@ -118,8 +121,10 @@ class WorkerController
                 'supported_workflow_types' => $validated['supported_workflow_types'] ?? [],
                 'workflow_definition_fingerprints' => $workflowDefinitionFingerprints,
                 'supported_activity_types' => $validated['supported_activity_types'] ?? [],
+                'capabilities' => $this->nonEmptyStringArray($validated['capabilities'] ?? []),
                 'max_concurrent_workflow_tasks' => $validated['max_concurrent_workflow_tasks'] ?? 100,
                 'max_concurrent_activity_tasks' => $validated['max_concurrent_activity_tasks'] ?? 100,
+                'max_concurrent_worker_sessions' => $validated['max_concurrent_worker_sessions'] ?? 10,
                 'last_heartbeat_at' => now(),
                 'status' => $registrationStatus,
             ]
@@ -484,6 +489,17 @@ class WorkerController
             'commands.*.schedule_to_start_timeout' => ['nullable', 'integer', 'min:1'],
             'commands.*.schedule_to_close_timeout' => ['nullable', 'integer', 'min:1'],
             'commands.*.heartbeat_timeout' => ['nullable', 'integer', 'min:1'],
+            'commands.*.worker_session' => ['nullable', 'array'],
+            'commands.*.worker_session.session_id' => ['nullable', 'string', 'max:255'],
+            'commands.*.worker_session.connection' => ['nullable', 'string', 'max:255'],
+            'commands.*.worker_session.queue' => ['nullable', 'string', 'max:255'],
+            'commands.*.worker_session.requirements' => ['nullable', 'array'],
+            'commands.*.worker_session.requirements.*' => ['string', 'max:255'],
+            'commands.*.worker_session.lease_seconds' => ['nullable', 'integer', 'min:1'],
+            'commands.*.worker_session.ttl_seconds' => ['nullable', 'integer', 'min:1'],
+            'commands.*.worker_session.max_concurrent_activities' => ['nullable', 'integer', 'min:1'],
+            'commands.*.worker_session.create_if_missing' => ['nullable', 'boolean'],
+            'commands.*.worker_session.allow_reacquire_after_failure' => ['nullable', 'boolean'],
             'commands.*.execution_timeout_seconds' => ['nullable', 'integer', 'min:1'],
             'commands.*.run_timeout_seconds' => ['nullable', 'integer', 'min:1'],
             'commands.*.workflow_type' => ['nullable', 'string'],
@@ -580,6 +596,11 @@ class WorkerController
                 }
             }
 
+            if ($this->hasCommandValue($command, 'worker_session') && $type !== 'schedule_activity') {
+                $errors["commands.{$index}.worker_session"][] =
+                    'worker_session is only supported for schedule_activity commands.';
+            }
+
             foreach (['execution_timeout_seconds', 'run_timeout_seconds'] as $field) {
                 if ($this->hasCommandValue($command, $field) && $type !== 'start_child_workflow') {
                     $errors["commands.{$index}.{$field}"][] =
@@ -627,6 +648,9 @@ class WorkerController
             'schedule_to_start_timeout',
             'schedule_to_close_timeout',
             'heartbeat_timeout',
+            'worker_session.lease_seconds',
+            'worker_session.ttl_seconds',
+            'worker_session.max_concurrent_activities',
             'execution_timeout_seconds',
             'run_timeout_seconds',
             'delay_seconds',
@@ -638,6 +662,16 @@ class WorkerController
 
         foreach ($commands as $index => $command) {
             foreach ($integerFields as $field) {
+                if (str_contains($field, '.')) {
+                    [$parent, $child] = explode('.', $field, 2);
+
+                    if (isset($command[$parent]) && is_array($command[$parent]) && array_key_exists($child, $command[$parent])) {
+                        $commands[$index][$parent][$child] = $this->normalizeValidatedInteger($command[$parent][$child]);
+                    }
+
+                    continue;
+                }
+
                 if (array_key_exists($field, $command)) {
                     $commands[$index][$field] = $this->normalizeValidatedInteger($command[$field]);
                 }

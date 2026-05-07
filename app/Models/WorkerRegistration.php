@@ -18,8 +18,10 @@ class WorkerRegistration extends Model
         'supported_workflow_types',
         'workflow_definition_fingerprints',
         'supported_activity_types',
+        'capabilities',
         'max_concurrent_workflow_tasks',
         'max_concurrent_activity_tasks',
+        'max_concurrent_worker_sessions',
         'last_heartbeat_at',
         'status',
     ];
@@ -30,6 +32,7 @@ class WorkerRegistration extends Model
             'supported_workflow_types' => 'array',
             'workflow_definition_fingerprints' => 'array',
             'supported_activity_types' => 'array',
+            'capabilities' => 'array',
             'last_heartbeat_at' => 'datetime',
         ];
     }
