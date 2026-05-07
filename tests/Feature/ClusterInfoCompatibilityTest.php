@@ -263,14 +263,11 @@ class ClusterInfoCompatibilityTest extends TestCase
             'waterline_read_api',
             'waterline_diagnostic_objects',
             'repair_actionability_objects',
+            'cli_json_envelopes',
             'mcp_discovery',
             'mcp_tool_results',
             'cluster_info_envelope',
         ];
-
-        if (array_key_exists('cli_json_envelopes', $specs)) {
-            $expectedDeliverableSpecs[] = 'cli_json_envelopes';
-        }
 
         foreach ($expectedDeliverableSpecs as $expectedSpec) {
             $this->assertArrayHasKey(
