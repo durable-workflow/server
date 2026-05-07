@@ -267,6 +267,11 @@ class ClusterInfoCompatibilityTest extends TestCase
             'mcp_tool_results',
             'cluster_info_envelope',
         ];
+
+        if (array_key_exists('cli_json_envelopes', $specs)) {
+            $expectedDeliverableSpecs[] = 'cli_json_envelopes';
+        }
+
         foreach ($expectedDeliverableSpecs as $expectedSpec) {
             $this->assertArrayHasKey(
                 $expectedSpec,
