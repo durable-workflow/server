@@ -73,6 +73,9 @@ The command emits a single JSON document shaped by
 - `replay_diff` — the
   `durable-workflow.v2.replay-diff` report (replay status, reason,
   drift fields).
+- `evidence` — booleans and counters that say which verification
+  checks actually ran (`integrity_checked`, `replay_checked`,
+  `replay_skipped`, and `strict_warnings`).
 
 The command's exit code is the gate signal:
 
@@ -96,7 +99,11 @@ The aggregated report carries
 `verdict` + `promotion_decision` vocabulary as the single-bundle report.
 Each per-bundle entry under `bundles[]` keeps its own verdict and
 promotion decision so a CI runner can render which bundle held up the
-gate. The aggregation rule is **strictest verdict wins**: any per-bundle
+gate. The top-level `evidence` block carries `bundle_count`,
+`missing_bundle_count`, `integrity_checked_count`, and
+`replay_checked_count`, letting an agent distinguish "all sampled
+bundles were checked" from "no evidence was supplied." The aggregation
+rule is **strictest verdict wins**: any per-bundle
 `failed` pins the overall to `failed`; otherwise any `drifted` pins to
 `drifted`; otherwise any `warning` pins to `warning`; otherwise `ok`. An
 empty directory aggregates to `failed` because a gate with no evidence
@@ -125,6 +132,10 @@ re-implementing the verdict-to-decision table:
 `ReplayPromotionGate::aggregate()` reduces a list of reports with the
 same strictest-verdict-wins rule as the batch CLI, so any caller that
 sees multiple reports can collapse them to one decision deterministically.
+Known v1 verify and simulation reports must include their `evidence`
+block; a clean verdict with missing evidence blocks promotion, and a
+single-bundle report that intentionally used `--skip-replay` is reduced
+to `review_before_promote` rather than `safe_to_promote`.
 
 ## Verdicts and promotion
 

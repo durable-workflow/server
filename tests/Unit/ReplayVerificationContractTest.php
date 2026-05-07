@@ -41,6 +41,10 @@ class ReplayVerificationContractTest extends TestCase
             $this->assertContains($status, $manifest['integrity_report']['statuses']);
         }
 
+        foreach (['rule', 'severity', 'message', 'path', 'context'] as $field) {
+            $this->assertContains($field, $manifest['integrity_report']['finding_fields']);
+        }
+
         foreach ([
             'integrity.checksum_mismatch',
             'integrity.signature_mismatch',
@@ -81,8 +85,12 @@ class ReplayVerificationContractTest extends TestCase
         );
         $this->assertSame(1, $manifest['verification_report']['schema_version']);
 
-        foreach (['verdict', 'promotion_decision', 'bundle_path', 'integrity', 'replay_diff'] as $field) {
+        foreach (['verdict', 'promotion_decision', 'evidence', 'bundle_path', 'integrity', 'replay_diff'] as $field) {
             $this->assertContains($field, $manifest['verification_report']['fields']);
+        }
+
+        foreach (['integrity_checked', 'replay_checked', 'replay_skipped'] as $field) {
+            $this->assertContains($field, $manifest['verification_report']['evidence_fields']);
         }
 
         foreach (['ok', 'warning', 'drifted', 'failed'] as $verdict) {
@@ -128,8 +136,12 @@ class ReplayVerificationContractTest extends TestCase
         $this->assertSame(1, $manifest['simulation_report']['schema_version']);
         $this->assertSame('strictest_verdict_wins', $manifest['simulation_report']['aggregation_rule']);
 
-        foreach (['verdict', 'promotion_decision', 'summary', 'bundles', 'missing_bundles'] as $field) {
+        foreach (['verdict', 'promotion_decision', 'evidence', 'summary', 'bundles', 'missing_bundles'] as $field) {
             $this->assertContains($field, $manifest['simulation_report']['fields']);
+        }
+
+        foreach (['bundle_count', 'missing_bundle_count', 'integrity_checked_count'] as $field) {
+            $this->assertContains($field, $manifest['simulation_report']['evidence_fields']);
         }
     }
 
@@ -138,6 +150,7 @@ class ReplayVerificationContractTest extends TestCase
         $manifest = ReplayVerificationContract::manifest();
 
         $this->assertArrayHasKey('promotion_gate', $manifest);
+        $this->assertArrayHasKey('evidence_policy', $manifest['promotion_gate']);
 
         foreach (['pass', 'review', 'block'] as $status) {
             $this->assertContains($status, $manifest['promotion_gate']['gate_statuses']);

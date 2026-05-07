@@ -112,6 +112,13 @@ final class ReplayVerificationContract
                 'schema_version' => self::INTEGRITY_REPORT_SCHEMA_VERSION,
                 'statuses' => ['ok', 'warning', 'failed'],
                 'severities' => ['info', 'warning', 'error'],
+                'finding_fields' => [
+                    'rule',
+                    'severity',
+                    'message',
+                    'path',
+                    'context',
+                ],
                 'rules' => [
                     'bundle.schema_missing',
                     'bundle.schema_unexpected',
@@ -173,9 +180,19 @@ final class ReplayVerificationContract
                 'fields' => [
                     'verdict',
                     'promotion_decision',
+                    'evidence',
                     'bundle_path',
                     'integrity',
                     'replay_diff',
+                ],
+                'evidence_fields' => [
+                    'integrity_checked',
+                    'integrity_status',
+                    'integrity_finding_count',
+                    'replay_checked',
+                    'replay_status',
+                    'replay_skipped',
+                    'strict_warnings',
                 ],
                 'verdicts' => ['ok', 'warning', 'drifted', 'failed'],
             ],
@@ -186,9 +203,18 @@ final class ReplayVerificationContract
                 'fields' => [
                     'verdict',
                     'promotion_decision',
+                    'evidence',
                     'summary',
                     'bundles',
                     'missing_bundles',
+                ],
+                'evidence_fields' => [
+                    'bundle_count',
+                    'missing_bundle_count',
+                    'integrity_checked_count',
+                    'replay_checked_count',
+                    'replay_skipped',
+                    'strict_warnings',
                 ],
                 'aggregation_rule' => 'strictest_verdict_wins',
                 'verdicts' => ['ok', 'warning', 'drifted', 'failed'],
@@ -196,6 +222,7 @@ final class ReplayVerificationContract
             'promotion_gate' => [
                 'description' => 'Server-side helper App\\Support\\ReplayPromotionGate consumes either a verify or simulation report and returns a normalized gate decision (pass / review / block).',
                 'gate_statuses' => ['pass', 'review', 'block'],
+                'evidence_policy' => 'Known v1 verify and simulation reports must include the evidence block; a clean verdict with missing or incomplete evidence is downgraded before promotion.',
                 'verdict_to_gate_status' => [
                     'ok' => 'pass',
                     'warning' => 'review',
