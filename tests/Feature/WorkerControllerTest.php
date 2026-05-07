@@ -6,6 +6,7 @@ namespace Tests\Feature;
 
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
+use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -29,7 +30,7 @@ class WorkerControllerTest extends TestCase
     {
         return [
             'X-Namespace' => $namespace,
-            'X-Durable-Workflow-Protocol-Version' => '1.0',
+            WorkerProtocol::HEADER => WorkerProtocol::VERSION,
         ];
     }
 
@@ -47,7 +48,7 @@ class WorkerControllerTest extends TestCase
         $response->assertStatus(201)
             ->assertJsonPath('worker_id', 'py-worker-1')
             ->assertJsonPath('registered', true)
-            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1.0');
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION);
 
         $worker = WorkerRegistration::query()
             ->where('worker_id', 'py-worker-1')

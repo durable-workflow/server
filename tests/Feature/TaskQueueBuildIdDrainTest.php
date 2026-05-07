@@ -7,6 +7,7 @@ namespace Tests\Feature;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
+use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -358,7 +359,7 @@ class TaskQueueBuildIdDrainTest extends TestCase
     {
         return [
             'X-Namespace' => $namespace,
-            'X-Durable-Workflow-Protocol-Version' => '1.0',
+            WorkerProtocol::HEADER => WorkerProtocol::VERSION,
         ];
     }
 

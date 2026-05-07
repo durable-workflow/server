@@ -21,6 +21,10 @@ class WorkerSessionController
             return $response;
         }
 
+        if ($response = WorkerProtocol::rejectWorkerSessionsUnavailable($request)) {
+            return $response;
+        }
+
         $namespace = (string) $request->attributes->get('namespace');
 
         $validated = $this->validateSessionRequest($request, workerIdRequired: true);
@@ -59,6 +63,10 @@ class WorkerSessionController
             return $response;
         }
 
+        if ($response = WorkerProtocol::rejectWorkerSessionsUnavailable($request)) {
+            return $response;
+        }
+
         $namespace = (string) $request->attributes->get('namespace');
 
         $validated = $request->validate([
@@ -79,6 +87,10 @@ class WorkerSessionController
     public function close(Request $request, string $sessionId): JsonResponse
     {
         if ($response = WorkerProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        if ($response = WorkerProtocol::rejectWorkerSessionsUnavailable($request)) {
             return $response;
         }
 

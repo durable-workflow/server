@@ -68,6 +68,51 @@ class WorkerProtocol
         ], 400);
     }
 
+    public static function workerSessionMinimumProtocolVersion(): string
+    {
+        $semantics = self::baseWorkerSessionSemantics();
+        $minimum = $semantics['minimum_protocol_version']
+            ?? $semantics['min_worker_protocol_version']
+            ?? ($semantics['rollout_safety']['minimum_protocol_version'] ?? null)
+            ?? self::VERSION;
+
+        return is_string($minimum) && trim($minimum) !== ''
+            ? trim($minimum)
+            : self::VERSION;
+    }
+
+    public static function workerSessionsSupported(): bool
+    {
+        $configured = (string) config('server.worker_protocol.version', self::VERSION);
+
+        return version_compare($configured, self::workerSessionMinimumProtocolVersion(), '>=');
+    }
+
+    public static function rejectWorkerSessionsUnavailable(Request $request): ?JsonResponse
+    {
+        if (self::workerSessionsSupported()) {
+            return null;
+        }
+
+        $configured = (string) config('server.worker_protocol.version', self::VERSION);
+        $minimum = self::workerSessionMinimumProtocolVersion();
+
+        return self::json([
+            'error' => sprintf(
+                'Worker sessions require worker protocol %s or newer.',
+                $minimum,
+            ),
+            'reason' => 'worker_sessions_unavailable',
+            'supported_version' => $configured,
+            'requested_version' => self::requestVersion($request),
+            'minimum_protocol_version' => $minimum,
+            'remediation' => sprintf(
+                'Route worker-session clients only to server nodes advertising worker protocol %s or newer.',
+                $minimum,
+            ),
+        ], 409);
+    }
+
     /**
      * @return list<string>
      */
@@ -108,6 +153,8 @@ class WorkerProtocol
      */
     public static function serverCapabilities(): array
     {
+        $workerSessionSupported = self::workerSessionsSupported();
+
         return [
             'long_poll_timeout' => (int) config(
                 'server.polling.timeout',
@@ -128,18 +175,8 @@ class WorkerProtocol
             'activity_retry_policy' => true,
             'activity_timeouts' => true,
             'local_activities' => self::localActivitySemantics(),
-            'worker_session_verbs' => method_exists(WorkerProtocolVersion::class, 'workerSessionVerbs')
-                ? WorkerProtocolVersion::workerSessionVerbs()
-                : ['create', 'heartbeat', 'close'],
-            'worker_sessions' => method_exists(WorkerProtocolVersion::class, 'workerSessionSemantics')
-                ? WorkerProtocolVersion::workerSessionSemantics()
-                : [
-                    'command_field' => 'worker_session',
-                    'activity_options_field' => 'worker_session',
-                    'lifecycle' => 'lazy_create_on_first_admitted_activity',
-                    'ownership' => 'single_worker_lease_owner',
-                    'verbs' => ['create', 'heartbeat', 'close'],
-                ],
+            'worker_session_verbs' => $workerSessionSupported ? self::workerSessionVerbs() : [],
+            'worker_sessions' => self::workerSessionSemantics($workerSessionSupported),
             'child_workflow_retry_policy' => true,
             'child_workflow_timeouts' => true,
             'parent_close_policy' => true,
@@ -176,6 +213,49 @@ class WorkerProtocol
                 'version' => ExternalTaskResultContract::VERSION,
             ],
         ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function workerSessionVerbs(): array
+    {
+        return method_exists(WorkerProtocolVersion::class, 'workerSessionVerbs')
+            ? WorkerProtocolVersion::workerSessionVerbs()
+            : ['create', 'heartbeat', 'close'];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function workerSessionSemantics(bool $supported): array
+    {
+        $minimum = self::workerSessionMinimumProtocolVersion();
+
+        return [
+            ...self::baseWorkerSessionSemantics(),
+            'supported' => $supported,
+            'minimum_protocol_version' => $minimum,
+            ...($supported ? [] : [
+                'unavailable_reason' => 'worker_protocol_version_below_worker_session_minimum',
+            ]),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function baseWorkerSessionSemantics(): array
+    {
+        return method_exists(WorkerProtocolVersion::class, 'workerSessionSemantics')
+            ? WorkerProtocolVersion::workerSessionSemantics()
+            : [
+                'command_field' => 'worker_session',
+                'activity_options_field' => 'worker_session',
+                'lifecycle' => 'lazy_create_on_first_admitted_activity',
+                'ownership' => 'single_worker_lease_owner',
+                'verbs' => ['create', 'heartbeat', 'close'],
+            ];
     }
 
     /**

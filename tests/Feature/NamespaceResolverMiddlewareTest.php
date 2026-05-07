@@ -3,9 +3,10 @@
 namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
-use Workflow\V2\Models\WorkflowSchedule;
+use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
+use Workflow\V2\Models\WorkflowSchedule;
 
 class NamespaceResolverMiddlewareTest extends TestCase
 {
@@ -200,7 +201,7 @@ class NamespaceResolverMiddlewareTest extends TestCase
     {
         $response = $this->withHeaders([
             'X-Namespace' => 'ghost-namespace',
-            'X-Durable-Workflow-Protocol-Version' => '1.0',
+            WorkerProtocol::HEADER => WorkerProtocol::VERSION,
         ])->postJson('/api/worker/register', [
             'worker_id' => 'w-1',
             'task_queue' => 'default',

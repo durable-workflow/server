@@ -373,9 +373,9 @@ class WorkerProtocolContractTest extends TestCase
                 'task_queue' => 'default',
                 'runtime' => 'python',
             ])->assertUnauthorized()
-            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1.0')
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
             ->assertHeaderMissing('X-Durable-Workflow-Control-Plane-Version')
-            ->assertJsonPath('protocol_version', '1.0')
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
             ->assertJsonPath('reason', 'unauthorized')
             ->assertJsonPath('message', 'Invalid or missing authentication token.')
             ->assertJsonPath('server_capabilities.long_poll_timeout', 0)
@@ -401,9 +401,9 @@ class WorkerProtocolContractTest extends TestCase
                 'task_queue' => 'default',
                 'runtime' => 'python',
             ])->assertForbidden()
-            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1.0')
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
             ->assertHeaderMissing('X-Durable-Workflow-Control-Plane-Version')
-            ->assertJsonPath('protocol_version', '1.0')
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
             ->assertJsonPath('reason', 'forbidden')
             ->assertJsonPath('role', 'operator')
             ->assertJsonPath('allowed_roles.0', 'worker')

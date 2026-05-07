@@ -6,6 +6,7 @@ namespace Tests\Feature;
 
 use App\Models\WorkerRegistration;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
@@ -284,7 +285,7 @@ class ActivityTimeoutTest extends TestCase
         return [
             'X-Namespace' => $namespace,
             'X-Durable-Workflow-Control-Plane-Version' => '2',
-            'X-Durable-Workflow-Protocol-Version' => '1.0',
+            WorkerProtocol::HEADER => WorkerProtocol::VERSION,
         ];
     }
 

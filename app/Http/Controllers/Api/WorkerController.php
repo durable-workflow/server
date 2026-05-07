@@ -524,6 +524,15 @@ class WorkerController
 
         $this->validateWorkflowTaskCommandScopes($commands);
 
+        if ($response = $this->guardWorkerSessionCommandsAvailable(
+            $request,
+            $taskId,
+            (int) $validated['workflow_task_attempt'],
+            $commands,
+        )) {
+            return $response;
+        }
+
         if ($response = $this->guardWorkflowTaskOwnership(
             $request,
             $namespace,
@@ -564,6 +573,54 @@ class WorkerController
             'created_task_ids' => $outcome['created_task_ids'] ?? [],
             'reason' => $outcome['reason'],
         ], $this->workflowOutcomeStatus($outcome['reason']));
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     */
+    private function guardWorkerSessionCommandsAvailable(
+        Request $request,
+        string $taskId,
+        int $workflowTaskAttempt,
+        array $commands,
+    ): ?JsonResponse {
+        if (! $this->commandsUseWorkerSessions($commands) || WorkerProtocol::workerSessionsSupported()) {
+            return null;
+        }
+
+        $minimum = WorkerProtocol::workerSessionMinimumProtocolVersion();
+
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => $workflowTaskAttempt,
+            'outcome' => 'rejected',
+            'recorded' => false,
+            'reason' => 'worker_sessions_unavailable',
+            'error' => sprintf(
+                'Worker-session activity commands require worker protocol %s or newer.',
+                $minimum,
+            ),
+            'requested_version' => WorkerProtocol::requestVersion($request),
+            'minimum_protocol_version' => $minimum,
+            'remediation' => sprintf(
+                'Complete worker-session workflow tasks through a server node advertising worker protocol %s or newer.',
+                $minimum,
+            ),
+        ], 409);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     */
+    private function commandsUseWorkerSessions(array $commands): bool
+    {
+        foreach ($commands as $command) {
+            if ($this->hasCommandValue($command, 'worker_session')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

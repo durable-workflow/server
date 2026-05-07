@@ -161,6 +161,10 @@ final class ActivityTaskPoller
                 );
 
                 if ($workerSession !== null) {
+                    if (! WorkerProtocol::workerSessionsSupported()) {
+                        return null;
+                    }
+
                     $admission = $this->workerSessions->admitActivity(
                         $namespace,
                         $worker,

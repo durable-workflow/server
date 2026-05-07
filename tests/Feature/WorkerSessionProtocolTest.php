@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Models\WorkerRegistration;
+use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
@@ -201,6 +202,108 @@ class WorkerSessionProtocolTest extends TestCase
             ->assertJsonPath('task', null);
     }
 
+    public function test_worker_session_activity_commands_are_protocol_fenced_for_mixed_server_rollouts(): void
+    {
+        Queue::fake();
+
+        $protocolVersion = $this->protocolVersionBefore(WorkerProtocol::workerSessionMinimumProtocolVersion());
+
+        config([
+            'server.worker_protocol.version' => $protocolVersion,
+        ]);
+
+        $workerHeaders = $this->workerProtocolHeaders($protocolVersion);
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-session-rollout-fence',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'external-workflows',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $this->postJson('/api/worker/register', [
+            'worker_id' => 'rollout-fenced-workflow-worker',
+            'task_queue' => 'external-workflows',
+            'runtime' => 'php',
+            'supported_workflow_types' => ['tests.external-greeting-workflow'],
+        ], $workerHeaders)
+            ->assertCreated()
+            ->assertJsonPath('server_capabilities.worker_sessions.supported', false)
+            ->assertJsonPath('server_capabilities.worker_session_verbs', []);
+
+        $workflowPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'rollout-fenced-workflow-worker',
+            'task_queue' => 'external-workflows',
+        ], $workerHeaders);
+
+        $workflowPoll->assertOk();
+
+        $this->postJson(
+            sprintf('/api/worker/workflow-tasks/%s/complete', $workflowPoll->json('task.task_id')),
+            [
+                'lease_owner' => $workflowPoll->json('task.lease_owner'),
+                'workflow_task_attempt' => $workflowPoll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'schedule_activity',
+                        'activity_type' => 'tests.external-greeting-activity',
+                        'arguments' => Serializer::serializeWithCodec(
+                            (string) config('workflows.serializer'),
+                            ['Ada'],
+                        ),
+                        'worker_session' => [
+                            'session_id' => 'gpu-rollout-fenced',
+                            'queue' => 'gpu-activities',
+                        ],
+                    ],
+                ],
+            ],
+            $workerHeaders,
+        )
+            ->assertStatus(409)
+            ->assertJsonPath('outcome', 'rejected')
+            ->assertJsonPath('recorded', false)
+            ->assertJsonPath('reason', 'worker_sessions_unavailable')
+            ->assertJsonPath('minimum_protocol_version', WorkerProtocol::workerSessionMinimumProtocolVersion());
+    }
+
+    public function test_worker_session_lifecycle_endpoints_are_protocol_fenced_for_mixed_server_rollouts(): void
+    {
+        $protocolVersion = $this->protocolVersionBefore(WorkerProtocol::workerSessionMinimumProtocolVersion());
+
+        config([
+            'server.worker_protocol.version' => $protocolVersion,
+        ]);
+
+        $workerHeaders = $this->workerProtocolHeaders($protocolVersion);
+
+        $this->postJson('/api/worker/register', [
+            'worker_id' => 'rollout-fenced-session-worker',
+            'task_queue' => 'gpu-activities',
+            'runtime' => 'php',
+            'capabilities' => ['gpu:nvidia-l4'],
+            'max_concurrent_worker_sessions' => 1,
+        ], $workerHeaders)->assertCreated();
+
+        $this->postJson('/api/worker/sessions', [
+            'worker_id' => 'rollout-fenced-session-worker',
+            'session_id' => 'gpu-rollout-lifecycle',
+            'queue' => 'gpu-activities',
+            'requirements' => ['gpu:nvidia-l4'],
+        ], $workerHeaders)
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'worker_sessions_unavailable')
+            ->assertJsonPath('server_capabilities.worker_sessions.supported', false)
+            ->assertJsonPath('server_capabilities.worker_session_verbs', [])
+            ->assertJsonPath('minimum_protocol_version', WorkerProtocol::workerSessionMinimumProtocolVersion());
+    }
+
     public function test_stale_session_holder_is_marked_orphaned_and_can_be_reacquired(): void
     {
         $this->registerWorkerThroughProtocol(
@@ -271,5 +374,29 @@ class WorkerSessionProtocolTest extends TestCase
             'capabilities' => $capabilities,
             'max_concurrent_worker_sessions' => $maxConcurrentWorkerSessions,
         ], $this->workerHeaders())->assertCreated();
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function workerProtocolHeaders(string $protocolVersion): array
+    {
+        return [
+            'X-Namespace' => 'default',
+            WorkerProtocol::HEADER => $protocolVersion,
+        ];
+    }
+
+    private function protocolVersionBefore(string $version): string
+    {
+        $parts = array_map('intval', explode('.', $version));
+        $major = max(0, $parts[0] ?? 1);
+        $minor = max(0, $parts[1] ?? 0);
+
+        if ($minor > 0) {
+            return sprintf('%d.%d', $major, $minor - 1);
+        }
+
+        return sprintf('%d.9', max(0, $major - 1));
     }
 }

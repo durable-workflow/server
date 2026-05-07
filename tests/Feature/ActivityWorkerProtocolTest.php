@@ -7,6 +7,7 @@ use App\Models\WorkflowNamespace;
 use App\Support\LongPoller;
 use App\Support\LongPollSignalStore;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Mockery\MockInterface;
@@ -80,8 +81,8 @@ class ActivityWorkerProtocolTest extends TestCase
             ]);
 
         $poll->assertOk()
-            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1.0')
-            ->assertJsonPath('protocol_version', '1.0')
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
             ->assertJsonPath('server_capabilities.supported_workflow_task_commands.4', 'start_timer')
             ->assertJsonPath('task.workflow_id', $workflow->id())
             ->assertJsonPath('task.run_id', $start->runId())
@@ -696,7 +697,7 @@ class ActivityWorkerProtocolTest extends TestCase
             ]);
 
         $fail->assertOk()
-            ->assertHeader('X-Durable-Workflow-Protocol-Version', '1.0')
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
             ->assertJsonPath('task_id', $taskId)
             ->assertJsonPath('activity_attempt_id', $attemptId)
             ->assertJsonPath('outcome', 'failed')
@@ -958,7 +959,7 @@ class ActivityWorkerProtocolTest extends TestCase
         return [
             'X-Namespace' => $namespace,
             'X-Durable-Workflow-Control-Plane-Version' => '2',
-            'X-Durable-Workflow-Protocol-Version' => '1.0',
+            WorkerProtocol::HEADER => WorkerProtocol::VERSION,
         ];
     }
 

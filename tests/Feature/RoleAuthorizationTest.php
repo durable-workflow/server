@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\WorkflowNamespace;
+use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -273,7 +274,7 @@ class RoleAuthorizationTest extends TestCase
         return [
             'Authorization' => "Bearer {$token}",
             'X-Namespace' => $namespace,
-            'X-Durable-Workflow-Protocol-Version' => '1.0',
+            WorkerProtocol::HEADER => WorkerProtocol::VERSION,
         ];
     }
 
