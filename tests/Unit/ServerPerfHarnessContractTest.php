@@ -187,6 +187,30 @@ class ServerPerfHarnessContractTest extends TestCase
         );
     }
 
+    public function test_server_perf_jobs_keep_event_split_guards(): void
+    {
+        $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
+        $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
+
+        $this->assertMatchesRegularExpression(
+            "/contract:\\s+name:\\s+Bounded-growth contract\\s+runs-on:\\s+ubuntu-latest\\s+if:\\s+github\\.event_name == 'pull_request' \\|\\| github\\.event_name == 'push'/s",
+            $workflow,
+            'Contract checks should only run for pull_request/push events, with runs-on before if for runner compatibility.',
+        );
+
+        $this->assertMatchesRegularExpression(
+            "/smoke:\\s+name:\\s+Polling cache bounded-growth smoke\\s+needs:\\s+contract\\s+runs-on:\\s+ubuntu-latest\\s+if:\\s+github\\.event_name == 'pull_request' \\|\\| github\\.event_name == 'push'/s",
+            $workflow,
+            'Short perf smokes should only run for pull_request/push events.',
+        );
+
+        $this->assertMatchesRegularExpression(
+            "/soak:\\s+name:\\s+Self-hosted polling cache soak\\s+runs-on:\\s+\\[self-hosted, linux, x64, perf-soak, server-perf\\]\\s+if:\\s+github\\.event_name == 'schedule' \\|\\| github\\.event_name == 'workflow_dispatch'/s",
+            $workflow,
+            'Trusted long soaks should only run for schedule/workflow_dispatch events.',
+        );
+    }
+
     public function test_self_hosted_perf_soak_requires_trusted_evidence_eligibility(): void
     {
         $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
@@ -209,6 +233,98 @@ class ServerPerfHarnessContractTest extends TestCase
             (string) ($smokeMatch['block'] ?? ''),
             'Short perf smokes should remain useful but ineligible artifacts.',
         );
+    }
+
+    public function test_server_perf_artifact_uploads_use_github_current_action_with_compatible_fallback(): void
+    {
+        $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
+        $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
+
+        $this->assertSame(2, substr_count($workflow, 'uses: actions/upload-artifact@v4'));
+        $this->assertSame(2, substr_count($workflow, 'uses: actions/upload-artifact@v3.2.2'));
+        $this->assertSame(2, substr_count($workflow, "github.server_url == 'https://github.com'"));
+        $this->assertSame(2, substr_count($workflow, "github.server_url != 'https://github.com'"));
+    }
+
+    public function test_server_perf_soak_uses_current_worker_protocol_default(): void
+    {
+        $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/server_soak.py');
+        $this->assertNotFalse($source, 'scripts/perf/server_soak.py must be readable');
+
+        $this->assertStringContainsString(
+            'WORKER_PROTOCOL_VERSION = os.environ.get("DW_PERF_WORKER_PROTOCOL_VERSION", "1.2")',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'headers["X-Durable-Workflow-Protocol-Version"] = WORKER_PROTOCOL_VERSION',
+            $source,
+        );
+        $this->assertStringNotContainsString('WORKER_PROTOCOL_VERSION = "1.0"', $source);
+    }
+
+    public function test_short_perf_smoke_keeps_flake_resistant_sample_coverage_floor(): void
+    {
+        $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
+        $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
+
+        $this->assertMatchesRegularExpression(
+            '/name:\s+Polling cache bounded-growth smoke(?P<block>.*?)\n\s+soak:/s',
+            $workflow,
+            'Server Perf workflow must keep a distinct short smoke job before the long soak job.',
+        );
+        preg_match('/name:\s+Polling cache bounded-growth smoke(?P<block>.*?)\n\s+soak:/s', $workflow, $smokeMatch);
+
+        $this->assertStringContainsString(
+            'DW_PERF_MIN_SAMPLE_COVERAGE: "0.75"',
+            (string) ($smokeMatch['block'] ?? ''),
+            'Short perf smokes should tolerate one slow compose-backed sample without losing coverage signal.',
+        );
+    }
+
+    public function test_server_perf_base_url_probe_supports_containerized_actions_runners(): void
+    {
+        $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/run-server-soak.sh');
+        $this->assertNotFalse($source, 'scripts/perf/run-server-soak.sh must be readable');
+
+        $this->assertStringContainsString('http://host.docker.internal:${SERVER_PORT}', $source);
+        $this->assertMatchesRegularExpression(
+            '/host\.docker\.internal.*?docker_host_ip.*?docker inspect/s',
+            $source,
+            'Perf smoke should prefer host-published ports before falling back to direct container addresses.',
+        );
+        $this->assertMatchesRegularExpression(
+            '/server_container_url="http:\/\/\$\{server_ip\}:8080".*?curl -fsS --max-time 2 "\$server_container_url\/api\/health"/s',
+            $source,
+            'Perf smoke should only select a direct container address after confirming the runner can reach it.',
+        );
+    }
+
+    public function test_server_perf_workflow_can_produce_trusted_long_soak_evidence(): void
+    {
+        $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
+        $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
+
+        foreach ([
+            'schedule:',
+            'cron: "17 7 * * *"',
+            'workflow_dispatch:',
+            'duration_seconds:',
+            'default: "7200"',
+            'concurrency:',
+            'default: "24"',
+            'remote_write:',
+            'type: boolean',
+            "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'",
+            'runs-on: [self-hosted, linux, x64, perf-soak, server-perf]',
+            'DW_PERF_REQUIRE_TRUSTED_EVIDENCE: "true"',
+            'RUNNER_ENVIRONMENT: "self-hosted"',
+        ] as $needle) {
+            $this->assertStringContainsString(
+                $needle,
+                $workflow,
+                "Server Perf workflow must retain trusted long-soak trigger support for {$needle}.",
+            );
+        }
     }
 
     public function test_ci_perf_trigger_paths_cover_bounded_growth_runtime_surfaces(): void

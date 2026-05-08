@@ -130,6 +130,7 @@ YAML
 
 server_base_url() {
   local base_url="http://127.0.0.1:${SERVER_PORT}"
+  local docker_internal_url="http://host.docker.internal:${SERVER_PORT}"
   local docker_host_url
   local docker_host_ip
   local server_id
@@ -137,6 +138,11 @@ server_base_url() {
 
   if curl -fsS --max-time 2 "$base_url/api/health" >/dev/null 2>&1; then
     echo "$base_url"
+    return
+  fi
+
+  if curl -fsS --max-time 2 "$docker_internal_url/api/health" >/dev/null 2>&1; then
+    echo "$docker_internal_url"
     return
   fi
 
@@ -153,8 +159,11 @@ server_base_url() {
   server_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$server_id" 2>/dev/null || true)"
 
   if [ -n "$server_ip" ]; then
-    echo "http://${server_ip}:8080"
-    return
+    local server_container_url="http://${server_ip}:8080"
+    if curl -fsS --max-time 2 "$server_container_url/api/health" >/dev/null 2>&1; then
+      echo "$server_container_url"
+      return
+    fi
   fi
 
   echo "$base_url"

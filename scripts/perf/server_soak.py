@@ -24,8 +24,8 @@ from pathlib import Path
 from typing import Any
 
 
-CONTROL_PLANE_VERSION = "2"
-WORKER_PROTOCOL_VERSION = "1.0"
+CONTROL_PLANE_VERSION = os.environ.get("DW_PERF_CONTROL_PLANE_VERSION", "2")
+WORKER_PROTOCOL_VERSION = os.environ.get("DW_PERF_WORKER_PROTOCOL_VERSION", "1.2")
 ERROR_WRITE_LOCK = threading.Lock()
 SERVER_CACHE_KEY_PATTERNS = {
     "long_poll_signals": "*server:long-poll-signal:*",
