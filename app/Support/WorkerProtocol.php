@@ -35,7 +35,7 @@ class WorkerProtocol
         $version = self::requestVersion($request);
         $supported = (string) config('server.worker_protocol.version', self::VERSION);
 
-        if ($version === $supported) {
+        if ($version !== null && self::isCompatibleProtocolVersion($version, $supported)) {
             return null;
         }
 
@@ -59,13 +59,54 @@ class WorkerProtocol
             'supported_version' => $supported,
             'requested_version' => $version,
             'remediation' => sprintf(
-                'Worker requested protocol version %s; this server only supports %s. Upgrade the worker to a release that targets worker-protocol %s, or connect to a server that supports %s.',
+                'Worker requested protocol version %s; this server supports %s. Workers may target any %s.x version with x ≤ %s. Upgrade the worker to a release that targets a compatible version, or connect to a server that matches.',
                 $version,
                 $supported,
-                $supported,
-                $version,
+                self::splitProtocolVersion($supported)[0] ?? '0',
+                self::splitProtocolVersion($supported)[1] ?? '0',
             ),
         ], 400);
+    }
+
+    /**
+     * A worker's announced protocol version is compatible with the server when
+     * they share a MAJOR and the worker's MINOR is ≤ the server's MINOR. Per
+     * workflow:v2's WorkerProtocolVersion contract, MINOR bumps are additive
+     * (new optional fields, new non-terminal command types) so older workers
+     * can talk to newer servers — they simply don't exercise the new optional
+     * shapes. MAJOR bumps are breaking and remain strict-rejected.
+     *
+     * Workers ahead of the server (higher MINOR than the server announces)
+     * are also rejected, because they may rely on additive features the
+     * server doesn't yet implement.
+     *
+     * @internal exposed for tests; see App\Support\WorkerProtocol::rejectUnsupported.
+     */
+    public static function isCompatibleProtocolVersion(string $worker, string $server): bool
+    {
+        $w = self::splitProtocolVersion($worker);
+        $s = self::splitProtocolVersion($server);
+
+        if ($w === null || $s === null) {
+            // Malformed / unparseable input — fall back to strict equality
+            // so a typo or hostile header can't bypass the check.
+            return $worker === $server;
+        }
+
+        return $w[0] === $s[0] && $w[1] <= $s[1];
+    }
+
+    /**
+     * @return array{0: int, 1: int}|null
+     */
+    private static function splitProtocolVersion(string $value): ?array
+    {
+        if (! preg_match('/^\d+\.\d+$/', $value)) {
+            return null;
+        }
+        [$major, $minor] = explode('.', $value, 2);
+
+        return [(int) $major, (int) $minor];
     }
 
     public static function workerSessionMinimumProtocolVersion(): string
