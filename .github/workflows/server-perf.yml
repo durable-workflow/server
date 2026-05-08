@@ -149,7 +149,13 @@ jobs:
   soak:
     name: Self-hosted polling cache soak
     runs-on: [self-hosted, linux, x64, perf-soak, server-perf]
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Only spawn when a self-hosted perf-soak runner fleet is registered.
+    # Set repository variable DW_PERF_SOAK_ENABLED=true to re-engage the
+    # nightly schedule once runners are online; without it the job would
+    # queue forever waiting on a label that nothing answers.
+    if: |
+      vars.DW_PERF_SOAK_ENABLED == 'true'
+      && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     timeout-minutes: 390
 
     steps:
