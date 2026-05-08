@@ -14,6 +14,7 @@ use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Support\PlatformConformanceSuite;
 use Workflow\V2\Support\PlatformProtocolSpecs;
+use Workflow\V2\Support\SdkNeutralityContract;
 use Workflow\V2\Support\SurfaceStabilityContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
@@ -160,6 +161,20 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'release_gates',
                 ],
                 'auth_composition_contract',
+                'sdk_neutrality_contract' => [
+                    'schema',
+                    'version',
+                    'authority_doc',
+                    'surface_stability_authority',
+                    'protocol_specs_authority',
+                    'conformance_suite_authority',
+                    'scope',
+                    'sdk_breadth_policy',
+                    'neutrality_rules',
+                    'audit_checklist',
+                    'audit_scope_surface_families',
+                    'release_gates',
+                ],
                 'control_plane',
                 'worker_protocol',
                 'bridge_adapter_outcome_contract',
@@ -197,7 +212,72 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath(
                 'platform_conformance_suite.surface_stability_authority',
                 SurfaceStabilityContract::SCHEMA,
+            )
+            ->assertJsonPath('sdk_neutrality_contract.schema', SdkNeutralityContract::SCHEMA)
+            ->assertJsonPath('sdk_neutrality_contract.version', SdkNeutralityContract::VERSION)
+            ->assertJsonPath(
+                'sdk_neutrality_contract.surface_stability_authority',
+                SurfaceStabilityContract::SCHEMA,
+            )
+            ->assertJsonPath(
+                'sdk_neutrality_contract.protocol_specs_authority',
+                PlatformProtocolSpecs::SCHEMA,
+            )
+            ->assertJsonPath(
+                'sdk_neutrality_contract.conformance_suite_authority',
+                PlatformConformanceSuite::SCHEMA,
             );
+    }
+
+    public function test_cluster_info_publishes_the_canonical_sdk_neutrality_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')->assertOk();
+
+        $this->assertSame(
+            SdkNeutralityContract::manifest(),
+            $response->json('sdk_neutrality_contract'),
+            'cluster info must re-export the workflow package SDK neutrality manifest verbatim',
+        );
+
+        $rules = $response->json('sdk_neutrality_contract.neutrality_rules');
+        $this->assertIsArray($rules);
+        foreach ([
+            'protocol_neutrality',
+            'codec_neutrality',
+            'error_shape_neutrality',
+            'type_identity_neutrality',
+            'replay_fixture_neutrality',
+            'discovery_neutrality',
+            'documentation_neutrality',
+        ] as $expectedRule) {
+            $this->assertArrayHasKey(
+                $expectedRule,
+                $rules,
+                "sdk_neutrality_contract.neutrality_rules must include $expectedRule",
+            );
+        }
+
+        $policy = $response->json('sdk_neutrality_contract.sdk_breadth_policy');
+        $this->assertSame(
+            SdkNeutralityContract::POSTURE_PRIORITY,
+            $policy['first_party']['php_workflow_package']['posture'],
+        );
+        $this->assertSame(
+            SdkNeutralityContract::POSTURE_PRIORITY,
+            $policy['first_party']['python_sdk']['posture'],
+            'python SDK is the highest-value non-PHP first-party priority',
+        );
+        foreach (['typescript_sdk', 'go_sdk', 'java_sdk', 'dotnet_sdk'] as $demandDriven) {
+            $this->assertArrayHasKey(
+                $demandDriven,
+                $policy['demand_driven'],
+                "sdk_breadth_policy.demand_driven must include $demandDriven",
+            );
+            $this->assertSame(
+                SdkNeutralityContract::POSTURE_DEMAND_DRIVEN,
+                $policy['demand_driven'][$demandDriven]['posture'],
+            );
+        }
     }
 
     public function test_cluster_info_publishes_the_canonical_surface_stability_contract(): void

@@ -19,6 +19,7 @@ use Illuminate\Support\Facades\DB;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Support\PlatformConformanceSuite;
 use Workflow\V2\Support\PlatformProtocolSpecs;
+use Workflow\V2\Support\SdkNeutralityContract;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\SurfaceStabilityContract;
@@ -155,6 +156,10 @@ class HealthController
 
         if (class_exists($embeddedV2ImportContract)) {
             $response['embedded_v2_import_contract'] = $embeddedV2ImportContract::manifest();
+        }
+
+        if (class_exists(SdkNeutralityContract::class)) {
+            $response['sdk_neutrality_contract'] = SdkNeutralityContract::manifest();
         }
 
         if ($serviceExecutionAvailable) {
