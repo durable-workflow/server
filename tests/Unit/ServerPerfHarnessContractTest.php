@@ -204,10 +204,16 @@ class ServerPerfHarnessContractTest extends TestCase
             'Short perf smokes should only run for pull_request/push events.',
         );
 
+        // The soak job is gated behind a repository variable so it does not
+        // queue forever waiting on a self-hosted runner fleet that may not be
+        // registered. The schedule/workflow_dispatch event guard is preserved
+        // inside the same `if:` so the gate is still a strict superset of the
+        // historical event filter — when DW_PERF_SOAK_ENABLED is set, only
+        // schedule and workflow_dispatch can spawn the job.
         $this->assertMatchesRegularExpression(
-            "/soak:\\s+name:\\s+Self-hosted polling cache soak\\s+runs-on:\\s+\\[self-hosted, linux, x64, perf-soak, server-perf\\]\\s+if:\\s+github\\.event_name == 'schedule' \\|\\| github\\.event_name == 'workflow_dispatch'/s",
+            "/soak:\\s+name:\\s+Self-hosted polling cache soak\\s+runs-on:\\s+\\[self-hosted, linux, x64, perf-soak, server-perf\\][^\\n]*\\n.*?if:\\s*\\|\\s*\\n\\s*vars\\.DW_PERF_SOAK_ENABLED == 'true'\\s*\\n?\\s*&&\\s*\\(github\\.event_name == 'schedule' \\|\\| github\\.event_name == 'workflow_dispatch'\\)/s",
             $workflow,
-            'Trusted long soaks should only run for schedule/workflow_dispatch events.',
+            'Trusted long soaks should only run for schedule/workflow_dispatch events AND only when the runner-fleet variable DW_PERF_SOAK_ENABLED is set.',
         );
     }
 
