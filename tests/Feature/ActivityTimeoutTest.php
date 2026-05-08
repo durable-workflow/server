@@ -272,8 +272,8 @@ class ActivityTimeoutTest extends TestCase
             [
                 'task_queue' => $taskQueue,
                 'runtime' => 'php',
-                'supported_workflow_types' => [],
-                'supported_activity_types' => [],
+                'supported_workflow_types' => ['tests.external-greeting-workflow'],
+                'supported_activity_types' => ['tests.external-greeting-activity'],
                 'last_heartbeat_at' => now(),
                 'status' => 'active',
             ],

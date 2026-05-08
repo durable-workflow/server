@@ -54,13 +54,25 @@ trait ServerTestHelpers
         ];
     }
 
+    /**
+     * @param  array<string>|null  $supportedWorkflowTypes
+     * @param  array<string>|null  $supportedActivityTypes
+     */
     protected function registerWorker(
         string $workerId,
         string $taskQueue,
         string $namespace = 'default',
-        array $supportedWorkflowTypes = [],
-        array $supportedActivityTypes = [],
+        ?array $supportedWorkflowTypes = null,
+        ?array $supportedActivityTypes = null,
     ): void {
+        // Default to declaring the standard test workflow and activity
+        // types so feature tests that don't care about capability filtering
+        // still receive tasks under the registered-capability-authoritative
+        // routing rule. Tests that exercise the no-capability path pass an
+        // explicit [] for the relevant array.
+        $supportedWorkflowTypes ??= ['tests.external-greeting-workflow'];
+        $supportedActivityTypes ??= ['tests.external-greeting-activity'];
+
         WorkerRegistration::query()->updateOrCreate(
             ['worker_id' => $workerId, 'namespace' => $namespace],
             [

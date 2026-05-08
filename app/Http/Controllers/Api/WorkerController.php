@@ -341,6 +341,20 @@ class WorkerController
             ? $worker->build_id
             : null;
 
+        $supportedWorkflowTypes = $this->nonEmptyStringArray($worker->supported_workflow_types);
+
+        // Registered capabilities are authoritative for routing: a worker
+        // that did not advertise any workflow types at register time is not
+        // a workflow worker, so the server must never deliver workflow
+        // tasks to it — even if it shares a task queue with workers that
+        // do handle workflow tasks.
+        if ($supportedWorkflowTypes === []) {
+            return WorkerProtocol::json([
+                'task' => null,
+                'poll_status' => 'no_workflow_capability',
+            ]);
+        }
+
         $poll = $this->workflowTaskPoller->poll(
             request: $request,
             namespace: $namespace,
@@ -350,7 +364,7 @@ class WorkerController
             pollRequestId: $validated['poll_request_id'] ?? null,
             historyPageSize: $pageSize,
             acceptHistoryEncoding: $acceptHistoryEncoding,
-            supportedWorkflowTypes: $this->nonEmptyStringArray($worker->supported_workflow_types),
+            supportedWorkflowTypes: $supportedWorkflowTypes,
         );
 
         $task = $this->formatTaskHistoryPagination($poll['task'] ?? null);

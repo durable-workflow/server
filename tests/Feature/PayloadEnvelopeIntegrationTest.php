@@ -1006,13 +1006,21 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
     private function registerWorker(string $workerId, string $taskQueue): void
     {
+        // Capability-aware routing: declare every workflow and activity
+        // type this suite drives so the worker is eligible for any of the
+        // tasks tests in this file enqueue.
         WorkerRegistration::query()->updateOrCreate(
             ['worker_id' => $workerId, 'namespace' => 'default'],
             [
                 'task_queue' => $taskQueue,
                 'runtime' => 'php',
-                'supported_workflow_types' => [],
-                'supported_activity_types' => [],
+                'supported_workflow_types' => [
+                    'tests.external-greeting-workflow',
+                    'tests.interactive-command-workflow',
+                ],
+                'supported_activity_types' => [
+                    'tests.external-greeting-activity',
+                ],
                 'last_heartbeat_at' => now(),
                 'status' => 'active',
             ],

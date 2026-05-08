@@ -445,6 +445,44 @@ class ActivityWorkerProtocolTest extends TestCase
             ->assertJsonPath('reason', 'worker_not_registered');
     }
 
+    public function test_worker_with_empty_supported_activity_types_receives_no_activity_tasks(): void
+    {
+        Queue::fake();
+
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-activity-no-capability');
+        $start = $workflow->start('Ada');
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
+
+        $this->runReadyWorkflowTask($start->runId());
+
+        // A worker that advertised no activity types at register time is
+        // not an activity worker — registered capabilities are
+        // authoritative for routing, so the server short-circuits the poll
+        // instead of dispatching activity tasks to a worker that cannot
+        // run them.
+        $this->registerWorker(
+            'php-workflow-only-on-activity-queue',
+            'external-activities',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+            supportedActivityTypes: [],
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-workflow-only-on-activity-queue',
+                'task_queue' => 'external-activities',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'no_activity_capability');
+    }
+
     public function test_worker_with_supported_activity_types_only_receives_matching_tasks(): void
     {
         Queue::fake();
@@ -909,13 +947,25 @@ class ActivityWorkerProtocolTest extends TestCase
             ->assertJsonPath('reason', 'task_not_found');
     }
 
+    /**
+     * @param  array<string>|null  $supportedWorkflowTypes
+     * @param  array<string>|null  $supportedActivityTypes
+     */
     private function registerWorker(
         string $workerId,
         string $taskQueue,
         string $namespace = 'default',
-        array $supportedWorkflowTypes = [],
-        array $supportedActivityTypes = [],
+        ?array $supportedWorkflowTypes = null,
+        ?array $supportedActivityTypes = null,
     ): void {
+        // Default to declaring the activity types this test suite drives so
+        // tests that don't care about capability filtering still receive
+        // activity tasks under the registered-capability-authoritative
+        // routing rule. Tests asserting the no-capability path pass an
+        // explicit [] for supportedActivityTypes.
+        $supportedWorkflowTypes ??= ['tests.external-greeting-workflow'];
+        $supportedActivityTypes ??= ['tests.external-greeting-activity'];
+
         WorkerRegistration::query()->updateOrCreate(
             ['worker_id' => $workerId, 'namespace' => $namespace],
             [

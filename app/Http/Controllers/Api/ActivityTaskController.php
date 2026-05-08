@@ -65,13 +65,27 @@ class ActivityTaskController
             ? $worker->build_id
             : null;
 
+        $supportedActivityTypes = $this->nonEmptyStringArray($worker->supported_activity_types);
+
+        // Registered capabilities are authoritative for routing: a worker
+        // that did not advertise any activity types at register time is
+        // not an activity worker, so the server must never deliver
+        // activity tasks to it — even if it shares a task queue with
+        // workers that do handle activity tasks.
+        if ($supportedActivityTypes === []) {
+            return WorkerProtocol::json([
+                'task' => null,
+                'poll_status' => 'no_activity_capability',
+            ]);
+        }
+
         $poll = $this->activityTaskPoller->poll(
             namespace: $namespace,
             taskQueue: $validated['task_queue'],
             leaseOwner: $validated['worker_id'],
             buildId: $registeredBuildId,
             worker: $worker,
-            supportedActivityTypes: $this->nonEmptyStringArray($worker->supported_activity_types),
+            supportedActivityTypes: $supportedActivityTypes,
         );
         $claim = $poll['task'] ?? null;
 

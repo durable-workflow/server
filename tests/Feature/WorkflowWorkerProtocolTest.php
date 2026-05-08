@@ -201,7 +201,11 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('memo.source', 'remote-client')
             ->assertJsonPath('search_attributes.team', 'remote-worker');
 
-        $this->registerWorker('php-worker-remote', 'external-workflows');
+        $this->registerWorker(
+            'php-worker-remote',
+            'external-workflows',
+            supportedWorkflowTypes: ['remote.greeting-workflow'],
+        );
 
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -2681,7 +2685,11 @@ class WorkflowWorkerProtocolTest extends TestCase
         $parentRunId = (string) $start->json('run_id');
 
         $this->registerWorker('php-worker-parent', 'external-workflows');
-        $this->registerWorker('php-worker-child', 'external-workflows');
+        $this->registerWorker(
+            'php-worker-child',
+            'external-workflows',
+            supportedWorkflowTypes: ['tests.external-child-workflow'],
+        );
 
         $poll = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
@@ -3341,7 +3349,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow');
     }
 
-    public function test_worker_with_empty_supported_workflow_types_receives_all_tasks(): void
+    public function test_worker_with_empty_supported_workflow_types_receives_no_workflow_tasks(): void
     {
         Queue::fake();
 
@@ -3350,7 +3358,7 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $start = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows', [
-                'workflow_id' => 'wf-capability-wildcard',
+                'workflow_id' => 'wf-capability-non-workflow-worker',
                 'workflow_type' => 'tests.external-greeting-workflow',
                 'task_queue' => 'external-workflows',
                 'input' => ['Ada'],
@@ -3358,20 +3366,83 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $start->assertCreated();
 
-        // Worker with empty supported types acts as a wildcard — receives all tasks.
+        // A worker that advertised no workflow types at register time is
+        // not a workflow worker — registered capabilities are authoritative
+        // for routing, so the server must short-circuit the poll instead of
+        // dispatching workflow tasks to a worker that cannot run them.
         $this->registerWorker(
-            'php-worker-wildcard',
+            'php-worker-activity-only',
             'external-workflows',
             supportedWorkflowTypes: [],
+            supportedActivityTypes: ['tests.external-greeting-activity'],
         );
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
-                'worker_id' => 'php-worker-wildcard',
+                'worker_id' => 'php-worker-activity-only',
                 'task_queue' => 'external-workflows',
             ])
             ->assertOk()
-            ->assertJsonPath('task.workflow_id', 'wf-capability-wildcard')
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'no_workflow_capability');
+    }
+
+    public function test_workflow_and_activity_workers_on_same_queue_do_not_cross_route(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-shared-queue-routing',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        // Polyglot setup: one worker registers as workflow-only, the other
+        // as activity-only, and both share the same task queue. The bug
+        // this guards against is the activity-only worker receiving the
+        // workflow task and timing out because it has no workflow handler.
+        $this->registerWorker(
+            'php-workflow-only',
+            'external-workflows',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+            supportedActivityTypes: [],
+        );
+
+        $this->registerWorker(
+            'py-activity-only',
+            'external-workflows',
+            supportedWorkflowTypes: [],
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+        );
+
+        // Activity-only worker polling for workflow tasks must come back
+        // empty regardless of poll order, otherwise it could steal the
+        // task from the workflow worker.
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'py-activity-only',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'no_workflow_capability');
+
+        // Workflow-only worker still receives the workflow task on the
+        // shared queue.
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-workflow-only',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-shared-queue-routing')
             ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow');
     }
 
@@ -3981,14 +4052,26 @@ class WorkflowWorkerProtocolTest extends TestCase
         ];
     }
 
+    /**
+     * @param  array<string>|null  $supportedWorkflowTypes
+     * @param  array<string>|null  $supportedActivityTypes
+     */
     private function registerWorker(
         string $workerId,
         string $taskQueue,
         string $namespace = 'default',
-        array $supportedWorkflowTypes = [],
-        array $supportedActivityTypes = [],
+        ?array $supportedWorkflowTypes = null,
+        ?array $supportedActivityTypes = null,
         ?string $buildId = null,
     ): void {
+        // Default to declaring the workflow types this test suite drives so
+        // tests that don't care about capability filtering still receive
+        // workflow tasks under the registered-capability-authoritative
+        // routing rule. Tests asserting the no-capability path pass an
+        // explicit [] for supportedWorkflowTypes.
+        $supportedWorkflowTypes ??= ['tests.external-greeting-workflow'];
+        $supportedActivityTypes ??= ['tests.external-greeting-activity'];
+
         WorkerRegistration::query()->updateOrCreate(
             ['worker_id' => $workerId, 'namespace' => $namespace],
             array_filter([
