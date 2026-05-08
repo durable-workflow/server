@@ -256,6 +256,44 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath(
                 'topology.migration_path.5.step',
                 'optional_execution_partitioning',
+            )
+            ->assertJsonPath('topology.migration_path.0.reversible', true)
+            ->assertJsonPath('topology.migration_path.5.reversible', true)
+            ->assertJsonPath(
+                'topology.kernel_invariants.0.id',
+                'single_persistence_engine',
+            )
+            ->assertJsonPath(
+                'topology.kernel_invariants.1.id',
+                'single_worker_protocol',
+            )
+            ->assertJsonPath(
+                'topology.kernel_invariants.2.id',
+                'single_history_writer',
+            )
+            ->assertJsonPath(
+                'topology.kernel_invariants.3.id',
+                'single_control_authority_per_run',
+            )
+            ->assertJsonPath(
+                'topology.kernel_invariants.4.id',
+                'embedded_topology_remains_supported',
+            )
+            ->assertJsonPath(
+                'topology.kernel_invariants.5.id',
+                'role_split_is_topology_only',
+            )
+            ->assertJsonPath(
+                'topology.kernel_invariants.0.applies_to.0',
+                'embedded',
+            )
+            ->assertJsonPath(
+                'topology.kernel_invariants.0.applies_to.1',
+                'standalone_server',
+            )
+            ->assertJsonPath(
+                'topology.kernel_invariants.0.applies_to.2',
+                'split_control_execution',
             );
     }
 

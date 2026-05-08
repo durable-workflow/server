@@ -101,6 +101,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'scaling_boundaries',
                     'supported_topologies',
                     'migration_path',
+                    'kernel_invariants',
                 ],
                 'coordination_health' => [
                     'schema',
