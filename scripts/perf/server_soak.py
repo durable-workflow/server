@@ -344,6 +344,9 @@ def create_namespaces(base_url: str, token: str, namespaces: list[str]) -> None:
             raise RuntimeError(f"failed to create namespace {namespace}: HTTP {status}: {body}")
 
 
+PERF_WORKFLOW_TYPE = "perf.harness.workflow"
+
+
 def register_workers(base_url: str, token: str, namespaces: list[str], queues: list[str]) -> list[tuple[str, str, str]]:
     workers: list[tuple[str, str, str]] = []
     for namespace in namespaces:
@@ -359,6 +362,13 @@ def register_workers(base_url: str, token: str, namespaces: list[str], queues: l
                     "runtime": "php",
                     "sdk_version": "perf-harness",
                     "max_concurrent_workflow_tasks": 100,
+                    # Workers must advertise at least one workflow type so
+                    # the server treats them as workflow-task-eligible. A
+                    # registration with no types short-circuits every poll
+                    # at no_workflow_capability and the polling cache surface
+                    # never runs — leaving the bounded-growth smoke without
+                    # any observation of the path it asserts on.
+                    "supported_workflow_types": [PERF_WORKFLOW_TYPE],
                 },
             )
             if status not in (200, 201):
@@ -708,6 +718,7 @@ def evidence_trust_profile(
     sampling_health: dict[str, Any],
     max_server_cache_keys_by_policy: dict[str, int],
     max_final_server_cache_keys_by_policy: dict[str, int],
+    polling_activity_observed: bool,
     failures: list[str],
 ) -> dict[str, Any]:
     minimum_duration_seconds = 3600
@@ -739,6 +750,12 @@ def evidence_trust_profile(
         reasons.append("periodic sample coverage below trusted minimum")
     if int(sampling_health.get("unhealthy_samples") or 0) > 0:
         reasons.append("compose-backed resource sampling has unhealthy samples")
+    if not polling_activity_observed:
+        # A long soak that never observed any polling cache activity cannot
+        # produce trusted evidence about polling cache bounded growth — the
+        # path was not exercised, so the assertions skip and the run says
+        # nothing about the surface it is meant to certify.
+        reasons.append("polling cache activity was not observed during the run")
     reasons.extend(
         per_policy_threshold_reasons(
             max_server_cache_keys_by_policy=max_server_cache_keys_by_policy,
@@ -762,6 +779,7 @@ def evidence_trust_profile(
         "requires_compose_resource_sampling": True,
         "requires_clean_tracked_working_tree": True,
         "requires_per_policy_cache_thresholds": True,
+        "requires_polling_cache_activity_observed": True,
         "reasons": reasons,
     }
 
@@ -886,7 +904,14 @@ def main() -> int:
             )
             for policy_id in SERVER_CACHE_KEY_PATTERNS
         }
-        max_polling_keys = max(max_pattern_polling_keys, max_redis_db_keys)
+        # Bounded-growth assertions on the polling cache must use the
+        # polling-pattern observation alone. Redis DBSIZE includes unrelated
+        # keys (queues, sessions, fairness counters, locks) that have nothing
+        # to do with polling cache growth, so conflating them produces false
+        # positives whenever the harness happens to leave non-polling Redis
+        # state behind. DBSIZE is still surfaced as max_redis_db_keys for
+        # diagnostic visibility.
+        max_polling_keys = max_pattern_polling_keys
         final_pattern_polling_keys = int(final_sample.get("redis_polling_keys") or 0)
         final_server_cache_keys = int(final_sample.get("redis_server_keys") or 0)
         final_redis_db_keys = int(final_sample.get("redis_db_keys") or 0)
@@ -894,7 +919,7 @@ def main() -> int:
             policy_id: int((final_sample.get("redis_server_keys_by_policy") or {}).get(policy_id) or 0)
             for policy_id in SERVER_CACHE_KEY_PATTERNS
         }
-        final_polling_keys = max(final_pattern_polling_keys, final_redis_db_keys)
+        final_polling_keys = final_pattern_polling_keys
         slope = memory_slope_mb_hour(samples) if args.duration_seconds >= 600 else None
         finished_at = datetime.now(timezone.utc)
         elapsed_seconds = time.monotonic() - started_monotonic
@@ -906,6 +931,16 @@ def main() -> int:
         sampling_health = sample_health(samples, args.compose_project)
 
         provenance = evidence_provenance(base_url, args.compose_project)
+
+        # When the harness fails to exercise the polling cache surface
+        # at all (zero observations across the entire window) we cannot
+        # make a meaningful bounded-growth claim about it. Surface that
+        # explicitly so the polling-specific assertions can skip rather
+        # than silently passing or asserting against conflated signals.
+        polling_activity_observed = max_pattern_polling_keys > 0
+        polling_observation_status = (
+            "observed" if polling_activity_observed else "skipped_no_activity"
+        )
 
         summary = {
             "duration_seconds": args.duration_seconds,
@@ -932,6 +967,7 @@ def main() -> int:
             "final_server_cache_keys": final_server_cache_keys,
             "final_server_cache_keys_by_policy": final_server_cache_keys_by_policy,
             "final_redis_db_keys": final_redis_db_keys,
+            "polling_observation_status": polling_observation_status,
             "server_memory_slope_mb_hour": None if slope is None else round(slope, 2),
             "sampling_health": sampling_health,
             "assertions": {
@@ -972,13 +1008,18 @@ def main() -> int:
                 f"server memory exceeded {args.max_server_memory_mb} MB "
                 f"(observed {summary['max_server_memory_mb']} MB)"
             )
-        if max_polling_keys > args.max_polling_keys:
-            failures.append(f"polling cache keys exceeded {args.max_polling_keys} (observed {max_polling_keys})")
-        if final_polling_keys > args.max_final_polling_keys:
-            failures.append(
-                f"polling cache keys did not drain to {args.max_final_polling_keys} "
-                f"(observed {final_polling_keys})"
-            )
+        # Skip the polling-cache-specific assertions when the harness did
+        # not exercise the polling path at all. Asserting bounded growth
+        # against zero observed activity blocks unrelated PRs without
+        # exercising what the gate is meant to protect.
+        if polling_activity_observed:
+            if max_polling_keys > args.max_polling_keys:
+                failures.append(f"polling cache keys exceeded {args.max_polling_keys} (observed {max_polling_keys})")
+            if final_polling_keys > args.max_final_polling_keys:
+                failures.append(
+                    f"polling cache keys did not drain to {args.max_final_polling_keys} "
+                    f"(observed {final_polling_keys})"
+                )
         if max_server_cache_keys > args.max_server_cache_keys:
             failures.append(
                 f"server cache keys exceeded {args.max_server_cache_keys} "
@@ -1028,6 +1069,7 @@ def main() -> int:
             sampling_health=sampling_health,
             max_server_cache_keys_by_policy=args.max_server_cache_keys_by_policy,
             max_final_server_cache_keys_by_policy=args.max_final_server_cache_keys_by_policy,
+            polling_activity_observed=polling_activity_observed,
             failures=failures,
         )
         trust_reasons = summary["evidence"]["trust"].get("reasons") or []

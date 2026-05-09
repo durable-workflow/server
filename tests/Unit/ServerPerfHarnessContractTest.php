@@ -90,6 +90,89 @@ class ServerPerfHarnessContractTest extends TestCase
         }
     }
 
+    public function test_perf_workers_register_supported_workflow_types_so_polls_reach_polling_cache(): void
+    {
+        $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/server_soak.py');
+        $this->assertNotFalse($source, 'scripts/perf/server_soak.py must be readable');
+
+        $this->assertMatchesRegularExpression(
+            '/def register_workers\b[\s\S]*?"supported_workflow_types":\s*\[PERF_WORKFLOW_TYPE\]/',
+            $source,
+            'Perf harness must register workers with at least one supported workflow type. '
+            .'Without it the server poll endpoint short-circuits at no_workflow_capability '
+            .'and the polling cache surface is never exercised, leaving the bounded-growth '
+            .'smoke without any observation of the path it asserts on.'
+        );
+
+        $this->assertStringContainsString('PERF_WORKFLOW_TYPE = ', $source);
+    }
+
+    public function test_polling_assertions_are_decoupled_from_redis_dbsize(): void
+    {
+        $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/server_soak.py');
+        $this->assertNotFalse($source, 'scripts/perf/server_soak.py must be readable');
+
+        $this->assertStringContainsString(
+            'max_polling_keys = max_pattern_polling_keys',
+            $source,
+            'Polling-cache bounded-growth threshold must be measured against the polling '
+            .'pattern observation alone. Conflating it with Redis DBSIZE drags in unrelated '
+            .'queue/session/lock keys and trips the gate on PRs that do not touch the polling '
+            .'cache.'
+        );
+        $this->assertStringContainsString(
+            'final_polling_keys = final_pattern_polling_keys',
+            $source,
+            'Final-drain polling threshold must also use the polling pattern observation '
+            .'alone, for the same reason.'
+        );
+        $this->assertStringNotContainsString(
+            'max_polling_keys = max(max_pattern_polling_keys, max_redis_db_keys)',
+            $source,
+        );
+        $this->assertStringNotContainsString(
+            'final_polling_keys = max(final_pattern_polling_keys, final_redis_db_keys)',
+            $source,
+        );
+    }
+
+    public function test_polling_assertions_skip_when_no_polling_activity_was_observed(): void
+    {
+        $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/server_soak.py');
+        $this->assertNotFalse($source, 'scripts/perf/server_soak.py must be readable');
+
+        $this->assertStringContainsString('polling_activity_observed = max_pattern_polling_keys > 0', $source);
+        $this->assertStringContainsString('"skipped_no_activity"', $source);
+        $this->assertStringContainsString('"polling_observation_status"', $source);
+        $this->assertMatchesRegularExpression(
+            '/if polling_activity_observed:\s+if max_polling_keys > args\.max_polling_keys:/s',
+            $source,
+            'Polling-cache bounded-growth assertions must be guarded by '
+            .'polling_activity_observed so the smoke does not assert against zero '
+            .'observed activity (which would block unrelated PRs without exercising '
+            .'what the gate is meant to protect).'
+        );
+    }
+
+    public function test_trusted_long_soak_evidence_requires_polling_cache_activity_observed(): void
+    {
+        $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/server_soak.py');
+        $this->assertNotFalse($source, 'scripts/perf/server_soak.py must be readable');
+
+        $this->assertStringContainsString('"requires_polling_cache_activity_observed": True', $source);
+        $this->assertStringContainsString(
+            'polling cache activity was not observed during the run',
+            $source,
+            'Trusted long-soak evidence must be ineligible if the run never exercised the '
+            .'polling cache, otherwise the soak certifies a surface it never touched.'
+        );
+        $this->assertStringContainsString(
+            'polling_activity_observed=polling_activity_observed',
+            $source,
+            'Trust-profile builder must receive the polling_activity_observed signal from main().'
+        );
+    }
+
     public function test_remote_write_target_labels_exclude_per_run_dimensions(): void
     {
         $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/run-server-soak.sh');
