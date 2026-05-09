@@ -3446,6 +3446,161 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow');
     }
 
+    public function test_polyglot_unconfigured_workflow_type_routes_to_workflow_only_worker_on_shared_queue(): void
+    {
+        // The polyglot scenario the smoke covers: a workflow whose type
+        // key uses a dotted, language-neutral identifier and is NOT
+        // present in the server's workflows.v2.types.workflows map (the
+        // workflow class lives in another language, the server only sees
+        // the type-key string). The registered-capability filter must
+        // still match the worker's supported_workflow_types against the
+        // run's stored workflow_type by exact string equality, regardless
+        // of whether the type maps to a loadable PHP class on the server.
+        // The previous shared-queue routing test only covers a configured
+        // workflow type, so this regression — the type-key match working
+        // for unconfigured types under the same two-worker shape — needs
+        // its own contract.
+        Queue::fake();
+
+        // Deliberately do NOT call configureWorkflowTypes(): the polyglot
+        // type is unknown to the server's class map.
+        $this->createNamespace('default', 'Default namespace');
+
+        $workflowType = 'polyglot.contract.PhpToPythonWorkflow';
+        $taskQueue = 'polyglot-contract-shared';
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-polyglot-contract-routing',
+                'workflow_type' => $workflowType,
+                'task_queue' => $taskQueue,
+                'input' => ['polyglot'],
+            ]);
+
+        $start->assertCreated();
+
+        // Workflow worker registers with multiple workflow types — the
+        // smoke's worker registers exactly one, but the routing contract
+        // must work the same when the registry lists more than one
+        // workflow type, so cover that here too.
+        $this->registerWorker(
+            'php-polyglot-workflow',
+            $taskQueue,
+            supportedWorkflowTypes: [
+                $workflowType,
+                'polyglot.contract.UnusedSiblingWorkflow',
+            ],
+            supportedActivityTypes: [],
+        );
+
+        // Activity worker registers multiple activity types and zero
+        // workflow types — same shape as the polyglot Python activity
+        // worker that ships with the sample app's polyglot stack.
+        $this->registerWorker(
+            'py-polyglot-activity',
+            $taskQueue,
+            supportedWorkflowTypes: [],
+            supportedActivityTypes: [
+                'polyglot.contract.reverse',
+                'polyglot.contract.tally',
+            ],
+        );
+
+        // Activity-only worker polling for workflow tasks must come back
+        // empty even when the workflow type is unconfigured server-side.
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'py-polyglot-activity',
+                'task_queue' => $taskQueue,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'no_workflow_capability');
+
+        // Workflow-only worker MUST receive the workflow task. This is
+        // the regression the polyglot smoke catches: type-key match must
+        // run on the run's stored workflow_type column directly, not on
+        // a class-resolved canonical key, otherwise unconfigured polyglot
+        // types are silently filtered out and the workflow stays pending
+        // on a queue where no other worker can claim it.
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-polyglot-workflow',
+                'task_queue' => $taskQueue,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-polyglot-contract-routing')
+            ->assertJsonPath('task.workflow_type', $workflowType);
+    }
+
+    public function test_polyglot_workflow_worker_receives_task_when_polling_before_activity_worker(): void
+    {
+        // Reverse poll order coverage for the polyglot two-worker shape:
+        // even when the workflow worker is the first to reach the server
+        // after both workers are live, the registered-capability filter
+        // must still hand the task to the workflow worker. The previous
+        // routing test only covers the activity-first poll order, so a
+        // regression that broke workflow-first delivery would have slipped
+        // through.
+        Queue::fake();
+
+        $this->createNamespace('default', 'Default namespace');
+
+        $workflowType = 'polyglot.contract.PhpToPythonWorkflow';
+        $taskQueue = 'polyglot-contract-workflow-first';
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-polyglot-workflow-first',
+                'workflow_type' => $workflowType,
+                'task_queue' => $taskQueue,
+                'input' => ['polyglot'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->registerWorker(
+            'php-polyglot-workflow-first',
+            $taskQueue,
+            supportedWorkflowTypes: [$workflowType],
+            supportedActivityTypes: [],
+        );
+
+        $this->registerWorker(
+            'py-polyglot-activity-second',
+            $taskQueue,
+            supportedWorkflowTypes: [],
+            supportedActivityTypes: [
+                'polyglot.contract.reverse',
+                'polyglot.contract.tally',
+            ],
+        );
+
+        // Workflow worker polls first — must receive the task.
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-polyglot-workflow-first',
+                'task_queue' => $taskQueue,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-polyglot-workflow-first')
+            ->assertJsonPath('task.workflow_type', $workflowType);
+
+        // Activity worker polling after the workflow task is leased must
+        // still come back empty (and never see the now-leased workflow
+        // task). Guards against regressions where the activity-only poll
+        // bypasses the capability check after the workflow task changes
+        // status.
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'py-polyglot-activity-second',
+                'task_queue' => $taskQueue,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'no_workflow_capability');
+    }
+
     public function test_fail_workflow_command_accepts_non_retryable_flag(): void
     {
         Queue::fake();
