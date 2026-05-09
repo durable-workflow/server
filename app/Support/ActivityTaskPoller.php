@@ -152,22 +152,34 @@ final class ActivityTaskPoller
             activityTypes: $supportedActivityTypes,
         );
 
-        // Server-owned dispatch fallback for typed activity polls.
-        // Symmetric with WorkflowTaskPoller::claimReadyTask: when a
-        // worker registered specific supportedActivityTypes but the
-        // bridge surfaced no candidate, run the same join in app code
-        // so the shared-queue routing rule is server-authoritative on
-        // both task kinds. The bridge stays authoritative for the
-        // claim transaction; this only identifies candidates and
-        // returns the row shape the existing claim path consumes.
-        if ($readyTasks === [] && $supportedActivityTypes !== []) {
-            $readyTasks = $this->pollReadyTasksFromDispatch(
+        // Server-owned dispatch is authoritative for typed polls: union
+        // the bridge candidates with an app-level workflow_tasks ↔
+        // activity_executions join filtered by the worker's registered
+        // types, so the shared-queue routing rule cannot depend on the
+        // bridge's current predicate shape. The earlier gate — fall
+        // back only when $readyTasks === [] — left a hole on shared
+        // queues: when the bridge surfaced a list of candidates whose
+        // activity_type did not match the polling worker's supported
+        // list, every entry was dropped by the per-task
+        // matchesActivityType filter, the fallback never ran, and a
+        // real matching activity task already in
+        // workflow_tasks/activity_executions stayed unclaimed. Running
+        // the app-level query unconditionally for typed polls and
+        // merging by task_id closes that hole, symmetric with the
+        // workflow-side dispatch in WorkflowTaskPoller. The merged
+        // candidate set is what the fairness reorder pass below
+        // operates on, so dispatch routing is fixed before fairness
+        // rebalances within priority tiers.
+        if ($supportedActivityTypes !== []) {
+            $dispatchTasks = $this->pollReadyTasksFromDispatch(
                 namespace: $namespace,
                 taskQueue: $taskQueue,
                 buildId: $buildId,
                 limit: $limit,
                 supportedActivityTypes: $supportedActivityTypes,
             );
+
+            $readyTasks = $this->mergeReadyTasksByTaskId($readyTasks, $dispatchTasks);
         }
 
         // Apply the fairness reorder pass: within a priority tier the
@@ -175,7 +187,9 @@ final class ActivityTaskPoller
         // single noisy class can't starve its peers under saturation.
         // Priority order is preserved across tiers — urgent work always
         // leads — and tasks without a fairness key share an implicit
-        // default class so unmarked tenants are never crowded out.
+        // default class so unmarked tenants are never crowded out. The
+        // dispatch-side union above runs first so the merged candidate
+        // set is what fairness reorders.
         $readyTasks = $this->reorderForFairness($taskQueue, $readyTasks);
 
         foreach ($readyTasks as $readyTask) {
@@ -302,18 +316,19 @@ final class ActivityTaskPoller
     }
 
     /**
-     * Server-owned dispatch fallback for typed activity polls.
+     * Server-owned dispatch identification for typed activity polls.
      *
      * Mirrors WorkflowTaskPoller::pollReadyTasksFromDispatch on the
-     * activity side: when a worker registered specific
-     * supportedActivityTypes but the bridge poll returns nothing, run
-     * the workflow_tasks ↔ activity_executions join in app code so the
-     * registered worker still sees its matching task on the next poll
-     * regardless of which predicate shape the bridge ships in a given
-     * release. The bridge is authoritative for the claim transaction;
-     * this method only identifies candidates and returns the same row
-     * shape the bridge poll already produces, so the downstream
-     * matchesActivityType + claimStatus chain runs unchanged.
+     * activity side: for typed polls (worker registered a non-empty
+     * supportedActivityTypes list), run the workflow_tasks ↔
+     * activity_executions join in app code and union the result with
+     * the bridge's candidate set so the registered worker still sees
+     * its matching task even when the bridge surfaces an unrelated
+     * candidate set on a shared queue. The bridge is authoritative
+     * for the claim transaction; this method only identifies
+     * candidates and returns the same row shape the bridge poll
+     * already produces, so the downstream matchesActivityType +
+     * claimStatus chain runs unchanged on the same payload.
      *
      * @param  list<string>  $supportedActivityTypes
      * @return list<array<string, mixed>>
@@ -386,6 +401,60 @@ final class ActivityTaskPoller
     private static function nullableString(mixed $value): ?string
     {
         return is_string($value) && $value !== '' ? $value : null;
+    }
+
+    /**
+     * Union two ready-task lists by task_id, preserving order and
+     * preferring the first occurrence's payload. The bridge's payload
+     * shape is preserved when both sources surface the same task, so
+     * downstream consumers (claim, activity-execution lookup) keep
+     * seeing the payload variant they have always seen on the happy
+     * path. Tasks the bridge surfaced that the dispatch query didn't
+     * are kept; tasks the dispatch query surfaced that the bridge
+     * missed are appended.
+     *
+     * @param  list<array<string, mixed>>  $primary
+     * @param  list<array<string, mixed>>  $secondary
+     * @return list<array<string, mixed>>
+     */
+    private function mergeReadyTasksByTaskId(array $primary, array $secondary): array
+    {
+        $seen = [];
+        $merged = [];
+
+        foreach ($primary as $task) {
+            $taskId = is_string($task['task_id'] ?? null) ? $task['task_id'] : null;
+
+            if ($taskId === null) {
+                $merged[] = $task;
+
+                continue;
+            }
+
+            if (isset($seen[$taskId])) {
+                continue;
+            }
+
+            $seen[$taskId] = true;
+            $merged[] = $task;
+        }
+
+        foreach ($secondary as $task) {
+            $taskId = is_string($task['task_id'] ?? null) ? $task['task_id'] : null;
+
+            if ($taskId === null) {
+                continue;
+            }
+
+            if (isset($seen[$taskId])) {
+                continue;
+            }
+
+            $seen[$taskId] = true;
+            $merged[] = $task;
+        }
+
+        return $merged;
     }
 
     /**

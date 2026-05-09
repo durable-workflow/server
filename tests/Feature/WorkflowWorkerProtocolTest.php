@@ -1516,6 +1516,119 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.workflow_type', $workflowType);
     }
 
+    public function test_workflow_task_routes_to_typed_worker_on_shared_queue_even_when_bridge_returns_only_unmatching_candidates(): void
+    {
+        // Shared-queue routing contract on a polluted bridge response.
+        // Two workers share one task queue with disjoint registered
+        // workflow types: only one of them can ever legally claim the
+        // run that exists in the database. The bridge is mocked to
+        // return a non-empty list whose entries all carry workflow
+        // types that match neither worker — the failure mode that the
+        // earlier "fall back only when $readyTasks === []" gate left
+        // open. With that gate, the per-task matchesWorkflowType
+        // filter dropped every bridge candidate but the fallback
+        // never fired, so the worker actually registered for the
+        // run's stored workflow_type came back empty-handed and the
+        // run stayed pending. The dispatch-side filter now runs the
+        // app-level workflow_tasks ↔ workflow_runs join unconditionally
+        // for typed polls and unions it with the bridge result, so the
+        // matching task still reaches its registered worker. The
+        // disjoint-typed peer worker must still come back empty.
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $matchingWorkflowType = 'tests.external-greeting-workflow';
+        $taskQueue = 'shared-disjoint-types';
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-disjoint-types-routing',
+                'workflow_type' => $matchingWorkflowType,
+                'task_queue' => $taskQueue,
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $instanceId = (string) $start->json('workflow_id');
+
+        // Simulate a bridge whose typed-filter predicate has drifted:
+        // it returns a candidate row whose workflow_type is in neither
+        // worker's registered list, even though the real workflow task
+        // for $matchingWorkflowType is sitting Ready in the DB.
+        // claimStatus and history calls still need to behave normally
+        // so the leased task can be returned to the worker that the
+        // app-level dispatch query surfaces.
+        $realBridge = $this->app->make(WorkflowTaskBridge::class);
+
+        $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use ($realBridge, $taskQueue): void {
+            $mock->shouldReceive('poll')
+                ->andReturn([[
+                    'task_id' => 'phantom-bridge-task',
+                    'workflow_run_id' => 'phantom-bridge-run',
+                    'workflow_instance_id' => 'phantom-bridge-instance',
+                    'workflow_type' => 'phantom.unrelated-workflow-type',
+                    'workflow_class' => null,
+                    'connection' => null,
+                    'queue' => $taskQueue,
+                    'compatibility' => null,
+                    'sticky_worker_id' => null,
+                    'sticky_until' => null,
+                    'available_at' => now()->subSecond()->toJSON(),
+                    'priority' => 5,
+                    'fairness_key' => null,
+                    'fairness_weight' => 1,
+                ]]);
+
+            $mock->shouldReceive('claimStatus')
+                ->andReturnUsing(static fn (string $taskId, ?string $leaseOwner = null): array => $realBridge->claimStatus($taskId, $leaseOwner));
+
+            $mock->shouldReceive('historyPayloadPaginated')
+                ->andReturnUsing(static fn (string $taskId, int $afterSequence = 0, int $pageSize = 50): ?array => $realBridge->historyPayloadPaginated($taskId, $afterSequence, $pageSize));
+
+            $mock->shouldReceive('historyPayload')
+                ->andReturnUsing(static fn (string $taskId): ?array => $realBridge->historyPayload($taskId));
+        });
+
+        $this->registerWorker(
+            'worker-with-matching-type',
+            $taskQueue,
+            supportedWorkflowTypes: [$matchingWorkflowType],
+        );
+
+        $this->registerWorker(
+            'worker-with-disjoint-type',
+            $taskQueue,
+            supportedWorkflowTypes: ['tests.disjoint-other-workflow'],
+        );
+
+        // Worker registered for a disjoint workflow type must come back
+        // empty: the only ready task on the queue is for a type the
+        // disjoint-typed worker did not register for.
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'worker-with-disjoint-type',
+                'task_queue' => $taskQueue,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+
+        // Worker registered for the run's stored workflow_type MUST
+        // receive the task even though the bridge only surfaced an
+        // unrelated phantom candidate — the dispatch-side filter
+        // must surface the matching task from the app-level join.
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'worker-with-matching-type',
+                'task_queue' => $taskQueue,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', $instanceId)
+            ->assertJsonPath('task.workflow_type', $matchingWorkflowType);
+    }
+
     public function test_workflow_dispatch_does_not_fall_back_for_untyped_polls_when_bridge_returns_no_tasks(): void
     {
         // Untyped-poll contract: workers that registered no workflow

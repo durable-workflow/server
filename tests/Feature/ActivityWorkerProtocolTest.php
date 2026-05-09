@@ -450,6 +450,118 @@ class ActivityWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');
     }
 
+    public function test_activity_task_routes_to_typed_worker_on_shared_queue_even_when_bridge_returns_only_unmatching_candidates(): void
+    {
+        // Shared-queue routing contract on a polluted bridge response,
+        // activity-side counterpart of the workflow disjoint-types test.
+        // Two workers share one task queue with disjoint registered
+        // activity types: only one of them can ever legally claim the
+        // execution that exists in the database. The bridge is mocked
+        // to return a non-empty list whose entries all carry an
+        // activity_type that matches neither worker — the failure mode
+        // that the earlier "fall back only when $readyTasks === []"
+        // gate left open. With that gate, the per-task
+        // matchesActivityType filter dropped every bridge candidate
+        // but the fallback never fired, so the worker actually
+        // registered for the execution's stored activity_type came
+        // back empty-handed and the activity stayed pending. The
+        // dispatch-side filter now runs the app-level
+        // workflow_tasks ↔ activity_executions join unconditionally
+        // for typed polls and unions it with the bridge result, so
+        // the matching task still reaches its registered worker. The
+        // disjoint-typed peer worker must still come back empty.
+        Queue::fake();
+
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-activity-disjoint-types-routing');
+        $start = $workflow->start('Ada');
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
+
+        $this->runReadyWorkflowTask($start->runId());
+
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $start->runId())
+            ->where('task_type', TaskType::Activity->value)
+            ->firstOrFail();
+
+        $taskQueue = is_string($task->queue) && $task->queue !== ''
+            ? $task->queue
+            : 'external-activities';
+
+        // Simulate a bridge whose typed-filter predicate has drifted:
+        // it returns a candidate row whose activity_type is in neither
+        // worker's registered list, even though the real activity task
+        // for tests.external-greeting-activity is sitting Ready in the
+        // DB. claimStatus still delegates to the real bridge so the
+        // leased task can be returned to the worker that the app-level
+        // dispatch query surfaces.
+        $realBridge = $this->app->make(ActivityTaskBridgeContract::class);
+
+        $this->mock(ActivityTaskBridgeContract::class, function (MockInterface $mock) use ($realBridge, $taskQueue): void {
+            $mock->shouldReceive('poll')
+                ->andReturn([[
+                    'task_id' => 'phantom-activity-bridge-task',
+                    'workflow_run_id' => 'phantom-activity-bridge-run',
+                    'workflow_instance_id' => 'phantom-activity-bridge-instance',
+                    'activity_execution_id' => 'phantom-activity-bridge-execution',
+                    'activity_type' => 'phantom.unrelated-activity-type',
+                    'activity_class' => null,
+                    'connection' => null,
+                    'queue' => $taskQueue,
+                    'compatibility' => null,
+                    'available_at' => now()->subSecond()->toJSON(),
+                    'priority' => 5,
+                    'fairness_key' => null,
+                    'fairness_weight' => 1,
+                ]]);
+
+            $mock->shouldReceive('claimStatus')
+                ->andReturnUsing(static fn (string $taskId, ?string $leaseOwner = null): array => $realBridge->claimStatus($taskId, $leaseOwner));
+        });
+
+        $this->registerWorker(
+            'php-activity-worker-with-matching-type',
+            $taskQueue,
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+        );
+
+        $this->registerWorker(
+            'php-activity-worker-with-disjoint-type',
+            $taskQueue,
+            supportedActivityTypes: ['tests.disjoint-other-activity'],
+        );
+
+        // Worker registered for a disjoint activity type must come back
+        // empty: the only ready activity task on the queue is for a
+        // type the disjoint-typed worker did not register for, and the
+        // bridge phantom carries a type neither worker registered for.
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-activity-worker-with-disjoint-type',
+                'task_queue' => $taskQueue,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+
+        // Worker registered for the execution's stored activity_type
+        // MUST receive the task even though the bridge only surfaced
+        // an unrelated phantom candidate — the dispatch-side filter
+        // must surface the matching task from the app-level join.
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-activity-worker-with-matching-type',
+                'task_queue' => $taskQueue,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.task_id', $task->id)
+            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');
+    }
+
     public function test_unregistered_worker_is_rejected_when_polling_activity_tasks(): void
     {
         WorkflowNamespace::query()->updateOrCreate(

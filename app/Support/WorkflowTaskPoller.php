@@ -436,23 +436,33 @@ final class WorkflowTaskPoller
             supportedWorkflowTypes: $supportedWorkflowTypes,
         );
 
-        // Server-owned dispatch fallback: when a typed-poll worker comes
-        // back from the package bridge with no candidate, run the
-        // workflow_tasks ↔ workflow_runs join in app code so the
-        // shared-queue routing rule does not depend on the bridge's
-        // current predicate shape. The bridge has cycled this filter
-        // through several variants (correlated subquery, then join);
-        // any future drift would silently strand workflow tasks on a
-        // queue where the registered worker is the only valid claimer.
-        // Falling back here keeps a polyglot two-worker queue moving
-        // without trusting the bridge to be the sole source of truth.
-        if ($readyTasks === [] && $supportedWorkflowTypes !== []) {
-            $readyTasks = $this->pollReadyTasksFromDispatch(
+        // Server-owned dispatch is authoritative for typed polls: union
+        // the bridge candidates with an app-level workflow_tasks ↔
+        // workflow_runs join filtered by the worker's registered types,
+        // so the shared-queue routing rule cannot depend on the bridge's
+        // current predicate shape. The earlier gate — fall back only when
+        // $readyTasks === [] — left a hole on shared queues: when the
+        // bridge surfaced a list of candidates whose workflow_type did
+        // not match the polling worker's supported list, every entry was
+        // dropped by the per-task matchesWorkflowType filter, the
+        // fallback never ran, and a real matching task already in
+        // workflow_tasks/workflow_runs stayed unclaimed. Running the
+        // app-level query unconditionally for typed polls and merging
+        // by task_id closes that hole, so a worker registered for the
+        // run's stored workflow_type still sees its matching task even
+        // when the bridge returns an unrelated candidate set for the
+        // same queue. The merged candidate set is what the fairness
+        // reorder pass below operates on, so dispatch routing is fixed
+        // before fairness rebalances within priority tiers.
+        if ($supportedWorkflowTypes !== []) {
+            $dispatchTasks = $this->pollReadyTasksFromDispatch(
                 namespace: $namespace,
                 taskQueue: $taskQueue,
                 limit: $limit,
                 supportedWorkflowTypes: $supportedWorkflowTypes,
             );
+
+            $readyTasks = $this->mergeReadyTasksByTaskId($readyTasks, $dispatchTasks);
         }
 
         // Apply the fairness reorder pass: within a priority tier the
@@ -460,7 +470,9 @@ final class WorkflowTaskPoller
         // single noisy class can't starve its peers under saturation.
         // Priority order is preserved across tiers — urgent work always
         // leads — and tasks without a fairness key share an implicit
-        // default class so unmarked tenants are never crowded out.
+        // default class so unmarked tenants are never crowded out. The
+        // dispatch-side union above runs first so the merged candidate
+        // set is what fairness reorders.
         $readyTasks = $this->reorderForFairness($taskQueue, $readyTasks);
 
         \Log::info('[WorkflowTaskPoller] claimReadyTask called', [
@@ -620,22 +632,24 @@ final class WorkflowTaskPoller
     }
 
     /**
-     * Server-owned dispatch fallback for typed workflow polls.
+     * Server-owned dispatch identification for typed workflow polls.
      *
-     * When a worker has registered specific supportedWorkflowTypes but the
-     * bridge poll surfaces no candidate, the dispatch path falls back to
-     * a direct query that joins workflow_tasks to workflow_runs and
-     * filters by the run's stored workflow_type. Owning this query in
-     * app code makes the shared-queue routing rule authoritative on the
-     * server side: a worker that registered for a workflow_type still
-     * sees the matching task on the next poll, even when the package
-     * bridge's predicate has drifted across releases (subquery shape,
-     * join shape, etc.) and stops surfacing the row on the worker's
-     * deployed image. The bridge is still authoritative for the claim
-     * transaction — this method only identifies candidates and returns
-     * the same row shape pollReadyTasks() already produces, so the
-     * downstream filter chain (matchesCompatibility, matchesWorkflowType,
-     * claimStatus) runs unchanged on the same payload.
+     * For typed polls (worker registered a non-empty
+     * supportedWorkflowTypes list), the dispatch path runs a direct
+     * query that joins workflow_tasks to workflow_runs and filters by
+     * the run's stored workflow_type, then unions the result with the
+     * bridge's candidate set in claimReadyTask(). Owning this query in
+     * app code makes the shared-queue routing rule authoritative on
+     * the server side: a worker that registered for a workflow_type
+     * still sees the matching task on the next poll, even when the
+     * package bridge surfaces an unrelated candidate set for the same
+     * queue (the polyglot two-worker shared-queue case) or its
+     * predicate drifts across releases. The bridge stays authoritative
+     * for the claim transaction — this method only identifies
+     * candidates and returns the same row shape pollReadyTasks()
+     * already produces, so the downstream filter chain
+     * (matchesCompatibility, matchesWorkflowType, claimStatus) runs
+     * unchanged on the same payload.
      *
      * @param  list<string>  $supportedWorkflowTypes
      * @return list<array<string, mixed>>
@@ -697,6 +711,60 @@ final class WorkflowTaskPoller
                 'fairness_weight' => is_int($task->fairness_weight) ? $task->fairness_weight : 1,
             ];
         })->values()->all();
+    }
+
+    /**
+     * Union two ready-task lists by task_id, preserving order and
+     * preferring the first occurrence's payload. The bridge's payload
+     * shape is preserved when both sources surface the same task, so
+     * downstream consumers (claim, history fetch) keep seeing the
+     * payload variant they have always seen on the happy path. Tasks
+     * the bridge surfaced that the dispatch query didn't are kept;
+     * tasks the dispatch query surfaced that the bridge missed are
+     * appended.
+     *
+     * @param  list<array<string, mixed>>  $primary
+     * @param  list<array<string, mixed>>  $secondary
+     * @return list<array<string, mixed>>
+     */
+    private function mergeReadyTasksByTaskId(array $primary, array $secondary): array
+    {
+        $seen = [];
+        $merged = [];
+
+        foreach ($primary as $task) {
+            $taskId = is_string($task['task_id'] ?? null) ? $task['task_id'] : null;
+
+            if ($taskId === null) {
+                $merged[] = $task;
+
+                continue;
+            }
+
+            if (isset($seen[$taskId])) {
+                continue;
+            }
+
+            $seen[$taskId] = true;
+            $merged[] = $task;
+        }
+
+        foreach ($secondary as $task) {
+            $taskId = is_string($task['task_id'] ?? null) ? $task['task_id'] : null;
+
+            if ($taskId === null) {
+                continue;
+            }
+
+            if (isset($seen[$taskId])) {
+                continue;
+            }
+
+            $seen[$taskId] = true;
+            $merged[] = $task;
+        }
+
+        return $merged;
     }
 
     private function recoverExpiredLeases(

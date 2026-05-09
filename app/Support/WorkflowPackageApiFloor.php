@@ -91,14 +91,24 @@ final class WorkflowPackageApiFloor
      * Workflow-task polling contract — commit a1d442d. The bridge must
      * accept the workflow-type filter parameter; the server's API floor
      * asserts that signature at boot. Beyond the signature, dispatch
-     * also runs a server-owned safety net: WorkflowTaskPoller and
-     * ActivityTaskPoller fall back to a typed app-side join when the
-     * bridge poll surfaces no candidate and the worker registered a
-     * non-empty supportedWorkflowTypes / supportedActivityTypes list.
-     * The fallback only identifies candidates and reuses the bridge
-     * for the claim transaction, so the bridge stays authoritative for
+     * also runs a server-owned authoritative typed-routing pass:
+     * WorkflowTaskPoller and ActivityTaskPoller run a typed app-side
+     * join (workflow_tasks ↔ workflow_runs / activity_executions
+     * filtered by the worker's registered types) on every typed poll
+     * and union the result with the bridge's candidate set by task_id
+     * before the fairness reorder pass. The earlier "fall back only
+     * when the bridge returned empty" gate left a hole on shared
+     * queues with disjoint-typed workers — when the bridge surfaced
+     * an unrelated candidate set, the per-task type filter dropped
+     * every entry but the empty-list gate did not trip, stranding a
+     * real matching task. Running the join unconditionally for typed
+     * polls and merging by task_id closes that hole. The dispatch
+     * pass only identifies candidates and reuses the bridge for the
+     * claim transaction, so the bridge stays authoritative for
      * leasing while a polyglot two-worker queue keeps moving even if
-     * the bridge's predicate shape ever drifts under it.
+     * the bridge's predicate shape ever drifts under it. The union
+     * runs before reorderForFairness so the merged candidate set is
+     * what fairness rebalances.
      */
     private const WORKFLOW_TASK_POLL_CLASS = WorkflowTaskBridge::class;
 
