@@ -1,0 +1,114 @@
+# Temporal Compatibility Parity Tracker
+
+This document tracks the durable-workflow stack against the capabilities Temporal
+announced at Replay 2026 (May 6, 2026). The goal is to make the parity surface
+visible in one place so a Temporal user evaluating durable-workflow as a swap-in
+can read a single page and know what is shipped, what is in flight, and what is
+deferred.
+
+The capability names below mirror Temporal's own labels for searchability;
+durable-workflow chooses its own implementation names. What matters is the
+contract a Temporal user expects when they swap durable-workflow in for the
+same workload.
+
+This is a snapshot, not a release gate. The platform conformance suite in
+`docs/contracts/platform-conformance.md` and the surface-stability contract
+re-exported from `GET /api/cluster/info` remain the binding contracts for
+release.
+
+## How to read the status column
+
+- **shipped** — implemented, on `main`, and reachable from a stable surface
+  (route, contract, or documented operator workflow). Evidence is a file path
+  or a public commit subject.
+- **in flight** — code exists on a feature branch or behind a flag and has not
+  yet landed on `main`.
+- **gap** — durable-workflow does not currently implement this capability.
+  Either tracked here for a future promotion or filed as a standalone work
+  item in the appropriate repo.
+- **building blocks present** — the underlying primitives ship today, but the
+  capability described in the announcement is a higher-level pattern,
+  reference sample, or helper that has not been promoted to a first-class
+  surface.
+
+## How to use this tracker
+
+- Before doing new work for a row, search the code, docs, and tests for
+  evidence the feature is already there. If it is, update the row to
+  **shipped** and point to the existing implementation rather than building
+  it again.
+- "Priority" is durable-workflow's view of its own swap-in story, not
+  Temporal's roadmap. **P0** breaks the swap-in story; **P1** is a strong
+  expectation a new user will have; **P2** is ecosystem or nice-to-have.
+- When a row is large enough that it needs its own GitHub issue with its own
+  reviewers, file it in the relevant repo and link the row to it. Smaller
+  rows can stay tracked here.
+
+## Core contract / server primitives
+
+| # | Capability | Status | Priority | Evidence / notes |
+|---|---|---|---|---|
+| 1 | **Worker Versioning** — pin in-flight workflows to the worker version that started them; progressive rollouts | shipped | P0 | `workflow_runs.compatibility` is stamped from the start-options `build_id` and surfaced on the workflow show / list APIs (`app/Http/Controllers/Api/WorkflowController.php`). Build-id rollouts table at `database/migrations/2026_04_22_000200_create_workflow_worker_build_id_rollouts_table.php` plus the deployment-lifecycle columns added on top. |
+| 2 | **Worker Heartbeats / Status surface** — every SDK emits periodic heartbeat (slots, resource, config); server stores; CLI and UI list workers per task queue | in flight | P0 | Worker fleet heartbeats with task-slot and process-metrics fields on `/api/worker/register` and `/api/worker/heartbeat`, plus `heartbeat_interval_seconds` and `stale_after_seconds` echoed in the acknowledgements, sit on a feature branch. The merge to `main` and the matching CLI / Waterline list views are tracked separately. |
+| 3 | **Task Queue Priority + Fairness** — priority levels on workflow / activity tasks; fair distribution across workload classes | gap | P1 | No priority field on the workflow / activity task contracts and no fairness scheduler in the matching path. Filed as a standalone surface for design review before implementation. |
+| 4 | **Nexus** — durable workflow-to-workflow / service-to-service calls across namespaces | gap | P1 | The cross-namespace service binding contract exists (`app/Support/ServiceCallBoundary.php`, `app/Http/Controllers/Api/ServiceCatalogController.php`) and gives us a place to hang Nexus-shaped semantics, but the Temporal-style Nexus operation contract (caller, handler, callback) is not implemented. |
+| 5 | **Principal Attribution** — server-derived non-spoofable field naming who invoked each workflow event | gap | P1 | `app/Http/Middleware/Authenticate.php` resolves a `Principal` per request, but the principal is not stamped onto the resulting workflow / signal / update history events as an attributed field. Adding attribution is a history-event schema change; tracked as a standalone contract before code lands. |
+| 6 | **Standalone Activities** — Activities run on their own (job-style), not just inside a Workflow; same Activity reusable inside Workflows | gap | P1 | `app/Http/Controllers/Api/ActivityTaskController.php` only dispatches activity tasks created by a workflow. Job-style standalone activities require a separate creation path and a result delivery channel. Tracked here until promoted. |
+| 7 | **Workflow Streams** — durable streaming via Signal / Update primitives for token batches, real-time UI | building blocks present | P1 | Signal and update routes already ship (`POST /api/workflows/{id}/signal/{name}`, `POST /api/workflows/{id}/update/{name}`, plus run-targeted variants in `routes/api.php`). The Replay 2026 announcement is about a higher-level streaming pattern built on these primitives — a reference helper or canonical sample is the missing piece, not a new server primitive. |
+| 8 | **External Payload Storage** — large payloads stored externally (object store + custom driver) for AI / large-data workflows | shipped | P1 | Per-namespace external payload storage with a configurable driver: `app/Support/NamespaceExternalPayloadStorage.php`, `app/Support/FilesystemExternalPayloadStorage.php`, `app/Support/ExternalPayloadRetentionCleanup.php`, control plane in `app/Http/Controllers/Api/StorageController.php`, namespace migration at `database/migrations/2026_04_22_000100_add_external_payload_storage_to_workflow_namespaces.php`. Test coverage in `tests/Feature/ExternalPayloadStorageTest.php` and `tests/Feature/PayloadEnvelopeIntegrationTest.php`. |
+
+## SDK additions
+
+| # | Capability | Status | Priority | Evidence / notes |
+|---|---|---|---|---|
+| 9 | **Rust SDK** — first-party Rust support for Workflows + Activities | gap | P2 | First-party SDKs today are PHP (`workflow` repo) and Python (`sdk-python` repo). Adding Rust requires a runtime-neutrality decision before we commit; tracked here. |
+| 10 | **AI integrations: Google ADK** — LLM calls + tool execution as Activities | gap | P2 | No first-party ADK helper. Workflows can already wrap ADK calls inside Activities today; the question is whether a packaged helper / sample is in scope. |
+| 11 | **AI integrations: OpenAI Agents SDK + sandbox support** — agent SDK + isolated execution | gap | P2 | Similar to ADK: no first-party helper. Sandbox lifecycle is the harder half and is tracked separately under "Sandbox Orchestration Harness" below. |
+| 12 | **AI Partner Ecosystem program** — partner-facing integration framework | strategic; out of scope as code | P2 | Not a code deliverable. Listed for completeness against the announcement. |
+
+## Agentic / sample patterns
+
+| # | Capability | Status | Priority | Evidence / notes |
+|---|---|---|---|---|
+| 21 | **Sandbox Orchestration Harness** — reference samples + thin SDK helpers wrapping Activities to manage agent sandbox lifecycle (provision, drive, persist, recover, clean up); not a new server primitive | gap | P2 | Tracked in the sample-app repo. Activities and the worker-session contract already cover the durable parts; the missing piece is the canonical sandbox-lifecycle pattern. |
+
+## Compute / deployment
+
+| # | Capability | Status | Priority | Evidence / notes |
+|---|---|---|---|---|
+| 13 | **Serverless Workers (AWS Lambda)** — Cloud auto-invokes / scales / shuts-down workers based on workload | gap | P2 | The worker protocol does not require a long-lived poller (workers may register, claim, and exit), but Cloud-side auto-invocation against task-queue depth is not built. Cloud-repo tracker. |
+
+## Cloud / operational
+
+These rows live in the `cloud` repo when promoted, not in `server`. They are
+listed here so the parity surface can be read end-to-end.
+
+| # | Capability | Status | Priority | Evidence / notes |
+|---|---|---|---|---|
+| 14 | **Prometheus / OpenMetrics endpoint** — Cloud-side metrics endpoint with task-queue / workflow / activity granularity | gap | P1 | Server already publishes a JSON metrics surface and the bounded-growth policy in `docs/bounded-growth.md` covers cardinality. The Cloud-side OpenMetrics endpoint is the Cloud team's surface. |
+| 15 | **Multi-region + Multi-cloud Replication** — namespace replication with 20-minute RTO automatic failover | gap | P1 | `docs/multi-region-validation.md` documents the validation harness; replication itself is a Cloud-side capability. |
+| 16 | **Billing API + Billable Action Metrics** — programmatic spend / usage with namespace + action-type labels | gap | P2 | Cloud-side. |
+| 17 | **SCIM** — automated user provisioning / group management | gap | P2 | Cloud-side. |
+| 18 | **AWS PrivateLink / GCP PSC self-serve** — private connectivity from customer network to Cloud namespace | gap | P2 | Cloud-side. |
+| 19 | **Capacity Modes** — predictable per-namespace capacity sizing (spikes, batch, load-test) | gap | P2 | Cloud-side. |
+
+## Recognition (not parity work)
+
+| # | Item |
+|---|---|
+| 20 | AWS AI Competency in Agentic AI — recognition; not a parity gap. |
+
+## Cross-references
+
+- Platform conformance suite (binding release contract):
+  `docs/contracts/platform-conformance.md`.
+- Replay verification contract (binding promotion contract):
+  `docs/contracts/replay-verification.md`.
+- Bounded-growth policy (caches, metrics, label cardinality):
+  `docs/bounded-growth.md`.
+- Surface stability authority: `surface_stability_contract` field of
+  `GET /api/cluster/info`.
+- Public docs site: <https://durable-workflow.github.io/>.
+
+Source for the capability list: Temporal blog,
+"Announcing new Temporal capabilities from Replay 2026" (May 6, 2026).
