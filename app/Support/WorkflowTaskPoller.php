@@ -9,6 +9,7 @@ use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\HistoryPayloadCompression;
 
@@ -431,6 +432,25 @@ final class WorkflowTaskPoller
             supportedWorkflowTypes: $supportedWorkflowTypes,
         );
 
+        // Server-owned dispatch fallback: when a typed-poll worker comes
+        // back from the package bridge with no candidate, run the
+        // workflow_tasks ↔ workflow_runs join in app code so the
+        // shared-queue routing rule does not depend on the bridge's
+        // current predicate shape. The bridge has cycled this filter
+        // through several variants (correlated subquery, then join);
+        // any future drift would silently strand workflow tasks on a
+        // queue where the registered worker is the only valid claimer.
+        // Falling back here keeps a polyglot two-worker queue moving
+        // without trusting the bridge to be the sole source of truth.
+        if ($readyTasks === [] && $supportedWorkflowTypes !== []) {
+            $readyTasks = $this->pollReadyTasksFromDispatch(
+                namespace: $namespace,
+                taskQueue: $taskQueue,
+                limit: $limit,
+                supportedWorkflowTypes: $supportedWorkflowTypes,
+            );
+        }
+
         \Log::info('[WorkflowTaskPoller] claimReadyTask called', [
             'namespace' => $namespace,
             'taskQueue' => $taskQueue,
@@ -578,6 +598,86 @@ final class WorkflowTaskPoller
             $namespace,
             $supportedWorkflowTypes,
         );
+    }
+
+    /**
+     * Server-owned dispatch fallback for typed workflow polls.
+     *
+     * When a worker has registered specific supportedWorkflowTypes but the
+     * bridge poll surfaces no candidate, the dispatch path falls back to
+     * a direct query that joins workflow_tasks to workflow_runs and
+     * filters by the run's stored workflow_type. Owning this query in
+     * app code makes the shared-queue routing rule authoritative on the
+     * server side: a worker that registered for a workflow_type still
+     * sees the matching task on the next poll, even when the package
+     * bridge's predicate has drifted across releases (subquery shape,
+     * join shape, etc.) and stops surfacing the row on the worker's
+     * deployed image. The bridge is still authoritative for the claim
+     * transaction — this method only identifies candidates and returns
+     * the same row shape pollReadyTasks() already produces, so the
+     * downstream filter chain (matchesCompatibility, matchesWorkflowType,
+     * claimStatus) runs unchanged on the same payload.
+     *
+     * @param  list<string>  $supportedWorkflowTypes
+     * @return list<array<string, mixed>>
+     */
+    private function pollReadyTasksFromDispatch(
+        string $namespace,
+        string $taskQueue,
+        int $limit,
+        array $supportedWorkflowTypes,
+    ): array {
+        if ($supportedWorkflowTypes === []) {
+            return [];
+        }
+
+        $availabilityCutoff = now()->addSecond();
+
+        $tasks = NamespaceWorkflowScope::taskQuery($namespace)
+            ->select('workflow_tasks.*')
+            ->join(
+                'workflow_runs',
+                'workflow_runs.id',
+                '=',
+                'workflow_tasks.workflow_run_id',
+            )
+            ->where('workflow_tasks.task_type', TaskType::Workflow->value)
+            ->where('workflow_tasks.status', TaskStatus::Ready->value)
+            ->where('workflow_tasks.queue', $taskQueue)
+            ->where(function ($builder) use ($availabilityCutoff): void {
+                $builder->whereNull('workflow_tasks.available_at')
+                    ->orWhere('workflow_tasks.available_at', '<=', $availabilityCutoff);
+            })
+            ->whereIn('workflow_runs.workflow_type', $supportedWorkflowTypes)
+            ->orderBy('workflow_tasks.priority')
+            ->orderBy('workflow_tasks.available_at')
+            ->orderBy('workflow_tasks.id')
+            ->limit(max(1, $limit))
+            ->get();
+
+        return $tasks->map(function (WorkflowTask $task): array {
+            /** @var WorkflowRun|null $run */
+            $run = WorkflowRun::query()->find($task->workflow_run_id);
+
+            return [
+                'task_id' => $task->id,
+                'workflow_run_id' => $task->workflow_run_id,
+                'workflow_instance_id' => is_string($run?->workflow_instance_id)
+                    ? $run->workflow_instance_id
+                    : '',
+                'workflow_type' => $this->nonEmptyString($run?->workflow_type),
+                'workflow_class' => $this->nonEmptyString($run?->workflow_class),
+                'connection' => $this->nonEmptyString($task->connection),
+                'queue' => $this->nonEmptyString($task->queue),
+                'compatibility' => $this->nonEmptyString($task->compatibility),
+                'sticky_worker_id' => $this->nonEmptyString($task->sticky_worker_id ?? null),
+                'sticky_until' => $task->sticky_until?->toJSON(),
+                'available_at' => $task->available_at?->toJSON(),
+                'priority' => is_int($task->priority) ? $task->priority : 5,
+                'fairness_key' => $this->nonEmptyString($task->fairness_key ?? null),
+                'fairness_weight' => is_int($task->fairness_weight) ? $task->fairness_weight : 1,
+            ];
+        })->values()->all();
     }
 
     private function recoverExpiredLeases(

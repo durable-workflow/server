@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\DB;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowTask;
 
 final class ActivityTaskPoller
@@ -147,6 +148,24 @@ final class ActivityTaskPoller
             activityTypes: $supportedActivityTypes,
         );
 
+        // Server-owned dispatch fallback for typed activity polls.
+        // Symmetric with WorkflowTaskPoller::claimReadyTask: when a
+        // worker registered specific supportedActivityTypes but the
+        // bridge surfaced no candidate, run the same join in app code
+        // so the shared-queue routing rule is server-authoritative on
+        // both task kinds. The bridge stays authoritative for the
+        // claim transaction; this only identifies candidates and
+        // returns the row shape the existing claim path consumes.
+        if ($readyTasks === [] && $supportedActivityTypes !== []) {
+            $readyTasks = $this->pollReadyTasksFromDispatch(
+                namespace: $namespace,
+                taskQueue: $taskQueue,
+                buildId: $buildId,
+                limit: $limit,
+                supportedActivityTypes: $supportedActivityTypes,
+            );
+        }
+
         foreach ($readyTasks as $readyTask) {
             $taskId = is_string($readyTask['task_id'] ?? null)
                 ? $readyTask['task_id']
@@ -211,6 +230,93 @@ final class ActivityTaskPoller
         }
 
         return null;
+    }
+
+    /**
+     * Server-owned dispatch fallback for typed activity polls.
+     *
+     * Mirrors WorkflowTaskPoller::pollReadyTasksFromDispatch on the
+     * activity side: when a worker registered specific
+     * supportedActivityTypes but the bridge poll returns nothing, run
+     * the workflow_tasks ↔ activity_executions join in app code so the
+     * registered worker still sees its matching task on the next poll
+     * regardless of which predicate shape the bridge ships in a given
+     * release. The bridge is authoritative for the claim transaction;
+     * this method only identifies candidates and returns the same row
+     * shape the bridge poll already produces, so the downstream
+     * matchesActivityType + claimStatus chain runs unchanged.
+     *
+     * @param  list<string>  $supportedActivityTypes
+     * @return list<array<string, mixed>>
+     */
+    private function pollReadyTasksFromDispatch(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        int $limit,
+        array $supportedActivityTypes,
+    ): array {
+        if ($supportedActivityTypes === []) {
+            return [];
+        }
+
+        $availabilityCutoff = now()->addSecond();
+
+        $query = NamespaceWorkflowScope::taskQuery($namespace)
+            ->select('workflow_tasks.*')
+            ->where('workflow_tasks.task_type', TaskType::Activity->value)
+            ->where('workflow_tasks.status', TaskStatus::Ready->value)
+            ->where('workflow_tasks.queue', $taskQueue)
+            ->where(function ($builder) use ($availabilityCutoff): void {
+                $builder->whereNull('workflow_tasks.available_at')
+                    ->orWhere('workflow_tasks.available_at', '<=', $availabilityCutoff);
+            })
+            ->whereIn(
+                'workflow_tasks.payload->activity_execution_id',
+                ActivityExecution::query()
+                    ->select('id')
+                    ->whereIn('activity_type', $supportedActivityTypes),
+            )
+            ->orderBy('workflow_tasks.priority')
+            ->orderBy('workflow_tasks.available_at')
+            ->orderBy('workflow_tasks.id')
+            ->limit(max(1, $limit));
+
+        if ($buildId !== null) {
+            $query->where('workflow_tasks.compatibility', $buildId);
+        }
+
+        $tasks = $query->get();
+
+        return $tasks->map(static function (WorkflowTask $task): array {
+            $executionId = $task->payload['activity_execution_id'] ?? null;
+
+            /** @var ActivityExecution|null $execution */
+            $execution = is_string($executionId)
+                ? ActivityExecution::query()->find($executionId)
+                : null;
+
+            return [
+                'task_id' => $task->id,
+                'workflow_run_id' => $task->workflow_run_id,
+                'workflow_instance_id' => '',
+                'activity_execution_id' => $execution?->id,
+                'activity_type' => self::nullableString($execution?->activity_type),
+                'activity_class' => self::nullableString($execution?->activity_class),
+                'connection' => self::nullableString($task->connection),
+                'queue' => self::nullableString($task->queue),
+                'compatibility' => self::nullableString($task->compatibility),
+                'available_at' => $task->available_at?->toJSON(),
+                'priority' => is_int($task->priority) ? $task->priority : 5,
+                'fairness_key' => self::nullableString($task->fairness_key ?? null),
+                'fairness_weight' => is_int($task->fairness_weight) ? $task->fairness_weight : 1,
+            ];
+        })->values()->all();
+    }
+
+    private static function nullableString(mixed $value): ?string
+    {
+        return is_string($value) && $value !== '' ? $value : null;
     }
 
     /**

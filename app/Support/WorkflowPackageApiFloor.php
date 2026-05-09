@@ -88,9 +88,17 @@ final class WorkflowPackageApiFloor
     ];
 
     /**
-     * Workflow-task polling contract — commit a1d442d. The server now depends
-     * on the bridge itself accepting the workflow-type filter instead of
-     * reflecting over older package baselines and broad-polling locally.
+     * Workflow-task polling contract — commit a1d442d. The bridge must
+     * accept the workflow-type filter parameter; the server's API floor
+     * asserts that signature at boot. Beyond the signature, dispatch
+     * also runs a server-owned safety net: WorkflowTaskPoller and
+     * ActivityTaskPoller fall back to a typed app-side join when the
+     * bridge poll surfaces no candidate and the worker registered a
+     * non-empty supportedWorkflowTypes / supportedActivityTypes list.
+     * The fallback only identifies candidates and reuses the bridge
+     * for the claim transaction, so the bridge stays authoritative for
+     * leasing while a polyglot two-worker queue keeps moving even if
+     * the bridge's predicate shape ever drifts under it.
      */
     private const WORKFLOW_TASK_POLL_CLASS = WorkflowTaskBridge::class;
 

@@ -9,12 +9,15 @@ use App\Support\TaskQueueAdmission;
 use App\Support\WorkflowTaskLeaseRecovery;
 use App\Support\WorkflowTaskPoller;
 use App\Support\WorkflowTaskPollRequestStore;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use ReflectionMethod;
 use Tests\TestCase;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 
 class WorkflowTaskPollerTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_claim_ready_task_forwards_supported_workflow_types_when_bridge_supports_filtering(): void
     {
         $bridge = \Mockery::mock(WorkflowTaskBridge::class);

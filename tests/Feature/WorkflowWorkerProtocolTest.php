@@ -1446,8 +1446,88 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task', null);
     }
 
-    public function test_it_does_not_fall_back_to_a_local_ready_scan_when_the_workflow_bridge_returns_no_tasks(): void
+    public function test_workflow_dispatch_falls_back_to_app_query_when_bridge_returns_no_candidate(): void
     {
+        // Server-owned dispatch contract: the package bridge's poll
+        // predicate has cycled through subquery- and join-shaped
+        // filters across releases, and any drift left a polyglot
+        // shared queue stalled with a workflow task pending while the
+        // registered worker polled and got nothing. The dispatch path
+        // now falls back to a server-side workflow_tasks ↔
+        // workflow_runs join when the bridge surfaces no candidate
+        // and the worker registered specific workflow types, so the
+        // matching task still reaches the right worker on the next
+        // poll regardless of which predicate shape the bridge ships
+        // in a given release.
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $workflowType = 'tests.external-greeting-workflow';
+        $taskQueue = 'external-workflows';
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-dispatch-fallback',
+                'workflow_type' => $workflowType,
+                'task_queue' => $taskQueue,
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $instanceId = (string) $start->json('workflow_id');
+
+        // Simulate a bridge whose typed-filter predicate fails to
+        // surface a real ready task — the failure mode the dispatch
+        // fallback exists to recover from. claimStatus and
+        // historyPayloadPaginated still need to behave normally so
+        // the leased task can be returned to the worker.
+        $realBridge = $this->app->make(WorkflowTaskBridge::class);
+
+        $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use ($realBridge): void {
+            $mock->shouldReceive('poll')
+                ->andReturn([]);
+
+            $mock->shouldReceive('claimStatus')
+                ->andReturnUsing(static fn (string $taskId, ?string $leaseOwner = null): array => $realBridge->claimStatus($taskId, $leaseOwner));
+
+            $mock->shouldReceive('historyPayloadPaginated')
+                ->andReturnUsing(static fn (string $taskId, int $afterSequence = 0, int $pageSize = 50): ?array => $realBridge->historyPayloadPaginated($taskId, $afterSequence, $pageSize));
+
+            $mock->shouldReceive('historyPayload')
+                ->andReturnUsing(static fn (string $taskId): ?array => $realBridge->historyPayload($taskId));
+        });
+
+        $this->registerWorker(
+            'php-worker-dispatch-fallback',
+            $taskQueue,
+            supportedWorkflowTypes: [$workflowType],
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-dispatch-fallback',
+                'task_queue' => $taskQueue,
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', $instanceId)
+            ->assertJsonPath('task.workflow_type', $workflowType);
+    }
+
+    public function test_workflow_dispatch_does_not_fall_back_for_untyped_polls_when_bridge_returns_no_tasks(): void
+    {
+        // Untyped-poll contract: workers that registered no workflow
+        // types are not workflow workers, so the dispatch path must
+        // never materialise a workflow task for them — neither through
+        // the bridge poll nor through the server-owned fallback. The
+        // typed fallback in WorkflowTaskPoller::claimReadyTask gates on
+        // supportedWorkflowTypes !== [], so the no-local-scan contract
+        // for the untyped path is preserved alongside the typed-fallback
+        // recovery: an untyped worker is short-circuited with the
+        // no_workflow_capability poll status before the bridge is asked
+        // anything at all.
         Queue::fake();
 
         $this->configureWorkflowTypes();
@@ -1455,7 +1535,7 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $start = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows', [
-                'workflow_id' => 'wf-bridge-only-poll',
+                'workflow_id' => 'wf-untyped-no-fallback',
                 'workflow_type' => 'tests.external-greeting-workflow',
                 'task_queue' => 'external-workflows',
                 'input' => ['Ada'],
@@ -1463,22 +1543,26 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $start->assertCreated();
 
+        // A bridge that, if asked, would return nothing — the test
+        // asserts the bridge is never asked for an untyped worker.
         $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock): void {
-            $mock->shouldReceive('poll')
-                ->once()
-                ->with(null, 'external-workflows', 10, null, 'default', [])
-                ->andReturn([]);
+            $mock->shouldNotReceive('poll');
         });
 
-        $this->registerWorker('php-worker-bridge-only', 'external-workflows');
+        $this->registerWorker(
+            'php-worker-untyped',
+            'external-workflows',
+            supportedWorkflowTypes: [],
+        );
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
-                'worker_id' => 'php-worker-bridge-only',
+                'worker_id' => 'php-worker-untyped',
                 'task_queue' => 'external-workflows',
             ])
             ->assertOk()
-            ->assertJsonPath('task', null);
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'no_workflow_capability');
     }
 
     public function test_it_passes_supported_workflow_types_to_the_workflow_bridge_poll(): void
