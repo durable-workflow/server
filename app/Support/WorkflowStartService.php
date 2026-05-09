@@ -16,6 +16,7 @@ class WorkflowStartService
         private readonly WorkflowControlPlane $controlPlane,
         private readonly ConfiguredWorkflowTypeValidator $workflowTypes,
         private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
+        private readonly WorkflowStartVersionPin $versionPin,
     ) {}
 
     /**
@@ -120,6 +121,10 @@ class WorkflowStartService
         $arguments = $envelope['blob'] ?? Serializer::serializeWithCodec($defaultCodec, []);
         $payloadCodec = $envelope['codec'] ?? $defaultCodec;
 
+        $pinnedBuildId = $namespace !== null
+            ? $this->versionPin->resolve($namespace, $taskQueue)
+            : null;
+
         $result = $this->controlPlane->start($workflowType, $workflowId, array_filter([
             'arguments' => $arguments,
             'payload_codec' => $payloadCodec,
@@ -135,6 +140,7 @@ class WorkflowStartService
             'run_timeout_seconds' => $this->intValue($validated, 'run_timeout_seconds'),
             'namespace' => $namespace,
             'command_context' => $commandContext,
+            'build_id' => $pinnedBuildId,
         ], static fn (mixed $value): bool => $value !== null));
 
         $started = (bool) ($result['started'] ?? false);

@@ -95,6 +95,11 @@ class WorkflowController
                 'status_bucket' => $summary->status_bucket,
                 'task_queue' => $summary->queue,
                 'is_terminal' => RunStatus::from($summary->status)->isTerminal(),
+                // The worker build the run is pinned to, surfaced so
+                // operators can see which version is in flight across a
+                // mixed worker-version pool without drilling into the
+                // run detail.
+                'compatibility' => $summary->compatibility,
                 'started_at' => $summary->started_at?->toJSON(),
                 'closed_at' => $summary->closed_at?->toJSON(),
                 'search_attributes' => $summary->search_attributes ?? [],
@@ -325,6 +330,7 @@ class WorkflowController
                 'business_key' => $run->business_key,
                 'status' => $run->status->value,
                 'task_queue' => $run->queue,
+                'compatibility' => $run->compatibility,
                 'started_at' => $run->started_at?->toJSON(),
                 'closed_at' => $run->closed_at?->toJSON(),
             ])->all(),
