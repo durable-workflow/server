@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\ActivityController;
 use App\Http\Controllers\Api\ActivityTaskController;
 use App\Http\Controllers\Api\BridgeAdapterController;
 use App\Http\Controllers\Api\DeploymentController;
@@ -138,6 +139,19 @@ Route::middleware([Authenticate::class])->group(function () {
         // without inspecting raw transport logs.
         Route::get('/{workflowId}/nexus-operations', [ServiceCatalogController::class, 'nexusOperationsForWorkflow']);
         Route::get('/{workflowId}/runs/{runId}/nexus-operations', [ServiceCatalogController::class, 'nexusOperationsForRun']);
+    });
+
+    // ── Standalone Activities ────────────────────────────────────────
+    // Activities run as top-level durable jobs, reusing the same Activity
+    // definition that workflows can also schedule via the activity() yield.
+    // The server records each standalone activity inside a host run that
+    // anchors retry, deadline, history, and cancellation accounting, so the
+    // execution surfaces as a first-class top-level row on the run summary,
+    // history, and listing APIs without authoring a wrapper Workflow.
+    Route::prefix('activities')->middleware([$operator, $cpv, $httpControl, $workflowBootstrap, $ns])->group(function () {
+        Route::get('/', [ActivityController::class, 'index']);
+        Route::post('/', [ActivityController::class, 'start']);
+        Route::get('/{activityId}', [ActivityController::class, 'show']);
     });
 
     // ── Bridge Adapters ──────────────────────────────────────────────
