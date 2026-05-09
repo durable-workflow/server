@@ -190,6 +190,7 @@ class WorkerProtocol
      *     invocable_carrier: array<string, mixed>,
      *     external_task_input: array<string, mixed>,
      *     external_task_result: array<string, mixed>,
+     *     task_queue_priority_fairness: array<string, mixed>,
      * }
      */
     public static function serverCapabilities(): array
@@ -267,6 +268,46 @@ class WorkerProtocol
             'external_task_result' => [
                 'schema' => ExternalTaskResultContract::SCHEMA,
                 'version' => ExternalTaskResultContract::VERSION,
+            ],
+            'task_queue_priority_fairness' => self::taskQueuePriorityFairnessSemantics(),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function taskQueuePriorityFairnessSemantics(): array
+    {
+        if (method_exists(WorkerProtocolVersion::class, 'taskQueuePriorityFairnessSemantics')) {
+            return WorkerProtocolVersion::taskQueuePriorityFairnessSemantics();
+        }
+
+        return [
+            'schema' => 'durable-workflow.v2.task-queue-priority-fairness.contract',
+            'version' => 1,
+            'feature' => 'task_queue_priority_fairness',
+            'fields' => [
+                'priority' => [
+                    'type' => 'integer',
+                    'min' => 0,
+                    'min_user' => 1,
+                    'max' => 9,
+                    'default' => 5,
+                    'lower_is_more_urgent' => true,
+                ],
+                'fairness_key' => [
+                    'type' => 'string',
+                    'nullable' => true,
+                    'max_length' => 64,
+                    'default' => null,
+                    'default_class_label' => '__default__',
+                ],
+                'fairness_weight' => [
+                    'type' => 'integer',
+                    'min' => 1,
+                    'max' => 1000,
+                    'default' => 1,
+                ],
             ],
         ];
     }

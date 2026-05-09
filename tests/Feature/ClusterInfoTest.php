@@ -1204,6 +1204,41 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('worker_protocol.server_capabilities.non_retryable_failures', true);
     }
 
+    public function test_it_publishes_task_queue_priority_fairness_contract_in_worker_protocol(): void
+    {
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.task_queue_priority_fairness.schema',
+                'durable-workflow.v2.task-queue-priority-fairness.contract',
+            )
+            ->assertJsonPath('worker_protocol.server_capabilities.task_queue_priority_fairness.version', 1)
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.task_queue_priority_fairness.feature',
+                'task_queue_priority_fairness',
+            )
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.task_queue_priority_fairness.fields.priority.default',
+                5,
+            )
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.task_queue_priority_fairness.fields.priority.min',
+                0,
+            )
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.task_queue_priority_fairness.fields.priority.max',
+                9,
+            )
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.task_queue_priority_fairness.fields.fairness_key.default_class_label',
+                '__default__',
+            )
+            ->assertJsonPath(
+                'worker_protocol.server_capabilities.task_queue_priority_fairness.fields.fairness_weight.default',
+                1,
+            );
+    }
+
     public function test_it_advertises_empty_compression_when_disabled(): void
     {
         config(['server.compression.enabled' => false]);
