@@ -315,6 +315,11 @@ jobs:
               throw new RuntimeException('Unknown PHP activity type: '.$activityType);
           }
 
+          $workflowMaxConcurrency = 4;
+          $activityMaxConcurrency = 4;
+          $workflowInflight = 0;
+          $activityInflight = 0;
+
           request('POST', '/worker/register', [
               'worker_id' => WORKER_ID,
               'task_queue' => TASK_QUEUE,
@@ -328,9 +333,46 @@ jobs:
                   'php_activity_for_python',
                   'php_activity_for_php',
               ],
+              'max_concurrent_workflow_tasks' => $workflowMaxConcurrency,
+              'max_concurrent_activity_tasks' => $activityMaxConcurrency,
           ]);
 
+          $workerStartedAt = time();
+          $lastHeartbeatAt = 0;
+
+          $sendHeartbeat = function () use (
+              &$lastHeartbeatAt,
+              &$workflowInflight,
+              &$activityInflight,
+              $workflowMaxConcurrency,
+              $activityMaxConcurrency,
+              $workerStartedAt,
+          ) {
+              $lastHeartbeatAt = time();
+
+              $processMetrics = [
+                  'memory_bytes' => (int) memory_get_usage(true),
+                  'process_id' => (int) getmypid(),
+                  'process_uptime_seconds' => max(0, time() - $workerStartedAt),
+              ];
+
+              $host = gethostname();
+              if (is_string($host) && $host !== '') {
+                  $processMetrics['host'] = substr($host, 0, 255);
+              }
+
+              request('POST', '/worker/heartbeat', [
+                  'worker_id' => WORKER_ID,
+                  'task_slots' => [
+                      'workflow_available' => max(0, $workflowMaxConcurrency - $workflowInflight),
+                      'activity_available' => max(0, $activityMaxConcurrency - $activityInflight),
+                  ],
+                  'process_metrics' => $processMetrics,
+              ]);
+          };
+
           echo "PHP worker starting\n";
+          $sendHeartbeat();
           while (true) {
               $workflowPoll = request('POST', '/worker/workflow-tasks/poll', [
                   'worker_id' => WORKER_ID,
@@ -338,7 +380,12 @@ jobs:
               ], 6);
 
               if (is_array($workflowPoll['task'] ?? null)) {
-                  handle_workflow_task($workflowPoll['task']);
+                  $workflowInflight++;
+                  try {
+                      handle_workflow_task($workflowPoll['task']);
+                  } finally {
+                      $workflowInflight = max(0, $workflowInflight - 1);
+                  }
               }
 
               $activityPoll = request('POST', '/worker/activity-tasks/poll', [
@@ -347,7 +394,16 @@ jobs:
               ], 6);
 
               if (is_array($activityPoll['task'] ?? null)) {
-                  handle_activity_task($activityPoll['task']);
+                  $activityInflight++;
+                  try {
+                      handle_activity_task($activityPoll['task']);
+                  } finally {
+                      $activityInflight = max(0, $activityInflight - 1);
+                  }
+              }
+
+              if (time() - $lastHeartbeatAt >= 60) {
+                  $sendHeartbeat();
               }
 
               usleep(100000);

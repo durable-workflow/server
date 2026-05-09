@@ -657,7 +657,7 @@ manifests should fail closed.
 
 ### Worker Protocol
 - `POST /api/worker/register` — Register a worker
-- `POST /api/worker/heartbeat` — Worker heartbeat
+- `POST /api/worker/heartbeat` — Worker fleet heartbeat (free task slots, basic process metrics)
 - `POST /api/worker/workflow-tasks/poll` — Long-poll for workflow tasks
 - `POST /api/worker/workflow-tasks/{id}/heartbeat` — Workflow task heartbeat
 - `POST /api/worker/workflow-tasks/{id}/complete` — Complete workflow task
@@ -666,6 +666,19 @@ manifests should fail closed.
 - `POST /api/worker/activity-tasks/{id}/complete` — Complete activity task
 - `POST /api/worker/activity-tasks/{id}/fail` — Fail activity task
 - `POST /api/worker/activity-tasks/{id}/heartbeat` — Activity heartbeat
+
+Worker-fleet heartbeats accept optional `task_slots` (`workflow_available`,
+`activity_available`, `session_available`) and `process_metrics`
+(`cpu_percent`, `memory_bytes`, `process_uptime_seconds`, `process_id`,
+`host`) so operators can answer "what workers are polling task queue X right
+now, what's their slot capacity, when did each last check in" via
+`GET /api/workers`, the CLI `dw worker:list`/`dw worker:describe`, and the
+Waterline Worker Status view. The register and heartbeat acknowledgements
+advertise the recommended cadence in `heartbeat_interval_seconds` (default
+60s, configurable via `DW_WORKER_HEARTBEAT_INTERVAL_SECONDS`); workers that
+miss enough heartbeats are surfaced as `stale` after
+`DW_WORKER_STALE_AFTER_SECONDS` and stop being considered for query-task
+dispatch and routing-gate admission.
 
 Worker-plane requests must send `X-Durable-Workflow-Protocol-Version: 1.2`, and
 worker-plane responses always echo the same header plus `protocol_version: "1.2"`.

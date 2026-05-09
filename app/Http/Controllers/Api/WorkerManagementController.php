@@ -31,33 +31,50 @@ class WorkerManagementController
 
         $staleAfter = (int) config('server.workers.stale_after_seconds', 300);
 
-        $workers = $query->get()->map(function (WorkerRegistration $worker) use ($staleAfter): array {
-            $isStale = $worker->last_heartbeat_at
-                && $worker->last_heartbeat_at->lt(now()->subSeconds($staleAfter));
-
-            return [
-                'worker_id' => $worker->worker_id,
-                'namespace' => $worker->namespace,
-                'task_queue' => $worker->task_queue,
-                'runtime' => $worker->runtime,
-                'sdk_version' => $worker->sdk_version,
-                'build_id' => $worker->build_id,
-                'supported_workflow_types' => $worker->supported_workflow_types ?? [],
-                'workflow_definition_fingerprints' => $worker->workflow_definition_fingerprints ?? [],
-                'supported_activity_types' => $worker->supported_activity_types ?? [],
-                'capabilities' => $worker->capabilities ?? [],
-                'max_concurrent_workflow_tasks' => $worker->max_concurrent_workflow_tasks,
-                'max_concurrent_activity_tasks' => $worker->max_concurrent_activity_tasks,
-                'max_concurrent_worker_sessions' => $worker->max_concurrent_worker_sessions,
-                'status' => $isStale ? 'stale' : $worker->status,
-                'last_heartbeat_at' => $worker->last_heartbeat_at?->toJSON(),
-                'registered_at' => $worker->created_at?->toJSON(),
-            ];
-        })->all();
+        $workers = $query->get()->map(fn (WorkerRegistration $worker): array => $this->workerSummary($worker, $staleAfter))->all();
 
         return ControlPlaneProtocol::json([
             'workers' => $workers,
+            'stale_after_seconds' => $staleAfter,
         ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function workerSummary(WorkerRegistration $worker, int $staleAfter): array
+    {
+        $isStale = $worker->last_heartbeat_at
+            && $worker->last_heartbeat_at->lt(now()->subSeconds($staleAfter));
+
+        return [
+            'worker_id' => $worker->worker_id,
+            'namespace' => $worker->namespace,
+            'task_queue' => $worker->task_queue,
+            'runtime' => $worker->runtime,
+            'sdk_version' => $worker->sdk_version,
+            'build_id' => $worker->build_id,
+            'supported_workflow_types' => $worker->supported_workflow_types ?? [],
+            'workflow_definition_fingerprints' => $worker->workflow_definition_fingerprints ?? [],
+            'supported_activity_types' => $worker->supported_activity_types ?? [],
+            'capabilities' => $worker->capabilities ?? [],
+            'max_concurrent_workflow_tasks' => $worker->max_concurrent_workflow_tasks,
+            'max_concurrent_activity_tasks' => $worker->max_concurrent_activity_tasks,
+            'max_concurrent_worker_sessions' => $worker->max_concurrent_worker_sessions,
+            'task_slots' => [
+                'workflow_available' => $worker->available_workflow_slots,
+                'activity_available' => $worker->available_activity_slots,
+                'session_available' => $worker->available_session_slots,
+                'workflow_capacity' => $worker->max_concurrent_workflow_tasks,
+                'activity_capacity' => $worker->max_concurrent_activity_tasks,
+                'session_capacity' => $worker->max_concurrent_worker_sessions,
+            ],
+            'process_metrics' => $worker->process_metrics ?? null,
+            'heartbeat_interval_seconds' => $worker->heartbeat_interval_seconds,
+            'status' => $isStale ? 'stale' : $worker->status,
+            'last_heartbeat_at' => $worker->last_heartbeat_at?->toJSON(),
+            'registered_at' => $worker->created_at?->toJSON(),
+        ];
     }
 
     public function show(Request $request, string $workerId): JsonResponse
@@ -85,28 +102,12 @@ class WorkerManagementController
         }
 
         $staleAfter = (int) config('server.workers.stale_after_seconds', 300);
-        $isStale = $worker->last_heartbeat_at
-            && $worker->last_heartbeat_at->lt(now()->subSeconds($staleAfter));
 
-        return ControlPlaneProtocol::json([
-            'worker_id' => $worker->worker_id,
-            'namespace' => $worker->namespace,
-            'task_queue' => $worker->task_queue,
-            'runtime' => $worker->runtime,
-            'sdk_version' => $worker->sdk_version,
-            'build_id' => $worker->build_id,
-            'supported_workflow_types' => $worker->supported_workflow_types ?? [],
-            'workflow_definition_fingerprints' => $worker->workflow_definition_fingerprints ?? [],
-            'supported_activity_types' => $worker->supported_activity_types ?? [],
-            'capabilities' => $worker->capabilities ?? [],
-            'max_concurrent_workflow_tasks' => $worker->max_concurrent_workflow_tasks,
-            'max_concurrent_activity_tasks' => $worker->max_concurrent_activity_tasks,
-            'max_concurrent_worker_sessions' => $worker->max_concurrent_worker_sessions,
-            'status' => $isStale ? 'stale' : $worker->status,
-            'last_heartbeat_at' => $worker->last_heartbeat_at?->toJSON(),
-            'registered_at' => $worker->created_at?->toJSON(),
-            'updated_at' => $worker->updated_at?->toJSON(),
-        ]);
+        $payload = $this->workerSummary($worker, $staleAfter);
+        $payload['updated_at'] = $worker->updated_at?->toJSON();
+        $payload['stale_after_seconds'] = $staleAfter;
+
+        return ControlPlaneProtocol::json($payload);
     }
 
     public function destroy(Request $request, string $workerId): JsonResponse

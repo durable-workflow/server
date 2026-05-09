@@ -66,6 +66,17 @@ class WorkerController
             'max_concurrent_workflow_tasks' => ['nullable', 'integer', 'min:1'],
             'max_concurrent_activity_tasks' => ['nullable', 'integer', 'min:1'],
             'max_concurrent_worker_sessions' => ['nullable', 'integer', 'min:1'],
+            'task_slots' => ['nullable', 'array'],
+            'task_slots.workflow_available' => ['nullable', 'integer', 'min:0'],
+            'task_slots.activity_available' => ['nullable', 'integer', 'min:0'],
+            'task_slots.session_available' => ['nullable', 'integer', 'min:0'],
+            'process_metrics' => ['nullable', 'array'],
+            'process_metrics.cpu_percent' => ['nullable', 'numeric', 'min:0'],
+            'process_metrics.memory_bytes' => ['nullable', 'integer', 'min:0'],
+            'process_metrics.process_uptime_seconds' => ['nullable', 'integer', 'min:0'],
+            'process_metrics.process_id' => ['nullable', 'integer', 'min:0'],
+            'process_metrics.host' => ['nullable', 'string', 'max:255'],
+            'heartbeat_interval_seconds' => ['nullable', 'integer', 'min:1', 'max:3600'],
         ]);
 
         $workerId = $validated['worker_id'] ?? Str::ulid()->toBase32();
@@ -109,6 +120,12 @@ class WorkerController
             $validated['build_id'] ?? null,
         );
 
+        $maxWorkflowTasks = $validated['max_concurrent_workflow_tasks'] ?? 100;
+        $maxActivityTasks = $validated['max_concurrent_activity_tasks'] ?? 100;
+        $maxWorkerSessions = $validated['max_concurrent_worker_sessions'] ?? 10;
+        $taskSlots = is_array($validated['task_slots'] ?? null) ? $validated['task_slots'] : [];
+        $processMetrics = $this->normalizeProcessMetrics($validated['process_metrics'] ?? null);
+
         WorkerRegistration::updateOrCreate(
             [
                 'worker_id' => $workerId,
@@ -123,9 +140,23 @@ class WorkerController
                 'workflow_definition_fingerprints' => $workflowDefinitionFingerprints,
                 'supported_activity_types' => $validated['supported_activity_types'] ?? [],
                 'capabilities' => $this->nonEmptyStringArray($validated['capabilities'] ?? []),
-                'max_concurrent_workflow_tasks' => $validated['max_concurrent_workflow_tasks'] ?? 100,
-                'max_concurrent_activity_tasks' => $validated['max_concurrent_activity_tasks'] ?? 100,
-                'max_concurrent_worker_sessions' => $validated['max_concurrent_worker_sessions'] ?? 10,
+                'max_concurrent_workflow_tasks' => $maxWorkflowTasks,
+                'max_concurrent_activity_tasks' => $maxActivityTasks,
+                'max_concurrent_worker_sessions' => $maxWorkerSessions,
+                'available_workflow_slots' => $this->boundedSlotCount(
+                    $taskSlots['workflow_available'] ?? null,
+                    $maxWorkflowTasks,
+                ),
+                'available_activity_slots' => $this->boundedSlotCount(
+                    $taskSlots['activity_available'] ?? null,
+                    $maxActivityTasks,
+                ),
+                'available_session_slots' => $this->boundedSlotCount(
+                    $taskSlots['session_available'] ?? null,
+                    $maxWorkerSessions,
+                ),
+                'process_metrics' => $processMetrics,
+                'heartbeat_interval_seconds' => $validated['heartbeat_interval_seconds'] ?? null,
                 'last_heartbeat_at' => now(),
                 'status' => $registrationStatus,
             ]
@@ -141,6 +172,7 @@ class WorkerController
         return WorkerProtocol::json([
             'worker_id' => $workerId,
             'registered' => true,
+            'heartbeat_interval_seconds' => $this->advertisedHeartbeatIntervalSeconds(),
         ], 201);
     }
 
@@ -227,6 +259,14 @@ class WorkerController
 
     /**
      * Worker heartbeat to maintain liveness.
+     *
+     * In addition to refreshing last_heartbeat_at, the worker may report its
+     * current task-slot availability and basic process-level metrics so that
+     * operators can see — via the worker management API, CLI, and Waterline —
+     * which workers are alive on each task queue, how many free slots each
+     * has, and basic process health. All non-identity fields are optional so
+     * older clients that only know the original heartbeat shape continue to
+     * work unchanged.
      */
     public function heartbeat(Request $request): JsonResponse
     {
@@ -236,6 +276,17 @@ class WorkerController
 
         $validated = $request->validate([
             'worker_id' => ['required', 'string'],
+            'task_slots' => ['nullable', 'array'],
+            'task_slots.workflow_available' => ['nullable', 'integer', 'min:0'],
+            'task_slots.activity_available' => ['nullable', 'integer', 'min:0'],
+            'task_slots.session_available' => ['nullable', 'integer', 'min:0'],
+            'process_metrics' => ['nullable', 'array'],
+            'process_metrics.cpu_percent' => ['nullable', 'numeric', 'min:0'],
+            'process_metrics.memory_bytes' => ['nullable', 'integer', 'min:0'],
+            'process_metrics.process_uptime_seconds' => ['nullable', 'integer', 'min:0'],
+            'process_metrics.process_id' => ['nullable', 'integer', 'min:0'],
+            'process_metrics.host' => ['nullable', 'string', 'max:255'],
+            'heartbeat_interval_seconds' => ['nullable', 'integer', 'min:1', 'max:3600'],
         ]);
 
         $namespace = $request->attributes->get('namespace');
@@ -259,10 +310,44 @@ class WorkerController
             is_string($worker->build_id) ? $worker->build_id : null,
         );
 
-        $worker->update([
+        $update = [
             'last_heartbeat_at' => now(),
             'status' => $heartbeatStatus,
-        ]);
+        ];
+
+        $taskSlots = is_array($validated['task_slots'] ?? null) ? $validated['task_slots'] : [];
+
+        if (array_key_exists('workflow_available', $taskSlots)) {
+            $update['available_workflow_slots'] = $this->boundedSlotCount(
+                $taskSlots['workflow_available'],
+                $worker->max_concurrent_workflow_tasks,
+            );
+        }
+
+        if (array_key_exists('activity_available', $taskSlots)) {
+            $update['available_activity_slots'] = $this->boundedSlotCount(
+                $taskSlots['activity_available'],
+                $worker->max_concurrent_activity_tasks,
+            );
+        }
+
+        if (array_key_exists('session_available', $taskSlots)) {
+            $update['available_session_slots'] = $this->boundedSlotCount(
+                $taskSlots['session_available'],
+                $worker->max_concurrent_worker_sessions,
+            );
+        }
+
+        if (array_key_exists('process_metrics', $validated)) {
+            $update['process_metrics'] = $this->normalizeProcessMetrics($validated['process_metrics']);
+        }
+
+        if (array_key_exists('heartbeat_interval_seconds', $validated)
+            && $validated['heartbeat_interval_seconds'] !== null) {
+            $update['heartbeat_interval_seconds'] = $validated['heartbeat_interval_seconds'];
+        }
+
+        $worker->update($update);
 
         StandaloneWorkerVisibility::recordCompatibility(
             namespace: $worker->namespace,
@@ -276,8 +361,94 @@ class WorkerController
         return WorkerProtocol::json([
             'worker_id' => $worker->worker_id,
             'acknowledged' => true,
+            'heartbeat_interval_seconds' => $this->advertisedHeartbeatIntervalSeconds(),
+            'stale_after_seconds' => $this->workerStaleAfterSeconds(),
             'retention' => $retention,
         ]);
+    }
+
+    private function boundedSlotCount(mixed $value, mixed $max): ?int
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (! is_int($value) && ! (is_string($value) && ctype_digit($value))) {
+            return null;
+        }
+
+        $count = max(0, (int) $value);
+
+        if (is_int($max) && $max >= 0) {
+            $count = min($count, $max);
+        }
+
+        return $count;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function normalizeProcessMetrics(mixed $value): ?array
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        if (! is_array($value)) {
+            return null;
+        }
+
+        $allowed = ['cpu_percent', 'memory_bytes', 'process_uptime_seconds', 'process_id', 'host'];
+        $normalized = [];
+
+        foreach ($allowed as $key) {
+            if (! array_key_exists($key, $value)) {
+                continue;
+            }
+
+            $entry = $value[$key];
+
+            if ($entry === null) {
+                continue;
+            }
+
+            if ($key === 'host') {
+                if (is_string($entry) && trim($entry) !== '') {
+                    $normalized[$key] = mb_substr(trim($entry), 0, 255);
+                }
+
+                continue;
+            }
+
+            if ($key === 'cpu_percent') {
+                if (is_int($entry) || is_float($entry)) {
+                    $normalized[$key] = max(0.0, (float) $entry);
+                }
+
+                continue;
+            }
+
+            if (is_int($entry) || (is_string($entry) && ctype_digit($entry))) {
+                $normalized[$key] = max(0, (int) $entry);
+            }
+        }
+
+        return $normalized === [] ? null : $normalized;
+    }
+
+    private function advertisedHeartbeatIntervalSeconds(): int
+    {
+        $configured = (int) config('server.workers.heartbeat_interval_seconds', 60);
+
+        return max(1, min(3600, $configured));
+    }
+
+    private function workerStaleAfterSeconds(): int
+    {
+        $configured = config('server.workers.stale_after_seconds');
+
+        return max(1, is_numeric($configured) ? (int) $configured : 300);
     }
 
     /**

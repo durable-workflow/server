@@ -245,6 +245,21 @@ class WorkerProtocol
                 'version' => InvocableCarrierContract::VERSION,
                 'carrier_type' => InvocableCarrierContract::CARRIER_TYPE,
             ],
+            'worker_status' => [
+                'supported' => true,
+                'heartbeat_interval_seconds' => max(1, min(3600, (int) config(
+                    'server.workers.heartbeat_interval_seconds',
+                    60,
+                ))),
+                'stale_after_seconds' => max(1, (int) config(
+                    'server.workers.stale_after_seconds',
+                    300,
+                )),
+                'fields' => [
+                    'task_slots' => ['workflow_available', 'activity_available', 'session_available'],
+                    'process_metrics' => ['cpu_percent', 'memory_bytes', 'process_uptime_seconds', 'process_id', 'host'],
+                ],
+            ],
             'external_task_input' => [
                 'schema' => ExternalTaskInputContract::SCHEMA,
                 'version' => ExternalTaskInputContract::VERSION,

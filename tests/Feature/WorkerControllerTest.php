@@ -61,6 +61,60 @@ class WorkerControllerTest extends TestCase
         $this->assertSame('active', $worker->status);
     }
 
+    public function test_register_advertises_heartbeat_interval_seconds(): void
+    {
+        config(['server.workers.heartbeat_interval_seconds' => 45]);
+
+        $response = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'cadence-worker',
+                'task_queue' => 'default',
+                'runtime' => 'python',
+            ]);
+
+        $response->assertStatus(201)
+            ->assertJsonPath('heartbeat_interval_seconds', 45);
+    }
+
+    public function test_register_accepts_initial_task_slots_and_process_metrics(): void
+    {
+        $response = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'init-state-worker',
+                'task_queue' => 'default',
+                'runtime' => 'python',
+                'max_concurrent_workflow_tasks' => 8,
+                'max_concurrent_activity_tasks' => 4,
+                'max_concurrent_worker_sessions' => 2,
+                'task_slots' => [
+                    'workflow_available' => 8,
+                    'activity_available' => 4,
+                    'session_available' => 2,
+                ],
+                'process_metrics' => [
+                    'cpu_percent' => 0,
+                    'memory_bytes' => 67108864,
+                    'process_uptime_seconds' => 0,
+                    'host' => 'init-host',
+                ],
+                'heartbeat_interval_seconds' => 30,
+            ]);
+
+        $response->assertStatus(201);
+
+        $worker = WorkerRegistration::query()
+            ->where('worker_id', 'init-state-worker')
+            ->where('namespace', 'default')
+            ->firstOrFail();
+
+        self::assertSame(8, $worker->available_workflow_slots);
+        self::assertSame(4, $worker->available_activity_slots);
+        self::assertSame(2, $worker->available_session_slots);
+        self::assertSame(30, $worker->heartbeat_interval_seconds);
+        self::assertIsArray($worker->process_metrics);
+        self::assertSame(67108864, $worker->process_metrics['memory_bytes']);
+    }
+
     public function test_register_auto_generates_worker_id_when_omitted(): void
     {
         $response = $this->withHeaders($this->workerHeaders())
@@ -323,7 +377,98 @@ class WorkerControllerTest extends TestCase
 
         $response->assertOk()
             ->assertJsonPath('worker_id', 'heartbeat-worker')
-            ->assertJsonPath('acknowledged', true);
+            ->assertJsonPath('acknowledged', true)
+            ->assertJsonPath('heartbeat_interval_seconds', 60);
+    }
+
+    public function test_heartbeat_records_task_slots_and_process_metrics(): void
+    {
+        WorkerRegistration::query()->create([
+            'worker_id' => 'metrics-worker',
+            'namespace' => 'default',
+            'task_queue' => 'default',
+            'runtime' => 'python',
+            'supported_workflow_types' => [],
+            'supported_activity_types' => [],
+            'max_concurrent_workflow_tasks' => 10,
+            'max_concurrent_activity_tasks' => 5,
+            'max_concurrent_worker_sessions' => 2,
+            'last_heartbeat_at' => now()->subMinutes(2),
+            'status' => 'active',
+        ]);
+
+        $response = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/heartbeat', [
+                'worker_id' => 'metrics-worker',
+                'task_slots' => [
+                    'workflow_available' => 7,
+                    'activity_available' => 5,
+                    'session_available' => 1,
+                ],
+                'process_metrics' => [
+                    'cpu_percent' => 8.25,
+                    'memory_bytes' => 314572800,
+                    'process_uptime_seconds' => 600,
+                    'process_id' => 1234,
+                    'host' => 'py-worker-01',
+                ],
+                'heartbeat_interval_seconds' => 45,
+            ]);
+
+        $response->assertOk()
+            ->assertJsonPath('acknowledged', true)
+            ->assertJsonPath('heartbeat_interval_seconds', 60);
+
+        $worker = WorkerRegistration::query()
+            ->where('worker_id', 'metrics-worker')
+            ->where('namespace', 'default')
+            ->firstOrFail();
+
+        self::assertSame(7, $worker->available_workflow_slots);
+        self::assertSame(5, $worker->available_activity_slots);
+        self::assertSame(1, $worker->available_session_slots);
+        self::assertSame(45, $worker->heartbeat_interval_seconds);
+
+        self::assertIsArray($worker->process_metrics);
+        self::assertSame(8.25, $worker->process_metrics['cpu_percent']);
+        self::assertSame(314572800, $worker->process_metrics['memory_bytes']);
+        self::assertSame(600, $worker->process_metrics['process_uptime_seconds']);
+        self::assertSame(1234, $worker->process_metrics['process_id']);
+        self::assertSame('py-worker-01', $worker->process_metrics['host']);
+    }
+
+    public function test_heartbeat_clamps_available_slots_to_capacity(): void
+    {
+        WorkerRegistration::query()->create([
+            'worker_id' => 'overflow-worker',
+            'namespace' => 'default',
+            'task_queue' => 'default',
+            'runtime' => 'python',
+            'supported_workflow_types' => [],
+            'supported_activity_types' => [],
+            'max_concurrent_workflow_tasks' => 4,
+            'max_concurrent_activity_tasks' => 4,
+            'max_concurrent_worker_sessions' => 1,
+            'last_heartbeat_at' => now(),
+            'status' => 'active',
+        ]);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/heartbeat', [
+                'worker_id' => 'overflow-worker',
+                'task_slots' => [
+                    'workflow_available' => 99,
+                ],
+            ])
+            ->assertOk();
+
+        $worker = WorkerRegistration::query()
+            ->where('worker_id', 'overflow-worker')
+            ->firstOrFail();
+
+        self::assertSame(4, $worker->available_workflow_slots);
+        self::assertNull($worker->available_activity_slots);
+        self::assertNull($worker->available_session_slots);
     }
 
     public function test_heartbeat_returns_404_for_unregistered_worker(): void

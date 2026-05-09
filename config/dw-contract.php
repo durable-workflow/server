@@ -387,6 +387,13 @@ return [
             'legacy' => 'WORKFLOW_SERVER_WORKER_STALE_AFTER_SECONDS',
         ],
 
+        'DW_WORKER_HEARTBEAT_INTERVAL_SECONDS' => [
+            'description' => 'Cadence (in seconds) the server advertises to SDKs in the register/heartbeat acknowledgement so each official SDK ticks at the same beat. Bounded to [1, 3600].',
+            'default' => '60',
+            'since' => '2.1.0',
+            'legacy' => 'WORKFLOW_SERVER_WORKER_HEARTBEAT_INTERVAL_SECONDS',
+        ],
+
         // --- Metrics --------------------------------------------------
 
         'DW_METRICS_WORKFLOW_TASK_FAILURE_TYPE_LIMIT' => [

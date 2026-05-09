@@ -390,6 +390,16 @@ return [
             'WORKFLOW_SERVER_WORKER_STALE_AFTER_SECONDS',
             max((int) EnvAuditor::env('DW_WORKER_POLL_TIMEOUT', 'WORKFLOW_SERVER_WORKER_POLL_TIMEOUT', 30) * 2, 60),
         ),
+        // Cadence advertised to SDKs in the register/heartbeat acknowledgement
+        // so every official SDK ticks at the same beat by default. SDKs read
+        // this value and feed it back into their periodic heartbeat loop;
+        // operators can pin the cadence cluster-wide without changing the
+        // worker fleet's configuration. Bounded to [1, 3600] seconds.
+        'heartbeat_interval_seconds' => (int) EnvAuditor::env(
+            'DW_WORKER_HEARTBEAT_INTERVAL_SECONDS',
+            'WORKFLOW_SERVER_WORKER_HEARTBEAT_INTERVAL_SECONDS',
+            60,
+        ),
     ],
 
     /*

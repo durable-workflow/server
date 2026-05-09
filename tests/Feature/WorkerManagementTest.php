@@ -228,6 +228,61 @@ class WorkerManagementTest extends TestCase
         $response->assertJsonPath('status', 'stale');
     }
 
+    public function test_show_returns_task_slots_and_process_metrics(): void
+    {
+        WorkerRegistration::query()->create([
+            'worker_id' => 'worker-slots',
+            'namespace' => 'default',
+            'task_queue' => 'queue',
+            'runtime' => 'python',
+            'supported_workflow_types' => [],
+            'supported_activity_types' => [],
+            'max_concurrent_workflow_tasks' => 8,
+            'max_concurrent_activity_tasks' => 4,
+            'max_concurrent_worker_sessions' => 2,
+            'available_workflow_slots' => 6,
+            'available_activity_slots' => 3,
+            'available_session_slots' => 2,
+            'process_metrics' => [
+                'cpu_percent' => 12.5,
+                'memory_bytes' => 419430400,
+                'process_uptime_seconds' => 900,
+                'process_id' => 4242,
+                'host' => 'worker-host-01',
+            ],
+            'heartbeat_interval_seconds' => 30,
+            'last_heartbeat_at' => now(),
+            'status' => 'active',
+        ]);
+
+        $response = $this->getJson('/api/workers/worker-slots', $this->apiHeaders());
+
+        $response->assertOk();
+        $response->assertJsonPath('task_slots.workflow_available', 6);
+        $response->assertJsonPath('task_slots.activity_available', 3);
+        $response->assertJsonPath('task_slots.session_available', 2);
+        $response->assertJsonPath('task_slots.workflow_capacity', 8);
+        $response->assertJsonPath('task_slots.activity_capacity', 4);
+        $response->assertJsonPath('task_slots.session_capacity', 2);
+        $response->assertJsonPath('process_metrics.cpu_percent', 12.5);
+        $response->assertJsonPath('process_metrics.memory_bytes', 419430400);
+        $response->assertJsonPath('process_metrics.process_uptime_seconds', 900);
+        $response->assertJsonPath('heartbeat_interval_seconds', 30);
+        $response->assertJsonPath('stale_after_seconds', (int) config('server.workers.stale_after_seconds'));
+    }
+
+    public function test_list_advertises_stale_after_window(): void
+    {
+        config(['server.workers.stale_after_seconds' => 90]);
+
+        $this->createWorker('worker-a', 'queue-alpha', 'php');
+
+        $response = $this->getJson('/api/workers', $this->apiHeaders());
+
+        $response->assertOk();
+        $response->assertJsonPath('stale_after_seconds', 90);
+    }
+
     // ── Destroy (Deregister) ─────────────────────────────────────────
 
     public function test_deregister_removes_worker(): void
