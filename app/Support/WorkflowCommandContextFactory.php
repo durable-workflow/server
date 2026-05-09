@@ -20,9 +20,11 @@ final class WorkflowCommandContextFactory
     ): CommandContext {
         [$defaultAuthStatus, $defaultAuthMethod] = $this->defaultAuthMetadata();
 
-        return CommandContext::controlPlane()->with([
+        $principal = Authenticate::principal($request);
+
+        $context = CommandContext::controlPlane()->with([
             'caller' => $this->callerMetadata($request),
-            'auth' => $this->authMetadata($request, $defaultAuthStatus, $defaultAuthMethod),
+            'auth' => $this->authMetadata($principal, $request, $defaultAuthStatus, $defaultAuthMethod),
             'request' => $this->requestMetadata($request),
             'server' => [
                 'namespace' => $request->attributes->get('namespace'),
@@ -31,6 +33,72 @@ final class WorkflowCommandContextFactory
                 'metadata' => $metadata,
             ],
         ]);
+
+        // The `principal` block is server-derived from the request's
+        // authenticated Principal and is never read from request input or
+        // forwarded headers. It is the non-spoofable identity recorded on
+        // every workflow history event for audit and incident review.
+        $serverDerivedPrincipal = $this->serverDerivedPrincipal($principal);
+
+        if ($serverDerivedPrincipal !== null) {
+            $context = $context->withPrincipal(
+                $serverDerivedPrincipal['type'],
+                $serverDerivedPrincipal['id'],
+                $serverDerivedPrincipal['label'] ?? null,
+            );
+        }
+
+        return $context;
+    }
+
+    /**
+     * @return array{type: string, id: string, label?: string}|null
+     */
+    private function serverDerivedPrincipal(?Principal $principal): ?array
+    {
+        if ($principal === null) {
+            return null;
+        }
+
+        $subject = trim($principal->subject());
+
+        if ($subject === '') {
+            return null;
+        }
+
+        $method = trim($principal->method());
+        $type = $method === '' || $method === 'none'
+            ? 'server'
+            : 'auth:'.$method;
+
+        $label = $this->principalLabel($principal);
+
+        return array_filter([
+            'type' => $type,
+            'id' => $subject,
+            'label' => $label,
+        ], static fn (mixed $value): bool => is_string($value) && $value !== '');
+    }
+
+    private function principalLabel(Principal $principal): ?string
+    {
+        $claims = $principal->claims();
+
+        foreach (['display_name', 'name', 'email'] as $claim) {
+            $value = $claims[$claim] ?? null;
+
+            if (is_string($value) && trim($value) !== '') {
+                return trim($value);
+            }
+        }
+
+        $role = $principal->primaryRole();
+
+        if (is_string($role) && trim($role) !== '') {
+            return ucfirst(trim($role));
+        }
+
+        return null;
     }
 
     /**
@@ -68,11 +136,11 @@ final class WorkflowCommandContextFactory
      * @return array<string, mixed>
      */
     private function authMetadata(
+        ?Principal $principal,
         Request $request,
         string $defaultStatus,
         string $defaultMethod,
     ): array {
-        $principal = Authenticate::principal($request);
         $principalContext = $principal?->toAuditContext() ?? [];
 
         return array_filter([

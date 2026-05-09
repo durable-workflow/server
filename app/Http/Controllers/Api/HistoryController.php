@@ -66,6 +66,7 @@ class HistoryController
                 'sequence' => $event->sequence,
                 'event_type' => $event->event_type?->value ?? $event->event_type,
                 'timestamp' => $event->recorded_at?->toJSON(),
+                'principal' => self::eventPrincipal($event),
                 'payload' => $event->payload ?? [],
             ])->all(),
             'next_page_token' => $hasMore && $lastSequence !== null
@@ -131,6 +132,31 @@ class HistoryController
     private static function encodePageToken(int $sequence): string
     {
         return base64_encode((string) $sequence);
+    }
+
+    /**
+     * Surface the server-derived principal recorded on the underlying
+     * command at the top of the event response so audit clients can
+     * read the actor for each mutation without walking the payload tree.
+     *
+     * @return array<string, string>|null
+     */
+    private static function eventPrincipal(WorkflowHistoryEvent $event): ?array
+    {
+        $payload = $event->payload ?? [];
+        $command = is_array($payload['command'] ?? null) ? $payload['command'] : null;
+
+        if ($command === null) {
+            return null;
+        }
+
+        $principal = array_filter([
+            'type' => is_string($command['principal_type'] ?? null) ? $command['principal_type'] : null,
+            'id' => is_string($command['principal_id'] ?? null) ? $command['principal_id'] : null,
+            'label' => is_string($command['principal_label'] ?? null) ? $command['principal_label'] : null,
+        ], static fn (mixed $value): bool => is_string($value) && $value !== '');
+
+        return $principal === [] ? null : $principal;
     }
 
     private function nextHistoryProbeAt(string $runId): ?\DateTimeInterface
