@@ -9,6 +9,7 @@ use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
 use App\Support\CoordinationHealthContract;
 use App\Support\NexusContract;
+use App\Support\WorkflowStreamsContract;
 use App\Support\ReplayVerificationContract;
 use App\Support\ServerReadiness;
 use App\Support\ServerTopology;
@@ -108,6 +109,7 @@ class HealthController
             'service_catalog' => true,
             'service_execution' => $serviceExecutionAvailable,
             'nexus' => $serviceExecutionAvailable,
+            'workflow_streams' => true,
             'replay_verification_contract' => true,
             'embedded_v2_import' => $embeddedV2ImportAvailable,
             'payload_codecs' => CodecRegistry::universal(),
@@ -168,6 +170,8 @@ class HealthController
             $response['service_execution_contract'] = $serviceExecutionContract::manifest();
             $response['nexus_contract'] = NexusContract::manifest();
         }
+
+        $response['workflow_streams_contract'] = WorkflowStreamsContract::manifest();
 
         if ($this->shouldExposePackageProvenance($request)) {
             $provenance = $this->packageProvenance();

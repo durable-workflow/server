@@ -18,6 +18,7 @@ use App\Http\Controllers\Api\WorkerController;
 use App\Http\Controllers\Api\WorkerManagementController;
 use App\Http\Controllers\Api\WorkerSessionController;
 use App\Http\Controllers\Api\WorkflowController;
+use App\Http\Controllers\Api\WorkflowStreamController;
 use App\Http\Middleware\Authenticate;
 use App\Http\Middleware\ControlPlaneVersionResolver;
 use App\Http\Middleware\NamespaceResolver;
@@ -120,6 +121,13 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::post('/{workflowId}/runs/{runId}/terminate', [WorkflowController::class, 'terminateRun']);
         Route::post('/{workflowId}/runs/{runId}/repair', [WorkflowController::class, 'repairRun']);
         Route::post('/{workflowId}/runs/{runId}/archive', [WorkflowController::class, 'archiveRun']);
+
+        // Durable workflow streams (producer side): append ordered items
+        // to a named, run-scoped stream and close the stream on
+        // producer completion or error. Routed in the bootstrap-gated
+        // group with the rest of the run-targeted mutations.
+        Route::post('/{workflowId}/runs/{runId}/streams/{streamName}/items', [WorkflowStreamController::class, 'append']);
+        Route::post('/{workflowId}/runs/{runId}/streams/{streamName}/close', [WorkflowStreamController::class, 'close']);
     });
 
     Route::prefix('workflows')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
@@ -139,6 +147,15 @@ Route::middleware([Authenticate::class])->group(function () {
         // without inspecting raw transport logs.
         Route::get('/{workflowId}/nexus-operations', [ServiceCatalogController::class, 'nexusOperationsForWorkflow']);
         Route::get('/{workflowId}/runs/{runId}/nexus-operations', [ServiceCatalogController::class, 'nexusOperationsForRun']);
+
+        // Durable workflow streams (subscriber + observability side):
+        // list streams on a run, describe a stream, and read an
+        // ordered items window with optional long-poll for reconnect-
+        // by-offset semantics. Producer-side append and close land in
+        // the bootstrap-gated mutations group above.
+        Route::get('/{workflowId}/runs/{runId}/streams', [WorkflowStreamController::class, 'index']);
+        Route::get('/{workflowId}/runs/{runId}/streams/{streamName}', [WorkflowStreamController::class, 'show']);
+        Route::get('/{workflowId}/runs/{runId}/streams/{streamName}/items', [WorkflowStreamController::class, 'items']);
     });
 
     // ── Standalone Activities ────────────────────────────────────────
