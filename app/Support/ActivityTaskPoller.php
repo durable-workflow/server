@@ -9,6 +9,9 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\TaskFairnessKey;
+use Workflow\V2\Support\TaskFairnessScheduler;
+use Workflow\V2\Support\TaskFairnessState;
 
 final class ActivityTaskPoller
 {
@@ -18,6 +21,7 @@ final class ActivityTaskPoller
         private readonly LongPollSignalStore $signals,
         private readonly TaskQueueAdmission $admission,
         private readonly WorkerSessionRegistry $workerSessions,
+        private readonly TaskFairnessState $fairnessState,
     ) {}
 
     /**
@@ -166,6 +170,14 @@ final class ActivityTaskPoller
             );
         }
 
+        // Apply the fairness reorder pass: within a priority tier the
+        // batch is rebalanced across distinct fairness-key classes so a
+        // single noisy class can't starve its peers under saturation.
+        // Priority order is preserved across tiers — urgent work always
+        // leads — and tasks without a fairness key share an implicit
+        // default class so unmarked tenants are never crowded out.
+        $readyTasks = $this->reorderForFairness($taskQueue, $readyTasks);
+
         foreach ($readyTasks as $readyTask) {
             $taskId = is_string($readyTask['task_id'] ?? null)
                 ? $readyTask['task_id']
@@ -225,11 +237,68 @@ final class ActivityTaskPoller
             }
 
             if ($claim !== null) {
+                // Record the dispatch against the shared fairness state
+                // so future polls see the deficit and continue
+                // rebalancing toward under-served classes. Activity
+                // tasks keep a separate fairness bucket from workflow
+                // tasks on the same queue.
+                $this->recordFairnessDispatch($taskQueue, $readyTask);
+
                 return $claim;
             }
         }
 
         return null;
+    }
+
+    /**
+     * Reorder the candidate batch so that, within each priority tier,
+     * dispatch is rebalanced across distinct fairness-key classes. The
+     * scheduler is a no-op when the batch has zero or one candidate
+     * (or only one class is present), so the common case is free.
+     *
+     * @param  list<array<string, mixed>>  $readyTasks
+     * @return list<array<string, mixed>>
+     */
+    private function reorderForFairness(string $taskQueue, array $readyTasks): array
+    {
+        if (count($readyTasks) <= 1) {
+            return $readyTasks;
+        }
+
+        $scheduler = new TaskFairnessScheduler($this->fairnessState);
+
+        return $scheduler->reorder(
+            TaskQueuePriorityFairnessSurface::BUCKET_ACTIVITY_TASK,
+            $taskQueue,
+            $readyTasks,
+        );
+    }
+
+    /**
+     * Record a successful activity-task dispatch against the shared
+     * fairness state. The bucket isolates activity-task counters from
+     * workflow-task counters so the two surfaces stay independent.
+     *
+     * @param  array<string, mixed>  $task
+     */
+    private function recordFairnessDispatch(string $taskQueue, array $task): void
+    {
+        $class = TaskFairnessKey::classFor(
+            isset($task['fairness_key']) && is_string($task['fairness_key']) && $task['fairness_key'] !== ''
+                ? $task['fairness_key']
+                : null,
+        );
+        $weight = isset($task['fairness_weight']) && is_int($task['fairness_weight']) && $task['fairness_weight'] >= 1
+            ? $task['fairness_weight']
+            : 1;
+
+        $this->fairnessState->recordDispatch(
+            TaskQueuePriorityFairnessSurface::BUCKET_ACTIVITY_TASK,
+            $taskQueue,
+            $class,
+            $weight,
+        );
     }
 
     /**

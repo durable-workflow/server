@@ -13,6 +13,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use ReflectionMethod;
 use Tests\TestCase;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Support\TaskFairnessState;
 
 class WorkflowTaskPollerTest extends TestCase
 {
@@ -34,6 +35,7 @@ class WorkflowTaskPollerTest extends TestCase
             app(WorkflowTaskPollRequestStore::class),
             app(ServerPollingCache::class),
             app(TaskQueueAdmission::class),
+            app(TaskFairnessState::class),
         );
 
         $result = $this->invokeClaimReadyTask(

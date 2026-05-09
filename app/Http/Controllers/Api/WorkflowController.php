@@ -128,8 +128,21 @@ class WorkflowController
             'duplicate_policy' => ['nullable', 'string', 'in:fail,use-existing'],
             'execution_timeout_seconds' => ['nullable', 'integer', 'min:1'],
             'run_timeout_seconds' => ['nullable', 'integer', 'min:1'],
+            // Dispatch-shaping fields. Lower priority numbers run first when
+            // workers on a shared queue are saturated; fairness_key tags the
+            // workload class so dispatch is rebalanced across distinct
+            // tenants/teams within a priority tier; fairness_weight gives a
+            // class a proportionally larger dispatch share.
+            'priority' => ['nullable', 'integer', 'min:0', 'max:9'],
+            'fairness_key' => ['nullable', 'string', 'max:64', 'regex:/^[A-Za-z0-9._:-]{1,64}$/'],
+            'fairness_weight' => ['nullable', 'integer', 'min:1', 'max:1000'],
         ], [
             'duplicate_policy.in' => 'The duplicate_policy field only supports fail or use-existing.',
+            'priority.min' => 'The priority field must be an integer in the range 0..9 (lower runs first).',
+            'priority.max' => 'The priority field must be an integer in the range 0..9 (lower runs first).',
+            'fairness_key.regex' => 'The fairness_key field must be 1-64 URL-safe characters using letters, numbers, ".", "_", "-", or ":".',
+            'fairness_weight.min' => 'The fairness_weight field must be an integer in the range 1..1000.',
+            'fairness_weight.max' => 'The fairness_weight field must be an integer in the range 1..1000.',
         ]);
 
         $validator->after(function ($validator) use ($request): void {

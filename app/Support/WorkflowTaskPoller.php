@@ -12,6 +12,9 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\HistoryPayloadCompression;
+use Workflow\V2\Support\TaskFairnessKey;
+use Workflow\V2\Support\TaskFairnessScheduler;
+use Workflow\V2\Support\TaskFairnessState;
 
 final class WorkflowTaskPoller
 {
@@ -23,6 +26,7 @@ final class WorkflowTaskPoller
         private readonly WorkflowTaskPollRequestStore $pollRequests,
         private readonly ServerPollingCache $cache,
         private readonly TaskQueueAdmission $admission,
+        private readonly TaskFairnessState $fairnessState,
     ) {}
 
     /**
@@ -451,6 +455,14 @@ final class WorkflowTaskPoller
             );
         }
 
+        // Apply the fairness reorder pass: within a priority tier the
+        // batch is rebalanced across distinct fairness-key classes so a
+        // single noisy class can't starve its peers under saturation.
+        // Priority order is preserved across tiers — urgent work always
+        // leads — and tasks without a fairness key share an implicit
+        // default class so unmarked tenants are never crowded out.
+        $readyTasks = $this->reorderForFairness($taskQueue, $readyTasks);
+
         \Log::info('[WorkflowTaskPoller] claimReadyTask called', [
             'namespace' => $namespace,
             'taskQueue' => $taskQueue,
@@ -550,6 +562,13 @@ final class WorkflowTaskPoller
                 'leaseOwner' => $leaseOwner,
                 'workflowType' => $readyTask['workflow_type'] ?? null,
             ]);
+
+            // Record the dispatch against the shared fairness state so
+            // future polls (in this process or another) see the deficit
+            // and continue rebalancing toward under-served classes. This
+            // happens after the claim succeeds so failed claims do not
+            // count against a class's fairness budget.
+            $this->recordFairnessDispatch($taskQueue, $readyTask);
 
             // Source the fencing token from the package's authoritative attempt
             // counter. The package increments WorkflowTask.attempt_count
@@ -1092,6 +1111,57 @@ final class WorkflowTaskPoller
         return is_string($value) && trim($value) !== ''
             ? trim($value)
             : null;
+    }
+
+    /**
+     * Reorder the candidate batch so that, within each priority tier,
+     * dispatch is rebalanced across distinct fairness-key classes. The
+     * fairness scheduler is a no-op when the batch has zero or one
+     * candidate (or only one fairness class is present), so the common
+     * case carries no extra cost.
+     *
+     * @param  list<array<string, mixed>>  $readyTasks
+     * @return list<array<string, mixed>>
+     */
+    private function reorderForFairness(string $taskQueue, array $readyTasks): array
+    {
+        if (count($readyTasks) <= 1) {
+            return $readyTasks;
+        }
+
+        $scheduler = new TaskFairnessScheduler($this->fairnessState);
+
+        return $scheduler->reorder(
+            TaskQueuePriorityFairnessSurface::BUCKET_WORKFLOW_TASK,
+            $taskQueue,
+            $readyTasks,
+        );
+    }
+
+    /**
+     * Record a successful workflow-task dispatch against the shared
+     * fairness state. The bucket isolates workflow-task counters from
+     * activity-task counters so the two surfaces stay independent.
+     *
+     * @param  array<string, mixed>  $task
+     */
+    private function recordFairnessDispatch(string $taskQueue, array $task): void
+    {
+        $class = TaskFairnessKey::classFor(
+            isset($task['fairness_key']) && is_string($task['fairness_key']) && $task['fairness_key'] !== ''
+                ? $task['fairness_key']
+                : null,
+        );
+        $weight = isset($task['fairness_weight']) && is_int($task['fairness_weight']) && $task['fairness_weight'] >= 1
+            ? $task['fairness_weight']
+            : 1;
+
+        $this->fairnessState->recordDispatch(
+            TaskQueuePriorityFairnessSurface::BUCKET_WORKFLOW_TASK,
+            $taskQueue,
+            $class,
+            $weight,
+        );
     }
 
     /**

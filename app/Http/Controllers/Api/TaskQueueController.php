@@ -7,6 +7,7 @@ use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneProtocol;
 use App\Support\TaskQueueAdmission;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
+use App\Support\TaskQueuePriorityFairnessSurface;
 use App\Support\WorkflowQueryTaskBroker;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -20,6 +21,7 @@ class TaskQueueController
         private readonly WorkflowQueryTaskBroker $queryTasks,
         private readonly TaskQueueAdmission $admission,
         private readonly TaskQueueBuildIdRolloutSnapshot $buildIdRollouts,
+        private readonly TaskQueuePriorityFairnessSurface $priorityFairness,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -126,6 +128,30 @@ class TaskQueueController
             $request,
             $taskQueue,
             WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE,
+        );
+    }
+
+    /**
+     * Operator observability surface for task-queue priority + fairness
+     * dispatch. Returns ready-task counts grouped by priority tier and
+     * fairness class for both workflow and activity tasks, plus the most
+     * recent dispatch scores per class so an operator can confirm under
+     * load that priority is honored (urgent tiers dominate dispatch counts)
+     * and that fairness is applied (counts are roughly balanced subject to
+     * declared weights). Workflow-task and activity-task surfaces are
+     * reported separately because they keep separate fairness buckets on
+     * the dispatch path.
+     */
+    public function priorityFairness(Request $request, string $taskQueue): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = (string) $request->attributes->get('namespace');
+
+        return ControlPlaneProtocol::json(
+            $this->priorityFairness->snapshot($namespace, $taskQueue),
         );
     }
 

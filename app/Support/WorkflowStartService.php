@@ -138,6 +138,13 @@ class WorkflowStartService
             'duplicate_start_policy' => $this->controlPlaneDuplicatePolicy($validated['duplicate_policy'] ?? null),
             'execution_timeout_seconds' => $this->intValue($validated, 'execution_timeout_seconds'),
             'run_timeout_seconds' => $this->intValue($validated, 'run_timeout_seconds'),
+            // Dispatch-shaping fields are passed through to the control
+            // plane so the workflow run (and every workflow/activity task
+            // it later spawns) carries the priority + fairness tags. The
+            // package's normalizers clamp ranges and lowercase the key.
+            'priority' => $this->intValue($validated, 'priority'),
+            'fairness_key' => $this->stringValue($validated, 'fairness_key'),
+            'fairness_weight' => $this->intValue($validated, 'fairness_weight'),
             'namespace' => $namespace,
             'command_context' => $commandContext,
             'build_id' => $pinnedBuildId,
@@ -190,6 +197,22 @@ class WorkflowStartService
         $value = $validated[$key] ?? null;
 
         return is_int($value) ? $value : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     */
+    private function stringValue(array $validated, string $key): ?string
+    {
+        $value = $validated[$key] ?? null;
+
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+
+        return $trimmed === '' ? null : $trimmed;
     }
 
     private function defaultTaskQueue(): string

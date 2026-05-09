@@ -194,6 +194,10 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::get('/{taskQueue}/build-ids', [TaskQueueController::class, 'buildIds']);
         Route::post('/{taskQueue}/build-ids/drain', [TaskQueueController::class, 'drainBuildId']);
         Route::post('/{taskQueue}/build-ids/resume', [TaskQueueController::class, 'resumeBuildId']);
+        // Operator-facing snapshot of priority + fairness dispatch state for
+        // a queue. Registered before the catch-all `{taskQueue}` show route
+        // so the segment is not swallowed by the route parameter.
+        Route::get('/{taskQueue}/priority-fairness', [TaskQueueController::class, 'priorityFairness']);
         Route::get('/{taskQueue}', [TaskQueueController::class, 'show']);
     });
 
