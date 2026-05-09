@@ -130,6 +130,14 @@ Route::middleware([Authenticate::class])->group(function () {
         // History
         Route::get('/{workflowId}/runs/{runId}/history', [HistoryController::class, 'show']);
         Route::get('/{workflowId}/runs/{runId}/history/export', [HistoryController::class, 'export']);
+
+        // Caller-side Nexus operations: every cross-namespace service call this
+        // workflow run scheduled, indexed by the caller run id. Operators
+        // debugging a failed run answer "what cross-namespace calls did this
+        // workflow make and how did each one settle?" from this surface
+        // without inspecting raw transport logs.
+        Route::get('/{workflowId}/nexus-operations', [ServiceCatalogController::class, 'nexusOperationsForWorkflow']);
+        Route::get('/{workflowId}/runs/{runId}/nexus-operations', [ServiceCatalogController::class, 'nexusOperationsForRun']);
     });
 
     // ── Bridge Adapters ──────────────────────────────────────────────

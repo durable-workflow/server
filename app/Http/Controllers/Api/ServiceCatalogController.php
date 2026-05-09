@@ -829,6 +829,150 @@ class ServiceCatalogController
         );
     }
 
+    /**
+     * Caller-indexed Nexus operation history for a workflow instance.
+     *
+     * Returns every cross-namespace service call (Nexus operation) the
+     * workflow run scheduled, regardless of the target endpoint / service /
+     * operation triple. The shape mirrors the per-call describe payload but
+     * is keyed by the caller workflow instance instead of by the durable
+     * service-call id, so an operator debugging a failed workflow can
+     * answer "what cross-namespace calls did this run make?" from a single
+     * surface.
+     */
+    public function nexusOperationsForWorkflow(
+        Request $request,
+        string $workflowId,
+    ): JsonResponse {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = $this->namespace($request);
+        $limit = $this->nexusListLimit($request);
+
+        $calls = WorkflowServiceCall::query()
+            ->where('caller_namespace', $namespace)
+            ->where('caller_workflow_instance_id', $workflowId)
+            ->orderByDesc('accepted_at')
+            ->orderByDesc('created_at')
+            ->limit($limit)
+            ->get();
+
+        return ControlPlaneProtocol::json([
+            'workflow_id' => $workflowId,
+            'caller_namespace' => $namespace,
+            'count' => $calls->count(),
+            'limit' => $limit,
+            'nexus_operations' => $calls
+                ->map(fn (WorkflowServiceCall $call) => $this->serializeCallerCall($call))
+                ->values(),
+        ]);
+    }
+
+    /**
+     * Caller-indexed Nexus operation history scoped to a single run id.
+     * Same shape as {@see nexusOperationsForWorkflow()} but filters to the
+     * specific run, so a caller workflow that has continued-as-new can
+     * inspect each run's outbound Nexus traffic separately.
+     */
+    public function nexusOperationsForRun(
+        Request $request,
+        string $workflowId,
+        string $runId,
+    ): JsonResponse {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = $this->namespace($request);
+        $limit = $this->nexusListLimit($request);
+
+        $calls = WorkflowServiceCall::query()
+            ->where('caller_namespace', $namespace)
+            ->where('caller_workflow_instance_id', $workflowId)
+            ->where('caller_workflow_run_id', $runId)
+            ->orderByDesc('accepted_at')
+            ->orderByDesc('created_at')
+            ->limit($limit)
+            ->get();
+
+        return ControlPlaneProtocol::json([
+            'workflow_id' => $workflowId,
+            'workflow_run_id' => $runId,
+            'caller_namespace' => $namespace,
+            'count' => $calls->count(),
+            'limit' => $limit,
+            'nexus_operations' => $calls
+                ->map(fn (WorkflowServiceCall $call) => $this->serializeCallerCall($call))
+                ->values(),
+        ]);
+    }
+
+    private function nexusListLimit(Request $request): int
+    {
+        $configured = (int) config('server.limits.max_nexus_operations_per_caller', 200);
+        $configured = $configured > 0 ? $configured : 200;
+        $requested = $request->query('limit');
+
+        if ($requested === null) {
+            return $configured;
+        }
+
+        if (! is_numeric($requested)) {
+            return $configured;
+        }
+
+        $value = (int) $requested;
+
+        if ($value < 1) {
+            return 1;
+        }
+
+        return min($value, $configured);
+    }
+
+    /**
+     * Caller-side Nexus row shape. Lighter than the per-call describe
+     * envelope (no payload references, no full policy snapshot) so a
+     * workflow with hundreds of outbound calls fits in one response.
+     *
+     * @return array<string, mixed>
+     */
+    private function serializeCallerCall(WorkflowServiceCall $call): array
+    {
+        return [
+            'service_call_id' => $call->id,
+            'caller_namespace' => $call->caller_namespace,
+            'caller_workflow_instance_id' => $call->caller_workflow_instance_id,
+            'caller_workflow_run_id' => $call->caller_workflow_run_id,
+            'target_namespace' => $call->target_namespace,
+            'endpoint_name' => $call->endpoint_name,
+            'service_name' => $call->service_name,
+            'operation_name' => $call->operation_name,
+            'operation_mode' => $call->operation_mode,
+            'status' => $call->status,
+            'outcome' => $this->scalarValue($call->outcome),
+            'outcome_category' => $call->outcome_category,
+            'outcome_reason' => $call->outcome_reason,
+            'outcome_message' => $call->outcome_message,
+            'resolved_binding_kind' => $call->resolved_binding_kind,
+            'resolved_target_reference' => $call->resolved_target_reference,
+            'linked_workflow_instance_id' => $call->linked_workflow_instance_id,
+            'linked_workflow_run_id' => $call->linked_workflow_run_id,
+            'linked_workflow_update_id' => $call->linked_workflow_update_id,
+            'idempotency_key' => $call->idempotency_key,
+            'failure_message' => $call->failure_message,
+            'caller_principal_subject' => $call->caller_principal_subject,
+            'caller_principal_method' => $call->caller_principal_method,
+            'accepted_at' => $call->accepted_at?->toIso8601String(),
+            'started_at' => $call->started_at?->toIso8601String(),
+            'completed_at' => $call->completed_at?->toIso8601String(),
+            'failed_at' => $call->failed_at?->toIso8601String(),
+            'cancelled_at' => $call->cancelled_at?->toIso8601String(),
+        ];
+    }
+
     public function operationDestroy(
         Request $request,
         string $endpointName,

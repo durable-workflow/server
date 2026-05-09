@@ -559,6 +559,16 @@ return [
         ),
         'max_pending_activities' => (int) EnvAuditor::env('DW_MAX_PENDING_ACTIVITIES', 'WORKFLOW_MAX_PENDING_ACTIVITIES', 2000),
         'max_pending_children' => (int) EnvAuditor::env('DW_MAX_PENDING_CHILDREN', 'WORKFLOW_MAX_PENDING_CHILDREN', 2000),
+
+        // Caps the per-caller list size returned from the Nexus operations
+        // history surface. A workflow with more outbound Nexus calls than
+        // this limit must paginate via the per-call describe surface or use
+        // the cross-namespace audit query.
+        'max_nexus_operations_per_caller' => (int) EnvAuditor::env(
+            'DW_MAX_NEXUS_OPERATIONS_PER_CALLER',
+            'WORKFLOW_MAX_NEXUS_OPERATIONS_PER_CALLER',
+            200,
+        ),
     ],
 
 ];

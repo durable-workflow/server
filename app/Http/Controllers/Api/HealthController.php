@@ -8,6 +8,7 @@ use App\Support\BridgeAdapterOutcomeContract;
 use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
 use App\Support\CoordinationHealthContract;
+use App\Support\NexusContract;
 use App\Support\ReplayVerificationContract;
 use App\Support\ServerReadiness;
 use App\Support\ServerTopology;
@@ -106,6 +107,7 @@ class HealthController
             'invocable_carrier_contract' => true,
             'service_catalog' => true,
             'service_execution' => $serviceExecutionAvailable,
+            'nexus' => $serviceExecutionAvailable,
             'replay_verification_contract' => true,
             'embedded_v2_import' => $embeddedV2ImportAvailable,
             'payload_codecs' => CodecRegistry::universal(),
@@ -164,6 +166,7 @@ class HealthController
 
         if ($serviceExecutionAvailable) {
             $response['service_execution_contract'] = $serviceExecutionContract::manifest();
+            $response['nexus_contract'] = NexusContract::manifest();
         }
 
         if ($this->shouldExposePackageProvenance($request)) {
