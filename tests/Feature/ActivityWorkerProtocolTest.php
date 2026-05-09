@@ -16,6 +16,7 @@ use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
+use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowTask;
@@ -530,6 +531,82 @@ class ActivityWorkerProtocolTest extends TestCase
             ->assertOk()
             ->assertJsonPath('task.workflow_id', $workflow->id())
             ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');
+    }
+
+    public function test_activity_worker_skips_bridge_returned_task_with_unregistered_activity_type(): void
+    {
+        // Defense-in-depth contract: the bridge poll filters by
+        // activity_type at the SQL level, but the server's claim loop
+        // must independently re-check the execution's stored
+        // activity_type against the worker's registered list before
+        // claiming. If the bridge ever returned a task whose
+        // activity_type is not in the worker's
+        // supported_activity_types — because of a stale index, a
+        // relaxed predicate, or a future bridge change — the server
+        // must still refuse to lease it. This is the activity-side
+        // counterpart of the polyglot Scenario 2 guard: it keeps the
+        // polyglot two-worker shape correct even if the bridge filter
+        // ever loosens.
+        Queue::fake();
+
+        WorkflowNamespace::query()->updateOrCreate(
+            ['name' => 'default'],
+            ['description' => 'Default namespace', 'retention_days' => 30, 'status' => 'active'],
+        );
+
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-activity-defense-in-depth');
+        $start = $workflow->start('Ada');
+
+        NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
+
+        $this->runReadyWorkflowTask($start->runId());
+
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $start->runId())
+            ->where('task_type', TaskType::Activity->value)
+            ->firstOrFail();
+
+        $executionId = is_array($task->payload ?? null)
+            ? ($task->payload['activity_execution_id'] ?? null)
+            : null;
+
+        // Simulate a bridge poll that returns the activity task even
+        // though its activity_type is not in the requesting worker's
+        // registered list.
+        $this->mock(ActivityTaskBridgeContract::class, function (MockInterface $mock) use (
+            $task,
+            $start,
+            $workflow,
+            $executionId,
+        ): void {
+            $mock->shouldReceive('poll')
+                ->andReturn([[
+                    'task_id' => $task->id,
+                    'workflow_run_id' => $start->runId(),
+                    'workflow_instance_id' => $workflow->id(),
+                    'activity_execution_id' => $executionId,
+                    'activity_type' => 'tests.external-greeting-activity',
+                    'activity_class' => 'tests.external-greeting-activity',
+                    'connection' => null,
+                    'queue' => 'external-activities',
+                    'compatibility' => null,
+                    'available_at' => now()->subSecond()->toJSON(),
+                ]]);
+        });
+
+        $this->registerWorker(
+            'php-activity-strict-types',
+            'external-activities',
+            supportedActivityTypes: ['some.unrelated-activity'],
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-activity-strict-types',
+                'task_queue' => 'external-activities',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
     }
 
     public function test_activity_poll_response_includes_matching_external_executor_config_mapping(): void

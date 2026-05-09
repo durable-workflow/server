@@ -3601,6 +3601,81 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('poll_status', 'no_workflow_capability');
     }
 
+    public function test_workflow_worker_skips_bridge_returned_task_with_unregistered_workflow_type(): void
+    {
+        // Defense-in-depth contract: the bridge poll filters by
+        // workflow_type at the SQL level, but the server's claim loop
+        // must independently re-check the run's stored workflow_type
+        // against the worker's registered list before claiming. If the
+        // bridge ever returned a task whose workflow_type is not in the
+        // worker's supported_workflow_types — because of a stale
+        // index, a relaxed predicate, or a future bridge change — the
+        // server must still refuse to lease it to that worker. Without
+        // this guard, the polyglot Scenario 2 failure mode comes back
+        // even when the bridge filter is correct in isolation: any
+        // upstream regression that loosens the bridge's predicate
+        // would hand a polyglot workflow task to the wrong worker and
+        // the run would stall pending.
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-defense-in-depth',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+        $instanceId = (string) $start->json('workflow_id');
+
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        // Simulate a bridge poll that returns the task even though its
+        // workflow_type is not in the requesting worker's registered
+        // list — the failure mode the new app-level filter guards
+        // against.
+        $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use ($task, $instanceId, $runId): void {
+            $mock->shouldReceive('poll')
+                ->andReturn([[
+                    'task_id' => $task->id,
+                    'workflow_run_id' => $runId,
+                    'workflow_instance_id' => $instanceId,
+                    'workflow_type' => 'tests.external-greeting-workflow',
+                    'workflow_class' => 'tests.external-greeting-workflow',
+                    'connection' => null,
+                    'queue' => 'external-workflows',
+                    'compatibility' => null,
+                    'sticky_worker_id' => null,
+                    'sticky_until' => null,
+                    'available_at' => now()->subSecond()->toJSON(),
+                ]]);
+        });
+
+        $this->registerWorker(
+            'php-worker-strict-types',
+            'external-workflows',
+            supportedWorkflowTypes: ['some.unrelated-workflow'],
+        );
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-strict-types',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+    }
+
     public function test_fail_workflow_command_accepts_non_retryable_flag(): void
     {
         Queue::fake();

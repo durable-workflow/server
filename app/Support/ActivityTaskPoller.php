@@ -119,10 +119,13 @@ final class ActivityTaskPoller
     }
 
     /**
-     * Claim the first available activity task by delegating filtering to the
-     * bridge's poll query and claim validation to ActivityTaskClaimer (via
-     * bridge->claimStatus). The poller no longer reimplements availability,
-     * compatibility, or activity-type checks — those live in the package.
+     * Claim the first available activity task by delegating bulk filtering
+     * (availability, compatibility, activity-type) to the bridge's poll
+     * query and claim validation to ActivityTaskClaimer (via
+     * bridge->claimStatus). The poller still re-checks activity_type
+     * against the worker's registered list on each ready task — an
+     * authoritative app-level guard that holds the polyglot routing
+     * contract even if the bridge filter ever loosens.
      *
      * @param  list<string>  $supportedActivityTypes
      */
@@ -150,6 +153,18 @@ final class ActivityTaskPoller
                 : null;
 
             if ($taskId === null) {
+                continue;
+            }
+
+            if (! $this->matchesActivityType($supportedActivityTypes, $readyTask['activity_type'] ?? null)) {
+                // Authoritative routing on the execution's stored
+                // activity_type: the bridge poll filters at the SQL
+                // level, but the server's claim loop must independently
+                // re-check the type against the worker's registered
+                // list before leasing. A worker that did not advertise
+                // this activity type at register time must never claim
+                // it, even if the bridge ever returns one (stale index,
+                // relaxed predicate, future bridge change).
                 continue;
             }
 
@@ -196,6 +211,29 @@ final class ActivityTaskPoller
         }
 
         return null;
+    }
+
+    /**
+     * Compare the worker's registered activity types against the
+     * execution's stored activity_type. The match is exact-string —
+     * no class-resolution or canonicalization. Workers that registered
+     * an empty list are short-circuited at the controller, so an empty
+     * $supported here means "no capability filter requested by this
+     * caller" and the task is allowed through.
+     *
+     * @param  list<string>  $supported
+     */
+    private function matchesActivityType(array $supported, mixed $activityType): bool
+    {
+        if ($supported === []) {
+            return true;
+        }
+
+        if (! is_string($activityType) || trim($activityType) === '') {
+            return false;
+        }
+
+        return in_array(trim($activityType), $supported, true);
     }
 
     private function applyWorkerCompatibility(string $namespace, ?string $buildId): void

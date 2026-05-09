@@ -481,6 +481,24 @@ final class WorkflowTaskPoller
                 continue;
             }
 
+            if (! $this->matchesWorkflowType($supportedWorkflowTypes, $readyTask['workflow_type'] ?? null)) {
+                // Authoritative routing on the run's stored workflow_type:
+                // even if the bridge returned this task (because of a stale
+                // index, a relaxed predicate, or a future bridge change),
+                // a worker that did not advertise this type at register
+                // time must never claim it. Without this guard, a polyglot
+                // task whose type-key is not in the worker's registered
+                // list could be leased to the wrong worker and the run
+                // would stall pending until lease recovery.
+                \Log::debug('[WorkflowTaskPoller] Skipping task: workflow_type not in supported list', [
+                    'taskId' => $readyTask['task_id'] ?? null,
+                    'workflowType' => $readyTask['workflow_type'] ?? null,
+                    'supportedWorkflowTypes' => $supportedWorkflowTypes,
+                ]);
+
+                continue;
+            }
+
             $taskId = is_string($readyTask['task_id'] ?? null)
                 ? $readyTask['task_id']
                 : null;
@@ -627,6 +645,30 @@ final class WorkflowTaskPoller
         }
 
         return $buildId !== null && $compatibility === $buildId;
+    }
+
+    /**
+     * Compare the worker's registered workflow types against the task's
+     * stored workflow_type. The match is exact-string against the column
+     * the run was created with at start-time — no class-resolution, no
+     * canonicalization. Workers that registered an empty list are already
+     * short-circuited at the controller, so an empty $supported here means
+     * "no capability filter requested by this caller" (used by the
+     * lease-recovery probe path).
+     *
+     * @param  list<string>  $supported
+     */
+    private function matchesWorkflowType(array $supported, mixed $workflowType): bool
+    {
+        if ($supported === []) {
+            return true;
+        }
+
+        if (! is_string($workflowType) || trim($workflowType) === '') {
+            return false;
+        }
+
+        return in_array(trim($workflowType), $supported, true);
     }
 
     private function nextVisibleReadyAt(string $namespace, string $taskQueue, ?string $buildId): ?\DateTimeInterface
