@@ -392,17 +392,12 @@ class ActivityWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.lease_expires_at', $leaseExpiresAt);
     }
 
-    public function test_activity_dispatch_falls_back_to_app_query_when_bridge_returns_no_candidate(): void
+    public function test_activity_poll_uses_bridge_as_the_only_ready_task_source(): void
     {
-        // Server-owned dispatch contract — activity-side counterpart of
-        // the workflow fallback. When a worker registered specific
-        // supportedActivityTypes but the bridge poll returns no
-        // candidate, the dispatch path falls back to a server-side
-        // workflow_tasks ↔ activity_executions join so the matching
-        // activity task still reaches the right worker on the next poll
-        // regardless of which predicate shape the bridge ships in a
-        // given release. The bridge stays authoritative for the claim
-        // transaction; the fallback only identifies candidates.
+        // Source-of-truth contract: the package bridge owns ready-task
+        // discovery, including activity_type filtering. If it returns no
+        // candidates, the server must not run its own workflow_tasks to
+        // activity_executions query as a second predicate source.
         Queue::fake();
 
         WorkflowNamespace::query()->updateOrCreate(
@@ -414,62 +409,43 @@ class ActivityWorkerProtocolTest extends TestCase
             ],
         );
 
-        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-activity-dispatch-fallback');
+        $workflow = WorkflowStub::make(ExternalGreetingWorkflow::class, 'wf-activity-bridge-only-source');
         $start = $workflow->start('Ada');
 
         NamespaceWorkflowScope::bind('default', $workflow->id(), ExternalGreetingWorkflow::class);
 
         $this->runReadyWorkflowTask($start->runId());
 
-        // Simulate a bridge whose typed-filter predicate fails to
-        // surface a real ready activity task. claimStatus must still
-        // behave normally so the leased task can be returned to the
-        // worker after the fallback has identified it.
-        $realBridge = $this->app->make(ActivityTaskBridgeContract::class);
-
-        $this->mock(ActivityTaskBridgeContract::class, function (MockInterface $mock) use ($realBridge): void {
+        $this->mock(ActivityTaskBridgeContract::class, function (MockInterface $mock): void {
             $mock->shouldReceive('poll')
+                ->once()
+                ->with(null, 'external-activities', 10, null, 'default', ['tests.external-greeting-activity'])
                 ->andReturn([]);
 
-            $mock->shouldReceive('claimStatus')
-                ->andReturnUsing(static fn (string $taskId, ?string $leaseOwner = null): array => $realBridge->claimStatus($taskId, $leaseOwner));
+            $mock->shouldNotReceive('claimStatus');
         });
 
         $this->registerWorker(
-            'php-activity-worker-dispatch-fallback',
+            'php-activity-worker-bridge-only-source',
             'external-activities',
             supportedActivityTypes: ['tests.external-greeting-activity'],
         );
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/activity-tasks/poll', [
-                'worker_id' => 'php-activity-worker-dispatch-fallback',
+                'worker_id' => 'php-activity-worker-bridge-only-source',
                 'task_queue' => 'external-activities',
             ])
             ->assertOk()
-            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');
+            ->assertJsonPath('task', null);
     }
 
-    public function test_activity_task_routes_to_typed_worker_on_shared_queue_even_when_bridge_returns_only_unmatching_candidates(): void
+    public function test_activity_poll_drops_bridge_candidates_outside_registered_types_without_local_dispatch_query(): void
     {
-        // Shared-queue routing contract on a polluted bridge response,
-        // activity-side counterpart of the workflow disjoint-types test.
-        // Two workers share one task queue with disjoint registered
-        // activity types: only one of them can ever legally claim the
-        // execution that exists in the database. The bridge is mocked
-        // to return a non-empty list whose entries all carry an
-        // activity_type that matches neither worker — the failure mode
-        // that the earlier "fall back only when $readyTasks === []"
-        // gate left open. With that gate, the per-task
-        // matchesActivityType filter dropped every bridge candidate
-        // but the fallback never fired, so the worker actually
-        // registered for the execution's stored activity_type came
-        // back empty-handed and the activity stayed pending. The
-        // dispatch-side filter now runs the app-level
-        // workflow_tasks ↔ activity_executions join unconditionally
-        // for typed polls and unions it with the bridge result, so
-        // the matching task still reaches its registered worker. The
-        // disjoint-typed peer worker must still come back empty.
+        // The bridge is the only source of ready-task candidates. The
+        // server still guards against a polluted bridge response before
+        // claiming, but it must not compensate by materialising a
+        // second local dispatch query from workflow_tasks/activity_executions.
         Queue::fake();
 
         WorkflowNamespace::query()->updateOrCreate(
@@ -493,17 +469,9 @@ class ActivityWorkerProtocolTest extends TestCase
             ? $task->queue
             : 'external-activities';
 
-        // Simulate a bridge whose typed-filter predicate has drifted:
-        // it returns a candidate row whose activity_type is in neither
-        // worker's registered list, even though the real activity task
-        // for tests.external-greeting-activity is sitting Ready in the
-        // DB. claimStatus still delegates to the real bridge so the
-        // leased task can be returned to the worker that the app-level
-        // dispatch query surfaces.
-        $realBridge = $this->app->make(ActivityTaskBridgeContract::class);
-
-        $this->mock(ActivityTaskBridgeContract::class, function (MockInterface $mock) use ($realBridge, $taskQueue): void {
+        $this->mock(ActivityTaskBridgeContract::class, function (MockInterface $mock) use ($taskQueue): void {
             $mock->shouldReceive('poll')
+                ->twice()
                 ->andReturn([[
                     'task_id' => 'phantom-activity-bridge-task',
                     'workflow_run_id' => 'phantom-activity-bridge-run',
@@ -520,8 +488,7 @@ class ActivityWorkerProtocolTest extends TestCase
                     'fairness_weight' => 1,
                 ]]);
 
-            $mock->shouldReceive('claimStatus')
-                ->andReturnUsing(static fn (string $taskId, ?string $leaseOwner = null): array => $realBridge->claimStatus($taskId, $leaseOwner));
+            $mock->shouldNotReceive('claimStatus');
         });
 
         $this->registerWorker(
@@ -548,18 +515,18 @@ class ActivityWorkerProtocolTest extends TestCase
             ->assertOk()
             ->assertJsonPath('task', null);
 
-        // Worker registered for the execution's stored activity_type
-        // MUST receive the task even though the bridge only surfaced
-        // an unrelated phantom candidate — the dispatch-side filter
-        // must surface the matching task from the app-level join.
+        // Even the worker registered for the execution's stored
+        // activity_type comes back empty if the bridge did not surface
+        // that task. The real bridge's typed poll contract is covered
+        // separately by package-level bridge tests; this test prevents
+        // a second server-owned predicate from returning.
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/activity-tasks/poll', [
                 'worker_id' => 'php-activity-worker-with-matching-type',
                 'task_queue' => $taskQueue,
             ])
             ->assertOk()
-            ->assertJsonPath('task.task_id', $task->id)
-            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');
+            ->assertJsonPath('task', null);
     }
 
     public function test_unregistered_worker_is_rejected_when_polling_activity_tasks(): void

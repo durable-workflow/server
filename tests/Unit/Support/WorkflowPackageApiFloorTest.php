@@ -6,9 +6,11 @@ use App\Support\WorkflowPackageApiFloor;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use ReflectionMethod;
+use Tests\Fixtures\LegacyActivityTaskBridgePollSignature;
 use Tests\Fixtures\LegacyWorkflowTaskBridgePollSignature;
 use Tests\Fixtures\StaleBackendCapabilities;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
@@ -157,6 +159,29 @@ class WorkflowPackageApiFloorTest extends TestCase
         );
     }
 
+    public function test_activity_task_bridge_poll_signature_matches_api_floor(): void
+    {
+        $confirms = $this->invokeConfirmsActivityTaskPollSignature(ActivityTaskBridge::class, 'poll');
+
+        $this->assertTrue(
+            $confirms,
+            'ActivityTaskBridge::poll() no longer matches the server API floor. If this fails, '
+            .'either the installed workflow package is stale or the polling contract changed '
+            .'without updating the shared release contract.'
+        );
+    }
+
+    public function test_activity_task_bridge_poll_signature_rejects_legacy_fixture(): void
+    {
+        $confirms = $this->invokeConfirmsActivityTaskPollSignature(LegacyActivityTaskBridgePollSignature::class, 'poll');
+
+        $this->assertFalse(
+            $confirms,
+            'Legacy activity poll fixture was accepted by the activity-task poll floor check — '
+            .'the server would silently permit a stale workflow package baseline again.'
+        );
+    }
+
     public function test_default_matching_role_exposes_public_instance_repair_methods(): void
     {
         $reflection = new ReflectionClass(DefaultMatchingRole::class);
@@ -199,6 +224,16 @@ class WorkflowPackageApiFloorTest extends TestCase
     private function invokeConfirmsWorkflowTaskPollSignature(string $class, string $method): bool
     {
         $reflection = new ReflectionMethod(WorkflowPackageApiFloor::class, 'confirmsWorkflowTaskPollSignature');
+
+        /** @var bool $result */
+        $result = $reflection->invoke(null, $class, $method);
+
+        return $result;
+    }
+
+    private function invokeConfirmsActivityTaskPollSignature(string $class, string $method): bool
+    {
+        $reflection = new ReflectionMethod(WorkflowPackageApiFloor::class, 'confirmsActivityTaskPollSignature');
 
         /** @var bool $result */
         $result = $reflection->invoke(null, $class, $method);

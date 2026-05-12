@@ -7,7 +7,6 @@ use Illuminate\Support\Facades\DB;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
-use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\TaskFairnessKey;
 use Workflow\V2\Support\TaskFairnessScheduler;
@@ -152,44 +151,17 @@ final class ActivityTaskPoller
             activityTypes: $supportedActivityTypes,
         );
 
-        // Server-owned dispatch is authoritative for typed polls: union
-        // the bridge candidates with an app-level workflow_tasks ↔
-        // activity_executions join filtered by the worker's registered
-        // types, so the shared-queue routing rule cannot depend on the
-        // bridge's current predicate shape. The earlier gate — fall
-        // back only when $readyTasks === [] — left a hole on shared
-        // queues: when the bridge surfaced a list of candidates whose
-        // activity_type did not match the polling worker's supported
-        // list, every entry was dropped by the per-task
-        // matchesActivityType filter, the fallback never ran, and a
-        // real matching activity task already in
-        // workflow_tasks/activity_executions stayed unclaimed. Running
-        // the app-level query unconditionally for typed polls and
-        // merging by task_id closes that hole, symmetric with the
-        // workflow-side dispatch in WorkflowTaskPoller. The merged
-        // candidate set is what the fairness reorder pass below
-        // operates on, so dispatch routing is fixed before fairness
-        // rebalances within priority tiers.
-        if ($supportedActivityTypes !== []) {
-            $dispatchTasks = $this->pollReadyTasksFromDispatch(
-                namespace: $namespace,
-                taskQueue: $taskQueue,
-                buildId: $buildId,
-                limit: $limit,
-                supportedActivityTypes: $supportedActivityTypes,
-            );
-
-            $readyTasks = $this->mergeReadyTasksByTaskId($readyTasks, $dispatchTasks);
-        }
-
+        // The activity bridge owns ready-task discovery, including the
+        // activity-type predicate for typed polls. The server keeps only
+        // post-poll guards, worker-session admission, fairness, and
+        // claiming so shared-queue routing has one SQL source of truth.
+        //
         // Apply the fairness reorder pass: within a priority tier the
         // batch is rebalanced across distinct fairness-key classes so a
         // single noisy class can't starve its peers under saturation.
         // Priority order is preserved across tiers — urgent work always
         // leads — and tasks without a fairness key share an implicit
-        // default class so unmarked tenants are never crowded out. The
-        // dispatch-side union above runs first so the merged candidate
-        // set is what fairness reorders.
+        // default class so unmarked tenants are never crowded out.
         $readyTasks = $this->reorderForFairness($taskQueue, $readyTasks);
 
         foreach ($readyTasks as $readyTask) {
@@ -313,148 +285,6 @@ final class ActivityTaskPoller
             $class,
             $weight,
         );
-    }
-
-    /**
-     * Server-owned dispatch identification for typed activity polls.
-     *
-     * Mirrors WorkflowTaskPoller::pollReadyTasksFromDispatch on the
-     * activity side: for typed polls (worker registered a non-empty
-     * supportedActivityTypes list), run the workflow_tasks ↔
-     * activity_executions join in app code and union the result with
-     * the bridge's candidate set so the registered worker still sees
-     * its matching task even when the bridge surfaces an unrelated
-     * candidate set on a shared queue. The bridge is authoritative
-     * for the claim transaction; this method only identifies
-     * candidates and returns the same row shape the bridge poll
-     * already produces, so the downstream matchesActivityType +
-     * claimStatus chain runs unchanged on the same payload.
-     *
-     * @param  list<string>  $supportedActivityTypes
-     * @return list<array<string, mixed>>
-     */
-    private function pollReadyTasksFromDispatch(
-        string $namespace,
-        string $taskQueue,
-        ?string $buildId,
-        int $limit,
-        array $supportedActivityTypes,
-    ): array {
-        if ($supportedActivityTypes === []) {
-            return [];
-        }
-
-        $availabilityCutoff = now()->addSecond();
-
-        $query = NamespaceWorkflowScope::taskQuery($namespace)
-            ->select('workflow_tasks.*')
-            ->where('workflow_tasks.task_type', TaskType::Activity->value)
-            ->where('workflow_tasks.status', TaskStatus::Ready->value)
-            ->where('workflow_tasks.queue', $taskQueue)
-            ->where(function ($builder) use ($availabilityCutoff): void {
-                $builder->whereNull('workflow_tasks.available_at')
-                    ->orWhere('workflow_tasks.available_at', '<=', $availabilityCutoff);
-            })
-            ->whereIn(
-                'workflow_tasks.payload->activity_execution_id',
-                ActivityExecution::query()
-                    ->select('id')
-                    ->whereIn('activity_type', $supportedActivityTypes),
-            )
-            ->orderBy('workflow_tasks.priority')
-            ->orderBy('workflow_tasks.available_at')
-            ->orderBy('workflow_tasks.id')
-            ->limit(max(1, $limit));
-
-        if ($buildId !== null) {
-            $query->where('workflow_tasks.compatibility', $buildId);
-        }
-
-        $tasks = $query->get();
-
-        return $tasks->map(static function (WorkflowTask $task): array {
-            $executionId = $task->payload['activity_execution_id'] ?? null;
-
-            /** @var ActivityExecution|null $execution */
-            $execution = is_string($executionId)
-                ? ActivityExecution::query()->find($executionId)
-                : null;
-
-            return [
-                'task_id' => $task->id,
-                'workflow_run_id' => $task->workflow_run_id,
-                'workflow_instance_id' => '',
-                'activity_execution_id' => $execution?->id,
-                'activity_type' => self::nullableString($execution?->activity_type),
-                'activity_class' => self::nullableString($execution?->activity_class),
-                'connection' => self::nullableString($task->connection),
-                'queue' => self::nullableString($task->queue),
-                'compatibility' => self::nullableString($task->compatibility),
-                'available_at' => $task->available_at?->toJSON(),
-                'priority' => is_int($task->priority) ? $task->priority : 5,
-                'fairness_key' => self::nullableString($task->fairness_key ?? null),
-                'fairness_weight' => is_int($task->fairness_weight) ? $task->fairness_weight : 1,
-            ];
-        })->values()->all();
-    }
-
-    private static function nullableString(mixed $value): ?string
-    {
-        return is_string($value) && $value !== '' ? $value : null;
-    }
-
-    /**
-     * Union two ready-task lists by task_id, preserving order and
-     * preferring the first occurrence's payload. The bridge's payload
-     * shape is preserved when both sources surface the same task, so
-     * downstream consumers (claim, activity-execution lookup) keep
-     * seeing the payload variant they have always seen on the happy
-     * path. Tasks the bridge surfaced that the dispatch query didn't
-     * are kept; tasks the dispatch query surfaced that the bridge
-     * missed are appended.
-     *
-     * @param  list<array<string, mixed>>  $primary
-     * @param  list<array<string, mixed>>  $secondary
-     * @return list<array<string, mixed>>
-     */
-    private function mergeReadyTasksByTaskId(array $primary, array $secondary): array
-    {
-        $seen = [];
-        $merged = [];
-
-        foreach ($primary as $task) {
-            $taskId = is_string($task['task_id'] ?? null) ? $task['task_id'] : null;
-
-            if ($taskId === null) {
-                $merged[] = $task;
-
-                continue;
-            }
-
-            if (isset($seen[$taskId])) {
-                continue;
-            }
-
-            $seen[$taskId] = true;
-            $merged[] = $task;
-        }
-
-        foreach ($secondary as $task) {
-            $taskId = is_string($task['task_id'] ?? null) ? $task['task_id'] : null;
-
-            if ($taskId === null) {
-                continue;
-            }
-
-            if (isset($seen[$taskId])) {
-                continue;
-            }
-
-            $seen[$taskId] = true;
-            $merged[] = $task;
-        }
-
-        return $merged;
     }
 
     /**

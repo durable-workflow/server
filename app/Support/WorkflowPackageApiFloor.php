@@ -7,6 +7,7 @@ use ReflectionException;
 use ReflectionMethod;
 use RuntimeException;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
@@ -25,9 +26,9 @@ use Workflow\V2\Support\WorkerProtocolVersion;
  * `dev-v2` path/Git source. A stale build or cached install can resolve to
  * an older v2 snapshot that lacks APIs the server assumes are present,
  * producing hard-to-diagnose fatals on `/api/cluster/info` (missing
- * `CodecRegistry::universal()`), workflow-task polling regressions
- * (missing workflow-type filtering), or service-mode queue capability
- * failures (missing poll-mode queue demotion).
+ * `CodecRegistry::universal()`), typed task polling regressions
+ * (missing workflow/activity type filtering), or service-mode queue
+ * capability failures (missing poll-mode queue demotion).
  *
  * Rather than fail at first request, assert the floor at boot so broken
  * installs surface a clear diagnostic during `php artisan package:discover`
@@ -88,31 +89,19 @@ final class WorkflowPackageApiFloor
     ];
 
     /**
-     * Workflow-task polling contract — commit a1d442d. The bridge must
-     * accept the workflow-type filter parameter; the server's API floor
-     * asserts that signature at boot. Beyond the signature, dispatch
-     * also runs a server-owned authoritative typed-routing pass:
-     * WorkflowTaskPoller and ActivityTaskPoller run a typed app-side
-     * join (workflow_tasks ↔ workflow_runs / activity_executions
-     * filtered by the worker's registered types) on every typed poll
-     * and union the result with the bridge's candidate set by task_id
-     * before the fairness reorder pass. The earlier "fall back only
-     * when the bridge returned empty" gate left a hole on shared
-     * queues with disjoint-typed workers — when the bridge surfaced
-     * an unrelated candidate set, the per-task type filter dropped
-     * every entry but the empty-list gate did not trip, stranding a
-     * real matching task. Running the join unconditionally for typed
-     * polls and merging by task_id closes that hole. The dispatch
-     * pass only identifies candidates and reuses the bridge for the
-     * claim transaction, so the bridge stays authoritative for
-     * leasing while a polyglot two-worker queue keeps moving even if
-     * the bridge's predicate shape ever drifts under it. The union
-     * runs before reorderForFairness so the merged candidate set is
-     * what fairness rebalances.
+     * Typed poll contracts. The package bridges own ready-task
+     * discovery, including workflow_type/activity_type predicates for
+     * shared queues; server pollers intentionally do not duplicate
+     * those SQL predicates. Assert the signatures at boot so a stale
+     * workflow package cannot silently reintroduce broad polling.
      */
     private const WORKFLOW_TASK_POLL_CLASS = WorkflowTaskBridge::class;
 
     private const WORKFLOW_TASK_POLL_METHOD = 'poll';
+
+    private const ACTIVITY_TASK_POLL_CLASS = ActivityTaskBridge::class;
+
+    private const ACTIVITY_TASK_POLL_METHOD = 'poll';
 
     /**
      * Poll-mode queue capability demotion — commit f666b25. Detected
@@ -167,6 +156,14 @@ final class WorkflowPackageApiFloor
             );
         }
 
+        if (! self::confirmsActivityTaskPollSignature(self::ACTIVITY_TASK_POLL_CLASS, self::ACTIVITY_TASK_POLL_METHOD)) {
+            $missing[] = sprintf(
+                '%s::%s() with activity-type filtering',
+                self::ACTIVITY_TASK_POLL_CLASS,
+                self::ACTIVITY_TASK_POLL_METHOD,
+            );
+        }
+
         if (! class_exists(self::POLL_MODE_DEMOTION_CLASS)) {
             $missing[] = self::POLL_MODE_DEMOTION_CLASS;
         } elseif (! self::confirmsPollModeDemotion(self::POLL_MODE_DEMOTION_CLASS, self::POLL_MODE_DEMOTION_METHOD)) {
@@ -185,7 +182,7 @@ final class WorkflowPackageApiFloor
             "Installed durable-workflow/workflow package is older than the server's API floor. "
             .'Missing: %s. Re-run `composer update durable-workflow/workflow` against a v2 snapshot that '
             .'includes CodecRegistry::universal(), CodecRegistry::engineSpecific(), MatchingRoleSnapshot::current(), '
-            .'the filtered WorkflowTaskBridge::poll() contract, '
+            .'the filtered WorkflowTaskBridge::poll() and ActivityTaskBridge::poll() contracts, '
             .'the poll-mode queue capability demotion, the matching-role repair-pass contract, '
             .'the service execution control-plane contract, the worker-session protocol contract, plus '
             .'ChildWorkflowNamespaceProjection for package-owned child namespace propagation '
@@ -244,6 +241,16 @@ final class WorkflowPackageApiFloor
 
     private static function confirmsWorkflowTaskPollSignature(string $class, string $method): bool
     {
+        return self::confirmsTypedPollSignature($class, $method, 'workflowTypes');
+    }
+
+    private static function confirmsActivityTaskPollSignature(string $class, string $method): bool
+    {
+        return self::confirmsTypedPollSignature($class, $method, 'activityTypes');
+    }
+
+    private static function confirmsTypedPollSignature(string $class, string $method, string $typeFilterParameter): bool
+    {
         if (! interface_exists($class) && ! class_exists($class)) {
             return false;
         }
@@ -274,7 +281,7 @@ final class WorkflowPackageApiFloor
             && self::matchesParameter($parameters[2], 'limit', 'int', false, true, 1)
             && self::matchesParameter($parameters[3], 'compatibility', 'string', true, true, null)
             && self::matchesParameter($parameters[4], 'namespace', 'string', true, true, null)
-            && self::matchesParameter($parameters[5], 'workflowTypes', 'array', false, true, []);
+            && self::matchesParameter($parameters[5], $typeFilterParameter, 'array', false, true, []);
     }
 
     private static function matchesParameter(

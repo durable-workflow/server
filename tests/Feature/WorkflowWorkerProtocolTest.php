@@ -1476,19 +1476,12 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task', null);
     }
 
-    public function test_workflow_dispatch_falls_back_to_app_query_when_bridge_returns_no_candidate(): void
+    public function test_workflow_poll_uses_bridge_as_the_only_ready_task_source(): void
     {
-        // Server-owned dispatch contract: the package bridge's poll
-        // predicate has cycled through subquery- and join-shaped
-        // filters across releases, and any drift left a polyglot
-        // shared queue stalled with a workflow task pending while the
-        // registered worker polled and got nothing. The dispatch path
-        // now falls back to a server-side workflow_tasks ↔
-        // workflow_runs join when the bridge surfaces no candidate
-        // and the worker registered specific workflow types, so the
-        // matching task still reaches the right worker on the next
-        // poll regardless of which predicate shape the bridge ships
-        // in a given release.
+        // Source-of-truth contract: the package bridge owns ready-task
+        // discovery, including workflow_type filtering. If it returns no
+        // candidates, the server must not run its own workflow_tasks to
+        // workflow_runs query as a second predicate source.
         Queue::fake();
 
         $this->configureWorkflowTypes();
@@ -1499,7 +1492,7 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $start = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows', [
-                'workflow_id' => 'wf-dispatch-fallback',
+                'workflow_id' => 'wf-bridge-only-source',
                 'workflow_type' => $workflowType,
                 'task_queue' => $taskQueue,
                 'input' => ['Ada'],
@@ -1507,63 +1500,36 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $start->assertCreated();
 
-        $instanceId = (string) $start->json('workflow_id');
-
-        // Simulate a bridge whose typed-filter predicate fails to
-        // surface a real ready task — the failure mode the dispatch
-        // fallback exists to recover from. claimStatus and
-        // historyPayloadPaginated still need to behave normally so
-        // the leased task can be returned to the worker.
-        $realBridge = $this->app->make(WorkflowTaskBridge::class);
-
-        $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use ($realBridge): void {
+        $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use ($taskQueue, $workflowType): void {
             $mock->shouldReceive('poll')
+                ->once()
+                ->with(null, $taskQueue, 10, null, 'default', [$workflowType])
                 ->andReturn([]);
 
-            $mock->shouldReceive('claimStatus')
-                ->andReturnUsing(static fn (string $taskId, ?string $leaseOwner = null): array => $realBridge->claimStatus($taskId, $leaseOwner));
-
-            $mock->shouldReceive('historyPayloadPaginated')
-                ->andReturnUsing(static fn (string $taskId, int $afterSequence = 0, int $pageSize = 50): ?array => $realBridge->historyPayloadPaginated($taskId, $afterSequence, $pageSize));
-
-            $mock->shouldReceive('historyPayload')
-                ->andReturnUsing(static fn (string $taskId): ?array => $realBridge->historyPayload($taskId));
+            $mock->shouldNotReceive('claimStatus');
         });
 
         $this->registerWorker(
-            'php-worker-dispatch-fallback',
+            'php-worker-bridge-only-source',
             $taskQueue,
             supportedWorkflowTypes: [$workflowType],
         );
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
-                'worker_id' => 'php-worker-dispatch-fallback',
+                'worker_id' => 'php-worker-bridge-only-source',
                 'task_queue' => $taskQueue,
             ])
             ->assertOk()
-            ->assertJsonPath('task.workflow_id', $instanceId)
-            ->assertJsonPath('task.workflow_type', $workflowType);
+            ->assertJsonPath('task', null);
     }
 
-    public function test_workflow_task_routes_to_typed_worker_on_shared_queue_even_when_bridge_returns_only_unmatching_candidates(): void
+    public function test_workflow_poll_drops_bridge_candidates_outside_registered_types_without_local_dispatch_query(): void
     {
-        // Shared-queue routing contract on a polluted bridge response.
-        // Two workers share one task queue with disjoint registered
-        // workflow types: only one of them can ever legally claim the
-        // run that exists in the database. The bridge is mocked to
-        // return a non-empty list whose entries all carry workflow
-        // types that match neither worker — the failure mode that the
-        // earlier "fall back only when $readyTasks === []" gate left
-        // open. With that gate, the per-task matchesWorkflowType
-        // filter dropped every bridge candidate but the fallback
-        // never fired, so the worker actually registered for the
-        // run's stored workflow_type came back empty-handed and the
-        // run stayed pending. The dispatch-side filter now runs the
-        // app-level workflow_tasks ↔ workflow_runs join unconditionally
-        // for typed polls and unions it with the bridge result, so the
-        // matching task still reaches its registered worker. The
-        // disjoint-typed peer worker must still come back empty.
+        // The bridge is the only source of ready-task candidates. The
+        // server still guards against a polluted bridge response before
+        // claiming, but it must not compensate by materialising a
+        // second local dispatch query from workflow_tasks/workflow_runs.
         Queue::fake();
 
         $this->configureWorkflowTypes();
@@ -1582,19 +1548,9 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $start->assertCreated();
 
-        $instanceId = (string) $start->json('workflow_id');
-
-        // Simulate a bridge whose typed-filter predicate has drifted:
-        // it returns a candidate row whose workflow_type is in neither
-        // worker's registered list, even though the real workflow task
-        // for $matchingWorkflowType is sitting Ready in the DB.
-        // claimStatus and history calls still need to behave normally
-        // so the leased task can be returned to the worker that the
-        // app-level dispatch query surfaces.
-        $realBridge = $this->app->make(WorkflowTaskBridge::class);
-
-        $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use ($realBridge, $taskQueue): void {
+        $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use ($taskQueue): void {
             $mock->shouldReceive('poll')
+                ->twice()
                 ->andReturn([[
                     'task_id' => 'phantom-bridge-task',
                     'workflow_run_id' => 'phantom-bridge-run',
@@ -1612,14 +1568,7 @@ class WorkflowWorkerProtocolTest extends TestCase
                     'fairness_weight' => 1,
                 ]]);
 
-            $mock->shouldReceive('claimStatus')
-                ->andReturnUsing(static fn (string $taskId, ?string $leaseOwner = null): array => $realBridge->claimStatus($taskId, $leaseOwner));
-
-            $mock->shouldReceive('historyPayloadPaginated')
-                ->andReturnUsing(static fn (string $taskId, int $afterSequence = 0, int $pageSize = 50): ?array => $realBridge->historyPayloadPaginated($taskId, $afterSequence, $pageSize));
-
-            $mock->shouldReceive('historyPayload')
-                ->andReturnUsing(static fn (string $taskId): ?array => $realBridge->historyPayload($taskId));
+            $mock->shouldNotReceive('claimStatus');
         });
 
         $this->registerWorker(
@@ -1645,32 +1594,28 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertOk()
             ->assertJsonPath('task', null);
 
-        // Worker registered for the run's stored workflow_type MUST
-        // receive the task even though the bridge only surfaced an
-        // unrelated phantom candidate — the dispatch-side filter
-        // must surface the matching task from the app-level join.
+        // Even the worker registered for the run's stored workflow_type
+        // comes back empty if the bridge did not surface that task. The
+        // real bridge's typed poll contract is covered separately by
+        // the shared-queue integration tests; this test prevents a
+        // second server-owned predicate from returning.
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [
                 'worker_id' => 'worker-with-matching-type',
                 'task_queue' => $taskQueue,
             ])
             ->assertOk()
-            ->assertJsonPath('task.workflow_id', $instanceId)
-            ->assertJsonPath('task.workflow_type', $matchingWorkflowType);
+            ->assertJsonPath('task', null);
     }
 
     public function test_workflow_dispatch_does_not_fall_back_for_untyped_polls_when_bridge_returns_no_tasks(): void
     {
         // Untyped-poll contract: workers that registered no workflow
         // types are not workflow workers, so the dispatch path must
-        // never materialise a workflow task for them — neither through
-        // the bridge poll nor through the server-owned fallback. The
-        // typed fallback in WorkflowTaskPoller::claimReadyTask gates on
-        // supportedWorkflowTypes !== [], so the no-local-scan contract
-        // for the untyped path is preserved alongside the typed-fallback
-        // recovery: an untyped worker is short-circuited with the
-        // no_workflow_capability poll status before the bridge is asked
-        // anything at all.
+        // never materialise a workflow task for them. An untyped
+        // worker is short-circuited with
+        // the no_workflow_capability poll status before the bridge is
+        // asked anything at all.
         Queue::fake();
 
         $this->configureWorkflowTypes();
@@ -1678,7 +1623,7 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $start = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows', [
-                'workflow_id' => 'wf-untyped-no-fallback',
+                'workflow_id' => 'wf-untyped-no-bridge-poll',
                 'workflow_type' => 'tests.external-greeting-workflow',
                 'task_queue' => 'external-workflows',
                 'input' => ['Ada'],
