@@ -47,7 +47,8 @@
     "arguments": {
       "codec": "avro",
       "blob": "BASE64_AVRO_ARGUMENTS"
-    }
+    },
+    "signal_arguments": null
   },
   "history": {
     "events": [

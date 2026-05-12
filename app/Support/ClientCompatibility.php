@@ -11,11 +11,12 @@ final class ClientCompatibility
     private const SUPPORTED_SDK_VERSIONS = [
         'php' => '>=1.0',
         'python' => '>=0.2,<1.0',
+        'rust' => '>=0.1,<1.0',
         'cli' => '>=0.1,<1.0',
     ];
 
     /**
-     * @return array{php: string, python: string, cli: string}
+     * @return array{php: string, python: string, rust: string, cli: string}
      */
     public static function supportedSdkVersions(): array
     {
@@ -82,6 +83,20 @@ final class ClientCompatibility
                 ],
                 'sdk-python' => [
                     'supported_versions' => self::SUPPORTED_SDK_VERSIONS['python'],
+                    'requires' => [
+                        'auth_composition.version',
+                        'control_plane.version',
+                        'control_plane.request_contract',
+                        'worker_protocol.version',
+                        'worker_protocol.external_execution_surface_contract',
+                        'worker_protocol.external_executor_config_contract',
+                        'worker_protocol.invocable_carrier_contract',
+                        'worker_protocol.external_task_input_contract',
+                        'worker_protocol.external_task_result_contract',
+                    ],
+                ],
+                'sdk-rust' => [
+                    'supported_versions' => self::SUPPORTED_SDK_VERSIONS['rust'],
                     'requires' => [
                         'auth_composition.version',
                         'control_plane.version',

@@ -41,6 +41,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                 'supported_sdk_versions' => [
                     'php',
                     'python',
+                    'rust',
                     'cli',
                 ],
                 'capabilities' => [
@@ -555,7 +556,8 @@ class ClusterInfoCompatibilityTest extends TestCase
                 1,
             )
             ->assertJsonPath('client_compatibility.clients.cli.supported_versions', '>=0.1,<1.0')
-            ->assertJsonPath('client_compatibility.clients.sdk-python.supported_versions', '>=0.2,<1.0');
+            ->assertJsonPath('client_compatibility.clients.sdk-python.supported_versions', '>=0.2,<1.0')
+            ->assertJsonPath('client_compatibility.clients.sdk-rust.supported_versions', '>=0.1,<1.0');
 
         $this->assertSame(
             $response->json('supported_sdk_versions.cli'),
@@ -565,6 +567,10 @@ class ClusterInfoCompatibilityTest extends TestCase
             $response->json('supported_sdk_versions.python'),
             $response->json('client_compatibility.clients.sdk-python.supported_versions'),
         );
+        $this->assertSame(
+            $response->json('supported_sdk_versions.rust'),
+            $response->json('client_compatibility.clients.sdk-rust.supported_versions'),
+        );
 
         $this->assertContains(
             'auth_composition.version',
@@ -573,6 +579,10 @@ class ClusterInfoCompatibilityTest extends TestCase
         $this->assertContains(
             'auth_composition.version',
             $response->json('client_compatibility.clients.sdk-python.requires'),
+        );
+        $this->assertContains(
+            'worker_protocol.version',
+            $response->json('client_compatibility.clients.sdk-rust.requires'),
         );
     }
 

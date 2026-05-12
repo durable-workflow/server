@@ -849,8 +849,10 @@ context fields from the durable task payload: `workflow_wait_kind`,
 `activity_attempt_id`, `activity_type`,
 `child_call_id`, `child_workflow_run_id`, `workflow_sequence`,
 `workflow_event_type`, `timer_id`, `condition_wait_id`, `condition_key`, and
-`condition_definition_fingerprint`. Fields that do not apply to the leased task
-are `null`; pure timer resumes set
+`condition_definition_fingerprint`. Signal-backed tasks also expose
+`signal_arguments` as the same codec-tagged payload envelope used by workflow
+start and activity inputs. Fields that do not apply to the leased task are
+`null`; pure timer resumes set
 `workflow_wait_kind: "timer"`, `open_wait_id: "timer:{timer_id}"`, and
 `timer_id` so SDK workers can apply timer-fired history directly. Update-backed
 tasks set

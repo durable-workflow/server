@@ -52,7 +52,7 @@ class WorkerController
         $validated = $request->validate([
             'worker_id' => ['nullable', 'string', 'max:255'],
             'task_queue' => ['required', 'string', 'max:255'],
-            'runtime' => ['required', 'string', 'in:php,python,typescript,go,java'],
+            'runtime' => ['required', 'string', 'in:php,python,rust,typescript,go,java'],
             'sdk_version' => ['nullable', 'string', 'max:64'],
             'build_id' => ['nullable', 'string', 'max:255'],
             'supported_workflow_types' => ['nullable', 'array'],
@@ -618,6 +618,10 @@ class WorkerController
         }
 
         $acceptHistoryEncoding = $validated['accept_history_encoding'] ?? null;
+
+        $history['history_events'] = $this->workflowTaskPoller->historyEventsWithSignalArguments(
+            $history['history_events'] ?? [],
+        );
 
         if ($acceptHistoryEncoding !== null) {
             $history = HistoryPayloadCompression::compress($history, $acceptHistoryEncoding);

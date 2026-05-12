@@ -133,7 +133,7 @@ class WorkerControllerTest extends TestCase
 
     public function test_register_accepts_all_supported_runtimes(): void
     {
-        foreach (['php', 'python', 'typescript', 'go', 'java'] as $runtime) {
+        foreach (['php', 'python', 'rust', 'typescript', 'go', 'java'] as $runtime) {
             $response = $this->withHeaders($this->workerHeaders())
                 ->postJson('/api/worker/register', [
                     'worker_id' => "worker-{$runtime}",
@@ -144,7 +144,7 @@ class WorkerControllerTest extends TestCase
             $response->assertStatus(201);
         }
 
-        $this->assertSame(5, WorkerRegistration::query()->count());
+        $this->assertSame(6, WorkerRegistration::query()->count());
     }
 
     public function test_register_rejects_unsupported_runtime(): void

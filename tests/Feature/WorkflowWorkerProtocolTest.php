@@ -382,6 +382,36 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonStructure(['remediation']);
     }
 
+    public function test_worker_registration_accepts_first_party_rust_runtime(): void
+    {
+        $this->createNamespace('default', 'Default namespace');
+
+        $register = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'rust-worker-register',
+                'task_queue' => 'rust-workers',
+                'runtime' => 'rust',
+                'sdk_version' => 'durable-workflow-rust/0.1.0',
+                'supported_workflow_types' => ['hello.workflow'],
+                'supported_activity_types' => ['hello.activity'],
+            ]);
+
+        $register->assertCreated()
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('worker_id', 'rust-worker-register')
+            ->assertJsonPath('registered', true);
+
+        $this->assertDatabaseHas('worker_registrations', [
+            'namespace' => 'default',
+            'worker_id' => 'rust-worker-register',
+            'task_queue' => 'rust-workers',
+            'runtime' => 'rust',
+            'sdk_version' => 'durable-workflow-rust/0.1.0',
+            'status' => 'active',
+        ]);
+    }
+
     public function test_worker_heartbeat_is_scoped_to_the_resolved_namespace(): void
     {
         $this->createNamespace('default', 'Default namespace');

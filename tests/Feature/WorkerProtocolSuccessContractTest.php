@@ -492,6 +492,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('task.workflow_signal_id', $signalRecord->id)
             ->assertJsonPath('task.signal_name', 'advance')
             ->assertJsonPath('task.signal_wait_id', $signalRecord->signal_wait_id)
+            ->assertJsonPath('task.signal_arguments.codec', (string) $signalRecord->payload_codec)
             ->assertJsonPath('task.workflow_command_id', $commandId)
             ->assertJsonPath('task.workflow_update_id', null)
             ->assertJsonPath('task.child_call_id', null)
@@ -500,6 +501,109 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $eventTypes = array_column((array) $poll->json('task.history_events'), 'event_type');
 
         $this->assertContains('SignalReceived', $eventTypes);
+
+        $this->assertSame(
+            ['Ada'],
+            Serializer::unserializeWithCodec(
+                (string) $poll->json('task.signal_arguments.codec'),
+                (string) $poll->json('task.signal_arguments.blob'),
+            ),
+        );
+
+        $signalReceived = collect($poll->json('task.history_events'))
+            ->first(static fn (array $event): bool => ($event['event_type'] ?? null) === 'SignalReceived');
+
+        $this->assertIsArray($signalReceived);
+        $this->assertSame(
+            $poll->json('task.signal_arguments'),
+            $signalReceived['payload']['arguments'] ?? null,
+        );
+    }
+
+    public function test_paginated_workflow_task_history_enriches_signal_received_arguments(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.interactive-command-workflow' => InteractiveCommandWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-signal-history-page-contract',
+            'workflow_type' => 'tests.interactive-command-workflow',
+            'task_queue' => 'contract-queue',
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $signal = $this->postJson('/api/workflows/wf-worker-signal-history-page-contract/signal/advance', [
+            'input' => ['Ada'],
+            'request_id' => 'signal-history-page-1',
+        ], $this->apiHeaders());
+
+        $signal->assertAccepted()
+            ->assertJsonPath('signal_name', 'advance')
+            ->assertJsonPath('command_status', 'accepted')
+            ->assertJsonPath('outcome', 'signal_received');
+
+        $this->registerWorker(
+            workerId: 'worker-signal-history-page-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.interactive-command-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-signal-history-page-contract',
+            'task_queue' => 'contract-queue',
+            'history_page_size' => 1,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task.workflow_id', 'wf-worker-signal-history-page-contract')
+            ->assertJsonPath('task.workflow_wait_kind', 'signal')
+            ->assertJsonPath('task.signal_name', 'advance');
+
+        $this->assertIsString($poll->json('task.signal_arguments.codec'));
+        $this->assertIsString($poll->json('task.signal_arguments.blob'));
+        $this->assertIsString($poll->json('task.next_history_page_token'));
+        $this->assertNotContains(
+            'SignalReceived',
+            array_column((array) $poll->json('task.history_events'), 'event_type'),
+        );
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $history = $this->postJson("/api/worker/workflow-tasks/{$taskId}/history", [
+            'lease_owner' => 'worker-signal-history-page-contract',
+            'workflow_task_attempt' => $attempt,
+            'next_history_page_token' => (string) $poll->json('task.next_history_page_token'),
+            'history_page_size' => 100,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($history)
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt);
+
+        $signalReceived = collect($history->json('history_events'))
+            ->first(static fn (array $event): bool => ($event['event_type'] ?? null) === 'SignalReceived');
+
+        $this->assertIsArray($signalReceived);
+        $this->assertSame(
+            $poll->json('task.signal_arguments'),
+            $signalReceived['payload']['arguments'] ?? null,
+        );
+        $this->assertSame(
+            ['Ada'],
+            Serializer::unserializeWithCodec(
+                (string) ($signalReceived['payload']['arguments']['codec'] ?? ''),
+                (string) ($signalReceived['payload']['arguments']['blob'] ?? ''),
+            ),
+        );
     }
 
     public function test_update_backed_workflow_task_complete_can_close_accepted_update(): void

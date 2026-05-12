@@ -10,6 +10,7 @@ use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\HistoryPayloadCompression;
 use Workflow\V2\Support\TaskFairnessKey;
@@ -1045,6 +1046,8 @@ final class WorkflowTaskPoller
             return null;
         }
 
+        $history['history_events'] = $this->historyEventsWithSignalArguments($history['history_events'] ?? []);
+
         if ($acceptHistoryEncoding !== null) {
             $history = HistoryPayloadCompression::compress($history, $acceptHistoryEncoding);
         }
@@ -1125,6 +1128,7 @@ final class WorkflowTaskPoller
             'workflow_signal_id' => null,
             'signal_name' => null,
             'signal_wait_id' => null,
+            'signal_arguments' => null,
             'workflow_command_id' => null,
             'activity_execution_id' => null,
             'activity_attempt_id' => null,
@@ -1148,6 +1152,10 @@ final class WorkflowTaskPoller
         }
 
         foreach ($context as $field => $_) {
+            if ($field === 'signal_arguments') {
+                continue;
+            }
+
             $value = $payload[$field] ?? null;
 
             if ($field === 'workflow_sequence') {
@@ -1159,7 +1167,106 @@ final class WorkflowTaskPoller
             $context[$field] = $this->nonEmptyString($value);
         }
 
+        $context['signal_arguments'] = $this->signalArgumentsEnvelope($context['workflow_signal_id']);
+
         return $context;
+    }
+
+    /**
+     * @param  array<int, mixed>  $events
+     * @return array<int, mixed>
+     */
+    public function historyEventsWithSignalArguments(array $events): array
+    {
+        $signalIds = [];
+
+        foreach ($events as $event) {
+            if (! is_array($event) || ($event['event_type'] ?? null) !== 'SignalReceived') {
+                continue;
+            }
+
+            $payload = $event['payload'] ?? null;
+            if (! is_array($payload)) {
+                continue;
+            }
+
+            $signalId = $this->nonEmptyString($payload['signal_id'] ?? null);
+            if ($signalId !== null) {
+                $signalIds[] = $signalId;
+            }
+        }
+
+        $signalIds = array_values(array_unique($signalIds));
+        if ($signalIds === []) {
+            return $events;
+        }
+
+        /** @var array<string, WorkflowSignal> $signals */
+        $signals = WorkflowSignal::query()
+            ->whereIn('id', $signalIds)
+            ->get()
+            ->keyBy('id')
+            ->all();
+
+        foreach ($events as $index => $event) {
+            if (! is_array($event) || ($event['event_type'] ?? null) !== 'SignalReceived') {
+                continue;
+            }
+
+            $payload = $event['payload'] ?? [];
+            if (! is_array($payload)) {
+                $payload = [];
+            }
+
+            $signalId = $this->nonEmptyString($payload['signal_id'] ?? null);
+            $signal = $signalId === null ? null : ($signals[$signalId] ?? null);
+            $envelope = $signal instanceof WorkflowSignal
+                ? $this->signalArgumentsEnvelopeFromRecord($signal)
+                : null;
+
+            if ($envelope === null) {
+                continue;
+            }
+
+            $payload['payload_codec'] ??= $envelope['codec'];
+            $payload['arguments'] ??= $envelope;
+            $event['payload'] = $payload;
+            $events[$index] = $event;
+        }
+
+        return $events;
+    }
+
+    /**
+     * @return array{codec: string, blob: string}|null
+     */
+    private function signalArgumentsEnvelope(?string $signalId): ?array
+    {
+        if ($signalId === null) {
+            return null;
+        }
+
+        /** @var WorkflowSignal|null $signal */
+        $signal = WorkflowSignal::query()->find($signalId);
+
+        return $signal instanceof WorkflowSignal
+            ? $this->signalArgumentsEnvelopeFromRecord($signal)
+            : null;
+    }
+
+    /**
+     * @return array{codec: string, blob: string}|null
+     */
+    private function signalArgumentsEnvelopeFromRecord(WorkflowSignal $signal): ?array
+    {
+        if (! is_string($signal->arguments) || $signal->arguments === '') {
+            return null;
+        }
+
+        return [
+            'codec' => $this->nonEmptyString($signal->payload_codec) ?? CodecRegistry::defaultCodec(),
+            'blob' => $signal->arguments,
+        ];
     }
 
     /**

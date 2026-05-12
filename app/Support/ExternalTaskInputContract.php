@@ -140,6 +140,11 @@ final class ExternalTaskInputContract
             ],
             'payload_fields' => [
                 'arguments' => ['source' => 'task.arguments', 'nullable' => true],
+                'signal_arguments' => [
+                    'source' => 'task.signal_arguments',
+                    'nullable' => true,
+                    'meaning' => 'Codec-tagged arguments for the accepted signal that resumed this workflow task, when workflow_wait_kind is signal.',
+                ],
             ],
             'history_fields' => [
                 'events' => ['source' => 'task.history_events', 'type' => 'array'],
@@ -281,6 +286,7 @@ final class ExternalTaskInputContract
                     'codec' => 'avro',
                     'blob' => 'BASE64_AVRO_ARGUMENTS',
                 ],
+                'signal_arguments' => null,
             ],
             'history' => [
                 'events' => [
