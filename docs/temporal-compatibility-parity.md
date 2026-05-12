@@ -86,7 +86,7 @@ listed here so the parity surface can be read end-to-end.
 | # | Capability | Status | Priority | Evidence / notes |
 |---|---|---|---|---|
 | 14 | **Prometheus / OpenMetrics endpoint** — Cloud-side metrics endpoint with task-queue / workflow / activity granularity | gap | P1 | Server already publishes a JSON metrics surface and the bounded-growth policy in `docs/bounded-growth.md` covers cardinality. The Cloud-side OpenMetrics endpoint is the Cloud team's surface. |
-| 15 | **Multi-region + Multi-cloud Replication** — namespace replication with 20-minute RTO automatic failover | gap | P1 | `docs/multi-region-validation.md` documents the validation harness; replication itself is a Cloud-side capability. |
+| 15 | **Multi-region + Multi-cloud Replication** — namespace replication with 20-minute RTO automatic failover | partial | P1 | Cloud v1 supports two-region namespace replication inside one cloud provider with automatic failover/failback, observable lag, last successful replication, and current-primary state. `docs/multi-region-validation.md` remains the server-side validation boundary; multi-cloud replication is still deferred. |
 | 16 | **Billing API + Billable Action Metrics** — programmatic spend / usage with namespace + action-type labels | gap | P2 | Cloud-side. |
 | 17 | **SCIM** — automated user provisioning / group management | gap | P2 | Cloud-side. |
 | 18 | **AWS PrivateLink / GCP PSC self-serve** — private connectivity from customer network to Cloud namespace | gap | P2 | Cloud-side. |
