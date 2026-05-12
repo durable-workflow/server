@@ -18,7 +18,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use futures_util::task::noop_waker_ref;
+use futures_util::{future::OptionFuture, task::noop_waker_ref};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 pub use serde_json::{json, Value};
 use thiserror::Error;
@@ -1101,10 +1101,10 @@ impl Worker {
                         return Err(error);
                     }
                 }
-                result = workflow_poller.as_mut().unwrap(), if workflow_poller.is_some() => {
+                result = OptionFuture::from(workflow_poller.as_mut()), if workflow_poller.is_some() => {
                     workflow_poller = None;
                     stop.store(true, Ordering::SeqCst);
-                    let poller_result = poller_result("workflow", result);
+                    let poller_result = optional_poller_result("workflow", result);
                     let join_result =
                         join_pollers(workflow_poller.take(), activity_poller.take()).await;
                     poller_result?;
@@ -1113,10 +1113,10 @@ impl Worker {
                         "workflow poller stopped unexpectedly".to_string(),
                     ));
                 }
-                result = activity_poller.as_mut().unwrap(), if activity_poller.is_some() => {
+                result = OptionFuture::from(activity_poller.as_mut()), if activity_poller.is_some() => {
                     activity_poller = None;
                     stop.store(true, Ordering::SeqCst);
-                    let poller_result = poller_result("activity", result);
+                    let poller_result = optional_poller_result("activity", result);
                     let join_result =
                         join_pollers(workflow_poller.take(), activity_poller.take()).await;
                     poller_result?;
@@ -1312,6 +1312,16 @@ fn poller_result(
         Err(error) => Err(Error::WorkerLoop(format!(
             "{kind} poller join error: {error}"
         ))),
+    }
+}
+
+fn optional_poller_result(
+    kind: &str,
+    result: Option<std::result::Result<Result<()>, tokio::task::JoinError>>,
+) -> Result<()> {
+    match result {
+        Some(result) => poller_result(kind, result),
+        None => Ok(()),
     }
 }
 
@@ -1664,6 +1674,11 @@ fn resume_signal_matches_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::{Read, Write},
+        net::{SocketAddr, TcpListener, TcpStream},
+        thread,
+    };
 
     #[test]
     fn avro_generic_wrapper_round_trips_json_values() {
@@ -1806,5 +1821,143 @@ mod tests {
         let signals =
             signal_values(&task.history_events, "start", DEFAULT_CODEC, None).expect("signals");
         assert_eq!(signals, vec![vec![json!("Rust")]]);
+    }
+
+    #[tokio::test]
+    async fn activity_only_worker_can_shutdown_without_workflow_poller() {
+        let server = MockWorkerServer::start();
+        let client = Client::builder(server.base_url())
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let mut worker = Worker::new(client, "rust-workers")
+            .worker_id("activity-only-worker")
+            .poll_timeout(Duration::from_millis(10));
+
+        worker.register_activity("activity.only", |_ctx, _args| async move {
+            Ok(Value::Null)
+        });
+
+        worker.run_until(async {}).await.expect("run worker");
+    }
+
+    #[tokio::test]
+    async fn workflow_only_worker_can_shutdown_without_activity_poller() {
+        let server = MockWorkerServer::start();
+        let client = Client::builder(server.base_url())
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let mut worker = Worker::new(client, "rust-workers")
+            .worker_id("workflow-only-worker")
+            .poll_timeout(Duration::from_millis(10));
+
+        worker.register_workflow("workflow.only", |_ctx, _input| async move {
+            Ok(Value::Null)
+        });
+
+        worker.run_until(async {}).await.expect("run worker");
+    }
+
+    struct MockWorkerServer {
+        addr: SocketAddr,
+        stop: Arc<AtomicBool>,
+        thread: Option<thread::JoinHandle<()>>,
+    }
+
+    impl MockWorkerServer {
+        fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock server");
+            listener
+                .set_nonblocking(true)
+                .expect("configure mock listener");
+            let addr = listener.local_addr().expect("mock server address");
+            let stop = Arc::new(AtomicBool::new(false));
+            let server_stop = Arc::clone(&stop);
+            let thread = thread::spawn(move || {
+                while !server_stop.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => handle_mock_worker_request(&mut stream),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+
+            Self {
+                addr,
+                stop,
+                thread: Some(thread),
+            }
+        }
+
+        fn base_url(&self) -> String {
+            format!("http://{}", self.addr)
+        }
+    }
+
+    impl Drop for MockWorkerServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            let _ = TcpStream::connect(self.addr);
+
+            if let Some(thread) = self.thread.take() {
+                thread.join().expect("join mock server");
+            }
+        }
+    }
+
+    fn handle_mock_worker_request(stream: &mut TcpStream) {
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
+        let mut buffer = [0_u8; 8192];
+        let mut request = Vec::new();
+
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => {
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    break;
+                }
+                Err(_) => return,
+            }
+        }
+
+        let request = String::from_utf8_lossy(&request);
+        let path = request
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .unwrap_or_default();
+        let (status, body) = match path {
+            "/api/worker/register" => (
+                "200 OK",
+                r#"{"worker_id":"mock-worker","registered":true,"heartbeat_interval_seconds":3600}"#,
+            ),
+            "/api/worker/heartbeat" => ("200 OK", "{}"),
+            "/api/worker/activity-tasks/poll" | "/api/worker/workflow-tasks/poll" => {
+                ("200 OK", r#"{"task":null}"#)
+            }
+            _ => ("404 Not Found", r#"{"message":"not found"}"#),
+        };
+        let response = format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
     }
 }
