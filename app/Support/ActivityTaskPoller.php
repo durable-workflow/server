@@ -4,9 +4,13 @@ namespace App\Support;
 
 use App\Models\WorkerRegistration;
 use Illuminate\Support\Facades\DB;
+use InvalidArgumentException;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\TaskFairnessKey;
 use Workflow\V2\Support\TaskFairnessScheduler;
@@ -185,9 +189,25 @@ final class ActivityTaskPoller
                 continue;
             }
 
+            $workerSession = $this->workerSessions->optionsForExecution(
+                is_string($readyTask['activity_execution_id'] ?? null)
+                    ? $readyTask['activity_execution_id']
+                    : null,
+            );
+
+            if (
+                $workerSession !== null
+                && (
+                    ! WorkerProtocol::workerSessionsSupported()
+                    || ! $this->workerCanSatisfySession($worker, $workerSession)
+                )
+            ) {
+                continue;
+            }
+
             try {
                 $claim = DB::transaction(function () use ($namespace, $worker, $taskId, $leaseOwner): ?array {
-                    $claim = $this->bridge->claimStatus($taskId, $leaseOwner);
+                    $claim = $this->claimStatus($taskId, $leaseOwner);
 
                     if (($claim['claimed'] ?? false) !== true) {
                         return null;
@@ -235,6 +255,90 @@ final class ActivityTaskPoller
         }
 
         return null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function claimStatus(string $taskId, string $leaseOwner): ?array
+    {
+        try {
+            return $this->bridge->claimStatus($taskId, $leaseOwner);
+        } catch (InvalidArgumentException $exception) {
+            if (! str_contains($exception->getMessage(), 'Unknown payload codec')) {
+                throw $exception;
+            }
+
+            return $this->rawActivityClaimPayload($taskId, $leaseOwner);
+        }
+    }
+
+    /**
+     * Reconstruct a successful claim response when the package bridge leased
+     * the task but could not build a locally-decodable payload envelope.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function rawActivityClaimPayload(string $taskId, string $leaseOwner): ?array
+    {
+        /** @var WorkflowTask|null $task */
+        $task = WorkflowTask::query()->find($taskId);
+
+        if ($task === null || $task->task_type !== TaskType::Activity || $task->lease_owner !== $leaseOwner) {
+            return null;
+        }
+
+        $executionId = is_array($task->payload ?? null)
+            ? ($task->payload['activity_execution_id'] ?? null)
+            : null;
+
+        /** @var ActivityExecution|null $execution */
+        $execution = is_string($executionId) && $executionId !== ''
+            ? ActivityExecution::query()->find($executionId)
+            : null;
+
+        if (! $execution instanceof ActivityExecution) {
+            return null;
+        }
+
+        /** @var WorkflowRun|null $run */
+        $run = WorkflowRun::query()->find($execution->workflow_run_id);
+
+        if (! $run instanceof WorkflowRun) {
+            return null;
+        }
+
+        /** @var ActivityAttempt|null $attempt */
+        $attempt = ActivityAttempt::query()
+            ->where('workflow_task_id', $task->id)
+            ->where('activity_execution_id', $execution->id)
+            ->latest('attempt_number')
+            ->first();
+
+        return [
+            'claimed' => true,
+            'task_id' => $task->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'activity_execution_id' => $execution->id,
+            'activity_attempt_id' => $attempt?->id,
+            'attempt_number' => $attempt instanceof ActivityAttempt ? max(1, (int) $attempt->attempt_number) : max(1, (int) $task->attempt_count),
+            'activity_type' => $this->nonEmptyString($execution->activity_type),
+            'activity_class' => $this->nonEmptyString($execution->activity_class),
+            'idempotency_key' => $execution->id,
+            'payload_codec' => $execution->payload_codec ?? $run->payload_codec ?? 'json',
+            'arguments' => $this->nonEmptyString($execution->arguments),
+            'retry_policy' => is_array($execution->retry_policy) ? $execution->retry_policy : null,
+            'connection' => $this->nonEmptyString($execution->connection),
+            'queue' => $this->nonEmptyString($execution->queue),
+            'lease_owner' => $this->nonEmptyString($task->lease_owner),
+            'lease_expires_at' => $task->lease_expires_at?->toJSON(),
+            'reason' => null,
+            'reason_detail' => null,
+            'retry_after_seconds' => null,
+            'backend_error' => null,
+            'compatibility_reason' => null,
+        ];
     }
 
     /**
@@ -343,6 +447,61 @@ final class ActivityTaskPoller
         $task = $query->first();
 
         return $task?->available_at;
+    }
+
+    /**
+     * @param  array<string, mixed>  $workerSession
+     */
+    private function workerCanSatisfySession(WorkerRegistration $worker, array $workerSession): bool
+    {
+        $queue = $this->nonEmptyString($workerSession['queue'] ?? null);
+
+        if ($queue !== null && $worker->task_queue !== $queue) {
+            return false;
+        }
+
+        $requirements = $this->stringList($workerSession['requirements'] ?? []);
+
+        if ($requirements === []) {
+            return true;
+        }
+
+        $capabilities = array_flip($this->stringList($worker->capabilities ?? []));
+
+        foreach ($requirements as $requirement) {
+            if (! isset($capabilities[$requirement])) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function nonEmptyString(mixed $value): ?string
+    {
+        return is_string($value) && trim($value) !== ''
+            ? trim($value)
+            : null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function stringList(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            array_map(
+                static fn (mixed $item): ?string => is_string($item) && trim($item) !== ''
+                    ? trim($item)
+                    : null,
+                $value,
+            ),
+            static fn (?string $item): bool => $item !== null,
+        ));
     }
 
     /**

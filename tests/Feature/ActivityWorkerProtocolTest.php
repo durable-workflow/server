@@ -327,7 +327,7 @@ class ActivityWorkerProtocolTest extends TestCase
         ): void {
             $mock->shouldReceive('poll')
                 ->once()
-                ->with(null, 'external-activities', 10, null, 'default', [])
+                ->with(null, 'external-activities', 10, null, 'default', ['tests.external-greeting-activity'])
                 ->andReturn([
                     [
                         'task_id' => $task->id,

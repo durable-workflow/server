@@ -733,6 +733,7 @@ class WorkerController
             return $response;
         }
 
+        $commands = $this->applyWorkerSessionRoutingDefaults($commands);
         $commands = WorkflowCommandNormalizer::normalize($commands);
 
         /** @var WorkflowTaskBridge $bridge */
@@ -811,6 +812,39 @@ class WorkerController
         }
 
         return false;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     * @return list<array<string, mixed>>
+     */
+    private function applyWorkerSessionRoutingDefaults(array $commands): array
+    {
+        foreach ($commands as $index => $command) {
+            if (($command['type'] ?? null) !== 'schedule_activity') {
+                continue;
+            }
+
+            $workerSession = is_array($command['worker_session'] ?? null)
+                ? $command['worker_session']
+                : null;
+
+            if ($workerSession === null) {
+                continue;
+            }
+
+            foreach (['connection', 'queue'] as $field) {
+                if ($this->hasCommandValue($command, $field)) {
+                    continue;
+                }
+
+                if (is_string($workerSession[$field] ?? null) && trim($workerSession[$field]) !== '') {
+                    $commands[$index][$field] = trim($workerSession[$field]);
+                }
+            }
+        }
+
+        return $commands;
     }
 
     /**

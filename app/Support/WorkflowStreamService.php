@@ -65,7 +65,7 @@ final class WorkflowStreamService
             ));
         }
 
-        return DB::transaction(function () use ($run, $namespace, $streamName, $items, $maxPendingItems) {
+        $result = DB::transaction(function () use ($run, $namespace, $streamName, $items, $maxPendingItems) {
             $stream = $this->lockStream($run, $namespace, $streamName, openIfMissing: true);
 
             if ($stream === null) {
@@ -84,6 +84,7 @@ final class WorkflowStreamService
             $accepted = [];
             $deduped = 0;
             $offset = (int) $stream->last_offset;
+            $streamFull = false;
 
             foreach ($items as $item) {
                 if (! is_array($item)) {
@@ -109,7 +110,9 @@ final class WorkflowStreamService
                 }
 
                 if ($stream->pending_items >= $maxPendingItems) {
-                    throw new StreamFullException($stream, $maxPendingItems);
+                    $streamFull = true;
+
+                    break;
                 }
 
                 $offset++;
@@ -146,8 +149,17 @@ final class WorkflowStreamService
                 'items' => $accepted,
                 'accepted' => count($accepted) - $deduped,
                 'deduped' => $deduped,
+                'stream_full' => $streamFull,
             ];
         });
+
+        if (($result['stream_full'] ?? false) === true) {
+            throw new StreamFullException($result['stream'], $maxPendingItems);
+        }
+
+        unset($result['stream_full']);
+
+        return $result;
     }
 
     /**

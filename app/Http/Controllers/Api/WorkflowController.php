@@ -102,7 +102,7 @@ class WorkflowController
                 'compatibility' => $summary->compatibility,
                 'started_at' => $summary->started_at?->toJSON(),
                 'closed_at' => $summary->closed_at?->toJSON(),
-                'search_attributes' => $summary->search_attributes ?? [],
+                'search_attributes' => $summary->getTypedSearchAttributes(),
             ])->all(),
             'workflow_count' => $page->count(),
             'next_page_token' => $hasMore ? $this->encodePageToken($offset + $pageSize) : null,
@@ -937,8 +937,8 @@ class WorkflowController
             'last_progress_at' => $runDescription['last_progress_at'] ?? $run->last_progress_at?->toJSON(),
             'wait_kind' => $runDescription['wait_kind'] ?? null,
             'wait_reason' => $runDescription['wait_reason'] ?? null,
-            'memo' => $run->memo ?? [],
-            'search_attributes' => $run->search_attributes ?? [],
+            'memo' => $run->typedMemos(),
+            'search_attributes' => $run->typedSearchAttributes(),
             'actions' => $actions,
         ];
     }

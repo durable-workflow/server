@@ -4,11 +4,14 @@ namespace App\Support;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use InvalidArgumentException;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\HistoryPayloadCompression;
@@ -873,10 +876,18 @@ final class WorkflowTaskPoller
         ?int $historyPageSize,
         ?string $acceptHistoryEncoding,
     ): ?array {
-        if ($historyPageSize !== null) {
-            $history = $this->bridge->historyPayloadPaginated($taskId, 0, $historyPageSize);
-        } else {
-            $history = $this->bridge->historyPayload($taskId);
+        try {
+            if ($historyPageSize !== null) {
+                $history = $this->bridge->historyPayloadPaginated($taskId, 0, $historyPageSize);
+            } else {
+                $history = $this->bridge->historyPayload($taskId);
+            }
+        } catch (InvalidArgumentException $exception) {
+            if (! str_contains($exception->getMessage(), 'Unknown payload codec')) {
+                throw $exception;
+            }
+
+            $history = $this->rawHistoryPayload($taskId, $historyPageSize);
         }
 
         if (! is_array($history)) {
@@ -890,6 +901,83 @@ final class WorkflowTaskPoller
         }
 
         return $history;
+    }
+
+    /**
+     * Build the worker-facing history payload without asking the package to
+     * decode or canonicalize the run's payload codec. Non-PHP workers may be
+     * able to handle codecs that this process cannot decode locally.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function rawHistoryPayload(string $taskId, ?int $historyPageSize): ?array
+    {
+        /** @var WorkflowTask|null $task */
+        $task = WorkflowTask::query()->find($taskId);
+
+        if ($task === null || $task->task_type !== TaskType::Workflow) {
+            return null;
+        }
+
+        /** @var WorkflowRun|null $run */
+        $run = WorkflowRun::query()->find($task->workflow_run_id);
+
+        if (! $run instanceof WorkflowRun) {
+            return null;
+        }
+
+        $query = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->orderBy('sequence');
+
+        $pageSize = $historyPageSize !== null
+            ? max(1, min($historyPageSize, 500))
+            : null;
+
+        if ($pageSize !== null) {
+            $events = $query->limit($pageSize + 1)->get();
+            $hasMore = $events->count() > $pageSize;
+            $events = $hasMore ? $events->take($pageSize) : $events;
+            $lastEventSequence = $events->isNotEmpty()
+                ? (int) $events->last()->sequence
+                : null;
+        } else {
+            $events = $query->get();
+            $hasMore = false;
+            $lastEventSequence = null;
+        }
+
+        return array_filter([
+            'task_id' => $task->id,
+            'workflow_run_id' => $run->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_type' => $this->nonEmptyString($run->workflow_type),
+            'workflow_class' => $this->nonEmptyString($run->workflow_class),
+            'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+            'arguments' => $this->nonEmptyString($run->arguments),
+            'run_status' => $run->status->value,
+            'sticky_worker_id' => $this->nonEmptyString($task->sticky_worker_id),
+            'sticky_until' => $task->sticky_until?->toJSON(),
+            'sticky_replay_mode' => $this->nonEmptyString($task->sticky_replay_mode),
+            'last_history_sequence' => (int) ($run->last_history_sequence ?? 0),
+            'after_sequence' => $pageSize !== null ? 0 : null,
+            'page_size' => $pageSize,
+            'has_more' => $pageSize !== null ? $hasMore : null,
+            'next_after_sequence' => $hasMore ? $lastEventSequence : null,
+            'history_events' => $events->map(static fn (WorkflowHistoryEvent $event) => [
+                'id' => $event->id,
+                'sequence' => (int) $event->sequence,
+                'event_type' => $event->event_type->value,
+                'payload' => is_array($event->payload) ? $event->payload : [],
+                'workflow_task_id' => is_string($event->workflow_task_id) && $event->workflow_task_id !== ''
+                    ? $event->workflow_task_id
+                    : null,
+                'workflow_command_id' => is_string($event->workflow_command_id) && $event->workflow_command_id !== ''
+                    ? $event->workflow_command_id
+                    : null,
+                'recorded_at' => $event->recorded_at?->toJSON(),
+            ])->values()->all(),
+        ], static fn (mixed $value): bool => $value !== null);
     }
 
     /**

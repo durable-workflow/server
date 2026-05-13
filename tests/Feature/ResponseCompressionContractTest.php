@@ -35,7 +35,11 @@ class ResponseCompressionContractTest extends TestCase
 
         $start->assertCreated();
 
-        $this->registerWorker('gzip-worker', 'compressed-workers');
+        $this->registerWorker(
+            'gzip-worker',
+            'compressed-workers',
+            supportedWorkflowTypes: ['remote.large-worker-contract'],
+        );
 
         $response = $this->withHeaders($this->workerHeaders() + [
             'Accept-Encoding' => 'gzip',

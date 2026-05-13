@@ -34,8 +34,7 @@ class ServiceCatalogController
     public function __construct(
         private readonly ServiceControlPlane $serviceControlPlane,
         private readonly ServiceCallBoundary $serviceCallBoundary,
-    ) {
-    }
+    ) {}
 
     public function endpointIndex(Request $request): JsonResponse
     {
@@ -1211,6 +1210,7 @@ class ServiceCatalogController
         $normalized = $this->normalizeCatalogName($endpointName);
 
         return ControlPlaneProtocol::json([
+            'accepted' => false,
             'message' => sprintf(
                 'Service endpoint [%s] not found in namespace [%s].',
                 $normalized,

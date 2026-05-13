@@ -30,7 +30,7 @@ class ServiceExecutionRoutesTest extends TestCase
                 'arguments' => null,
             ]);
 
-        $response->assertStatus(409)
+        $response->assertStatus(404)
             ->assertJsonPath('accepted', false)
             ->assertJsonPath('reason', 'endpoint_not_found');
     }

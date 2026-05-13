@@ -13,10 +13,14 @@ use App\Support\WorkerProtocol;
 use App\Support\WorkerSessionRegistry;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use InvalidArgumentException;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
+use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
 
 class ActivityTaskController
@@ -255,7 +259,27 @@ class ActivityTaskController
             }
         }
 
-        $outcome = $bridge->fail($validated['activity_attempt_id'], $failure, $resolved['codec']);
+        try {
+            $outcome = $bridge->fail($validated['activity_attempt_id'], $failure, $resolved['codec']);
+        } catch (InvalidArgumentException $exception) {
+            if (! str_contains($exception->getMessage(), 'Unknown payload codec')) {
+                throw $exception;
+            }
+
+            try {
+                $outcome = $bridge->fail($validated['activity_attempt_id'], $failure, CodecRegistry::defaultCodec());
+            } catch (InvalidArgumentException $retryException) {
+                if (! str_contains($retryException->getMessage(), 'Unknown payload codec')) {
+                    throw $retryException;
+                }
+
+                $outcome = $this->recordUnsupportedCodecActivityFailure(
+                    $validated['activity_attempt_id'],
+                    $failure,
+                    $bridge,
+                );
+            }
+        }
         $stopStatus = $this->activityStopStatus($bridge, $validated['activity_attempt_id'], $outcome['reason']);
 
         return WorkerProtocol::json(array_merge([
@@ -266,6 +290,62 @@ class ActivityTaskController
             'reason' => $outcome['reason'],
             'next_task_id' => $outcome['next_task_id'],
         ], $stopStatus), $this->outcomeStatus($outcome['reason']));
+    }
+
+    /**
+     * @param  array<string, mixed>  $failure
+     * @return array{recorded: bool, task_id: string, reason: string|null, next_task_id: string|null}
+     */
+    private function recordUnsupportedCodecActivityFailure(
+        string $attemptId,
+        array $failure,
+        ActivityTaskBridgeContract $bridge,
+    ): array {
+        return DB::transaction(function () use ($attemptId, $failure, $bridge): array {
+            /** @var ActivityAttempt|null $attempt */
+            $attempt = ActivityAttempt::query()->find($attemptId);
+
+            if (! $attempt instanceof ActivityAttempt) {
+                return $this->activityFailureOutcome($attemptId, false, 'attempt_not_found');
+            }
+
+            /** @var WorkflowRun|null $run */
+            $run = WorkflowRun::query()
+                ->lockForUpdate()
+                ->find($attempt->workflow_run_id);
+
+            if (! $run instanceof WorkflowRun) {
+                return $this->activityFailureOutcome($attemptId, false, 'activity_execution_missing');
+            }
+
+            $originalCodec = is_string($run->payload_codec) ? $run->payload_codec : null;
+            $defaultCodec = CodecRegistry::defaultCodec();
+
+            // The workflow package recorder serializes ActivityFailed storage
+            // with the run codec. Unknown codecs are worker-owned, so use the
+            // default codec only for recorder side effects, then restore the
+            // worker-facing run codec before committing the transaction.
+            $run->forceFill(['payload_codec' => $defaultCodec])->save();
+
+            try {
+                return $bridge->fail($attemptId, $failure, $defaultCodec);
+            } finally {
+                $run->forceFill(['payload_codec' => $originalCodec])->save();
+            }
+        });
+    }
+
+    /**
+     * @return array{recorded: bool, task_id: string, reason: string|null, next_task_id: string|null}
+     */
+    private function activityFailureOutcome(string $attemptId, bool $recorded, ?string $reason): array
+    {
+        return [
+            'recorded' => $recorded,
+            'task_id' => $attemptId,
+            'reason' => $reason,
+            'next_task_id' => null,
+        ];
     }
 
     /**

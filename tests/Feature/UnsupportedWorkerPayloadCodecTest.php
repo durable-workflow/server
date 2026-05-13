@@ -158,8 +158,9 @@ class UnsupportedWorkerPayloadCodecTest extends TestCase
 
         $fail->assertOk()
             ->assertJsonPath('outcome', 'failed')
-            ->assertJsonPath('recorded', true)
-            ->assertJsonPath('next_task_id', null);
+            ->assertJsonPath('recorded', true);
+
+        $this->assertIsString($fail->json('next_task_id'));
 
         $execution = ActivityExecution::query()
             ->findOrFail((string) $activityPoll->json('task.activity_execution_id'));
@@ -177,6 +178,25 @@ class UnsupportedWorkerPayloadCodecTest extends TestCase
                 ->where('event_type', HistoryEventType::ActivityRetryScheduled->value)
                 ->exists(),
         );
+
+        /** @var WorkflowRun $refreshedRun */
+        $refreshedRun = WorkflowRun::query()->findOrFail($run->id);
+        $this->assertSame('zstd', $refreshedRun->payload_codec);
+
+        $resumePoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'python-codec-scheduler',
+                'task_queue' => 'python-workflows',
+            ]);
+
+        $resumePoll->assertOk()
+            ->assertJsonPath('task.task_id', $fail->json('next_task_id'))
+            ->assertJsonPath('task.payload_codec', 'zstd');
+
+        $resumeEvents = collect((array) $resumePoll->json('task.history_events'));
+        $this->assertTrue($resumeEvents->contains(
+            static fn (array $event): bool => ($event['event_type'] ?? null) === HistoryEventType::ActivityFailed->value
+        ));
     }
 
     public function test_worker_query_payload_codec_failure_records_failed_query_task(): void

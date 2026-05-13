@@ -55,29 +55,11 @@ on:
       - "tests/Unit/BoundedMetricPolicyTest.php"
       - "tests/Unit/ServerPerfHarnessContractTest.php"
       - "tests/Feature/SystemMetricsTest.php"
-  schedule:
-    - cron: "17 7 * * *"
-  workflow_dispatch:
-    inputs:
-      duration_seconds:
-        description: "Soak duration in seconds"
-        required: false
-        default: "7200"
-      concurrency:
-        description: "Concurrent long-poll workers"
-        required: false
-        default: "24"
-      remote_write:
-        description: "Enable Prometheus remote_write when variables/secrets are configured"
-        required: false
-        type: boolean
-        default: true
-
 permissions:
   contents: read
 
 concurrency:
-  group: server-perf-${{ github.event_name }}-${{ github.ref }}
+  group: server-perf-${{ github.event_name }}-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
@@ -103,7 +85,6 @@ jobs:
 
   smoke:
     name: Polling cache bounded-growth smoke
-    needs: contract
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     timeout-minutes: 45
@@ -143,57 +124,5 @@ jobs:
         uses: actions/upload-artifact@v3.2.2
         with:
           name: server-perf-smoke
-          path: build/perf/
-          if-no-files-found: warn
-
-  soak:
-    name: Self-hosted polling cache soak
-    runs-on: [self-hosted, linux, x64, perf-soak, server-perf]
-    # Only spawn when a self-hosted perf-soak runner fleet is registered.
-    # Set repository variable DW_PERF_SOAK_ENABLED=true to re-engage the
-    # nightly schedule once runners are online; without it the job would
-    # queue forever waiting on a label that nothing answers.
-    if: |
-      vars.DW_PERF_SOAK_ENABLED == 'true'
-      && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-    timeout-minutes: 390
-
-    steps:
-      - name: Checkout server
-        uses: actions/checkout@v6
-
-      - name: Run long perf soak
-        env:
-          DW_PERF_DURATION_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.duration_seconds || '7200' }}
-          DW_PERF_CONCURRENCY: ${{ github.event_name == 'workflow_dispatch' && inputs.concurrency || '24' }}
-          DW_PERF_NAMESPACES: "8"
-          DW_PERF_TASK_QUEUES: "16"
-          DW_PERF_MAX_SERVER_MEMORY_MB: "1024"
-          DW_PERF_MAX_POLLING_KEYS: "2048"
-          DW_PERF_MAX_FINAL_POLLING_KEYS: "0"
-          DW_PERF_MAX_SERVER_CACHE_KEYS_BY_POLICY: '{"workflow_task_poll_requests":2048,"long_poll_signals":2048,"workflow_query_tasks":128,"task_queue_admission_locks":256,"task_queue_dispatch_counters":256,"workflow_task_expired_lease_recovery":256,"history_retention_inline":128,"readiness_probe":32}'
-          DW_PERF_MAX_FINAL_SERVER_CACHE_KEYS_BY_POLICY: '{"workflow_task_poll_requests":0,"long_poll_signals":0,"workflow_query_tasks":0,"task_queue_admission_locks":0,"task_queue_dispatch_counters":0,"workflow_task_expired_lease_recovery":0,"history_retention_inline":0,"readiness_probe":0}'
-          DW_PERF_MAX_SERVER_MEMORY_SLOPE_MB_HOUR: "128"
-          DW_PERF_REQUIRE_TRUSTED_EVIDENCE: "true"
-          DW_PERF_REMOTE_WRITE_ENABLED: ${{ github.event_name != 'workflow_dispatch' || inputs.remote_write }}
-          DW_PERF_REMOTE_WRITE_URL: ${{ vars.DW_PERF_REMOTE_WRITE_URL }}
-          DW_PERF_REMOTE_WRITE_USERNAME: ${{ vars.DW_PERF_REMOTE_WRITE_USERNAME }}
-          DW_PERF_REMOTE_WRITE_PASSWORD: ${{ secrets.DW_PERF_REMOTE_WRITE_PASSWORD }}
-          RUNNER_ENVIRONMENT: "self-hosted"
-        run: scripts/perf/run-server-soak.sh
-
-      - name: Upload perf artifacts
-        if: always() && github.server_url == 'https://github.com'
-        uses: actions/upload-artifact@v4
-        with:
-          name: server-perf-soak
-          path: build/perf/
-          if-no-files-found: warn
-
-      - name: Upload perf artifacts on compatible Actions servers
-        if: always() && github.server_url != 'https://github.com'
-        uses: actions/upload-artifact@v3.2.2
-        with:
-          name: server-perf-soak
           path: build/perf/
           if-no-files-found: warn

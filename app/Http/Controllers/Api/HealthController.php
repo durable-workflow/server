@@ -7,14 +7,15 @@ use App\Support\AuthCompositionContract;
 use App\Support\BridgeAdapterOutcomeContract;
 use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
+use App\Support\ControlPlaneRequestContract;
 use App\Support\CoordinationHealthContract;
 use App\Support\NexusContract;
-use App\Support\WorkflowStreamsContract;
 use App\Support\ReplayVerificationContract;
 use App\Support\ServerReadiness;
 use App\Support\ServerTopology;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\WorkerProtocol;
+use App\Support\WorkflowStreamsContract;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -167,7 +168,12 @@ class HealthController
         }
 
         if ($serviceExecutionAvailable) {
-            $response['service_execution_contract'] = $serviceExecutionContract::manifest();
+            $response['service_execution_contract'] = array_merge(
+                $serviceExecutionContract::manifest(),
+                [
+                    'durable_response_fields' => ControlPlaneRequestContract::manifest()['operations']['service_execute']['durable_response_fields'],
+                ],
+            );
             $response['nexus_contract'] = NexusContract::manifest();
         }
 

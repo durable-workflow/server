@@ -256,6 +256,8 @@ class ServerPerfHarnessContractTest extends TestCase
     {
         $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
         $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
+        $soakWorkflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf-soak.yml');
+        $this->assertNotFalse($soakWorkflow, '.github/workflows/server-perf-soak.yml must be readable');
 
         $this->assertMatchesRegularExpression(
             '/name:\s+Polling cache bounded-growth smoke.*?RUNNER_ENVIRONMENT:\s+"github-hosted"/s',
@@ -265,7 +267,7 @@ class ServerPerfHarnessContractTest extends TestCase
 
         $this->assertMatchesRegularExpression(
             '/name:\s+Self-hosted polling cache soak.*?RUNNER_ENVIRONMENT:\s+"self-hosted"/s',
-            $workflow,
+            $soakWorkflow,
             'Trusted long soaks must explicitly record self-hosted runner provenance.',
         );
     }
@@ -274,6 +276,8 @@ class ServerPerfHarnessContractTest extends TestCase
     {
         $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
         $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
+        $soakWorkflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf-soak.yml');
+        $this->assertNotFalse($soakWorkflow, '.github/workflows/server-perf-soak.yml must be readable');
 
         $this->assertMatchesRegularExpression(
             "/contract:\\s+name:\\s+Bounded-growth contract\\s+runs-on:\\s+ubuntu-latest\\s+if:\\s+github\\.event_name == 'pull_request' \\|\\| github\\.event_name == 'push'/s",
@@ -282,9 +286,26 @@ class ServerPerfHarnessContractTest extends TestCase
         );
 
         $this->assertMatchesRegularExpression(
-            "/smoke:\\s+name:\\s+Polling cache bounded-growth smoke\\s+needs:\\s+contract\\s+runs-on:\\s+ubuntu-latest\\s+if:\\s+github\\.event_name == 'pull_request' \\|\\| github\\.event_name == 'push'/s",
+            "/smoke:\\s+name:\\s+Polling cache bounded-growth smoke\\s+runs-on:\\s+ubuntu-latest\\s+if:\\s+github\\.event_name == 'pull_request' \\|\\| github\\.event_name == 'push'/s",
             $workflow,
             'Short perf smokes should only run for pull_request/push events.',
+        );
+
+        $this->assertStringNotContainsString(
+            'needs: contract',
+            $workflow,
+            'Compatible Actions servers can leave dependent smoke jobs pending after contract success, so the smoke must be scheduled directly.',
+        );
+        $this->assertStringContainsString(
+            'group: server-perf-${{ github.event_name }}-${{ github.ref }}-${{ github.sha }}',
+            $workflow,
+            'Perf workflow concurrency must be scoped to the commit so stale checks from an older PR head cannot block the current head.',
+        );
+
+        $this->assertStringNotContainsString(
+            'Self-hosted polling cache soak',
+            $workflow,
+            'Pull-request perf workflow must not create the self-hosted soak status.',
         );
 
         // The soak job is gated behind a repository variable so it does not
@@ -295,7 +316,7 @@ class ServerPerfHarnessContractTest extends TestCase
         // schedule and workflow_dispatch can spawn the job.
         $this->assertMatchesRegularExpression(
             "/soak:\\s+name:\\s+Self-hosted polling cache soak\\s+runs-on:\\s+\\[self-hosted, linux, x64, perf-soak, server-perf\\][^\\n]*\\n.*?if:\\s*\\|\\s*\\n\\s*vars\\.DW_PERF_SOAK_ENABLED == 'true'\\s*\\n?\\s*&&\\s*\\(github\\.event_name == 'schedule' \\|\\| github\\.event_name == 'workflow_dispatch'\\)/s",
-            $workflow,
+            $soakWorkflow,
             'Trusted long soaks should only run for schedule/workflow_dispatch events AND only when the runner-fleet variable DW_PERF_SOAK_ENABLED is set.',
         );
     }
@@ -304,19 +325,21 @@ class ServerPerfHarnessContractTest extends TestCase
     {
         $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
         $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
+        $soakWorkflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf-soak.yml');
+        $this->assertNotFalse($soakWorkflow, '.github/workflows/server-perf-soak.yml must be readable');
 
         $this->assertMatchesRegularExpression(
             '/name:\s+Self-hosted polling cache soak.*?DW_PERF_REQUIRE_TRUSTED_EVIDENCE:\s+"true"/s',
-            $workflow,
+            $soakWorkflow,
             'Self-hosted long soaks must fail instead of producing green ineligible trusted evidence.',
         );
 
         $this->assertMatchesRegularExpression(
-            '/name:\s+Polling cache bounded-growth smoke(?P<block>.*?)\n\s+soak:/s',
+            '/name:\s+Polling cache bounded-growth smoke(?P<block>.*)$/s',
             $workflow,
-            'Server Perf workflow must keep a distinct short smoke job before the long soak job.',
+            'Server Perf workflow must keep a distinct short smoke job.',
         );
-        preg_match('/name:\s+Polling cache bounded-growth smoke(?P<block>.*?)\n\s+soak:/s', $workflow, $smokeMatch);
+        preg_match('/name:\s+Polling cache bounded-growth smoke(?P<block>.*)$/s', $workflow, $smokeMatch);
         $this->assertStringNotContainsString(
             'DW_PERF_REQUIRE_TRUSTED_EVIDENCE: "true"',
             (string) ($smokeMatch['block'] ?? ''),
@@ -328,11 +351,14 @@ class ServerPerfHarnessContractTest extends TestCase
     {
         $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
         $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
+        $soakWorkflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf-soak.yml');
+        $this->assertNotFalse($soakWorkflow, '.github/workflows/server-perf-soak.yml must be readable');
+        $workflows = $workflow."\n".$soakWorkflow;
 
-        $this->assertSame(2, substr_count($workflow, 'uses: actions/upload-artifact@v4'));
-        $this->assertSame(2, substr_count($workflow, 'uses: actions/upload-artifact@v3.2.2'));
-        $this->assertSame(2, substr_count($workflow, "github.server_url == 'https://github.com'"));
-        $this->assertSame(2, substr_count($workflow, "github.server_url != 'https://github.com'"));
+        $this->assertSame(2, substr_count($workflows, 'uses: actions/upload-artifact@v4'));
+        $this->assertSame(2, substr_count($workflows, 'uses: actions/upload-artifact@v3.2.2'));
+        $this->assertSame(2, substr_count($workflows, "github.server_url == 'https://github.com'"));
+        $this->assertSame(2, substr_count($workflows, "github.server_url != 'https://github.com'"));
     }
 
     public function test_server_perf_soak_uses_current_worker_protocol_default(): void
@@ -357,11 +383,11 @@ class ServerPerfHarnessContractTest extends TestCase
         $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
 
         $this->assertMatchesRegularExpression(
-            '/name:\s+Polling cache bounded-growth smoke(?P<block>.*?)\n\s+soak:/s',
+            '/name:\s+Polling cache bounded-growth smoke(?P<block>.*)$/s',
             $workflow,
-            'Server Perf workflow must keep a distinct short smoke job before the long soak job.',
+            'Server Perf workflow must keep a distinct short smoke job.',
         );
-        preg_match('/name:\s+Polling cache bounded-growth smoke(?P<block>.*?)\n\s+soak:/s', $workflow, $smokeMatch);
+        preg_match('/name:\s+Polling cache bounded-growth smoke(?P<block>.*)$/s', $workflow, $smokeMatch);
 
         $this->assertStringContainsString(
             'DW_PERF_MIN_SAMPLE_COVERAGE: "0.75"',
@@ -390,8 +416,8 @@ class ServerPerfHarnessContractTest extends TestCase
 
     public function test_server_perf_workflow_can_produce_trusted_long_soak_evidence(): void
     {
-        $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
-        $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
+        $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf-soak.yml');
+        $this->assertNotFalse($workflow, '.github/workflows/server-perf-soak.yml must be readable');
 
         foreach ([
             'schedule:',
@@ -411,7 +437,7 @@ class ServerPerfHarnessContractTest extends TestCase
             $this->assertStringContainsString(
                 $needle,
                 $workflow,
-                "Server Perf workflow must retain trusted long-soak trigger support for {$needle}.",
+                "Server Perf soak workflow must retain trusted long-soak trigger support for {$needle}.",
             );
         }
     }

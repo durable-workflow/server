@@ -1,6 +1,7 @@
 name: PHPUnit Feature
 
 on:
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -15,20 +16,44 @@ jobs:
     steps:
       - name: Checkout server
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
-      - name: Checkout workflow package
+      - name: Checkout workflow package from GitHub
+        if: github.server_url == 'https://github.com'
         uses: actions/checkout@v6
         with:
           repository: durable-workflow/workflow
           ref: v2
           path: workflow-package
+          persist-credentials: false
+
+      - name: Checkout workflow package from current Actions server
+        if: github.server_url != 'https://github.com'
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository_owner }}/workflow
+          ref: v2
+          path: workflow-package
+          token: ${{ secrets.CROSS_REPO_READ_TOKEN }}
+          github-server-url: ${{ github.server_url }}
+          persist-credentials: false
+
+      - name: Remove workflow package Git metadata
+        shell: bash
+        run: rm -rf workflow-package/.git
 
       - name: Run feature suite
+        shell: bash
         run: |
-          docker run --rm \
-            -u "$(id -u):$(id -g)" \
-            -v "${PWD}:/app" \
-            -v "${PWD}/workflow-package:/workflow:ro" \
-            -w /app \
-            composer:2 \
-            sh -lc 'composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Feature --no-progress --colors=never'
+          set -euo pipefail
+          tar \
+            --exclude=.git \
+            --exclude='*/.git' \
+            --exclude=vendor \
+            --exclude='*/vendor' \
+            --exclude=build \
+            --exclude='*/build' \
+            -cf - . \
+            | docker run --rm -i -w /app --entrypoint sh composer:2 \
+                -lc 'tar -xf - -C /app && cp -a /app/workflow-package /workflow && composer install --no-interaction --no-progress --prefer-dist && vendor/bin/phpunit tests/Feature --no-progress --colors=never'

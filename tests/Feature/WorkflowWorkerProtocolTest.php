@@ -402,7 +402,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('worker_id', 'rust-worker-register')
             ->assertJsonPath('registered', true);
 
-        $this->assertDatabaseHas('worker_registrations', [
+        $this->assertDatabaseHas('workflow_worker_registrations', [
             'namespace' => 'default',
             'worker_id' => 'rust-worker-register',
             'task_queue' => 'rust-workers',
@@ -613,7 +613,7 @@ class WorkflowWorkerProtocolTest extends TestCase
         ): void {
             $mock->shouldReceive('poll')
                 ->times(2)
-                ->with(null, 'external-workflows', 10, null, 'default', [])
+                ->with(null, 'external-workflows', 10, null, 'default', ['tests.external-greeting-workflow'])
                 ->andReturn(
                     [[
                         'task_id' => $task->id,
@@ -1425,7 +1425,7 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->mock(WorkflowTaskBridge::class, function (MockInterface $mock) use ($recordedAt): void {
             $mock->shouldReceive('poll')
                 ->once()
-                ->with(null, 'external-workflows', 10, null, 'default', [])
+                ->with(null, 'external-workflows', 10, null, 'default', ['tests.external-greeting-workflow'])
                 ->andReturn([
                     [
                         'task_id' => 'wf-task-missing-row',
