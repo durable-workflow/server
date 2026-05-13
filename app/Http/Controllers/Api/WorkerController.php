@@ -1012,10 +1012,6 @@ class WorkerController
         foreach ($commands as $index => $command) {
             $commandType = $command['type'] ?? null;
 
-            if ($commandType === 'complete_update') {
-                unset($commands[$index]['payload_codec']);
-            }
-
             foreach (['arguments', 'result'] as $field) {
                 if (! array_key_exists($field, $command) || ! is_array($command[$field])) {
                     continue;
@@ -1033,10 +1029,8 @@ class WorkerController
                     continue;
                 }
 
-                $normalizerAcceptsPayloadEnvelope = ($field === 'arguments'
-                    && in_array($commandType, ['schedule_activity', 'start_child_workflow', 'continue_as_new'], true))
-                    || ($field === 'result'
-                        && in_array($commandType, ['complete_workflow', 'record_side_effect'], true));
+                $normalizerAcceptsPayloadEnvelope = is_string($commandType)
+                    && WorkflowCommandNormalizer::acceptsPayloadEnvelope($commandType, $field);
 
                 if (! $normalizerAcceptsPayloadEnvelope) {
                     unset($commands[$index]['payload_codec']);
@@ -1050,11 +1044,7 @@ class WorkerController
                     'blob' => $resolved['payload'],
                 ];
 
-                if (
-                    $field === 'arguments'
-                    && $commandType === 'continue_as_new'
-                    && ! array_key_exists('payload_codec', $commands[$index])
-                ) {
+                if (($commands[$index]['payload_codec'] ?? null) === null) {
                     $commands[$index]['payload_codec'] = $resolved['codec'];
                 }
             }

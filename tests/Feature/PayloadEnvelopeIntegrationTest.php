@@ -25,6 +25,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
+use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowExecutor;
 
 class PayloadEnvelopeIntegrationTest extends TestCase
@@ -1182,6 +1183,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             'codec' => 'workflow-serializer-y',
             'blob' => $workflowPayload,
         ], $commands[0]['result']);
+        $this->assertSame('workflow-serializer-y', $commands[0]['payload_codec'] ?? null);
         $this->assertSame([
             'codec' => 'workflow-serializer-y',
             'blob' => $sideEffectPayload,
@@ -1189,7 +1191,7 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $this->assertSame('workflow-serializer-y', $commands[1]['payload_codec'] ?? null);
     }
 
-    public function test_workflow_task_command_external_storage_update_results_avoid_unsupported_payload_codec_fields(): void
+    public function test_workflow_task_command_external_storage_update_results_use_package_payload_envelope_contract(): void
     {
         $this->createNamespace('default', [
             'driver' => 'local',
@@ -1211,8 +1213,16 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ],
         ]);
 
-        $this->assertSame($updatePayload, $commands[0]['result']);
-        $this->assertArrayNotHasKey('payload_codec', $commands[0]);
+        $this->assertSame([
+            'codec' => 'workflow-serializer-y',
+            'blob' => $updatePayload,
+        ], $commands[0]['result']);
+        $this->assertSame('workflow-serializer-y', $commands[0]['payload_codec'] ?? null);
+
+        $normalized = WorkflowCommandNormalizer::normalize($commands);
+
+        $this->assertSame($updatePayload, $normalized[0]['result']);
+        $this->assertSame('workflow-serializer-y', $normalized[0]['payload_codec'] ?? null);
     }
 
     public function test_describe_response_includes_input_and_output_envelopes(): void

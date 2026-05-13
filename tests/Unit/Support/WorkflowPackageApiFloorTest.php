@@ -27,6 +27,7 @@ use Workflow\V2\Support\MatchingRoleSnapshot;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\ServiceExecutionContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
+use Workflow\V2\Support\WorkflowCommandNormalizer;
 
 /**
  * Pins the API floor contract the server relies on from
@@ -235,6 +236,29 @@ class WorkflowPackageApiFloorTest extends TestCase
         );
     }
 
+    public function test_workflow_command_normalizer_payload_envelope_contract_matches_api_floor(): void
+    {
+        $reflection = new ReflectionClass(WorkflowCommandNormalizer::class);
+
+        foreach (['payloadEnvelopeFields', 'acceptsPayloadEnvelope'] as $methodName) {
+            $method = $reflection->getMethod($methodName);
+
+            $this->assertTrue($method->isPublic());
+            $this->assertTrue($method->isStatic());
+        }
+
+        $this->assertSame([
+            'complete_workflow' => ['result'],
+            'schedule_activity' => ['arguments'],
+            'start_child_workflow' => ['arguments'],
+            'continue_as_new' => ['arguments'],
+            'complete_update' => ['result'],
+            'record_side_effect' => ['result'],
+        ], WorkflowCommandNormalizer::payloadEnvelopeFields());
+
+        $this->assertTrue($this->invokeConfirmsWorkflowCommandNormalizerPayloadEnvelopeContract());
+    }
+
     public function test_workflow_task_bridge_poll_signature_matches_api_floor(): void
     {
         $confirms = $this->invokeConfirmsWorkflowTaskPollSignature(WorkflowTaskBridge::class, 'poll');
@@ -368,6 +392,19 @@ class WorkflowPackageApiFloorTest extends TestCase
     private function invokeConfirmsExternalPayloadStorageInterfaces(): bool
     {
         $reflection = new ReflectionMethod(WorkflowPackageApiFloor::class, 'confirmsExternalPayloadStorageInterfaces');
+
+        /** @var bool $result */
+        $result = $reflection->invoke(null);
+
+        return $result;
+    }
+
+    private function invokeConfirmsWorkflowCommandNormalizerPayloadEnvelopeContract(): bool
+    {
+        $reflection = new ReflectionMethod(
+            WorkflowPackageApiFloor::class,
+            'confirmsWorkflowCommandNormalizerPayloadEnvelopeContract',
+        );
 
         /** @var bool $result */
         $result = $reflection->invoke(null);

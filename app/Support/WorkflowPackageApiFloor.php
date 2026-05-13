@@ -24,6 +24,7 @@ use Workflow\V2\Support\MatchingRoleSnapshot;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\ServiceExecutionContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
+use Workflow\V2\Support\WorkflowCommandNormalizer;
 
 /**
  * Enforces the minimum `durable-workflow/workflow` API surface the server
@@ -227,6 +228,10 @@ final class WorkflowPackageApiFloor
             $missing[] = 'external payload storage driver/policy signatures';
         }
 
+        if (! self::confirmsWorkflowCommandNormalizerPayloadEnvelopeContract()) {
+            $missing[] = WorkflowCommandNormalizer::class.' command payload-envelope contract';
+        }
+
         if (! class_exists(self::POLL_MODE_DEMOTION_CLASS)) {
             $missing[] = self::POLL_MODE_DEMOTION_CLASS;
         } elseif (! self::confirmsPollModeDemotion(self::POLL_MODE_DEMOTION_CLASS, self::POLL_MODE_DEMOTION_METHOD)) {
@@ -248,7 +253,7 @@ final class WorkflowPackageApiFloor
             .'the filtered WorkflowTaskBridge::poll() and ActivityTaskBridge::poll() contracts, '
             .'the poll-mode queue capability demotion, the matching-role repair-pass contract, '
             .'the service execution control-plane contract, the worker-session protocol contract, '
-            .'the external payload storage protocol APIs, plus '
+            .'the external payload storage protocol APIs, the command payload-envelope contract, plus '
             .'ChildWorkflowNamespaceProjection for package-owned child namespace propagation '
             .'(install a current v2 workflow package snapshot or newer).',
             implode(', ', $missing),
@@ -510,6 +515,33 @@ final class WorkflowPackageApiFloor
             true,
             true,
         );
+    }
+
+    private static function confirmsWorkflowCommandNormalizerPayloadEnvelopeContract(): bool
+    {
+        return self::matchesStaticMethod(
+            WorkflowCommandNormalizer::class,
+            'payloadEnvelopeFields',
+            [],
+            'array',
+            false,
+        ) && self::matchesStaticMethod(
+            WorkflowCommandNormalizer::class,
+            'acceptsPayloadEnvelope',
+            [
+                ['commandType', 'string', false, false, null],
+                ['field', 'string', false, false, null],
+            ],
+            'bool',
+            false,
+        ) && WorkflowCommandNormalizer::acceptsPayloadEnvelope('complete_workflow', 'result')
+            && WorkflowCommandNormalizer::acceptsPayloadEnvelope('schedule_activity', 'arguments')
+            && WorkflowCommandNormalizer::acceptsPayloadEnvelope('start_child_workflow', 'arguments')
+            && WorkflowCommandNormalizer::acceptsPayloadEnvelope('continue_as_new', 'arguments')
+            && WorkflowCommandNormalizer::acceptsPayloadEnvelope('complete_update', 'result')
+            && WorkflowCommandNormalizer::acceptsPayloadEnvelope('record_side_effect', 'result')
+            && ! WorkflowCommandNormalizer::acceptsPayloadEnvelope('complete_update', 'arguments')
+            && ! WorkflowCommandNormalizer::acceptsPayloadEnvelope('fail_update', 'result');
     }
 
     /**

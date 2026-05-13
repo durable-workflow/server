@@ -39,11 +39,12 @@ activity inputs, activity results, and workflow outputs are persisted as stored
 external references before they enter history. Worker poll, history, query,
 workflow describe, and standalone activity describe responses expose those
 references as `{codec, external_storage}` when the namespace policy is enabled.
-Workflow task completions do not add top-level `payload_codec` fields to
-`complete_update` commands; those result bytes follow the accepted update
-codec. `record_side_effect` result bytes may carry `payload_codec` or a
-codec-tagged payload envelope, and history stores the side-effect result with
-that codec.
+Workflow task completions preserve top-level `payload_codec` fields for command
+fields that the workflow package declares as accepting payload envelopes. This
+includes `complete_update.result`, so externally stored update results keep the
+resolved codec alongside the inline bytes passed to the package normalizer.
+`record_side_effect` result bytes may carry `payload_codec` or a codec-tagged
+payload envelope, and history stores the side-effect result with that codec.
 
 Small payloads remain inline as `{codec, blob}`. Existing inline history stays
 readable; externalization is a transport shape for oversized payloads, not a
