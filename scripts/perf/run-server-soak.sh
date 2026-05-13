@@ -5,10 +5,24 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ARTIFACT_DIR="${DW_PERF_ARTIFACT_DIR:-$ROOT_DIR/build/perf}"
 RUN_ID="${GITHUB_RUN_ID:-local}-$(date +%s)"
 PROJECT="${DW_PERF_COMPOSE_PROJECT:-dw-server-perf-$RUN_ID}"
-SERVER_PORT="${DW_PERF_SERVER_PORT:-18080}"
+choose_free_port() {
+  python3 - <<'PY'
+import socket
+
+with socket.socket() as sock:
+    sock.bind(("", 0))
+    print(sock.getsockname()[1])
+PY
+}
+
+SERVER_PORT="${DW_PERF_SERVER_PORT:-}"
+SERVER_PORT_MAPPING="8080"
+if [ -n "$SERVER_PORT" ]; then
+  SERVER_PORT_MAPPING="${SERVER_PORT}:8080"
+fi
 MYSQL_PORT="${DW_PERF_MYSQL_PORT:-13306}"
 REDIS_PORT="${DW_PERF_REDIS_PORT:-16379}"
-METRICS_PORT="${DW_PERF_METRICS_PORT:-19090}"
+METRICS_PORT="${DW_PERF_METRICS_PORT:-$(choose_free_port)}"
 AUTH_TOKEN="${DW_PERF_AUTH_TOKEN:-perf-token}"
 POLL_TIMEOUT="${DW_PERF_POLL_TIMEOUT:-1}"
 PROMETHEUS_CONTAINER="${PROJECT}-prometheus"
@@ -40,7 +54,7 @@ services:
       DW_WORKER_POLL_SIGNAL_CHECK_INTERVAL_MS: "25"
   server:
     ports: !override
-      - "${SERVER_PORT}:8080"
+      - "${SERVER_PORT_MAPPING}"
     environment:
       LOG_LEVEL: warning
       DW_WORKER_POLL_TIMEOUT: "$POLL_TIMEOUT"
@@ -171,8 +185,18 @@ server_base_url() {
 
 cd "$ROOT_DIR"
 
-echo "Starting perf stack with project ${PROJECT} on http://127.0.0.1:${SERVER_PORT}"
+if [ -n "${DW_PERF_SERVER_PORT:-}" ]; then
+  echo "Starting perf stack with project ${PROJECT} on http://127.0.0.1:${SERVER_PORT}"
+else
+  echo "Starting perf stack with project ${PROJECT} on a dynamic host port"
+fi
 docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" up -d --build --wait
+PUBLISHED_SERVER_PORT="$(docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" port server 8080 | awk -F: 'END {print $NF}')"
+if [ -z "$PUBLISHED_SERVER_PORT" ]; then
+  echo "Unable to discover published server port for ${PROJECT}" >&2
+  exit 1
+fi
+SERVER_PORT="$PUBLISHED_SERVER_PORT"
 
 maybe_start_prometheus
 BASE_URL="$(server_base_url)"

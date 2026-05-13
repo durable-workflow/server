@@ -414,6 +414,20 @@ class ServerPerfHarnessContractTest extends TestCase
         );
     }
 
+    public function test_server_perf_smoke_uses_dynamic_host_ports_by_default(): void
+    {
+        $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/run-server-soak.sh');
+        $this->assertNotFalse($source, 'scripts/perf/run-server-soak.sh must be readable');
+
+        $this->assertStringContainsString('SERVER_PORT="${DW_PERF_SERVER_PORT:-}"', $source);
+        $this->assertStringContainsString('SERVER_PORT_MAPPING="8080"', $source);
+        $this->assertStringContainsString('SERVER_PORT_MAPPING="${SERVER_PORT}:8080"', $source);
+        $this->assertStringContainsString('- "${SERVER_PORT_MAPPING}"', $source);
+        $this->assertStringContainsString('port server 8080', $source);
+        $this->assertStringContainsString('SERVER_PORT="$PUBLISHED_SERVER_PORT"', $source);
+        $this->assertStringContainsString('METRICS_PORT="${DW_PERF_METRICS_PORT:-$(choose_free_port)}"', $source);
+    }
+
     public function test_server_perf_workflow_can_produce_trusted_long_soak_evidence(): void
     {
         $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf-soak.yml');

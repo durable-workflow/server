@@ -126,6 +126,15 @@ class UnsupportedWorkerPayloadCodecTest extends TestCase
         $schedule->assertOk()
             ->assertJsonPath('outcome', 'completed');
 
+        $scheduledExecution = ActivityExecution::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('activity_type', 'python.codec-activity')
+            ->firstOrFail();
+        $scheduledExecution->forceFill([
+            'payload_codec' => 'zstd',
+            'arguments' => 'opaque-activity-arguments',
+        ])->save();
+
         $run->refresh()->forceFill(['payload_codec' => 'zstd'])->save();
 
         $this->registerWorker(

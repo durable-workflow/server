@@ -35,7 +35,7 @@ class SystemPrometheusMetricsTest extends TestCase
 
     public function test_prometheus_metrics_summary_is_granular_by_queue_workflow_and_activity_type(): void
     {
-        $runA = $this->run(
+        $runA = $this->workflowRun(
             workflowId: 'checkout-1',
             workflowType: 'CheckoutWorkflow',
             queue: 'checkout',
@@ -43,7 +43,7 @@ class SystemPrometheusMetricsTest extends TestCase
             statusBucket: 'completed',
             durationMs: 1500,
         );
-        $runB = $this->run(
+        $runB = $this->workflowRun(
             workflowId: 'checkout-2',
             workflowType: 'CheckoutWorkflow',
             queue: 'checkout',
@@ -51,7 +51,7 @@ class SystemPrometheusMetricsTest extends TestCase
             statusBucket: 'failed',
             durationMs: 3000,
         );
-        $this->run(
+        $this->workflowRun(
             workflowId: 'refund-1',
             workflowType: 'RefundWorkflow',
             queue: 'refunds',
@@ -114,7 +114,7 @@ class SystemPrometheusMetricsTest extends TestCase
 
     public function test_prometheus_workflow_failed_total_counts_only_raw_failed_status(): void
     {
-        $this->run(
+        $this->workflowRun(
             workflowId: 'billing-failed',
             workflowType: 'BillingWorkflow',
             queue: 'billing',
@@ -122,7 +122,7 @@ class SystemPrometheusMetricsTest extends TestCase
             statusBucket: 'failed',
             durationMs: 1000,
         );
-        $this->run(
+        $this->workflowRun(
             workflowId: 'billing-cancelled',
             workflowType: 'BillingWorkflow',
             queue: 'billing',
@@ -130,7 +130,7 @@ class SystemPrometheusMetricsTest extends TestCase
             statusBucket: 'failed',
             durationMs: 1200,
         );
-        $this->run(
+        $this->workflowRun(
             workflowId: 'billing-terminated',
             workflowType: 'BillingWorkflow',
             queue: 'billing',
@@ -138,7 +138,7 @@ class SystemPrometheusMetricsTest extends TestCase
             statusBucket: 'failed',
             durationMs: 1400,
         );
-        $this->run(
+        $this->workflowRun(
             workflowId: 'billing-completed',
             workflowType: 'BillingWorkflow',
             queue: 'billing',
@@ -146,7 +146,7 @@ class SystemPrometheusMetricsTest extends TestCase
             statusBucket: 'completed',
             durationMs: 1600,
         );
-        $this->run(
+        $this->workflowRun(
             workflowId: 'billing-running',
             workflowType: 'BillingWorkflow',
             queue: 'billing',
@@ -179,7 +179,7 @@ class SystemPrometheusMetricsTest extends TestCase
             'server.metrics.prometheus_task_queue_series_limit' => 1,
         ]);
 
-        $checkoutA = $this->run(
+        $checkoutA = $this->workflowRun(
             workflowId: 'checkout-a',
             workflowType: 'CheckoutWorkflow',
             queue: 'checkout',
@@ -187,7 +187,7 @@ class SystemPrometheusMetricsTest extends TestCase
             statusBucket: 'completed',
             durationMs: 500,
         );
-        $checkoutB = $this->run(
+        $checkoutB = $this->workflowRun(
             workflowId: 'checkout-b',
             workflowType: 'CheckoutWorkflow',
             queue: 'checkout',
@@ -195,7 +195,7 @@ class SystemPrometheusMetricsTest extends TestCase
             statusBucket: 'completed',
             durationMs: 700,
         );
-        $refund = $this->run(
+        $refund = $this->workflowRun(
             workflowId: 'refund-a',
             workflowType: 'RefundWorkflow',
             queue: 'refunds',
@@ -283,28 +283,28 @@ class SystemPrometheusMetricsTest extends TestCase
         ]);
 
         $old = now()->subHours(2);
-        $staleWorkflow = $this->run(
+        $staleWorkflow = $this->workflowRun(
             workflowId: 'stale-workflow',
             workflowType: 'StaleWorkflow',
             queue: 'aaa-archive',
             status: 'completed',
             statusBucket: 'completed',
         );
-        $staleActivity = $this->run(
+        $staleActivity = $this->workflowRun(
             workflowId: 'stale-activity',
             workflowType: 'StaleActivity',
             queue: 'aab-archive',
             status: 'failed',
             statusBucket: 'failed',
         );
-        $recent = $this->run(
+        $recent = $this->workflowRun(
             workflowId: 'recent-finished',
             workflowType: 'RecentWorkflow',
             queue: 'recent-finished',
             status: 'completed',
             statusBucket: 'completed',
         );
-        $active = $this->run(
+        $active = $this->workflowRun(
             workflowId: 'active-work',
             workflowType: 'ActiveWorkflow',
             queue: 'z-live',
@@ -366,7 +366,7 @@ class SystemPrometheusMetricsTest extends TestCase
         $this->assertFalse($byQueue->has('aab-archive'));
     }
 
-    private function run(
+    private function workflowRun(
         string $workflowId,
         string $workflowType,
         string $queue,
