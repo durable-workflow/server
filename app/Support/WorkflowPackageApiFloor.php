@@ -8,13 +8,20 @@ use ReflectionMethod;
 use RuntimeException;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\ActivityTaskBridge;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
 use Workflow\V2\Support\DefaultMatchingRole;
+use Workflow\V2\Support\ExternalPayloadReference;
+use Workflow\V2\Support\ExternalPayloads;
+use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\MatchingRoleSnapshot;
+use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\ServiceExecutionContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
@@ -59,6 +66,33 @@ final class WorkflowPackageApiFloor
         // cluster info re-export the package-owned runtime semantics.
         [WorkerProtocolVersion::class, 'workerSessionVerbs'],
         [WorkerProtocolVersion::class, 'workerSessionSemantics'],
+        // External payload storage protocol: server controllers and
+        // envelope services depend on the package-owned wire helpers.
+        [PayloadEnvelopeResolver::class, 'resolve'],
+        [PayloadEnvelopeResolver::class, 'resolveToArray'],
+        [PayloadEnvelopeResolver::class, 'resolveCommandPayload'],
+        [PayloadEnvelopeResolver::class, 'resolveCommandPayloadWithCodec'],
+        [ExternalPayloads::class, 'externalizeForNamespace'],
+        [ExternalPayloads::class, 'isStoredReference'],
+        [ExternalPayloads::class, 'wireEnvelope'],
+        [ExternalPayloads::class, 'historyValue'],
+        [ExternalPayloads::class, 'storedEnvelope'],
+    ];
+
+    /**
+     * Public constants the server embeds in HTTP/control-plane payloads.
+     */
+    private const REQUIRED_CLASS_CONSTANTS = [
+        [ExternalPayloadReference::class, 'SCHEMA'],
+        [ExternalPayloads::class, 'STORED_REFERENCE_PREFIX'],
+    ];
+
+    /**
+     * Concrete classes the server instantiates or catches directly.
+     */
+    private const REQUIRED_CLASSES = [
+        ExternalPayloadIntegrityException::class,
+        LocalFilesystemExternalPayloadStorage::class,
     ];
 
     /**
@@ -86,6 +120,11 @@ final class WorkflowPackageApiFloor
         [ServiceControlPlane::class, 'execute'],
         [ServiceControlPlane::class, 'describeCall'],
         [ServiceControlPlane::class, 'cancelCall'],
+        [ExternalPayloadStorageDriver::class, 'put'],
+        [ExternalPayloadStorageDriver::class, 'get'],
+        [ExternalPayloadStorageDriver::class, 'delete'],
+        [ExternalPayloadStoragePolicy::class, 'driverFor'],
+        [ExternalPayloadStoragePolicy::class, 'thresholdBytesFor'],
     ];
 
     /**
@@ -136,6 +175,18 @@ final class WorkflowPackageApiFloor
             }
         }
 
+        foreach (self::REQUIRED_CLASS_CONSTANTS as [$class, $constant]) {
+            if (! self::hasPublicConstant($class, $constant)) {
+                $missing[] = sprintf('%s::%s', $class, $constant);
+            }
+        }
+
+        foreach (self::REQUIRED_CLASSES as $class) {
+            if (! class_exists($class)) {
+                $missing[] = $class;
+            }
+        }
+
         foreach (self::REQUIRED_INSTANCE_APIS as [$class, $method]) {
             if (! self::hasInstanceMethod($class, $method)) {
                 $missing[] = sprintf('%s::%s()', $class, $method);
@@ -164,6 +215,18 @@ final class WorkflowPackageApiFloor
             );
         }
 
+        if (! self::confirmsPayloadEnvelopeResolverSignature()) {
+            $missing[] = PayloadEnvelopeResolver::class.' external-storage envelope signatures';
+        }
+
+        if (! self::confirmsExternalPayloadsSignature()) {
+            $missing[] = ExternalPayloads::class.' external payload helper signatures';
+        }
+
+        if (! self::confirmsExternalPayloadStorageInterfaces()) {
+            $missing[] = 'external payload storage driver/policy signatures';
+        }
+
         if (! class_exists(self::POLL_MODE_DEMOTION_CLASS)) {
             $missing[] = self::POLL_MODE_DEMOTION_CLASS;
         } elseif (! self::confirmsPollModeDemotion(self::POLL_MODE_DEMOTION_CLASS, self::POLL_MODE_DEMOTION_METHOD)) {
@@ -184,7 +247,8 @@ final class WorkflowPackageApiFloor
             .'includes CodecRegistry::universal(), CodecRegistry::engineSpecific(), MatchingRoleSnapshot::current(), '
             .'the filtered WorkflowTaskBridge::poll() and ActivityTaskBridge::poll() contracts, '
             .'the poll-mode queue capability demotion, the matching-role repair-pass contract, '
-            .'the service execution control-plane contract, the worker-session protocol contract, plus '
+            .'the service execution control-plane contract, the worker-session protocol contract, '
+            .'the external payload storage protocol APIs, plus '
             .'ChildWorkflowNamespaceProjection for package-owned child namespace propagation '
             .'(install a current v2 workflow package snapshot or newer).',
             implode(', ', $missing),
@@ -205,6 +269,22 @@ final class WorkflowPackageApiFloor
         }
 
         return $methodReflection->isPublic() && $methodReflection->isStatic();
+    }
+
+    private static function hasPublicConstant(string $class, string $constant): bool
+    {
+        if (! class_exists($class)) {
+            return false;
+        }
+
+        try {
+            $reflection = new ReflectionClass($class);
+            $constantReflection = $reflection->getReflectionConstant($constant);
+        } catch (ReflectionException) {
+            return false;
+        }
+
+        return $constantReflection !== false && $constantReflection->isPublic();
     }
 
     private static function hasInstanceMethod(string $class, string $method): bool
@@ -282,6 +362,289 @@ final class WorkflowPackageApiFloor
             && self::matchesParameter($parameters[3], 'compatibility', 'string', true, true, null)
             && self::matchesParameter($parameters[4], 'namespace', 'string', true, true, null)
             && self::matchesParameter($parameters[5], $typeFilterParameter, 'array', false, true, []);
+    }
+
+    private static function confirmsPayloadEnvelopeResolverSignature(): bool
+    {
+        return self::matchesStaticMethod(
+            PayloadEnvelopeResolver::class,
+            'resolve',
+            [
+                ['input', null, false, false, null],
+                ['field', 'string', false, true, 'input'],
+                ['externalStorage', ExternalPayloadStorageDriver::class, true, true, null],
+            ],
+            'array',
+            false,
+        ) && self::matchesStaticMethod(
+            PayloadEnvelopeResolver::class,
+            'resolveToArray',
+            [
+                ['input', null, false, false, null],
+                ['field', 'string', false, true, 'input'],
+                ['externalStorage', ExternalPayloadStorageDriver::class, true, true, null],
+            ],
+            'array',
+            false,
+        ) && self::matchesStaticMethod(
+            PayloadEnvelopeResolver::class,
+            'resolveCommandPayload',
+            [
+                ['value', null, false, false, null],
+                ['field', 'string', false, true, 'result'],
+                ['externalStorage', ExternalPayloadStorageDriver::class, true, true, null],
+            ],
+            'mixed',
+            true,
+        ) && self::matchesStaticMethod(
+            PayloadEnvelopeResolver::class,
+            'resolveCommandPayloadWithCodec',
+            [
+                ['value', null, false, false, null],
+                ['field', 'string', false, true, 'result'],
+                ['externalStorage', ExternalPayloadStorageDriver::class, true, true, null],
+            ],
+            'array',
+            false,
+        );
+    }
+
+    private static function confirmsExternalPayloadsSignature(): bool
+    {
+        return self::matchesStaticMethod(
+            ExternalPayloads::class,
+            'externalizeForNamespace',
+            [
+                ['payload', 'string', true, false, null],
+                ['codec', 'string', true, false, null],
+                ['namespace', 'string', true, false, null],
+            ],
+            'string',
+            true,
+        ) && self::matchesStaticMethod(
+            ExternalPayloads::class,
+            'isStoredReference',
+            [
+                ['payload', 'string', false, false, null],
+            ],
+            'bool',
+            false,
+        ) && self::matchesStaticMethod(
+            ExternalPayloads::class,
+            'wireEnvelope',
+            [
+                ['payload', 'string', true, false, null],
+                ['codec', 'string', true, false, null],
+                ['namespace', 'string', true, false, null],
+            ],
+            'array',
+            true,
+        ) && self::matchesStaticMethod(
+            ExternalPayloads::class,
+            'historyValue',
+            [
+                ['payload', 'string', true, false, null],
+                ['codec', 'string', true, false, null],
+                ['namespace', 'string', true, false, null],
+            ],
+            'mixed',
+            true,
+        ) && self::matchesStaticMethod(
+            ExternalPayloads::class,
+            'storedEnvelope',
+            [
+                ['payload', 'string', false, false, null],
+            ],
+            'array',
+            true,
+        );
+    }
+
+    private static function confirmsExternalPayloadStorageInterfaces(): bool
+    {
+        return self::matchesInstanceMethod(
+            ExternalPayloadStorageDriver::class,
+            'put',
+            [
+                ['data', 'string', false, false, null],
+                ['sha256', 'string', false, false, null],
+                ['codec', 'string', false, false, null],
+            ],
+            'string',
+            false,
+            true,
+        ) && self::matchesInstanceMethod(
+            ExternalPayloadStorageDriver::class,
+            'get',
+            [
+                ['uri', 'string', false, false, null],
+            ],
+            'string',
+            false,
+            true,
+        ) && self::matchesInstanceMethod(
+            ExternalPayloadStorageDriver::class,
+            'delete',
+            [
+                ['uri', 'string', false, false, null],
+            ],
+            'void',
+            false,
+            true,
+        ) && self::matchesInstanceMethod(
+            ExternalPayloadStoragePolicy::class,
+            'driverFor',
+            [
+                ['namespace', 'string', true, false, null],
+            ],
+            ExternalPayloadStorageDriver::class,
+            true,
+            true,
+        ) && self::matchesInstanceMethod(
+            ExternalPayloadStoragePolicy::class,
+            'thresholdBytesFor',
+            [
+                ['namespace', 'string', true, false, null],
+            ],
+            'int',
+            true,
+            true,
+        );
+    }
+
+    /**
+     * @param  array<int, array{0: string, 1: string|null, 2: bool, 3: bool, 4: mixed}>  $expectedParameters
+     */
+    private static function matchesStaticMethod(
+        string $class,
+        string $method,
+        array $expectedParameters,
+        string $returnType,
+        bool $returnAllowsNull,
+    ): bool {
+        return self::matchesMethodSignature(
+            $class,
+            $method,
+            $expectedParameters,
+            $returnType,
+            $returnAllowsNull,
+            true,
+            false,
+        );
+    }
+
+    /**
+     * @param  array<int, array{0: string, 1: string|null, 2: bool, 3: bool, 4: mixed}>  $expectedParameters
+     */
+    private static function matchesInstanceMethod(
+        string $class,
+        string $method,
+        array $expectedParameters,
+        string $returnType,
+        bool $returnAllowsNull,
+        bool $allowInterface,
+    ): bool {
+        return self::matchesMethodSignature(
+            $class,
+            $method,
+            $expectedParameters,
+            $returnType,
+            $returnAllowsNull,
+            false,
+            $allowInterface,
+        );
+    }
+
+    /**
+     * @param  array<int, array{0: string, 1: string|null, 2: bool, 3: bool, 4: mixed}>  $expectedParameters
+     */
+    private static function matchesMethodSignature(
+        string $class,
+        string $method,
+        array $expectedParameters,
+        string $returnType,
+        bool $returnAllowsNull,
+        bool $static,
+        bool $allowInterface,
+    ): bool {
+        if (! class_exists($class) && (! $allowInterface || ! interface_exists($class))) {
+            return false;
+        }
+
+        try {
+            $reflection = new ReflectionMethod($class, $method);
+        } catch (ReflectionException) {
+            return false;
+        }
+
+        if (! $reflection->isPublic() || $reflection->isStatic() !== $static) {
+            return false;
+        }
+
+        if (! self::matchesReturnType($reflection, $returnType, $returnAllowsNull)) {
+            return false;
+        }
+
+        $parameters = $reflection->getParameters();
+
+        if (count($parameters) !== count($expectedParameters)) {
+            return false;
+        }
+
+        foreach ($expectedParameters as $index => [$name, $type, $allowsNull, $hasDefault, $default]) {
+            if (! self::matchesFlexibleParameter($parameters[$index], $name, $type, $allowsNull, $hasDefault, $default)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static function matchesReturnType(
+        ReflectionMethod $reflection,
+        string $returnType,
+        bool $allowsNull,
+    ): bool {
+        $type = $reflection->getReturnType();
+
+        if (! $type instanceof \ReflectionNamedType) {
+            return false;
+        }
+
+        return $type->getName() === $returnType
+            && $type->allowsNull() === $allowsNull;
+    }
+
+    private static function matchesFlexibleParameter(
+        \ReflectionParameter $parameter,
+        string $name,
+        ?string $type,
+        bool $allowsNull,
+        bool $hasDefault,
+        mixed $default,
+    ): bool {
+        if ($parameter->getName() !== $name
+            || $parameter->isDefaultValueAvailable() !== $hasDefault) {
+            return false;
+        }
+
+        $parameterType = $parameter->getType();
+
+        if ($type === null) {
+            if ($parameterType !== null) {
+                return false;
+            }
+        } elseif (! $parameterType instanceof \ReflectionNamedType
+            || $parameterType->getName() !== $type
+            || $parameterType->allowsNull() !== $allowsNull) {
+            return false;
+        }
+
+        if (! $hasDefault) {
+            return true;
+        }
+
+        return $parameter->getDefaultValue() === $default;
     }
 
     private static function matchesParameter(

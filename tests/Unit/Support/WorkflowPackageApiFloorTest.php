@@ -11,13 +11,20 @@ use Tests\Fixtures\LegacyWorkflowTaskBridgePollSignature;
 use Tests\Fixtures\StaleBackendCapabilities;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\ActivityTaskBridge;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
 use Workflow\V2\Support\DefaultMatchingRole;
+use Workflow\V2\Support\ExternalPayloadReference;
+use Workflow\V2\Support\ExternalPayloads;
+use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\MatchingRoleSnapshot;
+use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\ServiceExecutionContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
@@ -136,6 +143,98 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertSame('worker_session', WorkerProtocolVersion::workerSessionSemantics()['command_field'] ?? null);
     }
 
+    public function test_external_payload_reference_constants_are_public_package_api(): void
+    {
+        $referenceReflection = new ReflectionClass(ExternalPayloadReference::class);
+        $schema = $referenceReflection->getReflectionConstant('SCHEMA');
+
+        $this->assertNotFalse($schema);
+        $this->assertTrue($schema->isPublic());
+        $this->assertSame(
+            'durable-workflow.v2.external-payload-reference.v1',
+            ExternalPayloadReference::SCHEMA,
+        );
+
+        $payloadsReflection = new ReflectionClass(ExternalPayloads::class);
+        $prefix = $payloadsReflection->getReflectionConstant('STORED_REFERENCE_PREFIX');
+
+        $this->assertNotFalse($prefix);
+        $this->assertTrue($prefix->isPublic());
+        $this->assertSame('dw-external-payload:v1:', ExternalPayloads::STORED_REFERENCE_PREFIX);
+    }
+
+    public function test_external_payload_protocol_classes_are_available(): void
+    {
+        $this->assertTrue(interface_exists(ExternalPayloadStorageDriver::class));
+        $this->assertTrue(interface_exists(ExternalPayloadStoragePolicy::class));
+        $this->assertTrue(class_exists(ExternalPayloadIntegrityException::class));
+        $this->assertTrue(class_exists(LocalFilesystemExternalPayloadStorage::class));
+    }
+
+    public function test_external_payload_apis_are_listed_in_the_package_floor(): void
+    {
+        $floor = new ReflectionClass(WorkflowPackageApiFloor::class);
+
+        $apis = $this->privateConstant($floor, 'REQUIRED_APIS');
+        $this->assertContains([PayloadEnvelopeResolver::class, 'resolve'], $apis);
+        $this->assertContains([PayloadEnvelopeResolver::class, 'resolveToArray'], $apis);
+        $this->assertContains([PayloadEnvelopeResolver::class, 'resolveCommandPayload'], $apis);
+        $this->assertContains([PayloadEnvelopeResolver::class, 'resolveCommandPayloadWithCodec'], $apis);
+        $this->assertContains([ExternalPayloads::class, 'externalizeForNamespace'], $apis);
+        $this->assertContains([ExternalPayloads::class, 'isStoredReference'], $apis);
+        $this->assertContains([ExternalPayloads::class, 'wireEnvelope'], $apis);
+        $this->assertContains([ExternalPayloads::class, 'historyValue'], $apis);
+        $this->assertContains([ExternalPayloads::class, 'storedEnvelope'], $apis);
+
+        $constants = $this->privateConstant($floor, 'REQUIRED_CLASS_CONSTANTS');
+        $this->assertContains([ExternalPayloadReference::class, 'SCHEMA'], $constants);
+        $this->assertContains([ExternalPayloads::class, 'STORED_REFERENCE_PREFIX'], $constants);
+
+        $classes = $this->privateConstant($floor, 'REQUIRED_CLASSES');
+        $this->assertContains(ExternalPayloadIntegrityException::class, $classes);
+        $this->assertContains(LocalFilesystemExternalPayloadStorage::class, $classes);
+
+        $interfaces = $this->privateConstant($floor, 'REQUIRED_INTERFACE_APIS');
+        $this->assertContains([ExternalPayloadStorageDriver::class, 'put'], $interfaces);
+        $this->assertContains([ExternalPayloadStorageDriver::class, 'get'], $interfaces);
+        $this->assertContains([ExternalPayloadStorageDriver::class, 'delete'], $interfaces);
+        $this->assertContains([ExternalPayloadStoragePolicy::class, 'driverFor'], $interfaces);
+        $this->assertContains([ExternalPayloadStoragePolicy::class, 'thresholdBytesFor'], $interfaces);
+    }
+
+    public function test_payload_envelope_resolver_external_storage_signature_matches_api_floor(): void
+    {
+        $confirms = $this->invokeConfirmsPayloadEnvelopeResolverSignature();
+
+        $this->assertTrue(
+            $confirms,
+            'PayloadEnvelopeResolver no longer matches the server API floor. The server requires '
+            .'the external-storage envelope signatures for workflow start, signal, query, update, '
+            .'activity completion, and worker command payloads.'
+        );
+    }
+
+    public function test_external_payload_helpers_match_api_floor(): void
+    {
+        $confirms = $this->invokeConfirmsExternalPayloadsSignature();
+
+        $this->assertTrue(
+            $confirms,
+            'ExternalPayloads no longer matches the server API floor. The server requires stored '
+            .'reference detection, worker/history envelope projection, and namespace externalization.'
+        );
+    }
+
+    public function test_external_payload_storage_interfaces_match_api_floor(): void
+    {
+        $confirms = $this->invokeConfirmsExternalPayloadStorageInterfaces();
+
+        $this->assertTrue(
+            $confirms,
+            'External payload storage interfaces no longer match the server API floor.'
+        );
+    }
+
     public function test_workflow_task_bridge_poll_signature_matches_api_floor(): void
     {
         $confirms = $this->invokeConfirmsWorkflowTaskPollSignature(WorkflowTaskBridge::class, 'poll');
@@ -227,6 +326,51 @@ class WorkflowPackageApiFloorTest extends TestCase
 
         /** @var bool $result */
         $result = $reflection->invoke(null, $class, $method);
+
+        return $result;
+    }
+
+    /**
+     * @return array<int, mixed>
+     */
+    private function privateConstant(ReflectionClass $reflection, string $name): array
+    {
+        $constant = $reflection->getReflectionConstant($name);
+
+        $this->assertNotFalse($constant);
+
+        /** @var array<int, mixed> $value */
+        $value = $constant->getValue();
+
+        return $value;
+    }
+
+    private function invokeConfirmsPayloadEnvelopeResolverSignature(): bool
+    {
+        $reflection = new ReflectionMethod(WorkflowPackageApiFloor::class, 'confirmsPayloadEnvelopeResolverSignature');
+
+        /** @var bool $result */
+        $result = $reflection->invoke(null);
+
+        return $result;
+    }
+
+    private function invokeConfirmsExternalPayloadsSignature(): bool
+    {
+        $reflection = new ReflectionMethod(WorkflowPackageApiFloor::class, 'confirmsExternalPayloadsSignature');
+
+        /** @var bool $result */
+        $result = $reflection->invoke(null);
+
+        return $result;
+    }
+
+    private function invokeConfirmsExternalPayloadStorageInterfaces(): bool
+    {
+        $reflection = new ReflectionMethod(WorkflowPackageApiFloor::class, 'confirmsExternalPayloadStorageInterfaces');
+
+        /** @var bool $result */
+        $result = $reflection->invoke(null);
 
         return $result;
     }
