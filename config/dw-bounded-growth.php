@@ -176,9 +176,9 @@ return [
                 'task_queue' => 'bounded_series',
                 'workflow_type' => 'bounded_series',
             ],
-            'cardinality' => 'Workflow series keyed by task_queue/workflow_type are capped by server.metrics.prometheus_workflow_series_limit, default 100 and hard-clamped to 500.',
-            'selection' => 'top_by_started_total_then_task_queue_and_workflow_type',
-            'suppression' => 'The endpoint reports observed, reported, truncated, suppressed series, and suppressed started totals under cardinality.series_limits.workflows.',
+            'cardinality' => 'Workflow series keyed by task_queue/workflow_type are capped by server.metrics.prometheus_workflow_series_limit, default 100 and hard-clamped to 500; scrape-time discovery reads at most limit + 1 label sets.',
+            'selection' => 'bounded_task_queue_and_workflow_type_ascending',
+            'suppression' => 'The endpoint reports observed, reported, truncated, suppressed series, and suppressed started totals under cardinality.series_limits.workflows; counts are exact until the cap is exceeded, then disclosed as lower bounds.',
         ],
 
         'dw_workflow_run_latency_seconds' => [
@@ -190,7 +190,7 @@ return [
                 'workflow_type' => 'bounded_series',
             ],
             'cardinality' => 'Workflow latency series share the same bounded task_queue/workflow_type series cap as dw_workflow_runs_total.',
-            'selection' => 'top_by_started_total_then_task_queue_and_workflow_type',
+            'selection' => 'bounded_task_queue_and_workflow_type_ascending',
             'suppression' => 'Suppression is disclosed once for the shared workflow series set under cardinality.series_limits.workflows.',
         ],
 
@@ -203,9 +203,9 @@ return [
                 'workflow_type' => 'bounded_series',
                 'activity_type' => 'bounded_series',
             ],
-            'cardinality' => 'Activity series keyed by task_queue/workflow_type/activity_type are capped by server.metrics.prometheus_activity_series_limit, default 100 and hard-clamped to 500.',
-            'selection' => 'top_by_started_total_then_task_queue_workflow_type_and_activity_type',
-            'suppression' => 'The endpoint reports observed, reported, truncated, suppressed series, and suppressed started totals under cardinality.series_limits.activities.',
+            'cardinality' => 'Activity series keyed by task_queue/workflow_type/activity_type are capped by server.metrics.prometheus_activity_series_limit, default 100 and hard-clamped to 500; scrape-time discovery reads at most limit + 1 label sets.',
+            'selection' => 'bounded_task_queue_workflow_type_and_activity_type_ascending',
+            'suppression' => 'The endpoint reports observed, reported, truncated, suppressed series, and suppressed started totals under cardinality.series_limits.activities; counts are exact until the cap is exceeded, then disclosed as lower bounds.',
         ],
 
         'dw_activity_execution_latency_seconds' => [
@@ -218,7 +218,7 @@ return [
                 'activity_type' => 'bounded_series',
             ],
             'cardinality' => 'Activity latency series share the same bounded task_queue/workflow_type/activity_type series cap as dw_activity_executions_total.',
-            'selection' => 'top_by_started_total_then_task_queue_workflow_type_and_activity_type',
+            'selection' => 'bounded_task_queue_workflow_type_and_activity_type_ascending',
             'suppression' => 'Suppression is disclosed once for the shared activity series set under cardinality.series_limits.activities.',
         ],
 
@@ -229,9 +229,9 @@ return [
                 'namespace' => 'request_scope_not_label',
                 'task_queue' => 'bounded_series',
             ],
-            'cardinality' => 'Task-queue runtime series keyed by task_queue are capped by server.metrics.prometheus_task_queue_series_limit, default 100 and hard-clamped to 500.',
+            'cardinality' => 'Task-queue runtime series keyed by task_queue are capped by server.metrics.prometheus_task_queue_series_limit, default 100 and hard-clamped to 500; scrape-time discovery reads at most limit + 1 queue label sets and aggregation scans only active or last-minute task rows for reported queues.',
             'selection' => 'task_queue_name_ascending',
-            'suppression' => 'The endpoint reports observed, reported, truncated, and suppressed queue series under cardinality.series_limits.task_queues.',
+            'suppression' => 'The endpoint reports observed, reported, truncated, and suppressed queue series under cardinality.series_limits.task_queues; counts are exact until the cap is exceeded, then disclosed as lower bounds.',
         ],
 
         'dw_perf_requests_total' => [

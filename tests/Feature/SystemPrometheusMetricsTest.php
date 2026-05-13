@@ -276,6 +276,70 @@ class SystemPrometheusMetricsTest extends TestCase
         }
     }
 
+    public function test_prometheus_metrics_summary_discloses_lower_bounds_after_bounded_candidate_scan(): void
+    {
+        config([
+            'server.metrics.prometheus_workflow_series_limit' => 2,
+            'server.metrics.prometheus_activity_series_limit' => 2,
+            'server.metrics.prometheus_task_queue_series_limit' => 2,
+        ]);
+
+        foreach (range(1, 5) as $index) {
+            $queue = sprintf('queue-%02d', $index);
+            $workflowType = sprintf('Workflow%02d', $index);
+            $activityType = sprintf('Activity%02d', $index);
+            $runId = $this->workflowRun(
+                workflowId: sprintf('workflow-%02d', $index),
+                workflowType: $workflowType,
+                queue: $queue,
+                status: 'completed',
+                statusBucket: 'completed',
+                durationMs: 1000 + $index,
+            );
+
+            $this->activity($runId, $activityType, $queue, 'completed', 100 + $index);
+            $this->task($runId, 'workflow', 'ready', $queue);
+        }
+
+        $response = $this->getJson(
+            '/api/system/prometheus-metrics',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $response->assertOk()
+            ->assertJsonCount(2, 'series.workflows')
+            ->assertJsonCount(2, 'series.activities')
+            ->assertJsonCount(2, 'series.task_queues')
+            ->assertJsonPath('series_count', 6)
+            ->assertJsonPath('observed_series_count', 9)
+            ->assertJsonPath('observed_series_count_precision', 'lower_bound')
+            ->assertJsonPath('suppressed_series_count', 3)
+            ->assertJsonPath('suppressed_series_count_precision', 'lower_bound')
+            ->assertJsonPath('cardinality.series_limits.workflows.observed_series_count', 3)
+            ->assertJsonPath('cardinality.series_limits.workflows.observed_series_count_precision', 'lower_bound')
+            ->assertJsonPath('cardinality.series_limits.workflows.reported_series_count', 2)
+            ->assertJsonPath('cardinality.series_limits.workflows.suppressed_series_count', 1)
+            ->assertJsonPath('cardinality.series_limits.workflows.suppressed_counts_precision', 'lower_bound')
+            ->assertJsonPath('cardinality.series_limits.workflows.suppressed_started_total', 1)
+            ->assertJsonPath('cardinality.series_limits.activities.observed_series_count', 3)
+            ->assertJsonPath('cardinality.series_limits.activities.suppressed_started_total', 1)
+            ->assertJsonPath('cardinality.series_limits.task_queues.observed_series_count', 3)
+            ->assertJsonPath('cardinality.series_limits.task_queues.suppressed_counts_precision', 'lower_bound');
+
+        $this->assertSame(
+            ['queue-01', 'queue-02'],
+            array_column($response->json('series.workflows'), 'task_queue'),
+        );
+        $this->assertSame(
+            ['queue-01', 'queue-02'],
+            array_column($response->json('series.activities'), 'task_queue'),
+        );
+        $this->assertSame(
+            ['queue-01', 'queue-02'],
+            array_column($response->json('series.task_queues'), 'task_queue'),
+        );
+    }
+
     public function test_task_queue_runtime_inventory_ignores_stale_historical_tasks_before_applying_limit(): void
     {
         config([
@@ -364,6 +428,79 @@ class SystemPrometheusMetricsTest extends TestCase
         $this->assertSame(1, $byQueue->get('z-live')['workflow_ready_tasks']);
         $this->assertFalse($byQueue->has('aaa-archive'));
         $this->assertFalse($byQueue->has('aab-archive'));
+    }
+
+    public function test_task_queue_runtime_aggregation_filters_stale_historical_rows(): void
+    {
+        config([
+            'server.metrics.prometheus_task_queue_series_limit' => 1,
+        ]);
+
+        $old = now()->subHours(2);
+        $active = $this->workflowRun(
+            workflowId: 'active-work',
+            workflowType: 'ActiveWorkflow',
+            queue: 'z-live',
+            status: 'running',
+            statusBucket: 'running',
+        );
+        $staleCompleted = $this->workflowRun(
+            workflowId: 'stale-completed-same-queue',
+            workflowType: 'StaleWorkflow',
+            queue: 'z-live',
+            status: 'completed',
+            statusBucket: 'completed',
+        );
+        $staleFailed = $this->workflowRun(
+            workflowId: 'stale-failed-same-queue',
+            workflowType: 'StaleWorkflow',
+            queue: 'z-live',
+            status: 'failed',
+            statusBucket: 'failed',
+        );
+
+        $this->task($active, 'workflow', 'ready', 'z-live', createdAt: $old);
+        $this->task($staleCompleted, 'workflow', 'completed', 'z-live', createdAt: $old, lastDispatchedAt: $old);
+        $this->task($staleFailed, 'activity', 'failed', 'z-live', createdAt: $old, lastDispatchedAt: $old);
+
+        $queries = [];
+        DB::listen(static function ($query) use (&$queries): void {
+            $queries[] = (string) $query->sql;
+        });
+
+        $response = $this->getJson(
+            '/api/system/prometheus-metrics',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $response->assertOk()
+            ->assertJsonCount(1, 'series.task_queues')
+            ->assertJsonPath('series.task_queues.0.task_queue', 'z-live')
+            ->assertJsonPath('series.task_queues.0.workflow_ready_tasks', 1)
+            ->assertJsonPath('series.task_queues.0.workflow_tasks_added_last_minute', 0)
+            ->assertJsonPath('series.task_queues.0.workflow_tasks_dispatched_last_minute', 0)
+            ->assertJsonPath('series.task_queues.0.activity_tasks_added_last_minute', 0)
+            ->assertJsonPath('series.task_queues.0.activity_tasks_dispatched_last_minute', 0);
+
+        $taskAggregationQueries = array_values(array_filter($queries, static function (string $sql): bool {
+            $normalized = str_replace(['"', '`'], '', strtolower($sql));
+
+            return str_contains($normalized, 'from workflow_tasks')
+                && str_contains($normalized, 'group by coalesce(queue');
+        }));
+
+        $this->assertNotEmpty($taskAggregationQueries, 'Task-queue runtime scrape must aggregate workflow_tasks.');
+
+        $whereClause = Str::after(
+            str_replace(['"', '`'], '', strtolower($taskAggregationQueries[0])),
+            ' where ',
+        );
+
+        $this->assertMatchesRegularExpression(
+            '/task_type\s+in.*status\s+in.*created_at\s+>=.*last_dispatched_at\s+is\s+not\s+null.*last_dispatched_at\s+>=/s',
+            $whereClause,
+            'Task-queue runtime aggregation must filter to active or recent task rows before grouping.',
+        );
     }
 
     private function workflowRun(

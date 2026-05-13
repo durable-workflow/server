@@ -76,20 +76,22 @@ class PrometheusMetricsSummary
             'observed_series_count' => $workflows['observed_series_count']
                 + $activities['observed_series_count']
                 + $taskQueues['observed_series_count'],
+            'observed_series_count_precision' => $this->combinedPrecision($workflows, $activities, $taskQueues),
             'suppressed_series_count' => $workflows['suppressed_series_count']
                 + $activities['suppressed_series_count']
                 + $taskQueues['suppressed_series_count'],
+            'suppressed_series_count_precision' => $this->combinedPrecision($workflows, $activities, $taskQueues),
             'cardinality' => [
                 'series_limits' => [
                     'workflows' => $this->seriesLimitDisclosure(
                         $workflows,
                         ['task_queue', 'workflow_type'],
-                        'top_by_started_total_then_task_queue_and_workflow_type',
+                        'bounded_task_queue_and_workflow_type_ascending',
                     ),
                     'activities' => $this->seriesLimitDisclosure(
                         $activities,
                         ['task_queue', 'workflow_type', 'activity_type'],
-                        'top_by_started_total_then_task_queue_workflow_type_and_activity_type',
+                        'bounded_task_queue_workflow_type_and_activity_type_ascending',
                     ),
                     'task_queues' => $this->seriesLimitDisclosure(
                         $taskQueues,
@@ -107,19 +109,19 @@ class PrometheusMetricsSummary
      *     series: list<array<string, mixed>>,
      *     limit: int,
      *     observed_series_count: int,
+     *     observed_series_count_precision: string,
      *     suppressed_series_count: int,
      *     suppressed_started_total: int,
+     *     suppressed_counts_precision: string,
      *     truncated: bool
      * }
      */
     private function workflowSeries(string $namespace, int $limit): array
     {
         $durationExpr = 'duration_ms / 1000.0';
-        $base = DB::table('workflow_run_summaries')
-            ->selectRaw("COALESCE(queue, 'default') as task_queue")
-            ->selectRaw('workflow_type')
-            ->where('namespace', $namespace)
-            ->groupByRaw("COALESCE(queue, 'default'), workflow_type");
+        $candidates = $this->workflowSeriesCandidates($namespace, $limit);
+        $reportedKeys = array_slice($candidates, 0, $limit);
+        $overflowKeys = array_slice($candidates, $limit);
 
         $rows = DB::table('workflow_run_summaries')
             ->selectRaw("COALESCE(queue, 'default') as task_queue")
@@ -135,17 +137,22 @@ class PrometheusMetricsSummary
             ->where('namespace', $namespace)
             ->groupByRaw("COALESCE(queue, 'default'), workflow_type");
 
+        $this->whereWorkflowSeriesIn($rows, $candidates);
         $this->selectLatencyBuckets($rows, $durationExpr, 'duration_ms IS NOT NULL');
 
-        $rows = $rows
-            ->orderByDesc('started_total')
-            ->orderBy('task_queue')
-            ->orderBy('workflow_type')
-            ->limit($limit)
-            ->get();
+        $rows = $rows->get()->keyBy(
+            fn (object $row): string => $this->workflowSeriesKey((string) $row->task_queue, (string) $row->workflow_type),
+        );
 
-        $series = $rows->map(function (object $row): array {
-            return [
+        $series = [];
+        foreach ($reportedKeys as $key) {
+            $row = $rows->get($this->workflowSeriesKey($key['task_queue'], $key['workflow_type']));
+
+            if (! $row) {
+                continue;
+            }
+
+            $series[] = [
                 'task_queue' => (string) $row->task_queue,
                 'workflow_type' => (string) $row->workflow_type,
                 'started_total' => (int) $row->started_total,
@@ -156,18 +163,21 @@ class PrometheusMetricsSummary
                 'running' => (int) $row->running,
                 'latency_seconds' => $this->latencyFromRow($row),
             ];
-        })->values()->all();
+        }
 
-        $observed = $this->seriesCount($base);
-        $reportedStarted = array_sum(array_map(
-            static fn (array $entry): int => (int) $entry['started_total'],
+        $suppressedStarted = 0;
+        foreach ($overflowKeys as $key) {
+            $row = $rows->get($this->workflowSeriesKey($key['task_queue'], $key['workflow_type']));
+            $suppressedStarted += $row ? (int) $row->started_total : 0;
+        }
+
+        return $this->seriesSnapshot(
             $series,
-        ));
-        $totalStarted = (int) DB::table('workflow_run_summaries')
-            ->where('namespace', $namespace)
-            ->count();
-
-        return $this->seriesSnapshot($series, $limit, $observed, max(0, $totalStarted - $reportedStarted));
+            $limit,
+            count($candidates),
+            $suppressedStarted,
+            count($candidates) > $limit,
+        );
     }
 
     /**
@@ -175,8 +185,10 @@ class PrometheusMetricsSummary
      *     series: list<array<string, mixed>>,
      *     limit: int,
      *     observed_series_count: int,
+     *     observed_series_count_precision: string,
      *     suppressed_series_count: int,
      *     suppressed_started_total: int,
+     *     suppressed_counts_precision: string,
      *     truncated: bool
      * }
      */
@@ -184,13 +196,9 @@ class PrometheusMetricsSummary
     {
         $durationExpr = $this->activityDurationSecondsExpression();
         $durationAvailable = 'activity_executions.started_at IS NOT NULL AND activity_executions.closed_at IS NOT NULL';
-        $base = DB::table('activity_executions')
-            ->join('workflow_runs', 'workflow_runs.id', '=', 'activity_executions.workflow_run_id')
-            ->selectRaw("COALESCE(activity_executions.queue, workflow_runs.queue, 'default') as task_queue")
-            ->selectRaw('workflow_runs.workflow_type as workflow_type')
-            ->selectRaw('activity_executions.activity_type as activity_type')
-            ->where('workflow_runs.namespace', $namespace)
-            ->groupByRaw("COALESCE(activity_executions.queue, workflow_runs.queue, 'default'), workflow_runs.workflow_type, activity_executions.activity_type");
+        $candidates = $this->activitySeriesCandidates($namespace, $limit);
+        $reportedKeys = array_slice($candidates, 0, $limit);
+        $overflowKeys = array_slice($candidates, $limit);
 
         $rows = DB::table('activity_executions')
             ->join('workflow_runs', 'workflow_runs.id', '=', 'activity_executions.workflow_run_id')
@@ -219,18 +227,30 @@ class PrometheusMetricsSummary
             ->where('workflow_runs.namespace', $namespace)
             ->groupByRaw("COALESCE(activity_executions.queue, workflow_runs.queue, 'default'), workflow_runs.workflow_type, activity_executions.activity_type");
 
+        $this->whereActivitySeriesIn($rows, $candidates);
         $this->selectLatencyBuckets($rows, $durationExpr, $durationAvailable);
 
-        $rows = $rows
-            ->orderByDesc('started_total')
-            ->orderBy('task_queue')
-            ->orderBy('workflow_type')
-            ->orderBy('activity_type')
-            ->limit($limit)
-            ->get();
+        $rows = $rows->get()->keyBy(
+            fn (object $row): string => $this->activitySeriesKey(
+                (string) $row->task_queue,
+                (string) $row->workflow_type,
+                (string) $row->activity_type,
+            ),
+        );
 
-        $series = $rows->map(function (object $row): array {
-            return [
+        $series = [];
+        foreach ($reportedKeys as $key) {
+            $row = $rows->get($this->activitySeriesKey(
+                $key['task_queue'],
+                $key['workflow_type'],
+                $key['activity_type'],
+            ));
+
+            if (! $row) {
+                continue;
+            }
+
+            $series[] = [
                 'task_queue' => (string) $row->task_queue,
                 'workflow_type' => (string) $row->workflow_type,
                 'activity_type' => (string) $row->activity_type,
@@ -241,19 +261,25 @@ class PrometheusMetricsSummary
                 'running' => (int) $row->running,
                 'latency_seconds' => $this->latencyFromRow($row),
             ];
-        })->values()->all();
+        }
 
-        $observed = $this->seriesCount($base);
-        $reportedStarted = array_sum(array_map(
-            static fn (array $entry): int => (int) $entry['started_total'],
+        $suppressedStarted = 0;
+        foreach ($overflowKeys as $key) {
+            $row = $rows->get($this->activitySeriesKey(
+                $key['task_queue'],
+                $key['workflow_type'],
+                $key['activity_type'],
+            ));
+            $suppressedStarted += $row ? (int) $row->started_total : 0;
+        }
+
+        return $this->seriesSnapshot(
             $series,
-        ));
-        $totalStarted = (int) DB::table('activity_executions')
-            ->join('workflow_runs', 'workflow_runs.id', '=', 'activity_executions.workflow_run_id')
-            ->where('workflow_runs.namespace', $namespace)
-            ->count();
-
-        return $this->seriesSnapshot($series, $limit, $observed, max(0, $totalStarted - $reportedStarted));
+            $limit,
+            count($candidates),
+            $suppressedStarted,
+            count($candidates) > $limit,
+        );
     }
 
     /**
@@ -261,24 +287,20 @@ class PrometheusMetricsSummary
      *     series: list<array<string, mixed>>,
      *     limit: int,
      *     observed_series_count: int,
+     *     observed_series_count_precision: string,
      *     suppressed_series_count: int,
      *     suppressed_started_total: int,
+     *     suppressed_counts_precision: string,
      *     truncated: bool
      * }
      */
     private function taskQueueSeries(string $namespace, CarbonInterface $now, int $limit): array
     {
         $queues = [];
-        $observed = $this->seriesCount($this->taskQueueInventoryQuery($namespace, $now));
-        $reportedQueues = DB::query()
-            ->fromSub($this->taskQueueInventoryQuery($namespace, $now), 'task_queue_metric_series')
-            ->select('task_queue')
-            ->orderBy('task_queue')
-            ->limit($limit)
-            ->pluck('task_queue')
-            ->map(static fn (mixed $queue): string => (string) $queue)
-            ->values()
-            ->all();
+        $reportedQueues = $this->taskQueueCandidates($namespace, $now, $limit);
+        $observed = count($reportedQueues);
+        $truncated = $observed > $limit;
+        $reportedQueues = array_slice($reportedQueues, 0, $limit);
 
         foreach ($this->taskRows($namespace, $now, $reportedQueues) as $row) {
             $queue = (string) $row->task_queue;
@@ -314,7 +336,7 @@ class PrometheusMetricsSummary
 
         ksort($queues);
 
-        return $this->seriesSnapshot(array_values($queues), $limit, $observed, 0);
+        return $this->seriesSnapshot(array_values($queues), $limit, $observed, 0, $truncated);
     }
 
     /**
@@ -341,7 +363,12 @@ class PrometheusMetricsSummary
             ->selectRaw('SUM(CASE WHEN last_dispatched_at IS NOT NULL AND last_dispatched_at >= ? THEN 1 ELSE 0 END) as dispatched_last_minute', [$oneMinuteAgo])
             ->where('namespace', $namespace)
             ->whereIn('task_type', [TaskType::Workflow->value, TaskType::Activity->value])
-            ->whereIn(DB::raw("COALESCE(queue, 'default')"), $queues)
+            ->where(function ($query) use ($oneMinuteAgo): void {
+                $this->whereTaskRuntimeVisible($query, $oneMinuteAgo);
+            })
+            ->where(function ($query) use ($queues): void {
+                $this->whereQueueLabelIn($query, 'queue', $queues);
+            })
             ->groupByRaw("COALESCE(queue, 'default'), task_type, status")
             ->get();
     }
@@ -364,7 +391,9 @@ class PrometheusMetricsSummary
             ->where('status', 'active')
             ->whereNotNull('last_heartbeat_at')
             ->where('last_heartbeat_at', '>=', $staleCutoff)
-            ->whereIn(DB::raw("COALESCE(task_queue, 'default')"), $queues)
+            ->where(function ($query) use ($queues): void {
+                $this->whereQueueLabelIn($query, 'task_queue', $queues);
+            })
             ->groupByRaw("COALESCE(task_queue, 'default')")
             ->get();
     }
@@ -453,43 +482,223 @@ class PrometheusMetricsSummary
         return max(1, min(self::MAX_SERIES_LIMIT, $limit));
     }
 
-    private function seriesCount($query): int
+    /**
+     * @return list<array{task_queue: string, workflow_type: string}>
+     */
+    private function workflowSeriesCandidates(string $namespace, int $limit): array
     {
-        return (int) DB::query()
-            ->fromSub($query, 'bounded_metric_series')
-            ->count();
+        return DB::table('workflow_run_summaries')
+            ->selectRaw("COALESCE(queue, 'default') as task_queue")
+            ->selectRaw('workflow_type')
+            ->distinct()
+            ->where('namespace', $namespace)
+            ->orderBy('task_queue')
+            ->orderBy('workflow_type')
+            ->limit($limit + 1)
+            ->get()
+            ->map(static fn (object $row): array => [
+                'task_queue' => (string) $row->task_queue,
+                'workflow_type' => (string) $row->workflow_type,
+            ])
+            ->values()
+            ->all();
     }
 
-    private function taskQueueInventoryQuery(string $namespace, CarbonInterface $now)
+    /**
+     * @return list<array{task_queue: string, workflow_type: string, activity_type: string}>
+     */
+    private function activitySeriesCandidates(string $namespace, int $limit): array
+    {
+        return DB::table('activity_executions')
+            ->join('workflow_runs', 'workflow_runs.id', '=', 'activity_executions.workflow_run_id')
+            ->selectRaw("COALESCE(activity_executions.queue, workflow_runs.queue, 'default') as task_queue")
+            ->selectRaw('workflow_runs.workflow_type as workflow_type')
+            ->selectRaw('activity_executions.activity_type as activity_type')
+            ->distinct()
+            ->where('workflow_runs.namespace', $namespace)
+            ->orderBy('task_queue')
+            ->orderBy('workflow_type')
+            ->orderBy('activity_type')
+            ->limit($limit + 1)
+            ->get()
+            ->map(static fn (object $row): array => [
+                'task_queue' => (string) $row->task_queue,
+                'workflow_type' => (string) $row->workflow_type,
+                'activity_type' => (string) $row->activity_type,
+            ])
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param  list<array{task_queue: string, workflow_type: string}>  $keys
+     */
+    private function whereWorkflowSeriesIn($query, array $keys): void
+    {
+        if ($keys === []) {
+            $query->whereRaw('1 = 0');
+
+            return;
+        }
+
+        $query->where(function ($query) use ($keys): void {
+            foreach ($keys as $key) {
+                $query->orWhere(function ($query) use ($key): void {
+                    if ($key['task_queue'] === 'default') {
+                        $query->where(function ($query): void {
+                            $query->where('queue', 'default')
+                                ->orWhereNull('queue');
+                        });
+                    } else {
+                        $query->where('queue', $key['task_queue']);
+                    }
+
+                    $query->where('workflow_type', $key['workflow_type']);
+                });
+            }
+        });
+    }
+
+    /**
+     * @param  list<array{task_queue: string, workflow_type: string, activity_type: string}>  $keys
+     */
+    private function whereActivitySeriesIn($query, array $keys): void
+    {
+        if ($keys === []) {
+            $query->whereRaw('1 = 0');
+
+            return;
+        }
+
+        $query->where(function ($query) use ($keys): void {
+            foreach ($keys as $key) {
+                $query->orWhere(function ($query) use ($key): void {
+                    if ($key['task_queue'] === 'default') {
+                        $query->where(function ($query): void {
+                            $query->where('activity_executions.queue', 'default')
+                                ->orWhere(function ($query): void {
+                                    $query->whereNull('activity_executions.queue')
+                                        ->where(function ($query): void {
+                                            $query->where('workflow_runs.queue', 'default')
+                                                ->orWhereNull('workflow_runs.queue');
+                                        });
+                                });
+                        });
+                    } else {
+                        $query->where(function ($query) use ($key): void {
+                            $query->where('activity_executions.queue', $key['task_queue'])
+                                ->orWhere(function ($query) use ($key): void {
+                                    $query->whereNull('activity_executions.queue')
+                                        ->where('workflow_runs.queue', $key['task_queue']);
+                                });
+                        });
+                    }
+
+                    $query->where('workflow_runs.workflow_type', $key['workflow_type'])
+                        ->where('activity_executions.activity_type', $key['activity_type']);
+                });
+            }
+        });
+    }
+
+    private function workflowSeriesKey(string $taskQueue, string $workflowType): string
+    {
+        return $taskQueue."\x1F".$workflowType;
+    }
+
+    private function activitySeriesKey(string $taskQueue, string $workflowType, string $activityType): string
+    {
+        return $taskQueue."\x1F".$workflowType."\x1F".$activityType;
+    }
+
+    /**
+     * @param  list<string>  $queues
+     */
+    private function whereQueueLabelIn($query, string $column, array $queues): void
+    {
+        if ($queues === []) {
+            $query->whereRaw('1 = 0');
+
+            return;
+        }
+
+        foreach ($queues as $queue) {
+            $query->orWhere(function ($query) use ($column, $queue): void {
+                if ($queue === 'default') {
+                    $query->where($column, 'default')
+                        ->orWhereNull($column);
+
+                    return;
+                }
+
+                $query->where($column, $queue);
+            });
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  ...$snapshots
+     */
+    private function combinedPrecision(array ...$snapshots): string
+    {
+        foreach ($snapshots as $snapshot) {
+            if (($snapshot['observed_series_count_precision'] ?? 'exact') !== 'exact') {
+                return 'lower_bound';
+            }
+        }
+
+        return 'exact';
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function taskQueueCandidates(string $namespace, CarbonInterface $now, int $limit): array
     {
         $workerTable = (new WorkerRegistration)->getTable();
         $staleCutoff = $now->copy()->subSeconds($this->workerStaleAfterSeconds());
         $reportingWindowStart = $now->copy()->subMinute();
         $taskQueues = DB::table('workflow_tasks')
             ->selectRaw("COALESCE(queue, 'default') as task_queue")
+            ->distinct()
             ->where('namespace', $namespace)
             ->whereIn('task_type', [TaskType::Workflow->value, TaskType::Activity->value])
             ->where(function ($query) use ($reportingWindowStart): void {
-                $query->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
-                    ->orWhere('created_at', '>=', $reportingWindowStart)
-                    ->orWhere(function ($query) use ($reportingWindowStart): void {
-                        $query->whereNotNull('last_dispatched_at')
-                            ->where('last_dispatched_at', '>=', $reportingWindowStart);
-                    });
-            });
+                $this->whereTaskRuntimeVisible($query, $reportingWindowStart);
+            })
+            ->orderBy('task_queue')
+            ->limit($limit + 1)
+            ->pluck('task_queue')
+            ->map(static fn (mixed $queue): string => (string) $queue)
+            ->all();
+
         $workerQueues = DB::table($workerTable)
             ->selectRaw("COALESCE(task_queue, 'default') as task_queue")
+            ->distinct()
             ->where('namespace', $namespace)
             ->where('status', 'active')
             ->whereNotNull('last_heartbeat_at')
-            ->where('last_heartbeat_at', '>=', $staleCutoff);
+            ->where('last_heartbeat_at', '>=', $staleCutoff)
+            ->orderBy('task_queue')
+            ->limit($limit + 1)
+            ->pluck('task_queue')
+            ->map(static fn (mixed $queue): string => (string) $queue)
+            ->all();
 
-        $union = $taskQueues->union($workerQueues);
+        $queues = array_values(array_unique([...$taskQueues, ...$workerQueues]));
+        sort($queues, SORT_STRING);
 
-        return DB::query()
-            ->fromSub($union, 'task_queue_inventory')
-            ->select('task_queue')
-            ->groupBy('task_queue');
+        return array_slice($queues, 0, $limit + 1);
+    }
+
+    private function whereTaskRuntimeVisible($query, CarbonInterface $reportingWindowStart): void
+    {
+        $query->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->orWhere('created_at', '>=', $reportingWindowStart)
+            ->orWhere(function ($query) use ($reportingWindowStart): void {
+                $query->whereNotNull('last_dispatched_at')
+                    ->where('last_dispatched_at', '>=', $reportingWindowStart);
+            });
     }
 
     /**
@@ -498,19 +707,31 @@ class PrometheusMetricsSummary
      *     series: list<array<string, mixed>>,
      *     limit: int,
      *     observed_series_count: int,
+     *     observed_series_count_precision: string,
      *     suppressed_series_count: int,
      *     suppressed_started_total: int,
+     *     suppressed_counts_precision: string,
      *     truncated: bool
      * }
      */
-    private function seriesSnapshot(array $series, int $limit, int $observed, int $suppressedStartedTotal): array
+    private function seriesSnapshot(
+        array $series,
+        int $limit,
+        int $observed,
+        int $suppressedStartedTotal,
+        bool $lowerBound,
+    ): array
     {
+        $precision = $lowerBound ? 'lower_bound' : 'exact';
+
         return [
             'series' => $series,
             'limit' => $limit,
             'observed_series_count' => $observed,
+            'observed_series_count_precision' => $precision,
             'suppressed_series_count' => max(0, $observed - count($series)),
             'suppressed_started_total' => $suppressedStartedTotal,
+            'suppressed_counts_precision' => $precision,
             'truncated' => $observed > count($series),
         ];
     }
@@ -526,9 +747,11 @@ class PrometheusMetricsSummary
             'label_dimensions' => $labelDimensions,
             'limit' => $snapshot['limit'],
             'observed_series_count' => $snapshot['observed_series_count'],
+            'observed_series_count_precision' => $snapshot['observed_series_count_precision'],
             'reported_series_count' => count($snapshot['series']),
             'suppressed_series_count' => $snapshot['suppressed_series_count'],
             'suppressed_started_total' => $snapshot['suppressed_started_total'],
+            'suppressed_counts_precision' => $snapshot['suppressed_counts_precision'],
             'truncated' => $snapshot['truncated'],
             'selection' => $selection,
         ];
@@ -545,25 +768,25 @@ class PrometheusMetricsSummary
         $workflowRuntime = [
             'task_queue' => [
                 'limit' => $workflows['limit'],
-                'selection' => 'top_by_started_total_then_task_queue_and_workflow_type',
+                'selection' => 'bounded_task_queue_and_workflow_type_ascending',
             ],
             'workflow_type' => [
                 'limit' => $workflows['limit'],
-                'selection' => 'top_by_started_total_then_task_queue_and_workflow_type',
+                'selection' => 'bounded_task_queue_and_workflow_type_ascending',
             ],
         ];
         $activityRuntime = [
             'task_queue' => [
                 'limit' => $activities['limit'],
-                'selection' => 'top_by_started_total_then_task_queue_workflow_type_and_activity_type',
+                'selection' => 'bounded_task_queue_workflow_type_and_activity_type_ascending',
             ],
             'workflow_type' => [
                 'limit' => $activities['limit'],
-                'selection' => 'top_by_started_total_then_task_queue_workflow_type_and_activity_type',
+                'selection' => 'bounded_task_queue_workflow_type_and_activity_type_ascending',
             ],
             'activity_type' => [
                 'limit' => $activities['limit'],
-                'selection' => 'top_by_started_total_then_task_queue_workflow_type_and_activity_type',
+                'selection' => 'bounded_task_queue_workflow_type_and_activity_type_ascending',
             ],
         ];
 
