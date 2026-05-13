@@ -670,6 +670,13 @@ class ClusterInfoTest extends TestCase
 
     public function test_it_exposes_namespace_external_payload_storage_policy_path(): void
     {
+        config([
+            'filesystems.disks.azure-payloads' => [
+                'driver' => 'local',
+                'root' => storage_path('framework/testing/azure-payloads'),
+            ],
+        ]);
+
         WorkflowNamespace::query()->create([
             'name' => 'analytics',
             'description' => 'Analytics namespace',
@@ -707,6 +714,38 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('namespace.external_payload_storage.threshold_bytes', 1024)
             ->assertJsonPath('namespace.external_payload_storage.reference_uri_scheme', 'azblob')
             ->assertJsonPath('namespace.external_payload_storage.custom_driver_configurable', true)
+            ->assertJsonPath('namespace.external_payload_storage.config_redacted', true)
+            ->assertJsonMissingPath('namespace.external_payload_storage.config');
+    }
+
+    public function test_cluster_info_reports_unknown_object_storage_disk_unavailable(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'analytics',
+            'description' => 'Analytics namespace',
+            'retention_days' => 45,
+            'status' => 'active',
+            'external_payload_storage' => [
+                'driver' => 's3',
+                'enabled' => true,
+                'threshold_bytes' => 1024,
+                'config' => [
+                    'disk' => 'missing-payload-disk',
+                    'bucket' => 'payloads',
+                    'prefix' => 'durable',
+                ],
+            ],
+        ]);
+
+        $this->withHeaders(['X-Namespace' => 'analytics'])
+            ->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('namespace.name', 'analytics')
+            ->assertJsonPath('namespace.external_payload_storage.configured', true)
+            ->assertJsonPath('namespace.external_payload_storage.enabled', true)
+            ->assertJsonPath('namespace.external_payload_storage.status', 'driver_unavailable')
+            ->assertJsonPath('namespace.external_payload_storage.driver', 's3')
+            ->assertJsonPath('namespace.external_payload_storage.reference_uri_scheme', 's3')
             ->assertJsonPath('namespace.external_payload_storage.config_redacted', true)
             ->assertJsonMissingPath('namespace.external_payload_storage.config');
     }

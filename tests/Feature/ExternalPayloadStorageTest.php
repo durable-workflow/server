@@ -109,6 +109,12 @@ class ExternalPayloadStorageTest extends TestCase
 
     public function test_configured_object_storage_diagnostic_round_trips_payloads(): void
     {
+        config([
+            'filesystems.disks.external-payload-objects' => [
+                'driver' => 'local',
+                'root' => storage_path('framework/testing/external-payload-objects'),
+            ],
+        ]);
         Storage::fake('external-payload-objects');
 
         $this->createNamespace('billing', [
@@ -144,6 +150,12 @@ class ExternalPayloadStorageTest extends TestCase
 
     public function test_custom_storage_diagnostic_uses_configured_filesystem_driver(): void
     {
+        config([
+            'filesystems.disks.external-payload-custom' => [
+                'driver' => 'local',
+                'root' => storage_path('framework/testing/external-payload-custom'),
+            ],
+        ]);
         Storage::fake('external-payload-custom');
 
         $this->createNamespace('billing', [
@@ -202,6 +214,24 @@ class ExternalPayloadStorageTest extends TestCase
             ->assertJsonPath('reason', 'storage_driver_unavailable')
             ->assertJsonPath('driver', 's3')
             ->assertJsonPath('supported_diagnostic_drivers.0', 'local');
+
+        WorkflowNamespace::where('name', 'default')->update([
+            'external_payload_storage' => [
+                'driver' => 's3',
+                'enabled' => true,
+                'config' => [
+                    'disk' => 'missing-payload-disk',
+                    'bucket' => 'dw-payloads',
+                ],
+            ],
+        ]);
+
+        $this->postJson('/api/storage/test', [
+            'small_payload_bytes' => 16,
+            'large_payload_bytes' => 64,
+        ])->assertStatus(422)
+            ->assertJsonPath('reason', 'storage_driver_unavailable')
+            ->assertJsonPath('driver', 's3');
     }
 
     public function test_storage_diagnostic_reports_disabled_policy(): void

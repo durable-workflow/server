@@ -34,7 +34,7 @@ class NamespaceExternalPayloadStorage implements ExternalPayloadStoragePolicy
                 ? ($policy['config']['scheme'] ?? null)
                 : $driver;
 
-            if (! is_string($disk) || $disk === ''
+            if (! FilesystemDiskAvailability::configured($disk)
                 || ! is_string($bucket) || $bucket === ''
                 || ! is_string($scheme) || $scheme === ''
             ) {

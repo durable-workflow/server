@@ -10,6 +10,7 @@ use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
 use App\Support\CoordinationHealthContract;
+use App\Support\FilesystemDiskAvailability;
 use App\Support\NexusContract;
 use App\Support\ReplayVerificationContract;
 use App\Support\ServerReadiness;
@@ -318,7 +319,7 @@ class HealthController
             ? $this->stringOrNull($config['scheme'] ?? null)
             : $driver;
 
-        return $disk !== null && $bucket !== null && $scheme !== null;
+        return FilesystemDiskAvailability::configured($disk) && $bucket !== null && $scheme !== null;
     }
 
     private function stringOrNull(mixed $value): ?string

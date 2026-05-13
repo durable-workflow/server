@@ -339,6 +339,12 @@ class HistoryRetentionTest extends TestCase
     public function test_retention_pass_deletes_configured_object_storage_references(): void
     {
         Queue::fake();
+        config([
+            'filesystems.disks.retention-object-payloads' => [
+                'driver' => 'local',
+                'root' => storage_path('framework/testing/retention-object-payloads'),
+            ],
+        ]);
         Storage::fake('retention-object-payloads');
 
         $this->createNamespace('default');
@@ -388,6 +394,12 @@ class HistoryRetentionTest extends TestCase
     public function test_retention_pass_keeps_external_payload_referenced_by_retained_run(): void
     {
         Queue::fake();
+        config([
+            'filesystems.disks.retention-shared-object-payloads' => [
+                'driver' => 'local',
+                'root' => storage_path('framework/testing/retention-shared-object-payloads'),
+            ],
+        ]);
         Storage::fake('retention-shared-object-payloads');
 
         $this->createNamespace('default');
