@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
+use App\Support\BackendLockPressure;
 use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\NamespaceExternalPayloadStorage;
@@ -530,17 +531,29 @@ class WorkerController
             ]);
         }
 
-        $poll = $this->workflowTaskPoller->poll(
-            request: $request,
-            namespace: $namespace,
-            taskQueue: $validated['task_queue'],
-            leaseOwner: $validated['worker_id'],
-            buildId: $registeredBuildId,
-            pollRequestId: $validated['poll_request_id'] ?? null,
-            historyPageSize: $pageSize,
-            acceptHistoryEncoding: $acceptHistoryEncoding,
-            supportedWorkflowTypes: $supportedWorkflowTypes,
-        );
+        try {
+            $poll = $this->workflowTaskPoller->poll(
+                request: $request,
+                namespace: $namespace,
+                taskQueue: $validated['task_queue'],
+                leaseOwner: $validated['worker_id'],
+                buildId: $registeredBuildId,
+                pollRequestId: $validated['poll_request_id'] ?? null,
+                historyPageSize: $pageSize,
+                acceptHistoryEncoding: $acceptHistoryEncoding,
+                supportedWorkflowTypes: $supportedWorkflowTypes,
+            );
+        } catch (\Throwable $exception) {
+            if (BackendLockPressure::is($exception)) {
+                return BackendLockPressure::workerPollResponse(
+                    'workflow_task',
+                    $namespace,
+                    $validated['task_queue'],
+                );
+            }
+
+            throw $exception;
+        }
 
         $task = $this->formatTaskHistoryPagination($poll['task'] ?? null);
 
@@ -1281,6 +1294,16 @@ class WorkerController
                 'namespace' => $namespace,
                 'task_queue' => $validated['task_queue'],
             ], 503);
+        } catch (\Throwable $exception) {
+            if (BackendLockPressure::is($exception)) {
+                return BackendLockPressure::workerPollResponse(
+                    'query_task',
+                    $namespace,
+                    $validated['task_queue'],
+                );
+            }
+
+            throw $exception;
         }
 
         return WorkerProtocol::json([

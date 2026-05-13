@@ -3,6 +3,7 @@
 use App\Http\Middleware\CompressResponse;
 use App\Http\Middleware\EnforcePayloadLimits;
 use App\Http\Middleware\RemoveServerHeader;
+use App\Support\BackendLockPressure;
 use App\Support\ControlPlaneProtocol;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Application;
@@ -12,6 +13,7 @@ use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
+use Throwable;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -85,5 +87,37 @@ return Application::configure(basePath: dirname(__DIR__))
             ], static fn (mixed $value): bool => $value !== null);
 
             return ControlPlaneProtocol::jsonForRequest($request, $payload, $status);
+        });
+
+        $exceptions->render(function (Throwable $exception, Request $request) {
+            if (! BackendLockPressure::is($exception)) {
+                return null;
+            }
+
+            if (! WorkerProtocol::isWorkerPlaneRequest($request)
+                || WorkerProtocol::requestVersion($request) !== (string) config('server.worker_protocol.version', WorkerProtocol::VERSION)
+            ) {
+                return null;
+            }
+
+            $taskKind = match (true) {
+                $request->is('api/worker/workflow-tasks/poll') => 'workflow_task',
+                $request->is('api/worker/activity-tasks/poll') => 'activity_task',
+                $request->is('api/worker/query-tasks/poll') => 'query_task',
+                default => null,
+            };
+
+            if ($taskKind === null) {
+                return null;
+            }
+
+            $namespace = $request->attributes->get('namespace', $request->header('X-Namespace', 'default'));
+            $taskQueue = $request->input('task_queue', '');
+
+            return BackendLockPressure::workerPollResponse(
+                $taskKind,
+                is_string($namespace) && trim($namespace) !== '' ? trim($namespace) : 'default',
+                is_string($taskQueue) ? $taskQueue : '',
+            );
         });
     })->create();

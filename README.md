@@ -1076,7 +1076,12 @@ The production image defaults to `DB_CONNECTION=sqlite`,
 `DB_DATABASE=/app/database/database.sqlite`, `QUEUE_CONNECTION=database`, and
 `CACHE_STORE=file` so the plain Docker quickstart works without external
 services. The entrypoint creates the SQLite file when a fresh volume is mounted.
-Override those framework variables for MySQL/PostgreSQL/Redis deployments.
+SQLite uses WAL journal mode, a 5000 ms busy timeout, and `IMMEDIATE`
+transactions by default so concurrent worker poll claims serialize instead of
+failing immediately on the file lock. If worker poll endpoints still return
+`reason: backend_lock_pressure`, workers should retry with backoff; sustained
+multi-worker deployments should override those framework variables for
+MySQL/PostgreSQL/Redis.
 
 Across Compose, plain Docker, and Kubernetes, the supported bootstrap contract
 is the same: run the image's `server-bootstrap` command once before starting the

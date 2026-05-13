@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Support\ActivityTaskPoller;
+use App\Support\BackendLockPressure;
 use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\ExternalExecutorConfigContract;
@@ -88,14 +89,26 @@ class ActivityTaskController
             ]);
         }
 
-        $poll = $this->activityTaskPoller->poll(
-            namespace: $namespace,
-            taskQueue: $validated['task_queue'],
-            leaseOwner: $validated['worker_id'],
-            buildId: $registeredBuildId,
-            worker: $worker,
-            supportedActivityTypes: $supportedActivityTypes,
-        );
+        try {
+            $poll = $this->activityTaskPoller->poll(
+                namespace: $namespace,
+                taskQueue: $validated['task_queue'],
+                leaseOwner: $validated['worker_id'],
+                buildId: $registeredBuildId,
+                worker: $worker,
+                supportedActivityTypes: $supportedActivityTypes,
+            );
+        } catch (\Throwable $exception) {
+            if (BackendLockPressure::is($exception)) {
+                return BackendLockPressure::workerPollResponse(
+                    'activity_task',
+                    $namespace,
+                    $validated['task_queue'],
+                );
+            }
+
+            throw $exception;
+        }
         $claim = $poll['task'] ?? null;
 
         $deadlines = $claim === null ? null : $this->executionDeadlines($claim['activity_execution_id'] ?? null);
