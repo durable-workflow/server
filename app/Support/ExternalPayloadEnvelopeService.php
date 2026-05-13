@@ -3,22 +3,17 @@
 namespace App\Support;
 
 use Workflow\Serializers\CodecRegistry;
-use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
-use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\ExternalPayloads;
 
 class ExternalPayloadEnvelopeService
 {
-    public function __construct(
-        private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
-    ) {}
-
     /**
      * Return the worker-protocol payload envelope for an encoded blob.
      *
-     * Small payloads remain inline as `{codec, blob}`. Payloads larger than
-     * the namespace threshold are written through the configured external
-     * storage driver and returned as `{codec, external_storage}`.
+     * This is a read-path presenter only: persisted external references are
+     * surfaced as `{codec, external_storage}`, and ordinary strings remain
+     * inline as `{codec, blob}`. Write paths externalize oversized payloads
+     * before they are recorded.
      *
      * @return array{codec: string, blob: string}|array{codec: string, external_storage: array<string, mixed>}|null
      */
@@ -32,15 +27,6 @@ class ExternalPayloadEnvelopeService
 
         if (ExternalPayloads::isStoredReference($blob)) {
             return ExternalPayloads::wireEnvelope($blob, $codec, $namespace);
-        }
-
-        $driver = $this->driver($namespace);
-
-        if ($this->shouldExternalize($namespace, $blob, $driver)) {
-            return [
-                'codec' => $codec,
-                'external_storage' => $this->storeExternalPayload($driver, $blob, $codec),
-            ];
         }
 
         return [
@@ -62,15 +48,6 @@ class ExternalPayloadEnvelopeService
 
         if (ExternalPayloads::isStoredReference($value)) {
             return ExternalPayloads::historyValue($value, $codec, $namespace);
-        }
-
-        $driver = $this->driver($namespace);
-
-        if ($this->shouldExternalize($namespace, $value, $driver)) {
-            return [
-                'codec' => $codec,
-                'external_storage' => $this->storeExternalPayload($driver, $value, $codec),
-            ];
         }
 
         return [
@@ -174,44 +151,6 @@ class ExternalPayloadEnvelopeService
         }
 
         return $snapshot;
-    }
-
-    private function shouldExternalize(
-        ?string $namespace,
-        string $blob,
-        ?ExternalPayloadStorageDriver $driver,
-    ): bool {
-        $threshold = $this->thresholdBytes($namespace);
-
-        return $threshold !== null
-            && strlen($blob) > $threshold
-            && $driver instanceof ExternalPayloadStorageDriver;
-    }
-
-    private function driver(?string $namespace): ?ExternalPayloadStorageDriver
-    {
-        return $this->externalPayloadStorage->driverFor($namespace);
-    }
-
-    private function thresholdBytes(?string $namespace): ?int
-    {
-        return $this->externalPayloadStorage->thresholdBytesFor($namespace);
-    }
-
-    /**
-     * @return array{schema: string, uri: string, sha256: string, size_bytes: int, codec: string}
-     */
-    private function storeExternalPayload(ExternalPayloadStorageDriver $driver, string $blob, string $codec): array
-    {
-        $sha256 = hash('sha256', $blob);
-
-        return [
-            'schema' => ExternalPayloadReference::SCHEMA,
-            'uri' => $driver->put($blob, $sha256, $codec),
-            'sha256' => $sha256,
-            'size_bytes' => strlen($blob),
-            'codec' => $codec,
-        ];
     }
 
     private function responseCodec(?string $codec): string

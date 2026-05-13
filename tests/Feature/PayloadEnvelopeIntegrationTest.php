@@ -898,15 +898,67 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $this->assertExternalEnvelopeDecodes($show->json('output_envelope'), $workflowResult);
     }
 
-    public function test_history_payload_externalizes_oversize_string_fields(): void
+    public function test_read_surfaces_do_not_externalize_existing_inline_payloads(): void
     {
         Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default');
+
+        $largeInput = str_repeat('I', 128);
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-inline-read-path',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'inline-read-q',
+                'input' => [$largeInput],
+            ]);
+
+        $start->assertCreated();
+
+        $run = WorkflowRun::query()->findOrFail((string) $start->json('run_id'));
+        $this->assertIsString($run->arguments);
+        $this->assertStringStartsNotWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $run->arguments);
+
         $this->createNamespace('default', [
-            'driver' => 'local',
+            'driver' => 's3',
             'enabled' => true,
             'threshold_bytes' => 32,
             'config' => [
-                'uri' => 'file://'.$this->externalStorageDirectory,
+                'disk' => 'unavailable-external-payloads',
+                'bucket' => 'payloads',
+            ],
+        ]);
+
+        $show = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-inline-read-path');
+
+        $show->assertOk();
+        $this->assertInlineEnvelope($show->json('input_envelope'), $run->arguments, (string) $run->payload_codec);
+
+        $this->registerWorker('worker-inline-read-path', 'inline-read-q');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'worker-inline-read-path',
+                'task_queue' => 'inline-read-q',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('poll_status', 'leased');
+        $this->assertInlineEnvelope($poll->json('task.arguments'), $run->arguments, (string) $run->payload_codec);
+    }
+
+    public function test_read_path_payload_formatting_keeps_oversize_inline_payloads_inline(): void
+    {
+        Queue::fake();
+        $this->createNamespace('default', [
+            'driver' => 's3',
+            'enabled' => true,
+            'threshold_bytes' => 32,
+            'config' => [
+                'disk' => 'unavailable-external-payloads',
+                'bucket' => 'payloads',
             ],
         ]);
 
@@ -920,6 +972,8 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         /** @var ExternalPayloadEnvelopeService $envelopes */
         $envelopes = app(ExternalPayloadEnvelopeService::class);
+        $workerBlob = Serializer::serializeWithCodec('avro', ['worker' => str_repeat('H', 128)]);
+        $workerEnvelope = $envelopes->workerEnvelope('default', 'avro', $workerBlob);
         $payload = $envelopes->historyPayload('default', [
             'payload_codec' => 'avro',
             'arguments' => Serializer::serializeWithCodec('avro', $arguments),
@@ -940,13 +994,14 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ],
         ], 'avro');
 
-        $this->assertExternalEnvelopeDecodes($payload['arguments'], $arguments);
-        $this->assertExternalEnvelopeDecodes($payload['result'], $result);
-        $this->assertExternalEnvelopeDecodes($payload['output'], $output);
-        $this->assertExternalEnvelopeDecodes($payload['command']['payload'], $commandPayload);
-        $this->assertExternalEnvelopeDecodes($payload['activity']['arguments'], $activityArguments);
-        $this->assertExternalEnvelopeDecodes($payload['activity']['result'], $activityResult);
-        $this->assertExternalEnvelopeDecodes($payload['exception']['details'], $details);
+        $this->assertInlineEnvelope($workerEnvelope, $workerBlob, 'avro');
+        $this->assertInlineEnvelope($payload['arguments'], Serializer::serializeWithCodec('avro', $arguments), 'avro');
+        $this->assertInlineEnvelope($payload['result'], Serializer::serializeWithCodec('avro', $result), 'avro');
+        $this->assertInlineEnvelope($payload['output'], Serializer::serializeWithCodec('avro', $output), 'avro');
+        $this->assertInlineEnvelope($payload['command']['payload'], Serializer::serializeWithCodec('avro', $commandPayload), 'avro');
+        $this->assertInlineEnvelope($payload['activity']['arguments'], Serializer::serializeWithCodec('avro', $activityArguments), 'avro');
+        $this->assertInlineEnvelope($payload['activity']['result'], Serializer::serializeWithCodec('avro', $activityResult), 'avro');
+        $this->assertInlineEnvelope($payload['exception']['details'], Serializer::serializeWithCodec('avro', $details), 'avro');
     }
 
     public function test_history_payload_inlines_string_fields_below_external_storage_threshold(): void
@@ -1502,6 +1557,17 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ->assertJsonPath('task.lease_owner', $workerId);
 
         return $poll;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $envelope
+     */
+    private function assertInlineEnvelope(?array $envelope, string $expectedBlob, string $expectedCodec): void
+    {
+        $this->assertIsArray($envelope);
+        $this->assertSame($expectedCodec, $envelope['codec'] ?? null);
+        $this->assertSame($expectedBlob, $envelope['blob'] ?? null);
+        $this->assertArrayNotHasKey('external_storage', $envelope);
     }
 
     /**

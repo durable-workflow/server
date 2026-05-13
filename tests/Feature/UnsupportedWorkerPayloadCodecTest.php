@@ -100,7 +100,7 @@ class UnsupportedWorkerPayloadCodecTest extends TestCase
         );
     }
 
-    public function test_worker_workflow_task_external_storage_payload_preserves_opaque_codec(): void
+    public function test_worker_workflow_task_oversize_inline_payload_preserves_opaque_codec(): void
     {
         Queue::fake();
 
@@ -115,10 +115,12 @@ class UnsupportedWorkerPayloadCodecTest extends TestCase
             ],
         ])->save();
 
+        $arguments = str_repeat('opaque-zstd-payload-', 8);
+
         $run = $this->startRemoteWorkflow('wf-worker-unsupported-codec-external');
         $run->forceFill([
             'payload_codec' => 'zstd',
-            'arguments' => str_repeat('opaque-zstd-payload-', 8),
+            'arguments' => $arguments,
         ])->save();
 
         $this->registerWorker(
@@ -136,10 +138,9 @@ class UnsupportedWorkerPayloadCodecTest extends TestCase
         $poll->assertOk()
             ->assertJsonPath('task.payload_codec', 'zstd')
             ->assertJsonPath('task.arguments.codec', 'zstd')
-            ->assertJsonPath('task.arguments.external_storage.codec', 'zstd');
+            ->assertJsonPath('task.arguments.blob', $arguments);
 
-        $this->assertIsString($poll->json('task.arguments.external_storage.uri'));
-        $this->assertArrayNotHasKey('blob', $poll->json('task.arguments'));
+        $this->assertArrayNotHasKey('external_storage', $poll->json('task.arguments'));
     }
 
     public function test_history_response_preserves_opaque_payload_codec_in_envelopes(): void
