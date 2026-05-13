@@ -1,5 +1,6 @@
 <?php
 
+use App\Services\PrometheusMetricsSummary;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollSignalStore;
 use App\Support\ProjectionDriftMetrics;
@@ -165,6 +166,72 @@ return [
             'cardinality' => 'table series are fixed to the server projection inventory: run_summaries, run_waits, run_timeline_entries, run_timer_entries, and run_lineage_entries.',
             'selection' => 'all projection tables in the fixed inventory.',
             'suppression' => 'No suppression path is needed because the table inventory is finite.',
+        ],
+
+        'dw_workflow_runs_total' => [
+            'owner' => PrometheusMetricsSummary::class,
+            'surface' => 'GET /api/system/prometheus-metrics',
+            'dimensions' => [
+                'namespace' => 'request_scope_not_label',
+                'task_queue' => 'bounded_series',
+                'workflow_type' => 'bounded_series',
+            ],
+            'cardinality' => 'Workflow series keyed by task_queue/workflow_type are capped by server.metrics.prometheus_workflow_series_limit, default 100 and hard-clamped to 500.',
+            'selection' => 'top_by_started_total_then_task_queue_and_workflow_type',
+            'suppression' => 'The endpoint reports observed, reported, truncated, suppressed series, and suppressed started totals under cardinality.series_limits.workflows.',
+        ],
+
+        'dw_workflow_run_latency_seconds' => [
+            'owner' => PrometheusMetricsSummary::class,
+            'surface' => 'GET /api/system/prometheus-metrics',
+            'dimensions' => [
+                'namespace' => 'request_scope_not_label',
+                'task_queue' => 'bounded_series',
+                'workflow_type' => 'bounded_series',
+            ],
+            'cardinality' => 'Workflow latency series share the same bounded task_queue/workflow_type series cap as dw_workflow_runs_total.',
+            'selection' => 'top_by_started_total_then_task_queue_and_workflow_type',
+            'suppression' => 'Suppression is disclosed once for the shared workflow series set under cardinality.series_limits.workflows.',
+        ],
+
+        'dw_activity_executions_total' => [
+            'owner' => PrometheusMetricsSummary::class,
+            'surface' => 'GET /api/system/prometheus-metrics',
+            'dimensions' => [
+                'namespace' => 'request_scope_not_label',
+                'task_queue' => 'bounded_series',
+                'workflow_type' => 'bounded_series',
+                'activity_type' => 'bounded_series',
+            ],
+            'cardinality' => 'Activity series keyed by task_queue/workflow_type/activity_type are capped by server.metrics.prometheus_activity_series_limit, default 100 and hard-clamped to 500.',
+            'selection' => 'top_by_started_total_then_task_queue_workflow_type_and_activity_type',
+            'suppression' => 'The endpoint reports observed, reported, truncated, suppressed series, and suppressed started totals under cardinality.series_limits.activities.',
+        ],
+
+        'dw_activity_execution_latency_seconds' => [
+            'owner' => PrometheusMetricsSummary::class,
+            'surface' => 'GET /api/system/prometheus-metrics',
+            'dimensions' => [
+                'namespace' => 'request_scope_not_label',
+                'task_queue' => 'bounded_series',
+                'workflow_type' => 'bounded_series',
+                'activity_type' => 'bounded_series',
+            ],
+            'cardinality' => 'Activity latency series share the same bounded task_queue/workflow_type/activity_type series cap as dw_activity_executions_total.',
+            'selection' => 'top_by_started_total_then_task_queue_workflow_type_and_activity_type',
+            'suppression' => 'Suppression is disclosed once for the shared activity series set under cardinality.series_limits.activities.',
+        ],
+
+        'dw_task_queue_runtime_state' => [
+            'owner' => PrometheusMetricsSummary::class,
+            'surface' => 'GET /api/system/prometheus-metrics',
+            'dimensions' => [
+                'namespace' => 'request_scope_not_label',
+                'task_queue' => 'bounded_series',
+            ],
+            'cardinality' => 'Task-queue runtime series keyed by task_queue are capped by server.metrics.prometheus_task_queue_series_limit, default 100 and hard-clamped to 500.',
+            'selection' => 'task_queue_name_ascending',
+            'suppression' => 'The endpoint reports observed, reported, truncated, and suppressed queue series under cardinality.series_limits.task_queues.',
         ],
 
         'dw_perf_requests_total' => [

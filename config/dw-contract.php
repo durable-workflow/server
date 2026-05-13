@@ -402,6 +402,24 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_METRICS_WORKFLOW_TASK_FAILURE_TYPE_LIMIT',
         ],
+        'DW_METRICS_PROMETHEUS_WORKFLOW_SERIES_LIMIT' => [
+            'description' => 'Maximum workflow series reported by /api/system/prometheus-metrics before excess series are summarized.',
+            'default' => '100',
+            'since' => '2.1.0',
+            'legacy' => 'WORKFLOW_SERVER_METRICS_PROMETHEUS_WORKFLOW_SERIES_LIMIT',
+        ],
+        'DW_METRICS_PROMETHEUS_ACTIVITY_SERIES_LIMIT' => [
+            'description' => 'Maximum activity series reported by /api/system/prometheus-metrics before excess series are summarized.',
+            'default' => '100',
+            'since' => '2.1.0',
+            'legacy' => 'WORKFLOW_SERVER_METRICS_PROMETHEUS_ACTIVITY_SERIES_LIMIT',
+        ],
+        'DW_METRICS_PROMETHEUS_TASK_QUEUE_SERIES_LIMIT' => [
+            'description' => 'Maximum task-queue runtime series reported by /api/system/prometheus-metrics before excess series are summarized.',
+            'default' => '100',
+            'since' => '2.1.0',
+            'legacy' => 'WORKFLOW_SERVER_METRICS_PROMETHEUS_TASK_QUEUE_SERIES_LIMIT',
+        ],
 
         // --- History / retention / limits ------------------------------
 
@@ -465,6 +483,12 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_MAX_PENDING_CHILDREN',
         ],
+        'DW_MAX_NEXUS_OPERATIONS_PER_CALLER' => [
+            'description' => 'Maximum Nexus operations returned per caller from the operations history surface before clients must paginate.',
+            'default' => '200',
+            'since' => '2.1.0',
+            'legacy' => 'WORKFLOW_MAX_NEXUS_OPERATIONS_PER_CALLER',
+        ],
 
         // --- Response compression --------------------------------------
 
@@ -488,6 +512,27 @@ return [
             'default' => '<base_path>/.package-provenance',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_PACKAGE_PROVENANCE_PATH',
+        ],
+
+        // --- Service-call boundary -------------------------------------
+
+        'DW_SERVICE_BOUNDARY_CROSS_NAMESPACE_DEFAULT' => [
+            'description' => 'Default service-call boundary action for cross-namespace calls when no more-specific rule matches.',
+            'default' => 'allow',
+            'since' => '2.1.0',
+            'legacy' => 'WORKFLOW_SERVER_SERVICE_BOUNDARY_CROSS_NAMESPACE_DEFAULT',
+        ],
+        'DW_SERVICE_BOUNDARY_RATE_LIMIT_PER_MINUTE' => [
+            'description' => 'Optional per-minute service-call boundary rate limit. Unset means no boundary-level rate cap.',
+            'default' => null,
+            'since' => '2.1.0',
+            'legacy' => 'WORKFLOW_SERVER_SERVICE_BOUNDARY_RATE_LIMIT_PER_MINUTE',
+        ],
+        'DW_SERVICE_BOUNDARY_MAX_IN_FLIGHT' => [
+            'description' => 'Optional service-call boundary concurrency limit. Unset means no boundary-level in-flight cap.',
+            'default' => null,
+            'since' => '2.1.0',
+            'legacy' => 'WORKFLOW_SERVER_SERVICE_BOUNDARY_MAX_IN_FLIGHT',
         ],
 
         // --- Docker bootstrap ------------------------------------------

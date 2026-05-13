@@ -337,6 +337,7 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::get('/health', [SystemController::class, 'health']);
         Route::match(['get', 'post'], '/metrics', [SystemController::class, 'metrics']);
         Route::get('/operator-metrics', [SystemController::class, 'operatorMetrics']);
+        Route::get('/prometheus-metrics', [SystemController::class, 'prometheusMetrics']);
         Route::get('/repair', [SystemController::class, 'repairStatus']);
         Route::post('/repair/pass', [SystemController::class, 'repairPass']);
         Route::get('/activity-timeouts', [SystemController::class, 'activityTimeoutStatus']);

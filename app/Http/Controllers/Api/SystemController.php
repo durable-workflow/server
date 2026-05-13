@@ -8,6 +8,7 @@ use App\Support\ProjectionDriftMetrics;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\WorkerSessionRegistry;
 use App\Support\WorkflowTaskFailureMetrics;
+use App\Services\PrometheusMetricsSummary;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Workflow\V2\Contracts\MatchingRole;
@@ -146,6 +147,17 @@ class SystemController
             'namespace' => $namespace,
             'operator_metrics' => $snapshot,
         ]);
+    }
+
+    public function prometheusMetrics(Request $request, PrometheusMetricsSummary $summary): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $namespace = (string) $request->attributes->get('namespace');
+
+        return ControlPlaneProtocol::json($summary->snapshot($namespace));
     }
 
     public function activityTimeoutStatus(Request $request): JsonResponse

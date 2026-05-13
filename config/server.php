@@ -418,6 +418,21 @@ return [
             'WORKFLOW_SERVER_METRICS_WORKFLOW_TASK_FAILURE_TYPE_LIMIT',
             20,
         ),
+        'prometheus_workflow_series_limit' => (int) EnvAuditor::env(
+            'DW_METRICS_PROMETHEUS_WORKFLOW_SERIES_LIMIT',
+            'WORKFLOW_SERVER_METRICS_PROMETHEUS_WORKFLOW_SERIES_LIMIT',
+            100,
+        ),
+        'prometheus_activity_series_limit' => (int) EnvAuditor::env(
+            'DW_METRICS_PROMETHEUS_ACTIVITY_SERIES_LIMIT',
+            'WORKFLOW_SERVER_METRICS_PROMETHEUS_ACTIVITY_SERIES_LIMIT',
+            100,
+        ),
+        'prometheus_task_queue_series_limit' => (int) EnvAuditor::env(
+            'DW_METRICS_PROMETHEUS_TASK_QUEUE_SERIES_LIMIT',
+            'WORKFLOW_SERVER_METRICS_PROMETHEUS_TASK_QUEUE_SERIES_LIMIT',
+            100,
+        ),
     ],
 
     /*
