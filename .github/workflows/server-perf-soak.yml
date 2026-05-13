@@ -70,11 +70,3 @@ jobs:
           name: server-perf-soak
           path: build/perf/
           if-no-files-found: warn
-
-      - name: Upload perf artifacts on compatible Actions servers
-        if: always() && github.server_url != 'https://github.com'
-        uses: actions/upload-artifact@v3.2.2
-        with:
-          name: server-perf-soak
-          path: build/perf/
-          if-no-files-found: warn

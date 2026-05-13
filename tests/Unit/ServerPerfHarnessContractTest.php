@@ -347,7 +347,7 @@ class ServerPerfHarnessContractTest extends TestCase
         );
     }
 
-    public function test_server_perf_artifact_uploads_use_github_current_action_with_compatible_fallback(): void
+    public function test_server_perf_artifact_uploads_avoid_deprecated_actions(): void
     {
         $workflow = file_get_contents(dirname(__DIR__, 2).'/.github/workflows/server-perf.yml');
         $this->assertNotFalse($workflow, '.github/workflows/server-perf.yml must be readable');
@@ -356,9 +356,9 @@ class ServerPerfHarnessContractTest extends TestCase
         $workflows = $workflow."\n".$soakWorkflow;
 
         $this->assertSame(2, substr_count($workflows, 'uses: actions/upload-artifact@v4'));
-        $this->assertSame(2, substr_count($workflows, 'uses: actions/upload-artifact@v3.2.2'));
+        $this->assertSame(0, substr_count($workflows, 'uses: actions/upload-artifact@v3'));
         $this->assertSame(2, substr_count($workflows, "github.server_url == 'https://github.com'"));
-        $this->assertSame(2, substr_count($workflows, "github.server_url != 'https://github.com'"));
+        $this->assertSame(0, substr_count($workflows, "github.server_url != 'https://github.com'"));
     }
 
     public function test_server_perf_soak_uses_current_worker_protocol_default(): void
