@@ -22,6 +22,7 @@ final class WorkflowQueryTaskBroker
         private readonly ServerPollingCache $cache,
         private readonly LongPoller $longPoller,
         private readonly LongPollSignalStore $signals,
+        private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
     ) {}
 
     public function hasWorkerFor(string $namespace, WorkflowRun $run): bool
@@ -76,6 +77,10 @@ final class WorkflowQueryTaskBroker
         $result = $this->waitForResult((string) $task['query_task_id']);
 
         if (($result['status'] ?? null) === 'completed') {
+            $resultEnvelope = is_array($result['result_envelope'] ?? null)
+                ? $this->resultEnvelope($namespace, $result['result_envelope'])
+                : null;
+
             return [
                 'success' => true,
                 'workflow_instance_id' => $run->workflow_instance_id,
@@ -84,7 +89,7 @@ final class WorkflowQueryTaskBroker
                 'target_scope' => 'instance',
                 'query_name' => $queryName,
                 'result' => $result['result'] ?? null,
-                'result_envelope' => $result['result_envelope'] ?? null,
+                'result_envelope' => $resultEnvelope,
                 'reason' => null,
                 'status' => 200,
             ];
@@ -226,6 +231,24 @@ final class WorkflowQueryTaskBroker
             'reason' => null,
             'status' => 200,
         ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function guardCompletion(
+        string $namespace,
+        string $queryTaskId,
+        string $leaseOwner,
+        int $queryTaskAttempt,
+    ): ?array {
+        return $this->guardLease(
+            $this->task($queryTaskId),
+            $namespace,
+            $queryTaskId,
+            $leaseOwner,
+            $queryTaskAttempt,
+        );
     }
 
     /**
@@ -415,9 +438,13 @@ final class WorkflowQueryTaskBroker
             'query_name' => $task['query_name'],
             'payload_codec' => $task['payload_codec'],
             'workflow_arguments' => $run instanceof WorkflowRun && is_string($run->arguments)
-                ? ['codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(), 'blob' => $run->arguments]
+                ? $this->payloadEnvelopes->workerEnvelope(
+                    is_string($task['namespace'] ?? null) ? $task['namespace'] : null,
+                    $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                    $run->arguments,
+                )
                 : null,
-            'query_arguments' => $task['query_arguments'] ?? ['codec' => CodecRegistry::defaultCodec(), 'blob' => null],
+            'query_arguments' => $this->queryArgumentsEnvelope($task),
             'run_status' => $run?->status?->value,
             'last_history_sequence' => (int) ($run?->last_history_sequence ?? 0),
             'history_events' => $run instanceof WorkflowRun ? $this->historyEvents($run) : [],
@@ -425,6 +452,49 @@ final class WorkflowQueryTaskBroker
             'lease_owner' => $task['lease_owner'] ?? null,
             'lease_expires_at' => $task['lease_expires_at'] ?? null,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $task
+     * @return array<string, mixed>
+     */
+    private function queryArgumentsEnvelope(array $task): array
+    {
+        $arguments = $task['query_arguments'] ?? null;
+
+        if (! is_array($arguments)) {
+            return ['codec' => CodecRegistry::defaultCodec(), 'blob' => null];
+        }
+
+        $blob = $arguments['blob'] ?? null;
+        if (! is_string($blob)) {
+            return $arguments;
+        }
+
+        return $this->payloadEnvelopes->workerEnvelope(
+            is_string($task['namespace'] ?? null) ? $task['namespace'] : null,
+            is_string($arguments['codec'] ?? null) ? $arguments['codec'] : CodecRegistry::defaultCodec(),
+            $blob,
+        ) ?? ['codec' => CodecRegistry::defaultCodec(), 'blob' => null];
+    }
+
+    /**
+     * @param  array<string, mixed>  $envelope
+     * @return array<string, mixed>|null
+     */
+    private function resultEnvelope(string $namespace, array $envelope): ?array
+    {
+        $blob = $envelope['blob'] ?? null;
+
+        if (! is_string($blob)) {
+            return $envelope;
+        }
+
+        return $this->payloadEnvelopes->workerEnvelope(
+            $namespace,
+            is_string($envelope['codec'] ?? null) ? $envelope['codec'] : CodecRegistry::defaultCodec(),
+            $blob,
+        );
     }
 
     /**
@@ -436,11 +506,13 @@ final class WorkflowQueryTaskBroker
             ->where('workflow_run_id', $run->id)
             ->orderBy('sequence')
             ->get()
-            ->map(static fn (WorkflowHistoryEvent $event): array => [
+            ->map(fn (WorkflowHistoryEvent $event): array => [
                 'id' => $event->id,
                 'sequence' => (int) $event->sequence,
                 'event_type' => $event->event_type->value,
-                'payload' => is_array($event->payload) ? $event->payload : [],
+                'payload' => is_array($event->payload)
+                    ? $this->payloadEnvelopes->historyPayload($run->namespace, $event->payload, $run->payload_codec)
+                    : [],
                 'workflow_task_id' => $event->workflow_task_id,
                 'workflow_command_id' => $event->workflow_command_id,
                 'recorded_at' => $event->recorded_at?->toJSON(),

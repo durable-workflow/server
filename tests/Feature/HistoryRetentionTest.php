@@ -14,8 +14,10 @@ use Illuminate\Support\Facades\Storage;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowMemo;
 use Workflow\V2\Models\WorkflowMessage;
@@ -24,6 +26,7 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowRunTimerEntry;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\WorkflowStub;
 
 class HistoryRetentionTest extends TestCase
@@ -382,6 +385,138 @@ class HistoryRetentionTest extends TestCase
         $this->assertNull(WorkflowRunSummary::find($runId));
     }
 
+    public function test_retention_pass_keeps_external_payload_referenced_by_retained_run(): void
+    {
+        Queue::fake();
+        Storage::fake('retention-shared-object-payloads');
+
+        $this->createNamespace('default');
+        WorkflowNamespace::where('name', 'default')->update([
+            'external_payload_storage' => [
+                'driver' => 's3',
+                'enabled' => true,
+                'config' => [
+                    'disk' => 'retention-shared-object-payloads',
+                    'bucket' => 'dw-payloads',
+                    'prefix' => 'retention/',
+                ],
+            ],
+        ]);
+
+        $expiredRunId = $this->createExpiredClosedRun('default', 'wf-prune-shared-external-payload');
+        $retainedRunId = $this->createExpiredClosedRun('default', 'wf-retain-shared-external-payload', daysAgo: 1);
+        $payload = 'shared large encoded payload bytes';
+        $key = 'retention/avro/'.substr(hash('sha256', $payload), 0, 2).'/'.hash('sha256', $payload);
+        $reference = $this->externalStorageReference('s3://dw-payloads/'.$key, $payload);
+
+        Storage::disk('retention-shared-object-payloads')->put($key, $payload);
+
+        foreach ([$expiredRunId, $retainedRunId] as $runId) {
+            WorkflowHistoryEvent::query()->create([
+                'workflow_run_id' => $runId,
+                'sequence' => 999,
+                'event_type' => HistoryEventType::ActivityCompleted->value,
+                'payload' => [
+                    'result' => [
+                        'external_storage' => $reference,
+                    ],
+                ],
+                'recorded_at' => now(),
+            ]);
+        }
+
+        Storage::disk('retention-shared-object-payloads')->assertExists($key);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/retention/pass')
+            ->assertOk()
+            ->assertJsonPath('processed', 1)
+            ->assertJsonPath('pruned', 1)
+            ->assertJsonPath('results.0.external_payloads_deleted', 0);
+
+        Storage::disk('retention-shared-object-payloads')->assertExists($key);
+        $this->assertNull(WorkflowRunSummary::find($expiredRunId));
+        $this->assertNotNull(WorkflowRunSummary::find($retainedRunId));
+    }
+
+    public function test_retention_pass_deletes_stored_reference_payload_strings_from_run_and_activity_columns(): void
+    {
+        Queue::fake();
+
+        $storageDirectory = storage_path('framework/testing/retention-stored-reference-payloads');
+        File::deleteDirectory($storageDirectory);
+
+        $this->createNamespace('default');
+        WorkflowNamespace::where('name', 'default')->update([
+            'external_payload_storage' => [
+                'driver' => 'local',
+                'enabled' => true,
+                'config' => [
+                    'uri' => 'file://'.$storageDirectory,
+                ],
+            ],
+        ]);
+
+        $runId = $this->createExpiredClosedRun('default', 'wf-prune-stored-reference-payloads');
+        $references = [];
+        $paths = [];
+
+        foreach ([
+            'workflow-arguments',
+            'workflow-output',
+            'activity-arguments',
+            'activity-result',
+            'activity-exception',
+        ] as $name) {
+            $path = $storageDirectory.'/payloads/'.$name.'.bin';
+            $payload = 'large encoded payload bytes for '.$name;
+            File::ensureDirectoryExists(dirname($path));
+            file_put_contents($path, $payload);
+
+            $paths[] = $path;
+            $references[$name] = $this->storedExternalPayloadReference('file://'.$path, $payload);
+        }
+
+        WorkflowRun::where('id', $runId)->update([
+            'arguments' => $references['workflow-arguments'],
+            'output' => $references['workflow-output'],
+            'payload_codec' => 'avro',
+        ]);
+
+        ActivityExecution::query()->create([
+            'workflow_run_id' => $runId,
+            'sequence' => 999,
+            'activity_class' => 'retention.external-payload-test',
+            'activity_type' => 'retention.external-payload-test',
+            'status' => ActivityStatus::Completed->value,
+            'payload_codec' => 'avro',
+            'arguments' => $references['activity-arguments'],
+            'result' => $references['activity-result'],
+            'exception' => $references['activity-exception'],
+            'attempt_count' => 1,
+            'closed_at' => now()->subDays(60),
+        ]);
+
+        foreach ($paths as $path) {
+            $this->assertFileExists($path);
+        }
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/system/retention/pass')
+            ->assertOk()
+            ->assertJsonPath('processed', 1)
+            ->assertJsonPath('pruned', 1)
+            ->assertJsonPath('results.0.external_payloads_deleted', 5);
+
+        foreach ($paths as $path) {
+            $this->assertFileDoesNotExist($path);
+        }
+
+        $this->assertNull(WorkflowRunSummary::find($runId));
+
+        File::deleteDirectory($storageDirectory);
+    }
+
     public function test_retention_pass_with_specific_run_ids(): void
     {
         $this->createNamespace('default');
@@ -612,5 +747,13 @@ class HistoryRetentionTest extends TestCase
             'size_bytes' => strlen($payload),
             'codec' => 'avro',
         ];
+    }
+
+    private function storedExternalPayloadReference(string $uri, string $payload): string
+    {
+        return ExternalPayloads::encodeStoredEnvelope([
+            'codec' => 'avro',
+            'external_storage' => $this->externalStorageReference($uri, $payload),
+        ]);
     }
 }

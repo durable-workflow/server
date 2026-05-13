@@ -6,12 +6,14 @@ use App\Auth\ConfiguredAuthProvider;
 use App\Contracts\AuthProvider;
 use App\Observers\WorkflowHistoryEventObserver;
 use App\Observers\WorkflowTaskObserver;
+use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\RemoteScheduleStarter;
 use App\Support\ServiceCallBoundary;
 use App\Support\ServiceModeBusDispatcher;
 use App\Support\WorkflowPackageApiFloor;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
 use Illuminate\Support\ServiceProvider;
+use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -46,6 +48,11 @@ class AppServiceProvider extends ServiceProvider
         });
 
         $this->app->singleton(ScheduleWorkflowStarter::class, RemoteScheduleStarter::class);
+        $this->app->singleton(NamespaceExternalPayloadStorage::class);
+        $this->app->singleton(
+            ExternalPayloadStoragePolicy::class,
+            fn ($app): NamespaceExternalPayloadStorage => $app->make(NamespaceExternalPayloadStorage::class),
+        );
 
         // Cross-namespace service-call boundary. The server's
         // service_boundary config block layers on top of the workflow

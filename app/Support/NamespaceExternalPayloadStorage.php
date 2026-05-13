@@ -4,15 +4,15 @@ namespace App\Support;
 
 use App\Models\WorkflowNamespace;
 use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 
-class NamespaceExternalPayloadStorage
+class NamespaceExternalPayloadStorage implements ExternalPayloadStoragePolicy
 {
     public function driverFor(?string $namespace): ?ExternalPayloadStorageDriver
     {
         $namespace = $namespace ?: (string) config('server.default_namespace', 'default');
-        $ns = WorkflowNamespace::query()->where('name', $namespace)->first();
-        $policy = is_array($ns?->external_payload_storage) ? $ns->external_payload_storage : [];
+        $policy = $this->policyFor($namespace);
 
         if ($policy === [] || ($policy['enabled'] ?? true) === false) {
             return null;
@@ -21,26 +21,65 @@ class NamespaceExternalPayloadStorage
         $driver = $policy['driver'] ?? null;
 
         if ($driver === 'local') {
-            return new LocalFilesystemExternalPayloadStorage($this->localRoot($policy, $namespace));
+            return $this->guard(new LocalFilesystemExternalPayloadStorage($this->localRoot($policy, $namespace)));
         }
 
-        if (in_array($driver, ['s3', 'gcs', 'azure'], true)) {
+        if (in_array($driver, ['s3', 'gcs', 'azure', 'custom'], true)) {
             $disk = $policy['config']['disk'] ?? null;
-            $bucket = $policy['config']['bucket'] ?? null;
+            $bucket = $policy['config']['bucket']
+                ?? $policy['config']['container']
+                ?? $policy['config']['name']
+                ?? null;
+            $scheme = $driver === 'custom'
+                ? ($policy['config']['scheme'] ?? null)
+                : $driver;
 
-            if (! is_string($disk) || $disk === '' || ! is_string($bucket) || $bucket === '') {
+            if (! is_string($disk) || $disk === ''
+                || ! is_string($bucket) || $bucket === ''
+                || ! is_string($scheme) || $scheme === ''
+            ) {
                 return null;
             }
 
-            return new FilesystemExternalPayloadStorage(
+            return $this->guard(new FilesystemExternalPayloadStorage(
                 disk: $disk,
-                scheme: $driver,
+                scheme: $scheme,
                 bucket: $bucket,
                 prefix: $this->prefix($policy),
-            );
+            ));
         }
 
         return null;
+    }
+
+    public function thresholdBytesFor(?string $namespace): ?int
+    {
+        $namespace = $namespace ?: (string) config('server.default_namespace', 'default');
+        $policy = $this->policyFor($namespace);
+
+        if ($policy === [] || ($policy['enabled'] ?? true) === false) {
+            return null;
+        }
+
+        $threshold = $policy['threshold_bytes'] ?? null;
+        if (is_int($threshold) && $threshold > 0) {
+            return $threshold;
+        }
+
+        $default = (int) config('server.limits.max_payload_bytes', 2 * 1024 * 1024);
+
+        return $default > 0 ? $default : null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function policyFor(string $namespace): array
+    {
+        $ns = WorkflowNamespace::query()->where('name', $namespace)->first();
+        $policy = $ns?->external_payload_storage;
+
+        return is_array($policy) ? $policy : [];
     }
 
     /**
@@ -69,5 +108,10 @@ class NamespaceExternalPayloadStorage
         }
 
         return trim($prefix, '/').'/';
+    }
+
+    private function guard(ExternalPayloadStorageDriver $driver): ExternalPayloadStorageDriver
+    {
+        return new GuardedExternalPayloadStorage($driver);
     }
 }

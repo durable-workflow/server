@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\LongPoller;
 use App\Support\LongPollSignalStore;
 use App\Support\ServerPollingCache;
@@ -36,6 +37,7 @@ class WorkflowTaskPollerTest extends TestCase
             app(ServerPollingCache::class),
             app(TaskQueueAdmission::class),
             app(TaskFairnessState::class),
+            app(ExternalPayloadEnvelopeService::class),
         );
 
         $result = $this->invokeClaimReadyTask(

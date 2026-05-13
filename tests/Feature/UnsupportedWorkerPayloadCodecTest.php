@@ -2,8 +2,10 @@
 
 namespace Tests\Feature;
 
+use App\Models\WorkflowNamespace;
 use App\Support\WorkflowQueryTaskBroker;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
@@ -21,9 +23,14 @@ class UnsupportedWorkerPayloadCodecTest extends TestCase
     use RefreshDatabase;
     use ServerTestHelpers;
 
+    private string $externalStorageDirectory;
+
     protected function setUp(): void
     {
         parent::setUp();
+
+        $this->externalStorageDirectory = storage_path('framework/testing/unsupported-codec-external-payloads');
+        File::deleteDirectory($this->externalStorageDirectory);
 
         config([
             'server.polling.timeout' => 0,
@@ -31,6 +38,13 @@ class UnsupportedWorkerPayloadCodecTest extends TestCase
         ]);
 
         $this->createNamespace('default');
+    }
+
+    protected function tearDown(): void
+    {
+        File::deleteDirectory($this->externalStorageDirectory);
+
+        parent::tearDown();
     }
 
     public function test_worker_workflow_task_payload_codec_failure_records_task_failure(): void
@@ -84,6 +98,83 @@ class UnsupportedWorkerPayloadCodecTest extends TestCase
                 ->where('event_type', HistoryEventType::WorkflowCompleted->value)
                 ->exists(),
         );
+    }
+
+    public function test_worker_workflow_task_external_storage_payload_preserves_opaque_codec(): void
+    {
+        Queue::fake();
+
+        WorkflowNamespace::where('name', 'default')->firstOrFail()->forceFill([
+            'external_payload_storage' => [
+                'driver' => 'local',
+                'enabled' => true,
+                'threshold_bytes' => 8,
+                'config' => [
+                    'uri' => 'file://'.$this->externalStorageDirectory,
+                ],
+            ],
+        ])->save();
+
+        $run = $this->startRemoteWorkflow('wf-worker-unsupported-codec-external');
+        $run->forceFill([
+            'payload_codec' => 'zstd',
+            'arguments' => str_repeat('opaque-zstd-payload-', 8),
+        ])->save();
+
+        $this->registerWorker(
+            'python-codec-workflow-external',
+            'python-workflows',
+            supportedWorkflowTypes: ['python.codec-workflow'],
+        );
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'python-codec-workflow-external',
+                'task_queue' => 'python-workflows',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.payload_codec', 'zstd')
+            ->assertJsonPath('task.arguments.codec', 'zstd')
+            ->assertJsonPath('task.arguments.external_storage.codec', 'zstd');
+
+        $this->assertIsString($poll->json('task.arguments.external_storage.uri'));
+        $this->assertArrayNotHasKey('blob', $poll->json('task.arguments'));
+    }
+
+    public function test_history_response_preserves_opaque_payload_codec_in_envelopes(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-history-unsupported-codec');
+        $run->forceFill(['payload_codec' => 'zstd'])->save();
+
+        $nextSequence = ((int) WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->max('sequence')) + 1;
+
+        WorkflowHistoryEvent::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => $nextSequence,
+            'event_type' => HistoryEventType::WorkflowCompleted->value,
+            'payload' => [
+                'payload_codec' => 'zstd',
+                'output' => 'opaque-completed-payload',
+            ],
+            'recorded_at' => now(),
+        ]);
+
+        $history = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/wf-history-unsupported-codec/runs/{$run->id}/history");
+
+        $history->assertOk();
+
+        $completed = collect($history->json('events'))
+            ->firstWhere('event_type', HistoryEventType::WorkflowCompleted->value);
+
+        $this->assertIsArray($completed);
+        $this->assertSame('zstd', $completed['payload']['output']['codec'] ?? null);
+        $this->assertSame('opaque-completed-payload', $completed['payload']['output']['blob'] ?? null);
     }
 
     public function test_worker_activity_payload_codec_failure_is_non_retryable_even_without_details(): void

@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Support\ControlPlaneProtocol;
+use App\Support\ExternalPayloadEnvelopeService;
+use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\TaskQueueRoutingGate;
@@ -17,6 +19,7 @@ use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\StandaloneActivity\StandaloneActivityHostType;
+use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\StandaloneActivityStartService;
 
@@ -37,6 +40,7 @@ class ActivityController
         private readonly TaskQueueRoutingGate $taskQueueRoutingGate,
         private readonly WorkflowCommandContextFactory $commandContexts,
         private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
+        private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
     ) {}
 
     public function start(Request $request): JsonResponse
@@ -117,11 +121,6 @@ class ActivityController
             );
         }
 
-        $envelope = PayloadEnvelopeResolver::resolve(
-            $validated['input'] ?? null,
-            'input',
-            $this->externalPayloadStorage->driverFor($namespace),
-        );
         $defaultCodec = CodecRegistry::defaultCodec();
 
         $commandContext = $this->commandContexts->make(
@@ -135,14 +134,26 @@ class ActivityController
         );
 
         try {
+            $envelope = PayloadEnvelopeResolver::resolve(
+                $validated['input'] ?? null,
+                'input',
+                $this->externalPayloadStorage->driverFor($namespace),
+            );
+            $payloadCodec = $envelope['codec'] ?? $defaultCodec;
+            $arguments = $envelope['blob'] ?? null;
+
+            if (is_string($arguments)) {
+                $arguments = ExternalPayloads::externalizeForNamespace($arguments, $payloadCodec, $namespace);
+            }
+
             $start = $this->startService->start([
                 'namespace' => $namespace,
                 'activity_id' => $activityId,
                 'activity_type' => $validated['activity_type'],
                 'activity_class' => $validated['activity_class'] ?? null,
                 'task_queue' => $taskQueue,
-                'arguments' => $envelope['blob'] ?? null,
-                'payload_codec' => $envelope['codec'] ?? $defaultCodec,
+                'arguments' => $arguments,
+                'payload_codec' => $payloadCodec,
                 'business_key' => $validated['business_key'] ?? null,
                 'retry_policy' => $validated['retry_policy'] ?? null,
                 'start_to_close_timeout_seconds' => $validated['start_to_close_timeout_seconds'] ?? null,
@@ -151,6 +162,20 @@ class ActivityController
                 'heartbeat_timeout_seconds' => $validated['heartbeat_timeout_seconds'] ?? null,
                 'command_context' => $commandContext,
             ]);
+        } catch (ExternalPayloadStorageUnavailable $exception) {
+            return ControlPlaneProtocol::jsonForRequest(
+                $request,
+                [
+                    'message' => $exception->getMessage(),
+                    'reason' => 'external_payload_storage_unavailable',
+                    'activity_type' => $validated['activity_type'],
+                    'task_queue' => $taskQueue,
+                    'command_status' => 'rejected',
+                    'rejection_reason' => 'external_payload_storage_unavailable',
+                    'command_source' => 'control_plane',
+                ],
+                503,
+            );
         } catch (InvalidArgumentException $exception) {
             throw ValidationException::withMessages([
                 'activity_id' => [$exception->getMessage()],
@@ -282,10 +307,11 @@ class ActivityController
             && $execution->status === ActivityStatus::Completed
             && is_string($execution->result)
         ) {
-            $resultEnvelope = [
-                'codec' => $execution->payload_codec ?? CodecRegistry::defaultCodec(),
-                'blob' => $execution->result,
-            ];
+            $resultEnvelope = $this->payloadEnvelopes->workerEnvelope(
+                $namespace,
+                $execution->payload_codec ?? CodecRegistry::defaultCodec(),
+                $execution->result,
+            );
         }
 
         return [

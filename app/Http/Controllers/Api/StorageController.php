@@ -23,7 +23,7 @@ class StorageController
         }
 
         $validated = $request->validate([
-            'driver' => ['nullable', 'string', Rule::in(['local', 's3', 'gcs', 'azure'])],
+            'driver' => ['nullable', 'string', Rule::in(['local', 's3', 'gcs', 'azure', 'custom'])],
             'small_payload_bytes' => ['required', 'integer', 'min:1', 'max:1048576'],
             'large_payload_bytes' => ['required', 'integer', 'min:1', 'max:16777216'],
         ]);
@@ -59,7 +59,7 @@ class StorageController
                 'The server can persist this storage policy, but the configured storage driver is not available in this runtime.',
                 $namespace,
                 $driver,
-                ['supported_diagnostic_drivers' => ['local', 's3', 'gcs', 'azure']],
+                ['supported_diagnostic_drivers' => ['local', 's3', 'gcs', 'azure', 'custom']],
             );
         }
 

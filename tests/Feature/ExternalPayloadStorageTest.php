@@ -142,6 +142,41 @@ class ExternalPayloadStorageTest extends TestCase
         $this->assertSame([], Storage::disk('external-payload-objects')->allFiles());
     }
 
+    public function test_custom_storage_diagnostic_uses_configured_filesystem_driver(): void
+    {
+        Storage::fake('external-payload-custom');
+
+        $this->createNamespace('billing', [
+            'driver' => 'custom',
+            'enabled' => true,
+            'threshold_bytes' => 32,
+            'config' => [
+                'disk' => 'external-payload-custom',
+                'name' => 'workflow-payloads',
+                'scheme' => 'azure',
+                'prefix' => 'diagnostics/',
+            ],
+        ]);
+
+        $response = $this->postJson('/api/storage/test', [
+            'small_payload_bytes' => 16,
+            'large_payload_bytes' => 64,
+        ], ['X-Namespace' => 'billing']);
+
+        $smallHash = hash('sha256', str_repeat('s', 16));
+        $smallReference = 'azure://workflow-payloads/diagnostics/storage-test-small/'
+            .substr($smallHash, 0, 2).'/'.$smallHash;
+
+        $response->assertOk()
+            ->assertJsonPath('status', 'passed')
+            ->assertJsonPath('namespace', 'billing')
+            ->assertJsonPath('driver', 'custom')
+            ->assertJsonPath('small_payload.reference_uri', $smallReference)
+            ->assertJsonPath('large_payload.status', 'passed');
+
+        $this->assertSame([], Storage::disk('external-payload-custom')->allFiles());
+    }
+
     public function test_storage_diagnostic_reports_unconfigured_and_unavailable_drivers(): void
     {
         $this->createNamespace('default');

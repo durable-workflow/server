@@ -8,6 +8,7 @@ use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\File;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
@@ -17,6 +18,9 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\StandaloneActivity\StandaloneActivityHostType;
+use Workflow\V2\Support\ExternalPayloads;
+use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
+use Workflow\V2\Support\PayloadEnvelopeResolver;
 
 /**
  * End-to-end coverage for standalone activities on the control plane.
@@ -36,9 +40,14 @@ class StandaloneActivityApiTest extends TestCase
     use RefreshDatabase;
     use ServerTestHelpers;
 
+    private string $externalStorageDirectory;
+
     protected function setUp(): void
     {
         parent::setUp();
+
+        $this->externalStorageDirectory = storage_path('framework/testing/standalone-activity-external-storage');
+        File::deleteDirectory($this->externalStorageDirectory);
 
         WorkflowNamespace::query()->updateOrCreate(
             ['name' => 'default'],
@@ -48,6 +57,13 @@ class StandaloneActivityApiTest extends TestCase
                 'status' => 'active',
             ],
         );
+    }
+
+    protected function tearDown(): void
+    {
+        File::deleteDirectory($this->externalStorageDirectory);
+
+        parent::tearDown();
     }
 
     public function test_start_returns_handle_and_persists_host_run_and_activity_execution(): void
@@ -89,6 +105,86 @@ class StandaloneActivityApiTest extends TestCase
         $this->assertNotNull($execution);
         $this->assertSame('tests.external-greeting-activity', $execution->activity_type);
         $this->assertSame(ActivityStatus::Pending, $execution->status);
+    }
+
+    public function test_external_storage_round_trips_oversize_standalone_activity_payloads(): void
+    {
+        WorkflowNamespace::query()->where('name', 'default')->update([
+            'external_payload_storage' => [
+                'driver' => 'local',
+                'enabled' => true,
+                'threshold_bytes' => 32,
+                'config' => [
+                    'uri' => 'file://'.$this->externalStorageDirectory,
+                ],
+            ],
+        ]);
+
+        $this->registerWorker(
+            'php-worker-standalone-external',
+            'external-activities',
+            supportedWorkflowTypes: [],
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+        );
+
+        $input = str_repeat('A', 128);
+
+        $start = $this->withHeaders($this->apiHeaders())->postJson('/api/activities', [
+            'activity_id' => 'standalone-external-greet',
+            'activity_type' => 'tests.external-greeting-activity',
+            'task_queue' => 'external-activities',
+            'input' => [$input],
+        ]);
+
+        $start->assertStatus(201);
+
+        $run = WorkflowRun::query()->findOrFail((string) $start->json('workflow_run_id'));
+        $execution = ActivityExecution::query()->findOrFail((string) $start->json('activity_execution_id'));
+
+        $this->assertStoredExternalPayload($run->arguments);
+        $this->assertSame([$input], $run->workflowArguments());
+        $this->assertStoredExternalPayload($execution->arguments);
+        $this->assertSame([$input], $execution->activityArguments());
+
+        $workerHeaders = $this->workerHeaders() + [
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ];
+
+        $poll = $this->withHeaders($workerHeaders)->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'php-worker-standalone-external',
+            'task_queue' => 'external-activities',
+        ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.payload_codec', 'avro')
+            ->assertJsonStructure(['task' => ['arguments' => ['codec', 'external_storage']]]);
+        $this->assertExternalEnvelopeDecodes($poll->json('task.arguments'), [$input]);
+
+        $result = ['message' => str_repeat('B', 128)];
+        $codec = $poll->json('task.payload_codec') ?? CodecRegistry::defaultCodec();
+        $resultBlob = Serializer::serializeWithCodec($codec, $result);
+
+        $this->withHeaders($workerHeaders)->postJson(
+            '/api/worker/activity-tasks/'.$poll->json('task.task_id').'/complete',
+            [
+                'activity_attempt_id' => $poll->json('task.activity_attempt_id'),
+                'lease_owner' => $poll->json('task.lease_owner'),
+                'result' => [
+                    'codec' => $codec,
+                    'blob' => $resultBlob,
+                ],
+            ],
+        )->assertOk();
+
+        $execution->refresh();
+        $this->assertStoredExternalPayload($execution->result);
+        $this->assertSame($result, $execution->activityResult());
+
+        $show = $this->withHeaders($this->apiHeaders())->getJson('/api/activities/standalone-external-greet');
+        $show->assertOk()
+            ->assertJsonPath('activity_status', ActivityStatus::Completed->value)
+            ->assertJsonStructure(['result' => ['codec', 'external_storage']]);
+        $this->assertExternalEnvelopeDecodes($show->json('result'), $result);
     }
 
     public function test_show_returns_404_for_unknown_activity(): void
@@ -206,5 +302,34 @@ class StandaloneActivityApiTest extends TestCase
         $show->assertJsonPath('status', RunStatus::Completed->value);
         $show->assertJsonPath('activity_status', ActivityStatus::Completed->value);
         $this->assertSame($resultBlob, $show->json('result.blob'));
+    }
+
+    /**
+     * @param  array<string, mixed>  $envelope
+     */
+    private function assertExternalEnvelopeDecodes(array $envelope, mixed $expected): void
+    {
+        $this->assertArrayHasKey('external_storage', $envelope);
+        $this->assertArrayNotHasKey('blob', $envelope);
+
+        $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
+            $envelope,
+            'payload',
+            new LocalFilesystemExternalPayloadStorage($this->externalStorageDirectory),
+        );
+
+        $this->assertSame(
+            $expected,
+            Serializer::unserializeWithCodec((string) $resolved['codec'], (string) $resolved['payload']),
+        );
+    }
+
+    private function assertStoredExternalPayload(?string $payload): void
+    {
+        if (! is_string($payload)) {
+            $this->fail('Expected payload column to contain a stored external reference.');
+        }
+
+        $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $payload);
     }
 }

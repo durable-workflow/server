@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Api;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Support\ActivityTaskPoller;
+use App\Support\ExternalPayloadEnvelopeService;
+use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\ExternalExecutorConfigContract;
 use App\Support\InvocableCarrierContract;
 use App\Support\NamespaceExternalPayloadStorage;
@@ -15,9 +17,11 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
+use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
@@ -28,6 +32,7 @@ class ActivityTaskController
     public function __construct(
         private readonly ActivityTaskPoller $activityTaskPoller,
         private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
+        private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
         private readonly WorkerSessionRegistry $workerSessions,
     ) {}
 
@@ -113,7 +118,11 @@ class ActivityTaskController
                 'activity_type' => $claim['activity_type'],
                 'payload_codec' => $claim['payload_codec'],
                 'arguments' => $claim['arguments'] !== null
-                    ? ['codec' => $claim['payload_codec'] ?? CodecRegistry::defaultCodec(), 'blob' => $claim['arguments']]
+                    ? $this->payloadEnvelopes->workerEnvelope(
+                        $namespace,
+                        $claim['payload_codec'] ?? CodecRegistry::defaultCodec(),
+                        $claim['arguments'],
+                    )
                     : null,
                 'retry_policy' => $claim['retry_policy'],
                 'task_queue' => $claim['queue'],
@@ -162,16 +171,28 @@ class ActivityTaskController
 
         /** @var ActivityTaskBridgeContract $bridge */
         $bridge = app(ActivityTaskBridgeContract::class);
-        $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
-            $validated['result'] ?? null,
-            'result',
-            $this->externalPayloadStorage->driverFor($namespace),
-        );
-        $outcome = $bridge->complete(
-            $validated['activity_attempt_id'],
-            $resolved['payload'],
-            $resolved['codec'],
-        );
+        try {
+            $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
+                $validated['result'] ?? null,
+                'result',
+                $this->externalPayloadStorage->driverFor($namespace),
+            );
+        } catch (ValidationException $exception) {
+            throw $exception;
+        } catch (ExternalPayloadIntegrityException $exception) {
+            return $this->externalPayloadFailure($taskId, $validated['activity_attempt_id'], $exception, 422);
+        } catch (\Throwable $exception) {
+            return $this->externalPayloadFailure($taskId, $validated['activity_attempt_id'], $exception, 503);
+        }
+        try {
+            $outcome = $bridge->complete(
+                $validated['activity_attempt_id'],
+                $resolved['payload'],
+                $resolved['codec'],
+            );
+        } catch (ExternalPayloadStorageUnavailable $exception) {
+            return $this->externalPayloadFailure($taskId, $validated['activity_attempt_id'], $exception, 503);
+        }
         $stopStatus = $this->activityStopStatus($bridge, $validated['activity_attempt_id'], $outcome['reason']);
 
         return WorkerProtocol::json(array_merge([
@@ -244,11 +265,19 @@ class ActivityTaskController
 
         /** @var ActivityTaskBridgeContract $bridge */
         $bridge = app(ActivityTaskBridgeContract::class);
-        $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
-            $validated['failure']['details'] ?? null,
-            'failure.details',
-            $this->externalPayloadStorage->driverFor($namespace),
-        );
+        try {
+            $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
+                $validated['failure']['details'] ?? null,
+                'failure.details',
+                $this->externalPayloadStorage->driverFor($namespace),
+            );
+        } catch (ValidationException $exception) {
+            throw $exception;
+        } catch (ExternalPayloadIntegrityException $exception) {
+            return $this->externalPayloadFailure($taskId, $validated['activity_attempt_id'], $exception, 422);
+        } catch (\Throwable $exception) {
+            return $this->externalPayloadFailure($taskId, $validated['activity_attempt_id'], $exception, 503);
+        }
         $failure = $validated['failure'];
 
         if (array_key_exists('details', $failure)) {
@@ -260,25 +289,29 @@ class ActivityTaskController
         }
 
         try {
-            $outcome = $bridge->fail($validated['activity_attempt_id'], $failure, $resolved['codec']);
-        } catch (InvalidArgumentException $exception) {
-            if (! str_contains($exception->getMessage(), 'Unknown payload codec')) {
-                throw $exception;
-            }
-
             try {
-                $outcome = $bridge->fail($validated['activity_attempt_id'], $failure, CodecRegistry::defaultCodec());
-            } catch (InvalidArgumentException $retryException) {
-                if (! str_contains($retryException->getMessage(), 'Unknown payload codec')) {
-                    throw $retryException;
+                $outcome = $bridge->fail($validated['activity_attempt_id'], $failure, $resolved['codec']);
+            } catch (InvalidArgumentException $exception) {
+                if (! str_contains($exception->getMessage(), 'Unknown payload codec')) {
+                    throw $exception;
                 }
 
-                $outcome = $this->recordUnsupportedCodecActivityFailure(
-                    $validated['activity_attempt_id'],
-                    $failure,
-                    $bridge,
-                );
+                try {
+                    $outcome = $bridge->fail($validated['activity_attempt_id'], $failure, CodecRegistry::defaultCodec());
+                } catch (InvalidArgumentException $retryException) {
+                    if (! str_contains($retryException->getMessage(), 'Unknown payload codec')) {
+                        throw $retryException;
+                    }
+
+                    $outcome = $this->recordUnsupportedCodecActivityFailure(
+                        $validated['activity_attempt_id'],
+                        $failure,
+                        $bridge,
+                    );
+                }
             }
+        } catch (ExternalPayloadStorageUnavailable $exception) {
+            return $this->externalPayloadFailure($taskId, $validated['activity_attempt_id'], $exception, 503);
         }
         $stopStatus = $this->activityStopStatus($bridge, $validated['activity_attempt_id'], $outcome['reason']);
 
@@ -490,6 +523,26 @@ class ActivityTaskController
         }
 
         return $worker;
+    }
+
+    private function externalPayloadFailure(
+        string $taskId,
+        string $activityAttemptId,
+        \Throwable $exception,
+        int $status,
+    ): JsonResponse {
+        $integrityFailure = $status === 422;
+
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'activity_attempt_id' => $activityAttemptId,
+            'outcome' => 'rejected',
+            'recorded' => false,
+            'reason' => $integrityFailure
+                ? 'external_payload_integrity_failed'
+                : 'external_payload_storage_unavailable',
+            'error' => $exception->getMessage(),
+        ], $status);
     }
 
     /**

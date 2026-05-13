@@ -4,20 +4,27 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
+use App\Http\Controllers\Api\WorkerController;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
+use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Testing\TestResponse;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ExternalPayloads;
+use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
+use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\WorkflowExecutor;
 
 class PayloadEnvelopeIntegrationTest extends TestCase
@@ -418,9 +425,10 @@ class PayloadEnvelopeIntegrationTest extends TestCase
 
         $this->assertIsArray($completedEvent);
         $this->assertSame('avro', $completedEvent['payload']['payload_codec'] ?? null);
+        $this->assertSame('avro', $completedEvent['payload']['result']['codec'] ?? null);
         $this->assertSame(
             'Hello Ada from activity',
-            Serializer::unserializeWithCodec('avro', (string) ($completedEvent['payload']['result'] ?? '')),
+            Serializer::unserializeWithCodec('avro', (string) ($completedEvent['payload']['result']['blob'] ?? '')),
         );
     }
 
@@ -744,6 +752,414 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         $this->assertSame(['Ada'], Serializer::unserializeWithCodec('avro', $blob));
     }
 
+    public function test_external_storage_round_trips_oversize_worker_payloads_through_history(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', [
+            'driver' => 'local',
+            'enabled' => true,
+            'threshold_bytes' => 32,
+            'config' => [
+                'uri' => 'file://'.$this->externalStorageDirectory,
+            ],
+        ]);
+
+        $largeInput = str_repeat('A', 128);
+        $activityResult = ['message' => str_repeat('B', 128)];
+        $workflowResult = ['done' => str_repeat('C', 128)];
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-external-roundtrip',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'ext-q',
+                'input' => [$largeInput],
+            ]);
+
+        $start->assertCreated();
+        $runId = (string) $start->json('run_id');
+
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $this->assertStoredExternalPayload($run->arguments);
+        $this->assertSame([$largeInput], $run->workflowArguments());
+
+        $this->registerWorker('worker-external-roundtrip', 'ext-q');
+
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'worker-external-roundtrip',
+                'task_queue' => 'ext-q',
+            ]);
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('task.arguments.codec', 'avro')
+            ->assertJsonStructure(['task' => ['arguments' => ['codec', 'external_storage']]]);
+        $this->assertExternalEnvelopeDecodes($firstPoll->json('task.arguments'), [$largeInput]);
+
+        $activityArguments = Serializer::serializeWithCodec('avro', [$largeInput]);
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/'.$firstPoll->json('task.task_id').'/complete', [
+                'lease_owner' => 'worker-external-roundtrip',
+                'workflow_task_attempt' => $firstPoll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'schedule_activity',
+                        'activity_type' => 'tests.external-greeting-activity',
+                        'arguments' => $this->externalStorageEnvelope('avro', $activityArguments),
+                    ],
+                ],
+            ])
+            ->assertOk();
+
+        $activity = ActivityExecution::query()
+            ->where('workflow_run_id', $runId)
+            ->where('activity_type', 'tests.external-greeting-activity')
+            ->firstOrFail();
+        $this->assertStoredExternalPayload($activity->arguments);
+        $this->assertSame([$largeInput], $activity->activityArguments());
+
+        $activityPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'worker-external-roundtrip',
+                'task_queue' => 'ext-q',
+            ]);
+
+        $activityPoll->assertOk()
+            ->assertJsonPath('task.arguments.codec', 'avro')
+            ->assertJsonStructure(['task' => ['arguments' => ['codec', 'external_storage']]]);
+        $this->assertExternalEnvelopeDecodes($activityPoll->json('task.arguments'), [$largeInput]);
+
+        $activityResultPayload = Serializer::serializeWithCodec('avro', $activityResult);
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/'.$activityPoll->json('task.task_id').'/complete', [
+                'activity_attempt_id' => $activityPoll->json('task.activity_attempt_id'),
+                'lease_owner' => 'worker-external-roundtrip',
+                'result' => $this->externalStorageEnvelope('avro', $activityResultPayload),
+            ])
+            ->assertOk();
+
+        $activity->refresh();
+        $this->assertStoredExternalPayload($activity->result);
+        $this->assertSame($activityResult, $activity->activityResult());
+
+        $resumePoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'worker-external-roundtrip',
+                'task_queue' => 'ext-q',
+            ]);
+
+        $resumePoll->assertOk();
+        $activityCompleted = collect($resumePoll->json('task.history_events'))
+            ->firstWhere('event_type', 'ActivityCompleted');
+
+        $this->assertIsArray($activityCompleted);
+        $this->assertExternalEnvelopeDecodes($activityCompleted['payload']['result'], $activityResult);
+
+        $workflowResultPayload = Serializer::serializeWithCodec('avro', $workflowResult);
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/'.$resumePoll->json('task.task_id').'/complete', [
+                'lease_owner' => 'worker-external-roundtrip',
+                'workflow_task_attempt' => $resumePoll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => $this->externalStorageEnvelope('avro', $workflowResultPayload),
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('run_status', 'completed');
+
+        $run->refresh();
+        $this->assertStoredExternalPayload($run->output);
+        $this->assertSame($workflowResult, $run->workflowOutput());
+
+        $history = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/wf-external-roundtrip/runs/{$runId}/history");
+
+        $history->assertOk();
+        $historyActivityCompleted = collect($history->json('events'))
+            ->firstWhere('event_type', 'ActivityCompleted');
+        $historyWorkflowCompleted = collect($history->json('events'))
+            ->firstWhere('event_type', 'WorkflowCompleted');
+
+        $this->assertIsArray($historyActivityCompleted);
+        $this->assertIsArray($historyWorkflowCompleted);
+        $this->assertExternalEnvelopeDecodes($historyActivityCompleted['payload']['result'], $activityResult);
+        $this->assertExternalEnvelopeDecodes($historyWorkflowCompleted['payload']['output'], $workflowResult);
+
+        $show = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-external-roundtrip');
+
+        $show->assertOk()
+            ->assertJsonPath('output.done', $workflowResult['done'])
+            ->assertJsonStructure(['output_envelope' => ['codec', 'external_storage']]);
+        $this->assertExternalEnvelopeDecodes($show->json('output_envelope'), $workflowResult);
+    }
+
+    public function test_history_payload_externalizes_oversize_string_fields(): void
+    {
+        Queue::fake();
+        $this->createNamespace('default', [
+            'driver' => 'local',
+            'enabled' => true,
+            'threshold_bytes' => 32,
+            'config' => [
+                'uri' => 'file://'.$this->externalStorageDirectory,
+            ],
+        ]);
+
+        $arguments = ['input' => str_repeat('A', 128)];
+        $result = ['result' => str_repeat('B', 128)];
+        $output = ['output' => str_repeat('C', 128)];
+        $commandPayload = ['command' => str_repeat('D', 128)];
+        $activityArguments = ['activity_input' => str_repeat('E', 128)];
+        $activityResult = ['activity_result' => str_repeat('F', 128)];
+        $details = ['details' => str_repeat('G', 128)];
+
+        /** @var ExternalPayloadEnvelopeService $envelopes */
+        $envelopes = app(ExternalPayloadEnvelopeService::class);
+        $payload = $envelopes->historyPayload('default', [
+            'payload_codec' => 'avro',
+            'arguments' => Serializer::serializeWithCodec('avro', $arguments),
+            'result' => Serializer::serializeWithCodec('avro', $result),
+            'output' => Serializer::serializeWithCodec('avro', $output),
+            'command' => [
+                'payload_codec' => 'avro',
+                'payload' => Serializer::serializeWithCodec('avro', $commandPayload),
+            ],
+            'activity' => [
+                'payload_codec' => 'avro',
+                'arguments' => Serializer::serializeWithCodec('avro', $activityArguments),
+                'result' => Serializer::serializeWithCodec('avro', $activityResult),
+            ],
+            'exception' => [
+                'details_payload_codec' => 'avro',
+                'details' => Serializer::serializeWithCodec('avro', $details),
+            ],
+        ], 'avro');
+
+        $this->assertExternalEnvelopeDecodes($payload['arguments'], $arguments);
+        $this->assertExternalEnvelopeDecodes($payload['result'], $result);
+        $this->assertExternalEnvelopeDecodes($payload['output'], $output);
+        $this->assertExternalEnvelopeDecodes($payload['command']['payload'], $commandPayload);
+        $this->assertExternalEnvelopeDecodes($payload['activity']['arguments'], $activityArguments);
+        $this->assertExternalEnvelopeDecodes($payload['activity']['result'], $activityResult);
+        $this->assertExternalEnvelopeDecodes($payload['exception']['details'], $details);
+    }
+
+    public function test_history_payload_inlines_string_fields_below_external_storage_threshold(): void
+    {
+        Queue::fake();
+        $this->createNamespace('default', [
+            'driver' => 'local',
+            'enabled' => true,
+            'threshold_bytes' => 1024,
+            'config' => [
+                'uri' => 'file://'.$this->externalStorageDirectory,
+            ],
+        ]);
+
+        /** @var ExternalPayloadEnvelopeService $envelopes */
+        $envelopes = app(ExternalPayloadEnvelopeService::class);
+        $payload = $envelopes->historyPayload('default', [
+            'payload_codec' => 'zstd',
+            'output' => 'opaque-small-payload',
+        ], 'zstd');
+
+        $this->assertSame('zstd', $payload['output']['codec'] ?? null);
+        $this->assertSame('opaque-small-payload', $payload['output']['blob'] ?? null);
+        $this->assertArrayNotHasKey('external_storage', $payload['output']);
+    }
+
+    public function test_workflow_task_completion_rejects_wrong_lease_before_reading_external_payload_reference(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', [
+            'driver' => 'local',
+            'enabled' => true,
+            'threshold_bytes' => 32,
+            'config' => [
+                'uri' => 'file://'.$this->externalStorageDirectory,
+            ],
+        ]);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-external-wrong-lease',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'ext-q',
+                'input' => ['Ada'],
+            ])
+            ->assertCreated();
+
+        $this->registerWorker('worker-external-wrong-lease', 'ext-q');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'worker-external-wrong-lease',
+                'task_queue' => 'ext-q',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.lease_owner', 'worker-external-wrong-lease');
+
+        $missingPayload = Serializer::serializeWithCodec('avro', ['not-read']);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/'.$poll->json('task.task_id').'/complete', [
+                'lease_owner' => 'wrong-worker',
+                'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => $this->missingExternalStorageEnvelope('avro', $missingPayload),
+                    ],
+                ],
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'lease_owner_mismatch')
+            ->assertJsonPath('lease_owner', 'worker-external-wrong-lease');
+    }
+
+    public function test_workflow_task_completion_rejects_correct_lease_missing_external_payload_reference(): void
+    {
+        $workerId = 'worker-external-missing-reference';
+        $poll = $this->pollExternalStorageWorkflowTask('wf-external-missing-reference', $workerId);
+        $missingPayload = Serializer::serializeWithCodec('avro', ['missing-reference']);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/'.$poll->json('task.task_id').'/complete', [
+                'lease_owner' => $workerId,
+                'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => $this->missingExternalStorageEnvelope('avro', $missingPayload),
+                    ],
+                ],
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('outcome', 'rejected')
+            ->assertJsonPath('recorded', false)
+            ->assertJsonPath('reason', 'external_payload_integrity_failed');
+    }
+
+    public function test_workflow_task_completion_rejects_correct_lease_corrupt_external_payload_reference(): void
+    {
+        $workerId = 'worker-external-corrupt-reference';
+        $poll = $this->pollExternalStorageWorkflowTask('wf-external-corrupt-reference', $workerId);
+        $payload = Serializer::serializeWithCodec('avro', ['corrupt-reference']);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/'.$poll->json('task.task_id').'/complete', [
+                'lease_owner' => $workerId,
+                'workflow_task_attempt' => $poll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => $this->corruptExternalStorageEnvelope('avro', $payload),
+                    ],
+                ],
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('outcome', 'rejected')
+            ->assertJsonPath('recorded', false)
+            ->assertJsonPath('reason', 'external_payload_integrity_failed');
+    }
+
+    public function test_workflow_task_command_external_storage_arguments_preserve_codec_for_normalizer(): void
+    {
+        $this->createNamespace('default', [
+            'driver' => 'local',
+            'enabled' => true,
+            'threshold_bytes' => 32,
+            'config' => [
+                'uri' => 'file://'.$this->externalStorageDirectory,
+            ],
+        ]);
+
+        $payload = 'opaque-continue-as-new-payload';
+
+        $commands = $this->resolveWorkflowTaskCommandPayloadReferences([
+            [
+                'type' => 'continue_as_new',
+                'arguments' => $this->externalStorageEnvelope('workflow-serializer-y', $payload),
+            ],
+        ]);
+
+        $this->assertSame('workflow-serializer-y', $commands[0]['payload_codec'] ?? null);
+        $this->assertSame([
+            'codec' => 'workflow-serializer-y',
+            'blob' => $payload,
+        ], $commands[0]['arguments']);
+    }
+
+    public function test_workflow_task_command_external_storage_results_preserve_codec_for_supported_result_commands(): void
+    {
+        $this->createNamespace('default', [
+            'driver' => 'local',
+            'enabled' => true,
+            'threshold_bytes' => 32,
+            'config' => [
+                'uri' => 'file://'.$this->externalStorageDirectory,
+            ],
+        ]);
+
+        $workflowPayload = 'opaque-workflow-result-payload';
+        $sideEffectPayload = 'opaque-side-effect-payload';
+
+        $commands = $this->resolveWorkflowTaskCommandPayloadReferences([
+            [
+                'type' => 'complete_workflow',
+                'result' => $this->externalStorageEnvelope('workflow-serializer-y', $workflowPayload),
+            ],
+            [
+                'type' => 'record_side_effect',
+                'payload_codec' => 'workflow-serializer-y',
+                'result' => $this->externalStorageEnvelope('workflow-serializer-y', $sideEffectPayload),
+            ],
+        ]);
+
+        $this->assertSame([
+            'codec' => 'workflow-serializer-y',
+            'blob' => $workflowPayload,
+        ], $commands[0]['result']);
+        $this->assertSame([
+            'codec' => 'workflow-serializer-y',
+            'blob' => $sideEffectPayload,
+        ], $commands[1]['result']);
+        $this->assertSame('workflow-serializer-y', $commands[1]['payload_codec'] ?? null);
+    }
+
+    public function test_workflow_task_command_external_storage_update_results_avoid_unsupported_payload_codec_fields(): void
+    {
+        $this->createNamespace('default', [
+            'driver' => 'local',
+            'enabled' => true,
+            'threshold_bytes' => 32,
+            'config' => [
+                'uri' => 'file://'.$this->externalStorageDirectory,
+            ],
+        ]);
+
+        $updatePayload = 'opaque-update-result-payload';
+
+        $commands = $this->resolveWorkflowTaskCommandPayloadReferences([
+            [
+                'type' => 'complete_update',
+                'update_id' => 'update-1',
+                'payload_codec' => 'workflow-serializer-y',
+                'result' => $this->externalStorageEnvelope('workflow-serializer-y', $updatePayload),
+            ],
+        ]);
+
+        $this->assertSame($updatePayload, $commands[0]['result']);
+        $this->assertArrayNotHasKey('payload_codec', $commands[0]);
+    }
+
     public function test_describe_response_includes_input_and_output_envelopes(): void
     {
         Queue::fake();
@@ -1002,6 +1418,136 @@ class PayloadEnvelopeIntegrationTest extends TestCase
                 'codec' => $codec,
             ],
         ];
+    }
+
+    /**
+     * @return array{codec: string, external_storage: array{schema: string, uri: string, sha256: string, size_bytes: int, codec: string}}
+     */
+    private function missingExternalStorageEnvelope(string $codec, string $payload): array
+    {
+        $sha256 = hash('sha256', $payload);
+        $directory = $this->externalStorageDirectory.'/missing';
+        File::ensureDirectoryExists($directory);
+
+        return [
+            'codec' => $codec,
+            'external_storage' => [
+                'schema' => 'durable-workflow.v2.external-payload-reference.v1',
+                'uri' => 'file://'.$directory.'/'.$sha256.'.bin',
+                'sha256' => $sha256,
+                'size_bytes' => strlen($payload),
+                'codec' => $codec,
+            ],
+        ];
+    }
+
+    /**
+     * @return array{codec: string, external_storage: array{schema: string, uri: string, sha256: string, size_bytes: int, codec: string}}
+     */
+    private function corruptExternalStorageEnvelope(string $codec, string $payload): array
+    {
+        $sha256 = hash('sha256', $payload);
+        $directory = $this->externalStorageDirectory.'/corrupt';
+        File::ensureDirectoryExists($directory);
+
+        $corruptPayload = strlen($payload) > 0
+            ? (($payload[0] === 'x' ? 'y' : 'x').substr($payload, 1))
+            : 'x';
+        $path = $directory.'/'.$codec.'-'.$sha256.'.bin';
+        file_put_contents($path, $corruptPayload);
+
+        return [
+            'codec' => $codec,
+            'external_storage' => [
+                'schema' => 'durable-workflow.v2.external-payload-reference.v1',
+                'uri' => 'file://'.$path,
+                'sha256' => $sha256,
+                'size_bytes' => strlen($payload),
+                'codec' => $codec,
+            ],
+        ];
+    }
+
+    private function pollExternalStorageWorkflowTask(string $workflowId, string $workerId): TestResponse
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', [
+            'driver' => 'local',
+            'enabled' => true,
+            'threshold_bytes' => 32,
+            'config' => [
+                'uri' => 'file://'.$this->externalStorageDirectory,
+            ],
+        ]);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => $workflowId,
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'ext-q',
+                'input' => ['Ada'],
+            ])
+            ->assertCreated();
+
+        $this->registerWorker($workerId, 'ext-q');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => $workerId,
+                'task_queue' => 'ext-q',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.lease_owner', $workerId);
+
+        return $poll;
+    }
+
+    /**
+     * @param  array<string, mixed>  $envelope
+     */
+    private function assertExternalEnvelopeDecodes(array $envelope, mixed $expected): void
+    {
+        $this->assertSame('avro', $envelope['codec'] ?? null);
+        $this->assertArrayHasKey('external_storage', $envelope);
+        $this->assertArrayNotHasKey('blob', $envelope);
+
+        $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
+            $envelope,
+            'payload',
+            new LocalFilesystemExternalPayloadStorage($this->externalStorageDirectory),
+        );
+
+        $this->assertSame(
+            $expected,
+            Serializer::unserializeWithCodec((string) $resolved['codec'], (string) $resolved['payload']),
+        );
+    }
+
+    private function assertStoredExternalPayload(?string $payload): void
+    {
+        if (! is_string($payload)) {
+            $this->fail('Expected payload column to contain a stored external reference.');
+        }
+
+        $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $payload);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     * @return list<array<string, mixed>>
+     */
+    private function resolveWorkflowTaskCommandPayloadReferences(array $commands): array
+    {
+        $controller = app(WorkerController::class);
+        $method = new \ReflectionMethod($controller, 'resolveWorkflowTaskCommandPayloadReferences');
+        $method->setAccessible(true);
+
+        /** @var list<array<string, mixed>> $resolved */
+        $resolved = $method->invoke($controller, $commands, 'default');
+
+        return $resolved;
     }
 
     private function registerWorker(string $workerId, string $taskQueue): void

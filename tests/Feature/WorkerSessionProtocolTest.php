@@ -153,6 +153,15 @@ class WorkerSessionProtocolTest extends TestCase
         $scheduleActivity->assertOk()
             ->assertJsonPath('run_status', 'waiting');
 
+        $execution = ActivityExecution::query()
+            ->where('workflow_run_id', (string) $start->json('run_id'))
+            ->where('activity_type', 'tests.external-greeting-activity')
+            ->firstOrFail();
+
+        $this->assertSame('gpu-activities', $execution->queue);
+        $this->assertSame('gpu-activities', $execution->activity_options['queue'] ?? null);
+        $this->assertSame('gpu-activities', $execution->activity_options['worker_session']['queue'] ?? null);
+
         $this->registerWorkerThroughProtocol(
             workerId: 'cpu-worker',
             taskQueue: 'gpu-activities',

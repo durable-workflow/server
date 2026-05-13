@@ -652,7 +652,11 @@ class ClusterInfoTest extends TestCase
             )
             ->assertJsonPath(
                 'worker_protocol.external_execution_surface_contract.contract_seams.payload_external_storage.status',
-                'planned',
+                'published',
+            )
+            ->assertJsonPath(
+                'worker_protocol.external_execution_surface_contract.contract_seams.payload_external_storage.cluster_info_path',
+                'namespace.external_payload_storage',
             )
             ->assertJsonPath(
                 'worker_protocol.server_capabilities.external_execution_surface.schema',
@@ -661,6 +665,64 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath(
                 'client_compatibility.required_protocols.worker_protocol.external_execution_surface_contract.version',
                 1,
+            );
+    }
+
+    public function test_it_exposes_namespace_external_payload_storage_policy_path(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'analytics',
+            'description' => 'Analytics namespace',
+            'retention_days' => 45,
+            'status' => 'active',
+            'external_payload_storage' => [
+                'driver' => 'custom',
+                'enabled' => true,
+                'threshold_bytes' => 1024,
+                'config' => [
+                    'disk' => 'azure-payloads',
+                    'container' => 'payloads',
+                    'scheme' => 'azblob',
+                    'prefix' => 'durable',
+                ],
+            ],
+        ]);
+
+        $this->withHeaders(['X-Namespace' => 'analytics'])
+            ->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('namespace.name', 'analytics')
+            ->assertJsonPath('namespace.exists', true)
+            ->assertJsonPath('namespace.status', 'active')
+            ->assertJsonPath('namespace.retention_days', 45)
+            ->assertJsonPath(
+                'namespace.external_payload_storage.schema',
+                'durable-workflow.v2.external-payload-reference.v1',
+            )
+            ->assertJsonPath('namespace.external_payload_storage.version', 1)
+            ->assertJsonPath('namespace.external_payload_storage.configured', true)
+            ->assertJsonPath('namespace.external_payload_storage.enabled', true)
+            ->assertJsonPath('namespace.external_payload_storage.status', 'available')
+            ->assertJsonPath('namespace.external_payload_storage.driver', 'custom')
+            ->assertJsonPath('namespace.external_payload_storage.threshold_bytes', 1024)
+            ->assertJsonPath('namespace.external_payload_storage.reference_uri_scheme', 'azblob')
+            ->assertJsonPath('namespace.external_payload_storage.custom_driver_configurable', true)
+            ->assertJsonPath('namespace.external_payload_storage.config_redacted', true)
+            ->assertJsonMissingPath('namespace.external_payload_storage.config');
+    }
+
+    public function test_cluster_info_exposes_unconfigured_external_payload_storage_object(): void
+    {
+        $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('namespace.name', 'default')
+            ->assertJsonPath('namespace.exists', false)
+            ->assertJsonPath('namespace.external_payload_storage.configured', false)
+            ->assertJsonPath('namespace.external_payload_storage.enabled', false)
+            ->assertJsonPath('namespace.external_payload_storage.status', 'unconfigured')
+            ->assertJsonPath(
+                'namespace.external_payload_storage.schema',
+                'durable-workflow.v2.external-payload-reference.v1',
             );
     }
 

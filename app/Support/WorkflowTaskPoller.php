@@ -30,6 +30,7 @@ final class WorkflowTaskPoller
         private readonly ServerPollingCache $cache,
         private readonly TaskQueueAdmission $admission,
         private readonly TaskFairnessState $fairnessState,
+        private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
     ) {}
 
     /**
@@ -564,7 +565,7 @@ final class WorkflowTaskPoller
             // atomically inside claimStatus().
             $attempt = $this->packageAttemptCount($taskId);
 
-            $history = $this->fetchHistory($taskId, $historyPageSize, $acceptHistoryEncoding);
+            $history = $this->fetchHistory($namespace, $taskId, $historyPageSize, $acceptHistoryEncoding);
 
             if (! is_array($history)) {
                 \Log::warning('[WorkflowTaskPoller] Task claimed but history fetch failed', [
@@ -580,7 +581,7 @@ final class WorkflowTaskPoller
                 'historyEventsCount' => count($history['history_events'] ?? []),
             ]);
 
-            return $this->taskPayload($claim, $attempt, $history, $workflowId);
+            return $this->taskPayload($namespace, $claim, $attempt, $history, $workflowId);
         }
 
         \Log::debug('[WorkflowTaskPoller] No tasks claimed (examined all ready tasks)');
@@ -872,6 +873,7 @@ final class WorkflowTaskPoller
      * @return array<string, mixed>|null
      */
     private function fetchHistory(
+        string $namespace,
         string $taskId,
         ?int $historyPageSize,
         ?string $acceptHistoryEncoding,
@@ -894,7 +896,12 @@ final class WorkflowTaskPoller
             return null;
         }
 
-        $history['history_events'] = $this->historyEventsWithSignalArguments($history['history_events'] ?? []);
+        $payloadCodec = $this->nonEmptyString($history['payload_codec'] ?? null) ?? CodecRegistry::defaultCodec();
+        $history['history_events'] = $this->historyEventsWithSignalArguments(
+            $history['history_events'] ?? [],
+            $namespace,
+            $payloadCodec,
+        );
 
         if ($acceptHistoryEncoding !== null) {
             $history = HistoryPayloadCompression::compress($history, $acceptHistoryEncoding);
@@ -986,6 +993,7 @@ final class WorkflowTaskPoller
      * @return array<string, mixed>
      */
     private function taskPayload(
+        string $namespace,
         array $claim,
         int $attempt,
         array $history,
@@ -1001,7 +1009,11 @@ final class WorkflowTaskPoller
             'workflow_type' => $claim['workflow_type'],
             'payload_codec' => $claim['payload_codec'],
             'arguments' => ($history['arguments'] ?? null) !== null
-                ? ['codec' => $claim['payload_codec'] ?? CodecRegistry::defaultCodec(), 'blob' => $history['arguments']]
+                ? $this->payloadEnvelopes->workerEnvelope(
+                    $namespace,
+                    $claim['payload_codec'] ?? CodecRegistry::defaultCodec(),
+                    $history['arguments'],
+                )
                 : null,
             'run_status' => $history['run_status'] ?? null,
             'last_history_sequence' => $history['last_history_sequence'] ?? 0,
@@ -1013,7 +1025,7 @@ final class WorkflowTaskPoller
             'lease_expires_at' => $claim['lease_expires_at'],
         ];
 
-        $payload = array_merge($payload, $this->workflowTaskResumeContext((string) $claim['task_id']));
+        $payload = array_merge($payload, $this->workflowTaskResumeContext($namespace, (string) $claim['task_id']));
 
         // Include pagination metadata when history was fetched via
         // historyPayloadPaginated() so the controller can build page tokens.
@@ -1042,7 +1054,7 @@ final class WorkflowTaskPoller
      *
      * @return array<string, mixed>
      */
-    private function workflowTaskResumeContext(string $taskId): array
+    private function workflowTaskResumeContext(string $namespace, string $taskId): array
     {
         $context = [
             'workflow_wait_kind' => null,
@@ -1092,7 +1104,7 @@ final class WorkflowTaskPoller
             $context[$field] = $this->nonEmptyString($value);
         }
 
-        $context['signal_arguments'] = $this->signalArgumentsEnvelope($context['workflow_signal_id']);
+        $context['signal_arguments'] = $this->signalArgumentsEnvelope($context['workflow_signal_id'], $namespace);
 
         return $context;
     }
@@ -1101,7 +1113,21 @@ final class WorkflowTaskPoller
      * @param  array<int, mixed>  $events
      * @return array<int, mixed>
      */
-    public function historyEventsWithSignalArguments(array $events): array
+    public function historyEventsWithSignalArguments(
+        array $events,
+        ?string $namespace = null,
+        ?string $fallbackCodec = null,
+    ): array {
+        $events = $this->payloadEnvelopes->historyEvents($namespace, $events, $fallbackCodec);
+
+        return $this->historyEventsWithSignalArgumentEnvelopes($events, $namespace);
+    }
+
+    /**
+     * @param  array<int, mixed>  $events
+     * @return array<int, mixed>
+     */
+    private function historyEventsWithSignalArgumentEnvelopes(array $events, ?string $namespace): array
     {
         $signalIds = [];
 
@@ -1146,7 +1172,7 @@ final class WorkflowTaskPoller
             $signalId = $this->nonEmptyString($payload['signal_id'] ?? null);
             $signal = $signalId === null ? null : ($signals[$signalId] ?? null);
             $envelope = $signal instanceof WorkflowSignal
-                ? $this->signalArgumentsEnvelopeFromRecord($signal)
+                ? $this->signalArgumentsEnvelopeFromRecord($signal, $namespace)
                 : null;
 
             if ($envelope === null) {
@@ -1163,9 +1189,9 @@ final class WorkflowTaskPoller
     }
 
     /**
-     * @return array{codec: string, blob: string}|null
+     * @return array<string, mixed>|null
      */
-    private function signalArgumentsEnvelope(?string $signalId): ?array
+    private function signalArgumentsEnvelope(?string $signalId, ?string $namespace): ?array
     {
         if ($signalId === null) {
             return null;
@@ -1175,23 +1201,24 @@ final class WorkflowTaskPoller
         $signal = WorkflowSignal::query()->find($signalId);
 
         return $signal instanceof WorkflowSignal
-            ? $this->signalArgumentsEnvelopeFromRecord($signal)
+            ? $this->signalArgumentsEnvelopeFromRecord($signal, $namespace)
             : null;
     }
 
     /**
-     * @return array{codec: string, blob: string}|null
+     * @return array<string, mixed>|null
      */
-    private function signalArgumentsEnvelopeFromRecord(WorkflowSignal $signal): ?array
+    private function signalArgumentsEnvelopeFromRecord(WorkflowSignal $signal, ?string $namespace): ?array
     {
         if (! is_string($signal->arguments) || $signal->arguments === '') {
             return null;
         }
 
-        return [
-            'codec' => $this->nonEmptyString($signal->payload_codec) ?? CodecRegistry::defaultCodec(),
-            'blob' => $signal->arguments,
-        ];
+        return $this->payloadEnvelopes->workerEnvelope(
+            $namespace,
+            $this->nonEmptyString($signal->payload_codec) ?? CodecRegistry::defaultCodec(),
+            $signal->arguments,
+        );
     }
 
     /**

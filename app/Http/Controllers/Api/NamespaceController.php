@@ -135,14 +135,17 @@ class NamespaceController
         }
 
         $validated = $request->validate([
-            'driver' => ['required', 'string', Rule::in(['local', 's3', 'gcs', 'azure'])],
+            'driver' => ['required', 'string', Rule::in(['local', 's3', 'gcs', 'azure', 'custom'])],
             'enabled' => ['sometimes', 'boolean'],
             'threshold_bytes' => ['nullable', 'integer', 'min:1'],
             'config' => ['nullable', 'array'],
             'config.uri' => ['nullable', 'string', 'max:2048'],
             'config.bucket' => ['nullable', 'string', 'max:255'],
+            'config.container' => ['nullable', 'string', 'max:255'],
+            'config.name' => ['nullable', 'string', 'max:255'],
             'config.disk' => ['nullable', 'string', 'max:255'],
             'config.prefix' => ['nullable', 'string', 'max:1024'],
+            'config.scheme' => ['nullable', 'string', 'max:64'],
             'config.region' => ['nullable', 'string', 'max:128'],
             'config.endpoint' => ['nullable', 'string', 'max:2048'],
             'config.auth_profile' => ['nullable', 'string', 'max:255'],

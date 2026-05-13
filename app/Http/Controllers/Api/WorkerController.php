@@ -4,7 +4,9 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
+use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\HistoryRetentionEnforcer;
+use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\QueryTaskQueueUnavailableException;
 use App\Support\WorkerProtocol;
@@ -16,6 +18,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\HistoryPayloadCompression;
@@ -32,6 +35,7 @@ class WorkerController
         private readonly WorkflowTaskLeaseRecovery $workflowTaskLeaseRecovery,
         private readonly WorkflowTaskOwnership $taskOwnership,
         private readonly WorkflowQueryTaskBroker $queryTasks,
+        private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
     ) {}
 
     /**
@@ -621,6 +625,8 @@ class WorkerController
 
         $history['history_events'] = $this->workflowTaskPoller->historyEventsWithSignalArguments(
             $history['history_events'] ?? [],
+            $namespace,
+            is_string($history['payload_codec'] ?? null) ? $history['payload_codec'] : null,
         );
 
         if ($acceptHistoryEncoding !== null) {
@@ -695,6 +701,7 @@ class WorkerController
             'commands.*.workflow_type' => ['nullable', 'string'],
             'commands.*.delay_seconds' => ['nullable', 'integer', 'min:0'],
             'commands.*.message' => ['nullable', 'string'],
+            'commands.*.payload_codec' => ['nullable', 'string'],
             'commands.*.update_id' => ['nullable', 'string'],
             'commands.*.exception_class' => ['nullable', 'string'],
             'commands.*.exception_type' => ['nullable', 'string'],
@@ -711,17 +718,9 @@ class WorkerController
         ]);
 
         $commands = $this->normalizeWorkflowTaskCommandIntegerFields($validated['commands']);
+        $commands = $this->applyWorkerSessionRoutingDefaults($commands);
 
         $this->validateWorkflowTaskCommandScopes($commands);
-
-        if ($response = $this->guardWorkerSessionCommandsAvailable(
-            $request,
-            $taskId,
-            (int) $validated['workflow_task_attempt'],
-            $commands,
-        )) {
-            return $response;
-        }
 
         if ($response = $this->guardWorkflowTaskOwnership(
             $request,
@@ -733,7 +732,25 @@ class WorkerController
             return $response;
         }
 
-        $commands = $this->applyWorkerSessionRoutingDefaults($commands);
+        if ($response = $this->guardWorkerSessionCommandsAvailable(
+            $request,
+            $taskId,
+            (int) $validated['workflow_task_attempt'],
+            $commands,
+        )) {
+            return $response;
+        }
+
+        try {
+            $commands = $this->resolveWorkflowTaskCommandPayloadReferences($commands, $namespace);
+        } catch (ValidationException $exception) {
+            throw $exception;
+        } catch (ExternalPayloadIntegrityException $exception) {
+            return $this->externalPayloadFailure($taskId, (int) $validated['workflow_task_attempt'], $exception, 422);
+        } catch (\Throwable $exception) {
+            return $this->externalPayloadFailure($taskId, (int) $validated['workflow_task_attempt'], $exception, 503);
+        }
+
         $commands = WorkflowCommandNormalizer::normalize($commands);
 
         /** @var WorkflowTaskBridge $bridge */
@@ -752,6 +769,8 @@ class WorkerController
                 'current_value' => $e->currentValue,
                 'configured_limit' => $e->configuredLimit,
             ], 422);
+        } catch (ExternalPayloadStorageUnavailable $exception) {
+            return $this->externalPayloadFailure($taskId, (int) $validated['workflow_task_attempt'], $exception, 503);
         }
 
         return WorkerProtocol::json([
@@ -982,6 +1001,108 @@ class WorkerController
         return $commands;
     }
 
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     * @return list<array<string, mixed>>
+     */
+    private function resolveWorkflowTaskCommandPayloadReferences(array $commands, string $namespace): array
+    {
+        $driver = $this->externalPayloadStorage->driverFor($namespace);
+
+        foreach ($commands as $index => $command) {
+            $commandType = $command['type'] ?? null;
+
+            if ($commandType === 'complete_update') {
+                unset($commands[$index]['payload_codec']);
+            }
+
+            foreach (['arguments', 'result'] as $field) {
+                if (! array_key_exists($field, $command) || ! is_array($command[$field])) {
+                    continue;
+                }
+
+                $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
+                    $command[$field],
+                    "commands.{$index}.{$field}",
+                    $driver,
+                );
+
+                if ($resolved['codec'] === null) {
+                    $commands[$index][$field] = $resolved['payload'];
+
+                    continue;
+                }
+
+                $normalizerAcceptsPayloadEnvelope = ($field === 'arguments'
+                    && in_array($commandType, ['schedule_activity', 'start_child_workflow', 'continue_as_new'], true))
+                    || ($field === 'result'
+                        && in_array($commandType, ['complete_workflow', 'record_side_effect'], true));
+
+                if (! $normalizerAcceptsPayloadEnvelope) {
+                    unset($commands[$index]['payload_codec']);
+                    $commands[$index][$field] = $resolved['payload'];
+
+                    continue;
+                }
+
+                $commands[$index][$field] = [
+                    'codec' => $resolved['codec'],
+                    'blob' => $resolved['payload'],
+                ];
+
+                if (
+                    $field === 'arguments'
+                    && $commandType === 'continue_as_new'
+                    && ! array_key_exists('payload_codec', $commands[$index])
+                ) {
+                    $commands[$index]['payload_codec'] = $resolved['codec'];
+                }
+            }
+        }
+
+        return $commands;
+    }
+
+    private function externalPayloadFailure(
+        string $taskId,
+        int $workflowTaskAttempt,
+        \Throwable $exception,
+        int $status,
+    ): JsonResponse {
+        $integrityFailure = $status === 422;
+
+        return WorkerProtocol::json([
+            'task_id' => $taskId,
+            'workflow_task_attempt' => $workflowTaskAttempt,
+            'outcome' => 'rejected',
+            'recorded' => false,
+            'reason' => $integrityFailure
+                ? 'external_payload_integrity_failed'
+                : 'external_payload_storage_unavailable',
+            'error' => $exception->getMessage(),
+        ], $status);
+    }
+
+    private function externalQueryPayloadFailure(
+        string $queryTaskId,
+        int $queryTaskAttempt,
+        \Throwable $exception,
+        int $status,
+    ): JsonResponse {
+        $integrityFailure = $status === 422;
+
+        return WorkerProtocol::json([
+            'query_task_id' => $queryTaskId,
+            'query_task_attempt' => $queryTaskAttempt,
+            'outcome' => 'rejected',
+            'recorded' => false,
+            'reason' => $integrityFailure
+                ? 'external_payload_integrity_failed'
+                : 'external_payload_storage_unavailable',
+            'error' => $exception->getMessage(),
+        ], $status);
+    }
+
     private function normalizeValidatedInteger(mixed $value): mixed
     {
         if (is_int($value)) {
@@ -1119,7 +1240,11 @@ class WorkerController
 
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
-        $outcome = $bridge->fail($taskId, $validated['failure']);
+        try {
+            $outcome = $bridge->fail($taskId, $validated['failure']);
+        } catch (ExternalPayloadStorageUnavailable $exception) {
+            return $this->externalPayloadFailure($taskId, (int) $validated['workflow_task_attempt'], $exception, 503);
+        }
 
         return WorkerProtocol::json([
             'task_id' => $taskId,
@@ -1188,16 +1313,50 @@ class WorkerController
             'result' => ['nullable'],
             'result_envelope' => ['nullable', 'array'],
             'result_envelope.codec' => ['required_with:result_envelope', 'string', 'max:64'],
-            'result_envelope.blob' => ['required_with:result_envelope', 'string'],
+            'result_envelope.blob' => ['nullable', 'string'],
+            'result_envelope.external_storage' => ['nullable', 'array'],
         ]);
 
         $resultEnvelope = null;
 
+        $guard = $this->queryTasks->guardCompletion(
+            $namespace,
+            $queryTaskId,
+            $validated['lease_owner'],
+            (int) $validated['query_task_attempt'],
+        );
+
+        if ($guard !== null) {
+            return WorkerProtocol::json(
+                array_filter($guard, static fn (mixed $value): bool => $value !== null),
+                (int) ($guard['status'] ?? 409),
+            );
+        }
+
         if (($validated['result_envelope'] ?? null) !== null) {
-            $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec([
+            $candidate = [
                 'codec' => $validated['result_envelope']['codec'] ?? null,
-                'blob' => $validated['result_envelope']['blob'] ?? null,
-            ], 'result_envelope');
+            ];
+
+            if (array_key_exists('external_storage', $validated['result_envelope'])) {
+                $candidate['external_storage'] = $validated['result_envelope']['external_storage'];
+            } else {
+                $candidate['blob'] = $validated['result_envelope']['blob'] ?? null;
+            }
+
+            try {
+                $resolved = PayloadEnvelopeResolver::resolveCommandPayloadWithCodec(
+                    $candidate,
+                    'result_envelope',
+                    $this->externalPayloadStorage->driverFor($namespace),
+                );
+            } catch (ValidationException $exception) {
+                throw $exception;
+            } catch (ExternalPayloadIntegrityException $exception) {
+                return $this->externalQueryPayloadFailure($queryTaskId, (int) $validated['query_task_attempt'], $exception, 422);
+            } catch (\Throwable $exception) {
+                return $this->externalQueryPayloadFailure($queryTaskId, (int) $validated['query_task_attempt'], $exception, 503);
+            }
 
             $resultEnvelope = [
                 'codec' => $resolved['codec'],

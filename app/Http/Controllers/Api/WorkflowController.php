@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Api;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneResponseContract;
 use App\Support\ControlPlaneResultMapper;
+use App\Support\ExternalPayloadEnvelopeService;
+use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\TaskQueueRoutingGate;
@@ -34,6 +36,7 @@ class WorkflowController
         private readonly WorkflowQueryTaskBroker $queryTasks,
         private readonly WorkflowRunDiagnostics $diagnostics,
         private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
+        private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -248,6 +251,21 @@ class WorkflowController
                         'duplicate_policy' => $validated['duplicate_policy'] ?? null,
                     ], static fn (mixed $value): bool => $value !== null),
                 ),
+            );
+        } catch (ExternalPayloadStorageUnavailable $exception) {
+            return ControlPlaneProtocol::jsonForRequest(
+                $request,
+                $this->startRejectionPayload(
+                    workflowId: $workflowId,
+                    reason: 'external_payload_storage_unavailable',
+                    outcome: 'rejected_external_payload_storage_unavailable',
+                    message: $exception->getMessage(),
+                    extra: [
+                        'workflow_type' => $validated['workflow_type'],
+                        'task_queue' => $taskQueue,
+                    ],
+                ),
+                503,
             );
         } catch (LogicException $exception) {
             throw ValidationException::withMessages([
@@ -930,8 +948,16 @@ class WorkflowController
             'run_deadline_at' => $runDescription['run_deadline_at'] ?? null,
             'input' => $run->workflowArguments(),
             'output' => $run->workflowOutput(),
-            'input_envelope' => $run->argumentsEnvelope(),
-            'output_envelope' => $run->outputEnvelope(),
+            'input_envelope' => $this->payloadEnvelopes->workerEnvelope(
+                $namespace,
+                $run->payload_codec,
+                is_string($run->arguments) ? $run->arguments : null,
+            ),
+            'output_envelope' => $this->payloadEnvelopes->workerEnvelope(
+                $namespace,
+                $run->payload_codec,
+                is_string($run->output) ? $run->output : null,
+            ),
             'started_at' => $run->started_at?->toJSON(),
             'closed_at' => $run->closed_at?->toJSON(),
             'last_progress_at' => $runDescription['last_progress_at'] ?? $run->last_progress_at?->toJSON(),

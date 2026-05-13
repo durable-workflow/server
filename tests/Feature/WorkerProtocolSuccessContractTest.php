@@ -1853,7 +1853,8 @@ class WorkerProtocolSuccessContractTest extends TestCase
 
         $events = collect($history->json('events'))->keyBy('event_type');
 
-        $this->assertSame($sideEffectResult, $events->get('SideEffectRecorded')['payload']['result'] ?? null);
+        $this->assertSame('avro', $events->get('SideEffectRecorded')['payload']['result']['codec'] ?? null);
+        $this->assertSame($sideEffectResult, $events->get('SideEffectRecorded')['payload']['result']['blob'] ?? null);
         $this->assertSame(
             [
                 'obsolete' => null,

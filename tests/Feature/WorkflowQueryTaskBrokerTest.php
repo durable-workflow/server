@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\WorkerRegistration;
+use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use App\Support\QueryTaskQueueFullException;
 use App\Support\ServerPollingCache;
@@ -127,6 +128,55 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 (string) ($stored['result_envelope']['blob'] ?? ''),
             ),
         );
+    }
+
+    public function test_query_task_completion_rejects_wrong_lease_before_reading_external_payload_reference(): void
+    {
+        Queue::fake();
+
+        $directory = storage_path('framework/testing/query-task-external-storage');
+        File::deleteDirectory($directory);
+        WorkflowNamespace::query()->where('name', 'default')->update([
+            'external_payload_storage' => [
+                'driver' => 'local',
+                'enabled' => true,
+                'threshold_bytes' => 32,
+                'config' => [
+                    'uri' => 'file://'.$directory,
+                ],
+            ],
+        ]);
+
+        try {
+            $run = $this->startRemoteWorkflow('wf-query-external-wrong-lease');
+            $this->registerPythonWorker('python-query-external-lease', 'python-queries', ['python.queryable']);
+
+            /** @var WorkflowQueryTaskBroker $broker */
+            $broker = app(WorkflowQueryTaskBroker::class);
+            $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+            $poll = $this->postJson('/api/worker/query-tasks/poll', [
+                'worker_id' => 'python-query-external-lease',
+                'task_queue' => 'python-queries',
+            ], $this->workerHeaders());
+
+            $poll->assertOk()
+                ->assertJsonPath('task.query_task_id', $task['query_task_id'])
+                ->assertJsonPath('task.lease_owner', 'python-query-external-lease');
+
+            $missingPayload = Serializer::serializeWithCodec('avro', ['not-read']);
+
+            $this->postJson("/api/worker/query-tasks/{$task['query_task_id']}/complete", [
+                'lease_owner' => 'wrong-query-worker',
+                'query_task_attempt' => 1,
+                'result_envelope' => $this->missingExternalStorageEnvelope($directory, 'avro', $missingPayload),
+            ], $this->workerHeaders())
+                ->assertStatus(409)
+                ->assertJsonPath('reason', 'lease_owner_mismatch')
+                ->assertJsonPath('lease_owner', 'python-query-external-lease');
+        } finally {
+            File::deleteDirectory($directory);
+        }
     }
 
     public function test_control_plane_query_routes_to_python_worker_and_times_out_without_result(): void
@@ -416,6 +466,27 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         return [
             'codec' => 'avro',
             'blob' => Serializer::serializeWithCodec('avro', ['summary']),
+        ];
+    }
+
+    /**
+     * @return array{codec: string, external_storage: array{schema: string, uri: string, sha256: string, size_bytes: int, codec: string}}
+     */
+    private function missingExternalStorageEnvelope(string $root, string $codec, string $payload): array
+    {
+        $sha256 = hash('sha256', $payload);
+        $directory = $root.'/missing';
+        File::ensureDirectoryExists($directory);
+
+        return [
+            'codec' => $codec,
+            'external_storage' => [
+                'schema' => 'durable-workflow.v2.external-payload-reference.v1',
+                'uri' => 'file://'.$directory.'/'.$sha256.'.bin',
+                'sha256' => $sha256,
+                'size_bytes' => strlen($payload),
+                'codec' => $codec,
+            ],
         ];
     }
 

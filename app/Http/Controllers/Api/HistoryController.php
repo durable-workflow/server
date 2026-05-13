@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Support\ControlPlaneProtocol;
+use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\LongPoller;
 use App\Support\LongPollSignalStore;
 use App\Support\NamespaceWorkflowScope;
@@ -17,6 +18,7 @@ class HistoryController
     public function __construct(
         private readonly LongPoller $longPoller,
         private readonly LongPollSignalStore $signals,
+        private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
     ) {}
 
     /**
@@ -62,12 +64,14 @@ class HistoryController
         return ControlPlaneProtocol::jsonForRequest($request, [
             'workflow_id' => $workflowId,
             'run_id' => $runId,
-            'events' => $page->map(static fn (WorkflowHistoryEvent $event) => [
+            'events' => $page->map(fn (WorkflowHistoryEvent $event) => [
                 'sequence' => $event->sequence,
                 'event_type' => $event->event_type?->value ?? $event->event_type,
                 'timestamp' => $event->recorded_at?->toJSON(),
                 'principal' => self::eventPrincipal($event),
-                'payload' => $event->payload ?? [],
+                'payload' => is_array($event->payload)
+                    ? $this->payloadEnvelopes->historyPayload($namespace, $event->payload, $run->payload_codec)
+                    : [],
             ])->all(),
             'next_page_token' => $hasMore && $lastSequence !== null
                 ? self::encodePageToken((int) $lastSequence)

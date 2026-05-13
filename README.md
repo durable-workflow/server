@@ -533,16 +533,19 @@ already covered by another matching-role process holding the repair throttle.
 
 When a namespace enables external payload storage, the server resolves
 `{codec, external_storage}` payload envelopes on workflow start, signal, query,
-update, bridge-adapter, and activity result/failure ingress. The `local` driver
-stores blobs below the configured `file://` URI or the namespace-scoped server
-storage path. S3, GCS, and Azure policies are available when the policy includes
-`config.disk` naming a configured Laravel filesystem disk plus `config.bucket`;
-the server emits provider URIs such as `s3://bucket/prefix/...` while using that
-disk for put/get/delete operations. Object-storage policies without a configured
-disk remain fail-closed so references are not silently accepted by a runtime
-that cannot dereference or delete them. History retention deletes referenced
-local and configured object-storage payload blobs before pruning an expired run,
-and leaves runs in place when a retained reference uses a provider this server
+update, bridge-adapter, and activity result/failure ingress. The same policy is
+used while recording workflow starts, activity inputs/results, and workflow
+outputs, so oversized encoded payloads enter history as external references
+instead of inline blobs. The `local` driver stores blobs below the configured
+`file://` URI or the namespace-scoped server storage path. S3, GCS, and Azure
+policies are available when the policy includes `config.disk` naming a
+configured Laravel filesystem disk plus `config.bucket`; the server emits
+provider URIs such as `s3://bucket/prefix/...` while using that disk for
+put/get/delete operations. Object-storage policies without a configured disk
+remain fail-closed so references are not silently accepted by a runtime that
+cannot dereference or delete them. History retention deletes referenced local
+and configured object-storage payload blobs before pruning an expired run, and
+leaves runs in place when a retained reference uses a provider this server
 cannot delete yet.
 
 ### Workflows
@@ -838,7 +841,7 @@ must echo both `workflow_task_attempt` and `lease_owner` on workflow-task
 non-terminal commands such as `schedule_activity`, `start_timer`,
 `start_child_workflow`, `complete_update`, and `fail_update`, plus terminal
 `complete_workflow`, `fail_workflow`, and `continue_as_new` commands. Workers
-use `complete_update` with `update_id` and an optional codec-tagged `result`
+use `complete_update` with `update_id` and an optional encoded `result`
 after applying an accepted update, or `fail_update` with `update_id`,
 `message`, and optional exception metadata when the update handler fails. Poll
 responses also expose stable resume

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Middleware\Authenticate;
+use App\Models\WorkflowNamespace;
 use App\Support\AuthCompositionContract;
 use App\Support\BridgeAdapterOutcomeContract;
 use App\Support\ClientCompatibility;
@@ -20,6 +21,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\PlatformConformanceSuite;
 use Workflow\V2\Support\PlatformProtocolSpecs;
 use Workflow\V2\Support\SdkNeutralityContract;
@@ -128,6 +130,7 @@ class HealthController
             'server_id' => config('server.server_id'),
             'version' => env('APP_VERSION', '2.0.0'),
             'default_namespace' => config('server.default_namespace'),
+            'namespace' => $this->namespacePolicy($namespace),
             'supported_sdk_versions' => ClientCompatibility::supportedSdkVersions(),
             'capabilities' => $capabilities,
             'worker_fleet' => StandaloneWorkerVisibility::fleetSummary($namespace),
@@ -209,6 +212,118 @@ class HealthController
             'policy' => TaskRepairPolicy::snapshot(),
             'candidates' => TaskRepairCandidates::snapshot(),
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function namespacePolicy(string $namespace): array
+    {
+        $normalized = strtolower($namespace);
+        $ns = WorkflowNamespace::query()->where('name', $normalized)->first();
+
+        return [
+            'name' => $normalized,
+            'exists' => $ns !== null,
+            'status' => $ns?->status,
+            'retention_days' => $ns?->retention_days,
+            'external_payload_storage' => $this->externalPayloadStoragePolicy($ns),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function externalPayloadStoragePolicy(?WorkflowNamespace $ns): array
+    {
+        $policy = is_array($ns?->external_payload_storage) ? $ns->external_payload_storage : [];
+        $driver = $this->stringOrNull($policy['driver'] ?? null);
+        $enabled = $policy !== [] && ($policy['enabled'] ?? true) !== false;
+        $threshold = $policy['threshold_bytes'] ?? config('server.limits.max_payload_bytes', 2 * 1024 * 1024);
+        $config = is_array($policy['config'] ?? null) ? $policy['config'] : [];
+        $resolvedDriver = $enabled && $this->externalPayloadStorageResolvable($driver, $config);
+
+        return [
+            'schema' => ExternalPayloadReference::SCHEMA,
+            'version' => 1,
+            'configured' => $policy !== [],
+            'enabled' => $enabled,
+            'status' => $this->externalPayloadStorageStatus($policy, $enabled, $resolvedDriver),
+            'driver' => $driver,
+            'threshold_bytes' => (int) $threshold,
+            'reference_uri_scheme' => $this->externalPayloadReferenceScheme($driver, $config),
+            'supported_drivers' => ['local', 's3', 'gcs', 'azure', 'custom'],
+            'custom_driver_configurable' => true,
+            'config_redacted' => $config !== [],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $policy
+     */
+    private function externalPayloadStorageStatus(array $policy, bool $enabled, bool $resolved): string
+    {
+        if ($policy === []) {
+            return 'unconfigured';
+        }
+
+        if (! $enabled) {
+            return 'disabled';
+        }
+
+        return $resolved ? 'available' : 'driver_unavailable';
+    }
+
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    private function externalPayloadReferenceScheme(?string $driver, array $config): ?string
+    {
+        if ($driver === null) {
+            return null;
+        }
+
+        if ($driver === 'local') {
+            return 'file';
+        }
+
+        if ($driver === 'custom') {
+            return $this->stringOrNull($config['scheme'] ?? null);
+        }
+
+        return in_array($driver, ['s3', 'gcs', 'azure'], true) ? $driver : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $config
+     */
+    private function externalPayloadStorageResolvable(?string $driver, array $config): bool
+    {
+        if ($driver === 'local') {
+            return true;
+        }
+
+        if (! in_array($driver, ['s3', 'gcs', 'azure', 'custom'], true)) {
+            return false;
+        }
+
+        $disk = $this->stringOrNull($config['disk'] ?? null);
+        $bucket = $this->stringOrNull(
+            $config['bucket']
+            ?? $config['container']
+            ?? $config['name']
+            ?? null,
+        );
+        $scheme = $driver === 'custom'
+            ? $this->stringOrNull($config['scheme'] ?? null)
+            : $driver;
+
+        return $disk !== null && $bucket !== null && $scheme !== null;
+    }
+
+    private function stringOrNull(mixed $value): ?string
+    {
+        return is_string($value) && $value !== '' ? $value : null;
     }
 
     /**
