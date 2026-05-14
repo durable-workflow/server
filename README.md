@@ -1305,6 +1305,8 @@ every operator-facing variable the server honors.
 | `DW_POLLING_CACHE_PATH` | `storage/.../server-polling/<APP_ENV>` | Directory for worker-poll coordination state. |
 | `DW_WAKE_SIGNAL_TTL_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT + 5, 60)` | TTL for per-queue wake signals. |
 | `DW_MAX_TASKS_PER_POLL` | `1` | Maximum tasks returned per poll. |
+| `DW_SQLITE_CLAIM_LOCK_TTL_SECONDS` | `10` | Seconds the SQLite quickstart backend holds the cache-backed worker poll claim gate before the lock expires. |
+| `DW_SQLITE_CLAIM_LOCK_WAIT_SECONDS` | `5` | Seconds SQLite worker poll claims wait for the cache-backed claim gate before returning backend lock pressure. |
 | `DW_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_QUEUE` | (unset) | Optional server-side cap for active workflow-task leases per namespace/task queue. |
 | `DW_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_NAMESPACE` | (unset) | Optional server-side cap for active workflow-task leases across all task queues in a namespace. |
 | `DW_WORKFLOW_TASK_MAX_DISPATCHES_PER_MINUTE` | (unset) | Optional server-side cap for workflow-task dispatches per minute per namespace/task queue. |
