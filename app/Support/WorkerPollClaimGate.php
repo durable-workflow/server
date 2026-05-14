@@ -16,10 +16,11 @@ final class WorkerPollClaimGate
 
     /**
      * SQLite allows one writer at a time. In the quickstart image multiple
-     * server workers can race through the same ready-task probe and then try
-     * to upgrade deferred transactions while claiming. Serializing only the
-     * probe+claim section keeps normal long-poll waits concurrent while
-     * avoiding generic SQLITE_BUSY failures from concurrent worker pollers.
+     * server workers can race through ready-task probes and then try to
+     * upgrade deferred transactions while claiming. The writer lock is
+     * database-wide, so the quickstart SQLite backend uses one cache-backed
+     * gate for every workflow/activity claim probe. Normal long-poll waits
+     * stay concurrent because only the short probe+claim section is gated.
      *
      * @template TReturn
      *
@@ -40,7 +41,7 @@ final class WorkerPollClaimGate
 
         try {
             return $store
-                ->lock($this->lockKey($namespace, $taskQueue, $taskKind), $this->lockTtlSeconds())
+                ->lock($this->lockKey(), $this->lockTtlSeconds())
                 ->block($this->lockWaitSeconds(), $callback);
         } catch (LockTimeoutException $exception) {
             throw new BackendLockPressureException(
@@ -60,9 +61,9 @@ final class WorkerPollClaimGate
         }
     }
 
-    private function lockKey(string $namespace, string $taskQueue, string $taskKind): string
+    private function lockKey(): string
     {
-        return 'server:sqlite-worker-poll-claim:'.sha1($taskKind.'|'.$namespace.'|'.$taskQueue);
+        return 'server:sqlite-worker-poll-claim';
     }
 
     private function lockTtlSeconds(): int
