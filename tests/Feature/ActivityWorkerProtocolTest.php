@@ -967,7 +967,9 @@ class ActivityWorkerProtocolTest extends TestCase
                     ->withArgs(function (string $attemptId, array $failure, ?string $codec) {
                         return $codec === 'avro'
                             && ($failure['details'] ?? null) === Serializer::serializeWithCodec('avro', ['retry_after' => 30])
-                            && ($failure['details_payload_codec'] ?? null) === 'avro';
+                            && ($failure['details_payload_codec'] ?? null) === 'avro'
+                            && ($failure['runtime_diagnostics']['class'] ?? null) === 'App\\Activities\\TimeoutActivity'
+                            && ($failure['runtime_diagnostics']['file'] ?? null) === '/app/src/TimeoutActivity.php';
                     })
                     ->andReturn([
                         'recorded' => true,
@@ -988,6 +990,10 @@ class ActivityWorkerProtocolTest extends TestCase
                     'details' => [
                         'codec' => 'avro',
                         'blob' => Serializer::serializeWithCodec('avro', ['retry_after' => 30]),
+                    ],
+                    'runtime_diagnostics' => [
+                        'class' => 'App\\Activities\\TimeoutActivity',
+                        'file' => '/app/src/TimeoutActivity.php',
                     ],
                 ],
             ]);

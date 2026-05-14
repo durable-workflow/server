@@ -252,6 +252,8 @@ class ActivityTaskController
             'failure.cancelled' => ['nullable', 'boolean'],
             'failure.malformed_output' => ['nullable', 'boolean'],
             'failure.details' => ['nullable'],
+            'failure.diagnostics' => ['nullable', 'array'],
+            'failure.runtime_diagnostics' => ['nullable', 'array'],
         ]);
 
         if ($response = $this->guardAttemptOwnership(
