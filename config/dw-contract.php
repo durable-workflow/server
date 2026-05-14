@@ -248,6 +248,18 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_MAX_TASKS_PER_POLL',
         ],
+        'DW_SQLITE_CLAIM_LOCK_TTL_SECONDS' => [
+            'description' => 'Seconds the SQLite quickstart backend holds the cache-backed worker poll claim gate before the lock expires.',
+            'default' => '10',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_SQLITE_CLAIM_LOCK_TTL_SECONDS',
+        ],
+        'DW_SQLITE_CLAIM_LOCK_WAIT_SECONDS' => [
+            'description' => 'Seconds SQLite worker poll claims wait for the cache-backed claim gate before returning backend lock pressure.',
+            'default' => '5',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_SQLITE_CLAIM_LOCK_WAIT_SECONDS',
+        ],
         'DW_WORKFLOW_TASK_MAX_ACTIVE_LEASES_PER_QUEUE' => [
             'description' => 'Optional server-side cap for active workflow-task leases per namespace/task queue. Unset means no server-side cap beyond worker registration capacity.',
             'default' => '(unset)',
