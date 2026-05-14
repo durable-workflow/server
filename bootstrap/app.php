@@ -94,8 +94,12 @@ return Application::configure(basePath: dirname(__DIR__))
                 return null;
             }
 
+            $requestedVersion = WorkerProtocol::requestVersion($request);
+            $supportedVersion = (string) config('server.worker_protocol.version', WorkerProtocol::VERSION);
+
             if (! WorkerProtocol::isWorkerPlaneRequest($request)
-                || WorkerProtocol::requestVersion($request) !== (string) config('server.worker_protocol.version', WorkerProtocol::VERSION)
+                || $requestedVersion === null
+                || ! WorkerProtocol::isCompatibleProtocolVersion($requestedVersion, $supportedVersion)
             ) {
                 return null;
             }
