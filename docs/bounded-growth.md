@@ -42,6 +42,7 @@ added without a TTL, admission, or cardinality contract.
 | --- | --- | --- | --- |
 | `long_poll_signals` | `server:long-poll-signal:` | `App\Support\LongPollSignalStore` | One expiring key per wake channel touched during the TTL window; no retained index. |
 | `workflow_task_poll_requests` | `server:workflow-task-poll-request:` | `App\Support\WorkflowTaskPollRequestStore` | One pending key and one short replay-result key per idempotent worker poll request. |
+| `sqlite_worker_poll_claim_gate` | `server:sqlite-worker-poll-claim:` | `App\Support\WorkerPollClaimGate` | One short-lived singleton lock key guards SQLite worker poll claim probes when the polling cache store supports locks. |
 | `workflow_query_tasks` | `server:workflow-query-task:` | `App\Support\WorkflowQueryTaskBroker` | Pending query tasks are capped per `(namespace, task_queue)` by `server.query_tasks.max_pending_per_queue`, default 1024 and hard-clamped to 10000. |
 | `task_queue_admission_locks` | `server:task-queue-admission:` | `App\Support\TaskQueueAdmission` | One short-lived lock key per capped `(namespace, task_queue, task_kind)` under concurrent workflow/activity poll admission. |
 | `task_queue_dispatch_counters` | `server:task-queue-dispatch:` | `App\Support\TaskQueueAdmission` | One expiring counter per capped `(namespace, task_queue, task_kind, minute)` bucket that actually dispatches work. |

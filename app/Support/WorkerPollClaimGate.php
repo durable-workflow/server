@@ -63,7 +63,7 @@ final class WorkerPollClaimGate
 
     private function lockKey(): string
     {
-        return 'server:sqlite-worker-poll-claim';
+        return 'server:sqlite-worker-poll-claim:singleton';
     }
 
     private function lockTtlSeconds(): int

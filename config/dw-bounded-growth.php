@@ -6,6 +6,7 @@ use App\Support\LongPollSignalStore;
 use App\Support\ProjectionDriftMetrics;
 use App\Support\ServerReadiness;
 use App\Support\TaskQueueAdmission;
+use App\Support\WorkerPollClaimGate;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowTaskFailureMetrics;
 use App\Support\WorkflowTaskPoller;
@@ -60,6 +61,18 @@ return [
             'bound' => 'At most one pending key and one short replay-result key per idempotent worker poll request in the TTL window.',
             'admission' => 'Cache add elects a single poll leader for each idempotent request. Followers wait for the leader result and retry only while the pending marker exists.',
             'eviction' => 'Pending keys are removed when a leader publishes a result; all pending and result keys also expire by TTL.',
+        ],
+
+        'sqlite_worker_poll_claim_gate' => [
+            'owner' => WorkerPollClaimGate::class,
+            'prefix' => 'server:sqlite-worker-poll-claim:',
+            'dimensions' => [
+                'singleton_lock',
+            ],
+            'ttl' => 'server.polling.sqlite_claim_lock_ttl_seconds seconds, default 10 and runtime-minimum 1.',
+            'bound' => 'At most one short-lived lock key for the shared SQLite worker poll claim gate.',
+            'admission' => 'Only created when the server uses SQLite and the configured polling cache store supports atomic locks; all workflow and activity claim probes share the same gate.',
+            'eviction' => 'Cache lock TTL only. The lock key disappears once the holder releases it or the TTL expires.',
         ],
 
         'workflow_query_tasks' => [
