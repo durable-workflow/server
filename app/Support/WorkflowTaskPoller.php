@@ -31,6 +31,7 @@ final class WorkflowTaskPoller
         private readonly TaskQueueAdmission $admission,
         private readonly TaskFairnessState $fairnessState,
         private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
+        private readonly WorkerPollClaimGate $claimGate,
     ) {}
 
     /**
@@ -364,15 +365,20 @@ final class WorkflowTaskPoller
             $namespace,
             $taskQueue,
             TaskQueueAdmission::WORKFLOW_TASKS,
-            fn (): ?array => $this->claimReadyTask(
-                namespace: $namespace,
-                taskQueue: $taskQueue,
-                leaseOwner: $leaseOwner,
-                buildId: $buildId,
-                limit: $limit,
-                historyPageSize: $historyPageSize,
-                acceptHistoryEncoding: $acceptHistoryEncoding,
-                supportedWorkflowTypes: $supportedWorkflowTypes,
+            fn (): ?array => $this->claimGate->forSqliteClaim(
+                $namespace,
+                $taskQueue,
+                TaskQueueAdmission::WORKFLOW_TASKS,
+                fn (): ?array => $this->claimReadyTask(
+                    namespace: $namespace,
+                    taskQueue: $taskQueue,
+                    leaseOwner: $leaseOwner,
+                    buildId: $buildId,
+                    limit: $limit,
+                    historyPageSize: $historyPageSize,
+                    acceptHistoryEncoding: $acceptHistoryEncoding,
+                    supportedWorkflowTypes: $supportedWorkflowTypes,
+                ),
             ),
         );
 
@@ -389,15 +395,20 @@ final class WorkflowTaskPoller
                 $namespace,
                 $taskQueue,
                 TaskQueueAdmission::WORKFLOW_TASKS,
-                fn (): ?array => $this->claimReadyTask(
-                    namespace: $namespace,
-                    taskQueue: $taskQueue,
-                    leaseOwner: $leaseOwner,
-                    buildId: $buildId,
-                    limit: $limit,
-                    historyPageSize: $historyPageSize,
-                    acceptHistoryEncoding: $acceptHistoryEncoding,
-                    supportedWorkflowTypes: $supportedWorkflowTypes,
+                fn (): ?array => $this->claimGate->forSqliteClaim(
+                    $namespace,
+                    $taskQueue,
+                    TaskQueueAdmission::WORKFLOW_TASKS,
+                    fn (): ?array => $this->claimReadyTask(
+                        namespace: $namespace,
+                        taskQueue: $taskQueue,
+                        leaseOwner: $leaseOwner,
+                        buildId: $buildId,
+                        limit: $limit,
+                        historyPageSize: $historyPageSize,
+                        acceptHistoryEncoding: $acceptHistoryEncoding,
+                        supportedWorkflowTypes: $supportedWorkflowTypes,
+                    ),
                 ),
             );
 

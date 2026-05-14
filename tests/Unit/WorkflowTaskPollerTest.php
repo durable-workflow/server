@@ -7,6 +7,7 @@ use App\Support\LongPoller;
 use App\Support\LongPollSignalStore;
 use App\Support\ServerPollingCache;
 use App\Support\TaskQueueAdmission;
+use App\Support\WorkerPollClaimGate;
 use App\Support\WorkflowTaskLeaseRecovery;
 use App\Support\WorkflowTaskPoller;
 use App\Support\WorkflowTaskPollRequestStore;
@@ -38,6 +39,7 @@ class WorkflowTaskPollerTest extends TestCase
             app(TaskQueueAdmission::class),
             app(TaskFairnessState::class),
             app(ExternalPayloadEnvelopeService::class),
+            app(WorkerPollClaimGate::class),
         );
 
         $result = $this->invokeClaimReadyTask(

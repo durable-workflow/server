@@ -25,6 +25,7 @@ final class ActivityTaskPoller
         private readonly TaskQueueAdmission $admission,
         private readonly WorkerSessionRegistry $workerSessions,
         private readonly TaskFairnessState $fairnessState,
+        private readonly WorkerPollClaimGate $claimGate,
     ) {}
 
     /**
@@ -104,14 +105,19 @@ final class ActivityTaskPoller
             $namespace,
             $taskQueue,
             TaskQueueAdmission::ACTIVITY_TASKS,
-            fn (): ?array => $this->claimReadyTask(
+            fn (): ?array => $this->claimGate->forSqliteClaim(
                 $namespace,
                 $taskQueue,
-                $leaseOwner,
-                $buildId,
-                $worker,
-                $limit,
-                $supportedActivityTypes,
+                TaskQueueAdmission::ACTIVITY_TASKS,
+                fn (): ?array => $this->claimReadyTask(
+                    $namespace,
+                    $taskQueue,
+                    $leaseOwner,
+                    $buildId,
+                    $worker,
+                    $limit,
+                    $supportedActivityTypes,
+                ),
             ),
         );
 

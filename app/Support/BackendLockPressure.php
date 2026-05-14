@@ -20,6 +20,10 @@ final class BackendLockPressure
     public static function is(Throwable $exception): bool
     {
         for ($current = $exception; $current instanceof Throwable; $current = $current->getPrevious()) {
+            if ($current instanceof BackendLockPressureException) {
+                return true;
+            }
+
             $message = strtolower($current->getMessage());
 
             if (
@@ -59,8 +63,9 @@ final class BackendLockPressure
             'error' => 'Worker poll backend is temporarily locked.',
             'reason' => 'backend_lock_pressure',
             'message' => 'The database backend is under lock pressure while claiming a task. '
-                .'Retry the poll with backoff; if this persists on SQLite, reduce concurrent '
-                .'pollers or use MySQL/PostgreSQL with Redis for multi-worker deployments.',
+                .'Retry the poll with backoff; if this persists on SQLite, keep the quickstart '
+                .'to one server container or use MySQL/PostgreSQL with Redis for multi-node '
+                .'deployments.',
             'namespace' => $namespace,
             'task_queue' => $taskQueue,
             'task_kind' => $taskKind,

@@ -223,6 +223,16 @@ return [
             max((int) EnvAuditor::env('DW_WORKER_POLL_TIMEOUT', 'WORKFLOW_SERVER_WORKER_POLL_TIMEOUT', 30) + 5, 60),
         ),
         'max_tasks_per_poll' => (int) EnvAuditor::env('DW_MAX_TASKS_PER_POLL', 'WORKFLOW_SERVER_MAX_TASKS_PER_POLL', 1),
+        'sqlite_claim_lock_ttl_seconds' => (int) EnvAuditor::env(
+            'DW_SQLITE_CLAIM_LOCK_TTL_SECONDS',
+            'WORKFLOW_SERVER_SQLITE_CLAIM_LOCK_TTL_SECONDS',
+            10,
+        ),
+        'sqlite_claim_lock_wait_seconds' => (int) EnvAuditor::env(
+            'DW_SQLITE_CLAIM_LOCK_WAIT_SECONDS',
+            'WORKFLOW_SERVER_SQLITE_CLAIM_LOCK_WAIT_SECONDS',
+            5,
+        ),
         'expired_workflow_task_recovery_scan_limit' => (int) EnvAuditor::env(
             'DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT',
             'WORKFLOW_SERVER_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT',
