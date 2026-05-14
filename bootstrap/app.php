@@ -13,7 +13,6 @@ use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
-use Throwable;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -89,7 +88,7 @@ return Application::configure(basePath: dirname(__DIR__))
             return ControlPlaneProtocol::jsonForRequest($request, $payload, $status);
         });
 
-        $exceptions->render(function (Throwable $exception, Request $request) {
+        $exceptions->render(function (\Throwable $exception, Request $request) {
             if (! BackendLockPressure::is($exception)) {
                 return null;
             }
