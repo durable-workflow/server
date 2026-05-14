@@ -132,6 +132,23 @@ class ClusterInfoTest extends TestCase
         $this->assertContains('compatibility_blocked', $startContract['rejection_reasons']);
     }
 
+    public function test_it_publishes_a_signal_rejection_contract_in_the_response_manifest(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk();
+
+        $signalContract = $response->json('control_plane.response_contract.operations.signal');
+
+        $this->assertIsArray($signalContract);
+        $this->assertContains('run_id', $signalContract['rejection_fields']);
+        $this->assertContains('target_scope', $signalContract['rejection_fields']);
+        $this->assertContains('command_contract_source', $signalContract['rejection_fields']);
+        $this->assertContains('declared_signals', $signalContract['rejection_fields']);
+        $this->assertContains('instance_not_found', $signalContract['rejection_reasons']);
+        $this->assertContains('historical_run_command_rejected', $signalContract['rejection_reasons']);
+        $this->assertContains('unknown_signal', $signalContract['rejection_reasons']);
+    }
+
     public function test_it_publishes_external_task_input_contract_manifest(): void
     {
         $this->getJson('/api/cluster/info')

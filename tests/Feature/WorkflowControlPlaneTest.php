@@ -14,6 +14,9 @@ use Tests\Fixtures\InternalChildWorkflow;
 use Tests\Fixtures\InternalParentWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -197,6 +200,133 @@ class WorkflowControlPlaneTest extends TestCase
             ->assertJsonPath('workflow_count', 1)
             ->assertJsonPath('workflows.0.workflow_id', 'wf-control-plane-interactive')
             ->assertJsonPath('workflows.0.business_key', 'order-123');
+    }
+
+    public function test_external_worker_signals_are_admitted_for_language_neutral_workers_on_shared_queue(): void
+    {
+        Queue::fake();
+
+        $this->createNamespace('default', 'Default namespace');
+
+        foreach ([
+            ['worker_id' => 'python-signal-worker', 'runtime' => 'python', 'workflow_type' => 'polyglot.python.signal.wait'],
+            ['worker_id' => 'php-signal-worker', 'runtime' => 'php', 'workflow_type' => 'polyglot.php.signal.wait'],
+        ] as $worker) {
+            WorkerRegistration::query()->create([
+                'worker_id' => $worker['worker_id'],
+                'namespace' => 'default',
+                'task_queue' => 'polyglot-shared',
+                'runtime' => $worker['runtime'],
+                'sdk_version' => 'test',
+                'build_id' => null,
+                'supported_workflow_types' => [$worker['workflow_type']],
+                'workflow_definition_fingerprints' => [],
+                'supported_activity_types' => [],
+                'max_concurrent_workflow_tasks' => 100,
+                'max_concurrent_activity_tasks' => 100,
+                'last_heartbeat_at' => now(),
+                'status' => 'active',
+            ]);
+        }
+
+        foreach ([
+            'signal-python-external' => 'polyglot.python.signal.wait',
+            'signal-php-external' => 'polyglot.php.signal.wait',
+        ] as $workflowId => $workflowType) {
+            $start = $this->withHeaders($this->apiHeaders())
+                ->postJson('/api/workflows', [
+                    'workflow_id' => $workflowId,
+                    'workflow_type' => $workflowType,
+                    'task_queue' => 'polyglot-shared',
+                ]);
+
+            $start->assertCreated()
+                ->assertJsonPath('workflow_type', $workflowType);
+
+            $runId = (string) $start->json('run_id');
+
+            WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->update(['status' => TaskStatus::Completed->value]);
+
+            WorkflowRun::query()
+                ->whereKey($runId)
+                ->update(['status' => RunStatus::Waiting->value]);
+
+            $signal = $this->withHeaders($this->apiHeaders())
+                ->postJson("/api/workflows/{$workflowId}/signal/polyglot-signal", [
+                    'input' => ['accepted'],
+                    'request_id' => "signal-{$workflowId}",
+                ]);
+
+            $signal->assertAccepted()
+                ->assertJsonPath('workflow_id', $workflowId)
+                ->assertJsonPath('signal_name', 'polyglot-signal')
+                ->assertJsonPath('outcome', 'signal_received')
+                ->assertJsonPath('command_status', 'accepted');
+
+            $this->assertDatabaseHas('workflow_history_events', [
+                'workflow_run_id' => $runId,
+                'event_type' => HistoryEventType::SignalReceived->value,
+            ]);
+        }
+    }
+
+    public function test_unknown_signal_response_includes_command_contract_diagnostics(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-unknown-signal-diagnostics',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $signal = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-unknown-signal-diagnostics/signal/missing-signal');
+
+        $signal->assertNotFound()
+            ->assertJsonPath('workflow_id', 'wf-unknown-signal-diagnostics')
+            ->assertJsonPath('signal_name', 'missing-signal')
+            ->assertJsonPath('reason', 'unknown_signal')
+            ->assertJsonPath('command_contract_source', 'durable_history')
+            ->assertJsonPath('declared_signals.0', 'advance')
+            ->assertJsonPath('declared_signals.1', 'finish')
+            ->assertJsonPath('signal_admission', 'handler_not_declared')
+            ->assertJsonPath('control_plane.command_contract_source', 'durable_history')
+            ->assertJsonPath('control_plane.signal_admission', 'handler_not_declared');
+
+        $this->assertStringContainsString(
+            'durable command contract does not declare',
+            (string) $signal->json('message'),
+        );
+    }
+
+    public function test_missing_workflow_signal_response_includes_signal_rejection_contract(): void
+    {
+        Queue::fake();
+
+        $this->createNamespace('default', 'Default namespace');
+
+        $signal = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-missing-signal-contract/signal/advance');
+
+        $signal->assertNotFound()
+            ->assertJsonPath('workflow_id', 'wf-missing-signal-contract')
+            ->assertJsonPath('reason', 'instance_not_found')
+            ->assertJsonPath('control_plane.operation', 'signal')
+            ->assertJsonPath('control_plane.operation_name', 'advance')
+            ->assertJsonPath('control_plane.operation_name_field', 'signal_name');
+
+        $this->assertContains(
+            'instance_not_found',
+            $signal->json('control_plane.contract.rejection_reasons'),
+        );
     }
 
     public function test_it_returns_query_validation_errors_and_scopes_control_plane_commands_by_namespace(): void
@@ -1415,6 +1545,13 @@ class WorkflowControlPlaneTest extends TestCase
             ->assertJsonPath('target_scope', 'run')
             ->assertJsonPath('control_plane.operation', 'signal')
             ->assertJsonPath('control_plane.operation_name', 'advance');
+
+        $this->assertContains(
+            'historical_run_command_rejected',
+            $signal->json('control_plane.contract.rejection_reasons'),
+        );
+        $this->assertContains('run_id', $signal->json('control_plane.contract.rejection_fields'));
+        $this->assertContains('target_scope', $signal->json('control_plane.contract.rejection_fields'));
 
         // Cancel against a non-current run should be rejected
         $cancel = $this->withHeaders($this->apiHeaders())

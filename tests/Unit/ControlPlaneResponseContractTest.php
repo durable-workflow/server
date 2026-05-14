@@ -37,6 +37,32 @@ class ControlPlaneResponseContractTest extends TestCase
         $this->assertContains('message', ControlPlaneResponseContract::manifest()['projected_fields']);
     }
 
+    public function test_manifest_publishes_signal_rejection_contract_diagnostics(): void
+    {
+        $signal = ControlPlaneResponseContract::manifest()['operations']['signal'];
+
+        foreach ([
+            'instance_not_found',
+            'historical_run_command_rejected',
+            'unknown_signal',
+        ] as $reason) {
+            $this->assertContains($reason, $signal['rejection_reasons']);
+        }
+
+        foreach ([
+            'run_id',
+            'target_scope',
+            'command_contract_source',
+            'command_contract_backfill_needed',
+            'command_contract_backfill_available',
+            'declared_signals',
+            'signal_admission',
+        ] as $field) {
+            $this->assertContains($field, $signal['rejection_fields']);
+            $this->assertContains($field, ControlPlaneResponseContract::manifest()['projected_fields']);
+        }
+    }
+
     public function test_attach_propagates_start_rejection_fields_into_the_control_plane_block(): void
     {
         $payload = ControlPlaneResponseContract::attach('start', null, [
@@ -66,9 +92,8 @@ class ControlPlaneResponseContractTest extends TestCase
 
     public function test_attach_omits_rejection_metadata_for_operations_without_a_rejection_contract(): void
     {
-        $payload = ControlPlaneResponseContract::attach('signal', 'advance', [
-            'workflow_id' => 'wf-signal-1',
-            'outcome' => 'signal_received',
+        $payload = ControlPlaneResponseContract::attach('describe', null, [
+            'workflow_id' => 'wf-describe-1',
         ]);
 
         $this->assertArrayNotHasKey('rejection_fields', $payload['control_plane']['contract']);
