@@ -511,7 +511,12 @@ final class WorkflowQueryTaskBroker
                 'sequence' => (int) $event->sequence,
                 'event_type' => $event->event_type->value,
                 'payload' => is_array($event->payload)
-                    ? $this->payloadEnvelopes->historyPayload($run->namespace, $event->payload, $run->payload_codec)
+                    ? $this->payloadEnvelopes->historyPayload(
+                        $run->namespace,
+                        $event->payload,
+                        $run->payload_codec,
+                        $event->event_type->value,
+                    )
                     : [],
                 'workflow_task_id' => $event->workflow_task_id,
                 'workflow_command_id' => $event->workflow_command_id,

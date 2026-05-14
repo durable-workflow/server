@@ -304,6 +304,90 @@ class StandaloneActivityApiTest extends TestCase
         $this->assertSame($resultBlob, $show->json('result.blob'));
     }
 
+    public function test_default_activity_failure_history_payload_omits_runtime_exception_internals(): void
+    {
+        $this->registerWorker(
+            'php-worker-neutral-failure',
+            'external-activities',
+            supportedWorkflowTypes: [],
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+        );
+
+        $this->withHeaders($this->apiHeaders())->postJson('/api/activities', [
+            'activity_id' => 'standalone-neutral-failure',
+            'activity_type' => 'tests.external-greeting-activity',
+            'task_queue' => 'external-activities',
+            'input' => ['Neutral'],
+            'retry_policy' => [
+                'max_attempts' => 1,
+                'backoff_seconds' => [0],
+            ],
+        ])->assertStatus(201);
+
+        $workerHeaders = $this->workerHeaders() + [
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ];
+
+        $poll = $this->withHeaders($workerHeaders)->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'php-worker-neutral-failure',
+            'task_queue' => 'external-activities',
+        ]);
+
+        $poll->assertOk();
+        $task = $poll->json('task');
+        $this->assertIsArray($task);
+
+        $detailsBlob = Serializer::serializeWithCodec('avro', [
+            'stage' => 'inventory',
+            'retry_after' => 30,
+        ]);
+
+        $this->withHeaders($workerHeaders)->postJson(
+            '/api/worker/activity-tasks/'.$task['task_id'].'/fail',
+            [
+                'activity_attempt_id' => $task['activity_attempt_id'],
+                'lease_owner' => $task['lease_owner'],
+                'failure' => [
+                    'message' => 'php activity planned failure',
+                    'type' => 'PolyglotPhpPlannedFailure',
+                    'stack_trace' => 'at /app/src/PlannedFailureActivity.php:42',
+                    'non_retryable' => true,
+                    'details' => [
+                        'codec' => 'avro',
+                        'blob' => $detailsBlob,
+                    ],
+                ],
+            ],
+        )->assertOk();
+
+        $run = WorkflowRun::query()
+            ->where('workflow_instance_id', 'standalone-neutral-failure')
+            ->orderByDesc('run_number')
+            ->firstOrFail();
+
+        $history = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/standalone-neutral-failure/runs/{$run->id}/history");
+
+        $history->assertOk();
+
+        $activityFailed = collect($history->json('events'))
+            ->firstWhere('event_type', 'ActivityFailed');
+
+        $this->assertIsArray($activityFailed);
+        $exception = $activityFailed['payload']['exception'] ?? null;
+        $this->assertIsArray($exception);
+        $this->assertSame('PolyglotPhpPlannedFailure', $exception['type'] ?? null);
+        $this->assertSame('php activity planned failure', $exception['message'] ?? null);
+        $this->assertTrue($exception['non_retryable'] ?? false);
+        $this->assertSame('avro', $exception['details_payload_codec'] ?? null);
+        $this->assertSame('avro', $exception['details']['codec'] ?? null);
+        $this->assertSame($detailsBlob, $exception['details']['blob'] ?? null);
+
+        foreach (['class', 'file', 'line', 'trace', 'properties', 'stack_trace'] as $internalField) {
+            $this->assertArrayNotHasKey($internalField, $exception);
+        }
+    }
+
     /**
      * @param  array<string, mixed>  $envelope
      */

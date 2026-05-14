@@ -7,6 +7,26 @@ use Workflow\V2\Support\ExternalPayloads;
 
 class ExternalPayloadEnvelopeService
 {
+    private const ACTIVITY_FAILURE_NEUTRAL_EXCEPTION_KEYS = [
+        'type',
+        'message',
+        'code',
+        'kind',
+        'classification',
+        'retryable',
+        'non_retryable',
+        'timeout_type',
+        'cancelled',
+        'malformed_output',
+        'details',
+        'details_payload_codec',
+    ];
+
+    private const EXPLICIT_DIAGNOSTIC_KEYS = [
+        'diagnostics',
+        'runtime_diagnostics',
+    ];
+
     /**
      * Return the worker-protocol payload envelope for an encoded blob.
      *
@@ -69,7 +89,12 @@ class ExternalPayloadEnvelopeService
 
             $payload = $event['payload'] ?? null;
             if (is_array($payload)) {
-                $event['payload'] = $this->historyPayload($namespace, $payload, $fallbackCodec);
+                $event['payload'] = $this->historyPayload(
+                    $namespace,
+                    $payload,
+                    $fallbackCodec,
+                    $this->stringValue($event['event_type'] ?? null),
+                );
                 $events[$index] = $event;
             }
         }
@@ -81,8 +106,12 @@ class ExternalPayloadEnvelopeService
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
-    public function historyPayload(?string $namespace, array $payload, ?string $fallbackCodec = null): array
-    {
+    public function historyPayload(
+        ?string $namespace,
+        array $payload,
+        ?string $fallbackCodec = null,
+        ?string $eventType = null,
+    ): array {
         $codec = $this->stringValue($payload['payload_codec'] ?? null) ?? $fallbackCodec;
 
         foreach (['arguments', 'result', 'output'] as $field) {
@@ -100,7 +129,12 @@ class ExternalPayloadEnvelopeService
         }
 
         if (isset($payload['exception']) && is_array($payload['exception'])) {
-            $payload['exception'] = $this->failureSnapshot($namespace, $payload['exception'], $codec);
+            $payload['exception'] = $this->failureSnapshot(
+                $namespace,
+                $payload['exception'],
+                $codec,
+                $this->redactActivityFailureRuntimeInternals($eventType, $payload),
+            );
         }
 
         return $payload;
@@ -142,15 +176,58 @@ class ExternalPayloadEnvelopeService
      * @param  array<string, mixed>  $snapshot
      * @return array<string, mixed>
      */
-    private function failureSnapshot(?string $namespace, array $snapshot, ?string $fallbackCodec): array
-    {
+    private function failureSnapshot(
+        ?string $namespace,
+        array $snapshot,
+        ?string $fallbackCodec,
+        bool $redactRuntimeInternals = false,
+    ): array {
         $codec = $this->stringValue($snapshot['details_payload_codec'] ?? null) ?? $fallbackCodec;
 
         if (array_key_exists('details', $snapshot)) {
             $snapshot['details'] = $this->historyValue($namespace, $codec, $snapshot['details']);
         }
 
-        return $snapshot;
+        if (! $redactRuntimeInternals) {
+            return $snapshot;
+        }
+
+        $neutral = [];
+
+        foreach (self::ACTIVITY_FAILURE_NEUTRAL_EXCEPTION_KEYS as $key) {
+            if (array_key_exists($key, $snapshot)) {
+                $neutral[$key] = $snapshot[$key];
+            }
+        }
+
+        foreach (self::EXPLICIT_DIAGNOSTIC_KEYS as $key) {
+            if (isset($snapshot[$key]) && is_array($snapshot[$key])) {
+                $neutral[$key] = $snapshot[$key];
+            }
+        }
+
+        return $neutral;
+    }
+
+    /**
+     * Default PHP Throwable payloads contain server-local class/file/line/trace
+     * details. Activity failure history is a cross-runtime contract, so only
+     * neutral failure fields and explicit diagnostics envelopes are emitted.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private function redactActivityFailureRuntimeInternals(?string $eventType, array $payload): bool
+    {
+        if ($eventType === 'ActivityFailed') {
+            return true;
+        }
+
+        return $eventType === null
+            && (
+                array_key_exists('activity_execution_id', $payload)
+                || array_key_exists('activity_attempt_id', $payload)
+                || isset($payload['activity'])
+            );
     }
 
     private function responseCodec(?string $codec): string

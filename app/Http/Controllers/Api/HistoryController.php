@@ -70,7 +70,12 @@ class HistoryController
                 'timestamp' => $event->recorded_at?->toJSON(),
                 'principal' => self::eventPrincipal($event),
                 'payload' => is_array($event->payload)
-                    ? $this->payloadEnvelopes->historyPayload($namespace, $event->payload, $run->payload_codec)
+                    ? $this->payloadEnvelopes->historyPayload(
+                        $namespace,
+                        $event->payload,
+                        $run->payload_codec,
+                        $event->event_type?->value ?? $event->event_type,
+                    )
                     : [],
             ])->all(),
             'next_page_token' => $hasMore && $lastSequence !== null
