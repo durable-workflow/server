@@ -174,6 +174,7 @@ class WorkerProtocol
      *     history_page_size_default: int,
      *     history_page_size_max: int,
      *     query_tasks: bool,
+     *     query_task_timeouts: array{control_plane_timeout_seconds: int, lease_timeout_seconds: int, lease_grace_seconds: int},
      *     activity_retry_policy: bool,
      *     activity_timeouts: bool,
      *     local_activities: array<string, mixed>,
@@ -214,6 +215,7 @@ class WorkerProtocol
                 WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
             ),
             'query_tasks' => true,
+            'query_task_timeouts' => self::queryTaskTimeouts(),
             'activity_retry_policy' => true,
             'activity_timeouts' => true,
             'local_activities' => self::localActivitySemantics(),
@@ -270,6 +272,30 @@ class WorkerProtocol
                 'version' => ExternalTaskResultContract::VERSION,
             ],
             'task_queue_priority_fairness' => self::taskQueuePriorityFairnessSemantics(),
+        ];
+    }
+
+    /**
+     * @return array{control_plane_timeout_seconds: int, lease_timeout_seconds: int, lease_grace_seconds: int}
+     */
+    private static function queryTaskTimeouts(): array
+    {
+        $controlPlaneTimeout = max(0, (int) config(
+            'server.query_tasks.timeout',
+            config('server.polling.timeout', WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT),
+        ));
+        $configuredLease = max(1, (int) config(
+            'server.query_tasks.lease_timeout',
+            config('server.lease.workflow_task_timeout', 60),
+        ));
+        $grace = 5;
+
+        return [
+            'control_plane_timeout_seconds' => $controlPlaneTimeout,
+            'lease_timeout_seconds' => $controlPlaneTimeout === 0
+                ? $configuredLease
+                : max($configuredLease, $controlPlaneTimeout + $grace),
+            'lease_grace_seconds' => $grace,
         ];
     }
 

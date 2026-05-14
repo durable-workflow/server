@@ -71,7 +71,7 @@ return [
                 'task_queue',
                 'query_task_id',
             ],
-            'ttl' => 'Task and queue keys live max(60, server.query_tasks.timeout + server.query_tasks.lease_timeout + 60) seconds. Lease keys live server.query_tasks.lease_timeout seconds. Queue locks live 10 seconds.',
+            'ttl' => 'Task and queue keys live max(60, server.query_tasks.ttl_seconds, server.query_tasks.timeout + effective_query_task_lease_timeout + 60) seconds. effective_query_task_lease_timeout is server.query_tasks.lease_timeout when query timeout is 0; otherwise max(server.query_tasks.lease_timeout, server.query_tasks.timeout + 5). Lease keys live effective_query_task_lease_timeout seconds. Queue locks live 10 seconds.',
             'bound' => 'Pending query tasks are capped per namespace/task_queue by server.query_tasks.max_pending_per_queue, default 1024 and hard-clamped to 10000.',
             'admission' => 'Queue mutations require an atomic cache lock. Full queues return query_task_queue_full/HTTP 429; stores without locks or lock timeouts return query_task_queue_unavailable/HTTP 503.',
             'eviction' => 'Poll and enqueue paths prune stale queue IDs by checking each referenced task. Task, lease, queue, and lock keys expire by TTL.',

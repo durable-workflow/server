@@ -340,18 +340,18 @@ return [
 
         'DW_QUERY_TASK_TIMEOUT' => [
             'description' => 'Seconds the control plane waits for a query task response from the worker.',
-            'default' => 'DW_WORKER_POLL_TIMEOUT',
+            'default' => '25',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_TIMEOUT',
         ],
         'DW_QUERY_TASK_LEASE_TIMEOUT' => [
-            'description' => 'Lease timeout (seconds) for ephemeral query tasks handed to workers.',
+            'description' => 'Configured lease timeout (seconds) for ephemeral query tasks; nonzero query waits clamp effective leases to at least query timeout plus 5 seconds.',
             'default' => 'DW_WORKFLOW_TASK_TIMEOUT',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_LEASE_TIMEOUT',
         ],
         'DW_QUERY_TASK_TTL_SECONDS' => [
-            'description' => 'How long the server retains query-task result rows before reaping them.',
+            'description' => 'Configured retention floor for query-task result rows; effective retention is at least query timeout plus effective lease plus 60 seconds.',
             'default' => '180',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_TTL_SECONDS',

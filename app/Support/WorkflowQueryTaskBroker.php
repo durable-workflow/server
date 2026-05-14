@@ -542,6 +542,17 @@ final class WorkflowQueryTaskBroker
             ];
         }
 
+        if (($task['status'] ?? null) === 'timed_out') {
+            return [
+                'query_task_id' => $queryTaskId,
+                'outcome' => 'rejected',
+                'reason' => 'query_task_timed_out',
+                'error' => 'Query task timed out before completion.',
+                'timed_out_at' => $task['timed_out_at'] ?? null,
+                'status' => 409,
+            ];
+        }
+
         if (($task['status'] ?? null) !== 'leased') {
             return [
                 'query_task_id' => $queryTaskId,
@@ -779,12 +790,23 @@ final class WorkflowQueryTaskBroker
 
     private function leaseTtlSeconds(): int
     {
-        return max(1, (int) config('server.query_tasks.lease_timeout', config('server.lease.workflow_task_timeout', 60)));
+        $configured = max(1, (int) config('server.query_tasks.lease_timeout', config('server.lease.workflow_task_timeout', 60)));
+        $queryTimeout = $this->queryTimeoutSeconds();
+
+        if ($queryTimeout === 0) {
+            return $configured;
+        }
+
+        return max($configured, $queryTimeout + $this->leaseGraceSeconds());
     }
 
     private function taskTtlSeconds(): int
     {
-        return max(60, (int) config('server.query_tasks.ttl_seconds', $this->queryTimeoutSeconds() + $this->leaseTtlSeconds() + 60));
+        return max(
+            60,
+            (int) config('server.query_tasks.ttl_seconds', 0),
+            $this->queryTimeoutSeconds() + $this->leaseTtlSeconds() + 60,
+        );
     }
 
     private function maxPendingPerQueue(): int
@@ -814,6 +836,11 @@ final class WorkflowQueryTaskBroker
     private function staleAfterSeconds(): int
     {
         return max(1, (int) config('server.workers.stale_after_seconds', 60));
+    }
+
+    private function leaseGraceSeconds(): int
+    {
+        return 5;
     }
 
     private function taskKey(string $queryTaskId): string

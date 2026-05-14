@@ -16,6 +16,7 @@ use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Contracts\Cache\Store as CacheStore;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Symfony\Component\Process\Process;
@@ -205,6 +206,85 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         $pollAfterTimeout->assertOk()
             ->assertJsonPath('task', null);
+    }
+
+    public function test_query_task_lease_timeout_is_clamped_beyond_control_plane_wait(): void
+    {
+        Queue::fake();
+        config([
+            'server.query_tasks.timeout' => 20,
+            'server.query_tasks.lease_timeout' => 2,
+        ]);
+
+        $run = $this->startRemoteWorkflow('wf-query-task-lease-clamp');
+        $this->registerPythonWorker('python-query-lease-clamp-worker', 'python-queries', ['python.queryable']);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+        $claimedAfter = now();
+
+        $poll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-lease-clamp-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $poll->assertOk()
+            ->assertJsonPath('task.query_task_id', $task['query_task_id']);
+
+        $leaseExpiresAt = Carbon::parse((string) $poll->json('task.lease_expires_at'));
+        $this->assertGreaterThanOrEqual(
+            $claimedAfter->copy()->addSeconds(24)->getTimestamp(),
+            $leaseExpiresAt->getTimestamp(),
+        );
+
+        $cluster = $this->getJson('/api/cluster/info', $this->apiHeaders());
+        $cluster->assertOk()
+            ->assertJsonPath('worker_protocol.server_capabilities.query_task_timeouts.control_plane_timeout_seconds', 20)
+            ->assertJsonPath('worker_protocol.server_capabilities.query_task_timeouts.lease_timeout_seconds', 25)
+            ->assertJsonPath('worker_protocol.server_capabilities.query_task_timeouts.lease_grace_seconds', 5);
+    }
+
+    public function test_query_task_completion_after_control_plane_timeout_returns_structured_rejection(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-late-complete');
+        $this->registerPythonWorker('python-query-late-complete-worker', 'python-queries', ['python.queryable']);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+        $poll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-late-complete-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $poll->assertOk()
+            ->assertJsonPath('task.query_task_id', $task['query_task_id'])
+            ->assertJsonPath('task.lease_owner', 'python-query-late-complete-worker');
+
+        $stored = $broker->task((string) $task['query_task_id']);
+        $this->assertIsArray($stored);
+
+        $stored['status'] = 'timed_out';
+        $stored['timed_out_at'] = now()->toJSON();
+
+        $putTask = new \ReflectionMethod(WorkflowQueryTaskBroker::class, 'putTask');
+        $putTask->setAccessible(true);
+        $putTask->invoke($broker, $stored);
+
+        $this->postJson("/api/worker/query-tasks/{$task['query_task_id']}/complete", [
+            'lease_owner' => 'python-query-late-complete-worker',
+            'query_task_attempt' => 1,
+            'result' => ['status' => 'ready'],
+        ], $this->workerHeaders())
+            ->assertStatus(409)
+            ->assertJsonPath('query_task_id', $task['query_task_id'])
+            ->assertJsonPath('outcome', 'rejected')
+            ->assertJsonPath('reason', 'query_task_timed_out')
+            ->assertJsonPath('error', 'Query task timed out before completion.');
     }
 
     public function test_query_task_enqueue_rejects_when_per_queue_pending_limit_is_reached(): void
