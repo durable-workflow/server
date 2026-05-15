@@ -55,6 +55,7 @@ class ActivityTaskController
             'worker_id' => ['required', 'string'],
             'task_queue' => ['required', 'string'],
             'build_id' => ['nullable', 'string'],
+            'poll_request_id' => ['nullable', 'string', 'max:255'],
         ]);
 
         $worker = $this->resolveRegisteredWorker(
@@ -96,6 +97,7 @@ class ActivityTaskController
                 leaseOwner: $validated['worker_id'],
                 buildId: $registeredBuildId,
                 worker: $worker,
+                pollRequestId: $validated['poll_request_id'] ?? null,
                 supportedActivityTypes: $supportedActivityTypes,
             );
         } catch (\Throwable $exception) {

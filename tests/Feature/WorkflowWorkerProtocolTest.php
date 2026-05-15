@@ -1020,6 +1020,88 @@ class WorkflowWorkerProtocolTest extends TestCase
         }
     }
 
+    public function test_it_redelivers_the_same_activity_task_for_duplicate_poll_request_ids(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-duplicate-activity-poll-request',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->registerWorker('php-worker-activity-scheduler', 'external-workflows');
+        $this->registerWorker(
+            'php-worker-duplicate-activity-poll',
+            'external-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+        );
+
+        $workflowPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-activity-scheduler',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $workflowPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-duplicate-activity-poll-request')
+            ->assertJsonPath('task.workflow_task_attempt', 1);
+
+        $workflowTaskId = (string) $workflowPoll->json('task.task_id');
+        $workflowAttempt = (int) $workflowPoll->json('task.workflow_task_attempt');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$workflowTaskId}/complete", [
+                'lease_owner' => 'php-worker-activity-scheduler',
+                'workflow_task_attempt' => $workflowAttempt,
+                'commands' => [
+                    [
+                        'type' => 'schedule_activity',
+                        'activity_type' => 'tests.external-greeting-activity',
+                        'arguments' => Serializer::serializeWithCodec((string) config('workflows.serializer'), ['Ada']),
+                        'queue' => 'external-activities',
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'waiting');
+
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-worker-duplicate-activity-poll',
+                'task_queue' => 'external-activities',
+                'poll_request_id' => 'activity-poll-request-1',
+            ]);
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-duplicate-activity-poll-request')
+            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity')
+            ->assertJsonPath('task.lease_owner', 'php-worker-duplicate-activity-poll');
+
+        $activityTaskId = (string) $firstPoll->json('task.task_id');
+        $activityAttemptId = (string) $firstPoll->json('task.activity_attempt_id');
+
+        $duplicatePoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-worker-duplicate-activity-poll',
+                'task_queue' => 'external-activities',
+                'poll_request_id' => 'activity-poll-request-1',
+            ]);
+
+        $duplicatePoll->assertOk()
+            ->assertJsonPath('task.task_id', $activityTaskId)
+            ->assertJsonPath('task.activity_attempt_id', $activityAttemptId)
+            ->assertJsonPath('task.lease_owner', 'php-worker-duplicate-activity-poll');
+    }
+
     public function test_it_does_not_replay_cached_duplicate_poll_results_after_the_task_is_completed(): void
     {
         Queue::fake();

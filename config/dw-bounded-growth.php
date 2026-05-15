@@ -5,6 +5,7 @@ use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollSignalStore;
 use App\Support\ProjectionDriftMetrics;
 use App\Support\ServerReadiness;
+use App\Support\ActivityTaskPollRequestStore;
 use App\Support\TaskQueueAdmission;
 use App\Support\WorkerPollClaimGate;
 use App\Support\WorkflowQueryTaskBroker;
@@ -60,6 +61,23 @@ return [
             'ttl' => 'Pending keys live max(server.polling.timeout + 5, 5) seconds. Empty result keys live at most 60 seconds; task result keys live through the active task lease, capped at 3600 seconds.',
             'bound' => 'At most one pending key and one short replay-result key per idempotent worker poll request in the TTL window.',
             'admission' => 'Cache add elects a single poll leader for each idempotent request. Followers wait for the leader result and retry only while the pending marker exists.',
+            'eviction' => 'Pending keys are removed when a leader publishes a result; all pending and result keys also expire by TTL.',
+        ],
+
+        'activity_task_poll_requests' => [
+            'owner' => ActivityTaskPollRequestStore::class,
+            'prefix' => 'server:activity-task-poll-request:',
+            'dimensions' => [
+                'kind',
+                'namespace',
+                'task_queue',
+                'build_id',
+                'lease_owner',
+                'poll_request_id',
+            ],
+            'ttl' => 'Pending keys live max(server.polling.timeout + 5, 5) seconds. Empty result keys live at most 60 seconds; task result keys live through the active activity-attempt lease, capped at 3600 seconds.',
+            'bound' => 'At most one pending key and one short replay-result key per idempotent activity worker poll request in the TTL window.',
+            'admission' => 'Cache add elects a single activity poll leader for each idempotent request. Followers wait for the leader result and retry only while the pending marker exists.',
             'eviction' => 'Pending keys are removed when a leader publishes a result; all pending and result keys also expire by TTL.',
         ],
 
