@@ -6,6 +6,7 @@ use App\Models\WorkerRegistration;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use Workflow\V2\Contracts\ActivityTaskBridge as ActivityTaskBridgeContract;
+use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
@@ -21,6 +22,7 @@ final class ActivityTaskPoller
     public function __construct(
         private readonly LongPoller $longPoller,
         private readonly ActivityTaskBridgeContract $bridge,
+        private readonly ActivityTaskPollRequestStore $pollRequests,
         private readonly LongPollSignalStore $signals,
         private readonly TaskQueueAdmission $admission,
         private readonly WorkerSessionRegistry $workerSessions,
@@ -33,6 +35,232 @@ final class ActivityTaskPoller
      * @return array{task: array<string, mixed>|null, poll_status: string}
      */
     public function poll(
+        string $namespace,
+        string $taskQueue,
+        string $leaseOwner,
+        ?string $buildId,
+        WorkerRegistration $worker,
+        ?string $pollRequestId = null,
+        array $supportedActivityTypes = [],
+    ): array {
+        $pollRequestId = $this->nonEmptyString($pollRequestId);
+
+        if ($pollRequestId === null) {
+            return $this->performPoll(
+                namespace: $namespace,
+                taskQueue: $taskQueue,
+                leaseOwner: $leaseOwner,
+                buildId: $buildId,
+                worker: $worker,
+                supportedActivityTypes: $supportedActivityTypes,
+            );
+        }
+
+        return $this->coordinatedPoll(
+            namespace: $namespace,
+            taskQueue: $taskQueue,
+            leaseOwner: $leaseOwner,
+            buildId: $buildId,
+            worker: $worker,
+            pollRequestId: $pollRequestId,
+            supportedActivityTypes: $supportedActivityTypes,
+        );
+    }
+
+    /**
+     * @param  list<string>  $supportedActivityTypes
+     * @return array{task: array<string, mixed>|null, poll_status: string}
+     */
+    private function coordinatedPoll(
+        string $namespace,
+        string $taskQueue,
+        string $leaseOwner,
+        ?string $buildId,
+        WorkerRegistration $worker,
+        string $pollRequestId,
+        array $supportedActivityTypes = [],
+    ): array {
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            $cached = $this->cachedPollResult(
+                $namespace,
+                $taskQueue,
+                $buildId,
+                $leaseOwner,
+                $pollRequestId,
+            );
+
+            if ($cached['resolved']) {
+                return [
+                    'task' => $cached['task'],
+                    'poll_status' => $cached['poll_status'] ?? $this->defaultPollStatus($cached['task']),
+                ];
+            }
+
+            if ($this->pollRequests->tryStart(
+                $namespace,
+                $taskQueue,
+                $buildId,
+                $leaseOwner,
+                $pollRequestId,
+            )) {
+                return $this->runCoordinatedPollLeader(
+                    namespace: $namespace,
+                    taskQueue: $taskQueue,
+                    leaseOwner: $leaseOwner,
+                    buildId: $buildId,
+                    worker: $worker,
+                    pollRequestId: $pollRequestId,
+                    supportedActivityTypes: $supportedActivityTypes,
+                );
+            }
+
+            $observed = $this->pollRequests->waitForResult(
+                $namespace,
+                $taskQueue,
+                $buildId,
+                $leaseOwner,
+                $pollRequestId,
+            );
+
+            if ($observed['resolved']) {
+                return [
+                    'task' => $observed['task'],
+                    'poll_status' => $observed['poll_status'] ?? $this->defaultPollStatus($observed['task']),
+                ];
+            }
+        }
+
+        $cached = $this->cachedPollResult(
+            $namespace,
+            $taskQueue,
+            $buildId,
+            $leaseOwner,
+            $pollRequestId,
+        );
+
+        return [
+            'task' => $cached['task'],
+            'poll_status' => $cached['poll_status'] ?? $this->defaultPollStatus($cached['task']),
+        ];
+    }
+
+    /**
+     * @return array{resolved: bool, task: array<string, mixed>|null, poll_status: string|null}
+     */
+    private function cachedPollResult(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        string $leaseOwner,
+        string $pollRequestId,
+    ): array {
+        $cached = $this->pollRequests->result(
+            $namespace,
+            $taskQueue,
+            $buildId,
+            $leaseOwner,
+            $pollRequestId,
+        );
+
+        if (! $cached['resolved']) {
+            return $cached;
+        }
+
+        if ($this->cachedTaskStillDeliverable(
+            namespace: $namespace,
+            taskQueue: $taskQueue,
+            buildId: $buildId,
+            leaseOwner: $leaseOwner,
+            task: $cached['task'],
+        )) {
+            $refreshedTask = $this->refreshCachedTaskPayload($cached['task']);
+
+            if ($refreshedTask !== $cached['task']) {
+                $this->pollRequests->rememberResult(
+                    $namespace,
+                    $taskQueue,
+                    $buildId,
+                    $leaseOwner,
+                    $pollRequestId,
+                    $refreshedTask,
+                    $cached['poll_status'] ?? $this->defaultPollStatus($refreshedTask),
+                );
+            }
+
+            return [
+                'resolved' => true,
+                'task' => $refreshedTask,
+                'poll_status' => $cached['poll_status'] ?? $this->defaultPollStatus($refreshedTask),
+            ];
+        }
+
+        $this->pollRequests->forgetResult(
+            $namespace,
+            $taskQueue,
+            $buildId,
+            $leaseOwner,
+            $pollRequestId,
+        );
+
+        return [
+            'resolved' => false,
+            'task' => null,
+            'poll_status' => null,
+        ];
+    }
+
+    /**
+     * @param  list<string>  $supportedActivityTypes
+     * @return array{task: array<string, mixed>|null, poll_status: string}
+     */
+    private function runCoordinatedPollLeader(
+        string $namespace,
+        string $taskQueue,
+        string $leaseOwner,
+        ?string $buildId,
+        WorkerRegistration $worker,
+        string $pollRequestId,
+        array $supportedActivityTypes = [],
+    ): array {
+        try {
+            $task = $this->performPoll(
+                namespace: $namespace,
+                taskQueue: $taskQueue,
+                leaseOwner: $leaseOwner,
+                buildId: $buildId,
+                worker: $worker,
+                supportedActivityTypes: $supportedActivityTypes,
+            );
+        } catch (\Throwable $exception) {
+            $this->pollRequests->forgetPending(
+                $namespace,
+                $taskQueue,
+                $buildId,
+                $leaseOwner,
+                $pollRequestId,
+            );
+
+            throw $exception;
+        }
+
+        $this->pollRequests->rememberResult(
+            $namespace,
+            $taskQueue,
+            $buildId,
+            $leaseOwner,
+            $pollRequestId,
+            $task['task'] ?? null,
+            $task['poll_status'] ?? $this->defaultPollStatus($task['task'] ?? null),
+        );
+
+        return $task;
+    }
+
+    /**
+     * @param  list<string>  $supportedActivityTypes
+     * @return array{task: array<string, mixed>|null, poll_status: string}
+     */
+    private function performPoll(
         string $namespace,
         string $taskQueue,
         string $leaseOwner,
@@ -84,6 +312,116 @@ final class ActivityTaskPoller
             'task' => $task,
             'poll_status' => $resolvedResult['poll_status'] ?? $this->defaultPollStatus($task),
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $task
+     */
+    private function cachedTaskStillDeliverable(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        string $leaseOwner,
+        ?array $task,
+    ): bool {
+        if ($task === null) {
+            return true;
+        }
+
+        $taskId = $this->nonEmptyString($task['task_id'] ?? null);
+        $activityAttemptId = $this->nonEmptyString($task['activity_attempt_id'] ?? null);
+
+        if ($taskId === null || $activityAttemptId === null) {
+            return false;
+        }
+
+        $workflowTask = NamespaceWorkflowScope::task($namespace, $taskId);
+
+        if (! $workflowTask instanceof WorkflowTask || $workflowTask->task_type !== TaskType::Activity) {
+            return false;
+        }
+
+        if ($workflowTask->status !== TaskStatus::Leased) {
+            return false;
+        }
+
+        if ($this->nonEmptyString($workflowTask->queue) !== $taskQueue) {
+            return false;
+        }
+
+        if (! $this->matchesCompatibility($buildId, $workflowTask->compatibility)) {
+            return false;
+        }
+
+        if ($this->nonEmptyString($workflowTask->lease_owner) !== $leaseOwner) {
+            return false;
+        }
+
+        if ($workflowTask->lease_expires_at === null || $workflowTask->lease_expires_at->lte(now())) {
+            return false;
+        }
+
+        $attempt = ActivityAttempt::query()->find($activityAttemptId);
+
+        if (! $attempt instanceof ActivityAttempt) {
+            return false;
+        }
+
+        if ($attempt->workflow_task_id !== $workflowTask->id) {
+            return false;
+        }
+
+        if ($this->nonEmptyString($attempt->lease_owner) !== $leaseOwner) {
+            return false;
+        }
+
+        if ($attempt->status !== ActivityAttemptStatus::Running) {
+            return false;
+        }
+
+        if ($attempt->closed_at !== null) {
+            return false;
+        }
+
+        if ($attempt->lease_expires_at === null || $attempt->lease_expires_at->lte(now())) {
+            return false;
+        }
+
+        $attemptNumber = is_numeric($task['attempt_number'] ?? null)
+            ? (int) $task['attempt_number']
+            : null;
+
+        if (
+            $attemptNumber !== null
+            && is_int($attempt->attempt_number)
+            && (int) $attempt->attempt_number !== $attemptNumber
+        ) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $task
+     * @return array<string, mixed>|null
+     */
+    private function refreshCachedTaskPayload(?array $task): ?array
+    {
+        if (! is_array($task)) {
+            return $task;
+        }
+
+        $taskId = $this->nonEmptyString($task['task_id'] ?? null);
+        $leaseOwner = $this->nonEmptyString($task['lease_owner'] ?? null);
+
+        if ($taskId === null || $leaseOwner === null) {
+            return $task;
+        }
+
+        $refreshed = $this->rawActivityClaimPayload($taskId, $leaseOwner);
+
+        return is_array($refreshed) ? $refreshed : $task;
     }
 
     /**
@@ -418,6 +756,15 @@ final class ActivityTaskPoller
         }
 
         return in_array(trim($activityType), $supported, true);
+    }
+
+    private function matchesCompatibility(?string $buildId, mixed $compatibility): bool
+    {
+        if (! is_string($compatibility) || trim($compatibility) === '') {
+            return true;
+        }
+
+        return $buildId !== null && $compatibility === $buildId;
     }
 
     private function applyWorkerCompatibility(string $namespace, ?string $buildId): void
