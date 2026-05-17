@@ -67,6 +67,12 @@ final class WorkflowPackageApiFloor
         // cluster info re-export the package-owned runtime semantics.
         [WorkerProtocolVersion::class, 'workerSessionVerbs'],
         [WorkerProtocolVersion::class, 'workerSessionSemantics'],
+        // Worker protocol 1.6 query-task contract: PHP workers at this
+        // protocol level advertise query capability and poll/complete/fail
+        // query work through the standalone worker-plane routes.
+        [WorkerProtocolVersion::class, 'queryTaskVerbs'],
+        [WorkerProtocolVersion::class, 'workerCapabilities'],
+        [WorkerProtocolVersion::class, 'queryTaskSemantics'],
         // External payload storage protocol: server controllers and
         // envelope services depend on the package-owned wire helpers.
         [PayloadEnvelopeResolver::class, 'resolve'],
@@ -84,9 +90,15 @@ final class WorkflowPackageApiFloor
      * Public constants the server embeds in HTTP/control-plane payloads.
      */
     private const REQUIRED_CLASS_CONSTANTS = [
+        [WorkerProtocolVersion::class, 'CAPABILITY_QUERY_TASKS'],
         [ExternalPayloadReference::class, 'SCHEMA'],
         [ExternalPayloads::class, 'STORED_REFERENCE_PREFIX'],
     ];
+
+    /**
+     * Minimum workflow package protocol contract required by this server.
+     */
+    private const MINIMUM_WORKER_PROTOCOL_VERSION = '1.6';
 
     /**
      * Concrete classes the server instantiates or catches directly.
@@ -169,6 +181,16 @@ final class WorkflowPackageApiFloor
     public static function assert(): void
     {
         $missing = [];
+
+        if (! self::hasWorkerProtocolVersionAtLeast(self::MINIMUM_WORKER_PROTOCOL_VERSION)) {
+            $installed = self::installedWorkerProtocolVersion();
+            $missing[] = sprintf(
+                '%s::VERSION >= %s%s',
+                WorkerProtocolVersion::class,
+                self::MINIMUM_WORKER_PROTOCOL_VERSION,
+                $installed === null ? '' : sprintf(' (installed %s)', $installed),
+            );
+        }
 
         foreach (self::REQUIRED_APIS as [$class, $method]) {
             if (! self::hasStaticMethod($class, $method)) {
@@ -753,5 +775,23 @@ final class WorkflowPackageApiFloor
         return str_contains($body, 'task_dispatch_mode')
             && str_contains($body, "'info'")
             && str_contains($body, 'queue_sync_unsupported');
+    }
+
+    private static function hasWorkerProtocolVersionAtLeast(string $minimum): bool
+    {
+        $installed = self::installedWorkerProtocolVersion();
+
+        return $installed !== null && version_compare($installed, $minimum, '>=');
+    }
+
+    private static function installedWorkerProtocolVersion(): ?string
+    {
+        if (! defined(WorkerProtocolVersion::class.'::VERSION')) {
+            return null;
+        }
+
+        $version = WorkerProtocolVersion::VERSION;
+
+        return is_string($version) && trim($version) !== '' ? trim($version) : null;
     }
 }

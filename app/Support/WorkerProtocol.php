@@ -8,7 +8,15 @@ use Workflow\V2\Support\WorkerProtocolVersion;
 
 class WorkerProtocol
 {
-    public const VERSION = WorkerProtocolVersion::VERSION;
+    /**
+     * Worker-plane protocol version implemented by this server release.
+     *
+     * Keep this server-owned so a stale workflow package install cannot
+     * silently lower the advertised protocol below the endpoints implemented
+     * here. WorkflowPackageApiFloor asserts the installed package still
+     * provides the companion protocol helpers for this version.
+     */
+    public const VERSION = '1.6';
 
     public const HEADER = 'X-Durable-Workflow-Protocol-Version';
 

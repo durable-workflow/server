@@ -144,6 +144,31 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertSame('worker_session', WorkerProtocolVersion::workerSessionSemantics()['command_field'] ?? null);
     }
 
+    public function test_worker_query_task_protocol_contract_is_public_static(): void
+    {
+        $reflection = new ReflectionClass(WorkerProtocolVersion::class);
+
+        foreach (['queryTaskVerbs', 'workerCapabilities', 'queryTaskSemantics'] as $methodName) {
+            $method = $reflection->getMethod($methodName);
+
+            $this->assertTrue($method->isPublic());
+            $this->assertTrue($method->isStatic());
+        }
+
+        $capability = $reflection->getReflectionConstant('CAPABILITY_QUERY_TASKS');
+        $this->assertNotFalse($capability);
+        $this->assertTrue($capability->isPublic());
+
+        $this->assertSame('1.6', WorkerProtocolVersion::VERSION);
+        $this->assertSame('query_tasks', WorkerProtocolVersion::CAPABILITY_QUERY_TASKS);
+        $this->assertSame(['poll', 'complete', 'fail'], WorkerProtocolVersion::queryTaskVerbs());
+        $this->assertContains(WorkerProtocolVersion::CAPABILITY_QUERY_TASKS, WorkerProtocolVersion::workerCapabilities());
+        $this->assertSame(
+            '/api/worker/query-tasks',
+            WorkerProtocolVersion::queryTaskSemantics()['path_prefix'] ?? null,
+        );
+    }
+
     public function test_external_payload_reference_constants_are_public_package_api(): void
     {
         $referenceReflection = new ReflectionClass(ExternalPayloadReference::class);
@@ -177,6 +202,9 @@ class WorkflowPackageApiFloorTest extends TestCase
         $floor = new ReflectionClass(WorkflowPackageApiFloor::class);
 
         $apis = $this->privateConstant($floor, 'REQUIRED_APIS');
+        $this->assertContains([WorkerProtocolVersion::class, 'queryTaskVerbs'], $apis);
+        $this->assertContains([WorkerProtocolVersion::class, 'workerCapabilities'], $apis);
+        $this->assertContains([WorkerProtocolVersion::class, 'queryTaskSemantics'], $apis);
         $this->assertContains([PayloadEnvelopeResolver::class, 'resolve'], $apis);
         $this->assertContains([PayloadEnvelopeResolver::class, 'resolveToArray'], $apis);
         $this->assertContains([PayloadEnvelopeResolver::class, 'resolveCommandPayload'], $apis);
@@ -188,6 +216,7 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertContains([ExternalPayloads::class, 'storedEnvelope'], $apis);
 
         $constants = $this->privateConstant($floor, 'REQUIRED_CLASS_CONSTANTS');
+        $this->assertContains([WorkerProtocolVersion::class, 'CAPABILITY_QUERY_TASKS'], $constants);
         $this->assertContains([ExternalPayloadReference::class, 'SCHEMA'], $constants);
         $this->assertContains([ExternalPayloads::class, 'STORED_REFERENCE_PREFIX'], $constants);
 

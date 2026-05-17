@@ -586,7 +586,7 @@ class ClusterInfoCompatibilityTest extends TestCase
         );
     }
 
-    public function test_worker_protocol_manifest_is_sourced_from_the_package_contract(): void
+    public function test_worker_protocol_manifest_uses_server_protocol_and_package_wire_helpers(): void
     {
         $expectedCommands = array_values(array_merge(
             WorkerProtocolVersion::terminalCommandTypes(),
@@ -595,9 +595,11 @@ class ClusterInfoCompatibilityTest extends TestCase
 
         $response = $this->getJson('/api/cluster/info')->assertOk();
 
+        $this->assertSame('1.6', WorkerProtocol::VERSION);
         $this->assertSame(WorkerProtocolVersion::VERSION, WorkerProtocol::VERSION);
+        $this->assertSame(WorkerProtocol::VERSION, (string) config('server.worker_protocol.version'));
         $this->assertSame($expectedCommands, WorkerProtocol::supportedWorkflowTaskCommands());
-        $this->assertSame(WorkerProtocolVersion::VERSION, $response->json('worker_protocol.version'));
+        $this->assertSame(WorkerProtocol::VERSION, $response->json('worker_protocol.version'));
         $this->assertSame(
             $expectedCommands,
             $response->json('worker_protocol.server_capabilities.supported_workflow_task_commands'),

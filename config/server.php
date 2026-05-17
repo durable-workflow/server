@@ -1,6 +1,7 @@
 <?php
 
 use App\Support\EnvAuditor;
+use App\Support\WorkerProtocol;
 use Workflow\V2\Support\WorkerProtocolVersion;
 
 /*
@@ -335,7 +336,7 @@ return [
     */
 
     'worker_protocol' => [
-        'version' => EnvAuditor::env('DW_WORKER_PROTOCOL_VERSION', 'WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION', WorkerProtocolVersion::VERSION),
+        'version' => EnvAuditor::env('DW_WORKER_PROTOCOL_VERSION', 'WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION', WorkerProtocol::VERSION),
         'history_page_size_default' => (int) EnvAuditor::env(
             'DW_HISTORY_PAGE_SIZE_DEFAULT',
             'WORKFLOW_SERVER_HISTORY_PAGE_SIZE_DEFAULT',

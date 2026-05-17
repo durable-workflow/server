@@ -343,7 +343,7 @@ return [
 
         'DW_WORKER_PROTOCOL_VERSION' => [
             'description' => 'Override for the worker protocol version advertised on worker-plane responses.',
-            'default' => 'WorkerProtocolVersion::VERSION',
+            'default' => 'WorkerProtocol::VERSION',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_WORKER_PROTOCOL_VERSION',
         ],

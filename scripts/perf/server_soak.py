@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import math
@@ -475,28 +476,36 @@ def redis_info(project: str) -> dict[str, int]:
     server_keys = 0
     server_keys_by_policy = {policy_id: 0 for policy_id in SERVER_CACHE_KEY_PATTERNS}
 
-    info = run_command(compose_command(project, "exec", "-T", "redis", "redis-cli", "INFO", "memory"))
-    redis_ok = info.returncode == 0
-    for line in info.stdout.splitlines():
-        if line.startswith("used_memory:"):
-            used_memory = int(line.split(":", 1)[1].strip())
-            break
+    result = run_command(compose_command(project, "exec", "-T", "redis", "sh", "-lc", redis_sampling_script()))
+    redis_ok = result.returncode == 0
+    seen_used_memory = False
+    seen_dbsize = False
 
-    dbsize = run_command(compose_command(project, "exec", "-T", "redis", "redis-cli", "DBSIZE"))
-    redis_ok = redis_ok and dbsize.returncode == 0
-    try:
-        db_keys = int(dbsize.stdout.strip() or "0")
-    except ValueError:
-        db_keys = 0
-        redis_ok = False
+    for line in result.stdout.splitlines():
+        if line.startswith("__used_memory__="):
+            seen_used_memory = True
+            parsed, ok = parse_int_field(line.split("=", 1)[1])
+            used_memory = parsed
+            redis_ok = redis_ok and ok
+            continue
 
-    for policy_id, pattern in SERVER_CACHE_KEY_PATTERNS.items():
-        count, ok = redis_scan_count(project, pattern)
-        server_keys_by_policy[policy_id] = count
-        redis_ok = redis_ok and ok
+        if line.startswith("__dbsize__="):
+            seen_dbsize = True
+            parsed, ok = parse_int_field(line.split("=", 1)[1])
+            db_keys = parsed
+            redis_ok = redis_ok and ok
+            continue
 
-    server_keys, ok = redis_scan_count(project, "*server:*")
-    redis_ok = redis_ok and ok
+        if not line.startswith("__server_key__="):
+            continue
+
+        key = line.split("=", 1)[1]
+        server_keys += 1
+        for policy_id, pattern in SERVER_CACHE_KEY_PATTERNS.items():
+            if fnmatch.fnmatchcase(key, pattern):
+                server_keys_by_policy[policy_id] += 1
+
+    redis_ok = redis_ok and seen_used_memory and seen_dbsize
 
     return {
         "redis_sample_ok": 1 if redis_ok else 0,
@@ -508,20 +517,22 @@ def redis_info(project: str) -> dict[str, int]:
     }
 
 
-def redis_scan_count(project: str, pattern: str) -> tuple[int, bool]:
-    count = run_command(
-        compose_command(
-            project,
-            "exec",
-            "-T",
-            "redis",
-            "sh",
-            "-lc",
-            f"redis-cli --scan --pattern {json.dumps(pattern)} | wc -l",
-        )
+def redis_sampling_script() -> str:
+    return "\n".join(
+        [
+            "set -e",
+            "used_memory=$(redis-cli INFO memory | sed -n 's/^used_memory://p' | tr -d '\\r' | head -n 1)",
+            "dbsize=$(redis-cli DBSIZE)",
+            "printf '__used_memory__=%s\\n' \"$used_memory\"",
+            "printf '__dbsize__=%s\\n' \"$dbsize\"",
+            "redis-cli --scan --pattern '*server:*' | sed 's/^/__server_key__=/'",
+        ]
     )
+
+
+def parse_int_field(value: str) -> tuple[int, bool]:
     try:
-        return int(count.stdout.strip() or "0"), count.returncode == 0
+        return int(value.strip() or "0"), True
     except ValueError:
         return 0, False
 

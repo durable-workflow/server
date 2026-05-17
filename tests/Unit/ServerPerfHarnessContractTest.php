@@ -154,6 +154,22 @@ class ServerPerfHarnessContractTest extends TestCase
         );
     }
 
+    public function test_redis_sampling_batches_server_cache_inventory_in_one_container_exec(): void
+    {
+        $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/server_soak.py');
+        $this->assertNotFalse($source, 'scripts/perf/server_soak.py must be readable');
+
+        $this->assertStringContainsString('def redis_sampling_script()', $source);
+        $this->assertStringContainsString('redis-cli --scan --pattern \'*server:*\'', $source);
+        $this->assertStringContainsString('fnmatch.fnmatchcase(key, pattern)', $source);
+        $this->assertStringContainsString(
+            'compose_command(project, "exec", "-T", "redis", "sh", "-lc", redis_sampling_script())',
+            $source,
+            'Redis sampling should use one container exec and one server-key scan, then classify per-policy counts locally.',
+        );
+        $this->assertStringNotContainsString('for policy_id, pattern in SERVER_CACHE_KEY_PATTERNS.items():'.PHP_EOL.'        count, ok = redis_scan_count', $source);
+    }
+
     public function test_trusted_long_soak_evidence_requires_polling_cache_activity_observed(): void
     {
         $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/server_soak.py');
