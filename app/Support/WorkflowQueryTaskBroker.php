@@ -13,6 +13,7 @@ use Illuminate\Support\Str;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\HistoryExport;
 
 final class WorkflowQueryTaskBroker
 {
@@ -434,6 +435,7 @@ final class WorkflowQueryTaskBroker
             'workflow_id' => $task['workflow_id'],
             'run_id' => $task['run_id'],
             'workflow_type' => $task['workflow_type'],
+            'workflow_class' => $run?->workflow_class,
             'query_name' => $task['query_name'],
             'payload_codec' => $task['payload_codec'],
             'workflow_arguments' => $run instanceof WorkflowRun && is_string($run->arguments)
@@ -447,6 +449,7 @@ final class WorkflowQueryTaskBroker
             'run_status' => $run?->status?->value,
             'last_history_sequence' => (int) ($run?->last_history_sequence ?? 0),
             'history_events' => $run instanceof WorkflowRun ? $this->historyEvents($run) : [],
+            'history_export' => $run instanceof WorkflowRun ? HistoryExport::forRun($run) : null,
             'task_queue' => $task['task_queue'],
             'lease_owner' => $task['lease_owner'] ?? null,
             'lease_expires_at' => $task['lease_expires_at'] ?? null,

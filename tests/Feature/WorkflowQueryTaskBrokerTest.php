@@ -79,10 +79,15 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('task.workflow_id', 'wf-query-task-complete')
             ->assertJsonPath('task.run_id', $run->id)
             ->assertJsonPath('task.workflow_type', 'python.queryable')
+            ->assertJsonPath('task.workflow_class', 'python.queryable')
             ->assertJsonPath('task.query_name', 'status')
             ->assertJsonPath('task.task_queue', 'python-queries')
             ->assertJsonPath('task.lease_owner', 'python-query-worker')
-            ->assertJsonPath('task.query_arguments.codec', 'avro');
+            ->assertJsonPath('task.query_arguments.codec', 'avro')
+            ->assertJsonPath('task.history_export.schema', 'durable-workflow.v2.history-export')
+            ->assertJsonPath('task.history_export.workflow.workflow_type', 'python.queryable')
+            ->assertJsonPath('task.history_export.workflow.workflow_class', 'python.queryable')
+            ->assertJsonPath('task.history_export.payloads.codec', 'avro');
 
         $pollTask = $poll->json('task');
 
