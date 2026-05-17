@@ -222,6 +222,16 @@ return [
             'WORKFLOW_SERVER_WAKE_SIGNAL_TTL_SECONDS',
             max((int) EnvAuditor::env('DW_WORKER_POLL_TIMEOUT', 'WORKFLOW_SERVER_WORKER_POLL_TIMEOUT', 30) + 5, 60),
         ),
+        'max_concurrent_waits' => EnvAuditor::env(
+            'DW_WORKER_LONG_POLL_MAX_CONCURRENT',
+            'WORKFLOW_SERVER_WORKER_LONG_POLL_MAX_CONCURRENT',
+            null,
+        ),
+        'reserved_http_workers' => (int) EnvAuditor::env(
+            'DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS',
+            'WORKFLOW_SERVER_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS',
+            2,
+        ),
         'max_tasks_per_poll' => (int) EnvAuditor::env('DW_MAX_TASKS_PER_POLL', 'WORKFLOW_SERVER_MAX_TASKS_PER_POLL', 1),
         'sqlite_claim_lock_ttl_seconds' => (int) EnvAuditor::env(
             'DW_SQLITE_CLAIM_LOCK_TTL_SECONDS',

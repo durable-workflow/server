@@ -6,6 +6,7 @@ class LongPoller
 {
     public function __construct(
         private readonly LongPollSignalStore $signals,
+        private readonly LongPollWaitSlotStore $waitSlots,
     ) {}
 
     /**
@@ -20,6 +21,7 @@ class LongPoller
         ?int $intervalMilliseconds = null,
         array $wakeChannels = [],
         ?callable $nextProbeAt = null,
+        bool $reserveWorkerWaitSlot = false,
     ): mixed {
         $timeoutSeconds ??= max(0, (int) config('server.polling.timeout', 30));
         $intervalMilliseconds ??= max(1, (int) config('server.polling.interval_ms', 1000));
@@ -51,6 +53,16 @@ class LongPoller
             return $value;
         }
 
+        $waitSlot = null;
+
+        if ($reserveWorkerWaitSlot) {
+            $waitSlot = $this->waitSlots->tryAcquire($timeoutSeconds);
+
+            if ($waitSlot === null) {
+                return $value;
+            }
+        }
+
         $deadline = microtime(true) + $timeoutSeconds;
         $nextForcedProbeAt = $this->nextProbeDeadline(
             $nextProbeAt,
@@ -58,39 +70,43 @@ class LongPoller
             $deadline,
         );
 
-        while (microtime(true) < $deadline) {
-            $now = microtime(true);
-            $sleepUntil = min(
-                $deadline,
-                $nextForcedProbeAt,
-                $now + ($signalCheckIntervalMilliseconds / 1000),
-            );
-            $sleepMilliseconds = max(1, (int) ceil(max(0, $sleepUntil - $now) * 1000));
+        try {
+            while (microtime(true) < $deadline) {
+                $now = microtime(true);
+                $sleepUntil = min(
+                    $deadline,
+                    $nextForcedProbeAt,
+                    $now + ($signalCheckIntervalMilliseconds / 1000),
+                );
+                $sleepMilliseconds = max(1, (int) ceil(max(0, $sleepUntil - $now) * 1000));
 
-            $this->pause($sleepMilliseconds);
+                $this->pause($sleepMilliseconds);
 
-            $now = microtime(true);
-            $wakeChanged = $wakeChannels !== [] && $this->signals->changed($wakeSnapshot);
+                $now = microtime(true);
+                $wakeChanged = $wakeChannels !== [] && $this->signals->changed($wakeSnapshot);
 
-            if (! $wakeChanged && $now < $nextForcedProbeAt) {
-                continue;
+                if (! $wakeChanged && $now < $nextForcedProbeAt) {
+                    continue;
+                }
+
+                if ($wakeChanged) {
+                    $wakeSnapshot = $this->signals->snapshot($wakeChannels);
+                }
+
+                $nextForcedProbeAt = $this->nextProbeDeadline(
+                    $nextProbeAt,
+                    $now + ($intervalMilliseconds / 1000),
+                    $deadline,
+                );
+
+                $value = $probe();
+
+                if ($ready($value)) {
+                    return $value;
+                }
             }
-
-            if ($wakeChanged) {
-                $wakeSnapshot = $this->signals->snapshot($wakeChannels);
-            }
-
-            $nextForcedProbeAt = $this->nextProbeDeadline(
-                $nextProbeAt,
-                $now + ($intervalMilliseconds / 1000),
-                $deadline,
-            );
-
-            $value = $probe();
-
-            if ($ready($value)) {
-                return $value;
-            }
+        } finally {
+            $waitSlot?->release();
         }
 
         return $value;

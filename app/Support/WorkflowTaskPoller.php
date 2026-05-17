@@ -336,6 +336,7 @@ final class WorkflowTaskPoller
             nextProbeAt: function () use (&$nextProbeAt): mixed {
                 return $nextProbeAt;
             },
+            reserveWorkerWaitSlot: true,
         );
 
         return [

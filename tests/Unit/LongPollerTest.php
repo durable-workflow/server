@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use App\Support\LongPollSignalStore;
 use App\Support\LongPoller;
+use App\Support\LongPollWaitSlotStore;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -28,7 +29,7 @@ class LongPollerTest extends TestCase
 
         $probeCount = 0;
 
-        $poller = new class($signals) extends LongPoller
+        $poller = new class($signals, app(LongPollWaitSlotStore::class)) extends LongPoller
         {
             public int $pauseCalls = 0;
 
@@ -77,7 +78,7 @@ class LongPollerTest extends TestCase
 
         $probeCount = 0;
 
-        $poller = new class($signals) extends LongPoller
+        $poller = new class($signals, app(LongPollWaitSlotStore::class)) extends LongPoller
         {
             protected function pause(int $milliseconds): void
             {
@@ -108,7 +109,7 @@ class LongPollerTest extends TestCase
         $probeCount = 0;
         $nextProbeAt = null;
 
-        $poller = new class($signals) extends LongPoller
+        $poller = new class($signals, app(LongPollWaitSlotStore::class)) extends LongPoller
         {
             protected function pause(int $milliseconds): void
             {
@@ -143,5 +144,111 @@ class LongPollerTest extends TestCase
         $this->assertSame('ready', $result);
         $this->assertSame(2, $probeCount);
         $this->assertLessThan(0.8, $elapsedSeconds);
+    }
+
+    public function test_it_does_not_use_worker_wait_slots_by_default(): void
+    {
+        config([
+            'server.polling.max_concurrent_waits' => 1,
+        ]);
+
+        /** @var LongPollSignalStore $signals */
+        $signals = app(LongPollSignalStore::class);
+        $channel = $signals->workflowTaskPollChannels('default', null, 'external-workflows')[0];
+        /** @var LongPollWaitSlotStore $waitSlots */
+        $waitSlots = app(LongPollWaitSlotStore::class);
+        $heldSlot = $waitSlots->tryAcquire(1);
+        $this->assertNotNull($heldSlot);
+
+        $probeCount = 0;
+
+        $poller = new class($signals, $waitSlots) extends LongPoller
+        {
+            public int $pauseCalls = 0;
+
+            /** @var callable(int): void|null */
+            public $afterPause = null;
+
+            protected function pause(int $milliseconds): void
+            {
+                $this->pauseCalls++;
+
+                if (is_callable($this->afterPause)) {
+                    ($this->afterPause)($this->pauseCalls);
+                }
+            }
+        };
+
+        $poller->afterPause = function (int $pauseCalls) use ($signals, $channel): void {
+            if ($pauseCalls === 1) {
+                $signals->signal($channel);
+            }
+        };
+
+        try {
+            $result = $poller->until(
+                function () use (&$probeCount): ?string {
+                    $probeCount++;
+
+                    return $probeCount >= 2 ? 'ready' : null;
+                },
+                static fn (?string $value): bool => $value === 'ready',
+                timeoutSeconds: 1,
+                intervalMilliseconds: 1000,
+                wakeChannels: [$channel],
+            );
+        } finally {
+            $heldSlot->release();
+        }
+
+        $this->assertSame('ready', $result);
+        $this->assertSame(2, $probeCount);
+        $this->assertSame(1, $poller->pauseCalls);
+    }
+
+    public function test_it_returns_immediate_probe_result_when_worker_wait_slots_are_exhausted(): void
+    {
+        config([
+            'server.polling.max_concurrent_waits' => 1,
+        ]);
+
+        /** @var LongPollSignalStore $signals */
+        $signals = app(LongPollSignalStore::class);
+        /** @var LongPollWaitSlotStore $waitSlots */
+        $waitSlots = app(LongPollWaitSlotStore::class);
+        $heldSlot = $waitSlots->tryAcquire(1);
+        $this->assertNotNull($heldSlot);
+
+        $probeCount = 0;
+
+        $poller = new class($signals, $waitSlots) extends LongPoller
+        {
+            public int $pauseCalls = 0;
+
+            protected function pause(int $milliseconds): void
+            {
+                $this->pauseCalls++;
+            }
+        };
+
+        try {
+            $result = $poller->until(
+                function () use (&$probeCount): ?string {
+                    $probeCount++;
+
+                    return null;
+                },
+                static fn (?string $value): bool => $value === 'ready',
+                timeoutSeconds: 1,
+                intervalMilliseconds: 5,
+                reserveWorkerWaitSlot: true,
+            );
+        } finally {
+            $heldSlot->release();
+        }
+
+        $this->assertNull($result);
+        $this->assertSame(1, $probeCount);
+        $this->assertSame(0, $poller->pauseCalls);
     }
 }

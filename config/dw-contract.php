@@ -242,6 +242,18 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_WAKE_SIGNAL_TTL_SECONDS',
         ],
+        'DW_WORKER_LONG_POLL_MAX_CONCURRENT' => [
+            'description' => 'Optional cap for concurrent held worker long-poll waits on this server node. Unset derives from PHP_CLI_SERVER_WORKERS minus DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS when the standalone CLI server declares a worker count.',
+            'default' => '(unset; derived for PHP_CLI_SERVER_WORKERS)',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_WORKER_LONG_POLL_MAX_CONCURRENT',
+        ],
+        'DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS' => [
+            'description' => 'Number of PHP CLI server workers reserved for health and control-plane requests when deriving the long-poll wait cap.',
+            'default' => '2',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS',
+        ],
         'DW_MAX_TASKS_PER_POLL' => [
             'description' => 'Maximum tasks returned per worker poll.',
             'default' => '1',

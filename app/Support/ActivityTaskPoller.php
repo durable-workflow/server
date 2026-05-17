@@ -306,6 +306,7 @@ final class ActivityTaskPoller
             nextProbeAt: function () use (&$nextProbeAt): mixed {
                 return $nextProbeAt;
             },
+            reserveWorkerWaitSlot: true,
         );
 
         return [

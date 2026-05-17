@@ -5,6 +5,10 @@ namespace Tests\Feature;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
+use App\Support\ExternalPayloadEnvelopeService;
+use App\Support\LongPoller;
+use App\Support\LongPollSignalStore;
+use App\Support\LongPollWaitSlotStore;
 use App\Support\QueryTaskQueueFullException;
 use App\Support\ServerPollingCache;
 use App\Support\WorkerProtocol;
@@ -206,6 +210,78 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         $pollAfterTimeout->assertOk()
             ->assertJsonPath('task', null);
+    }
+
+    public function test_query_result_wait_ignores_exhausted_worker_long_poll_slots(): void
+    {
+        Queue::fake();
+        config([
+            'server.polling.max_concurrent_waits' => 1,
+            'server.query_tasks.timeout' => 1,
+        ]);
+
+        $run = $this->startRemoteWorkflow('wf-query-task-slot-exhaustion');
+        /** @var LongPollSignalStore $signals */
+        $signals = app(LongPollSignalStore::class);
+        /** @var LongPollWaitSlotStore $waitSlots */
+        $waitSlots = app(LongPollWaitSlotStore::class);
+        $heldSlot = $waitSlots->tryAcquire(1);
+        $this->assertNotNull($heldSlot);
+
+        $poller = new class($signals, $waitSlots) extends LongPoller
+        {
+            public int $pauseCalls = 0;
+
+            /** @var callable(int): void|null */
+            public $afterPause = null;
+
+            protected function pause(int $milliseconds): void
+            {
+                $this->pauseCalls++;
+
+                if (is_callable($this->afterPause)) {
+                    ($this->afterPause)($this->pauseCalls);
+                }
+            }
+        };
+
+        $broker = new WorkflowQueryTaskBroker(
+            app(ServerPollingCache::class),
+            $poller,
+            $signals,
+            app(ExternalPayloadEnvelopeService::class),
+        );
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+        $queryTaskId = (string) $task['query_task_id'];
+        $putTask = new \ReflectionMethod(WorkflowQueryTaskBroker::class, 'putTask');
+        $putTask->setAccessible(true);
+
+        $poller->afterPause = function (int $pauseCalls) use ($broker, $signals, $putTask, $queryTaskId): void {
+            if ($pauseCalls !== 1) {
+                return;
+            }
+
+            $stored = $broker->task($queryTaskId);
+            $this->assertIsArray($stored);
+
+            $stored['status'] = 'completed';
+            $stored['result'] = ['status' => 'ready'];
+            $stored['result_envelope'] = null;
+            $stored['completed_at'] = now()->toJSON();
+
+            $putTask->invoke($broker, $stored);
+            $signals->signalQueryTaskResult($queryTaskId);
+        };
+
+        try {
+            $result = $broker->waitForResult($queryTaskId);
+        } finally {
+            $heldSlot->release();
+        }
+
+        $this->assertSame('completed', $result['status'] ?? null);
+        $this->assertSame(['status' => 'ready'], $result['result'] ?? null);
+        $this->assertSame(1, $poller->pauseCalls);
     }
 
     public function test_query_task_lease_timeout_is_clamped_beyond_control_plane_wait(): void

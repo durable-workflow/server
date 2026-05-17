@@ -191,9 +191,8 @@ final class WorkflowQueryTaskBroker
         return $this->longPoller->until(
             fn (): ?array => $this->claimNext($namespace, $taskQueue, $worker->worker_id, $supportedWorkflowTypes),
             static fn (?array $task): bool => $task !== null,
-            null,
-            null,
-            $this->signals->queryTaskPollChannels($namespace, $taskQueue),
+            wakeChannels: $this->signals->queryTaskPollChannels($namespace, $taskQueue),
+            reserveWorkerWaitSlot: true,
         );
     }
 

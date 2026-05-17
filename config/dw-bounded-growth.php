@@ -3,6 +3,7 @@
 use App\Services\PrometheusMetricsSummary;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollSignalStore;
+use App\Support\LongPollWaitSlotStore;
 use App\Support\ProjectionDriftMetrics;
 use App\Support\ServerReadiness;
 use App\Support\ActivityTaskPollRequestStore;
@@ -79,6 +80,19 @@ return [
             'bound' => 'At most one pending key and one short replay-result key per idempotent activity worker poll request in the TTL window.',
             'admission' => 'Cache add elects a single activity poll leader for each idempotent request. Followers wait for the leader result and retry only while the pending marker exists.',
             'eviction' => 'Pending keys are removed when a leader publishes a result; all pending and result keys also expire by TTL.',
+        ],
+
+        'long_poll_wait_slots' => [
+            'owner' => LongPollWaitSlotStore::class,
+            'prefix' => 'server:long-poll-wait-slot:',
+            'dimensions' => [
+                'server_id_hash',
+                'slot_index',
+            ],
+            'ttl' => 'server.polling.timeout + 5 seconds, with a runtime minimum of 1 second.',
+            'bound' => 'At most server.polling.max_concurrent_waits keys per server node when set; otherwise PHP_CLI_SERVER_WORKERS minus server.polling.reserved_http_workers in the standalone CLI server image.',
+            'admission' => 'Empty worker long-poll waits must acquire one slot before sleeping. If all slots are occupied, the worker poll returns its immediate probe result so health and control-plane routes keep request-worker capacity.',
+            'eviction' => 'Slots are released when the poll returns; TTL clears stale holders after process death.',
         ],
 
         'sqlite_worker_poll_claim_gate' => [

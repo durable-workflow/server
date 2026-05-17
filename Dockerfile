@@ -92,12 +92,13 @@ LABEL org.opencontainers.image.title="Durable Workflow Server" \
 
 EXPOSE 8080
 
-# Default to 4 CLI server worker processes so long-poll requests do not
+# Default to 8 CLI server worker processes so long-poll requests do not
 # block the rest of the API surface. `php artisan serve` only honours
 # PHP_CLI_SERVER_WORKERS when `--no-reload` is set (otherwise it warns
 # and falls back to a single server thread), so both must be present
-# together.
-ENV PHP_CLI_SERVER_WORKERS=4 \
+# together. The runtime long-poll wait gate also reserves two of these
+# request workers for health and control-plane traffic.
+ENV PHP_CLI_SERVER_WORKERS=8 \
     DB_CONNECTION=sqlite \
     DB_DATABASE=/app/database/database.sqlite \
     QUEUE_CONNECTION=database \

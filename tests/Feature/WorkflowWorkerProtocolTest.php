@@ -18,13 +18,13 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
-use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class WorkflowWorkerProtocolTest extends TestCase
 {
@@ -341,7 +341,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('worker_fleet.workers.0.build_ids.0', 'build-register')
             ->assertJsonPath('worker_fleet.workers.0.queues.0', 'external-workflows');
 
-        WorkerCompatibilityHeartbeat::query()->delete();
+        WorkerCompatibilityFleet::clear();
 
         $heartbeat = $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/heartbeat', [
