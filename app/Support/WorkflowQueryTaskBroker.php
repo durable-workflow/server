@@ -103,6 +103,7 @@ final class WorkflowQueryTaskBroker
                 $this->stringValue($result['reason'] ?? null) ?? 'query_rejected',
                 $this->stringValue($result['message'] ?? null) ?? 'Query failed on the worker.',
                 (int) ($result['http_status'] ?? 409),
+                $this->validationErrors($result['validation_errors'] ?? null),
             );
         }
 
@@ -270,11 +271,17 @@ final class WorkflowQueryTaskBroker
         }
 
         $reason = $this->stringValue($failure['reason'] ?? null) ?? 'query_rejected';
+        $validationErrors = $this->validationErrors($failure['validation_errors'] ?? null);
         $task['status'] = 'failed';
         $task['reason'] = $reason;
         $task['message'] = $this->stringValue($failure['message'] ?? null) ?? 'Query failed on the worker.';
         $task['failure_type'] = $this->stringValue($failure['type'] ?? null);
-        $task['http_status'] = $reason === 'rejected_unknown_query' ? 404 : 409;
+        $task['validation_errors'] = $validationErrors;
+        $task['http_status'] = match ($reason) {
+            'rejected_unknown_query' => 404,
+            'invalid_query_arguments' => 422,
+            default => 409,
+        };
         $task['failed_at'] = now()->toJSON();
 
         $this->putTask($task);
@@ -285,6 +292,7 @@ final class WorkflowQueryTaskBroker
             'query_task_attempt' => $queryTaskAttempt,
             'outcome' => 'failed',
             'reason' => $reason,
+            'validation_errors' => $validationErrors === [] ? null : $validationErrors,
             'status' => 200,
         ];
     }
@@ -732,8 +740,9 @@ final class WorkflowQueryTaskBroker
         string $reason,
         string $message,
         int $status,
+        array $validationErrors = [],
     ): array {
-        return [
+        $payload = [
             'success' => false,
             'workflow_instance_id' => $run->workflow_instance_id,
             'workflow_id' => $run->workflow_instance_id,
@@ -745,6 +754,38 @@ final class WorkflowQueryTaskBroker
             'message' => $message,
             'status' => $status,
         ];
+
+        if ($validationErrors !== []) {
+            $payload['validation_errors'] = $validationErrors;
+        }
+
+        return $payload;
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    private function validationErrors(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $errors = [];
+
+        foreach ($value as $field => $messages) {
+            if (! is_array($messages)) {
+                continue;
+            }
+
+            foreach ($messages as $message) {
+                if (is_string($message) && $message !== '') {
+                    $errors[(string) $field][] = $message;
+                }
+            }
+        }
+
+        return $errors;
     }
 
     private function taskQueue(WorkflowRun $run): string

@@ -140,6 +140,64 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         );
     }
 
+    public function test_worker_query_task_failure_preserves_validation_errors(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-invalid-arguments');
+        $this->registerPythonWorker('python-query-worker', 'python-queries', ['python.queryable']);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'status', [
+            'codec' => 'avro',
+            'blob' => Serializer::serializeWithCodec('avro', [
+                'extra' => 'summary',
+            ]),
+        ]);
+
+        $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders())->assertOk();
+
+        $failure = $this->postJson("/api/worker/query-tasks/{$task['query_task_id']}/fail", [
+            'lease_owner' => 'python-query-worker',
+            'query_task_attempt' => 1,
+            'failure' => [
+                'message' => 'Workflow query [status] received invalid arguments.',
+                'reason' => 'invalid_query_arguments',
+                'type' => 'Workflow\\V2\\Exceptions\\InvalidQueryArgumentsException',
+                'validation_errors' => [
+                    'prefix' => ['The prefix argument is required.'],
+                    'extra' => ['Unknown argument [extra].'],
+                ],
+            ],
+        ], $this->workerHeaders());
+
+        $failure->assertOk()
+            ->assertJsonPath('query_task_id', $task['query_task_id'])
+            ->assertJsonPath('query_task_attempt', 1)
+            ->assertJsonPath('outcome', 'failed')
+            ->assertJsonPath('reason', 'invalid_query_arguments')
+            ->assertJsonPath('validation_errors.prefix.0', 'The prefix argument is required.')
+            ->assertJsonPath('validation_errors.extra.0', 'Unknown argument [extra].');
+
+        $stored = $broker->task((string) $task['query_task_id']);
+
+        $this->assertSame('failed', $stored['status'] ?? null);
+        $this->assertSame('invalid_query_arguments', $stored['reason'] ?? null);
+        $this->assertSame(422, $stored['http_status'] ?? null);
+        $this->assertSame(
+            ['The prefix argument is required.'],
+            $stored['validation_errors']['prefix'] ?? null,
+        );
+        $this->assertSame(
+            ['Unknown argument [extra].'],
+            $stored['validation_errors']['extra'] ?? null,
+        );
+    }
+
     public function test_query_task_completion_rejects_wrong_lease_before_reading_external_payload_reference(): void
     {
         Queue::fake();

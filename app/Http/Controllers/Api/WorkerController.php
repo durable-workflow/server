@@ -1408,6 +1408,9 @@ class WorkerController
             'failure.reason' => ['nullable', 'string'],
             'failure.type' => ['nullable', 'string'],
             'failure.stack_trace' => ['nullable', 'string'],
+            'failure.validation_errors' => ['nullable', 'array'],
+            'failure.validation_errors.*' => ['array'],
+            'failure.validation_errors.*.*' => ['string'],
         ]);
 
         $outcome = $this->queryTasks->fail(
