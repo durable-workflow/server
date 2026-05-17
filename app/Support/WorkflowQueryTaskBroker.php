@@ -46,7 +46,7 @@ final class WorkflowQueryTaskBroker
                 $queryName,
                 'query_worker_unavailable',
                 sprintf(
-                    'No active non-PHP worker is registered for workflow type [%s] on task queue [%s].',
+                    'No active worker is registered for workflow type [%s] on task queue [%s].',
                     $run->workflow_type,
                     $this->taskQueue($run),
                 ),
@@ -614,7 +614,6 @@ final class WorkflowQueryTaskBroker
             ->where('namespace', $namespace)
             ->where('task_queue', $this->taskQueue($run))
             ->where('status', 'active')
-            ->where('runtime', '!=', 'php')
             ->get()
             ->filter(fn (WorkerRegistration $worker): bool => $this->workerIsFresh($worker))
             ->filter(fn (WorkerRegistration $worker): bool => $this->matchesWorkflowType(

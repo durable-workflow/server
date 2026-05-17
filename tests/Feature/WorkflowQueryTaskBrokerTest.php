@@ -212,6 +212,30 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('task', null);
     }
 
+    public function test_control_plane_query_routes_to_php_worker_and_times_out_without_result(): void
+    {
+        Queue::fake();
+
+        $this->startRemoteWorkflow(
+            'wf-query-task-php-worker-timeout',
+            workflowType: 'polyglot.php.signal.wait',
+            taskQueue: 'polyglot-php',
+        );
+        $this->registerQueryWorker('php-query-timeout-worker', 'polyglot-php', ['polyglot.php.signal.wait'], 'php');
+
+        $query = $this->postJson('/api/workflows/wf-query-task-php-worker-timeout/query/status', [
+            'input' => ['summary'],
+        ], $this->apiHeaders());
+
+        $query->assertStatus(504)
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('workflow_id', 'wf-query-task-php-worker-timeout')
+            ->assertJsonPath('query_name', 'status')
+            ->assertJsonPath('reason', 'query_worker_timeout')
+            ->assertJsonPath('control_plane.operation', 'query')
+            ->assertJsonPath('control_plane.operation_name', 'status');
+    }
+
     public function test_query_result_wait_ignores_exhausted_worker_long_poll_slots(): void
     {
         Queue::fake();
@@ -600,12 +624,16 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         }
     }
 
-    private function startRemoteWorkflow(string $workflowId): WorkflowRun
+    private function startRemoteWorkflow(
+        string $workflowId,
+        string $workflowType = 'python.queryable',
+        string $taskQueue = 'python-queries',
+    ): WorkflowRun
     {
         $start = $this->postJson('/api/workflows', [
             'workflow_id' => $workflowId,
-            'workflow_type' => 'python.queryable',
-            'task_queue' => 'python-queries',
+            'workflow_type' => $workflowType,
+            'task_queue' => $taskQueue,
             'input' => ['Ada'],
         ], $this->apiHeaders());
 
@@ -654,12 +682,24 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         string $taskQueue,
         array $supportedWorkflowTypes,
     ): void {
+        $this->registerQueryWorker($workerId, $taskQueue, $supportedWorkflowTypes, 'python');
+    }
+
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     */
+    private function registerQueryWorker(
+        string $workerId,
+        string $taskQueue,
+        array $supportedWorkflowTypes,
+        string $runtime,
+    ): void {
         WorkerRegistration::query()->updateOrCreate(
             ['worker_id' => $workerId, 'namespace' => 'default'],
             [
                 'task_queue' => $taskQueue,
-                'runtime' => 'python',
-                'sdk_version' => 'durable-workflow-python/0.2.0',
+                'runtime' => $runtime,
+                'sdk_version' => 'durable-workflow-'.$runtime.'/0.2.0',
                 'supported_workflow_types' => $supportedWorkflowTypes,
                 'supported_activity_types' => [],
                 'last_heartbeat_at' => now(),
