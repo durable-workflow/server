@@ -363,8 +363,8 @@ return [
         // --- Query task transport --------------------------------------
 
         'DW_QUERY_TASK_TIMEOUT' => [
-            'description' => 'Seconds the control plane waits for a query task response from the worker.',
-            'default' => '25',
+            'description' => 'Seconds the control plane waits for a query task response from the worker. The default covers one worker long-poll cycle plus dispatch grace.',
+            'default' => 'max(DW_WORKER_POLL_TIMEOUT + 15, 40)',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_TIMEOUT',
         ],

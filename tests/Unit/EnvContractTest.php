@@ -79,6 +79,27 @@ class EnvContractTest extends TestCase
         }
     }
 
+    public function test_query_task_timeout_default_tracks_worker_poll_cadence(): void
+    {
+        $source = file_get_contents(self::$repoRoot.'/config/server.php');
+        $this->assertNotFalse($source);
+
+        $this->assertSame(
+            'max(DW_WORKER_POLL_TIMEOUT + 15, 40)',
+            self::$contract['vars']['DW_QUERY_TASK_TIMEOUT']['default'] ?? null,
+        );
+        $this->assertStringContainsString(
+            "EnvAuditor::env(\n                    'DW_WORKER_POLL_TIMEOUT'",
+            $source,
+            'The query-task timeout default must derive from the worker long-poll cadence.',
+        );
+        $this->assertStringContainsString(
+            '+ 15',
+            $source,
+            'The query-task timeout default must retain dispatch grace beyond one worker poll.',
+        );
+    }
+
     public function test_docker_compose_uses_only_dw_or_framework_names(): void
     {
         $source = file_get_contents(self::$repoRoot.'/docker-compose.yml');

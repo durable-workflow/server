@@ -1358,7 +1358,7 @@ every operator-facing variable the server honors.
 | `DW_WORKER_PROTOCOL_VERSION` | `WorkerProtocol::VERSION` | Override for the advertised worker protocol version. |
 | `DW_HISTORY_PAGE_SIZE_DEFAULT` | `DEFAULT_HISTORY_PAGE_SIZE` | Default page size for worker history reads. |
 | `DW_HISTORY_PAGE_SIZE_MAX` | `MAX_HISTORY_PAGE_SIZE` | Maximum page size honored for worker history reads. |
-| `DW_QUERY_TASK_TIMEOUT` | `25` | Seconds the control plane waits for a worker query response. |
+| `DW_QUERY_TASK_TIMEOUT` | `max(DW_WORKER_POLL_TIMEOUT + 15, 40)` | Seconds the control plane waits for a worker query response. The default covers a full worker long-poll cycle plus dispatch grace so first queries do not time out while a query-capable worker is rotating polls. |
 | `DW_QUERY_TASK_LEASE_TIMEOUT` | `DW_WORKFLOW_TASK_TIMEOUT` | Configured lease timeout for ephemeral query tasks; when `DW_QUERY_TASK_TIMEOUT` is nonzero, effective leases are at least `DW_QUERY_TASK_TIMEOUT + 5` seconds. |
 | `DW_QUERY_TASK_TTL_SECONDS` | `180` | Configured retention floor for query-task result rows; effective retention is at least query timeout + effective lease + 60 seconds. |
 | `DW_QUERY_TASK_MAX_PENDING_PER_QUEUE` | `1024` | Max pending cache-backed query tasks per namespace/task queue before new queries are rejected. |

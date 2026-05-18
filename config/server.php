@@ -364,7 +364,14 @@ return [
         'timeout' => (int) EnvAuditor::env(
             'DW_QUERY_TASK_TIMEOUT',
             'WORKFLOW_SERVER_QUERY_TASK_TIMEOUT',
-            25,
+            max(
+                (int) EnvAuditor::env(
+                    'DW_WORKER_POLL_TIMEOUT',
+                    'WORKFLOW_SERVER_WORKER_POLL_TIMEOUT',
+                    WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
+                ) + 15,
+                40,
+            ),
         ),
         'lease_timeout' => (int) EnvAuditor::env(
             'DW_QUERY_TASK_LEASE_TIMEOUT',

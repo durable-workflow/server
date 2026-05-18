@@ -59,7 +59,8 @@ keys live for the configured query-task TTL window, lease keys live for the
 effective query-task lease timeout, and queue locks live for 10 seconds. The
 query-poller marker key is scoped to `(namespace, task_queue, worker_id)` and
 lives for `max(server.workers.stale_after_seconds, server.query_tasks.timeout + 5)`
-seconds, with the query timeout runtime-clamped to 0 or greater. Markers are
+seconds, with the query timeout defaulting to
+`max(server.polling.timeout + 15, 40)` and runtime-clamped to 0 or greater. Markers are
 written only when a registered worker polls the query-task endpoint, are
 refreshed by the same worker's repeat polls, and are not retained in an index.
 Queue reads and writes prune stale pending task IDs by checking the referenced
