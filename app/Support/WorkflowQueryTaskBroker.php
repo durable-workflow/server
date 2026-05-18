@@ -11,6 +11,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use Workflow\Serializers\CodecRegistry;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\HistoryExport;
@@ -751,10 +752,14 @@ final class WorkflowQueryTaskBroker
         $arguments = $task['query_arguments'] ?? null;
 
         if (! is_array($arguments)) {
-            return ['codec' => CodecRegistry::defaultCodec(), 'blob' => null];
+            return $this->emptyArgumentsEnvelope();
         }
 
         $blob = $arguments['blob'] ?? null;
+        if ($blob === null && ! array_key_exists('external_storage', $arguments)) {
+            return $this->emptyArgumentsEnvelope($arguments['codec'] ?? null);
+        }
+
         if (! is_string($blob)) {
             return $arguments;
         }
@@ -764,6 +769,21 @@ final class WorkflowQueryTaskBroker
             is_string($arguments['codec'] ?? null) ? $arguments['codec'] : CodecRegistry::defaultCodec(),
             $blob,
         ) ?? ['codec' => CodecRegistry::defaultCodec(), 'blob' => null];
+    }
+
+    /**
+     * @return array{codec: string, blob: string}
+     */
+    private function emptyArgumentsEnvelope(mixed $codec = null): array
+    {
+        $codec = is_string($codec) && $codec !== ''
+            ? $codec
+            : CodecRegistry::defaultCodec();
+
+        return [
+            'codec' => $codec,
+            'blob' => Serializer::serializeWithCodec($codec, []),
+        ];
     }
 
     /**

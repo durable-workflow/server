@@ -144,6 +144,40 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         );
     }
 
+    public function test_worker_query_task_poll_encodes_missing_query_input_as_empty_arguments(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-empty-query-input');
+        $this->registerPythonWorker('python-query-empty-input-worker', 'python-queries', ['python.queryable']);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'current', [
+            'codec' => null,
+            'blob' => null,
+        ]);
+
+        $poll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-empty-input-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $poll->assertOk()
+            ->assertJsonPath('task.query_task_id', $task['query_task_id'])
+            ->assertJsonPath('task.query_name', 'current')
+            ->assertJsonPath('task.query_arguments.codec', 'avro');
+
+        $pollTask = $poll->json('task');
+        $this->assertSame(
+            [],
+            Serializer::unserializeWithCodec(
+                (string) $pollTask['query_arguments']['codec'],
+                (string) $pollTask['query_arguments']['blob'],
+            ),
+        );
+    }
+
     public function test_duplicate_query_poll_request_ids_replay_the_same_query_task(): void
     {
         Queue::fake();
