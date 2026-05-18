@@ -69,6 +69,43 @@ class LongPollWaitSlotStoreTest extends TestCase
         }
     }
 
+    public function test_default_query_task_poll_capacity_scales_for_multi_queue_workers(): void
+    {
+        $previous = getenv('PHP_CLI_SERVER_WORKERS');
+        putenv('PHP_CLI_SERVER_WORKERS=8');
+
+        config([
+            'server.polling.max_concurrent_waits' => null,
+            'server.polling.reserved_http_workers' => 2,
+            'server.query_tasks.max_concurrent_poll_waits' => null,
+        ]);
+
+        try {
+            /** @var LongPollWaitSlotStore $slots */
+            $slots = app(LongPollWaitSlotStore::class);
+
+            $this->assertSame(4, $slots->maxConcurrentWaits());
+            $this->assertSame(2, $slots->maxConcurrentQueryTaskPollWaits());
+
+            $firstQuery = $slots->tryAcquireQueryTaskPoll(30);
+            $secondQuery = $slots->tryAcquireQueryTaskPoll(30);
+            $thirdQuery = $slots->tryAcquireQueryTaskPoll(30);
+
+            $this->assertNotNull($firstQuery);
+            $this->assertNotNull($secondQuery);
+            $this->assertNull($thirdQuery);
+
+            $firstQuery->release();
+            $secondQuery->release();
+        } finally {
+            if ($previous === false) {
+                putenv('PHP_CLI_SERVER_WORKERS');
+            } else {
+                putenv('PHP_CLI_SERVER_WORKERS='.$previous);
+            }
+        }
+    }
+
     public function test_query_task_poll_slots_are_separate_from_worker_slots(): void
     {
         config([

@@ -36,7 +36,9 @@ final class LongPollWaitSlotStore
             return null;
         }
 
-        return max(0, $phpServerWorkers - $this->reservedHttpWorkers() - $this->queryTaskPollWaitReservation($phpServerWorkers));
+        $available = $this->availableNonReservedPhpServerWorkers($phpServerWorkers);
+
+        return max(0, $available - $this->queryTaskPollWaitReservation($available));
     }
 
     public function maxConcurrentQueryTaskPollWaits(): ?int
@@ -48,15 +50,16 @@ final class LongPollWaitSlotStore
             return $configured;
         }
 
+        $availableWorkers = $this->availableNonReservedPhpServerWorkers($phpServerWorkers);
         $workerWaits = $this->configuredMaxConcurrentWaits()
-            ?? max(0, $phpServerWorkers - $this->reservedHttpWorkers() - $this->queryTaskPollWaitReservation($phpServerWorkers));
-        $available = max(0, $phpServerWorkers - $this->reservedHttpWorkers() - $workerWaits);
+            ?? max(0, $availableWorkers - $this->queryTaskPollWaitReservation($availableWorkers));
+        $available = max(0, $availableWorkers - $workerWaits);
 
         if ($configured !== null) {
             return min($configured, $available);
         }
 
-        return min(1, $available);
+        return min($this->defaultQueryTaskPollWaits($availableWorkers), $available);
     }
 
     private function tryAcquireFromPool(int $timeoutSeconds, ?int $maxConcurrentWaits, string $pool): ?LongPollWaitSlot
@@ -109,16 +112,24 @@ final class LongPollWaitSlotStore
         return null;
     }
 
-    private function queryTaskPollWaitReservation(int $phpServerWorkers): int
+    private function queryTaskPollWaitReservation(int $availableWorkers): int
     {
-        $available = max(0, $phpServerWorkers - $this->reservedHttpWorkers());
         $configured = $this->configuredQueryTaskPollWaits();
 
         if ($configured !== null) {
-            return min($configured, $available);
+            return min($configured, $availableWorkers);
         }
 
-        return min(1, $available);
+        return $this->defaultQueryTaskPollWaits($availableWorkers);
+    }
+
+    private function defaultQueryTaskPollWaits(int $availableWorkers): int
+    {
+        if ($availableWorkers <= 0) {
+            return 0;
+        }
+
+        return min(2, max(1, intdiv($availableWorkers, 3)));
     }
 
     private function phpCliServerWorkers(): ?int
@@ -130,6 +141,11 @@ final class LongPollWaitSlotStore
         }
 
         return max(0, (int) $phpServerWorkers);
+    }
+
+    private function availableNonReservedPhpServerWorkers(int $phpServerWorkers): int
+    {
+        return max(0, $phpServerWorkers - $this->reservedHttpWorkers());
     }
 
     private function reservedHttpWorkers(): int

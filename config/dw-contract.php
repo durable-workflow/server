@@ -387,7 +387,7 @@ return [
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_MAX_PENDING_PER_QUEUE',
         ],
         'DW_QUERY_TASK_POLL_MAX_CONCURRENT' => [
-            'description' => 'Optional cap for concurrent held idle query-task worker long-poll waits on this server node. Pending query tasks can still be claimed immediately before a poll waits. Unset derives to one held query-task poll when PHP_CLI_SERVER_WORKERS leaves capacity after reserved HTTP workers and workflow/activity waits.',
+            'description' => 'Optional cap for concurrent held idle query-task worker long-poll waits on this server node. Pending query tasks can still be claimed immediately before a poll waits. Unset derives up to two held query-task polls when PHP_CLI_SERVER_WORKERS leaves capacity after reserved HTTP workers and workflow/activity waits.',
             'default' => '(unset; derived for PHP_CLI_SERVER_WORKERS)',
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_QUERY_TASK_POLL_MAX_CONCURRENT',
