@@ -893,7 +893,7 @@ final class WorkflowQueryTaskBroker
     private function matchesWorkflowType(array $supportedTypes, mixed $workflowType): bool
     {
         if ($supportedTypes === []) {
-            return true;
+            return false;
         }
 
         return is_string($workflowType) && in_array($workflowType, $supportedTypes, true);

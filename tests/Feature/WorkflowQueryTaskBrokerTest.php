@@ -359,6 +359,60 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->assertSame('python-query-old-duplicate-worker', $newPoll['lease_owner'] ?? null);
     }
 
+    public function test_query_workers_must_advertise_the_workflow_type(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-explicit-type-required');
+        $this->registerQueryWorker('generic-query-worker', 'python-queries', [], 'php');
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+
+        $this->assertFalse($broker->hasWorkerFor('default', $run));
+
+        $this->registerPythonWorker('python-query-explicit-worker', 'python-queries', ['python.queryable']);
+
+        $this->assertTrue($broker->hasWorkerFor('default', $run));
+    }
+
+    public function test_query_task_poll_skips_workers_without_explicit_workflow_type(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-shared-queue-explicit-type');
+        $this->registerQueryWorker('generic-shared-query-worker', 'python-queries', [], 'php');
+        $this->registerPythonWorker('python-shared-query-worker', 'python-queries', ['python.queryable']);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+        /** @var WorkerRegistration $genericWorker */
+        $genericWorker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'generic-shared-query-worker')
+            ->firstOrFail();
+
+        $this->assertNull($broker->poll('default', $genericWorker, 'query-poll-generic'));
+
+        $stored = $broker->task((string) $task['query_task_id']);
+        $this->assertIsArray($stored);
+        $this->assertSame('pending', $stored['status'] ?? null);
+        $this->assertArrayNotHasKey('lease_owner', $stored);
+
+        /** @var WorkerRegistration $pythonWorker */
+        $pythonWorker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-shared-query-worker')
+            ->firstOrFail();
+
+        $poll = $broker->poll('default', $pythonWorker, 'query-poll-python');
+
+        $this->assertSame($task['query_task_id'], $poll['query_task_id'] ?? null);
+        $this->assertSame('python-shared-query-worker', $poll['lease_owner'] ?? null);
+    }
+
     public function test_duplicate_query_poll_request_id_does_not_replay_after_query_task_completion(): void
     {
         Queue::fake();
