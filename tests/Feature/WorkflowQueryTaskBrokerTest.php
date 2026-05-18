@@ -144,6 +144,52 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         );
     }
 
+    public function test_worker_can_complete_worker_routed_query_task_with_scalar_zero_result(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-scalar-zero');
+        $this->registerPythonWorker('python-query-scalar-worker', 'python-queries', ['python.queryable']);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'current', $this->queryArguments());
+
+        $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-scalar-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('task.query_task_id', $task['query_task_id']);
+
+        $this->postJson("/api/worker/query-tasks/{$task['query_task_id']}/complete", [
+            'lease_owner' => 'python-query-scalar-worker',
+            'query_task_attempt' => 1,
+            'result' => 0,
+            'result_envelope' => [
+                'codec' => 'avro',
+                'blob' => Serializer::serializeWithCodec('avro', 0),
+            ],
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('query_task_id', $task['query_task_id'])
+            ->assertJsonPath('query_task_attempt', 1)
+            ->assertJsonPath('outcome', 'completed');
+
+        $stored = $broker->task((string) $task['query_task_id']);
+
+        $this->assertSame('completed', $stored['status'] ?? null);
+        $this->assertSame(0, $stored['result'] ?? null);
+        $this->assertSame('avro', $stored['result_envelope']['codec'] ?? null);
+        $this->assertSame(
+            0,
+            Serializer::unserializeWithCodec(
+                'avro',
+                (string) ($stored['result_envelope']['blob'] ?? ''),
+            ),
+        );
+    }
+
     public function test_worker_query_task_poll_encodes_missing_query_input_as_empty_arguments(): void
     {
         Queue::fake();

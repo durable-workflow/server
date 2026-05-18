@@ -356,7 +356,7 @@ class UnsupportedWorkerPayloadCodecTest extends TestCase
         $this->assertSame("Unsupported payload codec 'zstd'.", $stored['message'] ?? null);
     }
 
-    public function test_worker_query_result_envelope_rejects_unsupported_codec_without_completing(): void
+    public function test_worker_query_result_envelope_uses_inline_result_when_codec_is_unsupported(): void
     {
         Queue::fake();
 
@@ -394,14 +394,17 @@ class UnsupportedWorkerPayloadCodecTest extends TestCase
                 ],
             ]);
 
-        $complete->assertStatus(422)
-            ->assertJsonValidationErrors(['result_envelope.codec']);
+        $complete->assertOk()
+            ->assertJsonPath('query_task_id', $task['query_task_id'])
+            ->assertJsonPath('query_task_attempt', 1)
+            ->assertJsonPath('outcome', 'completed');
 
         $stored = $broker->task((string) $task['query_task_id']);
 
         $this->assertIsArray($stored);
-        $this->assertSame('leased', $stored['status'] ?? null);
-        $this->assertArrayNotHasKey('result_envelope', $stored);
+        $this->assertSame('completed', $stored['status'] ?? null);
+        $this->assertSame(['status' => 'ready'], $stored['result'] ?? null);
+        $this->assertNull($stored['result_envelope'] ?? null);
     }
 
     private function startRemoteWorkflow(string $workflowId): WorkflowRun

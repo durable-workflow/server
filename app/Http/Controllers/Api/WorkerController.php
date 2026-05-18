@@ -1332,6 +1332,7 @@ class WorkerController
         ]);
 
         $resultEnvelope = null;
+        $hasInlineResult = array_key_exists('result', $request->all());
 
         $guard = $this->queryTasks->guardCompletion(
             $namespace,
@@ -1365,17 +1366,29 @@ class WorkerController
                     $this->externalPayloadStorage->driverFor($namespace),
                 );
             } catch (ValidationException $exception) {
-                throw $exception;
+                // The envelope is optional metadata for query callers; the
+                // inline result is still authoritative.
+                if ($hasInlineResult) {
+                    $resultEnvelope = null;
+                } else {
+                    throw $exception;
+                }
             } catch (ExternalPayloadIntegrityException $exception) {
-                return $this->externalQueryPayloadFailure($queryTaskId, (int) $validated['query_task_attempt'], $exception, 422);
+                if (! $hasInlineResult) {
+                    return $this->externalQueryPayloadFailure($queryTaskId, (int) $validated['query_task_attempt'], $exception, 422);
+                }
             } catch (\Throwable $exception) {
-                return $this->externalQueryPayloadFailure($queryTaskId, (int) $validated['query_task_attempt'], $exception, 503);
+                if (! $hasInlineResult) {
+                    return $this->externalQueryPayloadFailure($queryTaskId, (int) $validated['query_task_attempt'], $exception, 503);
+                }
             }
 
-            $resultEnvelope = [
-                'codec' => $resolved['codec'],
-                'blob' => $resolved['payload'],
-            ];
+            if (isset($resolved)) {
+                $resultEnvelope = [
+                    'codec' => $resolved['codec'],
+                    'blob' => $resolved['payload'],
+                ];
+            }
         }
 
         $outcome = $this->queryTasks->complete(
