@@ -22,6 +22,7 @@ class LongPoller
         array $wakeChannels = [],
         ?callable $nextProbeAt = null,
         bool $reserveWorkerWaitSlot = false,
+        string $waitSlotPool = 'worker',
     ): mixed {
         $timeoutSeconds ??= max(0, (int) config('server.polling.timeout', 30));
         $intervalMilliseconds ??= max(1, (int) config('server.polling.interval_ms', 1000));
@@ -56,7 +57,9 @@ class LongPoller
         $waitSlot = null;
 
         if ($reserveWorkerWaitSlot) {
-            $waitSlot = $this->waitSlots->tryAcquire($timeoutSeconds);
+            $waitSlot = $waitSlotPool === 'query-task'
+                ? $this->waitSlots->tryAcquireQueryTaskPoll($timeoutSeconds)
+                : $this->waitSlots->tryAcquire($timeoutSeconds);
 
             if ($waitSlot === null) {
                 return $value;

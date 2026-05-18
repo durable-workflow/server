@@ -201,6 +201,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 array $wakeChannels = [],
                 ?callable $nextProbeAt = null,
                 bool $reserveWorkerWaitSlot = false,
+                string $waitSlotPool = 'worker',
             ): mixed {
                 if (is_callable($this->beforeProbe)) {
                     ($this->beforeProbe)();
@@ -635,6 +636,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         config([
             'server.polling.max_concurrent_waits' => 1,
             'server.polling.timeout' => 1,
+            'server.query_tasks.max_concurrent_poll_waits' => 1,
         ]);
 
         $run = $this->startRemoteWorkflow('wf-query-task-wait-slot-starvation');
@@ -696,6 +698,103 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->assertSame($queryTaskId, $poll['query_task_id'] ?? null);
         $this->assertSame('python-query-wait-slot-worker', $poll['lease_owner'] ?? null);
         $this->assertSame(1, $poller->pauseCalls);
+    }
+
+    public function test_query_task_poll_returns_empty_when_query_poll_wait_slots_are_exhausted(): void
+    {
+        Queue::fake();
+        config([
+            'server.polling.timeout' => 1,
+            'server.query_tasks.max_concurrent_poll_waits' => 1,
+        ]);
+
+        $this->registerPythonWorker('python-query-slot-worker', 'python-queries', ['python.queryable']);
+
+        /** @var LongPollSignalStore $signals */
+        $signals = app(LongPollSignalStore::class);
+        /** @var LongPollWaitSlotStore $waitSlots */
+        $waitSlots = app(LongPollWaitSlotStore::class);
+        $heldSlot = $waitSlots->tryAcquireQueryTaskPoll(1);
+        $this->assertNotNull($heldSlot);
+
+        $poller = new class($signals, $waitSlots) extends LongPoller
+        {
+            public int $pauseCalls = 0;
+
+            protected function pause(int $milliseconds): void
+            {
+                $this->pauseCalls++;
+            }
+        };
+
+        $broker = new WorkflowQueryTaskBroker(
+            app(ServerPollingCache::class),
+            $poller,
+            $signals,
+            app(ExternalPayloadEnvelopeService::class),
+            app(QueryTaskPollRequestStore::class),
+        );
+        /** @var WorkerRegistration $worker */
+        $worker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-query-slot-worker')
+            ->firstOrFail();
+
+        try {
+            $poll = $broker->poll('default', $worker, 'query-poll-slot-exhausted-1');
+        } finally {
+            $heldSlot->release();
+        }
+
+        $this->assertNull($poll);
+        $this->assertSame(0, $poller->pauseCalls);
+    }
+
+    public function test_pending_query_task_claim_does_not_require_idle_query_poll_wait_slot(): void
+    {
+        Queue::fake();
+        config([
+            'server.polling.timeout' => 1,
+            'server.query_tasks.max_concurrent_poll_waits' => 0,
+        ]);
+
+        $run = $this->startRemoteWorkflow('wf-query-task-pending-without-slot');
+        $this->registerPythonWorker('python-query-no-slot-worker', 'python-queries', ['python.queryable']);
+
+        /** @var LongPollSignalStore $signals */
+        $signals = app(LongPollSignalStore::class);
+        /** @var LongPollWaitSlotStore $waitSlots */
+        $waitSlots = app(LongPollWaitSlotStore::class);
+        $poller = new class($signals, $waitSlots) extends LongPoller
+        {
+            public int $pauseCalls = 0;
+
+            protected function pause(int $milliseconds): void
+            {
+                $this->pauseCalls++;
+            }
+        };
+
+        $broker = new WorkflowQueryTaskBroker(
+            app(ServerPollingCache::class),
+            $poller,
+            $signals,
+            app(ExternalPayloadEnvelopeService::class),
+            app(QueryTaskPollRequestStore::class),
+        );
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+        /** @var WorkerRegistration $worker */
+        $worker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-query-no-slot-worker')
+            ->firstOrFail();
+
+        $poll = $broker->poll('default', $worker, 'query-poll-no-slot-1');
+
+        $this->assertSame($task['query_task_id'], $poll['query_task_id'] ?? null);
+        $this->assertSame('python-query-no-slot-worker', $poll['lease_owner'] ?? null);
+        $this->assertSame(0, $poller->pauseCalls);
     }
 
     public function test_query_task_lease_timeout_is_clamped_beyond_control_plane_wait(): void

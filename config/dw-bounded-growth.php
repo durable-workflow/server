@@ -105,11 +105,12 @@ return [
             'prefix' => 'server:long-poll-wait-slot:',
             'dimensions' => [
                 'server_id_hash',
+                'pool',
                 'slot_index',
             ],
             'ttl' => 'server.polling.timeout + 5 seconds, with a runtime minimum of 1 second.',
-            'bound' => 'At most server.polling.max_concurrent_waits keys per server node when set; otherwise PHP_CLI_SERVER_WORKERS minus server.polling.reserved_http_workers in the standalone CLI server image.',
-            'admission' => 'Empty workflow and activity worker long-poll waits must acquire one slot before sleeping. Query-task polls stay outside this shared pool so live workflow queries are not starved by idle workflow/activity waits. If all slots are occupied, guarded worker polls return their immediate probe result so health and control-plane routes keep request-worker capacity.',
+            'bound' => 'At most server.polling.max_concurrent_waits workflow/activity wait keys per server node when set; otherwise PHP_CLI_SERVER_WORKERS minus server.polling.reserved_http_workers and the derived query-task poll wait budget in the standalone CLI server image. Query-task poll wait keys are capped by server.query_tasks.max_concurrent_poll_waits when set, otherwise one derived slot when PHP_CLI_SERVER_WORKERS leaves capacity.',
+            'admission' => 'Empty workflow, activity, and query-task worker long-poll waits must acquire a slot before sleeping. Query-task polls use a separate pool so live workflow queries are not starved by idle workflow/activity waits. If all slots for a pool are occupied, guarded worker polls return their immediate probe result so health and control-plane routes keep request-worker capacity. Pending query tasks are claimed before a query-task poll needs an idle wait slot.',
             'eviction' => 'Slots are released when the poll returns; TTL clears stale holders after process death.',
         ],
 

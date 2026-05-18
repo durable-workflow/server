@@ -377,6 +377,11 @@ return [
             'WORKFLOW_SERVER_QUERY_TASK_MAX_PENDING_PER_QUEUE',
             1024,
         ),
+        'max_concurrent_poll_waits' => EnvAuditor::env(
+            'DW_QUERY_TASK_POLL_MAX_CONCURRENT',
+            'WORKFLOW_SERVER_QUERY_TASK_POLL_MAX_CONCURRENT',
+            null,
+        ),
     ],
 
     /*

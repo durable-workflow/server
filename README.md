@@ -1107,11 +1107,14 @@ The standalone server image also reserves PHP request-worker capacity for
 health and control-plane routes. Empty workflow and activity worker long-polls
 acquire a short-lived wait slot before sleeping; once the node-local slot cap
 is reached, additional polls return their immediate empty result instead of
-holding another PHP server worker for the full poll timeout. Query-task polls
-are intentionally outside this shared wait-slot pool because they are the
-worker-side path for already accepted live workflow queries; size
-`PHP_CLI_SERVER_WORKERS` for expected concurrent query workers when using the
-standalone server.
+holding another PHP server worker for the full poll timeout. Idle query-task
+polls use a separate wait-slot budget so workflow/activity polls cannot starve
+live workflow queries, and query-task polls cannot consume the request workers
+needed by the waiting query request and the worker's completion callback. A
+poll that arrives after a query task is pending still claims it immediately
+before any wait slot is required. Size `PHP_CLI_SERVER_WORKERS` for expected
+concurrent workflow, activity, and query workers when using the standalone
+server.
 
 Across Compose, plain Docker, and Kubernetes, the supported bootstrap contract
 is the same: run the image's `server-bootstrap` command once before starting the
@@ -1334,7 +1337,7 @@ every operator-facing variable the server honors.
 | `DW_WORKER_POLL_SIGNAL_CHECK_INTERVAL_MS` | `100` | Wake-signal check interval during an open poll. |
 | `DW_POLLING_CACHE_PATH` | `storage/.../server-polling/<APP_ENV>` | Directory for worker-poll coordination state. |
 | `DW_WAKE_SIGNAL_TTL_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT + 5, 60)` | TTL for per-queue wake signals. |
-| `DW_WORKER_LONG_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held workflow/activity worker long-poll waits on this server node. Query-task polls are excluded so live workflow queries are not starved by idle workflow/activity waits. |
+| `DW_WORKER_LONG_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held workflow/activity worker long-poll waits on this server node. Query-task polls use a separate wait budget so live workflow queries are not starved by idle workflow/activity waits. |
 | `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. |
 | `DW_MAX_TASKS_PER_POLL` | `1` | Maximum tasks returned per poll. |
 | `DW_SQLITE_CLAIM_LOCK_TTL_SECONDS` | `10` | Seconds the SQLite quickstart backend holds the cache-backed worker poll claim gate before the lock expires. |
@@ -1357,6 +1360,7 @@ every operator-facing variable the server honors.
 | `DW_QUERY_TASK_LEASE_TIMEOUT` | `DW_WORKFLOW_TASK_TIMEOUT` | Configured lease timeout for ephemeral query tasks; when `DW_QUERY_TASK_TIMEOUT` is nonzero, effective leases are at least `DW_QUERY_TASK_TIMEOUT + 5` seconds. |
 | `DW_QUERY_TASK_TTL_SECONDS` | `180` | Configured retention floor for query-task result rows; effective retention is at least query timeout + effective lease + 60 seconds. |
 | `DW_QUERY_TASK_MAX_PENDING_PER_QUEUE` | `1024` | Max pending cache-backed query tasks per namespace/task queue before new queries are rejected. |
+| `DW_QUERY_TASK_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held idle query-task worker long-poll waits. Pending query tasks are still claimed immediately before an idle poll waits. |
 | `DW_WORKFLOW_TASK_TIMEOUT` | `60` | Default workflow-task lease timeout (seconds). |
 | `DW_ACTIVITY_TASK_TIMEOUT` | `300` | Default activity-task lease timeout (seconds). |
 | `DW_WORKER_STALE_AFTER_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT * 2, 60)` | Seconds before a worker heartbeat is considered stale. |

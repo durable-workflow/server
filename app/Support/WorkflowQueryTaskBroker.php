@@ -411,7 +411,8 @@ final class WorkflowQueryTaskBroker
             },
             static fn (?array $task): bool => $task !== null,
             wakeChannels: $this->signals->queryTaskPollChannels($namespace, $taskQueue),
-            reserveWorkerWaitSlot: false,
+            reserveWorkerWaitSlot: true,
+            waitSlotPool: 'query-task',
         );
 
         return ($result['poll_status'] ?? null) === 'superseded' ? null : $result;
