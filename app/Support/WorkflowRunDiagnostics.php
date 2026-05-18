@@ -48,6 +48,7 @@ class WorkflowRunDiagnostics
         $taskQueue = is_string($run->queue) && $run->queue !== ''
             ? $this->taskQueue($namespace, $run->queue)
             : null;
+        $activityTaskQueues = $this->activityTaskQueues($namespace, $pendingActivities);
         $lastEvent = $this->lastEvent($run, $includeLastEventPayload);
         $nextScheduledEvent = $this->nextScheduledEvent($summary, $taskRows->all());
         $recentFailures = $this->recentFailures($run);
@@ -62,6 +63,7 @@ class WorkflowRunDiagnostics
             'pending_workflow_tasks' => $pendingWorkflowTasks,
             'pending_activities' => $pendingActivities,
             'task_queue' => $taskQueue,
+            'activity_task_queues' => $activityTaskQueues,
             'recent_failures' => $recentFailures,
             'compatibility' => $this->compatibility($namespace, $run, $summary, $taskQueue),
         ];
@@ -526,7 +528,7 @@ class WorkflowRunDiagnostics
             ->orderBy('id')
             ->take(self::TASK_LIMIT)
             ->get()
-            ->map(function (ActivityExecution $execution): array {
+            ->map(function (ActivityExecution $execution) use ($run): array {
                 $attempt = $this->currentAttempt($execution);
 
                 return $this->compact([
@@ -534,7 +536,7 @@ class WorkflowRunDiagnostics
                     'activity_type' => $execution->activity_type,
                     'activity_class' => $execution->activity_class,
                     'status' => $execution->status?->value,
-                    'queue' => $execution->queue,
+                    'queue' => $this->stringValue($execution->queue) ?? $this->stringValue($run->queue),
                     'attempt_count' => (int) $execution->attempt_count,
                     'current_attempt_id' => $execution->current_attempt_id,
                     'started_at' => $this->timestamp($execution->started_at),
@@ -602,13 +604,40 @@ class WorkflowRunDiagnostics
      */
     private function taskQueue(string $namespace, string $queue): ?array
     {
-        return StandaloneWorkerVisibility::queueDetail(
+        $detail = StandaloneWorkerVisibility::queueDetail(
             $namespace,
             $queue,
             WorkerRegistration::class,
             now(),
             $this->workerStaleAfterSeconds(),
         )->toArray();
+
+        return $this->withDiagnosticPollerCounts($detail);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $pendingActivities
+     * @return array<string, array<string, mixed>>
+     */
+    private function activityTaskQueues(string $namespace, array $pendingActivities): array
+    {
+        $queues = [];
+
+        foreach ($pendingActivities as $activity) {
+            $queue = $this->stringValue($activity['queue'] ?? null);
+
+            if ($queue === null || isset($queues[$queue])) {
+                continue;
+            }
+
+            $taskQueue = $this->taskQueue($namespace, $queue);
+
+            if ($taskQueue !== null) {
+                $queues[$queue] = $taskQueue;
+            }
+        }
+
+        return $queues;
     }
 
     /**
@@ -701,7 +730,13 @@ class WorkflowRunDiagnostics
         $findings = [];
         $pendingTasks = $payload['pending_workflow_tasks'] ?? [];
         $pendingActivities = $payload['pending_activities'] ?? [];
-        $activePollers = (int) data_get($payload, 'task_queue.stats.pollers.active_count', 0);
+        $activityTaskQueues = is_array($payload['activity_task_queues'] ?? null)
+            ? $payload['activity_task_queues']
+            : [];
+        $taskQueue = $payload['task_queue'] ?? null;
+        $activePollers = is_array($taskQueue)
+            ? count($this->activePollers($taskQueue))
+            : (int) data_get($payload, 'task_queue.stats.pollers.active_count', 0);
         $expiredWorkflowLeases = (int) data_get($payload, 'task_queue.stats.workflow_tasks.expired_lease_count', 0);
         $expiredActivityLeases = (int) data_get($payload, 'task_queue.stats.activity_tasks.expired_lease_count', 0);
 
@@ -749,7 +784,171 @@ class WorkflowRunDiagnostics
             }
         }
 
+        foreach ($this->pendingActivityQueueFindings($pendingActivities, $activityTaskQueues) as $finding) {
+            $findings[] = $finding;
+        }
+
         return $findings;
+    }
+
+    /**
+     * @param  mixed  $pendingActivities
+     * @param  array<string, mixed>  $activityTaskQueues
+     * @return list<array<string, mixed>>
+     */
+    private function pendingActivityQueueFindings(mixed $pendingActivities, array $activityTaskQueues): array
+    {
+        if (! is_array($pendingActivities)) {
+            return [];
+        }
+
+        $findings = [];
+        $seen = [];
+
+        foreach ($pendingActivities as $activity) {
+            if (! is_array($activity)) {
+                continue;
+            }
+
+            $queue = $this->stringValue($activity['queue'] ?? null);
+            $activityType = $this->stringValue($activity['activity_type'] ?? null);
+
+            if ($queue === null || $activityType === null) {
+                continue;
+            }
+
+            $key = $queue.'|'.$activityType;
+
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+            $queueDetail = $activityTaskQueues[$queue] ?? null;
+            $activePollers = is_array($queueDetail)
+                ? $this->activePollers($queueDetail)
+                : [];
+
+            if ($activePollers === []) {
+                $findings[] = [
+                    'severity' => 'warning',
+                    'code' => 'pending_activity_queue_without_active_pollers',
+                    'message' => sprintf(
+                        'Activity [%s] is pending on task queue [%s], but that queue has no active pollers.',
+                        $activityType,
+                        $queue,
+                    ),
+                    'task_queue' => $queue,
+                    'activity_type' => $activityType,
+                    'activity_execution_id' => $this->stringValue($activity['activity_execution_id'] ?? null),
+                ];
+
+                continue;
+            }
+
+            $supportingPollers = array_values(array_filter(
+                $activePollers,
+                fn (array $poller): bool => $this->pollerSupportsActivity($poller, $activityType),
+            ));
+
+            if ($supportingPollers !== []) {
+                continue;
+            }
+
+            $findings[] = [
+                'severity' => 'warning',
+                'code' => 'pending_activity_type_unsupported',
+                'message' => sprintf(
+                    'Activity [%s] is pending on task queue [%s], but no active poller on that queue advertises that activity type.',
+                    $activityType,
+                    $queue,
+                ),
+                'task_queue' => $queue,
+                'activity_type' => $activityType,
+                'activity_execution_id' => $this->stringValue($activity['activity_execution_id'] ?? null),
+                'active_workers' => array_values(array_map(
+                    fn (array $poller): array => $this->compact([
+                        'worker_id' => $this->stringValue($poller['worker_id'] ?? null),
+                        'runtime' => $this->stringValue($poller['runtime'] ?? null),
+                        'supported_activity_types' => $this->stringList($poller['supported_activity_types'] ?? null),
+                    ]),
+                    $activePollers,
+                )),
+            ];
+        }
+
+        return $findings;
+    }
+
+    /**
+     * @param  array<string, mixed>  $queueDetail
+     * @return list<array<string, mixed>>
+     */
+    private function activePollers(array $queueDetail): array
+    {
+        $pollers = $queueDetail['pollers'] ?? [];
+
+        if (! is_array($pollers)) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            $pollers,
+            static fn (mixed $poller): bool => is_array($poller)
+                && ($poller['is_stale'] ?? false) !== true
+                && (($poller['status'] ?? 'active') === 'active'),
+        ));
+    }
+
+    /**
+     * @param  array<string, mixed>  $queueDetail
+     * @return array<string, mixed>
+     */
+    private function withDiagnosticPollerCounts(array $queueDetail): array
+    {
+        $stats = $queueDetail['stats'] ?? [];
+
+        if (! is_array($stats)) {
+            return $queueDetail;
+        }
+
+        $pollerStats = $stats['pollers'] ?? [];
+
+        if (! is_array($pollerStats)) {
+            $pollerStats = [];
+        }
+
+        $pollerStats['active_count'] = count($this->activePollers($queueDetail));
+        $stats['pollers'] = $pollerStats;
+        $queueDetail['stats'] = $stats;
+
+        return $queueDetail;
+    }
+
+    /**
+     * @param  array<string, mixed>  $poller
+     */
+    private function pollerSupportsActivity(array $poller, string $activityType): bool
+    {
+        return in_array($activityType, $this->stringList($poller['supported_activity_types'] ?? null), true);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function stringList(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            array_map(
+                fn (mixed $entry): ?string => $this->stringValue($entry),
+                $value,
+            ),
+            static fn (?string $entry): bool => $entry !== null,
+        ));
     }
 
     private function workerStaleAfterSeconds(): int

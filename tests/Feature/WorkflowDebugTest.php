@@ -114,6 +114,7 @@ class WorkflowDebugTest extends TestCase
                     'stats',
                     'current_leases',
                 ],
+                'activity_task_queues',
                 'compatibility' => [
                     'run',
                     'task_queue_pollers',
@@ -144,6 +145,187 @@ class WorkflowDebugTest extends TestCase
             ->assertJsonPath('run_id', $runId)
             ->assertJsonPath('control_plane.operation', 'debug_workflow')
             ->assertJsonPath('control_plane.run_id', $runId);
+    }
+
+    public function test_debug_diagnostics_identify_pending_activity_queues_without_active_pollers(): void
+    {
+        $this->registerWorker(
+            'debug-workflow-worker',
+            'debug-workflow-queue',
+            supportedWorkflowTypes: ['tests.await-approval-workflow'],
+        );
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-debug-activity-no-poller',
+            'workflow_type' => 'tests.await-approval-workflow',
+            'task_queue' => 'debug-workflow-queue',
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
+
+        $start->assertCreated();
+        $run = WorkflowRun::query()->findOrFail((string) $start->json('run_id'));
+        $activity = $this->createDiagnosticActivity(
+            $run,
+            1,
+            ActivityStatus::Running,
+            ActivityAttemptStatus::Running,
+            1,
+            [
+                'activity_type' => 'polyglot.python-to-php.echo',
+                'queue' => 'polyglot-python-to-php',
+            ],
+        );
+
+        $debug = $this->getJson(
+            '/api/workflows/wf-debug-activity-no-poller/debug',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $debug->assertOk()
+            ->assertJsonPath('pending_activities.0.activity_execution_id', $activity->id)
+            ->assertJsonPath('pending_activities.0.activity_type', 'polyglot.python-to-php.echo')
+            ->assertJsonPath('pending_activities.0.queue', 'polyglot-python-to-php')
+            ->assertJsonPath('activity_task_queues.polyglot-python-to-php.name', 'polyglot-python-to-php')
+            ->assertJsonPath('activity_task_queues.polyglot-python-to-php.stats.pollers.active_count', 0)
+            ->assertJsonPath('findings.0.code', 'pending_activity_queue_without_active_pollers')
+            ->assertJsonPath('findings.0.task_queue', 'polyglot-python-to-php')
+            ->assertJsonPath('findings.0.activity_type', 'polyglot.python-to-php.echo')
+            ->assertJsonPath('findings.0.activity_execution_id', $activity->id);
+    }
+
+    public function test_debug_diagnostics_treat_draining_workflow_pollers_as_inactive(): void
+    {
+        $this->registerWorker(
+            'debug-draining-workflow-worker',
+            'debug-workflow-queue',
+            supportedWorkflowTypes: ['tests.await-approval-workflow'],
+        );
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-debug-workflow-draining-poller',
+            'workflow_type' => 'tests.await-approval-workflow',
+            'task_queue' => 'debug-workflow-queue',
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
+
+        $start->assertCreated();
+
+        DB::table('workflow_worker_registrations')
+            ->where('worker_id', 'debug-draining-workflow-worker')
+            ->update(['status' => 'draining']);
+
+        $debug = $this->getJson(
+            '/api/workflows/wf-debug-workflow-draining-poller/debug',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $debug->assertOk()
+            ->assertJsonPath('task_queue.pollers.0.worker_id', 'debug-draining-workflow-worker')
+            ->assertJsonPath('task_queue.pollers.0.status', 'draining')
+            ->assertJsonPath('task_queue.stats.pollers.active_count', 0)
+            ->assertJsonPath('findings.0.code', 'no_active_pollers');
+    }
+
+    public function test_debug_diagnostics_treat_draining_activity_pollers_as_inactive(): void
+    {
+        $this->registerWorker(
+            'debug-workflow-worker',
+            'debug-workflow-queue',
+            supportedWorkflowTypes: ['tests.await-approval-workflow'],
+        );
+        $this->registerWorker(
+            'debug-draining-activity-worker',
+            'polyglot-python-to-php',
+            supportedWorkflowTypes: [],
+            supportedActivityTypes: ['polyglot.python-to-php.echo'],
+        );
+
+        DB::table('workflow_worker_registrations')
+            ->where('worker_id', 'debug-draining-activity-worker')
+            ->update(['status' => 'draining']);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-debug-activity-draining-poller',
+            'workflow_type' => 'tests.await-approval-workflow',
+            'task_queue' => 'debug-workflow-queue',
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
+
+        $start->assertCreated();
+        $run = WorkflowRun::query()->findOrFail((string) $start->json('run_id'));
+        $activity = $this->createDiagnosticActivity(
+            $run,
+            1,
+            ActivityStatus::Running,
+            ActivityAttemptStatus::Running,
+            1,
+            [
+                'activity_type' => 'polyglot.python-to-php.echo',
+                'queue' => 'polyglot-python-to-php',
+            ],
+        );
+
+        $debug = $this->getJson(
+            '/api/workflows/wf-debug-activity-draining-poller/debug',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $debug->assertOk()
+            ->assertJsonPath('activity_task_queues.polyglot-python-to-php.pollers.0.worker_id', 'debug-draining-activity-worker')
+            ->assertJsonPath('activity_task_queues.polyglot-python-to-php.pollers.0.status', 'draining')
+            ->assertJsonPath('activity_task_queues.polyglot-python-to-php.stats.pollers.active_count', 0)
+            ->assertJsonPath('findings.0.code', 'pending_activity_queue_without_active_pollers')
+            ->assertJsonPath('findings.0.task_queue', 'polyglot-python-to-php')
+            ->assertJsonPath('findings.0.activity_type', 'polyglot.python-to-php.echo')
+            ->assertJsonPath('findings.0.activity_execution_id', $activity->id)
+            ->assertJsonMissing(['code' => 'pending_activity_type_unsupported']);
+    }
+
+    public function test_debug_diagnostics_identify_pending_activity_types_without_capable_workers(): void
+    {
+        $this->registerWorker(
+            'debug-workflow-worker',
+            'debug-workflow-queue',
+            supportedWorkflowTypes: ['tests.await-approval-workflow'],
+        );
+        $this->registerWorker(
+            'debug-wrong-activity-worker',
+            'polyglot-python-to-php',
+            supportedWorkflowTypes: [],
+            supportedActivityTypes: ['polyglot.other.echo'],
+        );
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-debug-activity-unsupported',
+            'workflow_type' => 'tests.await-approval-workflow',
+            'task_queue' => 'debug-workflow-queue',
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
+
+        $start->assertCreated();
+        $run = WorkflowRun::query()->findOrFail((string) $start->json('run_id'));
+        $activity = $this->createDiagnosticActivity(
+            $run,
+            1,
+            ActivityStatus::Running,
+            ActivityAttemptStatus::Running,
+            1,
+            [
+                'activity_type' => 'polyglot.python-to-php.echo',
+                'queue' => 'polyglot-python-to-php',
+            ],
+        );
+
+        $debug = $this->getJson(
+            '/api/workflows/wf-debug-activity-unsupported/debug',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $debug->assertOk()
+            ->assertJsonPath('activity_task_queues.polyglot-python-to-php.stats.pollers.active_count', 1)
+            ->assertJsonPath('activity_task_queues.polyglot-python-to-php.pollers.0.worker_id', 'debug-wrong-activity-worker')
+            ->assertJsonPath('findings.0.code', 'pending_activity_type_unsupported')
+            ->assertJsonPath('findings.0.task_queue', 'polyglot-python-to-php')
+            ->assertJsonPath('findings.0.activity_type', 'polyglot.python-to-php.echo')
+            ->assertJsonPath('findings.0.activity_execution_id', $activity->id)
+            ->assertJsonPath('findings.0.active_workers.0.worker_id', 'debug-wrong-activity-worker')
+            ->assertJsonPath('findings.0.active_workers.0.supported_activity_types', ['polyglot.other.echo']);
     }
 
     public function test_debug_diagnostics_bound_last_event_payload_detail(): void
@@ -312,8 +494,10 @@ class WorkflowDebugTest extends TestCase
         ActivityStatus $status,
         ActivityAttemptStatus $attemptStatus,
         int $attemptCount,
+        array $attributes = [],
+        array $attemptAttributes = [],
     ): ActivityExecution {
-        $execution = ActivityExecution::query()->create([
+        $execution = ActivityExecution::query()->create(array_merge([
             'workflow_run_id' => $run->id,
             'sequence' => $sequence,
             'activity_class' => 'Tests\\Fixtures\\DebugActivity',
@@ -323,12 +507,12 @@ class WorkflowDebugTest extends TestCase
             'queue' => $run->queue,
             'attempt_count' => $attemptCount,
             'started_at' => now()->addSeconds($sequence),
-        ]);
+        ], $attributes));
 
         $currentAttempt = null;
 
         for ($attemptNumber = 1; $attemptNumber <= $attemptCount; $attemptNumber++) {
-            $currentAttempt = ActivityAttempt::query()->create([
+            $currentAttempt = ActivityAttempt::query()->create(array_merge([
                 'workflow_run_id' => $run->id,
                 'activity_execution_id' => $execution->id,
                 'workflow_task_id' => null,
@@ -339,7 +523,7 @@ class WorkflowDebugTest extends TestCase
                 'closed_at' => $attemptStatus === ActivityAttemptStatus::Running
                     ? null
                     : now()->addSeconds($sequence + $attemptNumber + 1),
-            ]);
+            ], $attemptAttributes));
         }
 
         if ($currentAttempt instanceof ActivityAttempt) {
