@@ -5,6 +5,7 @@ use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollSignalStore;
 use App\Support\LongPollWaitSlotStore;
 use App\Support\ProjectionDriftMetrics;
+use App\Support\QueryTaskPollRequestStore;
 use App\Support\ServerReadiness;
 use App\Support\ActivityTaskPollRequestStore;
 use App\Support\TaskQueueAdmission;
@@ -80,6 +81,23 @@ return [
             'bound' => 'At most one pending key and one short replay-result key per idempotent activity worker poll request in the TTL window.',
             'admission' => 'Cache add elects a single activity poll leader for each idempotent request. Followers wait for the leader result and retry only while the pending marker exists.',
             'eviction' => 'Pending keys are removed when a leader publishes a result; all pending and result keys also expire by TTL.',
+        ],
+
+        'query_task_poll_requests' => [
+            'owner' => QueryTaskPollRequestStore::class,
+            'prefix' => 'server:query-task-poll-request:',
+            'dimensions' => [
+                'kind',
+                'namespace',
+                'task_queue',
+                'build_id',
+                'lease_owner',
+                'poll_request_id',
+            ],
+            'ttl' => 'Pending and current-marker keys live max(server.polling.timeout + 5, 5) seconds. Empty result keys live at most 60 seconds; task result keys live through the active query-task lease, capped at 3600 seconds.',
+            'bound' => 'At most one pending key and one short replay-result key per idempotent query worker poll request in the TTL window, plus one current-marker key per namespace/task_queue/build_id/worker.',
+            'admission' => 'Cache add elects a single query poll leader for each idempotent request. Followers wait for the leader result and retry only while the pending marker exists. Newer poll ids supersede older leaders before they can lease query work.',
+            'eviction' => 'Pending keys are removed when a leader publishes a result; all pending, current-marker, and result keys also expire by TTL.',
         ],
 
         'long_poll_wait_slots' => [

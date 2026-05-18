@@ -16,7 +16,7 @@ class WorkerProtocol
      * here. WorkflowPackageApiFloor asserts the installed package still
      * provides the companion protocol helpers for this version.
      */
-    public const VERSION = '1.6';
+    public const VERSION = '1.7';
 
     public const HEADER = 'X-Durable-Workflow-Protocol-Version';
 
@@ -182,6 +182,7 @@ class WorkerProtocol
      *     history_page_size_default: int,
      *     history_page_size_max: int,
      *     query_tasks: bool,
+     *     query_task_poll_request_idempotency: bool,
      *     query_task_timeouts: array{control_plane_timeout_seconds: int, lease_timeout_seconds: int, lease_grace_seconds: int},
      *     activity_retry_policy: bool,
      *     activity_timeouts: bool,
@@ -223,6 +224,7 @@ class WorkerProtocol
                 WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
             ),
             'query_tasks' => true,
+            'query_task_poll_request_idempotency' => true,
             'query_task_timeouts' => self::queryTaskTimeouts(),
             'activity_retry_policy' => true,
             'activity_timeouts' => true,

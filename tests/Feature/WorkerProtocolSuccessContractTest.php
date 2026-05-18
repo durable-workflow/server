@@ -156,6 +156,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('server_capabilities.child_workflow_timeouts', true)
             ->assertJsonPath('server_capabilities.parent_close_policy', true)
             ->assertJsonPath('server_capabilities.query_tasks', true)
+            ->assertJsonPath('server_capabilities.query_task_poll_request_idempotency', true)
             ->assertJsonPath('server_capabilities.non_retryable_failures', true)
             ->assertJsonMissingPath('control_plane')
             ->assertJsonStructure($structure);
@@ -193,6 +194,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('protocol_version', $protocolVersion)
             ->assertJsonPath('registered', true)
             ->assertJsonPath('server_capabilities.query_tasks', true)
+            ->assertJsonPath('server_capabilities.query_task_poll_request_idempotency', true)
             ->assertJsonPath(
                 'server_capabilities.local_activities.schema',
                 'durable-workflow.v2.local-activity.contract',
@@ -2556,6 +2558,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('server_capabilities.child_workflow_timeouts', true)
             ->assertJsonPath('server_capabilities.parent_close_policy', true)
             ->assertJsonPath('server_capabilities.query_tasks', true)
+            ->assertJsonPath('server_capabilities.query_task_poll_request_idempotency', true)
             ->assertJsonPath('server_capabilities.non_retryable_failures', true)
             ->assertJsonMissingPath('control_plane');
 

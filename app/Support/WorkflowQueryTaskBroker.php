@@ -24,6 +24,7 @@ final class WorkflowQueryTaskBroker
         private readonly LongPoller $longPoller,
         private readonly LongPollSignalStore $signals,
         private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
+        private readonly QueryTaskPollRequestStore $pollRequests,
     ) {}
 
     public function hasWorkerFor(string $namespace, WorkflowRun $run): bool
@@ -186,16 +187,234 @@ final class WorkflowQueryTaskBroker
     public function poll(
         string $namespace,
         WorkerRegistration $worker,
+        ?string $pollRequestId = null,
     ): ?array {
+        $pollRequestId = $this->stringValue($pollRequestId);
         $taskQueue = (string) $worker->task_queue;
+        $buildId = $this->stringValue($worker->build_id);
         $supportedWorkflowTypes = $this->stringArray($worker->supported_workflow_types);
 
-        return $this->longPoller->until(
-            fn (): ?array => $this->claimNext($namespace, $taskQueue, $worker->worker_id, $supportedWorkflowTypes),
+        if ($pollRequestId !== null) {
+            $this->pollRequests->markCurrentIfFresh($namespace, $taskQueue, $buildId, $worker->worker_id, $pollRequestId);
+
+            return $this->coordinatedPoll(
+                $namespace,
+                $taskQueue,
+                $buildId,
+                $worker->worker_id,
+                $pollRequestId,
+                $supportedWorkflowTypes,
+            );
+        }
+
+        return $this->performPoll($namespace, $taskQueue, $worker->worker_id, $supportedWorkflowTypes);
+    }
+
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     * @return array<string, mixed>|null
+     */
+    private function coordinatedPoll(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        string $leaseOwner,
+        string $pollRequestId,
+        array $supportedWorkflowTypes,
+    ): ?array {
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            $cached = $this->cachedPollResult($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
+
+            if ($cached['resolved']) {
+                return $cached['task'];
+            }
+
+            if ($this->pollRequests->tryStart($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId)) {
+                return $this->runCoordinatedPollLeader(
+                    $namespace,
+                    $taskQueue,
+                    $buildId,
+                    $leaseOwner,
+                    $pollRequestId,
+                    $supportedWorkflowTypes,
+                );
+            }
+
+            $observed = $this->pollRequests->waitForResult(
+                $namespace,
+                $taskQueue,
+                $buildId,
+                $leaseOwner,
+                $pollRequestId,
+            );
+
+            if ($observed['resolved']) {
+                return $observed['task'];
+            }
+        }
+
+        return $this->cachedPollResult($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId)['task'];
+    }
+
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     * @return array<string, mixed>|null
+     */
+    private function runCoordinatedPollLeader(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        string $leaseOwner,
+        string $pollRequestId,
+        array $supportedWorkflowTypes,
+    ): ?array {
+        try {
+            $task = $this->performPoll(
+                $namespace,
+                $taskQueue,
+                $leaseOwner,
+                $supportedWorkflowTypes,
+                $buildId,
+                $pollRequestId,
+            );
+        } catch (\Throwable $exception) {
+            $this->pollRequests->forgetPending($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
+
+            throw $exception;
+        }
+
+        $this->pollRequests->rememberResult(
+            $namespace,
+            $taskQueue,
+            $buildId,
+            $leaseOwner,
+            $pollRequestId,
+            $task,
+            is_array($task) ? 'leased' : 'empty',
+        );
+
+        return $task;
+    }
+
+    /**
+     * @return array{resolved: bool, task: array<string, mixed>|null, poll_status: string|null}
+     */
+    private function cachedPollResult(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        string $leaseOwner,
+        string $pollRequestId,
+    ): array {
+        $cached = $this->pollRequests->result($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
+
+        if (! $cached['resolved']) {
+            return $cached;
+        }
+
+        if ($this->cachedTaskStillDeliverable($namespace, $taskQueue, $leaseOwner, $cached['task'])) {
+            return $cached;
+        }
+
+        $this->pollRequests->rememberResult(
+            $namespace,
+            $taskQueue,
+            $buildId,
+            $leaseOwner,
+            $pollRequestId,
+            null,
+            'empty',
+        );
+
+        return [
+            'resolved' => true,
+            'task' => null,
+            'poll_status' => 'empty',
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $task
+     */
+    private function cachedTaskStillDeliverable(
+        string $namespace,
+        string $taskQueue,
+        string $leaseOwner,
+        ?array $task,
+    ): bool {
+        if ($task === null) {
+            return true;
+        }
+
+        $queryTaskId = $this->stringValue($task['query_task_id'] ?? null);
+
+        if ($queryTaskId === null) {
+            return false;
+        }
+
+        if (($task['task_queue'] ?? null) !== $taskQueue || ($task['lease_owner'] ?? null) !== $leaseOwner) {
+            return false;
+        }
+
+        $current = $this->task($queryTaskId);
+
+        if (! is_array($current) || ($current['status'] ?? null) !== 'leased') {
+            return false;
+        }
+
+        if (
+            ($current['namespace'] ?? null) !== $namespace
+            || ($current['task_queue'] ?? null) !== $taskQueue
+            || ($current['lease_owner'] ?? null) !== $leaseOwner
+        ) {
+            return false;
+        }
+
+        $leaseExpiresAt = $this->timestamp($current['lease_expires_at'] ?? null);
+
+        if (! $leaseExpiresAt instanceof Carbon || $leaseExpiresAt->lte(now())) {
+            return false;
+        }
+
+        return (int) ($current['attempt_count'] ?? 0) === (int) ($task['query_task_attempt'] ?? 0);
+    }
+
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     * @return array<string, mixed>|null
+     */
+    private function performPoll(
+        string $namespace,
+        string $taskQueue,
+        string $leaseOwner,
+        array $supportedWorkflowTypes,
+        ?string $buildId = null,
+        ?string $pollRequestId = null,
+    ): ?array {
+        $result = $this->longPoller->until(
+            function () use ($namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes, $buildId, $pollRequestId): ?array {
+                if (
+                    $pollRequestId !== null
+                    && ! $this->pollRequests->isCurrent($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId)
+                ) {
+                    return ['poll_status' => 'superseded'];
+                }
+
+                return $this->claimNext(
+                    $namespace,
+                    $taskQueue,
+                    $leaseOwner,
+                    $supportedWorkflowTypes,
+                    $buildId,
+                    $pollRequestId,
+                );
+            },
             static fn (?array $task): bool => $task !== null,
             wakeChannels: $this->signals->queryTaskPollChannels($namespace, $taskQueue),
             reserveWorkerWaitSlot: true,
         );
+
+        return ($result['poll_status'] ?? null) === 'superseded' ? null : $result;
     }
 
     /**
@@ -362,12 +581,25 @@ final class WorkflowQueryTaskBroker
         string $taskQueue,
         string $leaseOwner,
         array $supportedWorkflowTypes,
+        ?string $buildId = null,
+        ?string $pollRequestId = null,
     ): ?array {
         $task = $this->withQueueLock(
             $namespace,
             $taskQueue,
-            fn (): ?array => $this->claimNextPendingTask($namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes),
+            fn (): ?array => $this->claimNextPendingTask(
+                $namespace,
+                $taskQueue,
+                $leaseOwner,
+                $supportedWorkflowTypes,
+                $buildId,
+                $pollRequestId,
+            ),
         );
+
+        if (($task['poll_status'] ?? null) === 'superseded') {
+            return $task;
+        }
 
         return is_array($task) ? $this->queryTaskPayload($task) : null;
     }
@@ -381,6 +613,8 @@ final class WorkflowQueryTaskBroker
         string $taskQueue,
         string $leaseOwner,
         array $supportedWorkflowTypes,
+        ?string $buildId = null,
+        ?string $pollRequestId = null,
     ): ?array {
         $ids = $this->pendingTaskIds($namespace, $taskQueue);
         $remaining = [];
@@ -396,6 +630,13 @@ final class WorkflowQueryTaskBroker
                 $remaining[] = $queryTaskId;
 
                 continue;
+            }
+
+            if (
+                $pollRequestId !== null
+                && ! $this->pollRequests->isCurrent($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId)
+            ) {
+                return ['poll_status' => 'superseded'];
             }
 
             if (! $this->store()->add($this->leaseKey($queryTaskId), $leaseOwner, now()->addSeconds($this->leaseTtlSeconds()))) {

@@ -595,7 +595,7 @@ class ClusterInfoCompatibilityTest extends TestCase
 
         $response = $this->getJson('/api/cluster/info')->assertOk();
 
-        $this->assertSame('1.6', WorkerProtocol::VERSION);
+        $this->assertSame('1.7', WorkerProtocol::VERSION);
         $this->assertSame(WorkerProtocolVersion::VERSION, WorkerProtocol::VERSION);
         $this->assertSame(WorkerProtocol::VERSION, (string) config('server.worker_protocol.version'));
         $this->assertSame($expectedCommands, WorkerProtocol::supportedWorkflowTaskCommands());
@@ -613,6 +613,7 @@ class ClusterInfoCompatibilityTest extends TestCase
             $response->json('worker_protocol.server_capabilities.history_page_size_max'),
         );
         $this->assertTrue($response->json('worker_protocol.server_capabilities.query_tasks'));
+        $this->assertTrue($response->json('worker_protocol.server_capabilities.query_task_poll_request_idempotency'));
         $this->assertSame(
             WorkerProtocolVersion::supportedHistoryEncodings(),
             $response->json('worker_protocol.server_capabilities.history_compression.supported_encodings'),
@@ -637,6 +638,7 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('capabilities.payload_codecs', CodecRegistry::universal())
             ->assertJsonPath('capabilities.worker_sessions', false)
             ->assertJsonPath('worker_protocol.server_capabilities.query_tasks', true)
+            ->assertJsonPath('worker_protocol.server_capabilities.query_task_poll_request_idempotency', true)
             ->assertJsonPath(
                 'worker_protocol.server_capabilities.local_activities.schema',
                 'durable-workflow.v2.local-activity.contract',

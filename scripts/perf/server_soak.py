@@ -32,6 +32,7 @@ SERVER_CACHE_KEY_PATTERNS = {
     "long_poll_signals": "*server:long-poll-signal:*",
     "workflow_task_poll_requests": "*server:workflow-task-poll-request:*",
     "activity_task_poll_requests": "*server:activity-task-poll-request:*",
+    "query_task_poll_requests": "*server:query-task-poll-request:*",
     "long_poll_wait_slots": "*server:long-poll-wait-slot:*",
     "sqlite_worker_poll_claim_gate": "*server:sqlite-worker-poll-claim:*",
     "workflow_query_tasks": "*server:workflow-query-task:*",

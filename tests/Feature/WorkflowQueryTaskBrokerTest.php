@@ -9,6 +9,7 @@ use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\LongPoller;
 use App\Support\LongPollSignalStore;
 use App\Support\LongPollWaitSlotStore;
+use App\Support\QueryTaskPollRequestStore;
 use App\Support\QueryTaskQueueFullException;
 use App\Support\ServerPollingCache;
 use App\Support\WorkerProtocol;
@@ -74,6 +75,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
             ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
             ->assertJsonPath('server_capabilities.query_tasks', true)
+            ->assertJsonPath('server_capabilities.query_task_poll_request_idempotency', true)
             ->assertJsonPath('task.query_task_id', $task['query_task_id'])
             ->assertJsonPath('task.query_task_attempt', 1)
             ->assertJsonPath('task.workflow_id', 'wf-query-task-complete')
@@ -138,6 +140,261 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 (string) ($stored['result_envelope']['blob'] ?? ''),
             ),
         );
+    }
+
+    public function test_duplicate_query_poll_request_ids_replay_the_same_query_task(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-duplicate-poll');
+        $this->registerPythonWorker('python-query-duplicate-worker', 'python-queries', ['python.queryable']);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+        $firstPoll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-duplicate-worker',
+            'task_queue' => 'python-queries',
+            'poll_request_id' => 'query-poll-request-1',
+        ], $this->workerHeaders());
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('task.query_task_id', $task['query_task_id'])
+            ->assertJsonPath('task.query_task_attempt', 1)
+            ->assertJsonPath('task.lease_owner', 'python-query-duplicate-worker');
+
+        $duplicatePoll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-duplicate-worker',
+            'task_queue' => 'python-queries',
+            'poll_request_id' => 'query-poll-request-1',
+        ], $this->workerHeaders());
+
+        $duplicatePoll->assertOk()
+            ->assertJsonPath('task.query_task_id', $task['query_task_id'])
+            ->assertJsonPath('task.query_task_attempt', 1)
+            ->assertJsonPath('task.lease_owner', 'python-query-duplicate-worker');
+    }
+
+    public function test_superseded_query_poll_request_cannot_lease_query_task(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-superseded-poll');
+        $this->registerPythonWorker('python-query-superseded-worker', 'python-queries', ['python.queryable']);
+
+        /** @var QueryTaskPollRequestStore $pollRequests */
+        $pollRequests = app(QueryTaskPollRequestStore::class);
+        $poller = new class(
+            app(LongPollSignalStore::class),
+            app(LongPollWaitSlotStore::class),
+        ) extends LongPoller
+        {
+            /** @var callable(): void|null */
+            public $beforeProbe = null;
+
+            public function until(
+                callable $probe,
+                callable $ready,
+                ?int $timeoutSeconds = null,
+                ?int $intervalMilliseconds = null,
+                array $wakeChannels = [],
+                ?callable $nextProbeAt = null,
+                bool $reserveWorkerWaitSlot = false,
+            ): mixed {
+                if (is_callable($this->beforeProbe)) {
+                    ($this->beforeProbe)();
+                }
+
+                return $probe();
+            }
+        };
+        $broker = new WorkflowQueryTaskBroker(
+            app(ServerPollingCache::class),
+            $poller,
+            app(LongPollSignalStore::class),
+            app(ExternalPayloadEnvelopeService::class),
+            $pollRequests,
+        );
+
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+        /** @var WorkerRegistration $worker */
+        $worker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-query-superseded-worker')
+            ->firstOrFail();
+
+        $poller->beforeProbe = function () use ($pollRequests): void {
+            $pollRequests->markCurrent(
+                'default',
+                'python-queries',
+                null,
+                'python-query-superseded-worker',
+                'query-poll-new',
+            );
+        };
+
+        $this->assertNull($broker->poll('default', $worker, 'query-poll-old'));
+
+        $stored = $broker->task((string) $task['query_task_id']);
+        $this->assertSame('pending', $stored['status'] ?? null);
+
+        $newPoll = $broker->poll('default', $worker, 'query-poll-new');
+
+        $this->assertSame($task['query_task_id'], $newPoll['query_task_id'] ?? null);
+        $this->assertSame('python-query-superseded-worker', $newPoll['lease_owner'] ?? null);
+    }
+
+    public function test_superseded_query_poll_request_cannot_lease_after_current_check_race(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-superseded-claim-race');
+        $this->registerPythonWorker('python-query-claim-race-worker', 'python-queries', ['python.queryable']);
+
+        $pollRequests = new WorkflowQueryTaskBrokerSupersessionRacePollRequestStore(app(ServerPollingCache::class));
+        $broker = new WorkflowQueryTaskBroker(
+            app(ServerPollingCache::class),
+            app(LongPoller::class),
+            app(LongPollSignalStore::class),
+            app(ExternalPayloadEnvelopeService::class),
+            $pollRequests,
+        );
+
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+        /** @var WorkerRegistration $worker */
+        $worker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-query-claim-race-worker')
+            ->firstOrFail();
+
+        $pollRequests->afterFirstCurrentCheck = function () use ($pollRequests): void {
+            $pollRequests->markCurrent(
+                'default',
+                'python-queries',
+                null,
+                'python-query-claim-race-worker',
+                'query-poll-new',
+            );
+        };
+
+        $this->assertNull($broker->poll('default', $worker, 'query-poll-old'));
+        $this->assertGreaterThanOrEqual(2, $pollRequests->currentChecks);
+
+        $stored = $broker->task((string) $task['query_task_id']);
+        $this->assertIsArray($stored);
+        $this->assertSame('pending', $stored['status'] ?? null);
+        $this->assertArrayNotHasKey('lease_owner', $stored);
+
+        $newPoll = $broker->poll('default', $worker, 'query-poll-new');
+
+        $this->assertSame($task['query_task_id'], $newPoll['query_task_id'] ?? null);
+        $this->assertSame('python-query-claim-race-worker', $newPoll['lease_owner'] ?? null);
+    }
+
+    public function test_duplicate_old_query_poll_request_does_not_become_current_after_newer_poll_starts(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-old-duplicate-current');
+        $this->registerPythonWorker('python-query-old-duplicate-worker', 'python-queries', ['python.queryable']);
+
+        $pollRequests = new WorkflowQueryTaskBrokerImmediatePollRequestStore(app(ServerPollingCache::class));
+        $broker = new WorkflowQueryTaskBroker(
+            app(ServerPollingCache::class),
+            app(LongPoller::class),
+            app(LongPollSignalStore::class),
+            app(ExternalPayloadEnvelopeService::class),
+            $pollRequests,
+        );
+        /** @var WorkerRegistration $worker */
+        $worker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-query-old-duplicate-worker')
+            ->firstOrFail();
+
+        $pollRequests->markCurrent(
+            'default',
+            'python-queries',
+            null,
+            'python-query-old-duplicate-worker',
+            'query-poll-old',
+        );
+        $this->assertTrue($pollRequests->tryStart(
+            'default',
+            'python-queries',
+            null,
+            'python-query-old-duplicate-worker',
+            'query-poll-old',
+        ));
+        $pollRequests->markCurrent(
+            'default',
+            'python-queries',
+            null,
+            'python-query-old-duplicate-worker',
+            'query-poll-new',
+        );
+
+        $this->assertNull($broker->poll('default', $worker, 'query-poll-old'));
+        $this->assertFalse($pollRequests->isCurrent(
+            'default',
+            'python-queries',
+            null,
+            'python-query-old-duplicate-worker',
+            'query-poll-old',
+        ));
+        $this->assertTrue($pollRequests->isCurrent(
+            'default',
+            'python-queries',
+            null,
+            'python-query-old-duplicate-worker',
+            'query-poll-new',
+        ));
+
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+        $newPoll = $broker->poll('default', $worker, 'query-poll-new');
+
+        $this->assertSame($task['query_task_id'], $newPoll['query_task_id'] ?? null);
+        $this->assertSame('python-query-old-duplicate-worker', $newPoll['lease_owner'] ?? null);
+    }
+
+    public function test_duplicate_query_poll_request_id_does_not_replay_after_query_task_completion(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-duplicate-complete');
+        $this->registerPythonWorker('python-query-duplicate-complete-worker', 'python-queries', ['python.queryable']);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+        $firstPoll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-duplicate-complete-worker',
+            'task_queue' => 'python-queries',
+            'poll_request_id' => 'query-poll-complete-1',
+        ], $this->workerHeaders());
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('task.query_task_id', $task['query_task_id']);
+
+        $this->postJson("/api/worker/query-tasks/{$task['query_task_id']}/complete", [
+            'lease_owner' => 'python-query-duplicate-complete-worker',
+            'query_task_attempt' => 1,
+            'result' => ['status' => 'ready'],
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('outcome', 'completed');
+
+        $duplicatePoll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-duplicate-complete-worker',
+            'task_queue' => 'python-queries',
+            'poll_request_id' => 'query-poll-complete-1',
+        ], $this->workerHeaders());
+
+        $duplicatePoll->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
     }
 
     public function test_worker_query_task_failure_preserves_validation_errors(): void
@@ -337,6 +594,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             $poller,
             $signals,
             app(ExternalPayloadEnvelopeService::class),
+            app(QueryTaskPollRequestStore::class),
         );
         $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
         $queryTaskId = (string) $task['query_task_id'];
@@ -827,6 +1085,49 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         }
 
         return $decoded;
+    }
+}
+
+final class WorkflowQueryTaskBrokerImmediatePollRequestStore extends QueryTaskPollRequestStore
+{
+    public function waitForResult(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        string $leaseOwner,
+        string $pollRequestId,
+        ?int $timeoutMilliseconds = null,
+    ): array {
+        return [
+            'resolved' => false,
+            'task' => null,
+            'poll_status' => null,
+        ];
+    }
+}
+
+final class WorkflowQueryTaskBrokerSupersessionRacePollRequestStore extends QueryTaskPollRequestStore
+{
+    public int $currentChecks = 0;
+
+    /** @var callable(): void|null */
+    public $afterFirstCurrentCheck = null;
+
+    public function isCurrent(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        string $leaseOwner,
+        string $pollRequestId,
+    ): bool {
+        $isCurrent = parent::isCurrent($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
+        $this->currentChecks++;
+
+        if ($this->currentChecks === 1 && $isCurrent && is_callable($this->afterFirstCurrentCheck)) {
+            ($this->afterFirstCurrentCheck)();
+        }
+
+        return $isCurrent;
     }
 }
 

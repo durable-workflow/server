@@ -98,25 +98,25 @@ class WorkerProtocolVersionCoverageTest extends TestCase
             ->assertJsonMissingPath('control_plane');
     }
 
-    public function test_worker_registration_accepts_protocol_1_6_workers(): void
+    public function test_worker_registration_accepts_protocol_1_7_workers(): void
     {
         $response = $this->postJson('/api/worker/register', [
-            'worker_id' => 'php-protocol-16-worker',
+            'worker_id' => 'php-protocol-17-worker',
             'task_queue' => 'polyglot-current',
             'runtime' => 'php',
-            'sdk_version' => 'durable-workflow/workflow 2.0.0-alpha.146',
+            'sdk_version' => 'durable-workflow/workflow 2.0.0-alpha.147',
             'supported_workflow_types' => ['PolyglotWorkflow'],
             'supported_activity_types' => ['PolyglotActivity'],
             'capabilities' => ['query_tasks'],
         ], [
             'X-Namespace' => 'default',
-            WorkerProtocol::HEADER => '1.6',
+            WorkerProtocol::HEADER => '1.7',
         ]);
 
         $response->assertCreated()
             ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
             ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
-            ->assertJsonPath('worker_id', 'php-protocol-16-worker')
+            ->assertJsonPath('worker_id', 'php-protocol-17-worker')
             ->assertJsonPath('registered', true)
             ->assertJsonPath('server_capabilities.query_tasks', true);
     }

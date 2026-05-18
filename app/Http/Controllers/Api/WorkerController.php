@@ -1270,6 +1270,7 @@ class WorkerController
         $validated = $request->validate([
             'worker_id' => ['required', 'string'],
             'task_queue' => ['required', 'string'],
+            'poll_request_id' => ['nullable', 'string', 'max:255'],
         ]);
 
         $worker = $this->resolveRegisteredWorker(
@@ -1283,7 +1284,7 @@ class WorkerController
         }
 
         try {
-            $task = $this->queryTasks->poll($namespace, $worker);
+            $task = $this->queryTasks->poll($namespace, $worker, $validated['poll_request_id'] ?? null);
         } catch (QueryTaskQueueUnavailableException $exception) {
             return WorkerProtocol::json([
                 'task' => null,

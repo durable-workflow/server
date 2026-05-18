@@ -1319,6 +1319,7 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('worker_protocol.server_capabilities.child_workflow_timeouts', true)
             ->assertJsonPath('worker_protocol.server_capabilities.parent_close_policy', true)
             ->assertJsonPath('worker_protocol.server_capabilities.query_tasks', true)
+            ->assertJsonPath('worker_protocol.server_capabilities.query_task_poll_request_idempotency', true)
             ->assertJsonPath('worker_protocol.server_capabilities.non_retryable_failures', true);
     }
 

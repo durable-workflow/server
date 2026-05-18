@@ -67,9 +67,10 @@ final class WorkflowPackageApiFloor
         // cluster info re-export the package-owned runtime semantics.
         [WorkerProtocolVersion::class, 'workerSessionVerbs'],
         [WorkerProtocolVersion::class, 'workerSessionSemantics'],
-        // Worker protocol 1.6 query-task contract: PHP workers at this
+        // Worker protocol 1.7 query-task contract: PHP workers at this
         // protocol level advertise query capability and poll/complete/fail
-        // query work through the standalone worker-plane routes.
+        // query work through the standalone worker-plane routes with
+        // idempotent poll request IDs.
         [WorkerProtocolVersion::class, 'queryTaskVerbs'],
         [WorkerProtocolVersion::class, 'workerCapabilities'],
         [WorkerProtocolVersion::class, 'queryTaskSemantics'],
@@ -98,7 +99,7 @@ final class WorkflowPackageApiFloor
     /**
      * Minimum workflow package protocol contract required by this server.
      */
-    private const MINIMUM_WORKER_PROTOCOL_VERSION = '1.6';
+    private const MINIMUM_WORKER_PROTOCOL_VERSION = '1.7';
 
     /**
      * Concrete classes the server instantiates or catches directly.
