@@ -28,6 +28,8 @@ use Symfony\Component\Process\Process;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 
 class WorkflowQueryTaskBrokerTest extends TestCase
@@ -411,6 +413,78 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         $this->assertSame($task['query_task_id'], $poll['query_task_id'] ?? null);
         $this->assertSame('python-shared-query-worker', $poll['lease_owner'] ?? null);
+    }
+
+    public function test_legacy_query_workers_become_eligible_after_polling_query_tasks(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-legacy-query-poller');
+        $this->registerPythonWorker('python-legacy-query-poller', 'python-queries', ['python.queryable'], []);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+
+        $this->assertFalse($broker->hasWorkerFor('default', $run));
+
+        /** @var WorkerRegistration $worker */
+        $worker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-legacy-query-poller')
+            ->firstOrFail();
+
+        $this->assertNull($broker->poll('default', $worker, 'query-poll-legacy-primer'));
+        $this->assertTrue($broker->hasWorkerFor('default', $run));
+    }
+
+    public function test_query_task_poll_skips_workers_with_mismatched_workflow_definition_fingerprint(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow(
+            'wf-query-task-definition-fingerprint',
+            workflowDefinitionFingerprint: 'sha256:python-counter',
+        );
+        $this->registerPythonWorker(
+            'python-mismatched-definition-worker',
+            'python-queries',
+            ['python.queryable'],
+            workflowDefinitionFingerprints: ['python.queryable' => 'sha256:php-counter'],
+        );
+        $this->registerPythonWorker(
+            'python-matching-definition-worker',
+            'python-queries',
+            ['python.queryable'],
+            workflowDefinitionFingerprints: ['python.queryable' => 'sha256:python-counter'],
+        );
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+        /** @var WorkerRegistration $mismatchedWorker */
+        $mismatchedWorker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-mismatched-definition-worker')
+            ->firstOrFail();
+
+        $this->assertNull($broker->poll('default', $mismatchedWorker, 'query-poll-definition-mismatch'));
+
+        $stored = $broker->task((string) $task['query_task_id']);
+        $this->assertIsArray($stored);
+        $this->assertSame('pending', $stored['status'] ?? null);
+        $this->assertArrayNotHasKey('lease_owner', $stored);
+
+        /** @var WorkerRegistration $matchingWorker */
+        $matchingWorker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-matching-definition-worker')
+            ->firstOrFail();
+
+        $poll = $broker->poll('default', $matchingWorker, 'query-poll-definition-match');
+
+        $this->assertSame($task['query_task_id'], $poll['query_task_id'] ?? null);
+        $this->assertSame('python-matching-definition-worker', $poll['lease_owner'] ?? null);
     }
 
     public function test_duplicate_query_poll_request_id_does_not_replay_after_query_task_completion(): void
@@ -1171,6 +1245,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         string $workflowId,
         string $workflowType = 'python.queryable',
         string $taskQueue = 'python-queries',
+        ?string $workflowDefinitionFingerprint = null,
     ): WorkflowRun
     {
         $start = $this->postJson('/api/workflows', [
@@ -1182,7 +1257,21 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         $start->assertCreated();
 
-        return WorkflowRun::query()->findOrFail((string) $start->json('run_id'));
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail((string) $start->json('run_id'));
+
+        if ($workflowDefinitionFingerprint !== null) {
+            /** @var WorkflowHistoryEvent $started */
+            $started = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::WorkflowStarted->value)
+                ->firstOrFail();
+            $payload = is_array($started->payload) ? $started->payload : [];
+            $payload['workflow_definition_fingerprint'] = $workflowDefinitionFingerprint;
+            $started->forceFill(['payload' => $payload])->save();
+        }
+
+        return $run->refresh();
     }
 
     /**
@@ -1224,18 +1313,31 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         string $workerId,
         string $taskQueue,
         array $supportedWorkflowTypes,
+        array $capabilities = ['query_tasks'],
+        array $workflowDefinitionFingerprints = [],
     ): void {
-        $this->registerQueryWorker($workerId, $taskQueue, $supportedWorkflowTypes, 'python');
+        $this->registerQueryWorker(
+            $workerId,
+            $taskQueue,
+            $supportedWorkflowTypes,
+            'python',
+            $capabilities,
+            $workflowDefinitionFingerprints,
+        );
     }
 
     /**
      * @param  list<string>  $supportedWorkflowTypes
+     * @param  list<string>  $capabilities
+     * @param  array<string, string>  $workflowDefinitionFingerprints
      */
     private function registerQueryWorker(
         string $workerId,
         string $taskQueue,
         array $supportedWorkflowTypes,
         string $runtime,
+        array $capabilities = ['query_tasks'],
+        array $workflowDefinitionFingerprints = [],
     ): void {
         WorkerRegistration::query()->updateOrCreate(
             ['worker_id' => $workerId, 'namespace' => 'default'],
@@ -1244,7 +1346,9 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 'runtime' => $runtime,
                 'sdk_version' => 'durable-workflow-'.$runtime.'/0.2.0',
                 'supported_workflow_types' => $supportedWorkflowTypes,
+                'workflow_definition_fingerprints' => $workflowDefinitionFingerprints,
                 'supported_activity_types' => [],
+                'capabilities' => $capabilities,
                 'last_heartbeat_at' => now(),
                 'status' => 'active',
             ],

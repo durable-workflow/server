@@ -18,6 +18,7 @@ use Workflow\V2\Support\HistoryExport;
 final class WorkflowQueryTaskBroker
 {
     private const CACHE_PREFIX = 'server:workflow-query-task:';
+    private const QUERY_TASKS_CAPABILITY = 'query_tasks';
 
     public function __construct(
         private readonly ServerPollingCache $cache,
@@ -48,7 +49,7 @@ final class WorkflowQueryTaskBroker
                 $queryName,
                 'query_worker_unavailable',
                 sprintf(
-                    'No active worker is registered for workflow type [%s] on task queue [%s].',
+                    'No active query-capable worker is registered for workflow type [%s] on task queue [%s].',
                     $run->workflow_type,
                     $this->taskQueue($run),
                 ),
@@ -158,6 +159,7 @@ final class WorkflowQueryTaskBroker
             'workflow_id' => $run->workflow_instance_id,
             'run_id' => $run->id,
             'workflow_type' => $run->workflow_type,
+            'workflow_definition_fingerprint' => $this->recordedWorkflowDefinitionFingerprint($run),
             'task_queue' => $taskQueue,
             'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
             'query_name' => $queryName,
@@ -193,6 +195,9 @@ final class WorkflowQueryTaskBroker
         $taskQueue = (string) $worker->task_queue;
         $buildId = $this->stringValue($worker->build_id);
         $supportedWorkflowTypes = $this->stringArray($worker->supported_workflow_types);
+        $workflowDefinitionFingerprints = $this->fingerprintMap($worker->workflow_definition_fingerprints);
+
+        $this->rememberQueryTaskPollingWorker($namespace, $taskQueue, $worker->worker_id);
 
         if ($pollRequestId !== null) {
             $this->pollRequests->markCurrentIfFresh($namespace, $taskQueue, $buildId, $worker->worker_id, $pollRequestId);
@@ -204,14 +209,22 @@ final class WorkflowQueryTaskBroker
                 $worker->worker_id,
                 $pollRequestId,
                 $supportedWorkflowTypes,
+                $workflowDefinitionFingerprints,
             );
         }
 
-        return $this->performPoll($namespace, $taskQueue, $worker->worker_id, $supportedWorkflowTypes);
+        return $this->performPoll(
+            $namespace,
+            $taskQueue,
+            $worker->worker_id,
+            $supportedWorkflowTypes,
+            $workflowDefinitionFingerprints,
+        );
     }
 
     /**
      * @param  list<string>  $supportedWorkflowTypes
+     * @param  array<string, string>  $workflowDefinitionFingerprints
      * @return array<string, mixed>|null
      */
     private function coordinatedPoll(
@@ -221,6 +234,7 @@ final class WorkflowQueryTaskBroker
         string $leaseOwner,
         string $pollRequestId,
         array $supportedWorkflowTypes,
+        array $workflowDefinitionFingerprints,
     ): ?array {
         for ($attempt = 0; $attempt < 3; $attempt++) {
             $cached = $this->cachedPollResult($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
@@ -237,6 +251,7 @@ final class WorkflowQueryTaskBroker
                     $leaseOwner,
                     $pollRequestId,
                     $supportedWorkflowTypes,
+                    $workflowDefinitionFingerprints,
                 );
             }
 
@@ -258,6 +273,7 @@ final class WorkflowQueryTaskBroker
 
     /**
      * @param  list<string>  $supportedWorkflowTypes
+     * @param  array<string, string>  $workflowDefinitionFingerprints
      * @return array<string, mixed>|null
      */
     private function runCoordinatedPollLeader(
@@ -267,6 +283,7 @@ final class WorkflowQueryTaskBroker
         string $leaseOwner,
         string $pollRequestId,
         array $supportedWorkflowTypes,
+        array $workflowDefinitionFingerprints,
     ): ?array {
         try {
             $task = $this->performPoll(
@@ -274,6 +291,7 @@ final class WorkflowQueryTaskBroker
                 $taskQueue,
                 $leaseOwner,
                 $supportedWorkflowTypes,
+                $workflowDefinitionFingerprints,
                 $buildId,
                 $pollRequestId,
             );
@@ -381,6 +399,7 @@ final class WorkflowQueryTaskBroker
 
     /**
      * @param  list<string>  $supportedWorkflowTypes
+     * @param  array<string, string>  $workflowDefinitionFingerprints
      * @return array<string, mixed>|null
      */
     private function performPoll(
@@ -388,11 +407,12 @@ final class WorkflowQueryTaskBroker
         string $taskQueue,
         string $leaseOwner,
         array $supportedWorkflowTypes,
+        array $workflowDefinitionFingerprints,
         ?string $buildId = null,
         ?string $pollRequestId = null,
     ): ?array {
         $result = $this->longPoller->until(
-            function () use ($namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes, $buildId, $pollRequestId): ?array {
+            function () use ($namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes, $workflowDefinitionFingerprints, $buildId, $pollRequestId): ?array {
                 if (
                     $pollRequestId !== null
                     && ! $this->pollRequests->isCurrent($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId)
@@ -405,6 +425,7 @@ final class WorkflowQueryTaskBroker
                     $taskQueue,
                     $leaseOwner,
                     $supportedWorkflowTypes,
+                    $workflowDefinitionFingerprints,
                     $buildId,
                     $pollRequestId,
                 );
@@ -575,6 +596,7 @@ final class WorkflowQueryTaskBroker
 
     /**
      * @param  list<string>  $supportedWorkflowTypes
+     * @param  array<string, string>  $workflowDefinitionFingerprints
      * @return array<string, mixed>|null
      */
     private function claimNext(
@@ -582,6 +604,7 @@ final class WorkflowQueryTaskBroker
         string $taskQueue,
         string $leaseOwner,
         array $supportedWorkflowTypes,
+        array $workflowDefinitionFingerprints,
         ?string $buildId = null,
         ?string $pollRequestId = null,
     ): ?array {
@@ -593,6 +616,7 @@ final class WorkflowQueryTaskBroker
                 $taskQueue,
                 $leaseOwner,
                 $supportedWorkflowTypes,
+                $workflowDefinitionFingerprints,
                 $buildId,
                 $pollRequestId,
             ),
@@ -607,6 +631,7 @@ final class WorkflowQueryTaskBroker
 
     /**
      * @param  list<string>  $supportedWorkflowTypes
+     * @param  array<string, string>  $workflowDefinitionFingerprints
      * @return array<string, mixed>|null
      */
     private function claimNextPendingTask(
@@ -614,6 +639,7 @@ final class WorkflowQueryTaskBroker
         string $taskQueue,
         string $leaseOwner,
         array $supportedWorkflowTypes,
+        array $workflowDefinitionFingerprints,
         ?string $buildId = null,
         ?string $pollRequestId = null,
     ): ?array {
@@ -628,6 +654,16 @@ final class WorkflowQueryTaskBroker
             }
 
             if (! $this->matchesWorkflowType($supportedWorkflowTypes, $task['workflow_type'] ?? null)) {
+                $remaining[] = $queryTaskId;
+
+                continue;
+            }
+
+            if (! $this->matchesWorkflowDefinitionFingerprint(
+                $workflowDefinitionFingerprints,
+                $task['workflow_type'] ?? null,
+                $task['workflow_definition_fingerprint'] ?? null,
+            )) {
                 $remaining[] = $queryTaskId;
 
                 continue;
@@ -869,9 +905,15 @@ final class WorkflowQueryTaskBroker
             ->where('status', 'active')
             ->get()
             ->filter(fn (WorkerRegistration $worker): bool => $this->workerIsFresh($worker))
+            ->filter(fn (WorkerRegistration $worker): bool => $this->workerAcceptsQueryTasks($namespace, $worker))
             ->filter(fn (WorkerRegistration $worker): bool => $this->matchesWorkflowType(
                 $this->stringArray($worker->supported_workflow_types),
                 $run->workflow_type,
+            ))
+            ->filter(fn (WorkerRegistration $worker): bool => $this->matchesWorkflowDefinitionFingerprint(
+                $this->fingerprintMap($worker->workflow_definition_fingerprints),
+                $run->workflow_type,
+                $this->recordedWorkflowDefinitionFingerprint($run),
             ))
             ->values();
     }
@@ -897,6 +939,100 @@ final class WorkflowQueryTaskBroker
         }
 
         return is_string($workflowType) && in_array($workflowType, $supportedTypes, true);
+    }
+
+    /**
+     * @param  array<string, string>  $workflowDefinitionFingerprints
+     */
+    private function matchesWorkflowDefinitionFingerprint(
+        array $workflowDefinitionFingerprints,
+        mixed $workflowType,
+        mixed $recordedFingerprint,
+    ): bool {
+        $recordedFingerprint = $this->stringValue($recordedFingerprint);
+
+        if ($recordedFingerprint === null) {
+            return true;
+        }
+
+        $workflowType = $this->stringValue($workflowType);
+
+        if ($workflowType === null) {
+            return false;
+        }
+
+        $advertisedFingerprint = $this->stringValue($workflowDefinitionFingerprints[$workflowType] ?? null);
+
+        return $advertisedFingerprint !== null && hash_equals($recordedFingerprint, $advertisedFingerprint);
+    }
+
+    private function workerAcceptsQueryTasks(string $namespace, WorkerRegistration $worker): bool
+    {
+        if (in_array(self::QUERY_TASKS_CAPABILITY, $this->stringArray($worker->capabilities), true)) {
+            return true;
+        }
+
+        return $this->store()->get($this->queryPollingWorkerKey(
+            $namespace,
+            (string) $worker->task_queue,
+            $worker->worker_id,
+        )) === true;
+    }
+
+    private function rememberQueryTaskPollingWorker(string $namespace, string $taskQueue, string $workerId): void
+    {
+        $this->store()->put(
+            $this->queryPollingWorkerKey($namespace, $taskQueue, $workerId),
+            true,
+            now()->addSeconds($this->queryPollingWorkerTtlSeconds()),
+        );
+    }
+
+    private function recordedWorkflowDefinitionFingerprint(WorkflowRun $run): ?string
+    {
+        if (! $run->exists) {
+            return null;
+        }
+
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', 'WorkflowStarted')
+            ->orderBy('sequence')
+            ->first();
+
+        return $this->stringValue($event?->payload['workflow_definition_fingerprint'] ?? null);
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function fingerprintMap(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $fingerprints = [];
+
+        foreach ($value as $workflowType => $fingerprint) {
+            if (! is_string($workflowType) || ! is_string($fingerprint)) {
+                continue;
+            }
+
+            $workflowType = trim($workflowType);
+            $fingerprint = trim($fingerprint);
+
+            if ($workflowType === '' || $fingerprint === '') {
+                continue;
+            }
+
+            $fingerprints[$workflowType] = $fingerprint;
+        }
+
+        ksort($fingerprints);
+
+        return $fingerprints;
     }
 
     /**
@@ -1132,6 +1268,11 @@ final class WorkflowQueryTaskBroker
         return 5;
     }
 
+    private function queryPollingWorkerTtlSeconds(): int
+    {
+        return max($this->staleAfterSeconds(), $this->queryTimeoutSeconds() + $this->leaseGraceSeconds());
+    }
+
     private function taskKey(string $queryTaskId): string
     {
         return self::CACHE_PREFIX.'task:'.$queryTaskId;
@@ -1150,6 +1291,11 @@ final class WorkflowQueryTaskBroker
     private function queueLockKey(string $namespace, string $taskQueue): string
     {
         return self::CACHE_PREFIX.'queue-lock:'.sha1($namespace.'|'.$taskQueue);
+    }
+
+    private function queryPollingWorkerKey(string $namespace, string $taskQueue, string $workerId): string
+    {
+        return self::CACHE_PREFIX.'query-poller:'.sha1($namespace.'|'.$taskQueue.'|'.$workerId);
     }
 
     private function store(): CacheRepository

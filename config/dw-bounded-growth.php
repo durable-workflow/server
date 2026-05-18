@@ -134,11 +134,12 @@ return [
                 'namespace',
                 'task_queue',
                 'query_task_id',
+                'worker_id',
             ],
-            'ttl' => 'Task and queue keys live max(60, server.query_tasks.ttl_seconds, server.query_tasks.timeout + effective_query_task_lease_timeout + 60) seconds. effective_query_task_lease_timeout is server.query_tasks.lease_timeout when query timeout is 0; otherwise max(server.query_tasks.lease_timeout, server.query_tasks.timeout + 5). Lease keys live effective_query_task_lease_timeout seconds. Queue locks live 10 seconds.',
-            'bound' => 'Pending query tasks are capped per namespace/task_queue by server.query_tasks.max_pending_per_queue, default 1024 and hard-clamped to 10000.',
-            'admission' => 'Queue mutations require an atomic cache lock. Full queues return query_task_queue_full/HTTP 429; stores without locks or lock timeouts return query_task_queue_unavailable/HTTP 503.',
-            'eviction' => 'Poll and enqueue paths prune stale queue IDs by checking each referenced task. Task, lease, queue, and lock keys expire by TTL.',
+            'ttl' => 'Task and queue keys live max(60, server.query_tasks.ttl_seconds, server.query_tasks.timeout + effective_query_task_lease_timeout + 60) seconds. effective_query_task_lease_timeout is server.query_tasks.lease_timeout when query timeout is 0; otherwise max(server.query_tasks.lease_timeout, server.query_tasks.timeout + 5). Lease keys live effective_query_task_lease_timeout seconds. Queue locks live 10 seconds. Query-poller markers live max(server.workers.stale_after_seconds, server.query_tasks.timeout + 5) seconds, with the query timeout runtime-clamped to 0 or greater.',
+            'bound' => 'Pending query tasks are capped per namespace/task_queue by server.query_tasks.max_pending_per_queue, default 1024 and hard-clamped to 10000. Query-poller markers add at most one expiring marker per namespace/task_queue/worker_id that has polled the query-task endpoint during the TTL window.',
+            'admission' => 'Queue mutations require an atomic cache lock. Full queues return query_task_queue_full/HTTP 429; stores without locks or lock timeouts return query_task_queue_unavailable/HTTP 503. Query-poller markers are written only when a registered worker polls the query-task endpoint and are not retained in an index.',
+            'eviction' => 'Poll and enqueue paths prune stale queue IDs by checking each referenced task. Task, lease, queue, and lock keys expire by TTL. Query-poller markers are overwritten by repeat polls from the same worker and otherwise expire by TTL.',
         ],
 
         'task_queue_admission_locks' => [
