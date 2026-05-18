@@ -2284,6 +2284,111 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->assertNotSame($initialLeaseExpiresAt, $heartbeat->json('lease_expires_at'));
     }
 
+    public function test_worker_reregistration_with_new_process_identity_releases_leased_workflow_tasks(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-worker-process-replaced',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $registration = [
+            'worker_id' => 'php-worker-process-replaced',
+            'task_queue' => 'external-workflows',
+            'runtime' => 'php',
+            'supported_workflow_types' => ['tests.external-greeting-workflow'],
+            'supported_activity_types' => ['tests.external-greeting-activity'],
+            'process_metrics' => [
+                'host' => 'worker-host',
+                'process_id' => 101,
+                'process_started_at' => '2026-05-18T21:00:00Z',
+            ],
+        ];
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', $registration)
+            ->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-process-replaced',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-worker-process-replaced')
+            ->assertJsonPath('task.workflow_task_attempt', 1)
+            ->assertJsonPath('task.lease_owner', 'php-worker-process-replaced');
+
+        $taskId = (string) $poll->json('task.task_id');
+        $staleAttempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', array_replace_recursive($registration, [
+                'process_metrics' => [
+                    'process_id' => 202,
+                    'process_started_at' => '2026-05-18T21:01:00Z',
+                ],
+            ]))
+            ->assertCreated();
+
+        $releasedTask = WorkflowTask::query()->findOrFail($taskId);
+
+        $this->assertSame(TaskStatus::Ready, $releasedTask->status);
+        $this->assertNull($releasedTask->lease_owner);
+        $this->assertNull($releasedTask->lease_expires_at);
+
+        $reclaimed = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-process-replaced',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $reclaimed->assertOk()
+            ->assertJsonPath('task.task_id', $taskId)
+            ->assertJsonPath('task.lease_owner', 'php-worker-process-replaced')
+            ->assertJsonPath('task.workflow_task_attempt', 2);
+
+        $freshAttempt = (int) $reclaimed->json('task.workflow_task_attempt');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => 'php-worker-process-replaced',
+                'workflow_task_attempt' => $staleAttempt,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serializeWithCodec('avro', ['late' => 'stale-process']),
+                    ],
+                ],
+            ])
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'workflow_task_attempt_mismatch');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => 'php-worker-process-replaced',
+                'workflow_task_attempt' => $freshAttempt,
+                'commands' => [
+                    [
+                        'type' => 'complete_workflow',
+                        'result' => Serializer::serializeWithCodec('avro', ['replaced' => true]),
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('run_status', 'completed');
+    }
+
     public function test_it_proactively_repairs_expired_workflow_task_leases_when_a_new_worker_polls(): void
     {
         Queue::fake();

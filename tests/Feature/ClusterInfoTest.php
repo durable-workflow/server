@@ -1320,7 +1320,15 @@ class ClusterInfoTest extends TestCase
             ->assertJsonPath('worker_protocol.server_capabilities.parent_close_policy', true)
             ->assertJsonPath('worker_protocol.server_capabilities.query_tasks', true)
             ->assertJsonPath('worker_protocol.server_capabilities.query_task_poll_request_idempotency', true)
-            ->assertJsonPath('worker_protocol.server_capabilities.non_retryable_failures', true);
+            ->assertJsonPath('worker_protocol.server_capabilities.non_retryable_failures', true)
+            ->assertJsonPath('worker_protocol.server_capabilities.worker_status.fields.process_metrics', [
+                'cpu_percent',
+                'memory_bytes',
+                'process_uptime_seconds',
+                'process_id',
+                'host',
+                'process_started_at',
+            ]);
     }
 
     public function test_it_publishes_task_queue_priority_fairness_contract_in_worker_protocol(): void

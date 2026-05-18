@@ -673,10 +673,13 @@ manifests should fail closed.
 Worker-fleet heartbeats accept optional `task_slots` (`workflow_available`,
 `activity_available`, `session_available`) and `process_metrics`
 (`cpu_percent`, `memory_bytes`, `process_uptime_seconds`, `process_id`,
-`host`) so operators can answer "what workers are polling task queue X right
-now, what's their slot capacity, when did each last check in" via
-`GET /api/workers`, the CLI `dw worker:list`/`dw worker:describe`, and the
-Waterline Worker Status view. The register and heartbeat acknowledgements
+`host`, `process_started_at`) so operators can answer "what workers are
+polling task queue X right now, what's their slot capacity, when did each last
+check in" via `GET /api/workers`, the CLI `dw worker:list` /
+`dw worker:describe`, and the Waterline Worker Status view.
+`process_started_at` is a process identity value, alongside `host` and
+`process_id`, that lets the server distinguish a restarted process that reused
+the same worker id and OS pid. The register and heartbeat acknowledgements
 advertise the recommended cadence in `heartbeat_interval_seconds` (default
 60s, configurable via `DW_WORKER_HEARTBEAT_INTERVAL_SECONDS`); workers that
 miss enough heartbeats are surfaced as `stale` after

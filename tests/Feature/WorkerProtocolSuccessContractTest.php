@@ -158,6 +158,14 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('server_capabilities.query_tasks', true)
             ->assertJsonPath('server_capabilities.query_task_poll_request_idempotency', true)
             ->assertJsonPath('server_capabilities.non_retryable_failures', true)
+            ->assertJsonPath('server_capabilities.worker_status.fields.process_metrics', [
+                'cpu_percent',
+                'memory_bytes',
+                'process_uptime_seconds',
+                'process_id',
+                'host',
+                'process_started_at',
+            ])
             ->assertJsonMissingPath('control_plane')
             ->assertJsonStructure($structure);
 

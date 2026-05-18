@@ -96,6 +96,7 @@ class WorkerControllerTest extends TestCase
                     'memory_bytes' => 67108864,
                     'process_uptime_seconds' => 0,
                     'host' => 'init-host',
+                    'process_started_at' => '2026-05-18T21:00:00Z',
                 ],
                 'heartbeat_interval_seconds' => 30,
             ]);
@@ -113,6 +114,7 @@ class WorkerControllerTest extends TestCase
         self::assertSame(30, $worker->heartbeat_interval_seconds);
         self::assertIsArray($worker->process_metrics);
         self::assertSame(67108864, $worker->process_metrics['memory_bytes']);
+        self::assertSame('2026-05-18T21:00:00Z', $worker->process_metrics['process_started_at']);
     }
 
     public function test_register_auto_generates_worker_id_when_omitted(): void
@@ -411,6 +413,7 @@ class WorkerControllerTest extends TestCase
                     'process_uptime_seconds' => 600,
                     'process_id' => 1234,
                     'host' => 'py-worker-01',
+                    'process_started_at' => '2026-05-18T21:02:00Z',
                 ],
                 'heartbeat_interval_seconds' => 45,
             ]);
@@ -435,6 +438,7 @@ class WorkerControllerTest extends TestCase
         self::assertSame(600, $worker->process_metrics['process_uptime_seconds']);
         self::assertSame(1234, $worker->process_metrics['process_id']);
         self::assertSame('py-worker-01', $worker->process_metrics['host']);
+        self::assertSame('2026-05-18T21:02:00Z', $worker->process_metrics['process_started_at']);
     }
 
     public function test_heartbeat_clamps_available_slots_to_capacity(): void

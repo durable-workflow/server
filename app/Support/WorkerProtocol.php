@@ -198,6 +198,12 @@ class WorkerProtocol
      *     external_execution_surface: array<string, mixed>,
      *     external_executor_config: array<string, mixed>,
      *     invocable_carrier: array<string, mixed>,
+     *     worker_status: array{
+     *         supported: bool,
+     *         heartbeat_interval_seconds: int,
+     *         stale_after_seconds: int,
+     *         fields: array{task_slots: list<string>, process_metrics: list<string>},
+     *     },
      *     external_task_input: array<string, mixed>,
      *     external_task_result: array<string, mixed>,
      *     task_queue_priority_fairness: array<string, mixed>,
@@ -270,7 +276,14 @@ class WorkerProtocol
                 )),
                 'fields' => [
                     'task_slots' => ['workflow_available', 'activity_available', 'session_available'],
-                    'process_metrics' => ['cpu_percent', 'memory_bytes', 'process_uptime_seconds', 'process_id', 'host'],
+                    'process_metrics' => [
+                        'cpu_percent',
+                        'memory_bytes',
+                        'process_uptime_seconds',
+                        'process_id',
+                        'host',
+                        'process_started_at',
+                    ],
                 ],
             ],
             'external_task_input' => [

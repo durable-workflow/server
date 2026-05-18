@@ -19,6 +19,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\WorkflowTask;
@@ -81,6 +83,7 @@ class WorkerController
             'process_metrics.process_uptime_seconds' => ['nullable', 'integer', 'min:0'],
             'process_metrics.process_id' => ['nullable', 'integer', 'min:0'],
             'process_metrics.host' => ['nullable', 'string', 'max:255'],
+            'process_metrics.process_started_at' => ['nullable', 'string', 'max:64'],
             'heartbeat_interval_seconds' => ['nullable', 'integer', 'min:1', 'max:3600'],
         ]);
 
@@ -130,6 +133,7 @@ class WorkerController
         $maxWorkerSessions = $validated['max_concurrent_worker_sessions'] ?? 10;
         $taskSlots = is_array($validated['task_slots'] ?? null) ? $validated['task_slots'] : [];
         $processMetrics = $this->normalizeProcessMetrics($validated['process_metrics'] ?? null);
+        $workerProcessReplaced = $this->workerProcessReplaced($existing, $processMetrics);
 
         WorkerRegistration::updateOrCreate(
             [
@@ -166,6 +170,10 @@ class WorkerController
                 'status' => $registrationStatus,
             ]
         );
+
+        if ($workerProcessReplaced) {
+            $this->releaseLeasedWorkflowTasksForReplacedWorker($namespace, $workerId);
+        }
 
         StandaloneWorkerVisibility::recordCompatibility(
             namespace: $namespace,
@@ -291,6 +299,7 @@ class WorkerController
             'process_metrics.process_uptime_seconds' => ['nullable', 'integer', 'min:0'],
             'process_metrics.process_id' => ['nullable', 'integer', 'min:0'],
             'process_metrics.host' => ['nullable', 'string', 'max:255'],
+            'process_metrics.process_started_at' => ['nullable', 'string', 'max:64'],
             'heartbeat_interval_seconds' => ['nullable', 'integer', 'min:1', 'max:3600'],
         ]);
 
@@ -404,7 +413,14 @@ class WorkerController
             return null;
         }
 
-        $allowed = ['cpu_percent', 'memory_bytes', 'process_uptime_seconds', 'process_id', 'host'];
+        $allowed = [
+            'cpu_percent',
+            'memory_bytes',
+            'process_uptime_seconds',
+            'process_id',
+            'host',
+            'process_started_at',
+        ];
         $normalized = [];
 
         foreach ($allowed as $key) {
@@ -418,7 +434,7 @@ class WorkerController
                 continue;
             }
 
-            if ($key === 'host') {
+            if ($key === 'host' || $key === 'process_started_at') {
                 if (is_string($entry) && trim($entry) !== '') {
                     $normalized[$key] = mb_substr(trim($entry), 0, 255);
                 }
@@ -440,6 +456,79 @@ class WorkerController
         }
 
         return $normalized === [] ? null : $normalized;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $incomingProcessMetrics
+     */
+    private function workerProcessReplaced(
+        ?WorkerRegistration $existing,
+        ?array $incomingProcessMetrics,
+    ): bool {
+        if (! $existing instanceof WorkerRegistration || $existing->status !== 'active') {
+            return false;
+        }
+
+        $incomingIdentity = $this->workerProcessIdentity($incomingProcessMetrics);
+
+        if ($incomingIdentity === []) {
+            return false;
+        }
+
+        $existingIdentity = $this->workerProcessIdentity($existing->process_metrics);
+
+        if ($existingIdentity === []) {
+            return true;
+        }
+
+        return $existingIdentity !== $incomingIdentity;
+    }
+
+    /**
+     * @return array<string, int|string>
+     */
+    private function workerProcessIdentity(mixed $processMetrics): array
+    {
+        if (! is_array($processMetrics)) {
+            return [];
+        }
+
+        $identity = [];
+
+        foreach (['host', 'process_started_at'] as $key) {
+            $value = $processMetrics[$key] ?? null;
+
+            if (is_string($value) && trim($value) !== '') {
+                $identity[$key] = trim($value);
+            }
+        }
+
+        $processId = $processMetrics['process_id'] ?? null;
+
+        if (is_int($processId) || (is_string($processId) && ctype_digit($processId))) {
+            $identity['process_id'] = (int) $processId;
+        }
+
+        return $identity;
+    }
+
+    private function releaseLeasedWorkflowTasksForReplacedWorker(string $namespace, string $workerId): void
+    {
+        WorkflowTask::query()
+            ->where('namespace', $namespace)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Leased->value)
+            ->where('lease_owner', $workerId)
+            ->update([
+                'status' => TaskStatus::Ready->value,
+                'leased_at' => null,
+                'lease_owner' => null,
+                'lease_expires_at' => null,
+                'sticky_replay_mode' => null,
+                'sticky_claimed_at' => null,
+                'last_claim_failed_at' => null,
+                'last_claim_error' => null,
+            ]);
     }
 
     private function advertisedHeartbeatIntervalSeconds(): int

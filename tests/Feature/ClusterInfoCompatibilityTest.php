@@ -618,6 +618,17 @@ class ClusterInfoCompatibilityTest extends TestCase
             WorkerProtocolVersion::supportedHistoryEncodings(),
             $response->json('worker_protocol.server_capabilities.history_compression.supported_encodings'),
         );
+        $this->assertSame(
+            [
+                'cpu_percent',
+                'memory_bytes',
+                'process_uptime_seconds',
+                'process_id',
+                'host',
+                'process_started_at',
+            ],
+            $response->json('worker_protocol.server_capabilities.worker_status.fields.process_metrics'),
+        );
     }
 
     public function test_cluster_info_advertises_worker_protocol_1_1_feature_floor_without_worker_sessions(): void
