@@ -629,6 +629,75 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->assertSame(1, $poller->pauseCalls);
     }
 
+    public function test_query_task_poll_waits_when_worker_long_poll_slots_are_exhausted(): void
+    {
+        Queue::fake();
+        config([
+            'server.polling.max_concurrent_waits' => 1,
+            'server.polling.timeout' => 1,
+        ]);
+
+        $run = $this->startRemoteWorkflow('wf-query-task-wait-slot-starvation');
+        $this->registerPythonWorker('python-query-wait-slot-worker', 'python-queries', ['python.queryable']);
+
+        /** @var LongPollSignalStore $signals */
+        $signals = app(LongPollSignalStore::class);
+        /** @var LongPollWaitSlotStore $waitSlots */
+        $waitSlots = app(LongPollWaitSlotStore::class);
+        $heldSlot = $waitSlots->tryAcquire(1);
+        $this->assertNotNull($heldSlot);
+
+        $poller = new class($signals, $waitSlots) extends LongPoller
+        {
+            public int $pauseCalls = 0;
+
+            /** @var callable(int): void|null */
+            public $afterPause = null;
+
+            protected function pause(int $milliseconds): void
+            {
+                $this->pauseCalls++;
+
+                if (is_callable($this->afterPause)) {
+                    ($this->afterPause)($this->pauseCalls);
+                }
+            }
+        };
+
+        $broker = new WorkflowQueryTaskBroker(
+            app(ServerPollingCache::class),
+            $poller,
+            $signals,
+            app(ExternalPayloadEnvelopeService::class),
+            app(QueryTaskPollRequestStore::class),
+        );
+        $queryTaskId = null;
+        /** @var WorkerRegistration $worker */
+        $worker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-query-wait-slot-worker')
+            ->firstOrFail();
+
+        $poller->afterPause = function (int $pauseCalls) use ($broker, $run, &$queryTaskId): void {
+            if ($pauseCalls !== 1) {
+                return;
+            }
+
+            $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+            $queryTaskId = $task['query_task_id'];
+        };
+
+        try {
+            $poll = $broker->poll('default', $worker, 'query-poll-wait-slot-1');
+        } finally {
+            $heldSlot->release();
+        }
+
+        $this->assertSame($queryTaskId, $poll['query_task_id'] ?? null);
+        $this->assertSame('python-query-wait-slot-worker', $poll['lease_owner'] ?? null);
+        $this->assertSame(1, $poller->pauseCalls);
+    }
+
     public function test_query_task_lease_timeout_is_clamped_beyond_control_plane_wait(): void
     {
         Queue::fake();

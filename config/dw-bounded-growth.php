@@ -109,7 +109,7 @@ return [
             ],
             'ttl' => 'server.polling.timeout + 5 seconds, with a runtime minimum of 1 second.',
             'bound' => 'At most server.polling.max_concurrent_waits keys per server node when set; otherwise PHP_CLI_SERVER_WORKERS minus server.polling.reserved_http_workers in the standalone CLI server image.',
-            'admission' => 'Empty worker long-poll waits must acquire one slot before sleeping. If all slots are occupied, the worker poll returns its immediate probe result so health and control-plane routes keep request-worker capacity.',
+            'admission' => 'Empty workflow and activity worker long-poll waits must acquire one slot before sleeping. Query-task polls stay outside this shared pool so live workflow queries are not starved by idle workflow/activity waits. If all slots are occupied, guarded worker polls return their immediate probe result so health and control-plane routes keep request-worker capacity.',
             'eviction' => 'Slots are released when the poll returns; TTL clears stale holders after process death.',
         ],
 

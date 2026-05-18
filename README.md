@@ -1104,10 +1104,14 @@ same file-backed writer lock. If worker poll endpoints still return
 multi-worker deployments should use MySQL/PostgreSQL with Redis.
 
 The standalone server image also reserves PHP request-worker capacity for
-health and control-plane routes. Empty worker long-polls acquire a short-lived
-wait slot before sleeping; once the node-local slot cap is reached, additional
-polls return their immediate empty result instead of holding another PHP server
-worker for the full poll timeout.
+health and control-plane routes. Empty workflow and activity worker long-polls
+acquire a short-lived wait slot before sleeping; once the node-local slot cap
+is reached, additional polls return their immediate empty result instead of
+holding another PHP server worker for the full poll timeout. Query-task polls
+are intentionally outside this shared wait-slot pool because they are the
+worker-side path for already accepted live workflow queries; size
+`PHP_CLI_SERVER_WORKERS` for expected concurrent query workers when using the
+standalone server.
 
 Across Compose, plain Docker, and Kubernetes, the supported bootstrap contract
 is the same: run the image's `server-bootstrap` command once before starting the
@@ -1330,8 +1334,8 @@ every operator-facing variable the server honors.
 | `DW_WORKER_POLL_SIGNAL_CHECK_INTERVAL_MS` | `100` | Wake-signal check interval during an open poll. |
 | `DW_POLLING_CACHE_PATH` | `storage/.../server-polling/<APP_ENV>` | Directory for worker-poll coordination state. |
 | `DW_WAKE_SIGNAL_TTL_SECONDS` | `max(DW_WORKER_POLL_TIMEOUT + 5, 60)` | TTL for per-queue wake signals. |
-| `DW_WORKER_LONG_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held worker long-poll waits on this server node. |
-| `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the long-poll wait cap. |
+| `DW_WORKER_LONG_POLL_MAX_CONCURRENT` | (unset; derived for PHP CLI server) | Optional cap for concurrent held workflow/activity worker long-poll waits on this server node. Query-task polls are excluded so live workflow queries are not starved by idle workflow/activity waits. |
+| `DW_WORKER_LONG_POLL_RESERVED_HTTP_WORKERS` | `2` | PHP CLI server workers reserved for health and control-plane requests when deriving the workflow/activity long-poll wait cap. |
 | `DW_MAX_TASKS_PER_POLL` | `1` | Maximum tasks returned per poll. |
 | `DW_SQLITE_CLAIM_LOCK_TTL_SECONDS` | `10` | Seconds the SQLite quickstart backend holds the cache-backed worker poll claim gate before the lock expires. |
 | `DW_SQLITE_CLAIM_LOCK_WAIT_SECONDS` | `5` | Seconds SQLite worker poll claims wait for the cache-backed claim gate before returning backend lock pressure. |
