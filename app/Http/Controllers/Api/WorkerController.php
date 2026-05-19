@@ -19,10 +19,13 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
+use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\HistoryPayloadCompression;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
@@ -173,6 +176,7 @@ class WorkerController
 
         if ($workerProcessReplaced) {
             $this->releaseLeasedWorkflowTasksForReplacedWorker($namespace, $workerId);
+            $this->releaseLeasedActivityTasksForReplacedWorker($namespace, $workerId);
         }
 
         StandaloneWorkerVisibility::recordCompatibility(
@@ -529,6 +533,65 @@ class WorkerController
                 'last_claim_failed_at' => null,
                 'last_claim_error' => null,
             ]);
+    }
+
+    private function releaseLeasedActivityTasksForReplacedWorker(string $namespace, string $workerId): void
+    {
+        WorkflowTask::query()
+            ->where('namespace', $namespace)
+            ->where('task_type', TaskType::Activity->value)
+            ->where('status', TaskStatus::Leased->value)
+            ->where('lease_owner', $workerId)
+            ->get()
+            ->each(function (WorkflowTask $task) use ($workerId): void {
+                $this->expireLeasedActivityAttemptForReplacedWorker($task, $workerId);
+
+                $task->forceFill([
+                    'status' => TaskStatus::Ready,
+                    'leased_at' => null,
+                    'lease_owner' => null,
+                    'lease_expires_at' => null,
+                    'last_claim_failed_at' => null,
+                    'last_claim_error' => null,
+                ])->save();
+            });
+    }
+
+    private function expireLeasedActivityAttemptForReplacedWorker(WorkflowTask $task, string $workerId): void
+    {
+        $executionId = is_array($task->payload ?? null)
+            ? ($task->payload['activity_execution_id'] ?? null)
+            : null;
+
+        if (! is_string($executionId) || $executionId === '') {
+            return;
+        }
+
+        /** @var ActivityExecution|null $execution */
+        $execution = ActivityExecution::query()->find($executionId);
+
+        if (! $execution instanceof ActivityExecution) {
+            return;
+        }
+
+        /** @var ActivityAttempt|null $attempt */
+        $attempt = ActivityAttempt::query()
+            ->where('workflow_task_id', $task->id)
+            ->where('activity_execution_id', $execution->id)
+            ->where('lease_owner', $workerId)
+            ->where('status', ActivityAttemptStatus::Running->value)
+            ->latest('attempt_number')
+            ->first();
+
+        if (! $attempt instanceof ActivityAttempt) {
+            return;
+        }
+
+        $attempt->forceFill([
+            'status' => ActivityAttemptStatus::Expired,
+            'lease_expires_at' => null,
+            'closed_at' => $attempt->closed_at ?? now(),
+        ])->save();
     }
 
     private function advertisedHeartbeatIntervalSeconds(): int
