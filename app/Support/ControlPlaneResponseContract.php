@@ -198,6 +198,7 @@ final class ControlPlaneResponseContract
         'command_status',
         'command_source',
         'target_scope',
+        'query_name',
         'outcome',
         'reason',
         'rejection_reason',

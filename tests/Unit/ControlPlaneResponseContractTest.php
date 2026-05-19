@@ -135,6 +135,19 @@ class ControlPlaneResponseContractTest extends TestCase
         );
     }
 
+    public function test_attach_projects_query_name_into_the_control_plane_block(): void
+    {
+        $payload = ControlPlaneResponseContract::attach('query', 'currentState', [
+            'workflow_id' => 'wf-query-1',
+            'query_name' => 'currentState',
+            'result' => ['stage' => 'waiting'],
+        ]);
+
+        $this->assertSame('currentState', $payload['control_plane']['operation_name']);
+        $this->assertSame('query_name', $payload['control_plane']['operation_name_field']);
+        $this->assertSame('currentState', $payload['control_plane']['query_name']);
+    }
+
     public function test_attach_omits_rejection_metadata_for_operations_without_a_rejection_contract(): void
     {
         $payload = ControlPlaneResponseContract::attach('describe', null, [
