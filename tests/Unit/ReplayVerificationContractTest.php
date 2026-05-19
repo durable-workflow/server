@@ -302,6 +302,10 @@ class ReplayVerificationContractTest extends TestCase
         $manifest = ReplayVerificationContract::manifest();
         $conformance = $manifest['replay_conformance'];
 
+        $this->assertSame(
+            ['pass', 'fail', 'unsupported', 'not_covered', 'runner_blocked'],
+            $conformance['scenario_statuses'],
+        );
         $this->assertContains('not_covered', $conformance['scenario_statuses']);
         $this->assertSame(
             'non_passing',
