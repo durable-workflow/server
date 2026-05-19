@@ -238,7 +238,10 @@ class ActivityWorkerProtocolTest extends TestCase
 
         /** @var LongPollSignalStore $signals */
         $signals = app(LongPollSignalStore::class);
-        $expectedChannels = $signals->activityTaskPollChannels('default', null, 'external-activities');
+        $expectedChannels = [
+            ...$signals->activityTaskPollChannels('default', null, 'external-activities'),
+            ...$signals->queryTaskPollChannels('default', 'external-activities'),
+        ];
 
         $this->mock(LongPoller::class, function (MockInterface $mock) use (
             $expectedChannels,

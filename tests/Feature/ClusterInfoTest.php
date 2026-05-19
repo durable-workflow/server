@@ -149,6 +149,27 @@ class ClusterInfoTest extends TestCase
         $this->assertContains('unknown_signal', $signalContract['rejection_reasons']);
     }
 
+    public function test_it_publishes_a_query_rejection_contract_in_the_response_manifest(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk();
+
+        $queryContract = $response->json('control_plane.response_contract.operations.query');
+
+        $this->assertIsArray($queryContract);
+        $this->assertContains('result_envelope', $queryContract['success_fields']);
+        $this->assertContains('run_id', $queryContract['rejection_fields']);
+        $this->assertContains('target_scope', $queryContract['rejection_fields']);
+        $this->assertContains('query_name', $queryContract['rejection_fields']);
+        $this->assertContains('blocked_reason', $queryContract['rejection_fields']);
+        $this->assertContains('validation_errors', $queryContract['rejection_fields']);
+        $this->assertContains('instance_not_found', $queryContract['rejection_reasons']);
+        $this->assertContains('historical_run_command_rejected', $queryContract['rejection_reasons']);
+        $this->assertContains('invalid_query_arguments', $queryContract['rejection_reasons']);
+        $this->assertContains('query_worker_unavailable', $queryContract['rejection_reasons']);
+        $this->assertContains('query_worker_execution_timeout', $queryContract['rejection_reasons']);
+    }
+
     public function test_it_publishes_external_task_input_contract_manifest(): void
     {
         $this->getJson('/api/cluster/info')

@@ -24,6 +24,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
+use Workflow\V2\Workflow;
 
 class WorkflowController
 {
@@ -530,7 +531,8 @@ class WorkflowController
         $externalStorage = $this->externalPayloadStorage->driverFor($namespace);
         $queryEnvelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $externalStorage);
 
-        if ($run instanceof WorkflowRun && $this->queryTasks->hasWorkerFor($namespace, $run)) {
+        if ($run instanceof WorkflowRun
+            && ($this->queryTasks->hasWorkerFor($namespace, $run) || ! $this->canReplayQueryInProcess($run))) {
             return $this->resultMapper->query(
                 $workflowId,
                 $queryName,
@@ -562,6 +564,15 @@ class WorkflowController
             $result,
             $this->controlPlaneRunId($request),
         );
+    }
+
+    private function canReplayQueryInProcess(WorkflowRun $run): bool
+    {
+        $workflowClass = is_string($run->workflow_class) ? trim($run->workflow_class) : '';
+
+        return $workflowClass !== ''
+            && class_exists($workflowClass)
+            && is_subclass_of($workflowClass, Workflow::class);
     }
 
     public function update(Request $request, string $workflowId, string $updateName): JsonResponse

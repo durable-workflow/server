@@ -1801,7 +1801,10 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         /** @var LongPollSignalStore $signals */
         $signals = app(LongPollSignalStore::class);
-        $expectedChannels = $signals->workflowTaskPollChannels('default', null, 'external-workflows');
+        $expectedChannels = [
+            ...$signals->workflowTaskPollChannels('default', null, 'external-workflows'),
+            ...$signals->queryTaskPollChannels('default', 'external-workflows'),
+        ];
 
         $this->mock(LongPoller::class, function (MockInterface $mock) use (
             $expectedChannels,

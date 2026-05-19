@@ -8,7 +8,6 @@ use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
@@ -31,7 +30,7 @@ final class WorkflowQueryTaskBroker
 
     public function hasWorkerFor(string $namespace, WorkflowRun $run): bool
     {
-        return $this->queryWorkers($namespace, $run)->isNotEmpty();
+        return $this->queryRoute($namespace, $run)['servable'];
     }
 
     /**
@@ -44,14 +43,16 @@ final class WorkflowQueryTaskBroker
         string $queryName,
         array $queryArguments,
     ): array {
-        if (! $this->hasWorkerFor($namespace, $run)) {
+        $route = $this->queryRoute($namespace, $run);
+
+        if (! $route['servable']) {
             return $this->queryFailed(
                 $run,
                 $queryName,
-                'query_worker_unavailable',
-                sprintf(
-                    'No active query-capable worker is registered for workflow type [%s] on task queue [%s].',
-                    $run->workflow_type,
+                $route['reason'] ?? 'query_worker_unavailable',
+                $route['message'] ?? sprintf(
+                    'No compatible query-capable worker is available for workflow type [%s] on task queue [%s].',
+                    $this->stringValue($run->workflow_type) ?? 'unknown',
                     $this->taskQueue($run),
                 ),
                 409,
@@ -110,14 +111,17 @@ final class WorkflowQueryTaskBroker
             );
         }
 
+        $timeoutTask = is_array($result) ? $result : $task;
+        $timeout = $this->timeoutFailure($namespace, $run, $queryName, $timeoutTask);
+
         $this->markTimedOut((string) $task['query_task_id']);
 
         return $this->queryFailed(
             $run,
             $queryName,
-            'query_worker_timeout',
-            'Timed out waiting for a worker to execute the workflow query.',
-            504,
+            $timeout['reason'],
+            $timeout['message'],
+            $timeout['status'],
         );
     }
 
@@ -569,6 +573,160 @@ final class WorkflowQueryTaskBroker
 
     /**
      * @return array{
+     *     servable: bool,
+     *     reason: string|null,
+     *     message: string|null,
+     *     task_queue: string,
+     *     active_worker_count: int,
+     *     query_capable_worker_count: int,
+     *     workflow_type_worker_count: int,
+     *     compatible_worker_count: int
+     * }
+     */
+    public function queryRoute(string $namespace, WorkflowRun $run): array
+    {
+        $taskQueue = $this->taskQueue($run);
+        $workflowType = $this->stringValue($run->workflow_type);
+        $recordedFingerprint = $this->recordedWorkflowDefinitionFingerprint($run);
+
+        $activeWorkers = WorkerRegistration::query()
+            ->where('namespace', $namespace)
+            ->where('task_queue', $taskQueue)
+            ->where('status', 'active')
+            ->get()
+            ->filter(fn (WorkerRegistration $worker): bool => $this->workerIsFresh($worker))
+            ->values();
+
+        if ($activeWorkers->isEmpty()) {
+            return $this->queryRouteResult(
+                false,
+                'query_worker_unavailable',
+                sprintf('No active worker is registered on task queue [%s].', $taskQueue),
+                $taskQueue,
+                0,
+                0,
+                0,
+                0,
+            );
+        }
+
+        $queryWorkers = $activeWorkers
+            ->filter(fn (WorkerRegistration $worker): bool => $this->workerAcceptsQueryTasks($namespace, $worker))
+            ->values();
+
+        if ($queryWorkers->isEmpty()) {
+            return $this->queryRouteResult(
+                false,
+                'query_worker_unavailable',
+                sprintf(
+                    'Active workers are registered on task queue [%s], but none are accepting workflow query tasks.',
+                    $taskQueue,
+                ),
+                $taskQueue,
+                $activeWorkers->count(),
+                0,
+                0,
+                0,
+            );
+        }
+
+        $typeWorkers = $queryWorkers
+            ->filter(fn (WorkerRegistration $worker): bool => $this->matchesWorkflowType(
+                $this->stringArray($worker->supported_workflow_types),
+                $workflowType,
+            ))
+            ->values();
+
+        if ($typeWorkers->isEmpty()) {
+            return $this->queryRouteResult(
+                false,
+                'query_worker_incompatible',
+                sprintf(
+                    'Query-capable workers on task queue [%s] do not advertise workflow type [%s].',
+                    $taskQueue,
+                    $workflowType ?? 'unknown',
+                ),
+                $taskQueue,
+                $activeWorkers->count(),
+                $queryWorkers->count(),
+                0,
+                0,
+            );
+        }
+
+        $compatibleWorkers = $typeWorkers
+            ->filter(fn (WorkerRegistration $worker): bool => $this->matchesWorkflowDefinitionFingerprint(
+                $this->fingerprintMap($worker->workflow_definition_fingerprints),
+                $workflowType,
+                $recordedFingerprint,
+            ))
+            ->values();
+
+        if ($compatibleWorkers->isEmpty()) {
+            return $this->queryRouteResult(
+                false,
+                'query_worker_incompatible',
+                sprintf(
+                    'Query-capable workers on task queue [%s] support workflow type [%s], but none advertise the recorded workflow definition fingerprint.',
+                    $taskQueue,
+                    $workflowType ?? 'unknown',
+                ),
+                $taskQueue,
+                $activeWorkers->count(),
+                $queryWorkers->count(),
+                $typeWorkers->count(),
+                0,
+            );
+        }
+
+        return $this->queryRouteResult(
+            true,
+            null,
+            null,
+            $taskQueue,
+            $activeWorkers->count(),
+            $queryWorkers->count(),
+            $typeWorkers->count(),
+            $compatibleWorkers->count(),
+        );
+    }
+
+    /**
+     * @return array{
+     *     servable: bool,
+     *     reason: string|null,
+     *     message: string|null,
+     *     task_queue: string,
+     *     active_worker_count: int,
+     *     query_capable_worker_count: int,
+     *     workflow_type_worker_count: int,
+     *     compatible_worker_count: int
+     * }
+     */
+    private function queryRouteResult(
+        bool $servable,
+        ?string $reason,
+        ?string $message,
+        string $taskQueue,
+        int $activeWorkerCount,
+        int $queryCapableWorkerCount,
+        int $workflowTypeWorkerCount,
+        int $compatibleWorkerCount,
+    ): array {
+        return [
+            'servable' => $servable,
+            'reason' => $reason,
+            'message' => $message,
+            'task_queue' => $taskQueue,
+            'active_worker_count' => $activeWorkerCount,
+            'query_capable_worker_count' => $queryCapableWorkerCount,
+            'workflow_type_worker_count' => $workflowTypeWorkerCount,
+            'compatible_worker_count' => $compatibleWorkerCount,
+        ];
+    }
+
+    /**
+     * @return array{
      *     budget_source: string,
      *     max_pending_per_queue: int,
      *     approximate_pending_count: int,
@@ -593,6 +751,29 @@ final class WorkflowQueryTaskBroker
             'lock_supported' => $lockSupported,
             'status' => $this->queueAdmissionStatus($pendingCount, $maxPending, $lockSupported),
         ];
+    }
+
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     */
+    public function hasPendingTaskForPoller(
+        string $namespace,
+        string $taskQueue,
+        array $supportedWorkflowTypes,
+    ): bool {
+        foreach ($this->pendingTaskIds($namespace, $taskQueue) as $queryTaskId) {
+            $task = $this->task($queryTaskId);
+
+            if (! is_array($task) || ($task['status'] ?? null) !== 'pending') {
+                continue;
+            }
+
+            if ($this->matchesWorkflowType($supportedWorkflowTypes, $task['workflow_type'] ?? null)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -914,30 +1095,6 @@ final class WorkflowQueryTaskBroker
         return null;
     }
 
-    /**
-     * @return Collection<int, WorkerRegistration>
-     */
-    private function queryWorkers(string $namespace, WorkflowRun $run)
-    {
-        return WorkerRegistration::query()
-            ->where('namespace', $namespace)
-            ->where('task_queue', $this->taskQueue($run))
-            ->where('status', 'active')
-            ->get()
-            ->filter(fn (WorkerRegistration $worker): bool => $this->workerIsFresh($worker))
-            ->filter(fn (WorkerRegistration $worker): bool => $this->workerAcceptsQueryTasks($namespace, $worker))
-            ->filter(fn (WorkerRegistration $worker): bool => $this->matchesWorkflowType(
-                $this->stringArray($worker->supported_workflow_types),
-                $run->workflow_type,
-            ))
-            ->filter(fn (WorkerRegistration $worker): bool => $this->matchesWorkflowDefinitionFingerprint(
-                $this->fingerprintMap($worker->workflow_definition_fingerprints),
-                $run->workflow_type,
-                $this->recordedWorkflowDefinitionFingerprint($run),
-            ))
-            ->values();
-    }
-
     private function workerIsFresh(WorkerRegistration $worker): bool
     {
         $heartbeat = $worker->last_heartbeat_at;
@@ -1158,6 +1315,59 @@ final class WorkflowQueryTaskBroker
         }
 
         return $payload;
+    }
+
+    /**
+     * @param  array<string, mixed>  $task
+     * @return array{reason: string, message: string, status: int}
+     */
+    private function timeoutFailure(string $namespace, WorkflowRun $run, string $queryName, array $task): array
+    {
+        $status = $this->stringValue($task['status'] ?? null) ?? 'unknown';
+
+        if ($status === 'pending') {
+            $route = $this->queryRoute($namespace, $run);
+
+            if (! $route['servable']) {
+                return [
+                    'reason' => $route['reason'] ?? 'query_worker_unavailable',
+                    'message' => $route['message'] ?? 'No compatible query-capable worker is available for this workflow query.',
+                    'status' => 409,
+                ];
+            }
+
+            return [
+                'reason' => 'query_task_not_claimed',
+                'message' => sprintf(
+                    'Timed out waiting for a compatible worker to claim workflow query [%s] on task queue [%s].',
+                    $queryName,
+                    $route['task_queue'],
+                ),
+                'status' => 504,
+            ];
+        }
+
+        if ($status === 'leased') {
+            $leaseOwner = $this->stringValue($task['lease_owner'] ?? null);
+
+            return [
+                'reason' => 'query_worker_execution_timeout',
+                'message' => $leaseOwner === null
+                    ? sprintf('Timed out waiting for the worker that leased workflow query [%s] to complete it.', $queryName)
+                    : sprintf('Timed out waiting for worker [%s] to complete workflow query [%s].', $leaseOwner, $queryName),
+                'status' => 504,
+            ];
+        }
+
+        return [
+            'reason' => 'query_worker_timeout',
+            'message' => sprintf(
+                'Timed out waiting for workflow query [%s] to complete; last query task status was [%s].',
+                $queryName,
+                $status,
+            ),
+            'status' => 504,
+        ];
     }
 
     /**

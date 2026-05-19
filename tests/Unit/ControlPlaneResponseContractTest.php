@@ -63,6 +63,47 @@ class ControlPlaneResponseContractTest extends TestCase
         }
     }
 
+    public function test_manifest_publishes_query_rejection_contract_diagnostics(): void
+    {
+        $query = ControlPlaneResponseContract::manifest()['operations']['query'];
+
+        foreach ([
+            'instance_not_found',
+            'historical_run_command_rejected',
+            'query_not_found',
+            'rejected_unknown_query',
+            'invalid_query_arguments',
+            'workflow_definition_unavailable',
+            'query_worker_unavailable',
+            'query_worker_incompatible',
+            'query_task_not_claimed',
+            'query_worker_execution_timeout',
+        ] as $reason) {
+            $this->assertContains($reason, $query['rejection_reasons']);
+        }
+
+        foreach ([
+            'run_id',
+            'target_scope',
+            'query_name',
+            'blocked_reason',
+            'validation_errors',
+            'result_envelope',
+        ] as $field) {
+            $this->assertContains($field, ControlPlaneResponseContract::manifest()['projected_fields']);
+        }
+
+        foreach ([
+            'run_id',
+            'target_scope',
+            'query_name',
+            'blocked_reason',
+            'validation_errors',
+        ] as $field) {
+            $this->assertContains($field, $query['rejection_fields']);
+        }
+    }
+
     public function test_attach_propagates_start_rejection_fields_into_the_control_plane_block(): void
     {
         $payload = ControlPlaneResponseContract::attach('start', null, [

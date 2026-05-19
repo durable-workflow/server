@@ -31,6 +31,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 
 class WorkflowQueryTaskBrokerTest extends TestCase
 {
@@ -458,6 +459,79 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->assertTrue($broker->hasWorkerFor('default', $run));
     }
 
+    public function test_external_control_plane_query_reports_no_worker_without_php_fallback(): void
+    {
+        Queue::fake();
+
+        $this->startRemoteWorkflow('wf-query-task-no-worker');
+
+        $query = $this->postJson('/api/workflows/wf-query-task-no-worker/query/status', [
+            'input' => ['summary'],
+        ], $this->apiHeaders());
+
+        $query->assertStatus(409)
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('workflow_id', 'wf-query-task-no-worker')
+            ->assertJsonPath('query_name', 'status')
+            ->assertJsonPath('reason', 'query_worker_unavailable')
+            ->assertJsonPath('message', 'No active worker is registered on task queue [python-queries].')
+            ->assertJsonPath('control_plane.operation', 'query')
+            ->assertJsonPath('control_plane.operation_name', 'status');
+    }
+
+    public function test_external_control_plane_query_reports_incompatible_worker_type(): void
+    {
+        Queue::fake();
+
+        $this->startRemoteWorkflow('wf-query-task-incompatible-type');
+        $this->registerPythonWorker('python-query-wrong-type-worker', 'python-queries', ['python.other']);
+
+        $query = $this->postJson('/api/workflows/wf-query-task-incompatible-type/query/status', [
+            'input' => ['summary'],
+        ], $this->apiHeaders());
+
+        $query->assertStatus(409)
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('workflow_id', 'wf-query-task-incompatible-type')
+            ->assertJsonPath('query_name', 'status')
+            ->assertJsonPath('reason', 'query_worker_incompatible')
+            ->assertJsonPath('message', 'Query-capable workers on task queue [python-queries] do not advertise workflow type [python.queryable].')
+            ->assertJsonPath('control_plane.operation', 'query')
+            ->assertJsonPath('control_plane.operation_name', 'status');
+    }
+
+    public function test_external_control_plane_query_reports_incompatible_worker_fingerprint(): void
+    {
+        Queue::fake();
+
+        $this->startRemoteWorkflow(
+            'wf-query-task-incompatible-fingerprint',
+            workflowDefinitionFingerprint: 'sha256:expected',
+        );
+        $this->registerPythonWorker(
+            'python-query-wrong-fingerprint-worker',
+            'python-queries',
+            ['python.queryable'],
+            workflowDefinitionFingerprints: ['python.queryable' => 'sha256:actual'],
+        );
+
+        $query = $this->postJson('/api/workflows/wf-query-task-incompatible-fingerprint/query/status', [
+            'input' => ['summary'],
+        ], $this->apiHeaders());
+
+        $query->assertStatus(409)
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('workflow_id', 'wf-query-task-incompatible-fingerprint')
+            ->assertJsonPath('query_name', 'status')
+            ->assertJsonPath('reason', 'query_worker_incompatible')
+            ->assertJsonPath(
+                'message',
+                'Query-capable workers on task queue [python-queries] support workflow type [python.queryable], but none advertise the recorded workflow definition fingerprint.',
+            )
+            ->assertJsonPath('control_plane.operation', 'query')
+            ->assertJsonPath('control_plane.operation_name', 'status');
+    }
+
     public function test_query_task_poll_skips_workers_without_explicit_workflow_type(): void
     {
         Queue::fake();
@@ -713,7 +787,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         }
     }
 
-    public function test_control_plane_query_routes_to_python_worker_and_times_out_without_result(): void
+    public function test_control_plane_query_reports_unclaimed_task_timeout_without_result(): void
     {
         Queue::fake();
 
@@ -728,7 +802,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
             ->assertJsonPath('workflow_id', 'wf-query-task-timeout')
             ->assertJsonPath('query_name', 'status')
-            ->assertJsonPath('reason', 'query_worker_timeout')
+            ->assertJsonPath('reason', 'query_task_not_claimed')
+            ->assertJsonPath('message', 'Timed out waiting for a compatible worker to claim workflow query [status] on task queue [python-queries].')
             ->assertJsonPath('control_plane.operation', 'query')
             ->assertJsonPath('control_plane.operation_name', 'status');
 
@@ -741,7 +816,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('task', null);
     }
 
-    public function test_control_plane_query_routes_to_php_worker_and_times_out_without_result(): void
+    public function test_control_plane_query_reports_php_unclaimed_task_timeout_without_result(): void
     {
         Queue::fake();
 
@@ -760,9 +835,106 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
             ->assertJsonPath('workflow_id', 'wf-query-task-php-worker-timeout')
             ->assertJsonPath('query_name', 'status')
-            ->assertJsonPath('reason', 'query_worker_timeout')
+            ->assertJsonPath('reason', 'query_task_not_claimed')
+            ->assertJsonPath('message', 'Timed out waiting for a compatible worker to claim workflow query [status] on task queue [polyglot-php].')
             ->assertJsonPath('control_plane.operation', 'query')
             ->assertJsonPath('control_plane.operation_name', 'status');
+    }
+
+    public function test_control_plane_query_reports_leased_task_execution_timeout_without_result(): void
+    {
+        Queue::fake();
+
+        $this->startRemoteWorkflow('wf-query-task-leased-timeout');
+        $this->registerPythonWorker('python-query-leased-timeout-worker', 'python-queries', ['python.queryable']);
+
+        /** @var LongPollSignalStore $signals */
+        $signals = app(LongPollSignalStore::class);
+        /** @var LongPollWaitSlotStore $waitSlots */
+        $waitSlots = app(LongPollWaitSlotStore::class);
+        $poller = new class($signals, $waitSlots) extends LongPoller
+        {
+            /** @var callable(): void|null */
+            public $afterFirstUnreadyProbe = null;
+
+            private bool $runningAfterProbe = false;
+
+            public function until(
+                callable $probe,
+                callable $ready,
+                ?int $timeoutSeconds = null,
+                ?int $intervalMilliseconds = null,
+                array $wakeChannels = [],
+                ?callable $nextProbeAt = null,
+                bool $reserveWorkerWaitSlot = false,
+                string $waitSlotPool = 'worker',
+            ): mixed {
+                $value = $probe();
+
+                if ($ready($value)) {
+                    return $value;
+                }
+
+                if (! is_callable($this->afterFirstUnreadyProbe) || $this->runningAfterProbe) {
+                    return $value;
+                }
+
+                $this->runningAfterProbe = true;
+
+                try {
+                    ($this->afterFirstUnreadyProbe)();
+                } finally {
+                    $this->runningAfterProbe = false;
+                    $this->afterFirstUnreadyProbe = null;
+                }
+
+                return $probe();
+            }
+        };
+        $broker = new WorkflowQueryTaskBroker(
+            app(ServerPollingCache::class),
+            $poller,
+            $signals,
+            app(ExternalPayloadEnvelopeService::class),
+            app(QueryTaskPollRequestStore::class),
+        );
+        $this->app->instance(WorkflowQueryTaskBroker::class, $broker);
+
+        /** @var WorkerRegistration $worker */
+        $worker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-query-leased-timeout-worker')
+            ->firstOrFail();
+        $leasedTaskId = null;
+
+        $poller->afterFirstUnreadyProbe = function () use ($broker, $worker, &$leasedTaskId): void {
+            $task = $broker->poll('default', $worker);
+
+            $this->assertIsArray($task);
+            $this->assertSame('python-query-leased-timeout-worker', $task['lease_owner'] ?? null);
+
+            $leasedTaskId = $task['query_task_id'] ?? null;
+        };
+
+        $query = $this->postJson('/api/workflows/wf-query-task-leased-timeout/query/status', [
+            'input' => ['summary'],
+        ], $this->apiHeaders());
+
+        $query->assertStatus(504)
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('workflow_id', 'wf-query-task-leased-timeout')
+            ->assertJsonPath('query_name', 'status')
+            ->assertJsonPath('reason', 'query_worker_execution_timeout')
+            ->assertJsonPath('message', 'Timed out waiting for worker [python-query-leased-timeout-worker] to complete workflow query [status].')
+            ->assertJsonPath('control_plane.operation', 'query')
+            ->assertJsonPath('control_plane.operation_name', 'status');
+
+        $this->assertIsString($leasedTaskId);
+
+        $stored = $broker->task($leasedTaskId);
+
+        $this->assertSame('timed_out', $stored['status'] ?? null);
+        $this->assertSame('python-query-leased-timeout-worker', $stored['lease_owner'] ?? null);
     }
 
     public function test_query_result_wait_ignores_exhausted_worker_long_poll_slots(): void
@@ -1003,6 +1175,57 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->assertSame($task['query_task_id'], $poll['query_task_id'] ?? null);
         $this->assertSame('python-query-no-slot-worker', $poll['lease_owner'] ?? null);
         $this->assertSame(0, $poller->pauseCalls);
+    }
+
+    public function test_pending_query_task_interrupts_idle_workflow_task_poll(): void
+    {
+        Queue::fake();
+        config(['server.polling.timeout' => 10]);
+
+        $run = $this->startRemoteWorkflow('wf-query-task-interrupt-workflow-poll');
+        WorkflowTask::query()->where('workflow_run_id', $run->id)->delete();
+        $this->registerPythonWorker('python-query-workflow-interrupt-worker', 'python-queries', ['python.queryable']);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'python-query-workflow-interrupt-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $poll->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'query_task_pending');
+    }
+
+    public function test_pending_query_task_interrupts_idle_activity_task_poll(): void
+    {
+        Queue::fake();
+        config(['server.polling.timeout' => 10]);
+
+        $run = $this->startRemoteWorkflow('wf-query-task-interrupt-activity-poll');
+        WorkflowTask::query()->where('workflow_run_id', $run->id)->delete();
+        $this->registerWorkerWithActivities(
+            'python-query-activity-interrupt-worker',
+            'python-queries',
+            ['python.queryable'],
+            ['python.activity'],
+        );
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+        $poll = $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'python-query-activity-interrupt-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $poll->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'query_task_pending');
     }
 
     public function test_query_task_lease_timeout_is_clamped_beyond_control_plane_wait(): void
@@ -1429,6 +1652,32 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 'workflow_definition_fingerprints' => $workflowDefinitionFingerprints,
                 'supported_activity_types' => [],
                 'capabilities' => $capabilities,
+                'last_heartbeat_at' => now(),
+                'status' => 'active',
+            ],
+        );
+    }
+
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     * @param  list<string>  $supportedActivityTypes
+     */
+    private function registerWorkerWithActivities(
+        string $workerId,
+        string $taskQueue,
+        array $supportedWorkflowTypes,
+        array $supportedActivityTypes,
+    ): void {
+        WorkerRegistration::query()->updateOrCreate(
+            ['worker_id' => $workerId, 'namespace' => 'default'],
+            [
+                'task_queue' => $taskQueue,
+                'runtime' => 'python',
+                'sdk_version' => 'durable-workflow-python/0.2.0',
+                'supported_workflow_types' => $supportedWorkflowTypes,
+                'workflow_definition_fingerprints' => [],
+                'supported_activity_types' => $supportedActivityTypes,
+                'capabilities' => ['query_tasks'],
                 'last_heartbeat_at' => now(),
                 'status' => 'active',
             ],

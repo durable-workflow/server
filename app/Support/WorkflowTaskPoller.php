@@ -32,6 +32,7 @@ final class WorkflowTaskPoller
         private readonly TaskFairnessState $fairnessState,
         private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
         private readonly WorkerPollClaimGate $claimGate,
+        private readonly WorkflowQueryTaskBroker $queryTasks,
     ) {}
 
     /**
@@ -302,7 +303,7 @@ final class WorkflowTaskPoller
             'next_probe_at' => null,
         ];
 
-        $task = $this->longPoller->until(
+        $pollResult = $this->longPoller->until(
             function () use (
                 $request,
                 $namespace,
@@ -329,19 +330,33 @@ final class WorkflowTaskPoller
                 );
                 $nextProbeAt = $resolvedResult['next_probe_at'] ?? null;
 
+                if (($resolvedResult['poll_status'] ?? null) === 'query_task_pending') {
+                    return $resolvedResult;
+                }
+
                 return $resolvedResult['task'] ?? null;
             },
-            static fn (?array $task): bool => is_array($task),
-            wakeChannels: $this->signals->workflowTaskPollChannels($namespace, null, $taskQueue),
+            static fn (?array $result): bool => is_array($result),
+            wakeChannels: [
+                ...$this->signals->workflowTaskPollChannels($namespace, null, $taskQueue),
+                ...$this->signals->queryTaskPollChannels($namespace, $taskQueue),
+            ],
             nextProbeAt: function () use (&$nextProbeAt): mixed {
                 return $nextProbeAt;
             },
             reserveWorkerWaitSlot: true,
         );
 
+        if (($pollResult['poll_status'] ?? null) === 'query_task_pending') {
+            return [
+                'task' => null,
+                'poll_status' => 'query_task_pending',
+            ];
+        }
+
         return [
-            'task' => $task,
-            'poll_status' => $resolvedResult['poll_status'] ?? $this->defaultPollStatus($task),
+            'task' => $pollResult,
+            'poll_status' => $resolvedResult['poll_status'] ?? $this->defaultPollStatus($pollResult),
         ];
     }
 
@@ -420,6 +435,14 @@ final class WorkflowTaskPoller
                     'next_probe_at' => null,
                 ];
             }
+        }
+
+        if ($this->queryTasks->hasPendingTaskForPoller($namespace, $taskQueue, $supportedWorkflowTypes)) {
+            return [
+                'task' => null,
+                'poll_status' => 'query_task_pending',
+                'next_probe_at' => null,
+            ];
         }
 
         return [
