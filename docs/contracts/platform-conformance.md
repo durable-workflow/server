@@ -72,8 +72,9 @@ category emits a warning and does not block.
   required published-artifact install policy, PHP/Python runtime matrix,
   CLI and SDK client paths, replay timing scenarios, terminal-run
   behavior, malformed-payload expectations, Waterline observer
-  comparison, run-record fields, and the coverage gate that keeps a
-  smoke-only subset non-passing.
+  comparison, run-record fields, the coverage gate that keeps a
+  smoke-only subset non-passing, and a result-gate evaluator that
+  rejects incomplete or finding-free non-pass scenario records.
 - Public docs page: <https://durable-workflow.github.io/docs/2.0/compatibility>
 - Normative protocol spec catalog:
   <https://durable-workflow.github.io/docs/2.0/platform-protocol-specs>.

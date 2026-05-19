@@ -8,6 +8,7 @@ use App\Models\WorkflowNamespace;
 use App\Support\CoordinationHealthContract;
 use App\Support\ServerTopology;
 use App\Support\SignalQueryRuntimeContract;
+use App\Support\SignalQueryRuntimeResultGate;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -194,6 +195,14 @@ class ClusterInfoTest extends TestCase
         $this->assertContains(
             'findings_linked_for_non_pass_scenarios',
             $contract['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertSame(
+            SignalQueryRuntimeResultGate::SCHEMA,
+            $contract['result_gate']['schema'],
+        );
+        $this->assertContains(
+            'every_required_scenario_has_one_result',
+            $contract['result_gate']['pass_requires'],
         );
     }
 

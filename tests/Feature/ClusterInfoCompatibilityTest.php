@@ -176,6 +176,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'required_scenarios',
                     'scenario_requirements',
                     'coverage_gate',
+                    'result_gate',
                     'finding_policy',
                 ],
                 'auth_composition_contract',

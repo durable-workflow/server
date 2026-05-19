@@ -230,6 +230,7 @@ final class SignalQueryRuntimeContract
                 'unsupported_public_surface_outcome' => 'non_passing_with_root_cause_finding',
                 'runner_blocked_outcome' => 'non_passing_runner_blocked',
             ],
+            'result_gate' => SignalQueryRuntimeResultGate::spec(),
             'finding_policy' => [
                 'ordering_drift' => 'link_root_cause_finding_against_server',
                 'query_staleness' => 'link_root_cause_finding_against_owning_sdk_or_runtime',
