@@ -188,6 +188,16 @@ class ReplayVerificationContractTest extends TestCase
         $conformance = $manifest['replay_conformance'];
 
         $this->assertSame(
+            'durable-workflow.v2.platform-conformance.runtime-scenarios',
+            $conformance['scenario_manifest']['schema'],
+        );
+        $this->assertSame('history_replay_bundles', $conformance['scenario_manifest']['category']);
+        $this->assertStringContainsString(
+            'replay-runtime-scenarios.json',
+            $conformance['scenario_manifest']['public_path'],
+        );
+
+        $this->assertSame(
             'latest_published_artifacts_at_run_time',
             $conformance['artifact_policy']['version_source'],
         );
@@ -217,9 +227,44 @@ class ReplayVerificationContractTest extends TestCase
     public function test_replay_conformance_matrix_names_full_replay_surface(): void
     {
         $manifest = ReplayVerificationContract::manifest();
-        $matrix = $manifest['replay_conformance']['required_matrix'];
+        $conformance = $manifest['replay_conformance'];
+        $matrix = $conformance['required_matrix'];
 
         $this->assertSame('each_required_runtime', $matrix['runtime_scope']);
+
+        foreach ([
+            'published_artifact_install_only',
+            'python_completed_history_activity_replay',
+            'python_completed_history_signal_update_replay',
+            'python_completed_history_wait_condition_replay',
+            'python_completed_history_version_marker_replay',
+            'python_completed_history_saga_compensation_replay',
+            'php_completed_history_activity_replay',
+            'php_completed_history_signal_update_replay',
+            'php_completed_history_wait_condition_replay',
+            'php_completed_history_version_marker_replay',
+            'php_completed_history_saga_compensation_replay',
+            'python_worker_restart_completed_query',
+            'python_worker_restart_activity_state',
+            'python_worker_restart_signal_update_state',
+            'python_worker_restart_wait_condition_state',
+            'python_worker_restart_version_marker_state',
+            'python_worker_restart_saga_compensation_state',
+            'php_worker_restart_completed_query',
+            'php_worker_restart_activity_state',
+            'php_worker_restart_signal_update_state',
+            'php_worker_restart_wait_condition_state',
+            'php_worker_restart_version_marker_state',
+            'php_worker_restart_saga_compensation_state',
+            'python_code_divergence_refusal',
+            'php_code_divergence_refusal',
+            'server_history_mutation_refusal',
+            'malformed_history_refusal',
+            'python_in_flight_signal_restart_timing',
+            'php_in_flight_signal_restart_timing',
+        ] as $scenario) {
+            $this->assertContains($scenario, $conformance['required_scenarios']);
+        }
 
         foreach ([
             'activity',

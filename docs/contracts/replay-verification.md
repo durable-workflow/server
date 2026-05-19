@@ -33,8 +33,9 @@ The authoritative machine-readable contract is published from
 - `golden_history` — the cross-runtime fixture schema and required
   workflow families.
 - `replay_conformance` — the full conformance coverage matrix,
-  published-artifact policy, required runtime axes, diagnostic
-  requirements, and pass gate for deterministic replay.
+  public runtime-scenario manifest pointer, published-artifact policy,
+  required scenario IDs, required runtime axes, diagnostic requirements,
+  and pass gate for deterministic replay.
 
 ## Bundle envelope
 
@@ -208,6 +209,19 @@ Every run record must carry artifact versions, start and finish
 timestamps, an overall outcome, scenario results, findings, and finding
 links. The required runtime axis is `workflow-php` and `sdk-python`; a
 passing run covers both.
+
+The machine-readable `required_scenarios` list mirrors the public
+scenario manifest at
+`https://durable-workflow.github.io/platform-conformance/replay-runtime-scenarios.json`.
+Harnesses must include a result for every listed scenario using one of
+the statuses published in `replay_conformance.scenario_statuses`:
+`pass`, `fail`, `unsupported`, `not_covered`, or `runner_blocked`.
+`pass` and `fail` describe product behavior that was actually exercised,
+`unsupported` marks a missing public surface, `not_covered` marks a
+required scenario the run did not execute, and `runner_blocked` marks a
+harness or environment blocker. Omitted scenarios are treated as
+`not_covered` for gate evaluation and keep the replay conformance
+outcome non-passing.
 
 For each required runtime, completed-history replay must cover these
 families:

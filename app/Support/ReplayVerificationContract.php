@@ -263,6 +263,13 @@ final class ReplayVerificationContract
                 ],
             ],
             'replay_conformance' => [
+                'scenario_manifest' => [
+                    'schema' => 'durable-workflow.v2.platform-conformance.runtime-scenarios',
+                    'category' => 'history_replay_bundles',
+                    'public_path' => 'https://durable-workflow.github.io/platform-conformance/replay-runtime-scenarios.json',
+                    'source_repository' => 'durable-workflow.github.io',
+                    'source_path' => 'static/platform-conformance/replay-runtime-scenarios.json',
+                ],
                 'artifact_policy' => [
                     'version_source' => 'latest_published_artifacts_at_run_time',
                     'install_channels' => [
@@ -296,6 +303,7 @@ final class ReplayVerificationContract
                     'not_covered',
                     'runner_blocked',
                 ],
+                'required_scenarios' => self::replayRequiredScenarios(),
                 'required_matrix' => [
                     'runtime_scope' => 'each_required_runtime',
                     'completed_history_families' => [
@@ -368,6 +376,44 @@ final class ReplayVerificationContract
                     'unsupported_public_surface' => 'link_root_cause_finding_against_surface_owner',
                 ],
             ],
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function replayRequiredScenarios(): array
+    {
+        return [
+            'published_artifact_install_only',
+            'python_completed_history_activity_replay',
+            'python_completed_history_signal_update_replay',
+            'python_completed_history_wait_condition_replay',
+            'python_completed_history_version_marker_replay',
+            'python_completed_history_saga_compensation_replay',
+            'php_completed_history_activity_replay',
+            'php_completed_history_signal_update_replay',
+            'php_completed_history_wait_condition_replay',
+            'php_completed_history_version_marker_replay',
+            'php_completed_history_saga_compensation_replay',
+            'python_worker_restart_completed_query',
+            'python_worker_restart_activity_state',
+            'python_worker_restart_signal_update_state',
+            'python_worker_restart_wait_condition_state',
+            'python_worker_restart_version_marker_state',
+            'python_worker_restart_saga_compensation_state',
+            'php_worker_restart_completed_query',
+            'php_worker_restart_activity_state',
+            'php_worker_restart_signal_update_state',
+            'php_worker_restart_wait_condition_state',
+            'php_worker_restart_version_marker_state',
+            'php_worker_restart_saga_compensation_state',
+            'python_code_divergence_refusal',
+            'php_code_divergence_refusal',
+            'server_history_mutation_refusal',
+            'malformed_history_refusal',
+            'python_in_flight_signal_restart_timing',
+            'php_in_flight_signal_restart_timing',
         ];
     }
 }
