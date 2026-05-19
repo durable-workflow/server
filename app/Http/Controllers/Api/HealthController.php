@@ -15,6 +15,7 @@ use App\Support\NexusContract;
 use App\Support\ReplayVerificationContract;
 use App\Support\ServerReadiness;
 use App\Support\ServerTopology;
+use App\Support\SignalQueryRuntimeContract;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowStreamsContract;
@@ -158,6 +159,7 @@ class HealthController
             'surface_stability_contract' => SurfaceStabilityContract::manifest(),
             'platform_protocol_specs' => PlatformProtocolSpecs::manifest(),
             'platform_conformance_suite' => PlatformConformanceSuite::manifest(),
+            'signal_query_runtime_contract' => SignalQueryRuntimeContract::manifest(),
             'auth_composition_contract' => AuthCompositionContract::manifest(),
             'control_plane' => ControlPlaneProtocol::info(),
             'worker_protocol' => WorkerProtocol::info(),

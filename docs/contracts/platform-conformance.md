@@ -27,7 +27,7 @@ the source of truth for three categories:
 | Category | Source path | Status |
 | --- | --- | --- |
 | `worker_task_lifecycle` (server side) | `tests/Fixtures/` plus the per-route examples in `docs/contracts/external-task-input.md` and `docs/contracts/external-task-result.md` | stable |
-| `signal_query_runtime_contract` (server side) | `tests/Feature/WorkflowControlPlaneTest.php`, `tests/Feature/WorkflowQueryTaskBrokerTest.php`, plus the signal/query control-plane routes documented in the protocol catalog | stable |
+| `signal_query_runtime_contract` (server side) | `GET /api/cluster/info`'s `signal_query_runtime_contract` manifest, `tests/Feature/WorkflowControlPlaneTest.php`, `tests/Feature/WorkflowQueryTaskBrokerTest.php`, plus the signal/query control-plane routes documented in the protocol catalog | stable |
 | `failure_repair_actionability` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, plus the artifact objects published from `GET /api/cluster/info`'s `worker_protocol.external_task_result_contract.fixtures` | stable |
 
 The other categories the server is graded against
@@ -65,6 +65,14 @@ category emits a warning and does not block.
   `Workflow\V2\Support\PlatformConformanceSuite`. Third-party harnesses
   that target this server can read the suite manifest live without
   vendoring the static mirror.
+- Signals/queries runtime contract: `GET /api/cluster/info` re-exports
+  `signal_query_runtime_contract`, schema
+  `durable-workflow.v2.signal-query-runtime.contract`. It names the
+  required published-artifact install policy, PHP/Python runtime matrix,
+  CLI and SDK client paths, replay timing scenarios, terminal-run
+  behavior, malformed-payload expectations, Waterline observer
+  comparison, run-record fields, and the coverage gate that keeps a
+  smoke-only subset non-passing.
 - Public docs page: <https://durable-workflow.github.io/docs/2.0/compatibility>
 - Normative protocol spec catalog:
   <https://durable-workflow.github.io/docs/2.0/platform-protocol-specs>.

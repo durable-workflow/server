@@ -7,6 +7,7 @@ use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\CoordinationHealthContract;
 use App\Support\ServerTopology;
+use App\Support\SignalQueryRuntimeContract;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -168,6 +169,32 @@ class ClusterInfoTest extends TestCase
         $this->assertContains('invalid_query_arguments', $queryContract['rejection_reasons']);
         $this->assertContains('query_worker_unavailable', $queryContract['rejection_reasons']);
         $this->assertContains('query_worker_execution_timeout', $queryContract['rejection_reasons']);
+    }
+
+    public function test_it_publishes_the_signal_query_runtime_conformance_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('signal_query_runtime_contract.schema', SignalQueryRuntimeContract::SCHEMA)
+            ->assertJsonPath('signal_query_runtime_contract.version', SignalQueryRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'signal_query_runtime_contract.fixture_category',
+                'signal_query_runtime_contract',
+            )
+            ->assertJsonPath(
+                'signal_query_runtime_contract.coverage_gate.smoke_subset_outcome',
+                'non_passing',
+            );
+
+        $contract = $response->json('signal_query_runtime_contract');
+        $this->assertIsArray($contract);
+        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
+        $this->assertContains('waterline_operator_visibility', $contract['required_scenarios']);
+        $this->assertContains(
+            'findings_linked_for_non_pass_scenarios',
+            $contract['coverage_gate']['passing_outcome_requires'],
+        );
     }
 
     public function test_it_publishes_external_task_input_contract_manifest(): void

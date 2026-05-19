@@ -8,6 +8,7 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
 use App\Support\CoordinationHealthContract;
 use App\Support\ServerTopology;
+use App\Support\SignalQueryRuntimeContract;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -161,6 +162,22 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'harness_contract',
                     'release_gates',
                 ],
+                'signal_query_runtime_contract' => [
+                    'schema',
+                    'version',
+                    'result_schema',
+                    'result_version',
+                    'fixture_category',
+                    'platform_conformance_suite_authority',
+                    'artifact_policy',
+                    'scenario_statuses',
+                    'topology',
+                    'required_matrix',
+                    'required_scenarios',
+                    'scenario_requirements',
+                    'coverage_gate',
+                    'finding_policy',
+                ],
                 'auth_composition_contract',
                 'sdk_neutrality_contract' => [
                     'schema',
@@ -213,6 +230,12 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath(
                 'platform_conformance_suite.surface_stability_authority',
                 SurfaceStabilityContract::SCHEMA,
+            )
+            ->assertJsonPath('signal_query_runtime_contract.schema', SignalQueryRuntimeContract::SCHEMA)
+            ->assertJsonPath('signal_query_runtime_contract.version', SignalQueryRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'signal_query_runtime_contract.platform_conformance_suite_authority',
+                PlatformConformanceSuite::SCHEMA,
             )
             ->assertJsonPath('sdk_neutrality_contract.schema', SdkNeutralityContract::SCHEMA)
             ->assertJsonPath('sdk_neutrality_contract.version', SdkNeutralityContract::VERSION)
