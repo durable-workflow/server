@@ -2,7 +2,8 @@
 
 The standalone `durable-workflow/server` participates in the platform
 conformance suite specified in
-[`workflow/docs/architecture/platform-conformance-suite.md`](https://github.com/durable-workflow/workflow/blob/v2/docs/architecture/platform-conformance-suite.md)
+the public
+[Platform Conformance Suite](https://durable-workflow.github.io/docs/2.0/platform-conformance)
 and mirrored by `Workflow\V2\Support\PlatformConformanceSuite`. This
 document is the per-repo claim: it lists the conformance targets the
 server claims, the fixture sources it serves, and the release gate that
@@ -27,7 +28,7 @@ the source of truth for three categories:
 | Category | Source path | Status |
 | --- | --- | --- |
 | `worker_task_lifecycle` (server side) | `tests/Fixtures/` plus the per-route examples in `docs/contracts/external-task-input.md` and `docs/contracts/external-task-result.md` | stable |
-| `signal_query_runtime_contract` (server side) | `GET /api/cluster/info`'s `signal_query_runtime_contract` manifest, `tests/Feature/WorkflowControlPlaneTest.php`, `tests/Feature/WorkflowQueryTaskBrokerTest.php`, plus the signal/query control-plane routes documented in the protocol catalog | stable |
+| `signal_query_runtime_contract` (server side) | `GET /api/cluster/info`'s `signal_query_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/signal-query-runtime-scenarios.json`, plus the signal/query control-plane routes documented in the protocol catalog | stable |
 | `failure_repair_actionability` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, plus the artifact objects published from `GET /api/cluster/info`'s `worker_protocol.external_task_result_contract.fixtures` | stable |
 
 The other categories the server is graded against
@@ -54,7 +55,7 @@ category emits a warning and does not block.
 
 ## Cross-references
 
-- Authority spec: `workflow/docs/architecture/platform-conformance-suite.md`
+- Authority spec: <https://durable-workflow.github.io/docs/2.0/platform-conformance>
 - Authority manifest class: `Workflow\V2\Support\PlatformConformanceSuite`
 - Surface stability authority: `Workflow\V2\Support\SurfaceStabilityContract`
   re-exported by this server from `GET /api/cluster/info` under
