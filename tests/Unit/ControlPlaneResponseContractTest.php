@@ -70,6 +70,7 @@ class ControlPlaneResponseContractTest extends TestCase
         foreach ([
             'instance_not_found',
             'historical_run_command_rejected',
+            'run_not_active',
             'query_not_found',
             'rejected_unknown_query',
             'invalid_query_arguments',
@@ -86,6 +87,7 @@ class ControlPlaneResponseContractTest extends TestCase
             'run_id',
             'target_scope',
             'query_name',
+            'run_status',
             'blocked_reason',
             'validation_errors',
             'result_envelope',
@@ -97,6 +99,8 @@ class ControlPlaneResponseContractTest extends TestCase
             'run_id',
             'target_scope',
             'query_name',
+            'run_status',
+            'is_terminal',
             'blocked_reason',
             'validation_errors',
         ] as $field) {

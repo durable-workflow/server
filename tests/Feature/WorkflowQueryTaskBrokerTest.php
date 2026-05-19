@@ -29,6 +29,7 @@ use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -143,6 +144,31 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 (string) ($stored['result_envelope']['blob'] ?? ''),
             ),
         );
+    }
+
+    public function test_query_rejects_terminal_run_before_enqueuing_worker_task(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-terminal');
+        $run->forceFill([
+            'status' => RunStatus::Completed,
+            'closed_at' => now(),
+        ])->save();
+        $this->registerPythonWorker('python-query-terminal-worker', 'python-queries', ['python.queryable']);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $result = $broker->query('default', $run->refresh(), 'status', $this->queryArguments());
+
+        $this->assertFalse($result['success']);
+        $this->assertSame('wf-query-task-terminal', $result['workflow_id']);
+        $this->assertSame($run->id, $result['run_id']);
+        $this->assertSame('status', $result['query_name']);
+        $this->assertSame('run_not_active', $result['reason']);
+        $this->assertSame('completed', $result['run_status']);
+        $this->assertTrue($result['is_terminal']);
+        $this->assertSame(409, $result['status']);
     }
 
     public function test_worker_can_complete_worker_routed_query_task_with_scalar_zero_result(): void

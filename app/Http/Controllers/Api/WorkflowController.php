@@ -528,6 +528,16 @@ class WorkflowController
         ]);
 
         $run = NamespaceWorkflowScope::currentRun($namespace, $workflowId);
+
+        if ($run instanceof WorkflowRun && $run->status->isTerminal()) {
+            return $this->resultMapper->query(
+                $workflowId,
+                $queryName,
+                $this->terminalRunQueryFailure($run, $queryName),
+                $this->controlPlaneRunId($request),
+            );
+        }
+
         $externalStorage = $this->externalPayloadStorage->driverFor($namespace);
         $queryEnvelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $externalStorage);
 
@@ -573,6 +583,32 @@ class WorkflowController
         return $workflowClass !== ''
             && class_exists($workflowClass)
             && is_subclass_of($workflowClass, Workflow::class);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function terminalRunQueryFailure(WorkflowRun $run, string $queryName): array
+    {
+        return [
+            'success' => false,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_id' => $run->workflow_instance_id,
+            'run_id' => $run->id,
+            'target_scope' => 'instance',
+            'query_name' => $queryName,
+            'result' => null,
+            'reason' => 'run_not_active',
+            'message' => sprintf(
+                'Workflow query [%s] cannot execute because run [%s] is terminal with status [%s].',
+                $queryName,
+                $run->id,
+                $run->status->value,
+            ),
+            'run_status' => $run->status->value,
+            'is_terminal' => true,
+            'status' => 409,
+        ];
     }
 
     public function update(Request $request, string $workflowId, string $updateName): JsonResponse

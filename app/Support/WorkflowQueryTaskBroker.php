@@ -43,6 +43,25 @@ final class WorkflowQueryTaskBroker
         string $queryName,
         array $queryArguments,
     ): array {
+        if ($run->status->isTerminal()) {
+            return $this->queryFailed(
+                $run,
+                $queryName,
+                'run_not_active',
+                sprintf(
+                    'Workflow query [%s] cannot execute because run [%s] is terminal with status [%s].',
+                    $queryName,
+                    $run->id,
+                    $run->status->value,
+                ),
+                409,
+                extra: [
+                    'run_status' => $run->status->value,
+                    'is_terminal' => true,
+                ],
+            );
+        }
+
         $route = $this->queryRoute($namespace, $run);
 
         if (! $route['servable']) {
@@ -1296,8 +1315,9 @@ final class WorkflowQueryTaskBroker
         string $message,
         int $status,
         array $validationErrors = [],
+        array $extra = [],
     ): array {
-        $payload = [
+        $payload = array_merge([
             'success' => false,
             'workflow_instance_id' => $run->workflow_instance_id,
             'workflow_id' => $run->workflow_instance_id,
@@ -1308,7 +1328,7 @@ final class WorkflowQueryTaskBroker
             'reason' => $reason,
             'message' => $message,
             'status' => $status,
-        ];
+        ], $extra);
 
         if ($validationErrors !== []) {
             $payload['validation_errors'] = $validationErrors;

@@ -380,6 +380,77 @@ class WorkflowControlPlaneTest extends TestCase
             ->assertJsonPath('reason', 'instance_not_found');
     }
 
+    public function test_completed_run_rejects_signal_and_query_with_typed_terminal_state(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-terminal-signal-query',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-terminal-signal-query/signal/advance', [
+                'input' => ['Ada'],
+            ])
+            ->assertAccepted();
+
+        $this->runReadyWorkflowTask($runId);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-terminal-signal-query/signal/finish')
+            ->assertAccepted();
+
+        $this->runReadyWorkflowTask($runId);
+
+        $this->assertSame(
+            RunStatus::Completed,
+            WorkflowRun::query()->findOrFail($runId)->status,
+        );
+
+        $signal = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-terminal-signal-query/signal/advance', [
+                'input' => ['Grace'],
+            ]);
+
+        $signal->assertStatus(409)
+            ->assertJsonPath('workflow_id', 'wf-terminal-signal-query')
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('signal_name', 'advance')
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('outcome', 'rejected_not_active')
+            ->assertJsonPath('reason', 'run_not_active')
+            ->assertJsonPath('rejection_reason', 'run_not_active')
+            ->assertJsonPath('control_plane.operation', 'signal')
+            ->assertJsonPath('control_plane.reason', 'run_not_active');
+
+        $query = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-terminal-signal-query/query/currentState');
+
+        $query->assertStatus(409)
+            ->assertJsonPath('workflow_id', 'wf-terminal-signal-query')
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('query_name', 'currentState')
+            ->assertJsonPath('result', null)
+            ->assertJsonPath('reason', 'run_not_active')
+            ->assertJsonPath('run_status', 'completed')
+            ->assertJsonPath('is_terminal', true)
+            ->assertJsonPath('control_plane.operation', 'query')
+            ->assertJsonPath('control_plane.reason', 'run_not_active')
+            ->assertJsonPath('control_plane.run_status', 'completed')
+            ->assertJsonPath('control_plane.is_terminal', true);
+    }
+
     public function test_start_rejects_cross_namespace_workflow_id_without_leaking_the_owning_namespace(): void
     {
         Queue::fake();
