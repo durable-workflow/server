@@ -32,6 +32,9 @@ The authoritative machine-readable contract is published from
   implies.
 - `golden_history` — the cross-runtime fixture schema and required
   workflow families.
+- `replay_conformance` — the full conformance coverage matrix,
+  published-artifact policy, required runtime axes, diagnostic
+  requirements, and pass gate for deterministic replay.
 
 ## Bundle envelope
 
@@ -190,3 +193,60 @@ which emits the same `durable-workflow.v2.replay-simulation.report`
 shape as the PHP `workflow:v2:replay-simulate` command. A multi-runtime
 rollout pipeline can therefore parse one schema regardless of which
 runtime produced the report.
+
+## Replay conformance matrix
+
+The `replay_conformance` block names the minimum surface a conformance
+run must cover before deterministic replay can count as passing. The run
+uses only published install channels resolved at run time: the server
+Docker image, the official `dw` install script, the Composer
+`durable-workflow/workflow` package, and the PyPI `durable-workflow`
+package. Local product source checkouts are forbidden as artifacts under
+test.
+
+Every run record must carry artifact versions, start and finish
+timestamps, an overall outcome, scenario results, findings, and finding
+links. The required runtime axis is `workflow-php` and `sdk-python`; a
+passing run covers both.
+
+For each required runtime, completed-history replay must cover these
+families:
+
+- `activity`
+- `signal-update`
+- `wait-condition`
+- `version-marker`
+- `saga-compensation`
+
+Worker-restart replay must cover completed-history query replay plus
+activity, signal/update, wait-condition, version-marker, and
+saga-compensation state after worker restart. The live timing surface
+must also cover `in_flight_signal_restart_timing`, where a signal
+received around worker restart and history reload leads to the same next
+decision as the original execution.
+
+Adversarial replay must cover:
+
+- `code_divergence_refusal` — changed workflow code refuses with a
+  non-determinism error that names the diverging workflow sequence,
+  expected shape, recorded event types, and message.
+- `server_history_mutation_refusal` — mutated server history is refused
+  as an invalid or drifted bundle with integrity and replay-diff
+  diagnostics.
+- `malformed_history_refusal` — malformed history is refused as invalid
+  or failed with an integrity rule, path, and message.
+
+A conformance run may report scenario status as `pass`, `fail`,
+`unsupported`, `not_covered`, or `runner_blocked`. The coverage gate can
+report a passing outcome only when every required runtime is present,
+every required matrix cell passes, every refusal is actionable, the
+artifact versions match the latest published set, and no local product
+source checkout is used. Any uncovered required scenario remains
+non-passing so a smoke subset cannot appear green as full deterministic
+replay coverage.
+
+Findings are routed by root cause. Nondeterminism belongs to the
+owning runtime or SDK; silent history-mutation acceptance belongs to the
+server; unclear refusal messages belong to the emitting surface; runtime
+asymmetry belongs to the asymmetric runtime; and unsupported public
+surfaces belong to the surface owner.

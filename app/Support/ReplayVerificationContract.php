@@ -262,6 +262,112 @@ final class ReplayVerificationContract
                     'sdk-python',
                 ],
             ],
+            'replay_conformance' => [
+                'artifact_policy' => [
+                    'version_source' => 'latest_published_artifacts_at_run_time',
+                    'install_channels' => [
+                        'server' => 'docker image durableworkflow/server:<latest>',
+                        'cli' => 'official dw install script pinned to its latest release tag',
+                        'workflow-php' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest>',
+                        'sdk-python' => 'PyPI package durable-workflow==<latest>',
+                    ],
+                    'forbidden_sources' => [
+                        'local_product_source_checkout',
+                        'workspace_repo_as_artifact_under_test',
+                    ],
+                    'required_run_record_fields' => [
+                        'artifact_versions',
+                        'started_at',
+                        'finished_at',
+                        'outcome',
+                        'scenario_results',
+                        'findings',
+                        'finding_links',
+                    ],
+                ],
+                'required_runtimes' => [
+                    'workflow-php',
+                    'sdk-python',
+                ],
+                'scenario_statuses' => [
+                    'pass',
+                    'fail',
+                    'unsupported',
+                    'not_covered',
+                    'runner_blocked',
+                ],
+                'required_matrix' => [
+                    'runtime_scope' => 'each_required_runtime',
+                    'completed_history_families' => [
+                        'activity',
+                        'signal-update',
+                        'wait-condition',
+                        'version-marker',
+                        'saga-compensation',
+                    ],
+                    'restart_scenarios' => [
+                        'completed_history_query_after_worker_restart',
+                        'activity_state_query_after_worker_restart',
+                        'signal_update_state_query_after_worker_restart',
+                        'wait_condition_state_after_worker_restart',
+                        'version_marker_state_after_worker_restart',
+                        'saga_compensation_state_after_worker_restart',
+                    ],
+                    'adversarial_scenarios' => [
+                        'code_divergence_refusal',
+                        'server_history_mutation_refusal',
+                        'malformed_history_refusal',
+                        'in_flight_signal_restart_timing',
+                    ],
+                ],
+                'diagnostic_requirements' => [
+                    'code_divergence_refusal' => [
+                        'required_outcome' => 'non_determinism_error',
+                        'required_fields' => [
+                            'workflow_sequence',
+                            'expected_shape',
+                            'recorded_event_types',
+                            'message',
+                        ],
+                    ],
+                    'server_history_mutation_refusal' => [
+                        'required_outcome' => 'bundle_invalid_or_drifted',
+                        'required_fields' => [
+                            'integrity.rule',
+                            'integrity.path',
+                            'replay_diff.reason',
+                            'message',
+                        ],
+                    ],
+                    'malformed_history_refusal' => [
+                        'required_outcome' => 'bundle_invalid_or_failed',
+                        'required_fields' => [
+                            'integrity.rule',
+                            'integrity.path',
+                            'message',
+                        ],
+                    ],
+                ],
+                'coverage_gate' => [
+                    'passing_outcome_requires' => [
+                        'all_required_runtimes_present',
+                        'all_required_matrix_cells_pass',
+                        'all_refusals_are_actionable',
+                        'artifact_versions_match_latest_published_set',
+                        'no_local_product_source_artifacts',
+                    ],
+                    'uncovered_required_scenario_outcome' => 'non_passing',
+                    'unsupported_public_surface_outcome' => 'non_passing_with_root_cause_finding',
+                    'runner_blocked_outcome' => 'non_passing_runner_blocked',
+                ],
+                'finding_policy' => [
+                    'nondeterminism' => 'link_root_cause_finding_against_owning_runtime_or_sdk',
+                    'silent_history_mutation_acceptance' => 'link_root_cause_finding_against_server',
+                    'unclear_refusal_message' => 'link_root_cause_finding_against_emitting_surface',
+                    'runtime_asymmetry' => 'link_root_cause_finding_against_asymmetric_runtime',
+                    'unsupported_public_surface' => 'link_root_cause_finding_against_surface_owner',
+                ],
+            ],
         ];
     }
 }

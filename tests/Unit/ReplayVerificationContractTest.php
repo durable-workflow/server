@@ -181,4 +181,126 @@ class ReplayVerificationContractTest extends TestCase
         $this->assertContains('workflow-php', $manifest['golden_history']['official_runtimes']);
         $this->assertContains('sdk-python', $manifest['golden_history']['official_runtimes']);
     }
+
+    public function test_replay_conformance_requires_published_artifacts_and_both_runtimes(): void
+    {
+        $manifest = ReplayVerificationContract::manifest();
+        $conformance = $manifest['replay_conformance'];
+
+        $this->assertSame(
+            'latest_published_artifacts_at_run_time',
+            $conformance['artifact_policy']['version_source'],
+        );
+        $this->assertArrayHasKey('server', $conformance['artifact_policy']['install_channels']);
+        $this->assertArrayHasKey('workflow-php', $conformance['artifact_policy']['install_channels']);
+        $this->assertArrayHasKey('sdk-python', $conformance['artifact_policy']['install_channels']);
+        $this->assertContains(
+            'local_product_source_checkout',
+            $conformance['artifact_policy']['forbidden_sources'],
+        );
+
+        $this->assertSame(['workflow-php', 'sdk-python'], $conformance['required_runtimes']);
+
+        foreach ([
+            'artifact_versions',
+            'started_at',
+            'finished_at',
+            'outcome',
+            'scenario_results',
+            'findings',
+            'finding_links',
+        ] as $field) {
+            $this->assertContains($field, $conformance['artifact_policy']['required_run_record_fields']);
+        }
+    }
+
+    public function test_replay_conformance_matrix_names_full_replay_surface(): void
+    {
+        $manifest = ReplayVerificationContract::manifest();
+        $matrix = $manifest['replay_conformance']['required_matrix'];
+
+        $this->assertSame('each_required_runtime', $matrix['runtime_scope']);
+
+        foreach ([
+            'activity',
+            'signal-update',
+            'wait-condition',
+            'version-marker',
+            'saga-compensation',
+        ] as $family) {
+            $this->assertContains($family, $matrix['completed_history_families']);
+        }
+
+        foreach ([
+            'completed_history_query_after_worker_restart',
+            'activity_state_query_after_worker_restart',
+            'signal_update_state_query_after_worker_restart',
+            'wait_condition_state_after_worker_restart',
+            'version_marker_state_after_worker_restart',
+            'saga_compensation_state_after_worker_restart',
+        ] as $scenario) {
+            $this->assertContains($scenario, $matrix['restart_scenarios']);
+        }
+
+        foreach ([
+            'code_divergence_refusal',
+            'server_history_mutation_refusal',
+            'malformed_history_refusal',
+            'in_flight_signal_restart_timing',
+        ] as $scenario) {
+            $this->assertContains($scenario, $matrix['adversarial_scenarios']);
+        }
+    }
+
+    public function test_replay_conformance_keeps_uncovered_required_surface_non_passing(): void
+    {
+        $manifest = ReplayVerificationContract::manifest();
+        $conformance = $manifest['replay_conformance'];
+
+        $this->assertContains('not_covered', $conformance['scenario_statuses']);
+        $this->assertSame(
+            'non_passing',
+            $conformance['coverage_gate']['uncovered_required_scenario_outcome'],
+        );
+        $this->assertContains(
+            'all_required_matrix_cells_pass',
+            $conformance['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertContains(
+            'all_refusals_are_actionable',
+            $conformance['coverage_gate']['passing_outcome_requires'],
+        );
+
+        foreach ([
+            'nondeterminism',
+            'silent_history_mutation_acceptance',
+            'unclear_refusal_message',
+            'runtime_asymmetry',
+            'unsupported_public_surface',
+        ] as $findingType) {
+            $this->assertArrayHasKey($findingType, $conformance['finding_policy']);
+        }
+    }
+
+    public function test_replay_conformance_refusals_require_actionable_diagnostics(): void
+    {
+        $manifest = ReplayVerificationContract::manifest();
+        $diagnostics = $manifest['replay_conformance']['diagnostic_requirements'];
+
+        $this->assertSame(
+            'non_determinism_error',
+            $diagnostics['code_divergence_refusal']['required_outcome'],
+        );
+        foreach (['workflow_sequence', 'expected_shape', 'recorded_event_types', 'message'] as $field) {
+            $this->assertContains($field, $diagnostics['code_divergence_refusal']['required_fields']);
+        }
+
+        $this->assertSame(
+            'bundle_invalid_or_drifted',
+            $diagnostics['server_history_mutation_refusal']['required_outcome'],
+        );
+        foreach (['integrity.rule', 'integrity.path', 'replay_diff.reason', 'message'] as $field) {
+            $this->assertContains($field, $diagnostics['server_history_mutation_refusal']['required_fields']);
+        }
+    }
 }
