@@ -19,6 +19,8 @@ use function Workflow\V2\signal;
 #[Signal('finish')]
 class InteractiveCommandWorkflow extends Workflow
 {
+    private static int $queryProbeInvocations = 0;
+
     private string $stage = 'booting';
 
     private ?string $name = null;
@@ -74,6 +76,25 @@ class InteractiveCommandWorkflow extends Workflow
             $this->events,
             static fn (string $event): bool => str_starts_with($event, $prefix),
         ));
+    }
+
+    #[QueryMethod('mutating-probe')]
+    public function mutatingProbe(string $prefix): array
+    {
+        self::$queryProbeInvocations++;
+        $this->events[] = sprintf('query:%s', $prefix);
+
+        return $this->currentState();
+    }
+
+    public static function resetQueryProbeInvocations(): void
+    {
+        self::$queryProbeInvocations = 0;
+    }
+
+    public static function queryProbeInvocations(): int
+    {
+        return self::$queryProbeInvocations;
     }
 
     #[UpdateMethod]

@@ -307,6 +307,73 @@ class WorkflowControlPlaneTest extends TestCase
         );
     }
 
+    public function test_malformed_typed_signal_payload_is_rejected_before_handler_mutates_state(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-invalid-signal-payload',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+        $this->runReadyWorkflowTask($runId);
+
+        $invalidSignal = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-invalid-signal-payload/signal/advance', [
+                'input' => ['name' => 123],
+            ]);
+
+        $invalidSignal->assertStatus(422)
+            ->assertJsonPath('workflow_id', 'wf-invalid-signal-payload')
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('signal_name', 'advance')
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('outcome', 'rejected_invalid_arguments')
+            ->assertJsonPath('reason', 'invalid_signal_arguments')
+            ->assertJsonPath('rejection_reason', 'invalid_signal_arguments')
+            ->assertJsonPath('control_plane.operation', 'signal')
+            ->assertJsonPath('control_plane.reason', 'invalid_signal_arguments')
+            ->assertJsonPath('validation_errors.name.0', 'The name argument must be of type string.');
+
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $runId,
+            'event_type' => HistoryEventType::SignalReceived->value,
+        ]);
+
+        $state = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-invalid-signal-payload/query/currentState');
+
+        $state->assertOk()
+            ->assertJsonPath('result.stage', 'waiting-for-advance')
+            ->assertJsonPath('result.name', null)
+            ->assertJsonPath('result.events.0', 'started');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-invalid-signal-payload/signal/advance', [
+                'input' => ['Ada'],
+            ])
+            ->assertAccepted();
+
+        $this->runReadyWorkflowTask($runId);
+
+        $stateAfterValidSignal = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-invalid-signal-payload/query/currentState');
+
+        $stateAfterValidSignal->assertOk()
+            ->assertJsonPath('result.stage', 'waiting-for-finish')
+            ->assertJsonPath('result.name', 'Ada')
+            ->assertJsonPath('result.events.0', 'started')
+            ->assertJsonPath('result.events.1', 'signal:Ada')
+            ->assertJsonMissingPath('result.events.2');
+    }
+
     public function test_missing_workflow_signal_response_includes_signal_rejection_contract(): void
     {
         Queue::fake();
@@ -332,6 +399,7 @@ class WorkflowControlPlaneTest extends TestCase
     public function test_it_returns_query_validation_errors_and_scopes_control_plane_commands_by_namespace(): void
     {
         Queue::fake();
+        InteractiveCommandWorkflow::resetQueryProbeInvocations();
 
         $this->configureWorkflowTypes();
         $this->createNamespace('default', 'Default namespace');
@@ -360,6 +428,20 @@ class WorkflowControlPlaneTest extends TestCase
             ->assertJsonPath('control_plane.validation_errors.prefix.0', 'The prefix argument is required.')
             ->assertJsonPath('validation_errors.prefix.0', 'The prefix argument is required.')
             ->assertJsonPath('validation_errors.extra.0', 'Unknown argument [extra].');
+
+        $invalidMutatingQuery = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-query-validation/query/mutating-probe', [
+                'input' => ['extra' => 'start'],
+            ]);
+
+        $invalidMutatingQuery->assertStatus(422)
+            ->assertJsonPath('query_name', 'mutating-probe')
+            ->assertJsonPath('reason', 'invalid_query_arguments')
+            ->assertJsonPath('control_plane.operation', 'query')
+            ->assertJsonPath('control_plane.reason', 'invalid_query_arguments')
+            ->assertJsonPath('validation_errors.prefix.0', 'The prefix argument is required.');
+
+        $this->assertSame(0, InteractiveCommandWorkflow::queryProbeInvocations());
 
         $this->withHeaders($this->apiHeaders(namespace: 'other'))
             ->postJson('/api/workflows/wf-query-validation/query/currentState')
