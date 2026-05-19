@@ -48,6 +48,10 @@ final class ReplayVerificationContract
 
     public const GOLDEN_HISTORY_FIXTURE_SCHEMA = 'durable-workflow.golden-history.v1';
 
+    public const REPLAY_CONFORMANCE_RESULT_SCHEMA = 'durable-workflow.v2.replay-conformance.result';
+
+    public const REPLAY_CONFORMANCE_RESULT_VERSION = 1;
+
     /**
      * @return array<string, mixed>
      */
@@ -263,6 +267,9 @@ final class ReplayVerificationContract
                 ],
             ],
             'replay_conformance' => [
+                'result_schema' => self::REPLAY_CONFORMANCE_RESULT_SCHEMA,
+                'result_version' => self::REPLAY_CONFORMANCE_RESULT_VERSION,
+                'fixture_category' => 'history_replay_bundles',
                 'scenario_manifest' => [
                     'schema' => 'durable-workflow.v2.platform-conformance.runtime-scenarios',
                     'category' => 'history_replay_bundles',
@@ -355,6 +362,15 @@ final class ReplayVerificationContract
                             'message',
                         ],
                     ],
+                    'in_flight_signal_restart_timing' => [
+                        'required_outcome' => 'same_next_decision_after_replay',
+                        'required_fields' => [
+                            'worker_restart_at',
+                            'signal_sent_at',
+                            'history_reloaded_at',
+                            'replayed_next_decision',
+                        ],
+                    ],
                 ],
                 'coverage_gate' => [
                     'passing_outcome_requires' => [
@@ -365,9 +381,11 @@ final class ReplayVerificationContract
                         'no_local_product_source_artifacts',
                     ],
                     'uncovered_required_scenario_outcome' => 'non_passing',
+                    'smoke_subset_outcome' => 'non_passing',
                     'unsupported_public_surface_outcome' => 'non_passing_with_root_cause_finding',
                     'runner_blocked_outcome' => 'non_passing_runner_blocked',
                 ],
+                'result_gate' => ReplayConformanceResultGate::spec(),
                 'finding_policy' => [
                     'nondeterminism' => 'link_root_cause_finding_against_owning_runtime_or_sdk',
                     'silent_history_mutation_acceptance' => 'link_root_cause_finding_against_server',

@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use App\Support\ReplayConformanceResultGate;
 use App\Support\ReplayVerificationContract;
 use PHPUnit\Framework\TestCase;
 
@@ -187,6 +188,9 @@ class ReplayVerificationContractTest extends TestCase
         $manifest = ReplayVerificationContract::manifest();
         $conformance = $manifest['replay_conformance'];
 
+        $this->assertSame(ReplayVerificationContract::REPLAY_CONFORMANCE_RESULT_SCHEMA, $conformance['result_schema']);
+        $this->assertSame(ReplayVerificationContract::REPLAY_CONFORMANCE_RESULT_VERSION, $conformance['result_version']);
+        $this->assertSame('history_replay_bundles', $conformance['fixture_category']);
         $this->assertSame(
             'durable-workflow.v2.platform-conformance.runtime-scenarios',
             $conformance['scenario_manifest']['schema'],
@@ -311,6 +315,10 @@ class ReplayVerificationContractTest extends TestCase
             'non_passing',
             $conformance['coverage_gate']['uncovered_required_scenario_outcome'],
         );
+        $this->assertSame(
+            'non_passing',
+            $conformance['coverage_gate']['smoke_subset_outcome'],
+        );
         $this->assertContains(
             'all_required_matrix_cells_pass',
             $conformance['coverage_gate']['passing_outcome_requires'],
@@ -351,5 +359,230 @@ class ReplayVerificationContractTest extends TestCase
         foreach (['integrity.rule', 'integrity.path', 'replay_diff.reason', 'message'] as $field) {
             $this->assertContains($field, $diagnostics['server_history_mutation_refusal']['required_fields']);
         }
+
+        $this->assertSame(
+            'same_next_decision_after_replay',
+            $diagnostics['in_flight_signal_restart_timing']['required_outcome'],
+        );
+        foreach (['worker_restart_at', 'signal_sent_at', 'history_reloaded_at', 'replayed_next_decision'] as $field) {
+            $this->assertContains($field, $diagnostics['in_flight_signal_restart_timing']['required_fields']);
+        }
+    }
+
+    public function test_replay_conformance_publishes_an_enforceable_result_gate(): void
+    {
+        $resultGate = ReplayVerificationContract::manifest()['replay_conformance']['result_gate'];
+
+        $this->assertSame(ReplayConformanceResultGate::SCHEMA, $resultGate['schema']);
+        $this->assertSame(ReplayConformanceResultGate::VERSION, $resultGate['version']);
+        $this->assertSame(
+            ReplayVerificationContract::REPLAY_CONFORMANCE_RESULT_SCHEMA,
+            $resultGate['evaluates_result_schema'],
+        );
+        $this->assertContains('scenario_results', $resultGate['scenario_results_fields']);
+        $this->assertContains('artifactVersions', $resultGate['artifact_versions_fields']);
+        $this->assertContains('every_required_scenario_has_one_result', $resultGate['pass_requires']);
+        $this->assertContains('required_php_and_python_runtimes_are_reported', $resultGate['pass_requires']);
+        $this->assertContains('adversarial_refusals_have_actionable_diagnostics', $resultGate['pass_requires']);
+        $this->assertContains('each_non_pass_scenario_has_linked_findings', $resultGate['pass_requires']);
+        $this->assertSame('non_passing', $resultGate['smoke_subset_outcome']);
+    }
+
+    public function test_replay_result_gate_rejects_python_smoke_subset_even_when_smoke_passes(): void
+    {
+        $scenarioResults = [];
+        foreach ([
+            'published_artifact_install_only',
+            'python_completed_history_activity_replay',
+            'python_completed_history_signal_update_replay',
+            'python_completed_history_wait_condition_replay',
+            'python_completed_history_version_marker_replay',
+            'python_completed_history_saga_compensation_replay',
+            'python_worker_restart_completed_query',
+            'python_worker_restart_activity_state',
+            'python_worker_restart_signal_update_state',
+        ] as $scenario) {
+            $scenarioResults[] = [
+                'scenario_id' => $scenario,
+                'status' => 'pass',
+                'observed_outputs' => [
+                    'recorded' => true,
+                ],
+            ];
+        }
+
+        $evaluation = ReplayConformanceResultGate::evaluate([
+            'schema' => ReplayVerificationContract::REPLAY_CONFORMANCE_RESULT_SCHEMA,
+            'artifactVersions' => [
+                'server' => '0.2.140',
+                'cli' => '0.1.45',
+                'sdk-python' => '0.4.59',
+                'workflow' => '2.0.0-alpha.162',
+            ],
+            'runtime_matrix' => [
+                'runtimes' => ['sdk-python'],
+            ],
+            'scenario_results' => $scenarioResults,
+        ]);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertTrue($evaluation['smoke_subset_detected']);
+        $this->assertContains('php_completed_history_activity_replay', $evaluation['missing_scenarios']);
+        $this->assertContains(
+            'smoke_subset_cannot_pass',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_replay_result_gate_requires_findings_for_non_pass_scenarios(): void
+    {
+        $result = $this->completeReplayConformanceResult();
+        $result['scenario_results']['php_code_divergence_refusal']['status'] = 'fail';
+        unset($result['scenario_results']['php_code_divergence_refusal']['linked_findings']);
+
+        $evaluation = ReplayConformanceResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('php_code_divergence_refusal', $evaluation['non_pass_scenarios']);
+        $this->assertContains(
+            'missing_non_pass_finding',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_replay_result_gate_rejects_duplicate_scenario_results(): void
+    {
+        $result = $this->completeReplayConformanceResult();
+        $result['scenario_results'] = array_values($result['scenario_results']);
+        $result['scenario_results'][] = [
+            'scenario_id' => 'python_completed_history_activity_replay',
+            'status' => 'pass',
+            'observed_outputs' => [
+                'recorded' => true,
+            ],
+        ];
+
+        $evaluation = ReplayConformanceResultGate::evaluate($result);
+        $duplicateFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'duplicate_scenario_result',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertCount(1, $duplicateFailures);
+        $this->assertSame('python_completed_history_activity_replay', $duplicateFailures[0]['scenario_id']);
+        $this->assertSame(2, $duplicateFailures[0]['count']);
+    }
+
+    public function test_replay_result_gate_rejects_pass_without_replay_evidence(): void
+    {
+        $result = $this->completeReplayConformanceResult();
+        unset($result['scenario_results']['python_completed_history_activity_replay']['observed_outputs']);
+
+        $evaluation = ReplayConformanceResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'missing_pass_replay_evidence',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_replay_result_gate_requires_actionable_refusal_diagnostics(): void
+    {
+        $result = $this->completeReplayConformanceResult();
+        unset($result['scenario_results']['server_history_mutation_refusal']['replay_diagnostics']['integrity']['rule']);
+
+        $evaluation = ReplayConformanceResultGate::evaluate($result);
+        $diagnosticFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_actionable_refusal_diagnostic',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertCount(1, $diagnosticFailures);
+        $this->assertSame('server_history_mutation_refusal', $diagnosticFailures[0]['scenario_id']);
+        $this->assertContains('integrity.rule', $diagnosticFailures[0]['missing_fields']);
+    }
+
+    public function test_replay_result_gate_accepts_a_complete_passing_matrix(): void
+    {
+        $evaluation = ReplayConformanceResultGate::evaluate($this->completeReplayConformanceResult());
+
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $evaluation['missing_scenarios']);
+        $this->assertSame([], $evaluation['non_pass_scenarios']);
+        $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function completeReplayConformanceResult(): array
+    {
+        $scenarioResults = [];
+        foreach (ReplayVerificationContract::manifest()['replay_conformance']['required_scenarios'] as $scenario) {
+            $scenarioResults[$scenario] = [
+                'scenario_id' => $scenario,
+                'status' => 'pass',
+                'observed_outputs' => [
+                    'recorded' => true,
+                ],
+            ];
+        }
+
+        foreach (['python_code_divergence_refusal', 'php_code_divergence_refusal'] as $scenario) {
+            $scenarioResults[$scenario]['replay_diagnostics'] = [
+                'workflow_sequence' => 4,
+                'expected_shape' => 'schedule_activity',
+                'recorded_event_types' => ['ActivityTaskScheduled'],
+                'message' => 'Replay diverged at workflow sequence 4.',
+            ];
+            unset($scenarioResults[$scenario]['observed_outputs']);
+        }
+
+        $scenarioResults['server_history_mutation_refusal']['replay_diagnostics'] = [
+            'integrity' => [
+                'rule' => 'integrity.checksum_mismatch',
+                'path' => '$.history_events[2].payload',
+            ],
+            'replay_diff' => [
+                'reason' => 'bundle_invalid',
+            ],
+            'message' => 'History bundle integrity check failed before replay.',
+        ];
+        unset($scenarioResults['server_history_mutation_refusal']['observed_outputs']);
+
+        $scenarioResults['malformed_history_refusal']['replay_diagnostics'] = [
+            'integrity' => [
+                'rule' => 'history_events.sequence_not_monotonic',
+                'path' => '$.history_events[3].sequence',
+            ],
+            'message' => 'History event sequence is not monotonic.',
+        ];
+        unset($scenarioResults['malformed_history_refusal']['observed_outputs']);
+
+        foreach (['python_in_flight_signal_restart_timing', 'php_in_flight_signal_restart_timing'] as $scenario) {
+            $scenarioResults[$scenario]['observed_outputs'] = [
+                'worker_restart_at' => '2026-05-19T22:00:00Z',
+                'signal_sent_at' => '2026-05-19T22:00:01Z',
+                'history_reloaded_at' => '2026-05-19T22:00:02Z',
+                'replayed_next_decision' => 'schedule_activity:after-signal',
+            ];
+        }
+
+        return [
+            'schema' => ReplayVerificationContract::REPLAY_CONFORMANCE_RESULT_SCHEMA,
+            'artifactVersions' => [
+                'server' => '0.2.140',
+                'cli' => '0.1.45',
+                'sdk-python' => '0.4.59',
+                'workflow' => '2.0.0-alpha.162',
+            ],
+            'runtime_matrix' => [
+                'runtimes' => ['workflow-php', 'sdk-python'],
+            ],
+            'scenario_results' => $scenarioResults,
+        ];
     }
 }

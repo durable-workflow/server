@@ -210,6 +210,13 @@ timestamps, an overall outcome, scenario results, findings, and finding
 links. The required runtime axis is `workflow-php` and `sdk-python`; a
 passing run covers both.
 
+The `result_gate` block is the server-published evaluator contract for
+`durable-workflow.v2.replay-conformance.result` documents. It rejects
+smoke-only evidence, omitted required scenarios, missing PHP or Python
+runtime cells, missing replay evidence for passing scenarios, missing
+linked findings for non-passing scenarios, and adversarial refusal cases
+that do not include actionable diagnostics.
+
 The machine-readable `required_scenarios` list mirrors the public
 scenario manifest at
 `https://durable-workflow.github.io/platform-conformance/replay-runtime-scenarios.json`.
