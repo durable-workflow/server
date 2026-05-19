@@ -22,11 +22,12 @@ The server claims three targets from the suite's matrix:
 ## Fixture sources served by this repo
 
 The fixture catalog in the suite manifest names paths in this repo as
-the source of truth for two categories:
+the source of truth for three categories:
 
 | Category | Source path | Status |
 | --- | --- | --- |
 | `worker_task_lifecycle` (server side) | `tests/Fixtures/` plus the per-route examples in `docs/contracts/external-task-input.md` and `docs/contracts/external-task-result.md` | stable |
+| `signal_query_runtime_contract` (server side) | `tests/Feature/WorkflowControlPlaneTest.php`, `tests/Feature/WorkflowQueryTaskBrokerTest.php`, plus the signal/query control-plane routes documented in the protocol catalog | stable |
 | `failure_repair_actionability` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, plus the artifact objects published from `GET /api/cluster/info`'s `worker_protocol.external_task_result_contract.fixtures` | stable |
 
 The other categories the server is graded against
@@ -43,7 +44,7 @@ result document before tag, with the conformance level at `full` or
 | Field | Value |
 | --- | --- |
 | Required claimed targets | `standalone_server`, `worker_protocol_implementation`, `repair_actionability_surface` |
-| Required suite version | `PlatformConformanceSuite::VERSION` (currently `1`) — the harness must run against the suite version exposed by the build under test |
+| Required suite version | `PlatformConformanceSuite::VERSION` (currently `2`) — the harness must run against the suite version exposed by the build under test |
 | CI job | `platform-conformance` (lands when the harness reference implementation publishes; until then the server release reviewer manually verifies parity against the existing fixture-driven tests under `tests/Feature` and `tests/Unit/EnvContractTest.php`) |
 | Block on `nonconforming` | yes |
 | Artifact attached to release | harness result document, schema `durable-workflow.v2.platform-conformance.result` |
