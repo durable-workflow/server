@@ -477,6 +477,9 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $signalRecord = WorkflowSignal::query()
             ->where('workflow_command_id', $commandId)
             ->sole();
+        $signalRecord->forceFill([
+            'workflow_sequence' => 1,
+        ])->save();
 
         $this->registerWorker(
             workerId: 'worker-signal-context-contract',
@@ -528,6 +531,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
             $poll->json('task.signal_arguments'),
             $signalReceived['payload']['arguments'] ?? null,
         );
+        $this->assertSame(1, $signalReceived['payload']['workflow_sequence'] ?? null);
     }
 
     public function test_paginated_workflow_task_history_enriches_signal_received_arguments(): void

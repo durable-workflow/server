@@ -1209,13 +1209,23 @@ final class WorkflowTaskPoller
             $envelope = $signal instanceof WorkflowSignal
                 ? $this->signalArgumentsEnvelopeFromRecord($signal, $namespace)
                 : null;
+            $changed = false;
 
-            if ($envelope === null) {
+            if ($signal instanceof WorkflowSignal && is_int($signal->workflow_sequence)) {
+                $payload['workflow_sequence'] ??= $signal->workflow_sequence;
+                $changed = true;
+            }
+
+            if ($envelope !== null) {
+                $payload['payload_codec'] ??= $envelope['codec'];
+                $payload['arguments'] ??= $envelope;
+                $changed = true;
+            }
+
+            if (! $changed) {
                 continue;
             }
 
-            $payload['payload_codec'] ??= $envelope['codec'];
-            $payload['arguments'] ??= $envelope;
             $event['payload'] = $payload;
             $events[$index] = $event;
         }
