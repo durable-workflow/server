@@ -44,7 +44,7 @@ result document before tag, with the conformance level at `full` or
 | Field | Value |
 | --- | --- |
 | Required claimed targets | `standalone_server`, `worker_protocol_implementation`, `repair_actionability_surface` |
-| Required suite version | `PlatformConformanceSuite::VERSION` (currently `2`) — the harness must run against the suite version exposed by the build under test |
+| Required suite version | The build's `PlatformConformanceSuite::VERSION` — the harness must run against the suite version exposed by the build under test |
 | CI job | `platform-conformance` (lands when the harness reference implementation publishes; until then the server release reviewer manually verifies parity against the existing fixture-driven tests under `tests/Feature` and `tests/Unit/EnvContractTest.php`) |
 | Block on `nonconforming` | yes |
 | Artifact attached to release | harness result document, schema `durable-workflow.v2.platform-conformance.result` |
