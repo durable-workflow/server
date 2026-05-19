@@ -25,10 +25,20 @@ REDIS_PORT="${DW_PERF_REDIS_PORT:-16379}"
 METRICS_PORT="${DW_PERF_METRICS_PORT:-$(choose_free_port)}"
 AUTH_TOKEN="${DW_PERF_AUTH_TOKEN:-perf-token}"
 POLL_TIMEOUT="${DW_PERF_POLL_TIMEOUT:-1}"
+LOAD_TIMEOUT_SECONDS="${DW_PERF_LOAD_TIMEOUT_SECONDS:-}"
 PROMETHEUS_CONTAINER="${PROJECT}-prometheus"
 PROMETHEUS_CONFIG_DIR=""
 
 mkdir -p "$ARTIFACT_DIR"
+
+if [ -z "$LOAD_TIMEOUT_SECONDS" ]; then
+  DURATION_SECONDS="${DW_PERF_DURATION_SECONDS:-120}"
+  DRAIN_SECONDS="${DW_PERF_DRAIN_SECONDS:-12}"
+  LOAD_TIMEOUT_SECONDS=$((DURATION_SECONDS + DRAIN_SECONDS + 300))
+  if [ "$LOAD_TIMEOUT_SECONDS" -lt 300 ]; then
+    LOAD_TIMEOUT_SECONDS=300
+  fi
+fi
 
 if [ -z "${DW_SERVER_KEY:-}" ]; then
   DW_SERVER_KEY="base64:$(openssl rand -base64 32)"
@@ -202,10 +212,39 @@ maybe_start_prometheus
 BASE_URL="$(server_base_url)"
 echo "Running perf load against ${BASE_URL}"
 
-DW_PERF_BASE_URL="$BASE_URL" \
-DW_PERF_AUTH_TOKEN="$AUTH_TOKEN" \
-DW_PERF_ARTIFACT_DIR="$ARTIFACT_DIR" \
-DW_PERF_COMPOSE_PROJECT="$PROJECT" \
-DW_PERF_METRICS_PORT="$METRICS_PORT" \
-DW_PERF_POLL_TIMEOUT="$POLL_TIMEOUT" \
-  "$ROOT_DIR/scripts/perf/server_soak.py"
+status=0
+if command -v timeout >/dev/null 2>&1; then
+  DW_PERF_BASE_URL="$BASE_URL" \
+  DW_PERF_AUTH_TOKEN="$AUTH_TOKEN" \
+  DW_PERF_ARTIFACT_DIR="$ARTIFACT_DIR" \
+  DW_PERF_COMPOSE_PROJECT="$PROJECT" \
+  DW_PERF_METRICS_PORT="$METRICS_PORT" \
+  DW_PERF_POLL_TIMEOUT="$POLL_TIMEOUT" \
+    timeout --kill-after=30s "${LOAD_TIMEOUT_SECONDS}s" "$ROOT_DIR/scripts/perf/server_soak.py" || status=$?
+else
+  echo "timeout command is unavailable; running perf load without shell deadline." >&2
+  DW_PERF_BASE_URL="$BASE_URL" \
+  DW_PERF_AUTH_TOKEN="$AUTH_TOKEN" \
+  DW_PERF_ARTIFACT_DIR="$ARTIFACT_DIR" \
+  DW_PERF_COMPOSE_PROJECT="$PROJECT" \
+  DW_PERF_METRICS_PORT="$METRICS_PORT" \
+  DW_PERF_POLL_TIMEOUT="$POLL_TIMEOUT" \
+    "$ROOT_DIR/scripts/perf/server_soak.py" || status=$?
+fi
+
+if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+  echo "Perf load timed out after ${LOAD_TIMEOUT_SECONDS}s; writing timeout diagnostics." >&2
+  cat > "$ARTIFACT_DIR/load-timeout.json" <<JSON
+{
+  "base_url": "${BASE_URL}",
+  "compose_project": "${PROJECT}",
+  "load_timeout_seconds": ${LOAD_TIMEOUT_SECONDS},
+  "status": ${status}
+}
+JSON
+  docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" ps >&2 || true
+  docker logs --tail=120 "${PROJECT}-server-1" >&2 || true
+  docker logs --tail=120 "${PROJECT}-worker-1" >&2 || true
+fi
+
+exit "$status"

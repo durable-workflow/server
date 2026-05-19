@@ -280,6 +280,11 @@ def parse_policy_limit_map(
     return limits
 
 
+def emit_progress(message: str) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    print(f"[server-soak] {timestamp} {message}", flush=True)
+
+
 def http_json(method: str, url: str, headers: dict[str, str], payload: dict[str, Any] | None = None) -> tuple[int, Any]:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, data=data, method=method)
@@ -861,17 +866,28 @@ def main() -> int:
     started_monotonic = time.monotonic()
 
     try:
+        emit_progress(f"waiting for health at {base_url}")
         wait_for_health(base_url)
+        emit_progress("server reported healthy")
 
         namespaces = [f"perf-ns-{index:03d}" for index in range(max(1, args.namespaces))]
         queues = [f"perf-queue-{index:03d}" for index in range(max(1, args.task_queues))]
         create_namespaces(base_url, args.token, namespaces)
         workers = register_workers(base_url, args.token, namespaces, queues)
+        emit_progress(
+            f"registered {len(workers)} workers across {len(namespaces)} namespaces and {len(queues)} task queues"
+        )
 
         stop_at = time.monotonic() + max(1, args.duration_seconds)
         futures = []
         samples: list[dict[str, Any]] = []
         periodic_sample_count = 0
+        sample_interval = max(1, args.sample_interval_seconds)
+        expected_periodic_samples = max(1, math.floor(args.duration_seconds / sample_interval))
+        emit_progress(
+            f"starting load for {args.duration_seconds}s with concurrency={args.concurrency} "
+            f"and sample_interval={sample_interval}s"
+        )
 
         with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as executor:
             for index in range(max(1, args.concurrency)):
@@ -880,7 +896,6 @@ def main() -> int:
                 )
 
             next_sample = time.monotonic()
-            sample_interval = max(1, args.sample_interval_seconds)
             while time.monotonic() < stop_at:
                 if time.monotonic() >= next_sample:
                     row = sample(args.compose_project)
@@ -888,9 +903,16 @@ def main() -> int:
                     periodic_sample_count += 1
                     metrics.update_sample(row)
                     write_jsonl(samples_path, row)
+                    emit_progress(
+                        f"sample {periodic_sample_count}/{expected_periodic_samples}: "
+                        f"requests={metrics.completed} errors={metrics.errors} "
+                        f"server_keys={row.get('redis_server_keys', 0)} "
+                        f"polling_keys={row.get('redis_polling_keys', 0)}"
+                    )
                     next_sample += sample_interval
                 time.sleep(0.2)
 
+            emit_progress("load window complete; waiting for worker loops to finish")
             wait(futures)
             for future in futures:
                 exception = future.exception()
@@ -898,6 +920,7 @@ def main() -> int:
                     metrics.record_error()
                     write_jsonl(errors_path, {"worker_exception": repr(exception)})
 
+        emit_progress(f"draining for {max(0, args.drain_seconds)}s before final sample")
         time.sleep(max(0, args.drain_seconds))
         final_sample = sample(args.compose_project)
         samples.append(final_sample)
@@ -938,7 +961,7 @@ def main() -> int:
         slope = memory_slope_mb_hour(samples) if args.duration_seconds >= 600 else None
         finished_at = datetime.now(timezone.utc)
         elapsed_seconds = time.monotonic() - started_monotonic
-        expected_samples = max(1, math.floor(args.duration_seconds / max(1, args.sample_interval_seconds)))
+        expected_samples = expected_periodic_samples
         sample_coverage = max(0.0, min(1.0, args.min_sample_coverage))
         min_samples = max(1, math.ceil(expected_samples * sample_coverage))
         sample_count = len(samples)

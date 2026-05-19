@@ -462,7 +462,7 @@ class WorkflowControlPlaneTest extends TestCase
             ->assertJsonPath('reason', 'instance_not_found');
     }
 
-    public function test_completed_run_rejects_signal_and_query_with_typed_terminal_state(): void
+    public function test_completed_run_rejects_signal_but_allows_query_replay(): void
     {
         Queue::fake();
 
@@ -519,18 +519,23 @@ class WorkflowControlPlaneTest extends TestCase
         $query = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows/wf-terminal-signal-query/query/currentState');
 
-        $query->assertStatus(409)
+        $query->assertOk()
             ->assertJsonPath('workflow_id', 'wf-terminal-signal-query')
             ->assertJsonPath('run_id', $runId)
             ->assertJsonPath('query_name', 'currentState')
-            ->assertJsonPath('result', null)
-            ->assertJsonPath('reason', 'run_not_active')
-            ->assertJsonPath('run_status', 'completed')
-            ->assertJsonPath('is_terminal', true)
+            ->assertJsonPath('result.stage', 'completed')
+            ->assertJsonPath('result.name', 'Ada')
+            ->assertJsonPath('result.events.0', 'started')
+            ->assertJsonPath('result.events.1', 'signal:Ada')
+            ->assertJsonPath('result.events.2', 'finish')
+            ->assertJsonPath('reason', null)
             ->assertJsonPath('control_plane.operation', 'query')
-            ->assertJsonPath('control_plane.reason', 'run_not_active')
-            ->assertJsonPath('control_plane.run_status', 'completed')
-            ->assertJsonPath('control_plane.is_terminal', true);
+            ->assertJsonPath('control_plane.reason', null);
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-terminal-signal-query')
+            ->assertOk()
+            ->assertJsonPath('actions.can_query', true);
     }
 
     public function test_start_rejects_cross_namespace_workflow_id_without_leaking_the_owning_namespace(): void
@@ -891,6 +896,21 @@ class WorkflowControlPlaneTest extends TestCase
             ->assertJsonPath('actions.can_update', false)
             ->assertJsonPath('actions.can_cancel', false)
             ->assertJsonPath('actions.can_terminate', false);
+
+        $query = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-control-plane-cancel/query/currentState');
+
+        $query->assertStatus(409)
+            ->assertJsonPath('workflow_id', 'wf-control-plane-cancel')
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('query_name', 'currentState')
+            ->assertJsonPath('reason', 'run_not_active')
+            ->assertJsonPath('run_status', 'cancelled')
+            ->assertJsonPath('is_terminal', true)
+            ->assertJsonPath('control_plane.operation', 'query')
+            ->assertJsonPath('control_plane.reason', 'run_not_active')
+            ->assertJsonPath('control_plane.run_status', 'cancelled')
+            ->assertJsonPath('control_plane.is_terminal', true);
     }
 
     public function test_it_terminates_waiting_workflows_through_the_control_plane_api(): void

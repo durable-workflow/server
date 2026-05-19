@@ -529,7 +529,7 @@ class WorkflowController
 
         $run = NamespaceWorkflowScope::currentRun($namespace, $workflowId);
 
-        if ($run instanceof WorkflowRun && $run->status->isTerminal()) {
+        if ($run instanceof WorkflowRun && $this->rejectsTerminalQuery($run)) {
             return $this->resultMapper->query(
                 $workflowId,
                 $queryName,
@@ -583,6 +583,22 @@ class WorkflowController
         return $workflowClass !== ''
             && class_exists($workflowClass)
             && is_subclass_of($workflowClass, Workflow::class);
+    }
+
+    private function rejectsTerminalQuery(WorkflowRun $run): bool
+    {
+        return $run->status->isTerminal()
+            && $run->status !== RunStatus::Completed;
+    }
+
+    private function canServeQuery(string $namespace, WorkflowRun $run): bool
+    {
+        if ($this->rejectsTerminalQuery($run)) {
+            return false;
+        }
+
+        return $this->canReplayQueryInProcess($run)
+            || $this->queryTasks->hasWorkerFor($namespace, $run);
     }
 
     /**
@@ -972,6 +988,8 @@ class WorkflowController
                 'can_repair' => false,
                 'can_archive' => false,
             ];
+        $isCurrentRun = ($runDescription['is_current_run'] ?? null) !== false;
+        $actions['can_query'] = $isCurrentRun && $this->canServeQuery($namespace, $run);
 
         return [
             'workflow_id' => $run->workflow_instance_id,

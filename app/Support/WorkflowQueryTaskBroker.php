@@ -11,6 +11,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\HistoryExport;
@@ -43,7 +44,7 @@ final class WorkflowQueryTaskBroker
         string $queryName,
         array $queryArguments,
     ): array {
-        if ($run->status->isTerminal()) {
+        if ($run->status->isTerminal() && $run->status !== RunStatus::Completed) {
             return $this->queryFailed(
                 $run,
                 $queryName,

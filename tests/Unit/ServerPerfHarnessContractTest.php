@@ -85,6 +85,11 @@ class ServerPerfHarnessContractTest extends TestCase
             'trusted evidence profile is ineligible',
             'duration below trusted long-soak minimum',
             'bounded-growth assertions failed',
+            'emit_progress',
+            'flush=True',
+            'waiting for health at {base_url}',
+            'sample {periodic_sample_count}/{expected_periodic_samples}',
+            'load window complete; waiting for worker loops to finish',
         ] as $needle) {
             $this->assertStringContainsString($needle, $source, "Perf soak summary must retain {$needle}");
         }
@@ -198,6 +203,29 @@ class ServerPerfHarnessContractTest extends TestCase
         $this->assertStringContainsString('workflow: "${GITHUB_WORKFLOW:-local}"', $source);
         $this->assertStringNotContainsString('run_id: "${GITHUB_RUN_ID:-local}"', $source);
         $this->assertStringNotContainsString('runner: "${RUNNER_NAME:-local}"', $source);
+    }
+
+    public function test_short_perf_load_has_bounded_timeout_diagnostics(): void
+    {
+        $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/run-server-soak.sh');
+        $this->assertNotFalse($source, 'scripts/perf/run-server-soak.sh must be readable');
+
+        foreach ([
+            'DW_PERF_LOAD_TIMEOUT_SECONDS',
+            'LOAD_TIMEOUT_SECONDS=$((DURATION_SECONDS + DRAIN_SECONDS + 300))',
+            'timeout --kill-after=30s "${LOAD_TIMEOUT_SECONDS}s"',
+            'Perf load timed out after ${LOAD_TIMEOUT_SECONDS}s; writing timeout diagnostics.',
+            'load-timeout.json',
+            'docker compose -p "$PROJECT"',
+            'docker logs --tail=120 "${PROJECT}-server-1"',
+            'docker logs --tail=120 "${PROJECT}-worker-1"',
+        ] as $needle) {
+            $this->assertStringContainsString(
+                $needle,
+                $source,
+                "Perf smoke wrapper must retain bounded-timeout diagnostic {$needle}.",
+            );
+        }
     }
 
     public function test_soak_cache_key_patterns_match_bounded_growth_policy(): void

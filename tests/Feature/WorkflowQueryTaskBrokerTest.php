@@ -146,29 +146,141 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         );
     }
 
-    public function test_query_rejects_terminal_run_before_enqueuing_worker_task(): void
+    public function test_query_rejects_non_completed_terminal_run_before_enqueuing_worker_task(): void
     {
         Queue::fake();
 
-        $run = $this->startRemoteWorkflow('wf-query-task-terminal');
+        $run = $this->startRemoteWorkflow('wf-query-task-failed-terminal');
         $run->forceFill([
-            'status' => RunStatus::Completed,
+            'status' => RunStatus::Failed,
             'closed_at' => now(),
         ])->save();
-        $this->registerPythonWorker('python-query-terminal-worker', 'python-queries', ['python.queryable']);
+        $this->registerPythonWorker('python-query-failed-terminal-worker', 'python-queries', ['python.queryable']);
 
         /** @var WorkflowQueryTaskBroker $broker */
         $broker = app(WorkflowQueryTaskBroker::class);
         $result = $broker->query('default', $run->refresh(), 'status', $this->queryArguments());
 
         $this->assertFalse($result['success']);
-        $this->assertSame('wf-query-task-terminal', $result['workflow_id']);
+        $this->assertSame('wf-query-task-failed-terminal', $result['workflow_id']);
         $this->assertSame($run->id, $result['run_id']);
         $this->assertSame('status', $result['query_name']);
         $this->assertSame('run_not_active', $result['reason']);
-        $this->assertSame('completed', $result['run_status']);
+        $this->assertSame('failed', $result['run_status']);
         $this->assertTrue($result['is_terminal']);
         $this->assertSame(409, $result['status']);
+    }
+
+    public function test_completed_control_plane_query_routes_to_worker_with_replay_history(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-completed-replay');
+        $run->forceFill([
+            'status' => RunStatus::Completed,
+            'closed_at' => now(),
+        ])->save();
+        $this->registerPythonWorker('python-query-completed-worker', 'python-queries', ['python.queryable']);
+
+        /** @var LongPollSignalStore $signals */
+        $signals = app(LongPollSignalStore::class);
+        /** @var LongPollWaitSlotStore $waitSlots */
+        $waitSlots = app(LongPollWaitSlotStore::class);
+        $poller = new class($signals, $waitSlots) extends LongPoller
+        {
+            /** @var callable(): void|null */
+            public $afterFirstUnreadyProbe = null;
+
+            private bool $runningAfterProbe = false;
+
+            public function until(
+                callable $probe,
+                callable $ready,
+                ?int $timeoutSeconds = null,
+                ?int $intervalMilliseconds = null,
+                array $wakeChannels = [],
+                ?callable $nextProbeAt = null,
+                bool $reserveWorkerWaitSlot = false,
+                string $waitSlotPool = 'worker',
+            ): mixed {
+                $value = $probe();
+
+                if ($ready($value)) {
+                    return $value;
+                }
+
+                if (! is_callable($this->afterFirstUnreadyProbe) || $this->runningAfterProbe) {
+                    return $value;
+                }
+
+                $this->runningAfterProbe = true;
+
+                try {
+                    ($this->afterFirstUnreadyProbe)();
+                } finally {
+                    $this->runningAfterProbe = false;
+                    $this->afterFirstUnreadyProbe = null;
+                }
+
+                return $probe();
+            }
+        };
+        $broker = new WorkflowQueryTaskBroker(
+            app(ServerPollingCache::class),
+            $poller,
+            $signals,
+            app(ExternalPayloadEnvelopeService::class),
+            app(QueryTaskPollRequestStore::class),
+        );
+        $this->app->instance(WorkflowQueryTaskBroker::class, $broker);
+
+        /** @var WorkerRegistration $worker */
+        $worker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-query-completed-worker')
+            ->firstOrFail();
+
+        $polledTask = null;
+        $poller->afterFirstUnreadyProbe = function () use ($broker, $worker, &$polledTask): void {
+            $task = $broker->poll('default', $worker);
+
+            $this->assertIsArray($task);
+            $this->assertSame('completed', $task['run_status'] ?? null);
+            $this->assertTrue($task['history_export']['history_complete'] ?? false);
+
+            $polledTask = $task;
+
+            $broker->complete(
+                'default',
+                (string) $task['query_task_id'],
+                'python-query-completed-worker',
+                (int) $task['query_task_attempt'],
+                ['stage' => 'completed', 'source' => 'replay'],
+                [
+                    'codec' => 'avro',
+                    'blob' => Serializer::serializeWithCodec('avro', ['stage' => 'completed', 'source' => 'replay']),
+                ],
+            );
+        };
+
+        $query = $this->postJson('/api/workflows/wf-query-task-completed-replay/query/status', [
+            'input' => ['summary'],
+        ], $this->apiHeaders());
+
+        $query->assertOk()
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('workflow_id', 'wf-query-task-completed-replay')
+            ->assertJsonPath('run_id', $run->id)
+            ->assertJsonPath('query_name', 'status')
+            ->assertJsonPath('result.stage', 'completed')
+            ->assertJsonPath('result.source', 'replay')
+            ->assertJsonPath('reason', null)
+            ->assertJsonPath('control_plane.operation', 'query')
+            ->assertJsonPath('control_plane.operation_name', 'status')
+            ->assertJsonPath('control_plane.reason', null);
+
+        $this->assertIsArray($polledTask);
+        $this->assertSame($run->id, $polledTask['run_id'] ?? null);
     }
 
     public function test_worker_can_complete_worker_routed_query_task_with_scalar_zero_result(): void
