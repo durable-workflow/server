@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(3, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(4, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -43,6 +43,14 @@ class SignalQueryRuntimeContractTest extends TestCase
             'latest_published_artifacts_at_run_time',
             $manifest['artifact_policy']['version_source'],
         );
+        $this->assertSame(
+            'concrete_published_versions_pinned_at_run_time',
+            $manifest['artifact_policy']['version_requirement'],
+        );
+        $this->assertTrue($manifest['artifact_policy']['placeholder_versions_rejected']);
+        foreach (['latest', 'current', 'head', 'unresolved', 'placeholder', '<latest>'] as $example) {
+            $this->assertContains($example, $manifest['artifact_policy']['placeholder_version_examples']);
+        }
 
         foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
@@ -175,12 +183,21 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(3, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(4, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
             $resultGate['evaluates_result_schema'],
         );
+        $this->assertSame(
+            'signal_query_runtime_contract.artifact_policy.install_channels',
+            $resultGate['required_artifact_versions_source'],
+        );
+        $this->assertTrue($resultGate['artifact_version_policy']['requires_recorded_and_pinned_versions']);
+        $this->assertTrue($resultGate['artifact_version_policy']['rejects_placeholder_versions']);
+        foreach (['latest', 'current', 'head', 'unresolved', 'placeholder', '<latest>'] as $example) {
+            $this->assertContains($example, $resultGate['artifact_version_policy']['placeholder_version_examples']);
+        }
         $this->assertContains('scenario_results', $resultGate['scenario_results_fields']);
         $this->assertContains('artifactVersions', $resultGate['artifact_versions_fields']);
         $this->assertContains('published_artifact_versions', $resultGate['artifact_versions_fields']);
@@ -195,6 +212,11 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertContains('each_non_pass_scenario_has_linked_findings', $resultGate['pass_requires']);
         $this->assertContains('run_timestamps_outcome_and_finding_links_are_recorded', $resultGate['pass_requires']);
         $this->assertContains('overall_outcome_matches_gate_status', $resultGate['pass_requires']);
+        $this->assertContains(
+            'published_artifact_versions_are_recorded_and_pinned',
+            $resultGate['pass_requires'],
+        );
+        $this->assertNotContains('published_artifact_versions_are_recorded', $resultGate['pass_requires']);
         $this->assertSame('non_passing', $resultGate['smoke_subset_outcome']);
     }
 
@@ -345,6 +367,26 @@ class SignalQueryRuntimeContractTest extends TestCase
         );
     }
 
+    public function test_result_gate_rejects_unknown_declared_outcome_aliases(): void
+    {
+        foreach (['outcome', 'status', 'verdict'] as $field) {
+            $result = $this->completeSignalQueryResult();
+            unset($result['outcome'], $result['status'], $result['verdict']);
+            $result[$field] = 'smoke_pass';
+
+            $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+            $invalidOutcomeFailures = array_values(array_filter(
+                $evaluation['gate_failures'],
+                static fn (array $failure): bool => ($failure['code'] ?? null) === 'invalid_declared_outcome',
+            ));
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertCount(1, $invalidOutcomeFailures);
+            $this->assertSame($field, $invalidOutcomeFailures[0]['field']);
+            $this->assertSame('smoke_pass', $invalidOutcomeFailures[0]['outcome']);
+        }
+    }
+
     public function test_result_gate_rejects_undocumented_pass_alias_declared_outcomes(): void
     {
         foreach (['passed', 'ok'] as $outcome) {
@@ -360,6 +402,49 @@ class SignalQueryRuntimeContractTest extends TestCase
             $this->assertSame('non_passing', $evaluation['status']);
             $this->assertCount(1, $invalidOutcomeFailures);
             $this->assertSame($outcome, $invalidOutcomeFailures[0]['outcome']);
+        }
+    }
+
+    public function test_result_gate_rejects_placeholder_artifact_versions_embedded_in_install_channel_strings(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['artifactVersions'] = [
+            'server' => 'durableworkflow/server:head',
+            'cli' => 'durable-workflow-cli==current',
+            'sdk-python' => 'durable-workflow==unresolved',
+            'workflow' => 'durable-workflow/workflow:placeholder',
+            'waterline' => 'durable-workflow/waterline:<latest>',
+        ];
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $placeholderFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'placeholder_artifact_version',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame(
+            ['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'],
+            array_column($placeholderFailures, 'artifact'),
+        );
+    }
+
+    public function test_result_gate_rejects_each_advertised_placeholder_word_inside_an_artifact_version(): void
+    {
+        foreach (['latest', 'current', 'head', 'unresolved', 'placeholder'] as $placeholder) {
+            $result = $this->completeSignalQueryResult();
+            $result['artifactVersions']['server'] = 'durableworkflow/server:' . $placeholder;
+
+            $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+            $serverPlaceholderFailures = array_values(array_filter(
+                $evaluation['gate_failures'],
+                static fn (array $failure): bool => ($failure['code'] ?? null) === 'placeholder_artifact_version'
+                    && ($failure['artifact'] ?? null) === 'server',
+            ));
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertCount(1, $serverPlaceholderFailures);
+            $this->assertSame('durableworkflow/server:' . $placeholder, $serverPlaceholderFailures[0]['version']);
         }
     }
 

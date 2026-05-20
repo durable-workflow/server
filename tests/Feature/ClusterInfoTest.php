@@ -210,6 +210,11 @@ class ClusterInfoTest extends TestCase
             'every_required_scenario_has_one_result',
             $contract['result_gate']['pass_requires'],
         );
+        $this->assertContains(
+            'published_artifact_versions_are_recorded_and_pinned',
+            $contract['result_gate']['pass_requires'],
+        );
+        $this->assertTrue($contract['result_gate']['artifact_version_policy']['rejects_placeholder_versions']);
     }
 
     public function test_it_publishes_the_child_workflow_runtime_conformance_contract(): void

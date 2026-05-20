@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 3;
+    public const VERSION = 4;
 
     /**
      * @return array<string, mixed>
@@ -29,6 +29,21 @@ final class SignalQueryRuntimeResultGate
                 'artifactVersions',
                 'published_artifact_versions',
                 'publishedArtifactVersions',
+            ],
+            'required_artifact_versions_source' => 'signal_query_runtime_contract.artifact_policy.install_channels',
+            'artifact_version_policy' => [
+                'requires_recorded_and_pinned_versions' => true,
+                'rejects_placeholder_versions' => true,
+                'placeholder_version_examples' => [
+                    'latest',
+                    'current',
+                    'head',
+                    'unresolved',
+                    'placeholder',
+                    '<latest>',
+                    '${VERSION}',
+                    '{{ version }}',
+                ],
             ],
             'declared_outcome_fields' => [
                 'outcome',
@@ -57,7 +72,7 @@ final class SignalQueryRuntimeResultGate
                 'each_non_pass_scenario_has_linked_findings',
                 'run_timestamps_outcome_and_finding_links_are_recorded',
                 'overall_outcome_matches_gate_status',
-                'published_artifact_versions_are_recorded',
+                'published_artifact_versions_are_recorded_and_pinned',
                 'no_local_product_source_artifacts_are_reported',
             ],
             'smoke_subset_outcome' => 'non_passing',
@@ -487,10 +502,20 @@ final class SignalQueryRuntimeResultGate
         $failures = [];
         $installChannels = self::arrayValue($contract['artifact_policy'] ?? [], 'install_channels') ?? [];
         foreach (array_keys($installChannels) as $artifact) {
-            if (! self::hasArtifactVersion($versions, (string) $artifact)) {
+            $version = self::artifactVersionValue($versions, (string) $artifact);
+            if ($version === '') {
                 $failures[] = [
                     'code' => 'missing_artifact_version',
                     'artifact' => $artifact,
+                ];
+                continue;
+            }
+
+            if (self::isPlaceholderVersion($version)) {
+                $failures[] = [
+                    'code' => 'placeholder_artifact_version',
+                    'artifact' => $artifact,
+                    'version' => $version,
                 ];
             }
         }
@@ -515,20 +540,38 @@ final class SignalQueryRuntimeResultGate
     /**
      * @param array<mixed> $versions
      */
-    private static function hasArtifactVersion(array $versions, string $artifact): bool
+    private static function artifactVersionValue(array $versions, string $artifact): string
     {
         $aliases = [
             'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
+            'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
         ];
 
         foreach ($aliases[$artifact] ?? [$artifact] as $key) {
             if (array_key_exists($key, $versions) && self::stringValue($versions[$key]) !== '') {
-                return true;
+                return self::stringValue($versions[$key]);
             }
         }
 
-        return false;
+        return '';
+    }
+
+    private static function isPlaceholderVersion(string $version): bool
+    {
+        $normalized = strtolower(trim($version));
+        if ($normalized === '') {
+            return false;
+        }
+
+        if (preg_match('/<[^>]+>|\$\{[^}]+}|{{[^}]+}}/', $normalized) === 1) {
+            return true;
+        }
+
+        return preg_match(
+            '/(^|[^a-z0-9])(latest|current|head|unresolved|placeholder)([^a-z0-9]|$)/',
+            $normalized,
+        ) === 1;
     }
 
     /**

@@ -72,13 +72,19 @@ category emits a warning and does not block.
 - Signals/queries runtime contract: `GET /api/cluster/info` re-exports
   `signal_query_runtime_contract`, schema
   `durable-workflow.v2.signal-query-runtime.contract`. It names the
-  required published-artifact install policy, PHP/Python runtime matrix,
-  CLI and SDK client paths, replay timing scenarios, terminal-run
-  behavior, malformed-payload expectations, Waterline observer
-  comparison, the public runtime scenario-manifest pointer, run-record
-  fields, the coverage gate that keeps a smoke-only subset non-passing,
-  and a result-gate evaluator that rejects incomplete pass records,
-  missing scenario evidence, or finding-free non-pass scenario records.
+  required published-artifact install policy with concrete pinned
+  artifact versions, PHP/Python runtime matrix, CLI and SDK client
+  paths, replay timing scenarios, terminal-run behavior,
+  malformed-payload expectations, Waterline observer comparison, the
+  public runtime scenario-manifest pointer, run-record fields, the
+  coverage gate that keeps a smoke-only subset non-passing, and a
+  result-gate evaluator that rejects incomplete, placeholder, or
+  finding-free non-pass scenario records. A run record that reports
+  placeholder or unresolved artifact versions such as `latest`,
+  `current`, `head`, `unresolved`, `placeholder`, `<latest>`,
+  `${VERSION}`, or `{{ version }}` is non-passing even when those tokens
+  are embedded in image, Composer, or PyPI install strings and every
+  scenario result is green.
 - Search-attributes runtime contract: `GET /api/cluster/info` re-exports
   `search_attribute_runtime_contract`, schema
   `durable-workflow.v2.search-attribute-runtime.contract`. It names the

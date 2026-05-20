@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 3;
+    public const VERSION = 4;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -42,6 +42,18 @@ final class SignalQueryRuntimeContract
             ],
             'artifact_policy' => [
                 'version_source' => 'latest_published_artifacts_at_run_time',
+                'version_requirement' => 'concrete_published_versions_pinned_at_run_time',
+                'placeholder_versions_rejected' => true,
+                'placeholder_version_examples' => [
+                    'latest',
+                    'current',
+                    'head',
+                    'unresolved',
+                    'placeholder',
+                    '<latest>',
+                    '${VERSION}',
+                    '{{ version }}',
+                ],
                 'install_channels' => [
                     'server' => 'docker image durableworkflow/server:<latest>',
                     'cli' => 'official dw install script pinned to its latest release tag',
