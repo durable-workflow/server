@@ -123,6 +123,7 @@ class ControlPlaneVersionCoverageTest extends TestCase
             ],
             'namespaces.show' => ['method' => 'get', 'path' => '/api/namespaces/default'],
             'namespaces.update' => ['method' => 'put', 'path' => '/api/namespaces/default'],
+            'namespaces.destroy' => ['method' => 'delete', 'path' => '/api/namespaces/default'],
 
             // SystemController
             'system.health' => ['method' => 'get', 'path' => '/api/system/health'],
@@ -205,6 +206,7 @@ class ControlPlaneVersionCoverageTest extends TestCase
             // control-plane version header.
             'namespaces.index' => ['method' => 'get', 'path' => '/api/namespaces', 'expected' => 200],
             'namespaces.show' => ['method' => 'get', 'path' => '/api/namespaces/default', 'expected' => 200],
+            'namespaces.destroy' => ['method' => 'delete', 'path' => '/api/namespaces/default', 'expected' => 200],
             'workflows.index' => ['method' => 'get', 'path' => '/api/workflows', 'expected' => 200],
             'workflows.show_missing' => ['method' => 'get', 'path' => '/api/workflows/does-not-exist', 'expected' => 404],
             'workflows.debug_missing' => ['method' => 'get', 'path' => '/api/workflows/does-not-exist/debug', 'expected' => 404],

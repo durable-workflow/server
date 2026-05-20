@@ -529,6 +529,7 @@ already covered by another matching-role process holding the repair throttle.
 - `POST /api/namespaces` — Create namespace
 - `GET /api/namespaces/{name}` — Get namespace
 - `PUT /api/namespaces/{name}` — Update namespace
+- `DELETE /api/namespaces/{name}` — Delete namespace and clean up its runtime state
 - `PUT /api/namespaces/{name}/external-storage` — Configure external payload storage policy
 
 When a namespace enables external payload storage, the server resolves
@@ -1006,8 +1007,8 @@ DW_ADMIN_TOKEN=admin-secret
 `worker` tokens can call `/api/worker/*` and `/api/cluster/info`. `operator`
 tokens can call workflow, history, schedule, search-attribute, task-queue,
 worker-read, and namespace-read endpoints. `admin` tokens can call admin
-operations such as `/api/system/*`, namespace creation/update, and worker
-deletion, and can also use operator endpoints.
+operations such as `/api/system/*`, namespace create/update/delete, and
+worker deletion, and can also use operator endpoints.
 
 ```bash
 curl -H "Authorization: Bearer operator-secret" \

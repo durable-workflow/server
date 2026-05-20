@@ -145,6 +145,12 @@ class ControlPlaneErrorContractTest extends TestCase
                 'body' => ['description' => 'missing namespace'],
                 'reason' => 'namespace_not_found',
             ],
+            'namespaces.destroy_missing' => [
+                'method' => 'delete',
+                'path' => '/api/namespaces/ghost',
+                'body' => [],
+                'reason' => 'namespace_not_found',
+            ],
             'history.show_missing' => [
                 'method' => 'get',
                 'path' => '/api/workflows/wf-missing/runs/run-missing/history',

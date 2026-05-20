@@ -4,8 +4,11 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
+use App\Support\ExternalPayloadStorageUnavailable;
+use App\Support\NamespaceLifecycleCleanup;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 class NamespaceController
@@ -172,6 +175,47 @@ class NamespaceController
         $ns->update(['external_payload_storage' => $policy]);
 
         return ControlPlaneProtocol::json($this->serializeNamespace($ns->refresh()));
+    }
+
+    public function destroy(Request $request, string $namespace, NamespaceLifecycleCleanup $cleanup): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $normalized = strtolower($namespace);
+
+        try {
+            $payload = DB::transaction(function () use ($cleanup, $normalized): ?array {
+                $ns = WorkflowNamespace::where('name', $normalized)->lockForUpdate()->first();
+
+                if (! $ns) {
+                    return null;
+                }
+
+                $deleted = $cleanup->cleanup($normalized);
+                $ns->delete();
+
+                return [
+                    'name' => $normalized,
+                    'status' => 'deleted',
+                    'deleted' => $deleted,
+                ];
+            });
+        } catch (ExternalPayloadStorageUnavailable $e) {
+            return ControlPlaneProtocol::json([
+                'message' => 'Namespace cleanup requires deleting external payloads, but external payload storage is unavailable.',
+                'reason' => 'external_payload_storage_driver_unavailable',
+                'namespace' => $normalized,
+                'error' => $e->getMessage(),
+            ], 503);
+        }
+
+        if ($payload === null) {
+            return $this->namespaceNotFound($namespace);
+        }
+
+        return ControlPlaneProtocol::json($payload);
     }
 
     private function namespaceNotFound(string $namespace): JsonResponse

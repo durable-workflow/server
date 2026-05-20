@@ -86,6 +86,7 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::post('/', [NamespaceController::class, 'store'])->middleware([$admin, $cpv, $httpControl, $ns]);
         Route::get('/{namespace}', [NamespaceController::class, 'show'])->middleware([$operator, $cpv, $httpControl, $ns]);
         Route::put('/{namespace}', [NamespaceController::class, 'update'])->middleware([$admin, $cpv, $httpControl, $ns]);
+        Route::delete('/{namespace}', [NamespaceController::class, 'destroy'])->middleware([$admin, $cpv, $httpControl, $ns]);
         Route::put('/{namespace}/external-storage', [NamespaceController::class, 'updateExternalStorage'])->middleware([$admin, $cpv, $httpControl, $ns]);
     });
 

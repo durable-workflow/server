@@ -74,6 +74,15 @@ class ControlPlaneResourceSuccessContractTest extends TestCase
                 'structure' => ['name', 'description', 'retention_days', 'status', 'updated_at'],
                 'paths' => ['name' => 'default', 'description' => 'Updated namespace'],
             ],
+            'namespaces.destroy' => [
+                'case' => 'namespaces.destroy',
+                'method' => 'delete',
+                'path' => '/api/namespaces/default',
+                'body' => [],
+                'status' => 200,
+                'structure' => ['name', 'status', 'deleted'],
+                'paths' => ['name' => 'default', 'status' => 'deleted'],
+            ],
             'search-attributes.index' => [
                 'case' => 'search-attributes.index',
                 'method' => 'get',
