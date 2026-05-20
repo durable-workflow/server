@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(2, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(3, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -175,7 +175,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(2, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(3, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -183,10 +183,18 @@ class SignalQueryRuntimeContractTest extends TestCase
         );
         $this->assertContains('scenario_results', $resultGate['scenario_results_fields']);
         $this->assertContains('artifactVersions', $resultGate['artifact_versions_fields']);
+        $this->assertContains('published_artifact_versions', $resultGate['artifact_versions_fields']);
+        $this->assertSame(['outcome', 'status', 'verdict'], $resultGate['declared_outcome_fields']);
+        $this->assertSame(
+            'signal_query_runtime_contract.coverage_gate.*_outcome',
+            $resultGate['declared_outcomes_source'],
+        );
         $this->assertContains('every_required_scenario_has_one_result', $resultGate['pass_requires']);
         $this->assertContains('same_language_and_cross_language_cells_are_reported', $resultGate['pass_requires']);
         $this->assertContains('each_pass_scenario_includes_required_evidence', $resultGate['pass_requires']);
         $this->assertContains('each_non_pass_scenario_has_linked_findings', $resultGate['pass_requires']);
+        $this->assertContains('run_timestamps_outcome_and_finding_links_are_recorded', $resultGate['pass_requires']);
+        $this->assertContains('overall_outcome_matches_gate_status', $resultGate['pass_requires']);
         $this->assertSame('non_passing', $resultGate['smoke_subset_outcome']);
     }
 
@@ -273,6 +281,125 @@ class SignalQueryRuntimeContractTest extends TestCase
             ['python_worker_cli_and_sdk_baseline' => 2],
             $evaluation['duplicate_scenarios'],
         );
+    }
+
+    public function test_result_gate_requires_run_metadata_for_a_passing_result(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        unset($result['started_at'], $result['finished_at'], $result['outcome'], $result['findings'], $result['finding_links']);
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $missingFields = $this->missingRunRecordFields($evaluation);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        foreach (['started_at', 'finished_at', 'outcome', 'findings', 'finding_links'] as $field) {
+            $this->assertContains($field, $missingFields);
+        }
+    }
+
+    public function test_result_gate_accepts_contract_declared_non_passing_outcomes(): void
+    {
+        $coverageGate = SignalQueryRuntimeContract::manifest()['coverage_gate'];
+        $acceptedOutcomes = [
+            $coverageGate['uncovered_required_scenario_outcome'],
+            $coverageGate['smoke_subset_outcome'],
+            $coverageGate['unsupported_public_surface_outcome'],
+            $coverageGate['runner_blocked_outcome'],
+        ];
+
+        foreach (array_unique($acceptedOutcomes) as $outcome) {
+            $result = $this->completeSignalQueryResult();
+            $result['outcome'] = $outcome;
+            $result['scenario_results']['malformed_signal_and_query_payloads']['status'] =
+                $outcome === $coverageGate['runner_blocked_outcome'] ? 'runner_blocked' : 'unsupported';
+            $result['scenario_results']['malformed_signal_and_query_payloads']['linked_findings'] = [
+                'https://tracker.example/findings/malformed-signal-query-payloads',
+            ];
+
+            $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertNotContains(
+                'invalid_declared_outcome',
+                array_column($evaluation['gate_failures'], 'code'),
+                'Outcome ' . $outcome . ' must remain valid because coverage_gate advertises it.',
+            );
+        }
+    }
+
+    public function test_result_gate_rejects_unknown_declared_outcome(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['outcome'] = 'product_gap';
+        $result['scenario_results']['malformed_signal_and_query_payloads']['status'] = 'fail';
+        $result['scenario_results']['malformed_signal_and_query_payloads']['linked_findings'] = [
+            'https://tracker.example/findings/malformed-signal-query-payloads',
+        ];
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'invalid_declared_outcome',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_undocumented_pass_alias_declared_outcomes(): void
+    {
+        foreach (['passed', 'ok'] as $outcome) {
+            $result = $this->completeSignalQueryResult();
+            $result['outcome'] = $outcome;
+
+            $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+            $invalidOutcomeFailures = array_values(array_filter(
+                $evaluation['gate_failures'],
+                static fn (array $failure): bool => ($failure['code'] ?? null) === 'invalid_declared_outcome',
+            ));
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertCount(1, $invalidOutcomeFailures);
+            $this->assertSame($outcome, $invalidOutcomeFailures[0]['outcome']);
+        }
+    }
+
+    public function test_result_gate_rejects_complete_pass_with_non_passing_declared_outcome(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['outcome'] = 'non_passing';
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $mismatchFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'declared_outcome_status_mismatch',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertCount(1, $mismatchFailures);
+        $this->assertSame('non_passing', $mismatchFailures[0]['outcome']);
+        $this->assertSame('non_passing', $mismatchFailures[0]['declared_status']);
+        $this->assertSame('pass', $mismatchFailures[0]['evaluated_status']);
+    }
+
+    public function test_result_gate_rejects_non_passing_evidence_with_pass_declared_outcome(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['malformed_signal_and_query_payloads']['status'] = 'fail';
+        $result['scenario_results']['malformed_signal_and_query_payloads']['linked_findings'] = [
+            'https://tracker.example/findings/malformed-signal-query-payloads',
+        ];
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $mismatchFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'declared_outcome_status_mismatch',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertCount(1, $mismatchFailures);
+        $this->assertSame('pass', $mismatchFailures[0]['outcome']);
+        $this->assertSame('pass', $mismatchFailures[0]['declared_status']);
+        $this->assertSame('non_passing', $mismatchFailures[0]['evaluated_status']);
     }
 
     public function test_result_gate_rejects_empty_pass_output_arrays(): void
@@ -416,6 +543,28 @@ class SignalQueryRuntimeContractTest extends TestCase
     }
 
     /**
+     * @param array<string, mixed> $evaluation
+     *
+     * @return list<string>
+     */
+    private function missingRunRecordFields(array $evaluation): array
+    {
+        $fields = [];
+        foreach ($evaluation['gate_failures'] ?? [] as $failure) {
+            if (! is_array($failure) || ($failure['code'] ?? null) !== 'missing_run_record_field') {
+                continue;
+            }
+
+            $field = $failure['field'] ?? null;
+            if (is_string($field)) {
+                $fields[] = $field;
+            }
+        }
+
+        return $fields;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function completeSignalQueryResult(): array
@@ -480,6 +629,9 @@ class SignalQueryRuntimeContractTest extends TestCase
 
         return [
             'schema' => SignalQueryRuntimeContract::RESULT_SCHEMA,
+            'started_at' => '2026-05-20T00:00:00Z',
+            'finished_at' => '2026-05-20T00:05:00Z',
+            'outcome' => 'pass',
             'artifactVersions' => [
                 'server' => '0.2.140',
                 'cli' => '0.1.45',
@@ -528,6 +680,8 @@ class SignalQueryRuntimeContractTest extends TestCase
             'waterline_observer_comparison' => [
                 'waterline_operator_visibility' => $scenarioResults['waterline_operator_visibility']['observed_outputs'],
             ],
+            'findings' => [],
+            'finding_links' => [],
             'scenario_results' => $scenarioResults,
         ];
     }

@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     /**
      * @return array<string, mixed>
@@ -27,11 +27,19 @@ final class SignalQueryRuntimeResultGate
             'artifact_versions_fields' => [
                 'artifact_versions',
                 'artifactVersions',
+                'published_artifact_versions',
+                'publishedArtifactVersions',
+            ],
+            'declared_outcome_fields' => [
+                'outcome',
+                'status',
+                'verdict',
             ],
             'scenario_results_fields' => [
                 'scenario_results',
                 'scenarioResults',
             ],
+            'declared_outcomes_source' => 'signal_query_runtime_contract.coverage_gate.*_outcome',
             'non_pass_statuses' => [
                 'fail',
                 'unsupported',
@@ -47,6 +55,8 @@ final class SignalQueryRuntimeResultGate
                 'each_pass_scenario_has_observed_outputs',
                 'each_pass_scenario_includes_required_evidence',
                 'each_non_pass_scenario_has_linked_findings',
+                'run_timestamps_outcome_and_finding_links_are_recorded',
+                'overall_outcome_matches_gate_status',
                 'published_artifact_versions_are_recorded',
                 'no_local_product_source_artifacts_are_reported',
             ],
@@ -139,6 +149,12 @@ final class SignalQueryRuntimeResultGate
             }
         }
 
+        $runRecordFailures = self::runRecordFailures($result, $contract);
+        array_push($failures, ...$runRecordFailures);
+
+        $declaredOutcomeFailures = self::declaredOutcomeFailures($result, $contract);
+        array_push($failures, ...$declaredOutcomeFailures);
+
         $artifactFailures = self::artifactVersionFailures($result, $contract);
         array_push($failures, ...$artifactFailures);
 
@@ -162,10 +178,16 @@ final class SignalQueryRuntimeResultGate
             ];
         }
 
-        $passes = $failures === []
+        $evidencePasses = $failures === []
             && $missingScenarios === []
             && $nonPassScenarios === []
             && count($scenarioStatuses) >= count($requiredScenarios);
+        $evaluatedStatus = $evidencePasses ? 'pass' : 'non_passing';
+
+        $declaredOutcomeStatusFailures = self::declaredOutcomeStatusFailures($result, $contract, $evaluatedStatus);
+        array_push($failures, ...$declaredOutcomeStatusFailures);
+
+        $passes = $evaluatedStatus === 'pass' && $failures === [];
 
         return [
             'schema' => self::SCHEMA,
@@ -281,11 +303,186 @@ final class SignalQueryRuntimeResultGate
      *
      * @return array<int, array<string, mixed>>
      */
+    private static function runRecordFailures(array $result, array $contract): array
+    {
+        $requiredFields = self::stringList($contract['artifact_policy']['required_run_record_fields'] ?? []);
+        $failures = [];
+        foreach ($requiredFields as $field) {
+            if (self::hasRunRecordField($result, $field)) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'missing_run_record_field',
+                'field' => $field,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     */
+    private static function hasRunRecordField(array $result, string $field): bool
+    {
+        return match ($field) {
+            'artifact_versions' => self::artifactVersions($result) !== [],
+            'started_at' => self::hasScalarField($result, ['started_at', 'startedAt']),
+            'finished_at' => self::hasScalarField($result, ['finished_at', 'finishedAt']),
+            'outcome' => self::hasScalarField($result, ['outcome', 'status', 'verdict']),
+            'scenario_results' => self::hasArrayField($result, ['scenario_results', 'scenarioResults']),
+            'findings' => self::hasArrayField($result, ['findings']),
+            'finding_links' => self::hasArrayField($result, ['finding_links', 'findingLinks']),
+            default => self::hasScalarField($result, [$field, self::camelize($field)])
+                || self::hasArrayField($result, [$field, self::camelize($field)]),
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function declaredOutcomeFailures(array $result, array $contract): array
+    {
+        $declaredOutcomes = self::declaredOutcomeTokens($result);
+        if ($declaredOutcomes === []) {
+            return [];
+        }
+
+        $allowedOutcomes = self::declaredOutcomes($contract);
+        $failures = [];
+        foreach ($declaredOutcomes as $field => $outcome) {
+            if (in_array($outcome, $allowedOutcomes, true)) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'invalid_declared_outcome',
+                'field' => $field,
+                'outcome' => $outcome,
+                'allowed_outcomes' => $allowedOutcomes,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function declaredOutcomeStatusFailures(
+        array $result,
+        array $contract,
+        string $evaluatedStatus,
+    ): array
+    {
+        $declaredOutcomes = self::declaredOutcomeTokens($result);
+        if ($declaredOutcomes === []) {
+            return [];
+        }
+
+        $allowedOutcomes = self::declaredOutcomes($contract);
+        $failures = [];
+        $declaredStatuses = [];
+        foreach ($declaredOutcomes as $field => $outcome) {
+            if (! in_array($outcome, $allowedOutcomes, true)) {
+                continue;
+            }
+
+            $declaredStatus = self::declaredOutcomeStatus($outcome);
+            $declaredStatuses[$field] = $declaredStatus;
+            if ($declaredStatus === $evaluatedStatus) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'declared_outcome_status_mismatch',
+                'field' => $field,
+                'outcome' => $outcome,
+                'declared_status' => $declaredStatus,
+                'evaluated_status' => $evaluatedStatus,
+            ];
+        }
+
+        if (count(array_unique($declaredStatuses)) > 1) {
+            $failure = [
+                'code' => 'conflicting_outcome_tokens',
+                'declared_outcomes' => array_intersect_key($declaredOutcomes, $declaredStatuses),
+                'declared_statuses' => $declaredStatuses,
+            ];
+            foreach (['outcome', 'status', 'verdict'] as $field) {
+                if (array_key_exists($field, $declaredOutcomes)) {
+                    $failure[$field] = $declaredOutcomes[$field];
+                }
+            }
+
+            $failures[] = $failure;
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, string>
+     */
+    private static function declaredOutcomeTokens(array $result): array
+    {
+        $declaredOutcomes = [];
+        foreach (['outcome', 'status', 'verdict'] as $field) {
+            $value = self::stringValue($result[$field] ?? null);
+            if ($value !== '') {
+                $declaredOutcomes[$field] = $value;
+            }
+        }
+
+        return $declaredOutcomes;
+    }
+
+    /**
+     * @param array<string, mixed> $contract
+     *
+     * @return list<string>
+     */
+    private static function declaredOutcomes(array $contract): array
+    {
+        $outcomes = ['pass'];
+        $coverageGate = self::arrayValue($contract, 'coverage_gate') ?? [];
+        foreach ($coverageGate as $key => $value) {
+            if (! is_string($key) || ! str_ends_with($key, '_outcome')) {
+                continue;
+            }
+
+            $outcome = self::stringValue($value);
+            if ($outcome !== '') {
+                $outcomes[] = $outcome;
+            }
+        }
+
+        return array_values(array_unique($outcomes));
+    }
+
+    private static function declaredOutcomeStatus(string $outcome): string
+    {
+        return $outcome === 'pass' ? 'pass' : 'non_passing';
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     *
+     * @return array<int, array<string, mixed>>
+     */
     private static function artifactVersionFailures(array $result, array $contract): array
     {
-        $versions = self::arrayValue($result, 'artifact_versions')
-            ?? self::arrayValue($result, 'artifactVersions')
-            ?? [];
+        $versions = self::artifactVersions($result);
 
         $failures = [];
         $installChannels = self::arrayValue($contract['artifact_policy'] ?? [], 'install_channels') ?? [];
@@ -299,6 +496,20 @@ final class SignalQueryRuntimeResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     *
+     * @return array<mixed>
+     */
+    private static function artifactVersions(array $result): array
+    {
+        return self::arrayValue($result, 'artifact_versions')
+            ?? self::arrayValue($result, 'artifactVersions')
+            ?? self::arrayValue($result, 'published_artifact_versions')
+            ?? self::arrayValue($result, 'publishedArtifactVersions')
+            ?? [];
     }
 
     /**
@@ -797,11 +1008,50 @@ final class SignalQueryRuntimeResultGate
 
     /**
      * @param array<mixed> $value
+     * @param list<string> $fields
+     */
+    private static function hasScalarField(array $value, array $fields): bool
+    {
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $value) && self::stringValue($value[$field]) !== '') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<mixed> $value
+     * @param list<string> $fields
+     */
+    private static function hasArrayField(array $value, array $fields): bool
+    {
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $value) && is_array($value[$field])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<mixed> $value
      *
      * @return array<mixed>|null
      */
     private static function arrayValue(array $value, string $key): ?array
     {
         return isset($value[$key]) && is_array($value[$key]) ? $value[$key] : null;
+    }
+
+    private static function camelize(string $field): string
+    {
+        return preg_replace_callback(
+            '/_([a-z])/',
+            static fn (array $matches): string => strtoupper($matches[1]),
+            $field,
+        ) ?? $field;
     }
 }

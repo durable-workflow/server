@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
