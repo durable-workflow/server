@@ -168,6 +168,11 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertContains('scenario_results', $resultGate['scenario_results_fields']);
         $this->assertContains('artifactVersions', $resultGate['artifact_versions_fields']);
         $this->assertContains('published_artifact_versions', $resultGate['artifact_versions_fields']);
+        $this->assertContains('outcome', $resultGate['declared_outcome_fields']);
+        $this->assertSame(
+            'child_workflow_runtime_contract.coverage_gate.*_outcome',
+            $resultGate['declared_outcomes_source'],
+        );
         $this->assertContains('every_required_scenario_has_one_result', $resultGate['pass_requires']);
         $this->assertContains(
             'same_language_and_cross_language_parent_child_cells_are_reported',
@@ -178,7 +183,9 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             'run_timestamps_outcome_and_finding_links_are_recorded',
             $resultGate['pass_requires'],
         );
+        $this->assertContains('overall_outcome_matches_gate_status', $resultGate['pass_requires']);
         $this->assertContains('each_non_pass_scenario_has_linked_findings', $resultGate['pass_requires']);
+        $this->assertContains('published_artifact_versions_are_recorded_and_pinned', $resultGate['pass_requires']);
         $this->assertSame('non_passing', $resultGate['smoke_subset_outcome']);
     }
 
@@ -308,6 +315,132 @@ class ChildWorkflowRuntimeContractTest extends TestCase
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertContains('generated_at', $this->missingRunRecordFields($evaluation));
+    }
+
+    public function test_result_gate_rejects_placeholder_artifact_versions_embedded_in_install_channel_strings(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        $result['artifactVersions'] = [
+            'server' => 'durableworkflow/server:<latest>',
+            'cli' => 'latest',
+            'sdk-python' => 'durable-workflow==<latest>',
+            'workflow' => '2.0.0-alpha.<latest>',
+            'waterline' => '2.0.0-alpha.54',
+        ];
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $placeholderFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'placeholder_artifact_version',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame(
+            ['server', 'cli', 'workflow-php', 'sdk-python'],
+            array_column($placeholderFailures, 'artifact'),
+        );
+    }
+
+    public function test_result_gate_accepts_contract_declared_non_passing_outcomes(): void
+    {
+        $coverageGate = ChildWorkflowRuntimeContract::manifest()['coverage_gate'];
+        $acceptedOutcomes = [
+            $coverageGate['uncovered_required_scenario_outcome'],
+            $coverageGate['smoke_subset_outcome'],
+            $coverageGate['unsupported_public_surface_outcome'],
+            $coverageGate['runner_blocked_outcome'],
+        ];
+
+        foreach (array_unique($acceptedOutcomes) as $outcome) {
+            $result = $this->completeChildWorkflowResult();
+            $result['outcome'] = $outcome;
+            $result['scenario_results']['child_workflow_namespace_contract']['status'] =
+                $outcome === $coverageGate['runner_blocked_outcome'] ? 'runner_blocked' : 'unsupported';
+            $result['scenario_results']['child_workflow_namespace_contract']['linked_findings'] = [
+                'https://tracker.example/findings/child-workflow-namespace-contract',
+            ];
+
+            $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertNotContains(
+                'invalid_declared_outcome',
+                array_column($evaluation['gate_failures'], 'code'),
+                'Outcome ' . $outcome . ' must remain valid because coverage_gate advertises it.',
+            );
+        }
+    }
+
+    public function test_result_gate_rejects_unknown_declared_outcome(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        $result['outcome'] = 'smoke_pass';
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'invalid_declared_outcome',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_complete_pass_with_non_passing_declared_outcome(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        $result['outcome'] = 'non_passing';
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $mismatchFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'declared_outcome_status_mismatch',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertCount(1, $mismatchFailures);
+        $this->assertSame('non_passing', $mismatchFailures[0]['outcome']);
+        $this->assertSame('non_passing', $mismatchFailures[0]['declared_status']);
+        $this->assertSame('pass', $mismatchFailures[0]['evaluated_status']);
+    }
+
+    public function test_result_gate_uses_non_empty_verdict_when_outcome_is_empty(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        $result['outcome'] = '';
+        $result['verdict'] = 'non_passing';
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $mismatchFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'declared_outcome_status_mismatch',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertCount(1, $mismatchFailures);
+        $this->assertSame('non_passing', $mismatchFailures[0]['outcome']);
+        $this->assertSame('non_passing', $mismatchFailures[0]['declared_status']);
+        $this->assertSame('pass', $mismatchFailures[0]['evaluated_status']);
+    }
+
+    public function test_result_gate_rejects_non_passing_evidence_with_pass_declared_outcome(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        $result['scenario_results']['parent_cancellation_propagates_to_child']['status'] = 'fail';
+        $result['scenario_results']['parent_cancellation_propagates_to_child']['linked_findings'] = [
+            'https://tracker.example/findings/parent-cancellation-propagation',
+        ];
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $mismatchFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'declared_outcome_status_mismatch',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertCount(1, $mismatchFailures);
+        $this->assertSame('pass', $mismatchFailures[0]['outcome']);
+        $this->assertSame('pass', $mismatchFailures[0]['declared_status']);
+        $this->assertSame('non_passing', $mismatchFailures[0]['evaluated_status']);
     }
 
     public function test_result_gate_requires_scenario_specific_runtime_evidence(): void

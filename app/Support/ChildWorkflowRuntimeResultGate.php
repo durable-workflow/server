@@ -34,6 +34,11 @@ final class ChildWorkflowRuntimeResultGate
                 'scenario_results',
                 'scenarioResults',
             ],
+            'declared_outcome_fields' => [
+                'outcome',
+                'verdict',
+            ],
+            'declared_outcomes_source' => 'child_workflow_runtime_contract.coverage_gate.*_outcome',
             'non_pass_statuses' => [
                 'fail',
                 'unsupported',
@@ -50,7 +55,8 @@ final class ChildWorkflowRuntimeResultGate
                 'each_pass_scenario_has_scenario_specific_evidence',
                 'each_non_pass_scenario_has_linked_findings',
                 'run_timestamps_outcome_and_finding_links_are_recorded',
-                'published_artifact_versions_are_recorded',
+                'overall_outcome_matches_gate_status',
+                'published_artifact_versions_are_recorded_and_pinned',
                 'no_local_product_source_artifacts_are_reported',
             ],
             'smoke_subset_outcome' => 'non_passing',
@@ -143,6 +149,7 @@ final class ChildWorkflowRuntimeResultGate
         }
 
         array_push($failures, ...self::runRecordFailures($result, $contract));
+        array_push($failures, ...self::declaredOutcomeFailures($result, $contract));
         array_push($failures, ...self::artifactVersionFailures($result, $contract));
         array_push($failures, ...self::sourcePolicyFailures($result, $contract));
         array_push($failures, ...self::matrixFailures($result, $contract));
@@ -157,10 +164,15 @@ final class ChildWorkflowRuntimeResultGate
             ];
         }
 
-        $passes = $failures === []
+        $evidencePasses = $failures === []
             && $missingScenarios === []
             && $nonPassScenarios === []
             && count($scenarioStatuses) >= count($requiredScenarios);
+        $evaluatedStatus = $evidencePasses ? 'pass' : 'non_passing';
+
+        array_push($failures, ...self::declaredOutcomeStatusFailures($result, $contract, $evaluatedStatus));
+
+        $passes = $evaluatedStatus === 'pass' && $failures === [];
 
         return [
             'schema' => self::SCHEMA,
@@ -347,6 +359,88 @@ final class ChildWorkflowRuntimeResultGate
      *
      * @return array<int, array<string, mixed>>
      */
+    private static function declaredOutcomeFailures(array $result, array $contract): array
+    {
+        $outcome = self::declaredOutcome($result);
+        if ($outcome === '') {
+            return [];
+        }
+
+        $allowedOutcomes = self::declaredOutcomes($contract);
+        if (in_array($outcome, $allowedOutcomes, true)) {
+            return [];
+        }
+
+        return [[
+            'code' => 'invalid_declared_outcome',
+            'outcome' => $outcome,
+            'allowed_outcomes' => $allowedOutcomes,
+        ]];
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function declaredOutcomeStatusFailures(array $result, array $contract, string $evaluatedStatus): array
+    {
+        $outcome = self::declaredOutcome($result);
+        if ($outcome === '' || ! in_array($outcome, self::declaredOutcomes($contract), true)) {
+            return [];
+        }
+
+        $declaredStatus = $outcome === 'pass' ? 'pass' : 'non_passing';
+        if ($declaredStatus === $evaluatedStatus) {
+            return [];
+        }
+
+        return [[
+            'code' => 'declared_outcome_status_mismatch',
+            'outcome' => $outcome,
+            'declared_status' => $declaredStatus,
+            'evaluated_status' => $evaluatedStatus,
+        ]];
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     */
+    private static function declaredOutcome(array $result): string
+    {
+        return self::firstStringField($result, ['outcome', 'verdict']);
+    }
+
+    /**
+     * @param array<string, mixed> $contract
+     *
+     * @return list<string>
+     */
+    private static function declaredOutcomes(array $contract): array
+    {
+        $outcomes = ['pass'];
+        $coverageGate = self::arrayValue($contract, 'coverage_gate') ?? [];
+        foreach ($coverageGate as $key => $value) {
+            if (! is_string($key) || ! str_ends_with($key, '_outcome')) {
+                continue;
+            }
+
+            $outcome = self::stringValue($value);
+            if ($outcome !== '') {
+                $outcomes[] = $outcome;
+            }
+        }
+
+        return array_values(array_unique($outcomes));
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     *
+     * @return array<int, array<string, mixed>>
+     */
     private static function artifactVersionFailures(array $result, array $contract): array
     {
         $versions = self::artifactVersions($result);
@@ -354,10 +448,20 @@ final class ChildWorkflowRuntimeResultGate
         $failures = [];
         $installChannels = self::arrayValue($contract['artifact_policy'] ?? [], 'install_channels') ?? [];
         foreach (array_keys($installChannels) as $artifact) {
-            if (! self::hasArtifactVersion($versions, (string) $artifact)) {
+            $version = self::artifactVersionValue($versions, (string) $artifact);
+            if ($version === '') {
                 $failures[] = [
                     'code' => 'missing_artifact_version',
                     'artifact' => $artifact,
+                ];
+                continue;
+            }
+
+            if (self::isPlaceholderVersion($version)) {
+                $failures[] = [
+                    'code' => 'placeholder_artifact_version',
+                    'artifact' => $artifact,
+                    'version' => $version,
                 ];
             }
         }
@@ -382,20 +486,37 @@ final class ChildWorkflowRuntimeResultGate
     /**
      * @param array<mixed> $versions
      */
-    private static function hasArtifactVersion(array $versions, string $artifact): bool
+    private static function artifactVersionValue(array $versions, string $artifact): string
     {
         $aliases = [
             'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
+            'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
         ];
 
         foreach ($aliases[$artifact] ?? [$artifact] as $key) {
-            if (array_key_exists($key, $versions) && self::stringValue($versions[$key]) !== '') {
-                return true;
+            $version = self::stringValue($versions[$key] ?? null);
+            if (array_key_exists($key, $versions) && $version !== '') {
+                return $version;
             }
         }
 
-        return false;
+        return '';
+    }
+
+    private static function isPlaceholderVersion(string $version): bool
+    {
+        $normalized = strtolower(trim($version));
+        if ($normalized === '') {
+            return false;
+        }
+
+        if (preg_match('/<[^>]+>|\$\{[^}]+}|{{[^}]+}}/', $normalized) === 1) {
+            return true;
+        }
+
+        return preg_match('/(^|[^a-z0-9])latest([^a-z0-9]|$)/', $normalized) === 1
+            || in_array($normalized, ['latest', 'current', 'head', 'unresolved', 'placeholder'], true);
     }
 
     /**
