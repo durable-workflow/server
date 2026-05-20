@@ -149,6 +149,22 @@ class SearchAttributeTest extends TestCase
         }
     }
 
+    public function test_it_rejects_reserved_system_attribute_aliases(): void
+    {
+        $this->createNamespace('default');
+
+        foreach (['wf_id', 'workflow_id', 'run_id'] as $name) {
+            $response = $this->withHeaders($this->headers())
+                ->postJson('/api/search-attributes', [
+                    'name' => $name,
+                    'type' => 'keyword',
+                ]);
+
+            $response->assertStatus(409)
+                ->assertJsonPath('reason', 'name_reserved');
+        }
+    }
+
     public function test_it_validates_attribute_name_format(): void
     {
         $this->createNamespace('default');

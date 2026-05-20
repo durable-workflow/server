@@ -29,9 +29,9 @@ class WorkflowVisibilityQuery
      */
     public function apply(Builder $builder, string $namespace, string $query): bool
     {
-        $comparisons = $this->parse($query);
+        $comparisonGroups = $this->parse($query);
 
-        if ($comparisons === null) {
+        if ($comparisonGroups === null) {
             return false;
         }
 
@@ -40,35 +40,23 @@ class WorkflowVisibilityQuery
             ->pluck('type', 'name')
             ->all();
 
-        foreach ($comparisons as $comparison) {
-            $field = $comparison['field'];
+        $builder->where(function (Builder $visibilityQuery) use ($comparisonGroups, $definitions): void {
+            foreach ($comparisonGroups as $index => $comparisons) {
+                $method = $index === 0 ? 'where' : 'orWhere';
 
-            if ($field === 'Status' || $field === 'ExecutionStatus') {
-                $this->applyStatusComparison($builder, $comparison);
-
-                continue;
+                $visibilityQuery->{$method}(function (Builder $groupQuery) use ($comparisons, $definitions): void {
+                    foreach ($comparisons as $comparison) {
+                        $this->applyComparison($groupQuery, $comparison, $definitions);
+                    }
+                });
             }
-
-            if (isset(self::SYSTEM_COLUMNS[$field])) {
-                $this->applyColumnComparison($builder, self::SYSTEM_COLUMNS[$field], $comparison);
-
-                continue;
-            }
-
-            if (! isset($definitions[$field])) {
-                $builder->whereRaw('1 = 0');
-
-                continue;
-            }
-
-            $this->applySearchAttributeComparison($builder, $field, (string) $definitions[$field], $comparison);
-        }
+        });
 
         return true;
     }
 
     /**
-     * @return list<array{field: string, operator: string, literal: mixed, bare?: bool}>|null
+     * @return list<list<array{field: string, operator: string, literal: mixed, bare?: bool}>>|null
      */
     private function parse(string $query): ?array
     {
@@ -78,25 +66,66 @@ class WorkflowVisibilityQuery
             return null;
         }
 
-        $parts = $this->splitAndConditions($query);
+        $orParts = $this->splitConditionsByKeyword($query, 'OR');
 
-        if ($parts === []) {
+        if ($orParts === []) {
             throw $this->invalidQuery('Visibility query predicates must use: Field = literal.');
         }
 
-        $comparisons = [];
+        $groups = [];
 
-        foreach ($parts as $part) {
-            $comparison = $this->parsePredicate($part);
+        foreach ($orParts as $orPart) {
+            $andParts = $this->splitConditionsByKeyword($orPart, 'AND');
 
-            if ($comparison === null) {
+            if ($andParts === []) {
                 throw $this->invalidQuery('Visibility query predicates must use: Field = literal.');
             }
 
-            $comparisons[] = $comparison;
+            $comparisons = [];
+
+            foreach ($andParts as $part) {
+                $comparison = $this->parsePredicate($part);
+
+                if ($comparison === null) {
+                    throw $this->invalidQuery('Visibility query predicates must use: Field = literal.');
+                }
+
+                $comparisons[] = $comparison;
+            }
+
+            $groups[] = $comparisons;
         }
 
-        return $comparisons;
+        return $groups;
+    }
+
+    /**
+     * @param array{field: string, operator: string, literal: mixed, bare?: bool} $comparison
+     * @param array<string, string> $definitions
+     */
+    private function applyComparison(Builder $builder, array $comparison, array $definitions): void
+    {
+        $field = $comparison['field'];
+
+        if ($field === 'Status' || $field === 'ExecutionStatus') {
+            $this->applyStatusComparison($builder, $comparison);
+
+            return;
+        }
+
+        if (isset(self::SYSTEM_COLUMNS[$field])) {
+            $this->applyColumnComparison($builder, self::SYSTEM_COLUMNS[$field], $comparison);
+
+            return;
+        }
+
+        if (! isset($definitions[$field])) {
+            $builder->whereRaw('1 = 0');
+
+            return;
+        }
+
+        $this->applySearchAttributeComparison($builder, $field, (string) $definitions[$field], $comparison);
     }
 
     /**
@@ -189,7 +218,7 @@ class WorkflowVisibilityQuery
     /**
      * @return list<string>
      */
-    private function splitAndConditions(string $query): array
+    private function splitConditionsByKeyword(string $query, string $keyword): array
     {
         if ($query === '') {
             return [];
@@ -198,7 +227,9 @@ class WorkflowVisibilityQuery
         $parts = [];
         $current = '';
         $quote = null;
+        $parenDepth = 0;
         $length = strlen($query);
+        $keywordLength = strlen($keyword);
 
         for ($i = 0; $i < $length; $i++) {
             $char = $query[$i];
@@ -219,6 +250,25 @@ class WorkflowVisibilityQuery
                 continue;
             }
 
+            if ($char === '(') {
+                $parenDepth++;
+                $current .= $char;
+
+                continue;
+            }
+
+            if ($char === ')') {
+                $parenDepth--;
+
+                if ($parenDepth < 0) {
+                    return [];
+                }
+
+                $current .= $char;
+
+                continue;
+            }
+
             if ($char === '"' || $char === "'") {
                 $quote = $char;
                 $current .= $char;
@@ -226,7 +276,7 @@ class WorkflowVisibilityQuery
                 continue;
             }
 
-            if ($this->startsAndKeywordAt($query, $i)) {
+            if ($parenDepth === 0 && $this->startsKeywordAt($query, $i, $keyword)) {
                 $part = trim($current);
 
                 if ($part === '') {
@@ -235,7 +285,7 @@ class WorkflowVisibilityQuery
 
                 $parts[] = $part;
                 $current = '';
-                $i += 2;
+                $i += $keywordLength - 1;
 
                 continue;
             }
@@ -245,7 +295,7 @@ class WorkflowVisibilityQuery
 
         $part = trim($current);
 
-        if ($quote !== null || $part === '') {
+        if ($quote !== null || $parenDepth !== 0 || $part === '') {
             return [];
         }
 
@@ -343,14 +393,16 @@ class WorkflowVisibilityQuery
         return $parts;
     }
 
-    private function startsAndKeywordAt(string $query, int $offset): bool
+    private function startsKeywordAt(string $query, int $offset, string $keyword): bool
     {
-        if (strtolower(substr($query, $offset, 3)) !== 'and') {
+        $keywordLength = strlen($keyword);
+
+        if (strtolower(substr($query, $offset, $keywordLength)) !== strtolower($keyword)) {
             return false;
         }
 
         $before = $offset === 0 ? ' ' : $query[$offset - 1];
-        $afterOffset = $offset + 3;
+        $afterOffset = $offset + $keywordLength;
         $after = $afterOffset >= strlen($query) ? ' ' : $query[$afterOffset];
 
         return ! preg_match('/[A-Za-z0-9_]/', $before)
@@ -607,7 +659,7 @@ class WorkflowVisibilityQuery
     private function normalizeSearchAttributeType(string $type): string
     {
         return match ($type) {
-            'keyword', 'keyword_list', 'text', 'int', 'bool', 'datetime' => $type,
+            'keyword', 'keyword_list', 'string', 'text', 'int', 'bool', 'datetime' => $type === 'string' ? 'text' : $type,
             'double', 'float' => 'double',
             default => throw ValidationException::withMessages([
                 'query' => [sprintf('Search attribute type [%s] is not supported in visibility queries.', $type)],

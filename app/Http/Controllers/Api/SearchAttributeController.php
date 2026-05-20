@@ -57,10 +57,10 @@ class SearchAttributeController
             'type' => ['required', 'string', 'in:'.implode(',', SearchAttributeDefinition::ALLOWED_TYPES)],
         ]);
 
-        if (array_key_exists($validated['name'], SearchAttributeDefinition::SYSTEM_ATTRIBUTES)) {
+        if (SearchAttributeDefinition::isReservedName($validated['name'])) {
             return ControlPlaneProtocol::json([
                 'message' => sprintf(
-                    'The name [%s] is reserved as a system search attribute.',
+                    'The name [%s] is reserved for system search attributes.',
                     $validated['name'],
                 ),
                 'reason' => 'name_reserved',

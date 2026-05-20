@@ -16,6 +16,7 @@ class SearchAttributeDefinition extends Model
 
     public const ALLOWED_TYPES = [
         'keyword',
+        'string',
         'text',
         'int',
         'double',
@@ -37,4 +38,26 @@ class SearchAttributeDefinition extends Model
         'BuildId' => 'keyword',
         'BuildIds' => 'keyword',
     ];
+
+    private const SYSTEM_ATTRIBUTE_ALIASES = [
+        'workflow_type',
+        'workflow_id',
+        'wf_id',
+        'run_id',
+        'status',
+        'execution_status',
+        'start_time',
+        'execution_time',
+        'close_time',
+        'task_queue',
+        'build_id',
+        'build_ids',
+    ];
+
+    public static function isReservedName(string $name): bool
+    {
+        return array_key_exists($name, self::SYSTEM_ATTRIBUTES)
+            || in_array(strtolower($name), self::SYSTEM_ATTRIBUTE_ALIASES, true)
+            || str_starts_with($name, '__');
+    }
 }

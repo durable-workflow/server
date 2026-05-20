@@ -31,7 +31,7 @@ class WorkflowSearchAttributeVisibilityQueryTest extends TestCase
             SearchAttributeDefinition::query()->create([
                 'namespace' => $namespace,
                 'name' => 'customer_id',
-                'type' => 'keyword',
+                'type' => 'string',
             ]);
             SearchAttributeDefinition::query()->create([
                 'namespace' => $namespace,
@@ -45,6 +45,11 @@ class WorkflowSearchAttributeVisibilityQueryTest extends TestCase
             ]);
             SearchAttributeDefinition::query()->create([
                 'namespace' => $namespace,
+                'name' => 'priority_tier',
+                'type' => 'keyword',
+            ]);
+            SearchAttributeDefinition::query()->create([
+                'namespace' => $namespace,
                 'name' => 'tags',
                 'type' => 'keyword_list',
             ]);
@@ -54,6 +59,7 @@ class WorkflowSearchAttributeVisibilityQueryTest extends TestCase
             'customer_id' => 'cust-7',
             'order_total_cents' => 7500,
             'is_vip' => true,
+            'priority_tier' => 'gold',
             'tags' => ['urgent', 'oversized'],
         ]);
 
@@ -61,6 +67,7 @@ class WorkflowSearchAttributeVisibilityQueryTest extends TestCase
             'customer_id' => 'cust-2',
             'order_total_cents' => 1200,
             'is_vip' => false,
+            'priority_tier' => 'silver',
             'tags' => ['standard'],
         ]);
 
@@ -68,6 +75,7 @@ class WorkflowSearchAttributeVisibilityQueryTest extends TestCase
             'customer_id' => 'cust-8',
             'order_total_cents' => 9000,
             'is_vip' => false,
+            'priority_tier' => 'platinum',
             'tags' => ['urgent'],
         ]);
 
@@ -75,6 +83,7 @@ class WorkflowSearchAttributeVisibilityQueryTest extends TestCase
             'customer_id' => 'cust-7',
             'order_total_cents' => 7500,
             'is_vip' => true,
+            'priority_tier' => 'gold',
             'tags' => ['urgent'],
         ]);
     }
@@ -106,7 +115,23 @@ class WorkflowSearchAttributeVisibilityQueryTest extends TestCase
 
     public function test_workflow_list_query_supports_in_and_not_boolean_predicates(): void
     {
-        $this->assertSame(['wf-sa-non-vip'], $this->workflowIdsForQuery('customer_id IN ("cust-7", "cust-8") AND NOT is_vip'));
+        $this->assertSame(['wf-sa-non-vip'], $this->workflowIdsForQuery('priority_tier IN ("gold", "platinum") AND NOT is_vip'));
+    }
+
+    public function test_workflow_list_query_supports_or_predicates(): void
+    {
+        $this->assertSame(['wf-sa-non-vip', 'wf-sa-miss'], $this->workflowIdsForQuery('customer_id = "cust-2" OR customer_id = "cust-8"'));
+    }
+
+    public function test_workflow_list_query_rejects_or_injection_predicates(): void
+    {
+        $response = $this->getJson(
+            '/api/workflows?'.http_build_query(['query' => 'customer_id = "cust-7" OR 1=1']),
+            $this->apiHeaders(),
+        );
+
+        $response->assertStatus(422)
+            ->assertJsonPath('errors.query.0', 'Visibility query predicates must use: Field = literal.');
     }
 
     public function test_workflow_list_query_rejects_search_attribute_literal_type_mismatch(): void

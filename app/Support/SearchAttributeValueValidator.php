@@ -18,7 +18,9 @@ class SearchAttributeValueValidator
     {
         $maxKeyLength = (int) config('server.limits.max_search_attribute_key_length', 128);
         $maxValueBytes = (int) config('server.limits.max_search_attribute_value_bytes', 2048);
-        $definitions = $this->definitionTypes($namespace);
+        $customDefinitions = $this->customDefinitionTypes($namespace);
+        $definitions = array_merge(SearchAttributeDefinition::SYSTEM_ATTRIBUTES, $customDefinitions);
+        $schemaEnforced = $customDefinitions !== [];
         $attributeTypes = [];
         $messages = [];
 
@@ -60,6 +62,12 @@ class SearchAttributeValueValidator
                 continue;
             }
 
+            if ($schemaEnforced) {
+                $this->rejectUnregisteredValue($messages, $key);
+
+                continue;
+            }
+
             $this->validateUnregisteredValue($messages, $key, $value, $maxValueBytes);
         }
 
@@ -75,21 +83,17 @@ class SearchAttributeValueValidator
     /**
      * @return array<string, string>
      */
-    private function definitionTypes(?string $namespace): array
+    private function customDefinitionTypes(?string $namespace): array
     {
-        $types = SearchAttributeDefinition::SYSTEM_ATTRIBUTES;
-
         if (is_string($namespace) && $namespace !== '') {
             /** @var array<string, string> $custom */
-            $custom = SearchAttributeDefinition::query()
+            return SearchAttributeDefinition::query()
                 ->where('namespace', $namespace)
                 ->pluck('type', 'name')
                 ->all();
-
-            $types = array_merge($types, $custom);
         }
 
-        return $types;
+        return [];
     }
 
     /**
@@ -107,7 +111,7 @@ class SearchAttributeValueValidator
         }
 
         match ($declaredType) {
-            'keyword', 'text' => $this->validateStringValue($messages, $key, $value, $declaredType, $maxValueBytes),
+            'keyword', 'string', 'text' => $this->validateStringValue($messages, $key, $value, $declaredType, $maxValueBytes),
             'int' => $this->validateIntValue($messages, $key, $value),
             'double' => $this->validateDoubleValue($messages, $key, $value),
             'bool' => $this->validateBoolValue($messages, $key, $value),
@@ -119,6 +123,17 @@ class SearchAttributeValueValidator
                 $declaredType,
             ),
         };
+    }
+
+    /**
+     * @param  list<string>  $messages
+     */
+    private function rejectUnregisteredValue(array &$messages, string $key): void
+    {
+        $messages[] = sprintf(
+            'Search attribute [%s] is not registered for this namespace.',
+            $key,
+        );
     }
 
     /**
@@ -291,7 +306,7 @@ class SearchAttributeValueValidator
     private function storageType(string $declaredType): string
     {
         return match ($declaredType) {
-            'text' => WorkflowSearchAttribute::TYPE_STRING,
+            'string', 'text' => WorkflowSearchAttribute::TYPE_STRING,
             'double' => WorkflowSearchAttribute::TYPE_FLOAT,
             'keyword_list' => WorkflowSearchAttribute::TYPE_KEYWORD_LIST,
             default => $declaredType,

@@ -25,6 +25,30 @@ class SearchAttributeValueValidationTest extends TestCase
         ]);
     }
 
+    public function test_workflow_start_rejects_unregistered_search_attribute(): void
+    {
+        Queue::fake();
+
+        SearchAttributeDefinition::create([
+            'namespace' => 'default',
+            'name' => 'known_key',
+            'type' => 'keyword',
+        ]);
+
+        $response = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-search-attr-unknown-start',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'search-attr-queue',
+            'input' => ['Ada'],
+            'search_attributes' => [
+                'unknown_key' => 'x',
+            ],
+        ], $this->apiHeaders());
+
+        $response->assertStatus(422)
+            ->assertJsonPath('validation_errors.search_attributes.0', 'Search attribute [unknown_key] is not registered for this namespace.');
+    }
+
     public function test_worker_search_attribute_update_accepts_registered_keyword_list_value(): void
     {
         Queue::fake();
@@ -102,6 +126,41 @@ class SearchAttributeValueValidationTest extends TestCase
         $this->assertIsString($message);
         $this->assertStringContainsString('CustomerAge', $message);
         $this->assertStringContainsString('registered as int', $message);
+    }
+
+    public function test_worker_search_attribute_update_rejects_unregistered_key(): void
+    {
+        Queue::fake();
+
+        SearchAttributeDefinition::create([
+            'namespace' => 'default',
+            'name' => 'known_key',
+            'type' => 'keyword',
+        ]);
+
+        [, , $taskId, $attempt] = $this->startAndPollWorkflowTask(
+            'wf-search-attr-unknown-update',
+        );
+
+        $response = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-search-attrs',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [
+                [
+                    'type' => 'upsert_search_attributes',
+                    'attributes' => [
+                        'unknown_key' => 'x',
+                    ],
+                ],
+            ],
+        ], $this->workerHeaders());
+
+        $response->assertStatus(422)
+            ->assertJsonPath('reason', 'validation_failed');
+
+        $message = $response->json('validation_errors')['commands.0.attributes'][0] ?? null;
+
+        $this->assertSame('Search attribute [unknown_key] is not registered for this namespace.', $message);
     }
 
     /**
