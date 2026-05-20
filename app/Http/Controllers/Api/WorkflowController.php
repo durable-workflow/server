@@ -329,7 +329,7 @@ class WorkflowController
         return ControlPlaneProtocol::jsonForRequest($request, $this->formatRun(
             $run,
             $namespace,
-            $this->workflowControlPlane->describe($workflowId),
+            $this->workflowControlPlane->describe($workflowId, ['namespace' => $namespace]),
         ));
     }
 
@@ -390,7 +390,10 @@ class WorkflowController
         return ControlPlaneProtocol::jsonForRequest($request, $this->formatRun(
             $run,
             $namespace,
-            $this->workflowControlPlane->describe($workflowId, ['run_id' => $runId]),
+            $this->workflowControlPlane->describe($workflowId, [
+                'namespace' => $namespace,
+                'run_id' => $runId,
+            ]),
         ));
     }
 
@@ -482,6 +485,7 @@ class WorkflowController
             $workflowId,
             $signalName,
             [
+                'namespace' => $namespace,
                 'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
                 'payload_codec' => $envelope['codec'],
                 'payload_blob' => $envelope['blob'],
@@ -555,6 +559,7 @@ class WorkflowController
             $workflowId,
             $queryName,
             [
+                'namespace' => $namespace,
                 'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
                 'command_context' => $this->commandContexts->make(
                     $request,
@@ -658,6 +663,7 @@ class WorkflowController
             $workflowId,
             $updateName,
             [
+                'namespace' => $namespace,
                 'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
                 'command_context' => $this->commandContexts->make(
                     $request,
@@ -707,6 +713,7 @@ class WorkflowController
         $result = $this->workflowControlPlane->cancel(
             $workflowId,
             [
+                'namespace' => $namespace,
                 'reason' => $validated['reason'] ?? null,
                 'command_context' => $this->commandContexts->make(
                     $request,
@@ -751,6 +758,7 @@ class WorkflowController
         $result = $this->workflowControlPlane->terminate(
             $workflowId,
             [
+                'namespace' => $namespace,
                 'reason' => $validated['reason'] ?? null,
                 'command_context' => $this->commandContexts->make(
                     $request,
@@ -794,6 +802,7 @@ class WorkflowController
         $result = $this->workflowControlPlane->repair(
             $workflowId,
             [
+                'namespace' => $namespace,
                 'command_context' => $this->commandContexts->make(
                     $request,
                     workflowId: $workflowId,
@@ -836,6 +845,7 @@ class WorkflowController
         $result = $this->workflowControlPlane->archive(
             $workflowId,
             [
+                'namespace' => $namespace,
                 'reason' => $validated['reason'] ?? null,
                 'command_context' => $this->commandContexts->make(
                     $request,

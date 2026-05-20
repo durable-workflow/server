@@ -8,6 +8,7 @@ use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
 
 class WorkflowControllerDelegationTest extends TestCase
 {
@@ -19,6 +20,76 @@ class WorkflowControllerDelegationTest extends TestCase
         parent::setUp();
 
         $this->createNamespace('default');
+    }
+
+    public function test_describe_endpoint_passes_namespace_to_the_gateway(): void
+    {
+        $start = app(WorkflowControlPlane::class)->start('remote-workflow-type', 'wf-describe-delegate', [
+            'connection' => 'redis',
+            'queue' => 'default',
+            'namespace' => 'default',
+        ]);
+
+        $this->assertNotNull($start['workflow_run_id']);
+        $runId = (string) $start['workflow_run_id'];
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($runId);
+
+        $this->mock(WorkflowControlPlane::class, function (MockInterface $mock) use ($run): void {
+            $mock->shouldReceive('describe')
+                ->once()
+                ->withArgs(static function (string $workflowId, array $options): bool {
+                    return $workflowId === 'wf-describe-delegate'
+                        && ($options['namespace'] ?? null) === 'default';
+                })
+                ->andReturn([
+                    'found' => true,
+                    'workflow_instance_id' => 'wf-describe-delegate',
+                    'workflow_type' => 'remote-workflow-type',
+                    'workflow_class' => 'remote-workflow-type',
+                    'namespace' => 'default',
+                    'business_key' => null,
+                    'execution_timeout_seconds' => null,
+                    'run' => [
+                        'workflow_run_id' => $run->id,
+                        'run_number' => 1,
+                        'is_current_run' => true,
+                        'status' => $run->status->value,
+                        'status_bucket' => $run->status->statusBucket()->value,
+                        'closed_reason' => null,
+                        'compatibility' => $run->compatibility,
+                        'connection' => $run->connection,
+                        'queue' => $run->queue,
+                        'run_timeout_seconds' => null,
+                        'execution_deadline_at' => null,
+                        'run_deadline_at' => null,
+                        'started_at' => $run->started_at?->toJSON(),
+                        'closed_at' => null,
+                        'last_progress_at' => $run->last_progress_at?->toJSON(),
+                        'wait_kind' => null,
+                        'wait_reason' => null,
+                    ],
+                    'run_count' => 1,
+                    'actions' => [
+                        'can_signal' => true,
+                        'can_query' => false,
+                        'can_update' => false,
+                        'can_cancel' => true,
+                        'can_terminate' => true,
+                        'can_repair' => true,
+                        'can_archive' => false,
+                    ],
+                    'reason' => null,
+                ]);
+        });
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-describe-delegate')
+            ->assertOk()
+            ->assertJsonPath('workflow_id', 'wf-describe-delegate')
+            ->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('run_id', $run->id);
     }
 
     public function test_control_plane_command_endpoints_delegate_to_the_gateway(): void
@@ -50,6 +121,7 @@ class WorkflowControllerDelegationTest extends TestCase
                         && (($context['server']['command'] ?? null) === 'signal')
                         && (($context['server']['metadata']['request_id'] ?? null) === 'signal-request-1')
                         && (($context['server']['metadata']['signal_name'] ?? null) === 'advance')
+                        && ($options['namespace'] ?? null) === 'default'
                         && ($options['arguments'] ?? null) === ['Ada']
                         && ($options['strict_configured_type_validation'] ?? null) === true;
                 })
@@ -82,6 +154,7 @@ class WorkflowControllerDelegationTest extends TestCase
                         && (($context['request']['path'] ?? null) === '/api/workflows/wf-delegate/query/currentState')
                         && (($context['server']['command'] ?? null) === 'query')
                         && (($context['server']['metadata']['query_name'] ?? null) === 'currentState')
+                        && ($options['namespace'] ?? null) === 'default'
                         && ($options['strict_configured_type_validation'] ?? null) === true;
                 })
                 ->andReturn([
@@ -111,6 +184,7 @@ class WorkflowControllerDelegationTest extends TestCase
                         && (($context['server']['metadata']['request_id'] ?? null) === 'update-request-1')
                         && (($context['server']['metadata']['update_name'] ?? null) === 'approve')
                         && (($context['server']['metadata']['wait_for'] ?? null) === 'completed')
+                        && ($options['namespace'] ?? null) === 'default'
                         && ($options['arguments'] ?? null) === [true]
                         && ($options['wait_for'] ?? null) === 'completed'
                         && ($options['strict_configured_type_validation'] ?? null) === true;
@@ -142,6 +216,7 @@ class WorkflowControllerDelegationTest extends TestCase
                         && (($context['server']['command'] ?? null) === 'cancel')
                         && (($context['server']['metadata']['request_id'] ?? null) === 'cancel-request-1')
                         && (($context['server']['metadata']['reason'] ?? null) === 'operator cancel')
+                        && ($options['namespace'] ?? null) === 'default'
                         && ($options['reason'] ?? null) === 'operator cancel'
                         && ($options['strict_configured_type_validation'] ?? null) === true;
                 })
@@ -171,6 +246,7 @@ class WorkflowControllerDelegationTest extends TestCase
                         && (($context['server']['command'] ?? null) === 'terminate')
                         && (($context['server']['metadata']['request_id'] ?? null) === 'terminate-request-1')
                         && (($context['server']['metadata']['reason'] ?? null) === 'operator terminate')
+                        && ($options['namespace'] ?? null) === 'default'
                         && ($options['reason'] ?? null) === 'operator terminate'
                         && ($options['strict_configured_type_validation'] ?? null) === true;
                 })
