@@ -97,9 +97,9 @@ final class WorkflowPackageApiFloor
     ];
 
     /**
-     * Minimum workflow package protocol contract required by this server.
+     * Workflow package protocol contract required by this server.
      */
-    private const MINIMUM_WORKER_PROTOCOL_VERSION = '1.7';
+    private const REQUIRED_WORKER_PROTOCOL_VERSION = WorkerProtocol::VERSION;
 
     /**
      * Concrete classes the server instantiates or catches directly.
@@ -176,19 +176,20 @@ final class WorkflowPackageApiFloor
     private const POLL_MODE_DEMOTION_METHOD = 'queue';
 
     /**
-     * Assert every required API is present. Throws with a single
-     * aggregated diagnostic when the installed workflow package is too old.
+     * Assert every required API is present. Throws with a single aggregated
+     * diagnostic when the installed workflow package does not match the
+     * server-owned worker protocol surface.
      */
     public static function assert(): void
     {
         $missing = [];
 
-        if (! self::hasWorkerProtocolVersionAtLeast(self::MINIMUM_WORKER_PROTOCOL_VERSION)) {
+        if (! self::hasMatchingWorkerProtocolVersion(self::REQUIRED_WORKER_PROTOCOL_VERSION)) {
             $installed = self::installedWorkerProtocolVersion();
             $missing[] = sprintf(
-                '%s::VERSION >= %s%s',
+                '%s::VERSION = %s%s',
                 WorkerProtocolVersion::class,
-                self::MINIMUM_WORKER_PROTOCOL_VERSION,
+                self::REQUIRED_WORKER_PROTOCOL_VERSION,
                 $installed === null ? '' : sprintf(' (installed %s)', $installed),
             );
         }
@@ -270,16 +271,19 @@ final class WorkflowPackageApiFloor
         }
 
         throw new RuntimeException(sprintf(
-            "Installed durable-workflow/workflow package is older than the server's API floor. "
-            .'Missing: %s. Re-run `composer update durable-workflow/workflow` against a v2 snapshot that '
+            "Installed durable-workflow/workflow package does not match the server's API floor. "
+            .'Missing or incompatible: %s. Re-run `composer update durable-workflow/workflow` '
+            .'against a v2 snapshot that '
+            .'advertises worker protocol %s and '
             .'includes CodecRegistry::universal(), CodecRegistry::engineSpecific(), MatchingRoleSnapshot::current(), '
             .'the filtered WorkflowTaskBridge::poll() and ActivityTaskBridge::poll() contracts, '
             .'the poll-mode queue capability demotion, the matching-role repair-pass contract, '
             .'the service execution control-plane contract, the worker-session protocol contract, '
             .'the external payload storage protocol APIs, the command payload-envelope contract, plus '
             .'ChildWorkflowNamespaceProjection for package-owned child namespace propagation '
-            .'(install a current v2 workflow package snapshot or newer).',
+            .'(install the v2 workflow package snapshot that matches this server release).',
             implode(', ', $missing),
+            self::REQUIRED_WORKER_PROTOCOL_VERSION,
         ));
     }
 
@@ -778,11 +782,11 @@ final class WorkflowPackageApiFloor
             && str_contains($body, 'queue_sync_unsupported');
     }
 
-    private static function hasWorkerProtocolVersionAtLeast(string $minimum): bool
+    private static function hasMatchingWorkerProtocolVersion(string $required): bool
     {
         $installed = self::installedWorkerProtocolVersion();
 
-        return $installed !== null && version_compare($installed, $minimum, '>=');
+        return $installed === $required;
     }
 
     private static function installedWorkerProtocolVersion(): ?string

@@ -959,7 +959,10 @@ class WorkerController
         int $workflowTaskAttempt,
         array $commands,
     ): ?JsonResponse {
-        if (! $this->commandsUseWorkerSessions($commands) || WorkerProtocol::workerSessionsSupported()) {
+        if (
+            ! $this->commandsUseWorkerSessions($commands)
+            || WorkerProtocol::workerSessionsAvailableForRequest($request)
+        ) {
             return null;
         }
 

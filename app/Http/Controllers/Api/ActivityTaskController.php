@@ -99,6 +99,9 @@ class ActivityTaskController
                 worker: $worker,
                 pollRequestId: $validated['poll_request_id'] ?? null,
                 supportedActivityTypes: $supportedActivityTypes,
+                workerSessionsAvailable: WorkerProtocol::workerSessionsAvailableForRequest(
+                    $request,
+                ),
             );
         } catch (\Throwable $exception) {
             if (BackendLockPressure::is($exception)) {

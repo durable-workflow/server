@@ -43,6 +43,7 @@ final class ActivityTaskPoller
         WorkerRegistration $worker,
         ?string $pollRequestId = null,
         array $supportedActivityTypes = [],
+        bool $workerSessionsAvailable = true,
     ): array {
         $pollRequestId = $this->nonEmptyString($pollRequestId);
 
@@ -54,6 +55,7 @@ final class ActivityTaskPoller
                 buildId: $buildId,
                 worker: $worker,
                 supportedActivityTypes: $supportedActivityTypes,
+                workerSessionsAvailable: $workerSessionsAvailable,
             );
         }
 
@@ -65,6 +67,7 @@ final class ActivityTaskPoller
             worker: $worker,
             pollRequestId: $pollRequestId,
             supportedActivityTypes: $supportedActivityTypes,
+            workerSessionsAvailable: $workerSessionsAvailable,
         );
     }
 
@@ -80,6 +83,7 @@ final class ActivityTaskPoller
         WorkerRegistration $worker,
         string $pollRequestId,
         array $supportedActivityTypes = [],
+        bool $workerSessionsAvailable = true,
     ): array {
         for ($attempt = 0; $attempt < 3; $attempt++) {
             $cached = $this->cachedPollResult(
@@ -88,6 +92,7 @@ final class ActivityTaskPoller
                 $buildId,
                 $leaseOwner,
                 $pollRequestId,
+                $workerSessionsAvailable,
             );
 
             if ($cached['resolved']) {
@@ -112,6 +117,7 @@ final class ActivityTaskPoller
                     worker: $worker,
                     pollRequestId: $pollRequestId,
                     supportedActivityTypes: $supportedActivityTypes,
+                    workerSessionsAvailable: $workerSessionsAvailable,
                 );
             }
 
@@ -121,6 +127,15 @@ final class ActivityTaskPoller
                 $buildId,
                 $leaseOwner,
                 $pollRequestId,
+            );
+            $observed = $this->revalidatedPollResult(
+                namespace: $namespace,
+                taskQueue: $taskQueue,
+                buildId: $buildId,
+                leaseOwner: $leaseOwner,
+                pollRequestId: $pollRequestId,
+                result: $observed,
+                workerSessionsAvailable: $workerSessionsAvailable,
             );
 
             if ($observed['resolved']) {
@@ -137,6 +152,7 @@ final class ActivityTaskPoller
             $buildId,
             $leaseOwner,
             $pollRequestId,
+            $workerSessionsAvailable,
         );
 
         return [
@@ -154,6 +170,7 @@ final class ActivityTaskPoller
         ?string $buildId,
         string $leaseOwner,
         string $pollRequestId,
+        bool $workerSessionsAvailable = true,
     ): array {
         $cached = $this->pollRequests->result(
             $namespace,
@@ -167,16 +184,45 @@ final class ActivityTaskPoller
             return $cached;
         }
 
+        return $this->revalidatedPollResult(
+            namespace: $namespace,
+            taskQueue: $taskQueue,
+            buildId: $buildId,
+            leaseOwner: $leaseOwner,
+            pollRequestId: $pollRequestId,
+            result: $cached,
+            workerSessionsAvailable: $workerSessionsAvailable,
+        );
+    }
+
+    /**
+     * @param  array{resolved: bool, task: array<string, mixed>|null, poll_status: string|null}  $result
+     * @return array{resolved: bool, task: array<string, mixed>|null, poll_status: string|null}
+     */
+    private function revalidatedPollResult(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        string $leaseOwner,
+        string $pollRequestId,
+        array $result,
+        bool $workerSessionsAvailable = true,
+    ): array {
+        if (! $result['resolved']) {
+            return $result;
+        }
+
         if ($this->cachedTaskStillDeliverable(
             namespace: $namespace,
             taskQueue: $taskQueue,
             buildId: $buildId,
             leaseOwner: $leaseOwner,
-            task: $cached['task'],
+            task: $result['task'],
+            workerSessionsAvailable: $workerSessionsAvailable,
         )) {
-            $refreshedTask = $this->refreshCachedTaskPayload($cached['task']);
+            $refreshedTask = $this->refreshCachedTaskPayload($result['task']);
 
-            if ($refreshedTask !== $cached['task']) {
+            if ($refreshedTask !== $result['task']) {
                 $this->pollRequests->rememberResult(
                     $namespace,
                     $taskQueue,
@@ -184,14 +230,42 @@ final class ActivityTaskPoller
                     $leaseOwner,
                     $pollRequestId,
                     $refreshedTask,
-                    $cached['poll_status'] ?? $this->defaultPollStatus($refreshedTask),
+                    $result['poll_status'] ?? $this->defaultPollStatus($refreshedTask),
                 );
             }
 
             return [
                 'resolved' => true,
                 'task' => $refreshedTask,
-                'poll_status' => $cached['poll_status'] ?? $this->defaultPollStatus($refreshedTask),
+                'poll_status' => $result['poll_status'] ?? $this->defaultPollStatus($refreshedTask),
+            ];
+        }
+
+        if (
+            ! $workerSessionsAvailable
+            && $this->cachedTaskStillDeliverable(
+                namespace: $namespace,
+                taskQueue: $taskQueue,
+                buildId: $buildId,
+                leaseOwner: $leaseOwner,
+                task: $result['task'],
+                workerSessionsAvailable: true,
+            )
+            && $this->cachedTaskRequiresWorkerSession($result['task'])
+        ) {
+            $this->ensurePollResultRecorded(
+                namespace: $namespace,
+                taskQueue: $taskQueue,
+                buildId: $buildId,
+                leaseOwner: $leaseOwner,
+                pollRequestId: $pollRequestId,
+                result: $result,
+            );
+
+            return [
+                'resolved' => true,
+                'task' => null,
+                'poll_status' => 'empty',
             ];
         }
 
@@ -211,6 +285,31 @@ final class ActivityTaskPoller
     }
 
     /**
+     * Preserve a capable leader's session-bound result when an incapable
+     * duplicate waiter observes it through waitForResult().
+     *
+     * @param  array{resolved: bool, task: array<string, mixed>|null, poll_status: string|null}  $result
+     */
+    private function ensurePollResultRecorded(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        string $leaseOwner,
+        string $pollRequestId,
+        array $result,
+    ): void {
+        $this->pollRequests->rememberResult(
+            $namespace,
+            $taskQueue,
+            $buildId,
+            $leaseOwner,
+            $pollRequestId,
+            $result['task'],
+            $result['poll_status'] ?? $this->defaultPollStatus($result['task']),
+        );
+    }
+
+    /**
      * @param  list<string>  $supportedActivityTypes
      * @return array{task: array<string, mixed>|null, poll_status: string}
      */
@@ -222,6 +321,7 @@ final class ActivityTaskPoller
         WorkerRegistration $worker,
         string $pollRequestId,
         array $supportedActivityTypes = [],
+        bool $workerSessionsAvailable = true,
     ): array {
         try {
             $task = $this->performPoll(
@@ -231,6 +331,7 @@ final class ActivityTaskPoller
                 buildId: $buildId,
                 worker: $worker,
                 supportedActivityTypes: $supportedActivityTypes,
+                workerSessionsAvailable: $workerSessionsAvailable,
             );
         } catch (\Throwable $exception) {
             $this->pollRequests->forgetPending(
@@ -268,6 +369,7 @@ final class ActivityTaskPoller
         ?string $buildId,
         WorkerRegistration $worker,
         array $supportedActivityTypes = [],
+        bool $workerSessionsAvailable = true,
     ): array {
         $limit = max(10, max(1, (int) config('server.polling.max_tasks_per_poll', 1)) * 10);
         $nextProbeAt = null;
@@ -285,6 +387,7 @@ final class ActivityTaskPoller
                 $buildId,
                 $worker,
                 $supportedActivityTypes,
+                $workerSessionsAvailable,
                 $limit,
                 &$nextProbeAt,
                 &$resolvedResult,
@@ -297,6 +400,7 @@ final class ActivityTaskPoller
                     $worker,
                     $limit,
                     $supportedActivityTypes,
+                    $workerSessionsAvailable,
                 );
                 $nextProbeAt = $resolvedResult['next_probe_at'] ?? null;
 
@@ -339,6 +443,7 @@ final class ActivityTaskPoller
         ?string $buildId,
         string $leaseOwner,
         ?array $task,
+        bool $workerSessionsAvailable = true,
     ): bool {
         if ($task === null) {
             return true;
@@ -399,6 +504,13 @@ final class ActivityTaskPoller
             return false;
         }
 
+        if (
+            ! $workerSessionsAvailable
+            && $this->workerSessions->optionsForExecution($attempt->activity_execution_id) !== null
+        ) {
+            return false;
+        }
+
         if ($attempt->lease_expires_at === null || $attempt->lease_expires_at->lte(now())) {
             return false;
         }
@@ -416,6 +528,28 @@ final class ActivityTaskPoller
         }
 
         return true;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $task
+     */
+    private function cachedTaskRequiresWorkerSession(?array $task): bool
+    {
+        if ($task === null) {
+            return false;
+        }
+
+        $executionId = $this->nonEmptyString($task['activity_execution_id'] ?? null);
+
+        if ($executionId === null) {
+            $attemptId = $this->nonEmptyString($task['activity_attempt_id'] ?? null);
+            $attempt = $attemptId === null ? null : ActivityAttempt::query()->find($attemptId);
+            $executionId = $attempt instanceof ActivityAttempt
+                ? $this->nonEmptyString($attempt->activity_execution_id)
+                : null;
+        }
+
+        return $this->workerSessions->optionsForExecution($executionId) !== null;
     }
 
     /**
@@ -452,6 +586,7 @@ final class ActivityTaskPoller
         WorkerRegistration $worker,
         int $limit,
         array $supportedActivityTypes = [],
+        bool $workerSessionsAvailable = true,
     ): array {
         $this->applyWorkerCompatibility($namespace, $buildId);
 
@@ -471,6 +606,7 @@ final class ActivityTaskPoller
                     $worker,
                     $limit,
                     $supportedActivityTypes,
+                    $workerSessionsAvailable,
                 ),
             ),
         );
@@ -517,6 +653,7 @@ final class ActivityTaskPoller
         WorkerRegistration $worker,
         int $limit,
         array $supportedActivityTypes = [],
+        bool $workerSessionsAvailable = true,
     ): ?array {
         $readyTasks = $this->bridge->poll(
             connection: null,
@@ -570,7 +707,7 @@ final class ActivityTaskPoller
             if (
                 $workerSession !== null
                 && (
-                    ! WorkerProtocol::workerSessionsSupported()
+                    ! $workerSessionsAvailable
                     || ! $this->workerCanSatisfySession($worker, $workerSession)
                 )
             ) {
@@ -578,7 +715,13 @@ final class ActivityTaskPoller
             }
 
             try {
-                $claim = DB::transaction(function () use ($namespace, $worker, $taskId, $leaseOwner): ?array {
+                $claim = DB::transaction(function () use (
+                    $namespace,
+                    $worker,
+                    $taskId,
+                    $leaseOwner,
+                    $workerSessionsAvailable,
+                ): ?array {
                     $claim = $this->claimStatus($taskId, $leaseOwner);
 
                     if (($claim['claimed'] ?? false) !== true) {
@@ -592,7 +735,7 @@ final class ActivityTaskPoller
                     );
 
                     if ($workerSession !== null) {
-                        if (! WorkerProtocol::workerSessionsSupported()) {
+                        if (! $workerSessionsAvailable) {
                             throw new ActivityTaskClaimRolledBack;
                         }
 

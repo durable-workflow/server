@@ -6,6 +6,8 @@ namespace Tests\Feature;
 
 use App\Models\WorkerRegistration;
 use App\Models\WorkerSessionLease;
+use App\Support\ActivityTaskPollRequestStore;
+use App\Support\ServerPollingCache;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
@@ -176,6 +178,24 @@ class WorkerSessionProtocolTest extends TestCase
             ->assertJsonPath('poll_status', 'empty')
             ->assertJsonPath('task', null);
 
+        $legacyProtocol = $this->protocolVersionBefore(WorkerProtocol::workerSessionMinimumProtocolVersion());
+
+        $this->registerWorkerThroughProtocol(
+            workerId: 'legacy-gpu-worker',
+            taskQueue: 'gpu-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+            capabilities: ['gpu:nvidia-l4'],
+            protocolVersion: $legacyProtocol,
+        );
+
+        $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'legacy-gpu-worker',
+            'task_queue' => 'gpu-activities',
+        ], $this->workerProtocolHeaders($legacyProtocol))
+            ->assertOk()
+            ->assertJsonPath('poll_status', 'empty')
+            ->assertJsonPath('task', null);
+
         $this->registerWorkerThroughProtocol(
             workerId: 'gpu-worker',
             taskQueue: 'gpu-activities',
@@ -215,6 +235,232 @@ class WorkerSessionProtocolTest extends TestCase
             ->assertOk()
             ->assertJsonPath('poll_status', 'empty')
             ->assertJsonPath('task', null);
+    }
+
+    public function test_legacy_duplicate_activity_poll_wait_result_does_not_replay_worker_session_task(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-session-mixed-protocol-race',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'external-workflows',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $this->registerWorkerThroughProtocol(
+            workerId: 'mixed-protocol-workflow-worker',
+            taskQueue: 'external-workflows',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $workflowPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'mixed-protocol-workflow-worker',
+            'task_queue' => 'external-workflows',
+        ], $this->workerHeaders());
+
+        $workflowPoll->assertOk();
+
+        $this->postJson(
+            sprintf('/api/worker/workflow-tasks/%s/complete', $workflowPoll->json('task.task_id')),
+            [
+                'lease_owner' => $workflowPoll->json('task.lease_owner'),
+                'workflow_task_attempt' => $workflowPoll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'schedule_activity',
+                        'activity_type' => 'tests.external-greeting-activity',
+                        'arguments' => Serializer::serializeWithCodec(
+                            (string) config('workflows.serializer'),
+                            ['Ada'],
+                        ),
+                        'worker_session' => [
+                            'session_id' => 'gpu-mixed-protocol-race',
+                            'queue' => 'gpu-activities',
+                            'requirements' => ['gpu:nvidia-l4'],
+                            'lease_seconds' => 120,
+                            'ttl_seconds' => 600,
+                            'max_concurrent_activities' => 1,
+                        ],
+                    ],
+                ],
+            ],
+            $this->workerHeaders(),
+        )->assertOk();
+
+        $pollRequestId = 'mixed-protocol-session-poll';
+
+        $store = new class(app(ServerPollingCache::class), $pollRequestId) extends ActivityTaskPollRequestStore
+        {
+            public bool $forceWaitResult = true;
+
+            public int $recordedSessionResults = 0;
+
+            public int $waitCalls = 0;
+
+            /**
+             * @var array<string, mixed>|null
+             */
+            private ?array $task = null;
+
+            /**
+             * @param  array<string, mixed>  $task
+             */
+            public function observeTask(array $task): void
+            {
+                $this->task = $task;
+            }
+
+            /**
+             * Bind this store before the first activity-poll request so Laravel's
+             * cached route controller keeps the instrumented poll store.
+             */
+            public function __construct(
+                ServerPollingCache $cache,
+                private readonly string $pollRequestId,
+            ) {
+                parent::__construct($cache);
+            }
+
+            public function tryStart(
+                string $namespace,
+                string $taskQueue,
+                ?string $buildId,
+                string $leaseOwner,
+                string $pollRequestId,
+            ): bool {
+                if ($pollRequestId === $this->pollRequestId && $this->forceWaitResult) {
+                    return false;
+                }
+
+                return parent::tryStart($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
+            }
+
+            /**
+             * @return array{resolved: bool, task: array<string, mixed>|null, poll_status: string|null}
+             */
+            public function waitForResult(
+                string $namespace,
+                string $taskQueue,
+                ?string $buildId,
+                string $leaseOwner,
+                string $pollRequestId,
+                ?int $timeoutMilliseconds = null,
+            ): array {
+                if ($pollRequestId === $this->pollRequestId && $this->forceWaitResult && $this->task !== null) {
+                    $this->waitCalls++;
+
+                    return [
+                        'resolved' => true,
+                        'task' => $this->task,
+                        'poll_status' => 'leased',
+                    ];
+                }
+
+                return parent::waitForResult(
+                    $namespace,
+                    $taskQueue,
+                    $buildId,
+                    $leaseOwner,
+                    $pollRequestId,
+                    $timeoutMilliseconds,
+                );
+            }
+
+            /**
+             * @param  array<string, mixed>|null  $task
+             */
+            public function rememberResult(
+                string $namespace,
+                string $taskQueue,
+                ?string $buildId,
+                string $leaseOwner,
+                string $pollRequestId,
+                ?array $task,
+                string $pollStatus,
+            ): void {
+                if (
+                    $pollRequestId === $this->pollRequestId
+                    && is_array($task)
+                    && ($task['activity_execution_id'] ?? null) === ($this->task['activity_execution_id'] ?? null)
+                ) {
+                    $this->recordedSessionResults++;
+                }
+
+                parent::rememberResult(
+                    $namespace,
+                    $taskQueue,
+                    $buildId,
+                    $leaseOwner,
+                    $pollRequestId,
+                    $task,
+                    $pollStatus,
+                );
+            }
+
+            protected function pause(int $milliseconds): void
+            {
+                throw new \RuntimeException('The fake wait result should avoid sleeping.');
+            }
+        };
+
+        app()->instance(ActivityTaskPollRequestStore::class, $store);
+
+        $this->registerWorkerThroughProtocol(
+            workerId: 'gpu-worker-mixed-protocol',
+            taskQueue: 'gpu-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+            capabilities: ['gpu:nvidia-l4'],
+        );
+
+        $currentPoll = $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'gpu-worker-mixed-protocol',
+            'task_queue' => 'gpu-activities',
+            'poll_request_id' => 'current-protocol-session-poll',
+        ], $this->workerHeaders());
+
+        $currentPoll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.worker_session.session_id', 'gpu-mixed-protocol-race')
+            ->assertJsonPath('task.worker_session.lease_owner', 'gpu-worker-mixed-protocol');
+
+        $task = $currentPoll->json('task');
+        $this->assertIsArray($task);
+
+        $store->observeTask($task);
+
+        $legacyProtocol = $this->protocolVersionBefore(WorkerProtocol::workerSessionMinimumProtocolVersion());
+
+        $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'gpu-worker-mixed-protocol',
+            'task_queue' => 'gpu-activities',
+            'poll_request_id' => $pollRequestId,
+        ], $this->workerProtocolHeaders($legacyProtocol))
+            ->assertOk()
+            ->assertJsonPath('poll_status', 'empty')
+            ->assertJsonPath('task', null);
+
+        $this->assertSame(1, $store->waitCalls);
+        $this->assertSame(1, $store->recordedSessionResults);
+
+        $store->forceWaitResult = false;
+
+        $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'gpu-worker-mixed-protocol',
+            'task_queue' => 'gpu-activities',
+            'poll_request_id' => $pollRequestId,
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.task_id', $task['task_id'])
+            ->assertJsonPath('task.activity_attempt_id', $task['activity_attempt_id'])
+            ->assertJsonPath('task.worker_session.session_id', 'gpu-mixed-protocol-race');
     }
 
     public function test_activity_poll_does_not_admit_worker_session_when_task_claim_fails(): void
@@ -580,6 +826,31 @@ class WorkerSessionProtocolTest extends TestCase
             ->assertJsonPath('minimum_protocol_version', WorkerProtocol::workerSessionMinimumProtocolVersion());
     }
 
+    public function test_worker_session_lifecycle_endpoints_reject_requests_below_feature_protocol(): void
+    {
+        $protocolVersion = $this->protocolVersionBefore(WorkerProtocol::workerSessionMinimumProtocolVersion());
+
+        $this->registerWorkerThroughProtocol(
+            workerId: 'legacy-session-worker',
+            taskQueue: 'gpu-activities',
+            capabilities: ['gpu:nvidia-l4'],
+            maxConcurrentWorkerSessions: 1,
+            protocolVersion: $protocolVersion,
+        );
+
+        $this->postJson('/api/worker/sessions', [
+            'worker_id' => 'legacy-session-worker',
+            'session_id' => 'gpu-legacy-lifecycle',
+            'queue' => 'gpu-activities',
+            'requirements' => ['gpu:nvidia-l4'],
+        ], $this->workerProtocolHeaders($protocolVersion))
+            ->assertStatus(409)
+            ->assertJsonPath('reason', 'worker_sessions_unavailable')
+            ->assertJsonPath('supported_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('requested_version', $protocolVersion)
+            ->assertJsonPath('minimum_protocol_version', WorkerProtocol::workerSessionMinimumProtocolVersion());
+    }
+
     public function test_stale_session_holder_is_marked_orphaned_and_can_be_reacquired(): void
     {
         $this->registerWorkerThroughProtocol(
@@ -640,6 +911,7 @@ class WorkerSessionProtocolTest extends TestCase
         array $supportedActivityTypes = [],
         array $capabilities = [],
         int $maxConcurrentWorkerSessions = 10,
+        ?string $protocolVersion = null,
     ): void {
         $this->postJson('/api/worker/register', [
             'worker_id' => $workerId,
@@ -649,7 +921,10 @@ class WorkerSessionProtocolTest extends TestCase
             'supported_activity_types' => $supportedActivityTypes,
             'capabilities' => $capabilities,
             'max_concurrent_worker_sessions' => $maxConcurrentWorkerSessions,
-        ], $this->workerHeaders())->assertCreated();
+        ], $protocolVersion === null
+            ? $this->workerHeaders()
+            : $this->workerProtocolHeaders($protocolVersion))
+            ->assertCreated();
     }
 
     /**

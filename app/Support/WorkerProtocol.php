@@ -16,7 +16,7 @@ class WorkerProtocol
      * here. WorkflowPackageApiFloor asserts the installed package still
      * provides the companion protocol helpers for this version.
      */
-    public const VERSION = '1.7';
+    public const VERSION = '1.8';
 
     public const HEADER = 'X-Durable-Workflow-Protocol-Version';
 
@@ -134,17 +134,40 @@ class WorkerProtocol
     {
         $configured = (string) config('server.worker_protocol.version', self::VERSION);
 
-        return version_compare($configured, self::workerSessionMinimumProtocolVersion(), '>=');
+        return self::protocolVersionSupportsWorkerSessions($configured);
+    }
+
+    public static function workerSessionsAvailableForRequest(Request $request): bool
+    {
+        $version = self::requestVersion($request);
+
+        return self::workerSessionsSupported()
+            && $version !== null
+            && self::protocolVersionSupportsWorkerSessions($version);
     }
 
     public static function rejectWorkerSessionsUnavailable(Request $request): ?JsonResponse
     {
-        if (self::workerSessionsSupported()) {
+        if (self::workerSessionsAvailableForRequest($request)) {
             return null;
         }
 
         $configured = (string) config('server.worker_protocol.version', self::VERSION);
         $minimum = self::workerSessionMinimumProtocolVersion();
+        $requested = self::requestVersion($request);
+        $serverSupports = self::protocolVersionSupportsWorkerSessions($configured);
+
+        $remediation = $serverSupports
+            ? sprintf(
+                'Send the %s header with worker protocol %s or newer and use a worker SDK '
+                    .'that implements worker-session semantics.',
+                self::HEADER,
+                $minimum,
+            )
+            : sprintf(
+                'Route worker-session clients only to server nodes advertising worker protocol %s or newer.',
+                $minimum,
+            );
 
         return self::json([
             'error' => sprintf(
@@ -153,13 +176,21 @@ class WorkerProtocol
             ),
             'reason' => 'worker_sessions_unavailable',
             'supported_version' => $configured,
-            'requested_version' => self::requestVersion($request),
+            'requested_version' => $requested,
             'minimum_protocol_version' => $minimum,
-            'remediation' => sprintf(
-                'Route worker-session clients only to server nodes advertising worker protocol %s or newer.',
-                $minimum,
-            ),
+            'remediation' => $remediation,
         ], 409);
+    }
+
+    private static function protocolVersionSupportsWorkerSessions(string $version): bool
+    {
+        $minimum = self::workerSessionMinimumProtocolVersion();
+
+        if (self::splitProtocolVersion($version) === null || self::splitProtocolVersion($minimum) === null) {
+            return false;
+        }
+
+        return version_compare($version, $minimum, '>=');
     }
 
     /**
