@@ -397,8 +397,11 @@ class ReplayVerificationContractTest extends TestCase
         $this->assertContains('every_required_scenario_has_one_result', $resultGate['pass_requires']);
         $this->assertContains('required_php_and_python_runtimes_are_reported', $resultGate['pass_requires']);
         $this->assertContains('adversarial_refusals_have_actionable_diagnostics', $resultGate['pass_requires']);
+        $this->assertContains('adversarial_refusals_match_required_outcomes', $resultGate['pass_requires']);
+        $this->assertContains('in_flight_signal_timing_matches_required_outcome', $resultGate['pass_requires']);
         $this->assertContains('each_non_pass_scenario_has_linked_findings', $resultGate['pass_requires']);
         $this->assertContains('run_record_metadata_is_complete', $resultGate['pass_requires']);
+        $this->assertContains('overall_outcome_matches_gate_status', $resultGate['pass_requires']);
         $this->assertSame('non_passing', $resultGate['smoke_subset_outcome']);
     }
 
@@ -519,6 +522,20 @@ class ReplayVerificationContractTest extends TestCase
         $this->assertContains('finding_links', array_column($runRecordFailures, 'field'));
     }
 
+    public function test_replay_result_gate_requires_the_overall_outcome_to_pass(): void
+    {
+        $result = $this->completeReplayConformanceResult();
+        $result['outcome'] = 'fail';
+
+        $evaluation = ReplayConformanceResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'overall_outcome_not_pass',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
     public function test_replay_result_gate_requires_current_artifact_tuple_versions(): void
     {
         $result = $this->completeReplayConformanceResult();
@@ -550,6 +567,30 @@ class ReplayVerificationContractTest extends TestCase
         $this->assertContains('integrity.rule', $diagnosticFailures[0]['missing_fields']);
     }
 
+    public function test_replay_result_gate_requires_refusal_and_timing_outcomes_to_match_the_contract(): void
+    {
+        $result = $this->completeReplayConformanceResult();
+        $result['scenario_results']['php_code_divergence_refusal']['observed_outcome'] = 'stack_trace';
+        $result['scenario_results']['server_history_mutation_refusal']['replay_diagnostics']['observed_outcome'] = 'accepted';
+        $result['scenario_results']['python_in_flight_signal_restart_timing']['observed_outputs']['observed_outcome'] = 'timed_out';
+
+        $evaluation = ReplayConformanceResultGate::evaluate($result);
+        $outcomeFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'unexpected_required_outcome',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame([
+            'php_code_divergence_refusal',
+            'server_history_mutation_refusal',
+            'python_in_flight_signal_restart_timing',
+        ], array_column($outcomeFailures, 'scenario_id'));
+        $this->assertContains('non_determinism_error', array_column($outcomeFailures, 'expected_outcome'));
+        $this->assertContains('bundle_invalid_or_drifted', array_column($outcomeFailures, 'expected_outcome'));
+        $this->assertContains('same_next_decision_after_replay', array_column($outcomeFailures, 'expected_outcome'));
+    }
+
     public function test_replay_result_gate_accepts_a_complete_passing_matrix(): void
     {
         $evaluation = ReplayConformanceResultGate::evaluate($this->completeReplayConformanceResult());
@@ -577,6 +618,7 @@ class ReplayVerificationContractTest extends TestCase
         }
 
         foreach (['python_code_divergence_refusal', 'php_code_divergence_refusal'] as $scenario) {
+            $scenarioResults[$scenario]['observed_outcome'] = 'non_determinism_error';
             $scenarioResults[$scenario]['replay_diagnostics'] = [
                 'workflow_sequence' => 4,
                 'expected_shape' => 'schedule_activity',
@@ -594,6 +636,7 @@ class ReplayVerificationContractTest extends TestCase
             'replay_diff' => [
                 'reason' => 'bundle_invalid',
             ],
+            'observed_outcome' => 'bundle_invalid_or_drifted',
             'message' => 'History bundle integrity check failed before replay.',
         ];
         unset($scenarioResults['server_history_mutation_refusal']['observed_outputs']);
@@ -603,6 +646,7 @@ class ReplayVerificationContractTest extends TestCase
                 'rule' => 'history_events.sequence_not_monotonic',
                 'path' => '$.history_events[3].sequence',
             ],
+            'observed_outcome' => 'bundle_invalid_or_failed',
             'message' => 'History event sequence is not monotonic.',
         ];
         unset($scenarioResults['malformed_history_refusal']['observed_outputs']);
@@ -613,6 +657,7 @@ class ReplayVerificationContractTest extends TestCase
                 'signal_sent_at' => '2026-05-19T22:00:01Z',
                 'history_reloaded_at' => '2026-05-19T22:00:02Z',
                 'replayed_next_decision' => 'schedule_activity:after-signal',
+                'observed_outcome' => 'same_next_decision_after_replay',
             ];
         }
 

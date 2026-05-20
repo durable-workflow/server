@@ -10,7 +10,7 @@ final class ReplayConformanceResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.replay-conformance.result-gate';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     /**
      * @return array<string, mixed>
@@ -29,6 +29,8 @@ final class ReplayConformanceResultGate
             'artifact_versions_fields' => [
                 'artifact_versions',
                 'artifactVersions',
+                'published_artifact_versions',
+                'publishedArtifactVersions',
             ],
             'scenario_results_fields' => [
                 'scenario_results',
@@ -47,10 +49,13 @@ final class ReplayConformanceResultGate
                 'completed_history_families_are_reported_for_each_runtime',
                 'worker_restart_replay_cells_are_reported_for_each_runtime',
                 'adversarial_refusals_have_actionable_diagnostics',
+                'adversarial_refusals_match_required_outcomes',
                 'in_flight_signal_timing_is_reported_for_each_runtime',
+                'in_flight_signal_timing_matches_required_outcome',
                 'each_pass_scenario_has_replay_evidence',
                 'each_non_pass_scenario_has_linked_findings',
                 'run_record_metadata_is_complete',
+                'overall_outcome_matches_gate_status',
                 'published_artifact_versions_are_recorded',
                 'no_local_product_source_artifacts_are_reported',
             ],
@@ -118,7 +123,7 @@ final class ReplayConformanceResultGate
                 }
 
                 array_push($failures, ...self::diagnosticFailures($scenarioId, $scenarioResult, $contract));
-                array_push($failures, ...self::timingFailures($scenarioId, $scenarioResult));
+                array_push($failures, ...self::timingFailures($scenarioId, $scenarioResult, $contract));
             } else {
                 $nonPassScenarios[] = $scenarioId;
                 if (! self::hasLinkedFindings($scenarioResult, $result)) {
@@ -149,6 +154,7 @@ final class ReplayConformanceResultGate
         array_push($failures, ...self::artifactVersionFailures($result, $contract));
         array_push($failures, ...self::sourcePolicyFailures($result, $contract));
         array_push($failures, ...self::runRecordFailures($result, $contract));
+        array_push($failures, ...self::overallOutcomeFailures($result));
         array_push($failures, ...self::runtimeMatrixFailures($result, $contract));
         array_push($failures, ...self::requiredSectionFailures($result, $scenarioResults));
 
@@ -306,9 +312,7 @@ final class ReplayConformanceResultGate
      */
     private static function artifactVersionFailures(array $result, array $contract): array
     {
-        $versions = self::arrayValue($result, 'artifact_versions')
-            ?? self::arrayValue($result, 'artifactVersions')
-            ?? [];
+        $versions = self::artifactVersions($result);
 
         $failures = [];
         $artifactPolicy = self::arrayValue($contract, 'artifact_policy') ?? [];
@@ -327,6 +331,20 @@ final class ReplayConformanceResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     *
+     * @return array<mixed>
+     */
+    private static function artifactVersions(array $result): array
+    {
+        return self::arrayValue($result, 'artifact_versions')
+            ?? self::arrayValue($result, 'artifactVersions')
+            ?? self::arrayValue($result, 'published_artifact_versions')
+            ?? self::arrayValue($result, 'publishedArtifactVersions')
+            ?? [];
     }
 
     /**
@@ -406,11 +424,34 @@ final class ReplayConformanceResultGate
 
     /**
      * @param array<string, mixed> $result
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function overallOutcomeFailures(array $result): array
+    {
+        $outcome = self::stringValue($result['outcome'] ?? $result['status'] ?? $result['verdict'] ?? null);
+        if (self::isPassingOutcome($outcome)) {
+            return [];
+        }
+
+        return [[
+            'code' => 'overall_outcome_not_pass',
+            'outcome' => $outcome,
+        ]];
+    }
+
+    /**
+     * @param array<string, mixed> $result
      */
     private static function hasRunRecordField(array $result, string $field): bool
     {
         $aliases = [
-            'artifact_versions' => ['artifact_versions', 'artifactVersions'],
+            'artifact_versions' => [
+                'artifact_versions',
+                'artifactVersions',
+                'published_artifact_versions',
+                'publishedArtifactVersions',
+            ],
             'started_at' => ['started_at', 'startedAt'],
             'finished_at' => ['finished_at', 'finishedAt'],
             'scenario_results' => ['scenario_results', 'scenarioResults'],
@@ -591,22 +632,28 @@ final class ReplayConformanceResultGate
             }
         }
 
-        return $missingFields === []
-            ? []
-            : [[
+        $failures = [];
+        if ($missingFields !== []) {
+            $failures[] = [
                 'code' => 'missing_actionable_refusal_diagnostic',
                 'scenario_id' => $scenarioId,
                 'requirement' => $requirementKey,
                 'missing_fields' => $missingFields,
-            ]];
+            ];
+        }
+
+        array_push($failures, ...self::requiredOutcomeFailures($scenarioId, $scenarioResult, $requirementKey, $requirement));
+
+        return $failures;
     }
 
     /**
      * @param array<string, mixed> $scenarioResult
+     * @param array<string, mixed> $contract
      *
      * @return array<int, array<string, mixed>>
      */
-    private static function timingFailures(string $scenarioId, array $scenarioResult): array
+    private static function timingFailures(string $scenarioId, array $scenarioResult, array $contract): array
     {
         if (! in_array($scenarioId, [
             'python_in_flight_signal_restart_timing',
@@ -628,13 +675,113 @@ final class ReplayConformanceResultGate
             }
         }
 
-        return $missingFields === []
-            ? []
-            : [[
+        $failures = [];
+        if ($missingFields !== []) {
+            $failures[] = [
                 'code' => 'missing_in_flight_timing_evidence',
                 'scenario_id' => $scenarioId,
                 'missing_fields' => $missingFields,
-            ]];
+            ];
+        }
+
+        $diagnosticRequirements = self::arrayValue($contract, 'diagnostic_requirements') ?? [];
+        $requirement = self::arrayValue($diagnosticRequirements, 'in_flight_signal_restart_timing') ?? [];
+        if (is_array($requirement)) {
+            array_push($failures, ...self::requiredOutcomeFailures(
+                $scenarioId,
+                $scenarioResult,
+                'in_flight_signal_restart_timing',
+                $requirement,
+            ));
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     * @param array<string, mixed> $requirement
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function requiredOutcomeFailures(
+        string $scenarioId,
+        array $scenarioResult,
+        string $requirementKey,
+        array $requirement,
+    ): array {
+        $requiredOutcome = self::stringValue($requirement['required_outcome'] ?? null);
+        if ($requiredOutcome === '') {
+            return [];
+        }
+
+        $observedOutcome = self::scenarioOutcome($scenarioResult);
+        if ($observedOutcome === $requiredOutcome) {
+            return [];
+        }
+
+        return [[
+            'code' => 'unexpected_required_outcome',
+            'scenario_id' => $scenarioId,
+            'requirement' => $requirementKey,
+            'expected_outcome' => $requiredOutcome,
+            'observed_outcome' => $observedOutcome,
+        ]];
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     */
+    private static function scenarioOutcome(array $scenarioResult): string
+    {
+        foreach ([
+            'observed_outcome',
+            'observedOutcome',
+            'required_outcome',
+            'requiredOutcome',
+            'outcome',
+            'verdict',
+        ] as $field) {
+            $value = self::stringValue($scenarioResult[$field] ?? null);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        foreach ([
+            'replay_diagnostics',
+            'replayDiagnostics',
+            'diagnostics',
+            'observed_outputs',
+            'observedOutputs',
+            'comparison',
+        ] as $field) {
+            $value = self::arrayValue($scenarioResult, $field);
+            if ($value === null) {
+                continue;
+            }
+
+            foreach ([
+                'observed_outcome',
+                'observedOutcome',
+                'required_outcome',
+                'requiredOutcome',
+                'outcome',
+                'verdict',
+            ] as $outcomeField) {
+                $outcome = self::stringValue($value[$outcomeField] ?? null);
+                if ($outcome !== '') {
+                    return $outcome;
+                }
+            }
+        }
+
+        return '';
+    }
+
+    private static function isPassingOutcome(string $outcome): bool
+    {
+        return in_array(strtolower($outcome), ['pass', 'passed', 'ok'], true);
     }
 
     /**

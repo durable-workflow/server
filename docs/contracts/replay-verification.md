@@ -216,7 +216,9 @@ The `result_gate` block is the server-published evaluator contract for
 smoke-only evidence, omitted required scenarios, missing PHP or Python
 runtime cells, missing replay evidence for passing scenarios, missing
 linked findings for non-passing scenarios, and adversarial refusal cases
-that do not include actionable diagnostics.
+that do not include actionable diagnostics. A result whose scenario
+matrix is green but whose top-level outcome is not `pass` remains
+non-passing; the run verdict and the gate verdict must agree.
 
 The machine-readable `required_scenarios` list mirrors the public
 scenario manifest at
@@ -245,18 +247,24 @@ activity, signal/update, wait-condition, version-marker, and
 saga-compensation state after worker restart. The live timing surface
 must also cover `in_flight_signal_restart_timing`, where a signal
 received around worker restart and history reload leads to the same next
-decision as the original execution.
+decision as the original execution. Passing evidence must report the
+required outcome `same_next_decision_after_replay` with timestamps for
+signal send, worker restart, history reload, and the replayed next
+decision.
 
 Adversarial replay must cover:
 
 - `code_divergence_refusal` — changed workflow code refuses with a
   non-determinism error that names the diverging workflow sequence,
-  expected shape, recorded event types, and message.
+  expected shape, recorded event types, and message. Passing evidence
+  must report the required outcome `non_determinism_error`.
 - `server_history_mutation_refusal` — mutated server history is refused
   as an invalid or drifted bundle with integrity and replay-diff
-  diagnostics.
+  diagnostics. Passing evidence must report the required outcome
+  `bundle_invalid_or_drifted`.
 - `malformed_history_refusal` — malformed history is refused as invalid
-  or failed with an integrity rule, path, and message.
+  or failed with an integrity rule, path, and message. Passing evidence
+  must report the required outcome `bundle_invalid_or_failed`.
 
 A conformance run may report scenario status as `pass`, `fail`,
 `unsupported`, `not_covered`, or `runner_blocked`. The coverage gate can
