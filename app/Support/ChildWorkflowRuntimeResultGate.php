@@ -10,7 +10,7 @@ final class ChildWorkflowRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.child-workflow-runtime.result-gate';
 
-    public const VERSION = 3;
+    public const VERSION = 4;
 
     /**
      * @return array<string, mixed>
@@ -56,6 +56,7 @@ final class ChildWorkflowRuntimeResultGate
                 'each_pass_scenario_has_scenario_specific_evidence',
                 'published_artifact_install_evidence_reported',
                 'each_non_pass_scenario_has_linked_findings',
+                'omitted_required_scenarios_link_findings',
                 'run_timestamps_outcome_and_finding_links_are_recorded',
                 'overall_outcome_matches_gate_status',
                 'published_artifact_versions_are_recorded_and_pinned',
@@ -156,6 +157,7 @@ final class ChildWorkflowRuntimeResultGate
         array_push($failures, ...self::sourcePolicyFailures($result, $contract));
         array_push($failures, ...self::matrixFailures($result, $contract));
         array_push($failures, ...self::requiredSectionFailures($result, $scenarioResults));
+        array_push($failures, ...self::missingScenarioFindingFailures($missingScenarios, $result));
         array_push($failures, ...self::scenarioSpecificEvidenceFailures($result, $contract, $scenarioResults));
 
         $smokeSubsetDetected = self::isSmokeSubset($scenarioStatuses, $contract);
@@ -766,6 +768,30 @@ final class ChildWorkflowRuntimeResultGate
                     'scenarios' => $scenarios,
                 ];
             }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param list<string> $missingScenarios
+     * @param array<string, mixed> $result
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function missingScenarioFindingFailures(array $missingScenarios, array $result): array
+    {
+        $failures = [];
+
+        foreach ($missingScenarios as $scenarioId) {
+            if (self::hasLinkedFindings(['scenario_id' => $scenarioId], $result)) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'missing_required_scenario_finding',
+                'scenario_id' => $scenarioId,
+            ];
         }
 
         return $failures;

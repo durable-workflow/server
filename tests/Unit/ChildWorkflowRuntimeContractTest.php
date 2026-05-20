@@ -100,6 +100,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             'namespace_behavior_reported',
             'declared_outcome_matches_evaluated_status',
             'published_artifact_install_evidence_reported',
+            'omitted_required_scenarios_link_findings',
             'findings_linked_for_non_pass_scenarios',
         ] as $requirement) {
             $this->assertContains($requirement, $gate['passing_outcome_requires']);
@@ -196,6 +197,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         );
         $this->assertContains('each_pass_scenario_has_scenario_specific_evidence', $resultGate['pass_requires']);
         $this->assertContains('published_artifact_install_evidence_reported', $resultGate['pass_requires']);
+        $this->assertContains('omitted_required_scenarios_link_findings', $resultGate['pass_requires']);
         $this->assertContains(
             'run_timestamps_outcome_and_finding_links_are_recorded',
             $resultGate['pass_requires'],
@@ -260,6 +262,40 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertContains(
             'missing_non_pass_finding',
             array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_requires_findings_for_omitted_required_scenarios(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        unset($result['scenario_results']['php_parent_python_child_cross_language']);
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $missingScenarioFindingFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_required_scenario_finding',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('php_parent_python_child_cross_language', $evaluation['missing_scenarios']);
+        $this->assertCount(1, $missingScenarioFindingFailures);
+        $this->assertSame(
+            'php_parent_python_child_cross_language',
+            $missingScenarioFindingFailures[0]['scenario_id'],
+        );
+
+        $result['finding_links'] = [
+            'php_parent_python_child_cross_language' => [
+                'https://tracker.example/findings/php-parent-python-child-cross-language',
+            ],
+        ];
+
+        $evaluationWithFinding = ChildWorkflowRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluationWithFinding['status']);
+        $this->assertNotContains(
+            'missing_required_scenario_finding',
+            array_column($evaluationWithFinding['gate_failures'], 'code'),
         );
     }
 

@@ -16,7 +16,7 @@ final class ChildWorkflowRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.child-workflow-runtime.contract';
 
-    public const VERSION = 3;
+    public const VERSION = 4;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.child-workflow-runtime.result';
 
@@ -245,6 +245,7 @@ final class ChildWorkflowRuntimeContract
                     'declared_outcome_matches_evaluated_status',
                     'scenario_specific_evidence_reported',
                     'published_artifact_install_evidence_reported',
+                    'omitted_required_scenarios_link_findings',
                     'artifact_versions_match_latest_published_set',
                     'no_local_product_source_artifacts',
                     'findings_linked_for_non_pass_scenarios',
