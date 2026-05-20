@@ -86,7 +86,11 @@ category emits a warning and does not block.
   versions including Waterline, run timestamps and outcome, the coverage
   gate that keeps a Python-only smoke subset non-passing, and a
   result-gate evaluator that rejects incomplete, placeholder, or
-  finding-free non-pass scenario records.
+  finding-free non-pass scenario records. A child-workflow result whose
+  scenario matrix is green but whose declared outcome is non-passing
+  remains non-passing; every declared outcome alias (`outcome`, `status`,
+  `verdict`) and the evaluated gate status must agree before rollup can
+  count the evidence as passing.
 - Public docs page: <https://durable-workflow.github.io/docs/2.0/compatibility>
 - Normative protocol spec catalog:
   <https://durable-workflow.github.io/docs/2.0/platform-protocol-specs>.

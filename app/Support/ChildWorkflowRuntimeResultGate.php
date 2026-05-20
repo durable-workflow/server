@@ -10,7 +10,7 @@ final class ChildWorkflowRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.child-workflow-runtime.result-gate';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     /**
      * @return array<string, mixed>
@@ -30,13 +30,14 @@ final class ChildWorkflowRuntimeResultGate
                 'published_artifact_versions',
                 'publishedArtifactVersions',
             ],
+            'declared_outcome_fields' => [
+                'outcome',
+                'status',
+                'verdict',
+            ],
             'scenario_results_fields' => [
                 'scenario_results',
                 'scenarioResults',
-            ],
-            'declared_outcome_fields' => [
-                'outcome',
-                'verdict',
             ],
             'declared_outcomes_source' => 'child_workflow_runtime_contract.coverage_gate.*_outcome',
             'non_pass_statuses' => [
@@ -345,7 +346,7 @@ final class ChildWorkflowRuntimeResultGate
             'started_at' => self::hasScalarField($result, ['started_at', 'startedAt']),
             'finished_at' => self::hasScalarField($result, ['finished_at', 'finishedAt']),
             'generated_at' => self::hasScalarField($result, ['generated_at', 'generatedAt']),
-            'outcome' => self::hasScalarField($result, ['outcome', 'verdict']),
+            'outcome' => self::hasScalarField($result, ['outcome', 'status', 'verdict']),
             'scenario_results' => self::hasArrayField($result, ['scenario_results', 'scenarioResults']),
             'findings' => self::hasArrayField($result, ['findings']),
             'finding_links' => self::hasArrayField($result, ['finding_links', 'findingLinks']),
@@ -361,21 +362,27 @@ final class ChildWorkflowRuntimeResultGate
      */
     private static function declaredOutcomeFailures(array $result, array $contract): array
     {
-        $outcome = self::declaredOutcome($result);
-        if ($outcome === '') {
+        $declaredOutcomes = self::declaredOutcomeTokens($result);
+        if ($declaredOutcomes === []) {
             return [];
         }
 
         $allowedOutcomes = self::declaredOutcomes($contract);
-        if (in_array($outcome, $allowedOutcomes, true)) {
-            return [];
+        $failures = [];
+        foreach ($declaredOutcomes as $field => $outcome) {
+            if (in_array($outcome, $allowedOutcomes, true)) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'invalid_declared_outcome',
+                'field' => $field,
+                'outcome' => $outcome,
+                'allowed_outcomes' => $allowedOutcomes,
+            ];
         }
 
-        return [[
-            'code' => 'invalid_declared_outcome',
-            'outcome' => $outcome,
-            'allowed_outcomes' => $allowedOutcomes,
-        ]];
+        return $failures;
     }
 
     /**
@@ -386,30 +393,69 @@ final class ChildWorkflowRuntimeResultGate
      */
     private static function declaredOutcomeStatusFailures(array $result, array $contract, string $evaluatedStatus): array
     {
-        $outcome = self::declaredOutcome($result);
-        if ($outcome === '' || ! in_array($outcome, self::declaredOutcomes($contract), true)) {
+        $declaredOutcomes = self::declaredOutcomeTokens($result);
+        if ($declaredOutcomes === []) {
             return [];
         }
 
-        $declaredStatus = $outcome === 'pass' ? 'pass' : 'non_passing';
-        if ($declaredStatus === $evaluatedStatus) {
-            return [];
+        $allowedOutcomes = self::declaredOutcomes($contract);
+        $failures = [];
+        $declaredStatuses = [];
+        foreach ($declaredOutcomes as $field => $outcome) {
+            if (! in_array($outcome, $allowedOutcomes, true)) {
+                continue;
+            }
+
+            $declaredStatus = self::declaredOutcomeStatus($outcome);
+            $declaredStatuses[$field] = $declaredStatus;
+            if ($declaredStatus === $evaluatedStatus) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'declared_outcome_status_mismatch',
+                'field' => $field,
+                'outcome' => $outcome,
+                'declared_status' => $declaredStatus,
+                'evaluated_status' => $evaluatedStatus,
+            ];
         }
 
-        return [[
-            'code' => 'declared_outcome_status_mismatch',
-            'outcome' => $outcome,
-            'declared_status' => $declaredStatus,
-            'evaluated_status' => $evaluatedStatus,
-        ]];
+        if (count(array_unique($declaredStatuses)) > 1) {
+            $conflictingOutcomes = array_intersect_key($declaredOutcomes, $declaredStatuses);
+            $failure = [
+                'code' => 'conflicting_outcome_tokens',
+                'declared_outcomes' => $conflictingOutcomes,
+                'declared_statuses' => $declaredStatuses,
+            ];
+            foreach (['outcome', 'status', 'verdict'] as $field) {
+                if (array_key_exists($field, $conflictingOutcomes)) {
+                    $failure[$field] = $conflictingOutcomes[$field];
+                }
+            }
+
+            $failures[] = $failure;
+        }
+
+        return $failures;
     }
 
     /**
      * @param array<string, mixed> $result
+     *
+     * @return array<string, string>
      */
-    private static function declaredOutcome(array $result): string
+    private static function declaredOutcomeTokens(array $result): array
     {
-        return self::firstStringField($result, ['outcome', 'verdict']);
+        $declaredOutcomes = [];
+        foreach (['outcome', 'status', 'verdict'] as $field) {
+            $value = self::stringValue($result[$field] ?? null);
+            if ($value !== '') {
+                $declaredOutcomes[$field] = $value;
+            }
+        }
+
+        return $declaredOutcomes;
     }
 
     /**
@@ -433,6 +479,11 @@ final class ChildWorkflowRuntimeResultGate
         }
 
         return array_values(array_unique($outcomes));
+    }
+
+    private static function declaredOutcomeStatus(string $outcome): string
+    {
+        return $outcome === 'pass' ? 'pass' : 'non_passing';
     }
 
     /**

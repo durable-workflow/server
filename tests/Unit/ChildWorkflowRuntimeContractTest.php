@@ -14,7 +14,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $manifest = ChildWorkflowRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.child-workflow-runtime.contract', $manifest['schema']);
-        $this->assertSame(1, $manifest['version']);
+        $this->assertSame(ChildWorkflowRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.child-workflow-runtime.result', $manifest['result_schema']);
         $this->assertSame('child_workflow_runtime_contract', $manifest['fixture_category']);
         $this->assertSame(
@@ -98,6 +98,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             'replay_restart_reported',
             'fan_out_concurrency_reported',
             'namespace_behavior_reported',
+            'declared_outcome_matches_evaluated_status',
             'findings_linked_for_non_pass_scenarios',
         ] as $requirement) {
             $this->assertContains($requirement, $gate['passing_outcome_requires']);
@@ -168,7 +169,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertContains('scenario_results', $resultGate['scenario_results_fields']);
         $this->assertContains('artifactVersions', $resultGate['artifact_versions_fields']);
         $this->assertContains('published_artifact_versions', $resultGate['artifact_versions_fields']);
-        $this->assertContains('outcome', $resultGate['declared_outcome_fields']);
+        $this->assertSame(['outcome', 'status', 'verdict'], $resultGate['declared_outcome_fields']);
         $this->assertSame(
             'child_workflow_runtime_contract.coverage_gate.*_outcome',
             $resultGate['declared_outcomes_source'],
@@ -485,6 +486,64 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertSame([], $evaluation['missing_scenarios']);
         $this->assertSame([], $evaluation['non_pass_scenarios']);
         $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_result_gate_rejects_all_pass_checks_when_status_alias_is_non_passing(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        unset($result['outcome']);
+        $result['status'] = 'non_passing';
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $mismatchFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'declared_outcome_status_mismatch',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertCount(1, $mismatchFailures);
+        $this->assertSame('status', $mismatchFailures[0]['field']);
+        $this->assertSame('non_passing', $mismatchFailures[0]['outcome']);
+        $this->assertSame('non_passing', $mismatchFailures[0]['declared_status']);
+        $this->assertSame('pass', $mismatchFailures[0]['evaluated_status']);
+    }
+
+    public function test_result_gate_rejects_conflicting_outcome_and_verdict_aliases(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        $result['outcome'] = 'non_passing';
+        $result['verdict'] = 'pass';
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('declared_outcome_status_mismatch', $failureCodes);
+        $this->assertContains('conflicting_outcome_tokens', $failureCodes);
+    }
+
+    public function test_result_gate_rejects_conflicting_status_and_verdict_aliases_when_outcome_is_empty(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        unset($result['outcome']);
+        $result['status'] = 'non_passing';
+        $result['verdict'] = 'pass';
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+        $aliasFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'conflicting_outcome_tokens',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('declared_outcome_status_mismatch', $failureCodes);
+        $this->assertContains('conflicting_outcome_tokens', $failureCodes);
+        $this->assertCount(1, $aliasFailures);
+        $this->assertSame([
+            'status' => 'non_passing',
+            'verdict' => 'pass',
+        ], $aliasFailures[0]['declared_outcomes']);
     }
 
     /**
