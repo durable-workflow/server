@@ -23,10 +23,13 @@ class SearchAttributeTest extends TestCase
             ->assertJsonPath('system_attributes.WorkflowId', 'keyword')
             ->assertJsonPath('system_attributes.RunId', 'keyword')
             ->assertJsonPath('system_attributes.Status', 'keyword')
+            ->assertJsonPath('system_attributes.ExecutionStatus', 'keyword')
             ->assertJsonPath('system_attributes.StartTime', 'datetime')
+            ->assertJsonPath('system_attributes.ExecutionTime', 'datetime')
             ->assertJsonPath('system_attributes.CloseTime', 'datetime')
             ->assertJsonPath('system_attributes.TaskQueue', 'keyword')
             ->assertJsonPath('system_attributes.BuildId', 'keyword')
+            ->assertJsonPath('system_attributes.BuildIds', 'keyword')
             ->assertJsonPath('custom_attributes', []);
     }
 
@@ -134,14 +137,16 @@ class SearchAttributeTest extends TestCase
     {
         $this->createNamespace('default');
 
-        $response = $this->withHeaders($this->headers())
-            ->postJson('/api/search-attributes', [
-                'name' => 'WorkflowId',
-                'type' => 'keyword',
-            ]);
+        foreach (array_keys(SearchAttributeDefinition::SYSTEM_ATTRIBUTES) as $name) {
+            $response = $this->withHeaders($this->headers())
+                ->postJson('/api/search-attributes', [
+                    'name' => $name,
+                    'type' => 'keyword',
+                ]);
 
-        $response->assertStatus(409)
-            ->assertJsonPath('reason', 'name_reserved');
+            $response->assertStatus(409)
+                ->assertJsonPath('reason', 'name_reserved');
+        }
     }
 
     public function test_it_validates_attribute_name_format(): void
@@ -245,6 +250,36 @@ class SearchAttributeTest extends TestCase
 
         $response->assertStatus(409)
             ->assertJsonPath('reason', 'system_attribute');
+    }
+
+    public function test_it_deletes_legacy_custom_attributes_that_now_collide_with_system_names(): void
+    {
+        $this->createNamespace('default');
+
+        foreach (['ExecutionStatus', 'ExecutionTime', 'BuildIds'] as $name) {
+            SearchAttributeDefinition::create([
+                'namespace' => 'default',
+                'name' => $name,
+                'type' => SearchAttributeDefinition::SYSTEM_ATTRIBUTES[$name],
+            ]);
+
+            $response = $this->withHeaders($this->headers())
+                ->deleteJson('/api/search-attributes/'.$name);
+
+            $response->assertOk()
+                ->assertJsonPath('name', $name)
+                ->assertJsonPath('outcome', 'deleted');
+
+            $this->assertDatabaseMissing('search_attribute_definitions', [
+                'namespace' => 'default',
+                'name' => $name,
+            ]);
+
+            $this->withHeaders($this->headers())
+                ->deleteJson('/api/search-attributes/'.$name)
+                ->assertStatus(409)
+                ->assertJsonPath('reason', 'system_attribute');
+        }
     }
 
     public function test_delete_is_namespace_scoped(): void

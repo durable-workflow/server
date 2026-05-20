@@ -15,6 +15,7 @@ use App\Support\WorkflowCommandContextFactory;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowRunDiagnostics;
 use App\Support\WorkflowStartService;
+use App\Support\WorkflowVisibilityQuery;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
@@ -40,6 +41,7 @@ class WorkflowController
         private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
         private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
         private readonly SearchAttributeValueValidator $searchAttributeValues,
+        private readonly WorkflowVisibilityQuery $visibilityQuery,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -70,10 +72,14 @@ class WorkflowController
                 isset($query['status']),
                 static fn ($builder) => $builder->where('workflow_run_summaries.status_bucket', $query['status']),
             )
-            ->when(isset($query['query']), function ($builder) use ($query) {
+            ->when(isset($query['query']), function ($builder) use ($query, $namespace) {
                 $term = trim((string) $query['query']);
 
                 if ($term === '') {
+                    return;
+                }
+
+                if ($this->visibilityQuery->apply($builder, (string) $namespace, $term)) {
                     return;
                 }
 

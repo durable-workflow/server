@@ -29,9 +29,12 @@ class SearchAttributeDefinition extends Model
         'WorkflowId' => 'keyword',
         'RunId' => 'keyword',
         'Status' => 'keyword',
+        'ExecutionStatus' => 'keyword',
         'StartTime' => 'datetime',
+        'ExecutionTime' => 'datetime',
         'CloseTime' => 'datetime',
         'TaskQueue' => 'keyword',
         'BuildId' => 'keyword',
+        'BuildIds' => 'keyword',
     ];
 }

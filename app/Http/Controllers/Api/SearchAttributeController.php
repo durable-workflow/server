@@ -118,8 +118,10 @@ class SearchAttributeController
     /**
      * Remove a custom search attribute.
      *
-     * System attributes cannot be removed. Returns 404 if the attribute
-     * does not exist as a custom attribute in the current namespace.
+     * System attributes cannot be removed. Legacy namespace rows whose names
+     * later became reserved remain removable so operators can clean them up.
+     * Returns 404 if the attribute does not exist as a custom attribute in
+     * the current namespace.
      */
     public function destroy(Request $request, string $name): JsonResponse
     {
@@ -128,6 +130,20 @@ class SearchAttributeController
         }
 
         $namespace = $request->attributes->get('namespace');
+
+        $definition = SearchAttributeDefinition::query()
+            ->where('namespace', $namespace)
+            ->where('name', $name)
+            ->first();
+
+        if ($definition) {
+            $definition->delete();
+
+            return ControlPlaneProtocol::json([
+                'name' => $name,
+                'outcome' => 'deleted',
+            ]);
+        }
 
         if (array_key_exists($name, SearchAttributeDefinition::SYSTEM_ATTRIBUTES)) {
             return ControlPlaneProtocol::json([
@@ -139,27 +155,13 @@ class SearchAttributeController
             ], 409);
         }
 
-        $definition = SearchAttributeDefinition::query()
-            ->where('namespace', $namespace)
-            ->where('name', $name)
-            ->first();
-
-        if (! $definition) {
-            return ControlPlaneProtocol::json([
-                'message' => sprintf(
-                    'Custom search attribute [%s] not found in namespace [%s].',
-                    $name,
-                    $namespace,
-                ),
-                'reason' => 'attribute_not_found',
-            ], 404);
-        }
-
-        $definition->delete();
-
         return ControlPlaneProtocol::json([
-            'name' => $name,
-            'outcome' => 'deleted',
-        ]);
+            'message' => sprintf(
+                'Custom search attribute [%s] not found in namespace [%s].',
+                $name,
+                $namespace,
+            ),
+            'reason' => 'attribute_not_found',
+        ], 404);
     }
 }
