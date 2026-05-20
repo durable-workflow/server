@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Support\AuthCompositionContract;
 use App\Support\ClientCompatibility;
+use App\Support\ChildWorkflowRuntimeContract;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
 use App\Support\CoordinationHealthContract;
@@ -179,6 +180,23 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'result_gate',
                     'finding_policy',
                 ],
+                'child_workflow_runtime_contract' => [
+                    'schema',
+                    'version',
+                    'result_schema',
+                    'result_version',
+                    'fixture_category',
+                    'platform_conformance_suite_authority',
+                    'artifact_policy',
+                    'scenario_statuses',
+                    'topology',
+                    'required_matrix',
+                    'required_scenarios',
+                    'scenario_requirements',
+                    'coverage_gate',
+                    'result_gate',
+                    'finding_policy',
+                ],
                 'auth_composition_contract',
                 'sdk_neutrality_contract' => [
                     'schema',
@@ -236,6 +254,12 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('signal_query_runtime_contract.version', SignalQueryRuntimeContract::VERSION)
             ->assertJsonPath(
                 'signal_query_runtime_contract.platform_conformance_suite_authority',
+                PlatformConformanceSuite::SCHEMA,
+            )
+            ->assertJsonPath('child_workflow_runtime_contract.schema', ChildWorkflowRuntimeContract::SCHEMA)
+            ->assertJsonPath('child_workflow_runtime_contract.version', ChildWorkflowRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'child_workflow_runtime_contract.platform_conformance_suite_authority',
                 PlatformConformanceSuite::SCHEMA,
             )
             ->assertJsonPath('sdk_neutrality_contract.schema', SdkNeutralityContract::SCHEMA)

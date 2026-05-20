@@ -6,6 +6,7 @@ use App\Http\Middleware\Authenticate;
 use App\Models\WorkflowNamespace;
 use App\Support\AuthCompositionContract;
 use App\Support\BridgeAdapterOutcomeContract;
+use App\Support\ChildWorkflowRuntimeContract;
 use App\Support\ClientCompatibility;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
@@ -117,6 +118,7 @@ class HealthController
             'nexus' => $serviceExecutionAvailable,
             'workflow_streams' => true,
             'replay_verification_contract' => true,
+            'child_workflow_runtime_contract' => true,
             'embedded_v2_import' => $embeddedV2ImportAvailable,
             'payload_codecs' => CodecRegistry::universal(),
             'response_compression' => (bool) config('server.compression.enabled', true)
@@ -160,6 +162,7 @@ class HealthController
             'platform_protocol_specs' => PlatformProtocolSpecs::manifest(),
             'platform_conformance_suite' => PlatformConformanceSuite::manifest(),
             'signal_query_runtime_contract' => SignalQueryRuntimeContract::manifest(),
+            'child_workflow_runtime_contract' => ChildWorkflowRuntimeContract::manifest(),
             'auth_composition_contract' => AuthCompositionContract::manifest(),
             'control_plane' => ControlPlaneProtocol::info(),
             'worker_protocol' => WorkerProtocol::info(),

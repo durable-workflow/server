@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
+use App\Support\ChildWorkflowRuntimeContract;
+use App\Support\ChildWorkflowRuntimeResultGate;
 use App\Support\CoordinationHealthContract;
 use App\Support\ServerTopology;
 use App\Support\SignalQueryRuntimeContract;
@@ -198,6 +200,47 @@ class ClusterInfoTest extends TestCase
         );
         $this->assertSame(
             SignalQueryRuntimeResultGate::SCHEMA,
+            $contract['result_gate']['schema'],
+        );
+        $this->assertContains(
+            'every_required_scenario_has_one_result',
+            $contract['result_gate']['pass_requires'],
+        );
+    }
+
+    public function test_it_publishes_the_child_workflow_runtime_conformance_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('child_workflow_runtime_contract.schema', ChildWorkflowRuntimeContract::SCHEMA)
+            ->assertJsonPath('child_workflow_runtime_contract.version', ChildWorkflowRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'child_workflow_runtime_contract.fixture_category',
+                'child_workflow_runtime_contract',
+            )
+            ->assertJsonPath(
+                'child_workflow_runtime_contract.coverage_gate.smoke_subset_outcome',
+                'non_passing',
+            );
+
+        $contract = $response->json('child_workflow_runtime_contract');
+        $this->assertIsArray($contract);
+        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
+        $this->assertContains('php_parent_python_child_cross_language', $contract['required_scenarios']);
+        $this->assertContains('python_parent_php_child_cross_language', $contract['required_scenarios']);
+        $this->assertContains('child_failure_round_trip_matrix', $contract['required_scenarios']);
+        $this->assertContains('parent_cancellation_propagates_to_child', $contract['required_scenarios']);
+        $this->assertContains('direct_child_cancellation_observed_by_parent', $contract['required_scenarios']);
+        $this->assertContains('worker_restart_replay_preserves_child_outcome', $contract['required_scenarios']);
+        $this->assertContains('concurrent_child_fan_out', $contract['required_scenarios']);
+        $this->assertContains('child_workflow_namespace_contract', $contract['required_scenarios']);
+        $this->assertContains(
+            'findings_linked_for_non_pass_scenarios',
+            $contract['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertSame(
+            ChildWorkflowRuntimeResultGate::SCHEMA,
             $contract['result_gate']['schema'],
         );
         $this->assertContains(

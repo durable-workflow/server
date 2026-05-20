@@ -22,13 +22,14 @@ The server claims three targets from the suite's matrix:
 
 ## Fixture sources served by this repo
 
-The fixture catalog in the suite manifest names paths in this repo as
-the source of truth for three categories:
+The fixture catalog in the suite manifest names server-owned surfaces
+as source material for four categories:
 
 | Category | Source path | Status |
 | --- | --- | --- |
 | `worker_task_lifecycle` (server side) | `tests/Fixtures/` plus the per-route examples in `docs/contracts/external-task-input.md` and `docs/contracts/external-task-result.md` | stable |
 | `signal_query_runtime_contract` (server side) | `GET /api/cluster/info`'s `signal_query_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/signal-query-runtime-scenarios.json`, plus the signal/query control-plane routes documented in the protocol catalog | stable |
+| `child_workflow_runtime_contract` (server side) | `GET /api/cluster/info`'s `child_workflow_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/child-workflow-runtime-scenarios.json`, plus the child scheduling, completion, failure, cancellation, replay, fan-out, and namespace behavior recorded by the worker protocol and history surfaces | stable |
 | `failure_repair_actionability` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, plus the artifact objects published from `GET /api/cluster/info`'s `worker_protocol.external_task_result_contract.fixtures` | stable |
 
 The other categories the server is graded against
@@ -75,6 +76,16 @@ category emits a warning and does not block.
   comparison, run-record fields, the coverage gate that keeps a
   smoke-only subset non-passing, and a result-gate evaluator that
   rejects incomplete or finding-free non-pass scenario records.
+- Child-workflow runtime contract: `GET /api/cluster/info` re-exports
+  `child_workflow_runtime_contract`, schema
+  `durable-workflow.v2.child-workflow-runtime.contract`. It names the
+  required published-artifact install policy, PHP/Python parent-child
+  matrix, typed child failure propagation, parent and direct child
+  cancellation evidence, replay across parent-worker restart, N=5
+  fan-out concurrency evidence, namespace behavior, run-record fields,
+  the coverage gate that keeps a Python-only smoke subset non-passing,
+  and a result-gate evaluator that rejects incomplete or finding-free
+  non-pass scenario records.
 - Public docs page: <https://durable-workflow.github.io/docs/2.0/compatibility>
 - Normative protocol spec catalog:
   <https://durable-workflow.github.io/docs/2.0/platform-protocol-specs>.
