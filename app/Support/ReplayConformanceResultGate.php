@@ -32,10 +32,16 @@ final class ReplayConformanceResultGate
                 'published_artifact_versions',
                 'publishedArtifactVersions',
             ],
+            'declared_outcome_fields' => [
+                'outcome',
+                'status',
+                'verdict',
+            ],
             'scenario_results_fields' => [
                 'scenario_results',
                 'scenarioResults',
             ],
+            'declared_outcomes_source' => 'replay_verification_contract.replay_conformance.coverage_gate.*_outcome plus pass/fail aliases',
             'non_pass_statuses' => [
                 'fail',
                 'unsupported',
@@ -154,7 +160,7 @@ final class ReplayConformanceResultGate
         array_push($failures, ...self::artifactVersionFailures($result, $contract));
         array_push($failures, ...self::sourcePolicyFailures($result, $contract));
         array_push($failures, ...self::runRecordFailures($result, $contract));
-        array_push($failures, ...self::overallOutcomeFailures($result));
+        array_push($failures, ...self::declaredOutcomeFailures($result, $contract));
         array_push($failures, ...self::runtimeMatrixFailures($result, $contract));
         array_push($failures, ...self::requiredSectionFailures($result, $scenarioResults));
 
@@ -166,10 +172,15 @@ final class ReplayConformanceResultGate
             ];
         }
 
-        $passes = $failures === []
+        $evidencePasses = $failures === []
             && $missingScenarios === []
             && $nonPassScenarios === []
             && count($scenarioStatuses) >= count($requiredScenarios);
+        $evaluatedStatus = $evidencePasses ? 'pass' : 'non_passing';
+
+        array_push($failures, ...self::declaredOutcomeStatusFailures($result, $contract, $evaluatedStatus));
+
+        $passes = $evaluatedStatus === 'pass' && $failures === [];
 
         return [
             'schema' => self::SCHEMA,
@@ -424,20 +435,146 @@ final class ReplayConformanceResultGate
 
     /**
      * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
      *
      * @return array<int, array<string, mixed>>
      */
-    private static function overallOutcomeFailures(array $result): array
+    private static function declaredOutcomeFailures(array $result, array $contract): array
     {
-        $outcome = self::stringValue($result['outcome'] ?? $result['status'] ?? $result['verdict'] ?? null);
-        if (self::isPassingOutcome($outcome)) {
+        $declaredOutcomes = self::declaredOutcomeTokens($result);
+        if ($declaredOutcomes === []) {
             return [];
         }
 
-        return [[
-            'code' => 'overall_outcome_not_pass',
-            'outcome' => $outcome,
-        ]];
+        $allowedOutcomes = self::declaredOutcomes($contract);
+        $failures = [];
+        foreach ($declaredOutcomes as $field => $outcome) {
+            if (in_array($outcome, $allowedOutcomes, true)) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'invalid_declared_outcome',
+                'field' => $field,
+                'outcome' => $outcome,
+                'allowed_outcomes' => $allowedOutcomes,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function declaredOutcomeStatusFailures(
+        array $result,
+        array $contract,
+        string $evaluatedStatus,
+    ): array {
+        $declaredOutcomes = self::declaredOutcomeTokens($result);
+        if ($declaredOutcomes === []) {
+            return [];
+        }
+
+        $allowedOutcomes = self::declaredOutcomes($contract);
+        $failures = [];
+        $declaredStatuses = [];
+        foreach ($declaredOutcomes as $field => $outcome) {
+            if (! in_array($outcome, $allowedOutcomes, true)) {
+                continue;
+            }
+
+            $declaredStatus = self::declaredOutcomeStatus($outcome);
+            $declaredStatuses[$field] = $declaredStatus;
+            if ($declaredStatus === $evaluatedStatus) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'declared_outcome_status_mismatch',
+                'field' => $field,
+                'outcome' => $outcome,
+                'declared_status' => $declaredStatus,
+                'evaluated_status' => $evaluatedStatus,
+            ];
+        }
+
+        if (count(array_unique($declaredStatuses)) > 1) {
+            $conflictingOutcomes = array_intersect_key($declaredOutcomes, $declaredStatuses);
+            $failure = [
+                'code' => 'conflicting_outcome_tokens',
+                'declared_outcomes' => $conflictingOutcomes,
+                'declared_statuses' => $declaredStatuses,
+            ];
+            foreach (['outcome', 'status', 'verdict'] as $field) {
+                if (array_key_exists($field, $conflictingOutcomes)) {
+                    $failure[$field] = $conflictingOutcomes[$field];
+                }
+            }
+
+            $failures[] = $failure;
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, string>
+     */
+    private static function declaredOutcomeTokens(array $result): array
+    {
+        $declaredOutcomes = [];
+        foreach (['outcome', 'status', 'verdict'] as $field) {
+            $value = strtolower(self::stringValue($result[$field] ?? null));
+            if ($value !== '') {
+                $declaredOutcomes[$field] = $value;
+            }
+        }
+
+        return $declaredOutcomes;
+    }
+
+    /**
+     * @param array<string, mixed> $contract
+     *
+     * @return list<string>
+     */
+    private static function declaredOutcomes(array $contract): array
+    {
+        $outcomes = [
+            'pass',
+            'passed',
+            'ok',
+            'fail',
+            'failed',
+            'error',
+            'non_passing',
+        ];
+
+        $coverageGate = self::arrayValue($contract, 'coverage_gate') ?? [];
+        foreach ($coverageGate as $key => $value) {
+            if (! is_string($key) || ! str_ends_with($key, '_outcome')) {
+                continue;
+            }
+
+            $outcome = strtolower(self::stringValue($value));
+            if ($outcome !== '') {
+                $outcomes[] = $outcome;
+            }
+        }
+
+        return array_values(array_unique($outcomes));
+    }
+
+    private static function declaredOutcomeStatus(string $outcome): string
+    {
+        return in_array($outcome, ['pass', 'passed', 'ok'], true) ? 'pass' : 'non_passing';
     }
 
     /**
@@ -454,6 +591,7 @@ final class ReplayConformanceResultGate
             ],
             'started_at' => ['started_at', 'startedAt'],
             'finished_at' => ['finished_at', 'finishedAt'],
+            'outcome' => ['outcome', 'status', 'verdict'],
             'scenario_results' => ['scenario_results', 'scenarioResults'],
             'finding_links' => ['finding_links', 'findingLinks'],
         ];
@@ -777,11 +915,6 @@ final class ReplayConformanceResultGate
         }
 
         return '';
-    }
-
-    private static function isPassingOutcome(string $outcome): bool
-    {
-        return in_array(strtolower($outcome), ['pass', 'passed', 'ok'], true);
     }
 
     /**

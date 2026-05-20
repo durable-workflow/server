@@ -386,6 +386,12 @@ class ReplayVerificationContractTest extends TestCase
         );
         $this->assertContains('scenario_results', $resultGate['scenario_results_fields']);
         $this->assertContains('artifactVersions', $resultGate['artifact_versions_fields']);
+        $this->assertContains('outcome', $resultGate['declared_outcome_fields']);
+        $this->assertContains('verdict', $resultGate['declared_outcome_fields']);
+        $this->assertSame(
+            'replay_verification_contract.replay_conformance.coverage_gate.*_outcome plus pass/fail aliases',
+            $resultGate['declared_outcomes_source'],
+        );
         $this->assertSame(
             'replay_verification_contract.replay_conformance.artifact_policy.required_run_record_fields',
             $resultGate['required_run_record_fields_source'],
@@ -522,18 +528,106 @@ class ReplayVerificationContractTest extends TestCase
         $this->assertContains('finding_links', array_column($runRecordFailures, 'field'));
     }
 
-    public function test_replay_result_gate_requires_the_overall_outcome_to_pass(): void
+    public function test_replay_result_gate_accepts_status_and_verdict_as_outcome_metadata(): void
+    {
+        foreach (['status', 'verdict'] as $alias) {
+            $result = $this->completeReplayConformanceResult();
+            unset($result['outcome']);
+            $result[$alias] = 'pass';
+
+            $evaluation = ReplayConformanceResultGate::evaluate($result);
+
+            $this->assertSame('pass', $evaluation['status'], $alias);
+            $this->assertSame([], $this->missingReplayRunRecordFields($evaluation), $alias);
+            $this->assertSame([], $evaluation['gate_failures'], $alias);
+        }
+    }
+
+    public function test_replay_result_gate_reports_alias_declared_outcome_mismatch_without_missing_outcome(): void
+    {
+        foreach (['status', 'verdict'] as $alias) {
+            $result = $this->completeReplayConformanceResult();
+            unset($result['outcome']);
+            $result[$alias] = 'non_passing';
+
+            $evaluation = ReplayConformanceResultGate::evaluate($result);
+            $mismatchFailures = array_values(array_filter(
+                $evaluation['gate_failures'],
+                static fn (array $failure): bool => ($failure['code'] ?? null) === 'declared_outcome_status_mismatch',
+            ));
+
+            $this->assertSame('non_passing', $evaluation['status'], $alias);
+            $this->assertNotContains('outcome', $this->missingReplayRunRecordFields($evaluation), $alias);
+            $this->assertCount(1, $mismatchFailures, $alias);
+            $this->assertSame($alias, $mismatchFailures[0]['field'], $alias);
+            $this->assertSame('non_passing', $mismatchFailures[0]['outcome'], $alias);
+            $this->assertSame('non_passing', $mismatchFailures[0]['declared_status'], $alias);
+            $this->assertSame('pass', $mismatchFailures[0]['evaluated_status'], $alias);
+        }
+    }
+
+    public function test_replay_result_gate_accepts_complete_non_passing_product_findings(): void
     {
         $result = $this->completeReplayConformanceResult();
         $result['outcome'] = 'fail';
+        $result['finding_links'] = [
+            [
+                'scenario_id' => 'php_code_divergence_refusal',
+                'url' => 'https://tracker.example.invalid/findings/replay-divergence',
+            ],
+        ];
+        $result['scenario_results']['php_code_divergence_refusal']['status'] = 'fail';
+        $result['scenario_results']['php_code_divergence_refusal']['linked_findings'] = [
+            'https://tracker.example.invalid/findings/replay-divergence',
+        ];
+
+        $evaluation = ReplayConformanceResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame(['php_code_divergence_refusal'], $evaluation['non_pass_scenarios']);
+        $this->assertSame([], $evaluation['missing_scenarios']);
+        $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_replay_result_gate_rejects_declared_pass_when_evidence_is_non_passing(): void
+    {
+        $result = $this->completeReplayConformanceResult();
+        $result['finding_links'] = [
+            [
+                'scenario_id' => 'php_code_divergence_refusal',
+                'url' => 'https://tracker.example.invalid/findings/replay-divergence',
+            ],
+        ];
+        $result['scenario_results']['php_code_divergence_refusal']['status'] = 'fail';
+        $result['scenario_results']['php_code_divergence_refusal']['linked_findings'] = [
+            'https://tracker.example.invalid/findings/replay-divergence',
+        ];
 
         $evaluation = ReplayConformanceResultGate::evaluate($result);
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertContains(
-            'overall_outcome_not_pass',
+            'declared_outcome_status_mismatch',
             array_column($evaluation['gate_failures'], 'code'),
         );
+    }
+
+    public function test_replay_result_gate_rejects_invalid_declared_outcome(): void
+    {
+        $result = $this->completeReplayConformanceResult();
+        $result['outcome'] = 'fail';
+        $result['verdict'] = 'green';
+
+        $evaluation = ReplayConformanceResultGate::evaluate($result);
+        $invalidOutcomeFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'invalid_declared_outcome',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertCount(1, $invalidOutcomeFailures);
+        $this->assertSame('verdict', $invalidOutcomeFailures[0]['field']);
+        $this->assertSame('green', $invalidOutcomeFailures[0]['outcome']);
     }
 
     public function test_replay_result_gate_requires_current_artifact_tuple_versions(): void
@@ -599,6 +693,28 @@ class ReplayVerificationContractTest extends TestCase
         $this->assertSame([], $evaluation['missing_scenarios']);
         $this->assertSame([], $evaluation['non_pass_scenarios']);
         $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    /**
+     * @param array<string, mixed> $evaluation
+     *
+     * @return list<string>
+     */
+    private function missingReplayRunRecordFields(array $evaluation): array
+    {
+        $fields = [];
+        foreach ($evaluation['gate_failures'] ?? [] as $failure) {
+            if (! is_array($failure) || ($failure['code'] ?? null) !== 'missing_required_run_record_field') {
+                continue;
+            }
+
+            $field = $failure['field'] ?? null;
+            if (is_string($field)) {
+                $fields[] = $field;
+            }
+        }
+
+        return $fields;
     }
 
     /**
