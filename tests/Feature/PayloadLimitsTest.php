@@ -391,6 +391,57 @@ class PayloadLimitsTest extends TestCase
             );
     }
 
+    public function test_workflow_start_rejects_registered_search_attribute_type_mismatch(): void
+    {
+        $this->configureWorkflowTypes([
+            ExternalGreetingWorkflow::class,
+        ]);
+
+        SearchAttributeDefinition::create([
+            'namespace' => 'default',
+            'name' => 'CustomerAge',
+            'type' => 'int',
+        ]);
+
+        $this->postJson('/api/workflows', [
+            'workflow_type' => 'ExternalGreetingWorkflow',
+            'search_attributes' => ['CustomerAge' => 'not-an-int'],
+        ], $this->apiHeaders())
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'validation_errors.search_attributes.0',
+                fn (string $msg): bool => str_contains($msg, 'CustomerAge')
+                    && str_contains($msg, 'registered as int'),
+            );
+    }
+
+    public function test_workflow_start_accepts_registered_keyword_list_search_attribute(): void
+    {
+        $this->configureWorkflowTypes([
+            ExternalGreetingWorkflow::class,
+        ]);
+
+        SearchAttributeDefinition::create([
+            'namespace' => 'default',
+            'name' => 'Tags',
+            'type' => 'keyword_list',
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_type' => 'ExternalGreetingWorkflow',
+            'search_attributes' => ['Tags' => ['alpha', 'beta']],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $this->getJson(
+            sprintf('/api/workflows/%s/runs/%s', $start->json('workflow_id'), $start->json('run_id')),
+            $this->apiHeaders(),
+        )
+            ->assertOk()
+            ->assertJsonPath('search_attributes.Tags', ['alpha', 'beta']);
+    }
+
     public function test_workflow_start_accepts_valid_search_attributes(): void
     {
         $this->configureWorkflowTypes([

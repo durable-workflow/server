@@ -116,7 +116,7 @@ class WorkflowStartService
 
         // When the client sends no input (or an empty array), emit a
         // default-codec-encoded empty arg list so the run's `arguments`
-        // column stays non-null. The default codec is Avro (#334).
+        // column stays non-null. The default codec is Avro.
         $defaultCodec = CodecRegistry::defaultCodec();
         $arguments = $envelope['blob'] ?? Serializer::serializeWithCodec($defaultCodec, []);
         $payloadCodec = $envelope['codec'] ?? $defaultCodec;
@@ -133,6 +133,7 @@ class WorkflowStartService
                 ? $validated['business_key']
                 : null,
             'search_attributes' => $this->arrayValue($validated, 'search_attributes'),
+            'search_attribute_types' => $this->arrayValue($validated, 'search_attribute_types'),
             'memo' => $this->arrayValue($validated, 'memo'),
             'labels' => $this->arrayValue($validated, 'visibility_labels') ?: null,
             'duplicate_start_policy' => $this->controlPlaneDuplicatePolicy($validated['duplicate_policy'] ?? null),

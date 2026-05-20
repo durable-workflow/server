@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\SearchAttributeDefinition;
 use App\Models\WorkflowNamespace;
 use Workflow\V2\Models\WorkflowSchedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -210,6 +211,51 @@ class ScheduleTest extends TestCase
         $this->assertNotNull($schedule->next_fire_at);
     }
 
+    public function test_create_rejects_registered_search_attribute_type_mismatch(): void
+    {
+        SearchAttributeDefinition::create([
+            'namespace' => 'default',
+            'name' => 'CustomerAge',
+            'type' => 'int',
+        ]);
+
+        $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'schedule_id' => 'invalid-search-attribute',
+                'spec' => ['cron_expressions' => ['0 * * * *']],
+                'action' => ['workflow_type' => 'TestWorkflow'],
+                'search_attributes' => ['CustomerAge' => 'not-an-int'],
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'validation_errors.search_attributes.0',
+                fn (string $msg): bool => str_contains($msg, 'CustomerAge')
+                    && str_contains($msg, 'registered as int'),
+            );
+    }
+
+    public function test_create_accepts_registered_keyword_list_search_attribute(): void
+    {
+        SearchAttributeDefinition::create([
+            'namespace' => 'default',
+            'name' => 'Tags',
+            'type' => 'keyword_list',
+        ]);
+
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'schedule_id' => 'list-search-attribute',
+                'spec' => ['cron_expressions' => ['0 * * * *']],
+                'action' => ['workflow_type' => 'TestWorkflow'],
+                'search_attributes' => ['Tags' => ['alpha', 'beta']],
+            ]);
+
+        $response->assertCreated();
+
+        $schedule = WorkflowSchedule::where('schedule_id', 'list-search-attribute')->first();
+        $this->assertEquals(['Tags' => ['alpha', 'beta']], $schedule->search_attributes);
+    }
+
     // ── Show ─────────────────────────────────────────────────────────
 
     public function test_it_shows_schedule_detail(): void
@@ -371,6 +417,58 @@ class ScheduleTest extends TestCase
         $schedule = WorkflowSchedule::where('schedule_id', 'fields-test')->first();
         $this->assertEquals(['key' => 'value'], $schedule->memo);
         $this->assertEquals(['priority' => 'high'], $schedule->search_attributes);
+    }
+
+    public function test_update_rejects_registered_search_attribute_type_mismatch(): void
+    {
+        SearchAttributeDefinition::create([
+            'namespace' => 'default',
+            'name' => 'CustomerAge',
+            'type' => 'int',
+        ]);
+
+        WorkflowSchedule::create([
+            'schedule_id' => 'invalid-update-search-attribute',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+        ]);
+
+        $this->withHeaders($this->headers())
+            ->putJson('/api/schedules/invalid-update-search-attribute', [
+                'search_attributes' => ['CustomerAge' => 'not-an-int'],
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'validation_errors.search_attributes.0',
+                fn (string $msg): bool => str_contains($msg, 'CustomerAge')
+                    && str_contains($msg, 'registered as int'),
+            );
+    }
+
+    public function test_update_accepts_registered_keyword_list_search_attribute(): void
+    {
+        SearchAttributeDefinition::create([
+            'namespace' => 'default',
+            'name' => 'Tags',
+            'type' => 'keyword_list',
+        ]);
+
+        WorkflowSchedule::create([
+            'schedule_id' => 'list-update-search-attribute',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['0 * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+        ]);
+
+        $this->withHeaders($this->headers())
+            ->putJson('/api/schedules/list-update-search-attribute', [
+                'search_attributes' => ['Tags' => ['alpha', 'beta']],
+            ])
+            ->assertOk();
+
+        $schedule = WorkflowSchedule::where('schedule_id', 'list-update-search-attribute')->first();
+        $this->assertEquals(['Tags' => ['alpha', 'beta']], $schedule->search_attributes);
     }
 
     public function test_update_merges_action_fields_with_existing(): void

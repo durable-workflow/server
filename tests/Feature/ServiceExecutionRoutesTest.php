@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\SearchAttributeDefinition;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
@@ -134,6 +135,128 @@ class ServiceExecutionRoutesTest extends TestCase
         $this->assertSame('idem-1', $stub->captured['options']['idempotency_key']);
         $this->assertSame('run-target-1', $stub->captured['options']['target_workflow_run_id']);
         $this->assertArrayHasKey('service_call_id', $stub->captured['options']);
+    }
+
+    public function test_execute_rejects_registered_search_attribute_type_mismatch_before_dispatch(): void
+    {
+        $this->seedCatalog();
+
+        SearchAttributeDefinition::create([
+            'namespace' => 'default',
+            'name' => 'CustomerAge',
+            'type' => 'int',
+        ]);
+
+        $stub = new class implements ServiceControlPlane
+        {
+            public bool $executed = false;
+
+            public function execute(string $endpointName, string $serviceName, string $operationName, array $options = []): array
+            {
+                $this->executed = true;
+
+                return ['accepted' => true];
+            }
+
+            public function describeCall(string $serviceCallId, array $options = []): array
+            {
+                return ['found' => false, 'service_call_id' => $serviceCallId];
+            }
+
+            public function cancelCall(string $serviceCallId, array $options = []): array
+            {
+                return ['accepted' => false, 'service_call_id' => $serviceCallId];
+            }
+        };
+
+        $this->app->instance(ServiceControlPlane::class, $stub);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services/invoicing/operations/createinvoice/execute', [
+                'search_attributes' => ['CustomerAge' => 'not-an-int'],
+            ]);
+
+        $response->assertStatus(422)
+            ->assertJsonPath('reason', 'validation_failed')
+            ->assertJsonPath(
+                'validation_errors.search_attributes.0',
+                fn (string $msg): bool => str_contains($msg, 'CustomerAge')
+                    && str_contains($msg, 'registered as int'),
+            );
+
+        $this->assertFalse($stub->executed);
+        $this->assertDatabaseMissing('workflow_service_calls', [
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+            'service_name' => 'invoicing',
+            'operation_name' => 'createinvoice',
+        ]);
+    }
+
+    public function test_execute_preserves_registered_keyword_list_search_attribute_type(): void
+    {
+        $this->seedCatalog();
+
+        SearchAttributeDefinition::create([
+            'namespace' => 'default',
+            'name' => 'Tags',
+            'type' => 'keyword_list',
+        ]);
+
+        $stub = new class implements ServiceControlPlane
+        {
+            public ?array $captured = null;
+
+            public function execute(string $endpointName, string $serviceName, string $operationName, array $options = []): array
+            {
+                $this->captured = [
+                    'endpoint' => $endpointName,
+                    'service' => $serviceName,
+                    'operation' => $operationName,
+                    'options' => $options,
+                ];
+
+                return [
+                    'accepted' => true,
+                    'service_call_id' => $options['service_call_id'] ?? '01JEXECUTECALL000000000001',
+                    'namespace' => 'default',
+                    'endpoint_name' => $endpointName,
+                    'service_name' => $serviceName,
+                    'operation_name' => $operationName,
+                    'operation_mode' => 'async',
+                    'resolved_binding_kind' => 'workflow_run',
+                    'resolved_target_reference' => 'workflows.invoice.create',
+                    'status' => 'accepted',
+                    'linked_workflow_instance_id' => 'invoice-1',
+                    'linked_workflow_run_id' => '01JRUN0000000000000000000B',
+                    'linked_workflow_update_id' => null,
+                    'reason' => null,
+                ];
+            }
+
+            public function describeCall(string $serviceCallId, array $options = []): array
+            {
+                return ['found' => false, 'service_call_id' => $serviceCallId];
+            }
+
+            public function cancelCall(string $serviceCallId, array $options = []): array
+            {
+                return ['accepted' => false, 'service_call_id' => $serviceCallId];
+            }
+        };
+
+        $this->app->instance(ServiceControlPlane::class, $stub);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services/invoicing/operations/createinvoice/execute', [
+                'search_attributes' => ['Tags' => ['alpha', 'beta']],
+            ])
+            ->assertOk()
+            ->assertJsonPath('accepted', true);
+
+        $this->assertNotNull($stub->captured);
+        $this->assertSame(['Tags' => ['alpha', 'beta']], $stub->captured['options']['search_attributes']);
+        $this->assertSame(['Tags' => 'keyword_list'], $stub->captured['options']['search_attribute_types']);
     }
 
     public function test_execute_rejects_boundary_policy_before_control_plane_dispatch(): void

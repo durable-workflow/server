@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Support\ControlPlaneProtocol;
+use App\Support\SearchAttributeValueValidator;
 use App\Support\WorkflowCommandContextFactory;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -17,6 +18,7 @@ class ScheduleController
 {
     public function __construct(
         private readonly WorkflowCommandContextFactory $commandContexts,
+        private readonly SearchAttributeValueValidator $searchAttributeValues,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -53,6 +55,13 @@ class ScheduleController
 
         if (($memoError = $this->validateMemoSize($validated['memo'] ?? null)) !== null) {
             return $memoError;
+        }
+
+        if (isset($validated['search_attributes'])) {
+            $this->searchAttributeValues->validateForNamespace(
+                is_string($namespace) ? $namespace : null,
+                $validated['search_attributes'],
+            );
         }
 
         $scheduleId = $validated['schedule_id'] ?? Str::ulid()->toBase32();
@@ -138,6 +147,13 @@ class ScheduleController
 
         if (($memoError = $this->validateMemoSize($validated['memo'] ?? null)) !== null) {
             return $memoError;
+        }
+
+        if (isset($validated['search_attributes'])) {
+            $this->searchAttributeValues->validateForNamespace(
+                is_string($schedule->namespace) ? $schedule->namespace : null,
+                $validated['search_attributes'],
+            );
         }
 
         $overlapPolicy = isset($validated['overlap_policy'])

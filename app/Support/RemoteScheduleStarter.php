@@ -17,6 +17,7 @@ final class RemoteScheduleStarter implements ScheduleWorkflowStarter
     public function __construct(
         private readonly WorkflowStartService $startService,
         private readonly ServerReadiness $readiness,
+        private readonly SearchAttributeValueValidator $searchAttributeValues,
     ) {}
 
     public function start(
@@ -47,6 +48,11 @@ final class RemoteScheduleStarter implements ScheduleWorkflowStarter
         $duplicatePolicy = $policy === 'skip'
             ? 'use-existing'
             : null;
+        $searchAttributes = is_array($schedule->search_attributes) ? $schedule->search_attributes : [];
+        $searchAttributeTypes = $this->searchAttributeValues->validateForNamespace(
+            $schedule->namespace,
+            $searchAttributes,
+        );
 
         $payload = array_filter([
             'workflow_type' => $action['workflow_type'] ?? null,
@@ -55,7 +61,8 @@ final class RemoteScheduleStarter implements ScheduleWorkflowStarter
             'execution_timeout_seconds' => isset($action['execution_timeout_seconds']) ? (int) $action['execution_timeout_seconds'] : null,
             'run_timeout_seconds' => isset($action['run_timeout_seconds']) ? (int) $action['run_timeout_seconds'] : null,
             'memo' => is_array($schedule->memo) ? $schedule->memo : null,
-            'search_attributes' => is_array($schedule->search_attributes) ? $schedule->search_attributes : null,
+            'search_attributes' => is_array($schedule->search_attributes) ? $searchAttributes : null,
+            'search_attribute_types' => $searchAttributeTypes,
             'visibility_labels' => is_array($schedule->visibility_labels) ? $schedule->visibility_labels : null,
             'duplicate_policy' => $duplicatePolicy,
         ], static fn (mixed $v): bool => $v !== null);

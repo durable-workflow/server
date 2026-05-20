@@ -18,6 +18,7 @@ use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
 use Workflow\V2\Support\DefaultMatchingRole;
@@ -191,6 +192,24 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertSame('dw-external-payload:v1:', ExternalPayloads::STORED_REFERENCE_PREFIX);
     }
 
+    public function test_search_attribute_storage_constants_are_public_package_api(): void
+    {
+        $reflection = new ReflectionClass(WorkflowSearchAttribute::class);
+
+        foreach ([
+            'MAX_KEYWORD_LENGTH' => 255,
+            'TYPE_STRING' => 'string',
+            'TYPE_FLOAT' => 'float',
+            'TYPE_KEYWORD_LIST' => 'keyword_list',
+        ] as $constantName => $expectedValue) {
+            $constant = $reflection->getReflectionConstant($constantName);
+
+            $this->assertNotFalse($constant);
+            $this->assertTrue($constant->isPublic());
+            $this->assertSame($expectedValue, $constant->getValue());
+        }
+    }
+
     public function test_external_payload_protocol_classes_are_available(): void
     {
         $this->assertTrue(interface_exists(ExternalPayloadStorageDriver::class));
@@ -221,6 +240,10 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertContains([WorkerProtocolVersion::class, 'CAPABILITY_QUERY_TASKS'], $constants);
         $this->assertContains([ExternalPayloadReference::class, 'SCHEMA'], $constants);
         $this->assertContains([ExternalPayloads::class, 'STORED_REFERENCE_PREFIX'], $constants);
+        $this->assertContains([WorkflowSearchAttribute::class, 'MAX_KEYWORD_LENGTH'], $constants);
+        $this->assertContains([WorkflowSearchAttribute::class, 'TYPE_STRING'], $constants);
+        $this->assertContains([WorkflowSearchAttribute::class, 'TYPE_FLOAT'], $constants);
+        $this->assertContains([WorkflowSearchAttribute::class, 'TYPE_KEYWORD_LIST'], $constants);
 
         $classes = $this->privateConstant($floor, 'REQUIRED_CLASSES');
         $this->assertContains(ExternalPayloadIntegrityException::class, $classes);

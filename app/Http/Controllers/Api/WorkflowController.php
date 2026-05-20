@@ -9,6 +9,7 @@ use App\Support\ExternalPayloadEnvelopeService;
 use App\Support\ExternalPayloadStorageUnavailable;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
+use App\Support\SearchAttributeValueValidator;
 use App\Support\TaskQueueRoutingGate;
 use App\Support\WorkflowCommandContextFactory;
 use App\Support\WorkflowQueryTaskBroker;
@@ -38,6 +39,7 @@ class WorkflowController
         private readonly WorkflowRunDiagnostics $diagnostics,
         private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
         private readonly ExternalPayloadEnvelopeService $payloadEnvelopes,
+        private readonly SearchAttributeValueValidator $searchAttributeValues,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -178,7 +180,10 @@ class WorkflowController
         }
 
         if (isset($validated['search_attributes'])) {
-            $this->validateSearchAttributes($validated['search_attributes']);
+            $validated['search_attribute_types'] = $this->searchAttributeValues->validateForNamespace(
+                is_string($namespace) ? $namespace : null,
+                $validated['search_attributes'],
+            );
         }
 
         $workflowId = $validated['workflow_id'] ?? null;
@@ -1170,68 +1175,4 @@ class WorkflowController
         }
     }
 
-    /**
-     * Validate each search-attribute key and string value against the
-     * per-key and per-value limits so large or malformed entries are
-     * rejected before being written to the DB or forwarded to the
-     * control plane.
-     *
-     * @param  array<int|string, mixed>  $searchAttributes
-     */
-    private function validateSearchAttributes(array $searchAttributes): void
-    {
-        $maxKeyLength = (int) config('server.limits.max_search_attribute_key_length', 128);
-        $maxValueBytes = (int) config('server.limits.max_search_attribute_value_bytes', 2048);
-        $messages = [];
-
-        foreach ($searchAttributes as $key => $value) {
-            if (! is_string($key) || $key === '') {
-                $messages[] = 'Search attribute keys must be non-empty strings.';
-
-                continue;
-            }
-
-            if ($maxKeyLength > 0 && strlen($key) > $maxKeyLength) {
-                $messages[] = sprintf(
-                    'Search attribute key [%s] exceeds the maximum length of %d bytes.',
-                    $key,
-                    $maxKeyLength,
-                );
-
-                continue;
-            }
-
-            if (preg_match('/^[a-zA-Z][a-zA-Z0-9_]*$/', $key) !== 1) {
-                $messages[] = sprintf(
-                    'Search attribute key [%s] must start with a letter and contain only letters, numbers, and underscores.',
-                    $key,
-                );
-
-                continue;
-            }
-
-            if ($value !== null && ! is_scalar($value)) {
-                $messages[] = sprintf(
-                    'Search attribute [%s] must be a scalar value or null.',
-                    $key,
-                );
-
-                continue;
-            }
-
-            if (is_string($value) && $maxValueBytes > 0 && strlen($value) > $maxValueBytes) {
-                $messages[] = sprintf(
-                    'Search attribute [%s] value exceeds the maximum of %d bytes.',
-                    $key,
-                    $maxValueBytes,
-                );
-            }
-        }
-
-        if ($messages !== []) {
-            throw ValidationException::withMessages([
-                'search_attributes' => $messages,
-            ]);
-        }
-    }
 }

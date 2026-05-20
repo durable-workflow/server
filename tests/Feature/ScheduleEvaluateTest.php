@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\SearchAttributeDefinition;
 use App\Models\WorkflowNamespace;
 use App\Support\WorkflowStartService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -586,6 +587,81 @@ class ScheduleEvaluateTest extends TestCase
             ->assertExitCode(0);
 
         $this->assertEquals('production', $capturedNamespace);
+    }
+
+    public function test_it_passes_registered_schedule_search_attribute_types_to_start_service(): void
+    {
+        SearchAttributeDefinition::create([
+            'namespace' => 'default',
+            'name' => 'Tags',
+            'type' => 'keyword_list',
+        ]);
+
+        $capturedParams = null;
+        $this->fakeStartService(callback: function (array $params) use (&$capturedParams): array {
+            $capturedParams = $params;
+
+            return [
+                'workflow_id' => 'wf-search-attrs',
+                'run_id' => 'run-search-attrs',
+                'workflow_type' => 'TestWorkflow',
+                'outcome' => 'started_new',
+                'reason' => null,
+            ];
+        });
+
+        WorkflowSchedule::create([
+            'schedule_id' => 'search-attrs-sched',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['* * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'search_attributes' => ['Tags' => ['alpha', 'beta']],
+            'next_fire_at' => now()->subMinute(),
+        ]);
+
+        $this->artisan('schedule:evaluate')
+            ->assertExitCode(0);
+
+        $this->assertNotNull($capturedParams);
+        $this->assertSame(['Tags' => ['alpha', 'beta']], $capturedParams['search_attributes']);
+        $this->assertSame(['Tags' => 'keyword_list'], $capturedParams['search_attribute_types']);
+    }
+
+    public function test_it_rejects_existing_schedule_search_attribute_type_mismatch_before_start(): void
+    {
+        SearchAttributeDefinition::create([
+            'namespace' => 'default',
+            'name' => 'CustomerAge',
+            'type' => 'int',
+        ]);
+
+        $startServiceCalled = false;
+        $this->fakeStartService(callback: function (array $params) use (&$startServiceCalled): array {
+            $startServiceCalled = true;
+
+            return [
+                'workflow_id' => 'wf-invalid-search-attrs',
+                'run_id' => 'run-invalid-search-attrs',
+                'workflow_type' => 'TestWorkflow',
+                'outcome' => 'started_new',
+                'reason' => null,
+            ];
+        });
+
+        WorkflowSchedule::create([
+            'schedule_id' => 'invalid-search-attrs-sched',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['* * * * *']],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'search_attributes' => ['CustomerAge' => 'not-an-int'],
+            'next_fire_at' => now()->subMinute(),
+        ]);
+
+        $this->artisan('schedule:evaluate')
+            ->assertExitCode(1)
+            ->expectsOutputToContain('failed');
+
+        $this->assertFalse($startServiceCalled);
     }
 
     // ── Legacy timeout normalization ───────────────────────────────

@@ -10,6 +10,7 @@ use App\Support\HistoryRetentionEnforcer;
 use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\QueryTaskQueueUnavailableException;
+use App\Support\SearchAttributeValueValidator;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowTaskLeaseRecovery;
@@ -42,6 +43,7 @@ class WorkerController
         private readonly WorkflowTaskOwnership $taskOwnership,
         private readonly WorkflowQueryTaskBroker $queryTasks,
         private readonly NamespaceExternalPayloadStorage $externalPayloadStorage,
+        private readonly SearchAttributeValueValidator $searchAttributeValues,
     ) {}
 
     /**
@@ -916,6 +918,11 @@ class WorkerController
             return $this->externalPayloadFailure($taskId, (int) $validated['workflow_task_attempt'], $exception, 503);
         }
 
+        $commands = $this->validateWorkflowTaskSearchAttributeCommands(
+            $commands,
+            is_string($namespace) ? $namespace : null,
+        );
+
         $commands = WorkflowCommandNormalizer::normalize($commands);
 
         /** @var WorkflowTaskBridge $bridge */
@@ -999,6 +1006,31 @@ class WorkerController
         }
 
         return false;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     * @return list<array<string, mixed>>
+     */
+    private function validateWorkflowTaskSearchAttributeCommands(array $commands, ?string $namespace): array
+    {
+        foreach ($commands as $index => $command) {
+            if (($command['type'] ?? null) !== 'upsert_search_attributes') {
+                continue;
+            }
+
+            if (! is_array($command['attributes'] ?? null)) {
+                continue;
+            }
+
+            $commands[$index]['attribute_types'] = $this->searchAttributeValues->validateForNamespace(
+                $namespace,
+                $command['attributes'],
+                "commands.{$index}.attributes",
+            );
+        }
+
+        return $commands;
     }
 
     /**

@@ -14,6 +14,7 @@ use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
 use Workflow\V2\Support\DefaultMatchingRole;
@@ -94,6 +95,10 @@ final class WorkflowPackageApiFloor
         [WorkerProtocolVersion::class, 'CAPABILITY_QUERY_TASKS'],
         [ExternalPayloadReference::class, 'SCHEMA'],
         [ExternalPayloads::class, 'STORED_REFERENCE_PREFIX'],
+        [WorkflowSearchAttribute::class, 'MAX_KEYWORD_LENGTH'],
+        [WorkflowSearchAttribute::class, 'TYPE_STRING'],
+        [WorkflowSearchAttribute::class, 'TYPE_FLOAT'],
+        [WorkflowSearchAttribute::class, 'TYPE_KEYWORD_LIST'],
     ];
 
     /**
@@ -279,8 +284,9 @@ final class WorkflowPackageApiFloor
             .'the filtered WorkflowTaskBridge::poll() and ActivityTaskBridge::poll() contracts, '
             .'the poll-mode queue capability demotion, the matching-role repair-pass contract, '
             .'the service execution control-plane contract, the worker-session protocol contract, '
-            .'the external payload storage protocol APIs, the command payload-envelope contract, plus '
-            .'ChildWorkflowNamespaceProjection for package-owned child namespace propagation '
+            .'the external payload storage protocol APIs, the command payload-envelope contract, '
+            .'the typed search-attribute storage constants, plus ChildWorkflowNamespaceProjection '
+            .'for package-owned child namespace propagation '
             .'(install the v2 workflow package snapshot that matches this server release).',
             implode(', ', $missing),
             self::REQUIRED_WORKER_PROTOCOL_VERSION,

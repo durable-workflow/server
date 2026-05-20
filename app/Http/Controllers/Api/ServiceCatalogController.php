@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Auth\Principal;
 use App\Http\Middleware\Authenticate;
 use App\Support\ControlPlaneProtocol;
+use App\Support\SearchAttributeValueValidator;
 use App\Support\ServiceCallAdmission;
 use App\Support\ServiceCallBoundary;
 use Illuminate\Http\JsonResponse;
@@ -34,6 +35,7 @@ class ServiceCatalogController
     public function __construct(
         private readonly ServiceControlPlane $serviceControlPlane,
         private readonly ServiceCallBoundary $serviceCallBoundary,
+        private readonly SearchAttributeValueValidator $searchAttributeValues,
     ) {}
 
     public function endpointIndex(Request $request): JsonResponse
@@ -656,6 +658,13 @@ class ServiceCatalogController
             ],
         ]);
 
+        if (isset($validated['search_attributes'])) {
+            $validated['search_attribute_types'] = $this->searchAttributeValues->validateForNamespace(
+                $this->namespace($request),
+                $validated['search_attributes'],
+            );
+        }
+
         $options = array_filter(
             [
                 'namespace' => $this->namespace($request),
@@ -676,6 +685,7 @@ class ServiceCatalogController
                 'labels' => $validated['labels'] ?? null,
                 'memo' => $validated['memo'] ?? null,
                 'search_attributes' => $validated['search_attributes'] ?? null,
+                'search_attribute_types' => $validated['search_attribute_types'] ?? null,
                 'duplicate_start_policy' => $validated['duplicate_start_policy'] ?? null,
             ],
             static fn (mixed $value): bool => $value !== null,
