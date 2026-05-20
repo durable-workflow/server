@@ -12,6 +12,7 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
 use App\Support\CoordinationHealthContract;
 use App\Support\FilesystemDiskAvailability;
+use App\Support\NamespaceRuntimeContract;
 use App\Support\NexusContract;
 use App\Support\ReplayVerificationContract;
 use App\Support\ServerReadiness;
@@ -100,6 +101,7 @@ class HealthController
             'history_export' => true,
             'continue_as_new' => true,
             'child_workflows' => true,
+            'namespace_runtime_contract' => true,
             'activity_timeouts' => true,
             'activity_retry_policy' => true,
             'child_workflow_retry_policy' => true,
@@ -163,6 +165,7 @@ class HealthController
             'platform_conformance_suite' => PlatformConformanceSuite::manifest(),
             'signal_query_runtime_contract' => SignalQueryRuntimeContract::manifest(),
             'child_workflow_runtime_contract' => ChildWorkflowRuntimeContract::manifest(),
+            'namespace_runtime_contract' => NamespaceRuntimeContract::manifest(),
             'auth_composition_contract' => AuthCompositionContract::manifest(),
             'control_plane' => ControlPlaneProtocol::info(),
             'worker_protocol' => WorkerProtocol::info(),

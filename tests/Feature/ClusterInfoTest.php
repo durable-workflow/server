@@ -8,6 +8,8 @@ use App\Models\WorkflowNamespace;
 use App\Support\ChildWorkflowRuntimeContract;
 use App\Support\ChildWorkflowRuntimeResultGate;
 use App\Support\CoordinationHealthContract;
+use App\Support\NamespaceRuntimeContract;
+use App\Support\NamespaceRuntimeResultGate;
 use App\Support\ServerTopology;
 use App\Support\SignalQueryRuntimeContract;
 use App\Support\SignalQueryRuntimeResultGate;
@@ -247,6 +249,46 @@ class ClusterInfoTest extends TestCase
         $this->assertContains(
             'every_required_scenario_has_one_result',
             $contract['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'each_pass_scenario_has_scenario_specific_evidence',
+            $contract['result_gate']['pass_requires'],
+        );
+    }
+
+    public function test_it_publishes_the_namespace_runtime_conformance_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('namespace_runtime_contract.schema', NamespaceRuntimeContract::SCHEMA)
+            ->assertJsonPath('namespace_runtime_contract.version', NamespaceRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'namespace_runtime_contract.fixture_category',
+                'namespace_runtime_contract',
+            )
+            ->assertJsonPath(
+                'namespace_runtime_contract.coverage_gate.smoke_subset_outcome',
+                'non_passing',
+            );
+
+        $contract = $response->json('namespace_runtime_contract');
+        $this->assertIsArray($contract);
+        $this->assertArrayHasKey('waterline', $contract['artifact_policy']['install_channels']);
+        $this->assertContains('tenant-a', $contract['required_matrix']['namespaces']);
+        $this->assertContains('tenant-b', $contract['required_matrix']['namespaces']);
+        $this->assertContains('shared', $contract['required_matrix']['namespaces']);
+        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
+        $this->assertContains('namespace_lifecycle_cleanup_and_recreate', $contract['required_scenarios']);
+        $this->assertContains('nexus_explicit_cross_namespace_invocation', $contract['required_scenarios']);
+        $this->assertContains('waterline_operator_namespace_visibility', $contract['required_scenarios']);
+        $this->assertContains(
+            'search_attribute_value_query_isolation_reported',
+            $contract['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertSame(
+            NamespaceRuntimeResultGate::SCHEMA,
+            $contract['result_gate']['schema'],
         );
         $this->assertContains(
             'each_pass_scenario_has_scenario_specific_evidence',
