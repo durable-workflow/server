@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -34,6 +34,12 @@ final class SignalQueryRuntimeContract
             'result_version' => self::RESULT_VERSION,
             'fixture_category' => 'signal_query_runtime_contract',
             'platform_conformance_suite_authority' => PlatformConformanceSuite::SCHEMA,
+            'scenario_manifest' => [
+                'schema' => 'durable-workflow.v2.platform-conformance.runtime-scenarios',
+                'category' => 'signal_query_runtime_contract',
+                'public_path' => 'https://durable-workflow.github.io/platform-conformance/signal-query-runtime-scenarios.json',
+                'source_path' => 'static/platform-conformance/signal-query-runtime-scenarios.json',
+            ],
             'artifact_policy' => [
                 'version_source' => 'latest_published_artifacts_at_run_time',
                 'install_channels' => [

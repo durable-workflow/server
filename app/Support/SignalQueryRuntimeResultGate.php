@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     /**
      * @return array<string, mixed>
@@ -45,6 +45,7 @@ final class SignalQueryRuntimeResultGate
                 'same_language_and_cross_language_cells_are_reported',
                 'replay_terminal_adversarial_and_waterline_sections_are_reported',
                 'each_pass_scenario_has_observed_outputs',
+                'each_pass_scenario_includes_required_evidence',
                 'each_non_pass_scenario_has_linked_findings',
                 'published_artifact_versions_are_recorded',
                 'no_local_product_source_artifacts_are_reported',
@@ -149,6 +150,9 @@ final class SignalQueryRuntimeResultGate
 
         $sectionFailures = self::requiredSectionFailures($result, $scenarioResults);
         array_push($failures, ...$sectionFailures);
+
+        $evidenceFailures = self::scenarioEvidenceFailures($result, $scenarioResults, $contract);
+        array_push($failures, ...$evidenceFailures);
 
         $smokeSubsetDetected = self::isSmokeSubset($scenarioStatuses, $contract);
         if ($smokeSubsetDetected) {
@@ -493,6 +497,247 @@ final class SignalQueryRuntimeResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, array<string, mixed>> $scenarioResults
+     * @param array<string, mixed> $contract
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function scenarioEvidenceFailures(
+        array $result,
+        array $scenarioResults,
+        array $contract,
+    ): array {
+        $requirements = self::arrayValue($contract, 'scenario_requirements') ?? [];
+        $failures = [];
+
+        foreach ($requirements as $scenarioId => $requirement) {
+            if (! is_string($scenarioId) || ! is_array($requirement)) {
+                continue;
+            }
+
+            $scenarioResult = $scenarioResults[$scenarioId] ?? null;
+            if (! is_array($scenarioResult) || self::stringValue($scenarioResult['status'] ?? null) !== 'pass') {
+                continue;
+            }
+
+            foreach (self::requiredEvidenceKeys($requirement) as $evidenceKey) {
+                if (self::hasEvidence($result, $scenarioResult, $scenarioId, $evidenceKey)) {
+                    continue;
+                }
+
+                $failures[] = [
+                    'code' => 'missing_required_pass_evidence',
+                    'scenario_id' => $scenarioId,
+                    'evidence_key' => $evidenceKey,
+                ];
+            }
+
+            if ($scenarioId === 'ordered_signal_delivery') {
+                $expectedTotal = $requirement['expected_total_for_1_through_10'] ?? null;
+                $queriedTotal = self::evidenceValue($result, $scenarioResult, $scenarioId, 'queried_total');
+
+                if (is_numeric($expectedTotal) && is_numeric($queriedTotal)
+                    && (int) $queriedTotal !== (int) $expectedTotal) {
+                    $failures[] = [
+                        'code' => 'unexpected_ordered_signal_total',
+                        'scenario_id' => $scenarioId,
+                        'expected_total' => (int) $expectedTotal,
+                        'actual_total' => (int) $queriedTotal,
+                    ];
+                }
+            }
+
+            if ($scenarioId === 'query_during_replay') {
+                $queryAnswer = self::evidenceValue($result, $scenarioResult, $scenarioId, 'query_answer');
+                $expectedAnswer = self::evidenceValue($result, $scenarioResult, $scenarioId, 'expected_answer');
+
+                if ($queryAnswer !== null && $expectedAnswer !== null && $queryAnswer !== $expectedAnswer) {
+                    $failures[] = [
+                        'code' => 'unexpected_replay_query_answer',
+                        'scenario_id' => $scenarioId,
+                        'expected_answer' => $expectedAnswer,
+                        'actual_answer' => $queryAnswer,
+                    ];
+                }
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $requirement
+     *
+     * @return list<string>
+     */
+    private static function requiredEvidenceKeys(array $requirement): array
+    {
+        return array_values(array_unique(array_merge(
+            self::stringList($requirement['evidence'] ?? []),
+            self::stringList($requirement['required_errors'] ?? []),
+            self::stringList($requirement['required_surfaces'] ?? []),
+        )));
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     */
+    private static function hasEvidence(
+        array $result,
+        array $scenarioResult,
+        string $scenarioId,
+        string $evidenceKey,
+    ): bool {
+        return self::evidenceValue($result, $scenarioResult, $scenarioId, $evidenceKey) !== null;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     */
+    private static function evidenceValue(
+        array $result,
+        array $scenarioResult,
+        string $scenarioId,
+        string $evidenceKey,
+    ): mixed {
+        foreach (self::evidenceContainers($result, $scenarioResult, $scenarioId) as $container) {
+            $value = str_contains($evidenceKey, '.')
+                ? self::pathValue($container, explode('.', $evidenceKey))
+                : self::recursiveKeyValue($container, $evidenceKey);
+
+            if (self::evidencePresent($value)) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<mixed>>
+     */
+    private static function evidenceContainers(array $result, array $scenarioResult, string $scenarioId): array
+    {
+        $containers = [$scenarioResult];
+
+        foreach (['observed_outputs', 'observedOutputs', 'runtime_matrix', 'runtimeMatrix'] as $field) {
+            $value = self::arrayValue($scenarioResult, $field);
+            if ($value !== null) {
+                $containers[] = $value;
+            }
+        }
+
+        foreach ([
+            'replay_timing',
+            'terminal_run_behavior',
+            'adversarial_errors',
+            'waterline_observer_comparison',
+        ] as $field) {
+            $section = self::arrayValue($result, $field);
+            if ($section === null) {
+                continue;
+            }
+
+            array_push($containers, ...self::scenarioSectionContainers($section, $scenarioId));
+        }
+
+        return $containers;
+    }
+
+    /**
+     * @param array<mixed> $section
+     *
+     * @return array<int, array<mixed>>
+     */
+    private static function scenarioSectionContainers(array $section, string $scenarioId): array
+    {
+        $containers = [];
+        $keyedValue = self::arrayValue($section, $scenarioId);
+        if ($keyedValue !== null) {
+            $containers[] = $keyedValue;
+        }
+
+        foreach ($section as $value) {
+            if (! is_array($value)) {
+                continue;
+            }
+
+            $valueScenarioId = self::stringValue(
+                $value['scenario_id'] ?? $value['scenario'] ?? $value['id'] ?? null,
+            );
+            if ($valueScenarioId === $scenarioId) {
+                $containers[] = $value;
+            }
+        }
+
+        return $containers;
+    }
+
+    /**
+     * @param array<mixed> $value
+     * @param list<string> $path
+     */
+    private static function pathValue(array $value, array $path): mixed
+    {
+        $current = $value;
+        foreach ($path as $segment) {
+            if (! is_array($current) || ! array_key_exists($segment, $current)) {
+                return null;
+            }
+
+            $current = $current[$segment];
+        }
+
+        return $current;
+    }
+
+    /**
+     * @param array<mixed> $value
+     */
+    private static function recursiveKeyValue(array $value, string $key): mixed
+    {
+        if (array_key_exists($key, $value)) {
+            return $value[$key];
+        }
+
+        foreach ($value as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $found = self::recursiveKeyValue($item, $key);
+            if ($found !== null) {
+                return $found;
+            }
+        }
+
+        return null;
+    }
+
+    private static function evidencePresent(mixed $value): bool
+    {
+        if ($value === null) {
+            return false;
+        }
+
+        if (is_string($value)) {
+            return trim($value) !== '';
+        }
+
+        if (is_array($value)) {
+            return $value !== [];
+        }
+
+        return true;
     }
 
     /**

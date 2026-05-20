@@ -74,9 +74,10 @@ category emits a warning and does not block.
   required published-artifact install policy, PHP/Python runtime matrix,
   CLI and SDK client paths, replay timing scenarios, terminal-run
   behavior, malformed-payload expectations, Waterline observer
-  comparison, run-record fields, the coverage gate that keeps a
-  smoke-only subset non-passing, and a result-gate evaluator that
-  rejects incomplete or finding-free non-pass scenario records.
+  comparison, the public runtime scenario-manifest pointer, run-record
+  fields, the coverage gate that keeps a smoke-only subset non-passing,
+  and a result-gate evaluator that rejects incomplete pass records,
+  missing scenario evidence, or finding-free non-pass scenario records.
 - Child-workflow runtime contract: `GET /api/cluster/info` re-exports
   `child_workflow_runtime_contract`, schema
   `durable-workflow.v2.child-workflow-runtime.contract`. It names the
