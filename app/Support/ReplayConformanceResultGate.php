@@ -10,12 +10,23 @@ final class ReplayConformanceResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.replay-conformance.result-gate';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     private const OUTCOME_FIELDS = [
         'outcome',
         'status',
         'verdict',
+    ];
+
+    private const PLACEHOLDER_VERSION_EXAMPLES = [
+        'latest',
+        'current',
+        'head',
+        'unresolved',
+        'placeholder',
+        '<latest>',
+        '${VERSION}',
+        '{{ version }}',
     ];
 
     /**
@@ -32,6 +43,11 @@ final class ReplayConformanceResultGate
             'required_matrix_source' => 'replay_verification_contract.replay_conformance.required_matrix',
             'required_run_record_fields_source' => 'replay_verification_contract.replay_conformance.artifact_policy.required_run_record_fields',
             'required_artifact_versions_source' => 'replay_verification_contract.replay_conformance.artifact_policy.required_artifact_versions',
+            'artifact_version_policy' => [
+                'requires_recorded_and_pinned_versions' => true,
+                'rejects_placeholder_versions' => true,
+                'placeholder_version_examples' => self::PLACEHOLDER_VERSION_EXAMPLES,
+            ],
             'artifact_versions_fields' => [
                 'artifact_versions',
                 'artifactVersions',
@@ -64,7 +80,7 @@ final class ReplayConformanceResultGate
                 'each_non_pass_scenario_has_linked_findings',
                 'run_record_metadata_is_complete',
                 'overall_outcome_matches_gate_status',
-                'published_artifact_versions_are_recorded',
+                'published_artifact_versions_are_recorded_and_pinned',
                 'no_local_product_source_artifacts_are_reported',
             ],
             'smoke_subset_outcome' => 'non_passing',
@@ -335,10 +351,20 @@ final class ReplayConformanceResultGate
         }
 
         foreach ($requiredArtifacts as $artifact) {
-            if (! self::hasArtifactVersion($versions, $artifact)) {
+            $version = self::artifactVersionValue($versions, $artifact);
+            if ($version === '') {
                 $failures[] = [
                     'code' => 'missing_artifact_version',
                     'artifact' => $artifact,
+                ];
+                continue;
+            }
+
+            if (self::isPlaceholderVersion($version)) {
+                $failures[] = [
+                    'code' => 'placeholder_artifact_version',
+                    'artifact' => $artifact,
+                    'version' => $version,
                 ];
             }
         }
@@ -363,7 +389,7 @@ final class ReplayConformanceResultGate
     /**
      * @param array<mixed> $versions
      */
-    private static function hasArtifactVersion(array $versions, string $artifact): bool
+    private static function artifactVersionValue(array $versions, string $artifact): string
     {
         $aliases = [
             'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
@@ -372,12 +398,30 @@ final class ReplayConformanceResultGate
         ];
 
         foreach ($aliases[$artifact] ?? [$artifact] as $key) {
-            if (array_key_exists($key, $versions) && self::stringValue($versions[$key]) !== '') {
-                return true;
+            $version = self::stringValue($versions[$key] ?? null);
+            if (array_key_exists($key, $versions) && $version !== '') {
+                return $version;
             }
         }
 
-        return false;
+        return '';
+    }
+
+    private static function isPlaceholderVersion(string $version): bool
+    {
+        $normalized = strtolower(trim($version));
+        if ($normalized === '') {
+            return false;
+        }
+
+        if (preg_match('/<[^>]+>|\$\{[^}]+}|{{[^}]+}}/', $normalized) === 1) {
+            return true;
+        }
+
+        return preg_match(
+            '/(^|[^a-z0-9])(latest|current|head|unresolved|placeholder)([^a-z0-9]|$)/',
+            $normalized,
+        ) === 1;
     }
 
     /**

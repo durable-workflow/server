@@ -205,6 +205,14 @@ class ReplayVerificationContractTest extends TestCase
             'latest_published_artifacts_at_run_time',
             $conformance['artifact_policy']['version_source'],
         );
+        $this->assertSame(
+            'concrete_published_versions_pinned_at_run_time',
+            $conformance['artifact_policy']['version_requirement'],
+        );
+        $this->assertTrue($conformance['artifact_policy']['placeholder_versions_rejected']);
+        foreach (['latest', 'current', 'head', 'unresolved', 'placeholder', '<latest>'] as $example) {
+            $this->assertContains($example, $conformance['artifact_policy']['placeholder_version_examples']);
+        }
         $this->assertArrayHasKey('server', $conformance['artifact_policy']['install_channels']);
         $this->assertArrayHasKey('workflow-php', $conformance['artifact_policy']['install_channels']);
         $this->assertArrayHasKey('sdk-python', $conformance['artifact_policy']['install_channels']);
@@ -400,6 +408,11 @@ class ReplayVerificationContractTest extends TestCase
             'replay_verification_contract.replay_conformance.artifact_policy.required_artifact_versions',
             $resultGate['required_artifact_versions_source'],
         );
+        $this->assertTrue($resultGate['artifact_version_policy']['requires_recorded_and_pinned_versions']);
+        $this->assertTrue($resultGate['artifact_version_policy']['rejects_placeholder_versions']);
+        foreach (['latest', 'current', 'head', 'unresolved', 'placeholder', '<latest>'] as $example) {
+            $this->assertContains($example, $resultGate['artifact_version_policy']['placeholder_version_examples']);
+        }
         $this->assertContains('every_required_scenario_has_one_result', $resultGate['pass_requires']);
         $this->assertContains('required_php_and_python_runtimes_are_reported', $resultGate['pass_requires']);
         $this->assertContains('adversarial_refusals_have_actionable_diagnostics', $resultGate['pass_requires']);
@@ -408,6 +421,7 @@ class ReplayVerificationContractTest extends TestCase
         $this->assertContains('each_non_pass_scenario_has_linked_findings', $resultGate['pass_requires']);
         $this->assertContains('run_record_metadata_is_complete', $resultGate['pass_requires']);
         $this->assertContains('overall_outcome_matches_gate_status', $resultGate['pass_requires']);
+        $this->assertContains('published_artifact_versions_are_recorded_and_pinned', $resultGate['pass_requires']);
         $this->assertSame('non_passing', $resultGate['smoke_subset_outcome']);
     }
 
@@ -670,6 +684,30 @@ class ReplayVerificationContractTest extends TestCase
         $this->assertContains(
             'waterline',
             array_column($evaluation['gate_failures'], 'artifact'),
+        );
+    }
+
+    public function test_replay_result_gate_rejects_placeholder_artifact_versions(): void
+    {
+        $result = $this->completeReplayConformanceResult();
+        $result['artifactVersions'] = [
+            'server' => 'durableworkflow/server:<latest>',
+            'cli' => 'latest',
+            'sdk-python' => 'durable-workflow==<latest>',
+            'workflow' => '2.0.0-alpha.<latest>',
+            'waterline' => '2.0.0-alpha.57',
+        ];
+
+        $evaluation = ReplayConformanceResultGate::evaluate($result);
+        $placeholderFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'placeholder_artifact_version',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame(
+            ['server', 'cli', 'workflow-php', 'sdk-python'],
+            array_column($placeholderFailures, 'artifact'),
         );
     }
 

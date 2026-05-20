@@ -208,8 +208,12 @@ test.
 Every run record must carry artifact versions, start and finish
 timestamps, an overall outcome, scenario results, findings, and finding
 links. Artifact versions cover the current published tuple: server, CLI,
-PHP workflow runtime, Python SDK, and Waterline. The required runtime
-axis is `workflow-php` and `sdk-python`; a passing run covers both.
+PHP workflow runtime, Python SDK, and Waterline. They must be concrete
+published versions pinned at run time; placeholder or unresolved tokens
+such as `latest`, `current`, `head`, `unresolved`, `placeholder`,
+`<latest>`, `${VERSION}`, or `{{ version }}` keep the run non-passing.
+The required runtime axis is `workflow-php` and `sdk-python`; a passing
+run covers both.
 
 The `result_gate` block is the server-published evaluator contract for
 `durable-workflow.v2.replay-conformance.result` documents. It rejects
@@ -274,10 +278,10 @@ A conformance run may report scenario status as `pass`, `fail`,
 `unsupported`, `not_covered`, or `runner_blocked`. The coverage gate can
 report a passing outcome only when every required runtime is present,
 every required matrix cell passes, every refusal is actionable, the
-artifact versions match the latest published set, and no local product
-source checkout is used. Any uncovered required scenario remains
-non-passing so a smoke subset cannot appear green as full deterministic
-replay coverage.
+artifact versions are concrete pins for the latest published set, and no
+local product source checkout is used. Any uncovered required scenario
+remains non-passing so a smoke subset cannot appear green as full
+deterministic replay coverage.
 
 Findings are routed by root cause. Nondeterminism belongs to the
 owning runtime or SDK; silent history-mutation acceptance belongs to the
