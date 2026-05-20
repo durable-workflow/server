@@ -16,7 +16,7 @@ final class ChildWorkflowRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.child-workflow-runtime.contract';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.child-workflow-runtime.result';
 
@@ -158,6 +158,16 @@ final class ChildWorkflowRuntimeContract
                 'child_workflow_namespace_contract',
             ],
             'scenario_requirements' => [
+                'published_artifact_install_only' => [
+                    'required_behavior' => 'all_artifacts_resolved_from_published_channels',
+                    'evidence' => [
+                        'server_image',
+                        'cli_release',
+                        'workflow_php_package',
+                        'sdk_python_package',
+                        'waterline_artifact',
+                    ],
+                ],
                 'child_result_round_trip' => [
                     'evidence' => [
                         'parent_workflow_id',
@@ -234,6 +244,7 @@ final class ChildWorkflowRuntimeContract
                     'required_run_metadata_recorded',
                     'declared_outcome_matches_evaluated_status',
                     'scenario_specific_evidence_reported',
+                    'published_artifact_install_evidence_reported',
                     'artifact_versions_match_latest_published_set',
                     'no_local_product_source_artifacts',
                     'findings_linked_for_non_pass_scenarios',

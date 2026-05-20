@@ -10,7 +10,7 @@ final class ChildWorkflowRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.child-workflow-runtime.result-gate';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     /**
      * @return array<string, mixed>
@@ -54,6 +54,7 @@ final class ChildWorkflowRuntimeResultGate
                 'failure_cancellation_replay_fan_out_and_namespace_sections_are_reported',
                 'each_pass_scenario_has_observed_outputs',
                 'each_pass_scenario_has_scenario_specific_evidence',
+                'published_artifact_install_evidence_reported',
                 'each_non_pass_scenario_has_linked_findings',
                 'run_timestamps_outcome_and_finding_links_are_recorded',
                 'overall_outcome_matches_gate_status',
@@ -784,6 +785,16 @@ final class ChildWorkflowRuntimeResultGate
     ): array {
         $failures = [];
 
+        if (self::isPassScenario($scenarioResults, 'published_artifact_install_only')) {
+            array_push(
+                $failures,
+                ...self::publishedArtifactInstallEvidenceFailures(
+                    self::sectionValue($result, 'published_artifact_install') ?? [],
+                    $scenarioResults['published_artifact_install_only'],
+                ),
+            );
+        }
+
         foreach ([
             'python_parent_python_child_baseline',
             'php_parent_php_child_baseline',
@@ -835,6 +846,42 @@ final class ChildWorkflowRuntimeResultGate
                 $failures,
                 ...self::namespaceEvidenceFailures(self::sectionValue($result, 'namespace_behavior') ?? []),
             );
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<mixed> $section
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function publishedArtifactInstallEvidenceFailures(array $section, array $scenarioResult): array
+    {
+        $outputs = self::arrayValue($scenarioResult, 'observed_outputs')
+            ?? self::arrayValue($scenarioResult, 'observedOutputs')
+            ?? [];
+
+        $failures = [];
+        foreach ([
+            'server_image' => ['server_image', 'serverImage'],
+            'cli_release' => ['cli_release', 'cliRelease'],
+            'workflow_php_package' => ['workflow_php_package', 'workflowPhpPackage', 'workflow_package'],
+            'sdk_python_package' => ['sdk_python_package', 'sdkPythonPackage', 'python_package'],
+            'waterline_artifact' => ['waterline_artifact', 'waterlineArtifact'],
+        ] as $field => $aliases) {
+            if (self::hasNonEmptyField($section, $aliases)
+                || self::hasNonEmptyField($scenarioResult, $aliases)
+                || self::hasNonEmptyField($outputs, $aliases)) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'missing_published_artifact_install_field',
+                'scenario_id' => 'published_artifact_install_only',
+                'field' => $field,
+            ];
         }
 
         return $failures;

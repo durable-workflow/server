@@ -99,6 +99,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             'fan_out_concurrency_reported',
             'namespace_behavior_reported',
             'declared_outcome_matches_evaluated_status',
+            'published_artifact_install_evidence_reported',
             'findings_linked_for_non_pass_scenarios',
         ] as $requirement) {
             $this->assertContains($requirement, $gate['passing_outcome_requires']);
@@ -128,6 +129,20 @@ class ChildWorkflowRuntimeContractTest extends TestCase
     public function test_manifest_requires_actionable_diagnostics_for_cancellation_replay_fan_out_and_namespace_cases(): void
     {
         $requirements = ChildWorkflowRuntimeContract::manifest()['scenario_requirements'];
+
+        $this->assertSame(
+            'all_artifacts_resolved_from_published_channels',
+            $requirements['published_artifact_install_only']['required_behavior'],
+        );
+        foreach ([
+            'server_image',
+            'cli_release',
+            'workflow_php_package',
+            'sdk_python_package',
+            'waterline_artifact',
+        ] as $field) {
+            $this->assertContains($field, $requirements['published_artifact_install_only']['evidence']);
+        }
 
         $this->assertSame(
             'child_reaches_cancelled_after_parent_cancel',
@@ -180,6 +195,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             $resultGate['pass_requires'],
         );
         $this->assertContains('each_pass_scenario_has_scenario_specific_evidence', $resultGate['pass_requires']);
+        $this->assertContains('published_artifact_install_evidence_reported', $resultGate['pass_requires']);
         $this->assertContains(
             'run_timestamps_outcome_and_finding_links_are_recorded',
             $resultGate['pass_requires'],
@@ -478,6 +494,27 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertContains('missing_namespace_behavior_field', $failureCodes);
     }
 
+    public function test_result_gate_requires_published_artifact_install_evidence(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        unset($result['published_artifact_install']);
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $installFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_published_artifact_install_field',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame([
+            'server_image',
+            'cli_release',
+            'workflow_php_package',
+            'sdk_python_package',
+            'waterline_artifact',
+        ], array_column($installFailures, 'field'));
+    }
+
     public function test_result_gate_accepts_a_complete_passing_matrix(): void
     {
         $evaluation = ChildWorkflowRuntimeResultGate::evaluate($this->completeChildWorkflowResult());
@@ -600,6 +637,13 @@ class ChildWorkflowRuntimeContractTest extends TestCase
                 'sdk-python' => '0.4.60',
                 'workflow' => '2.0.0-alpha.164',
                 'waterline' => '2.0.0-alpha.54',
+            ],
+            'published_artifact_install' => [
+                'server_image' => 'durableworkflow/server:0.2.144',
+                'cli_release' => 'dw 0.1.45',
+                'workflow_php_package' => 'durable-workflow/workflow 2.0.0-alpha.164',
+                'sdk_python_package' => 'durable-workflow 0.4.60',
+                'waterline_artifact' => 'waterline 2.0.0-alpha.54',
             ],
             'runtime_matrix' => [
                 'runtimes' => ['workflow-php', 'sdk-python'],
