@@ -691,11 +691,11 @@ class ReplayVerificationContractTest extends TestCase
     {
         $result = $this->completeReplayConformanceResult();
         $result['artifactVersions'] = [
-            'server' => 'durableworkflow/server:<latest>',
-            'cli' => 'latest',
-            'sdk-python' => 'durable-workflow==<latest>',
-            'workflow' => '2.0.0-alpha.<latest>',
-            'waterline' => '2.0.0-alpha.57',
+            'server' => 'durableworkflow/server:head',
+            'cli' => 'durable-workflow-cli==current',
+            'sdk-python' => 'durable-workflow==unresolved',
+            'workflow' => 'durable-workflow/workflow:placeholder',
+            'waterline' => 'durable-workflow/waterline:<latest>',
         ];
 
         $evaluation = ReplayConformanceResultGate::evaluate($result);
@@ -706,9 +706,28 @@ class ReplayVerificationContractTest extends TestCase
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertSame(
-            ['server', 'cli', 'workflow-php', 'sdk-python'],
+            ['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'],
             array_column($placeholderFailures, 'artifact'),
         );
+    }
+
+    public function test_replay_result_gate_rejects_each_advertised_placeholder_word_inside_an_artifact_version(): void
+    {
+        foreach (['latest', 'current', 'head', 'unresolved', 'placeholder'] as $placeholder) {
+            $result = $this->completeReplayConformanceResult();
+            $result['artifactVersions']['server'] = 'durableworkflow/server:' . $placeholder;
+
+            $evaluation = ReplayConformanceResultGate::evaluate($result);
+            $serverPlaceholderFailures = array_values(array_filter(
+                $evaluation['gate_failures'],
+                static fn (array $failure): bool => ($failure['code'] ?? null) === 'placeholder_artifact_version'
+                    && ($failure['artifact'] ?? null) === 'server',
+            ));
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertCount(1, $serverPlaceholderFailures);
+            $this->assertSame('durableworkflow/server:' . $placeholder, $serverPlaceholderFailures[0]['version']);
+        }
     }
 
     public function test_replay_result_gate_requires_actionable_refusal_diagnostics(): void

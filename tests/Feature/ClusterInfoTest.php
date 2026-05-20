@@ -202,6 +202,10 @@ class ClusterInfoTest extends TestCase
             'findings_linked_for_non_pass_scenarios',
             $contract['coverage_gate']['passing_outcome_requires'],
         );
+        $this->assertContains(
+            'omitted_required_scenarios_link_findings',
+            $contract['coverage_gate']['passing_outcome_requires'],
+        );
         $this->assertSame(
             SignalQueryRuntimeResultGate::SCHEMA,
             $contract['result_gate']['schema'],
@@ -212,6 +216,10 @@ class ClusterInfoTest extends TestCase
         );
         $this->assertContains(
             'published_artifact_versions_are_recorded_and_pinned',
+            $contract['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'omitted_required_scenarios_link_findings',
             $contract['result_gate']['pass_requires'],
         );
         $this->assertTrue($contract['result_gate']['artifact_version_policy']['rejects_placeholder_versions']);

@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 4;
+    public const VERSION = 5;
 
     /**
      * @return array<string, mixed>
@@ -70,6 +70,7 @@ final class SignalQueryRuntimeResultGate
                 'each_pass_scenario_has_observed_outputs',
                 'each_pass_scenario_includes_required_evidence',
                 'each_non_pass_scenario_has_linked_findings',
+                'omitted_required_scenarios_link_findings',
                 'run_timestamps_outcome_and_finding_links_are_recorded',
                 'overall_outcome_matches_gate_status',
                 'published_artifact_versions_are_recorded_and_pinned',
@@ -181,6 +182,8 @@ final class SignalQueryRuntimeResultGate
 
         $sectionFailures = self::requiredSectionFailures($result, $scenarioResults);
         array_push($failures, ...$sectionFailures);
+
+        array_push($failures, ...self::missingScenarioFindingFailures($missingScenarios, $result));
 
         $evidenceFailures = self::scenarioEvidenceFailures($result, $scenarioResults, $contract);
         array_push($failures, ...$evidenceFailures);
@@ -818,6 +821,30 @@ final class SignalQueryRuntimeResultGate
                     ];
                 }
             }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param list<string> $missingScenarios
+     * @param array<string, mixed> $result
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function missingScenarioFindingFailures(array $missingScenarios, array $result): array
+    {
+        $failures = [];
+
+        foreach ($missingScenarios as $scenarioId) {
+            if (self::hasLinkedFindings(['scenario_id' => $scenarioId], $result)) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'missing_required_scenario_finding',
+                'scenario_id' => $scenarioId,
+            ];
         }
 
         return $failures;

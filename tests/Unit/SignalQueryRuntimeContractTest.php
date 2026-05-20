@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(4, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(5, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -120,6 +120,7 @@ class SignalQueryRuntimeContractTest extends TestCase
             'terminal_run_behavior_reported',
             'adversarial_errors_typed',
             'waterline_observer_comparison_reported',
+            'omitted_required_scenarios_link_findings',
             'findings_linked_for_non_pass_scenarios',
         ] as $requirement) {
             $this->assertContains($requirement, $gate['passing_outcome_requires']);
@@ -183,7 +184,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(4, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(5, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -210,6 +211,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertContains('same_language_and_cross_language_cells_are_reported', $resultGate['pass_requires']);
         $this->assertContains('each_pass_scenario_includes_required_evidence', $resultGate['pass_requires']);
         $this->assertContains('each_non_pass_scenario_has_linked_findings', $resultGate['pass_requires']);
+        $this->assertContains('omitted_required_scenarios_link_findings', $resultGate['pass_requires']);
         $this->assertContains('run_timestamps_outcome_and_finding_links_are_recorded', $resultGate['pass_requires']);
         $this->assertContains('overall_outcome_matches_gate_status', $resultGate['pass_requires']);
         $this->assertContains(
@@ -274,6 +276,40 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertContains(
             'missing_non_pass_finding',
             array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_requires_findings_for_omitted_required_scenarios(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        unset($result['scenario_results']['php_worker_cli_and_sdk_baseline']);
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $missingScenarioFindingFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_required_scenario_finding',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('php_worker_cli_and_sdk_baseline', $evaluation['missing_scenarios']);
+        $this->assertCount(1, $missingScenarioFindingFailures);
+        $this->assertSame(
+            'php_worker_cli_and_sdk_baseline',
+            $missingScenarioFindingFailures[0]['scenario_id'],
+        );
+
+        $result['finding_links'] = [
+            'php_worker_cli_and_sdk_baseline' => [
+                'https://tracker.example/findings/php-worker-signal-query-baseline',
+            ],
+        ];
+
+        $evaluationWithFinding = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluationWithFinding['status']);
+        $this->assertNotContains(
+            'missing_required_scenario_finding',
+            array_column($evaluationWithFinding['gate_failures'], 'code'),
         );
     }
 

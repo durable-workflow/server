@@ -220,13 +220,14 @@ The `result_gate` block is the server-published evaluator contract for
 smoke-only evidence, omitted required scenarios, missing PHP or Python
 runtime cells, missing replay evidence for passing scenarios, missing
 linked findings for non-passing scenarios, and adversarial refusal cases
-that do not include actionable diagnostics. A full-matrix result may
-declare `fail` or another non-passing coverage outcome when it links
-concrete product findings for every non-passing cell; that is complete
-product evidence, not malformed metadata. A result whose scenario matrix
-is green must declare a passing outcome, and a result with missing or
-non-passing cells must not declare `pass`; the run verdict and the gate
-verdict must agree.
+that do not include actionable diagnostics. It also rejects unresolved
+artifact version placeholders even when every scenario result is green.
+A full-matrix result may declare `fail` or another non-passing coverage
+outcome when it links concrete product findings for every non-passing
+cell; that is complete product evidence, not malformed metadata. A
+result whose scenario matrix is green must declare a passing outcome, and
+a result with missing or non-passing cells must not declare `pass`; the
+run verdict and the gate verdict must agree.
 
 The machine-readable `required_scenarios` list mirrors the public
 scenario manifest at

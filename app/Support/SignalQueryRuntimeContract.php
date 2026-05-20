@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 4;
+    public const VERSION = 5;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -242,6 +242,7 @@ final class SignalQueryRuntimeContract
                     'artifact_versions_match_latest_published_set',
                     'no_local_product_source_artifacts',
                     'findings_linked_for_non_pass_scenarios',
+                    'omitted_required_scenarios_link_findings',
                 ],
                 'uncovered_required_scenario_outcome' => 'non_passing',
                 'smoke_subset_outcome' => 'non_passing',
