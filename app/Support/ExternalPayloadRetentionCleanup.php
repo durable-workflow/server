@@ -6,6 +6,7 @@ use App\Models\WorkflowDurableStream;
 use App\Models\WorkflowDurableStreamItem;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use RuntimeException;
 use Workflow\V2\Models\ActivityExecution;
@@ -43,14 +44,48 @@ class ExternalPayloadRetentionCleanup
      * @param  list<string>  $runIds
      * @return array{found: int, deleted: int, blocked: bool, reason: string|null}
      */
-    public function deleteForRuns(string $namespace, array $runIds, bool $includeNamespaceOwnedReferences = false): array
+    public function deleteForRuns(string $namespace, array $runIds): array
     {
         $runIds = array_values(array_unique(array_filter(
             array_map(static fn (mixed $runId): string => (string) $runId, $runIds),
             static fn (string $runId): bool => $runId !== '',
         )));
 
-        $references = $this->referencesForRuns($namespace, $runIds, $includeNamespaceOwnedReferences);
+        return $this->deleteReferences(
+            $namespace,
+            $this->referencesForRuns($namespace, $runIds),
+            fn (string $uri): bool => $this->isReferencedByRetainedRun($uri, $runIds),
+        );
+    }
+
+    /**
+     * @param  list<string>  $runIds
+     * @param  list<string>  $instanceIds
+     * @return array{found: int, deleted: int, blocked: bool, reason: string|null}
+     */
+    public function deleteForNamespaceCleanup(string $namespace, array $runIds, array $instanceIds): array
+    {
+        $runIds = $this->normalizedStrings($runIds);
+        $instanceIds = $this->normalizedStrings($instanceIds);
+
+        return $this->deleteReferencesForOwningNamespaces(
+            $this->referencesForNamespaceCleanup(strtolower($namespace), $runIds, $instanceIds),
+            fn (string $uri): bool => $this->isReferencedByRetainedNamespaceRow(
+                $uri,
+                strtolower($namespace),
+                $runIds,
+                $instanceIds,
+            ),
+        );
+    }
+
+    /**
+     * @param  list<array{namespace: string, uri: string}>  $references
+     * @return array{found: int, deleted: int, blocked: bool, reason: string|null}
+     */
+    private function deleteReferencesForOwningNamespaces(array $references, callable $isRetained): array
+    {
+        $references = $this->uniqueOwnedReferences($references);
 
         if ($references === []) {
             return [
@@ -61,11 +96,99 @@ class ExternalPayloadRetentionCleanup
             ];
         }
 
-        try {
-            $driver = app(NamespaceExternalPayloadStorage::class)->driverFor($namespace);
-        } catch (\Throwable) {
-            $driver = null;
+        $deletable = array_values(array_filter(
+            $references,
+            static fn (array $reference): bool => ! $isRetained($reference['uri']),
+        ));
+
+        if ($deletable === []) {
+            return [
+                'found' => count($references),
+                'deleted' => 0,
+                'blocked' => false,
+                'reason' => null,
+            ];
         }
+
+        $drivers = [];
+
+        foreach ($deletable as $reference) {
+            $namespace = $reference['namespace'];
+
+            if (array_key_exists($namespace, $drivers)) {
+                continue;
+            }
+
+            $driver = app(NamespaceExternalPayloadStorage::class)->driverFor($namespace);
+
+            if ($driver === null) {
+                return [
+                    'found' => count($references),
+                    'deleted' => 0,
+                    'blocked' => true,
+                    'reason' => 'external_payload_storage_driver_unavailable',
+                ];
+            }
+
+            $drivers[$namespace] = $driver;
+        }
+
+        $deleted = 0;
+
+        foreach ($deletable as $reference) {
+            try {
+                $drivers[$reference['namespace']]->delete($reference['uri']);
+                $deleted++;
+            } catch (ExternalPayloadStorageUnavailable $e) {
+                throw $e;
+            } catch (\Throwable $e) {
+                throw new RuntimeException(
+                    'Unable to delete external payload reference during retention cleanup.',
+                    previous: $e,
+                );
+            }
+        }
+
+        return [
+            'found' => count($references),
+            'deleted' => $deleted,
+            'blocked' => false,
+            'reason' => null,
+        ];
+    }
+
+    /**
+     * @param  list<string>  $references
+     * @return array{found: int, deleted: int, blocked: bool, reason: string|null}
+     */
+    private function deleteReferences(string $namespace, array $references, callable $isRetained): array
+    {
+        $references = array_values(array_unique($references));
+
+        if ($references === []) {
+            return [
+                'found' => 0,
+                'deleted' => 0,
+                'blocked' => false,
+                'reason' => null,
+            ];
+        }
+
+        $deletable = array_values(array_filter(
+            $references,
+            static fn (string $uri): bool => ! $isRetained($uri),
+        ));
+
+        if ($deletable === []) {
+            return [
+                'found' => count($references),
+                'deleted' => 0,
+                'blocked' => false,
+                'reason' => null,
+            ];
+        }
+
+        $driver = app(NamespaceExternalPayloadStorage::class)->driverFor($namespace);
 
         if ($driver === null) {
             return [
@@ -78,11 +201,7 @@ class ExternalPayloadRetentionCleanup
 
         $deleted = 0;
 
-        foreach ($references as $uri) {
-            if ($this->isReferencedByRetainedRun($uri, $namespace, $runIds)) {
-                continue;
-            }
-
+        foreach ($deletable as $uri) {
             try {
                 $driver->delete($uri);
                 $deleted++;
@@ -105,10 +224,11 @@ class ExternalPayloadRetentionCleanup
     }
 
     /**
+     * @param  string  $namespace
      * @param  list<string>  $runIds
      * @return list<string>
      */
-    private function referencesForRuns(string $namespace, array $runIds, bool $includeNamespaceOwnedReferences): array
+    private function referencesForRuns(string $namespace, array $runIds): array
     {
         $uris = [];
 
@@ -118,13 +238,186 @@ class ExternalPayloadRetentionCleanup
             }
         }
 
-        if ($includeNamespaceOwnedReferences) {
-            foreach ($this->referencesForNamespaceOwnedRows($namespace) as $uri) {
-                $uris[] = $uri;
+        return array_values(array_unique($uris));
+    }
+
+    /**
+     * @param  list<string>  $runIds
+     * @param  list<string>  $instanceIds
+     * @return list<array{namespace: string, uri: string}>
+     */
+    private function referencesForNamespaceCleanup(string $namespace, array $runIds, array $instanceIds): array
+    {
+        $references = [];
+
+        foreach ($this->namespaceCleanupReferenceSources($namespace, $runIds, $instanceIds) as $source) {
+            $query = $this->queryForScope($source['table'], $source['scope']);
+
+            if ($query === null) {
+                continue;
+            }
+
+            foreach ($source['payload_columns'] as $column) {
+                $this->collectPayloadTableColumnReferences(
+                    clone $query,
+                    $source['table'],
+                    $column,
+                    $references,
+                    $namespace,
+                    $source['owner_namespace_column'],
+                );
+            }
+
+            foreach ($source['reference_columns'] as $column) {
+                $this->collectReferenceTableColumnReferences(
+                    clone $query,
+                    $source['table'],
+                    $column,
+                    $references,
+                    $namespace,
+                    $source['owner_namespace_column'],
+                );
             }
         }
 
-        return array_values(array_unique($uris));
+        return $this->uniqueOwnedReferences($references);
+    }
+
+    /**
+     * @param  list<string>  $runIds
+     * @param  list<string>  $instanceIds
+     */
+    private function isReferencedByRetainedNamespaceRow(
+        string $uri,
+        string $namespace,
+        array $runIds,
+        array $instanceIds,
+    ): bool {
+        foreach ($this->namespaceCleanupReferenceSources($namespace, $runIds, $instanceIds) as $source) {
+            $query = $this->retainedQueryForScope($source['table'], $source['scope']);
+
+            if ($query === null) {
+                continue;
+            }
+
+            foreach ($source['payload_columns'] as $column) {
+                if ($this->payloadTableColumnReferencesUri(clone $query, $source['table'], $column, $uri)) {
+                    return true;
+                }
+            }
+
+            foreach ($source['reference_columns'] as $column) {
+                if ($this->referenceTableColumnReferencesUri(clone $query, $source['table'], $column, $uri)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  list<string>  $runIds
+     * @param  list<string>  $instanceIds
+     * @return list<array{table: string, scope: array<string, list<string>>, payload_columns: list<string>, reference_columns: list<string>, owner_namespace_column: string|null}>
+     */
+    private function namespaceCleanupReferenceSources(string $namespace, array $runIds, array $instanceIds): array
+    {
+        $runOrInstanceScope = $this->runOrInstanceScope($runIds, $instanceIds);
+
+        return [
+            $this->namespaceSource('workflow_runs', ['arguments', 'output', 'memo', 'search_attributes', 'visibility_labels'], [], [
+                'namespace' => [$namespace],
+            ]),
+            $this->namespaceSource('workflow_run_summaries', ['visibility_labels'], [], [
+                'id' => $runIds,
+                'workflow_instance_id' => $instanceIds,
+            ]),
+            $this->namespaceSource('activity_executions', ['arguments', 'result', 'exception'], [], $runOrInstanceScope),
+            $this->namespaceSource('workflow_commands', ['payload'], [], $runOrInstanceScope),
+            $this->namespaceSource('workflow_history_events', ['payload'], [], $runOrInstanceScope),
+            $this->namespaceSource('workflow_memos', ['value'], [], $runOrInstanceScope),
+            $this->namespaceSource('workflow_tasks', ['payload'], [], $runOrInstanceScope),
+            $this->namespaceSource('workflow_messages', ['metadata'], ['payload_reference'], [
+                'workflow_instance_id' => $instanceIds,
+                'workflow_run_id' => $runIds,
+            ]),
+            $this->namespaceSource('workflow_child_calls', ['arguments', 'metadata'], [
+                'result_payload_reference',
+            ], [
+                'parent_workflow_instance_id' => $instanceIds,
+                'parent_workflow_run_id' => $runIds,
+            ]),
+            $this->namespaceSource('workflow_service_calls', $this->serviceCallPayloadColumns(), $this->serviceCallReferenceColumns(), [
+                'namespace' => [$namespace],
+                'target_namespace' => [$namespace],
+            ]),
+            $this->namespaceSource('workflow_schedule_history_events', ['payload'], [], [
+                'namespace' => [$namespace],
+            ]),
+            $this->namespaceSource('workflow_schedules', [
+                'spec',
+                'action',
+                'memo',
+                'search_attributes',
+                'visibility_labels',
+                'recent_actions',
+                'buffered_actions',
+            ], [], [
+                'namespace' => [$namespace],
+            ]),
+            $this->namespaceSource('workflow_durable_streams', ['metadata'], [], [
+                'namespace' => [$namespace],
+            ]),
+            $this->namespaceSource('workflow_durable_stream_items', ['payload'], ['payload_reference'], [
+                'namespace' => [$namespace],
+            ]),
+            $this->namespaceSource('workflow_run_timer_entries', ['payload'], [], $runOrInstanceScope),
+            $this->namespaceSource('workflow_run_waits', ['payload'], [], $runOrInstanceScope),
+            $this->namespaceSource('workflow_run_lineage_entries', ['payload'], [], $runOrInstanceScope),
+            $this->namespaceSource('workflow_signal_records', ['arguments'], [], $runOrInstanceScope),
+            $this->namespaceSource('workflow_run_timeline_entries', ['payload'], [], $runOrInstanceScope),
+            $this->namespaceSource('workflow_updates', ['arguments', 'result'], [], [
+                'workflow_instance_id' => $instanceIds,
+                'workflow_run_id' => $runIds,
+            ]),
+            $this->namespaceSource('workflow_search_attributes', ['value_string', 'value_keyword'], [], $runOrInstanceScope),
+        ];
+    }
+
+    /**
+     * @param  list<string>  $runIds
+     * @param  list<string>  $instanceIds
+     * @return array<string, list<string>>
+     */
+    private function runOrInstanceScope(array $runIds, array $instanceIds): array
+    {
+        return [
+            'workflow_run_id' => $runIds,
+            'workflow_instance_id' => $instanceIds,
+        ];
+    }
+
+    /**
+     * @param  list<string>  $payloadColumns
+     * @param  list<string>  $referenceColumns
+     * @param  array<string, list<string>>  $scope
+     * @return array{table: string, scope: array<string, list<string>>, payload_columns: list<string>, reference_columns: list<string>, owner_namespace_column: string|null}
+     */
+    private function namespaceSource(
+        string $table,
+        array $payloadColumns,
+        array $referenceColumns,
+        array $scope,
+        ?string $ownerNamespaceColumn = 'namespace',
+    ): array {
+        return [
+            'table' => $table,
+            'scope' => $scope,
+            'payload_columns' => $payloadColumns,
+            'reference_columns' => $referenceColumns,
+            'owner_namespace_column' => $ownerNamespaceColumn,
+        ];
     }
 
     /**
@@ -133,6 +426,7 @@ class ExternalPayloadRetentionCleanup
     private function referencesForRun(string $namespace, string $runId): array
     {
         $uris = [];
+        $namespace = strtolower($namespace);
 
         $run = WorkflowRun::query()->find($runId);
         if ($run instanceof WorkflowRun) {
@@ -151,17 +445,27 @@ class ExternalPayloadRetentionCleanup
         $this->collectPayloadColumn(WorkflowHistoryEvent::query()->where('workflow_run_id', $runId), 'payload', $uris);
         $this->collectPayloadColumn(WorkflowMemo::query()->where('workflow_run_id', $runId), 'value', $uris);
         $this->collectPayloadColumn(WorkflowTask::query()->where('workflow_run_id', $runId), 'payload', $uris);
-        $this->collectPayloadColumn(WorkflowMessage::query()->where('workflow_run_id', $runId), 'metadata', $uris);
-        $this->collectPayloadColumn(WorkflowChildCall::query()->where('parent_workflow_run_id', $runId), 'arguments', $uris);
-        $this->collectPayloadColumn(WorkflowChildCall::query()->where('parent_workflow_run_id', $runId), 'metadata', $uris);
-
+        $messages = $this->anyColumnReference(WorkflowMessage::query(), [
+            'workflow_run_id',
+            'source_workflow_run_id',
+            'target_workflow_run_id',
+        ], $runId);
+        $this->collectPayloadColumn(clone $messages, 'metadata', $uris);
+        $this->collectReferenceColumn(clone $messages, 'payload_reference', $uris);
+        $childCalls = $this->anyColumnReference(WorkflowChildCall::query(), [
+            'parent_workflow_run_id',
+            'resolved_child_run_id',
+        ], $runId);
+        $this->collectPayloadColumn(clone $childCalls, 'arguments', $uris);
+        $this->collectPayloadColumn(clone $childCalls, 'metadata', $uris);
+        $this->collectReferenceColumn(clone $childCalls, 'result_payload_reference', $uris);
+        $serviceCalls = $this->serviceCallsForRunRetention($namespace, $runId);
         foreach ($this->serviceCallPayloadColumns() as $column) {
-            $this->collectPayloadColumn($this->ownedServiceCallRunReference($namespace, $runId), $column, $uris);
+            $this->collectPayloadColumn(clone $serviceCalls, $column, $uris);
         }
         foreach ($this->serviceCallReferenceColumns() as $column) {
-            $this->collectExternalUriReferenceColumn($this->ownedServiceCallRunReference($namespace, $runId), $column, $uris);
+            $this->collectReferenceColumn(clone $serviceCalls, $column, $uris);
         }
-
         $this->collectPayloadColumn(WorkflowScheduleHistoryEvent::query()->where('workflow_run_id', $runId), 'payload', $uris);
         $this->collectPayloadColumn(WorkflowDurableStream::query()->where('workflow_run_id', $runId), 'metadata', $uris);
         $this->collectPayloadColumn(WorkflowDurableStreamItem::query()->where('workflow_run_id', $runId), 'payload', $uris);
@@ -186,26 +490,9 @@ class ExternalPayloadRetentionCleanup
     }
 
     /**
-     * @return list<string>
-     */
-    private function referencesForNamespaceOwnedRows(string $namespace): array
-    {
-        $uris = [];
-
-        foreach ($this->serviceCallPayloadColumns() as $column) {
-            $this->collectPayloadColumn($this->ownedServiceCallQuery($namespace), $column, $uris);
-        }
-        foreach ($this->serviceCallReferenceColumns() as $column) {
-            $this->collectExternalUriReferenceColumn($this->ownedServiceCallQuery($namespace), $column, $uris);
-        }
-
-        return array_values(array_unique($uris));
-    }
-
-    /**
      * @param  list<string>  $deletedRunIds
      */
-    private function isReferencedByRetainedRun(string $uri, string $namespace, array $deletedRunIds): bool
+    private function isReferencedByRetainedRun(string $uri, array $deletedRunIds): bool
     {
         $runColumns = [
             'arguments',
@@ -232,13 +519,13 @@ class ExternalPayloadRetentionCleanup
             }
         }
 
-        foreach ($this->retainedPayloadColumns($namespace, $deletedRunIds) as [$query, $column]) {
+        foreach ($this->retainedPayloadColumns($deletedRunIds) as [$query, $column]) {
             if ($this->payloadColumnReferencesUri($query, $column, $uri)) {
                 return true;
             }
         }
 
-        foreach ($this->retainedReferenceColumns($namespace, $deletedRunIds) as [$query, $column]) {
+        foreach ($this->retainedReferenceColumns($deletedRunIds) as [$query, $column]) {
             if ($this->referenceColumnReferencesUri($query, $column, $uri)) {
                 return true;
             }
@@ -262,9 +549,9 @@ class ExternalPayloadRetentionCleanup
      * @param  list<string>  $deletedRunIds
      * @return list<array{0: Builder<Model>, 1: string}>
      */
-    private function retainedPayloadColumns(string $namespace, array $deletedRunIds): array
+    private function retainedPayloadColumns(array $deletedRunIds): array
     {
-        $columns = [
+        return [
             [WorkflowRunSummary::query()->whereIn('id', $this->retainedRunIdsQuery($deletedRunIds)), 'visibility_labels'],
             [ActivityExecution::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'arguments'],
             [ActivityExecution::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'result'],
@@ -273,9 +560,27 @@ class ExternalPayloadRetentionCleanup
             [WorkflowHistoryEvent::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
             [WorkflowMemo::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'value'],
             [WorkflowTask::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
-            [WorkflowMessage::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'metadata'],
-            [WorkflowChildCall::query()->whereIn('parent_workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'arguments'],
-            [WorkflowChildCall::query()->whereIn('parent_workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'metadata'],
+            [$this->anyRetainedColumnReference(WorkflowMessage::query(), [
+                'workflow_run_id',
+                'source_workflow_run_id',
+                'target_workflow_run_id',
+            ], $deletedRunIds), 'metadata'],
+            [$this->anyRetainedColumnReference(WorkflowChildCall::query(), [
+                'parent_workflow_run_id',
+                'resolved_child_run_id',
+            ], $deletedRunIds), 'arguments'],
+            [$this->anyRetainedColumnReference(WorkflowChildCall::query(), [
+                'parent_workflow_run_id',
+                'resolved_child_run_id',
+            ], $deletedRunIds), 'metadata'],
+            [WorkflowServiceCall::query(), 'deadline_policy'],
+            [WorkflowServiceCall::query(), 'idempotency_policy'],
+            [WorkflowServiceCall::query(), 'cancellation_policy'],
+            [WorkflowServiceCall::query(), 'retry_policy'],
+            [WorkflowServiceCall::query(), 'boundary_policy'],
+            [WorkflowServiceCall::query(), 'metadata'],
+            [WorkflowServiceCall::query(), 'outcome_metadata'],
+            [WorkflowServiceCall::query(), 'caller_principal_claims'],
             [WorkflowScheduleHistoryEvent::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
             [WorkflowDurableStream::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'metadata'],
             [WorkflowDurableStreamItem::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'payload'],
@@ -289,29 +594,41 @@ class ExternalPayloadRetentionCleanup
             [WorkflowSearchAttribute::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'value_string'],
             [WorkflowSearchAttribute::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)), 'value_keyword'],
         ];
-
-        foreach ($this->serviceCallPayloadColumns() as $column) {
-            $columns[] = [$this->retainedServiceCallQuery($namespace), $column];
-        }
-
-        return $columns;
     }
 
     /**
      * @param  list<string>  $deletedRunIds
      * @return list<array{0: Builder<Model>, 1: string}>
      */
-    private function retainedReferenceColumns(string $namespace, array $deletedRunIds): array
+    private function retainedReferenceColumns(array $deletedRunIds): array
     {
         $columns = [
             [
                 WorkflowDurableStreamItem::query()->whereIn('workflow_run_id', $this->retainedRunIdsQuery($deletedRunIds)),
                 'payload_reference',
             ],
+            [
+                $this->anyRetainedColumnReference(WorkflowMessage::query(), [
+                    'workflow_run_id',
+                    'source_workflow_run_id',
+                    'target_workflow_run_id',
+                ], $deletedRunIds),
+                'payload_reference',
+            ],
+            [
+                $this->anyRetainedColumnReference(WorkflowChildCall::query(), [
+                    'parent_workflow_run_id',
+                    'resolved_child_run_id',
+                ], $deletedRunIds),
+                'result_payload_reference',
+            ],
         ];
 
         foreach ($this->serviceCallReferenceColumns() as $column) {
-            $columns[] = [$this->retainedServiceCallQuery($namespace), $column];
+            $columns[] = [
+                WorkflowServiceCall::query(),
+                $column,
+            ];
         }
 
         return $columns;
@@ -326,6 +643,8 @@ class ExternalPayloadRetentionCleanup
     {
         return $this->anyRetainedColumnReference($query, [
             'workflow_run_id',
+            'requested_workflow_run_id',
+            'resolved_workflow_run_id',
         ], $deletedRunIds);
     }
 
@@ -387,6 +706,50 @@ class ExternalPayloadRetentionCleanup
     }
 
     /**
+     * @return Builder<Model>
+     */
+    private function serviceCallsForRunRetention(string $namespace, string $runId)
+    {
+        $query = WorkflowServiceCall::query();
+        $runColumns = $this->existingColumns($query, [
+            'caller_workflow_run_id',
+            'linked_workflow_run_id',
+        ]);
+        $namespaceColumns = $this->existingColumns($query, [
+            'namespace',
+            'target_namespace',
+        ]);
+
+        if ($runColumns === [] || $namespaceColumns === []) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query
+            ->where(static function (Builder $query) use ($runColumns, $runId): void {
+                foreach ($runColumns as $index => $column) {
+                    if ($index === 0) {
+                        $query->where($column, $runId);
+
+                        continue;
+                    }
+
+                    $query->orWhere($column, $runId);
+                }
+            })
+            ->where(static function (Builder $query) use ($namespaceColumns, $namespace): void {
+                foreach ($namespaceColumns as $index => $column) {
+                    if ($index === 0) {
+                        $query->where($column, $namespace);
+
+                        continue;
+                    }
+
+                    $query->orWhere($column, $namespace);
+                }
+            });
+    }
+
+    /**
      * @param  Builder<Model>  $query
      * @return Builder<Model>
      */
@@ -394,7 +757,195 @@ class ExternalPayloadRetentionCleanup
     {
         return $this->anyColumnReference($query, [
             'workflow_run_id',
+            'requested_workflow_run_id',
+            'resolved_workflow_run_id',
         ], $runId);
+    }
+
+    /**
+     * @param  array<string, list<string>>  $scope
+     */
+    private function queryForScope(string $table, array $scope): mixed
+    {
+        $scope = $this->existingScope($table, $scope);
+
+        if ($scope === []) {
+            return null;
+        }
+
+        return DB::table($table)
+            ->where(function ($query) use ($scope): void {
+                foreach ($scope as $column => $values) {
+                    $query->orWhereIn($column, $values);
+                }
+            });
+    }
+
+    /**
+     * @param  array<string, list<string>>  $scope
+     */
+    private function retainedQueryForScope(string $table, array $scope): mixed
+    {
+        if (! Schema::hasTable($table)) {
+            return null;
+        }
+
+        $scope = $this->existingScope($table, $scope);
+
+        if ($scope === []) {
+            return DB::table($table);
+        }
+
+        return DB::table($table)
+            ->where(function ($query) use ($scope): void {
+                foreach ($scope as $column => $values) {
+                    $query->where(function ($query) use ($column, $values): void {
+                        $query->whereNotIn($column, $values)
+                            ->orWhereNull($column);
+                    });
+                }
+            });
+    }
+
+    /**
+     * @param  array<string, list<string>>  $scope
+     * @return array<string, list<string>>
+     */
+    private function existingScope(string $table, array $scope): array
+    {
+        if (! Schema::hasTable($table)) {
+            return [];
+        }
+
+        $existing = [];
+
+        foreach ($scope as $column => $values) {
+            $values = $this->normalizedStrings($values);
+
+            if ($values !== [] && Schema::hasColumn($table, $column)) {
+                $existing[$column] = $values;
+            }
+        }
+
+        return $existing;
+    }
+
+    /**
+     * @param  array<int, string>  $uris
+     */
+    private function collectPayloadTableColumn($query, string $table, string $column, array &$uris): void
+    {
+        if (! $this->hasTableColumn($table, $column)) {
+            return;
+        }
+
+        foreach ($query->select([$column])->cursor() as $row) {
+            $this->collectReferences($row->{$column}, $uris);
+        }
+    }
+
+    /**
+     * @param  array<int, string>  $uris
+     */
+    private function collectReferenceTableColumn($query, string $table, string $column, array &$uris): void
+    {
+        if (! $this->hasTableColumn($table, $column)) {
+            return;
+        }
+
+        foreach ($query->select([$column])->cursor() as $row) {
+            $uri = $row->{$column};
+
+            if ($this->isDirectPayloadReference($uri)) {
+                $uris[] = $uri;
+            }
+        }
+    }
+
+    /**
+     * @param  array<int, array{namespace: string, uri: string}>  $references
+     */
+    private function collectPayloadTableColumnReferences(
+        $query,
+        string $table,
+        string $column,
+        array &$references,
+        string $defaultNamespace,
+        ?string $ownerNamespaceColumn,
+    ): void {
+        if (! $this->hasTableColumn($table, $column)) {
+            return;
+        }
+
+        $ownerNamespaceColumn = $this->ownerNamespaceColumn($table, $ownerNamespaceColumn);
+        $select = array_values(array_unique(array_filter([$column, $ownerNamespaceColumn])));
+
+        foreach ($query->select($select)->cursor() as $row) {
+            $namespace = $this->ownerNamespaceForRow($row, $defaultNamespace, $ownerNamespaceColumn);
+            $uris = [];
+            $this->collectReferences($row->{$column}, $uris);
+
+            foreach ($uris as $uri) {
+                $references[] = [
+                    'namespace' => $namespace,
+                    'uri' => $uri,
+                ];
+            }
+        }
+    }
+
+    /**
+     * @param  array<int, array{namespace: string, uri: string}>  $references
+     */
+    private function collectReferenceTableColumnReferences(
+        $query,
+        string $table,
+        string $column,
+        array &$references,
+        string $defaultNamespace,
+        ?string $ownerNamespaceColumn,
+    ): void {
+        if (! $this->hasTableColumn($table, $column)) {
+            return;
+        }
+
+        $ownerNamespaceColumn = $this->ownerNamespaceColumn($table, $ownerNamespaceColumn);
+        $select = array_values(array_unique(array_filter([$column, $ownerNamespaceColumn])));
+
+        foreach ($query->select($select)->cursor() as $row) {
+            $uri = $row->{$column};
+
+            if ($this->isDirectPayloadReference($uri)) {
+                $references[] = [
+                    'namespace' => $this->ownerNamespaceForRow($row, $defaultNamespace, $ownerNamespaceColumn),
+                    'uri' => $uri,
+                ];
+            }
+        }
+    }
+
+    private function payloadTableColumnReferencesUri($query, string $table, string $column, string $uri): bool
+    {
+        if (! $this->hasTableColumn($table, $column)) {
+            return false;
+        }
+
+        foreach ($query->select([$column])->cursor() as $row) {
+            if ($this->valueReferencesUri($row->{$column}, $uri)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function referenceTableColumnReferencesUri($query, string $table, string $column, string $uri): bool
+    {
+        if (! $this->hasTableColumn($table, $column)) {
+            return false;
+        }
+
+        return $query->where($column, $uri)->exists();
     }
 
     /**
@@ -427,61 +978,60 @@ class ExternalPayloadRetentionCleanup
     }
 
     /**
-     * @return Builder<WorkflowServiceCall>
+     * @param  array<mixed>  $values
+     * @return list<string>
      */
-    private function ownedServiceCallRunReference(string $namespace, string $runId): Builder
+    private function normalizedStrings(array $values): array
     {
-        return $this->anyColumnReference($this->ownedServiceCallQuery($namespace), [
-            'caller_workflow_run_id',
-            'linked_workflow_run_id',
-        ], $runId);
+        return array_values(array_unique(array_filter(
+            array_map(static fn (mixed $value): string => (string) $value, $values),
+            static fn (string $value): bool => $value !== '',
+        )));
     }
 
     /**
-     * @return Builder<WorkflowServiceCall>
+     * @param  list<array{namespace: string, uri: string}>  $references
+     * @return list<array{namespace: string, uri: string}>
      */
-    private function ownedServiceCallQuery(string $namespace): Builder
+    private function uniqueOwnedReferences(array $references): array
     {
-        $query = WorkflowServiceCall::query();
-        $columns = $this->existingColumns($query, ['namespace', 'target_namespace']);
+        $unique = [];
 
-        if ($columns === []) {
-            return $query->whereRaw('1 = 0');
+        foreach ($references as $reference) {
+            $namespace = strtolower(trim($reference['namespace']));
+            $uri = trim($reference['uri']);
+
+            if ($namespace === '' || $uri === '') {
+                continue;
+            }
+
+            $unique[$namespace."\n".$uri] = [
+                'namespace' => $namespace,
+                'uri' => $uri,
+            ];
         }
 
-        return $query->where(static function (Builder $query) use ($columns, $namespace): void {
-            foreach ($columns as $index => $column) {
-                if ($index === 0) {
-                    $query->where($column, $namespace);
-
-                    continue;
-                }
-
-                $query->orWhere($column, $namespace);
-            }
-        });
+        return array_values($unique);
     }
 
-    /**
-     * @return Builder<WorkflowServiceCall>
-     */
-    private function retainedServiceCallQuery(string $namespace): Builder
+    private function ownerNamespaceColumn(string $table, ?string $column): ?string
     {
-        $query = WorkflowServiceCall::query();
-        $columns = $this->existingColumns($query, ['namespace', 'target_namespace']);
-
-        if ($columns === []) {
-            return $query;
+        if ($column === null || ! $this->hasTableColumn($table, $column)) {
+            return null;
         }
 
-        return $query->where(static function (Builder $query) use ($columns, $namespace): void {
-            foreach ($columns as $column) {
-                $query->where(static function (Builder $query) use ($column, $namespace): void {
-                    $query->where($column, '<>', $namespace)
-                        ->orWhereNull($column);
-                });
-            }
-        });
+        return $column;
+    }
+
+    private function ownerNamespaceForRow(mixed $row, string $defaultNamespace, ?string $ownerNamespaceColumn): string
+    {
+        if ($ownerNamespaceColumn === null || ! isset($row->{$ownerNamespaceColumn})) {
+            return strtolower($defaultNamespace);
+        }
+
+        $namespace = strtolower(trim((string) $row->{$ownerNamespaceColumn}));
+
+        return $namespace !== '' ? $namespace : strtolower($defaultNamespace);
     }
 
     /**
@@ -512,26 +1062,7 @@ class ExternalPayloadRetentionCleanup
         foreach ($query->select([$column])->cursor() as $row) {
             $uri = $row->{$column};
 
-            if (is_string($uri) && $uri !== '') {
-                $uris[] = $uri;
-            }
-        }
-    }
-
-    /**
-     * @param  Builder<Model>  $query
-     * @param  array<int, string>  $uris
-     */
-    private function collectExternalUriReferenceColumn($query, string $column, array &$uris): void
-    {
-        if (! $this->hasColumn($query, $column)) {
-            return;
-        }
-
-        foreach ($query->select([$column])->cursor() as $row) {
-            $uri = $row->{$column};
-
-            if (is_string($uri) && $this->isExternalPayloadUri($uri)) {
+            if ($this->isDirectPayloadReference($uri)) {
                 $uris[] = $uri;
             }
         }
@@ -592,17 +1123,17 @@ class ExternalPayloadRetentionCleanup
         return Schema::hasTable($table) && Schema::hasColumn($table, $column);
     }
 
+    private function hasTableColumn(string $table, string $column): bool
+    {
+        return Schema::hasTable($table) && Schema::hasColumn($table, $column);
+    }
+
     private function valueReferencesUri(mixed $value, string $uri): bool
     {
         $uris = [];
         $this->collectReferences($value, $uris);
 
         return in_array($uri, $uris, true);
-    }
-
-    private function isExternalPayloadUri(string $value): bool
-    {
-        return $value !== '' && is_string(parse_url($value, PHP_URL_SCHEME));
     }
 
     /**
@@ -612,6 +1143,16 @@ class ExternalPayloadRetentionCleanup
     {
         if (is_string($value) && ExternalPayloads::isStoredReference($value)) {
             $this->collectReferences(ExternalPayloads::storedEnvelope($value), $uris);
+
+            return;
+        }
+
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                $this->collectReferences($decoded, $uris);
+            }
 
             return;
         }
@@ -648,5 +1189,12 @@ class ExternalPayloadRetentionCleanup
             && $value['size_bytes'] >= 0
             && is_string($value['codec'] ?? null)
             && $value['codec'] !== '';
+    }
+
+    private function isDirectPayloadReference(mixed $value): bool
+    {
+        return is_string($value)
+            && $value !== ''
+            && preg_match('/\A[A-Za-z][A-Za-z0-9+.-]*:\/\//', $value) === 1;
     }
 }

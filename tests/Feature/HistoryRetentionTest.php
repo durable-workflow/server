@@ -8,9 +8,11 @@ use App\Models\WorkflowNamespace;
 use App\Support\NamespaceWorkflowScope;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
@@ -451,6 +453,60 @@ class HistoryRetentionTest extends TestCase
         $this->assertNotNull(WorkflowRunSummary::find($retainedRunId));
     }
 
+    public function test_retention_pass_preserves_cross_namespace_service_call_payload_for_caller_run(): void
+    {
+        Queue::fake();
+
+        $storageDirectory = storage_path('framework/testing/retention-cross-namespace-service-call-payloads');
+        $storageRoots = [
+            'tenant-a' => $storageDirectory.'/tenant-a',
+            'tenant-b' => $storageDirectory.'/tenant-b',
+        ];
+        File::deleteDirectory($storageDirectory);
+
+        foreach ($storageRoots as $namespace => $root) {
+            $this->createNamespace($namespace);
+            WorkflowNamespace::where('name', $namespace)->update([
+                'external_payload_storage' => [
+                    'driver' => 'local',
+                    'enabled' => true,
+                    'config' => [
+                        'uri' => 'file://'.$root,
+                    ],
+                ],
+            ]);
+        }
+
+        $callerRunId = $this->createExpiredClosedRun(
+            'tenant-a',
+            'wf-prune-cross-namespace-service-caller',
+        );
+        $path = $storageRoots['tenant-b'].'/payloads/target-output.bin';
+        File::ensureDirectoryExists(dirname($path));
+        file_put_contents($path, 'target-owned service call output');
+
+        $serviceCallId = $this->addServiceCall([
+            'namespace' => 'tenant-b',
+            'caller_namespace' => 'tenant-a',
+            'target_namespace' => 'tenant-b',
+            'caller_workflow_run_id' => $callerRunId,
+            'output_payload_reference' => 'file://'.$path,
+        ]);
+
+        $this->withHeaders($this->apiHeaders('tenant-a'))
+            ->postJson('/api/system/retention/pass')
+            ->assertOk()
+            ->assertJsonPath('processed', 1)
+            ->assertJsonPath('pruned', 1)
+            ->assertJsonPath('results.0.external_payloads_deleted', 0);
+
+        $this->assertFileExists($path);
+        $this->assertDatabaseHas('workflow_service_calls', ['id' => $serviceCallId]);
+        $this->assertNull(WorkflowRunSummary::find($callerRunId));
+
+        File::deleteDirectory($storageDirectory);
+    }
+
     public function test_retention_pass_deletes_stored_reference_payload_strings_from_run_and_activity_columns(): void
     {
         Queue::fake();
@@ -767,5 +823,30 @@ class HistoryRetentionTest extends TestCase
             'codec' => 'avro',
             'external_storage' => $this->externalStorageReference($uri, $payload),
         ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $overrides
+     */
+    private function addServiceCall(array $overrides): string
+    {
+        $now = now();
+        $id = (string) Str::ulid();
+
+        DB::table('workflow_service_calls')->insert(array_merge([
+            'id' => $id,
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+            'service_name' => 'ledger',
+            'operation_name' => 'capture',
+            'caller_namespace' => 'default',
+            'target_namespace' => 'default',
+            'status' => 'completed',
+            'operation_mode' => 'async',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ], $overrides));
+
+        return $id;
     }
 }

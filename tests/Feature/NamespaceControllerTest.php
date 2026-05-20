@@ -398,6 +398,175 @@ class NamespaceControllerTest extends TestCase
         File::deleteDirectory($storageDirectory);
     }
 
+    public function test_it_deletes_namespace_service_call_external_payload_references_before_service_rows(): void
+    {
+        $storageDirectory = storage_path('framework/testing/namespace-service-call-payloads');
+        $storageRoots = [
+            'tenant-a' => $storageDirectory.'/tenant-a',
+            'tenant-b' => $storageDirectory.'/tenant-b',
+            'tenant-c' => $storageDirectory.'/tenant-c',
+        ];
+        File::deleteDirectory($storageDirectory);
+
+        foreach ($storageRoots as $namespace => $root) {
+            WorkflowNamespace::create([
+                'name' => $namespace,
+                'retention_days' => 30,
+                'status' => 'active',
+                'external_payload_storage' => [
+                    'driver' => 'local',
+                    'enabled' => true,
+                    'config' => [
+                        'uri' => 'file://'.$root,
+                    ],
+                ],
+            ]);
+        }
+
+        $inputPath = $storageRoots['tenant-a'].'/payloads/service-input.bin';
+        $outputPath = $storageRoots['tenant-b'].'/payloads/service-output.bin';
+        $failurePath = $storageRoots['tenant-c'].'/payloads/service-failure.bin';
+
+        foreach ([$inputPath, $outputPath, $failurePath] as $path) {
+            File::ensureDirectoryExists(dirname($path));
+            file_put_contents($path, 'payload:'.$path);
+        }
+
+        $inputCall = $this->addServiceCall([
+            'namespace' => 'tenant-a',
+            'target_namespace' => 'tenant-a',
+            'input_payload_reference' => 'file://'.$inputPath,
+        ]);
+        $outputCall = $this->addServiceCall([
+            'namespace' => 'tenant-b',
+            'caller_namespace' => 'tenant-a',
+            'target_namespace' => 'tenant-b',
+            'output_payload_reference' => 'file://'.$outputPath,
+        ]);
+        $failureCall = $this->addServiceCall([
+            'namespace' => 'tenant-c',
+            'caller_namespace' => 'tenant-c',
+            'target_namespace' => 'tenant-a',
+            'failure_payload_reference' => 'file://'.$failurePath,
+        ]);
+
+        $this->deleteJson('/api/namespaces/tenant-a')
+            ->assertOk()
+            ->assertJsonPath('deleted.external_payloads_deleted', 2)
+            ->assertJsonPath('deleted.workflow_service_calls', 2);
+
+        foreach ([$inputPath, $failurePath] as $path) {
+            $this->assertFileDoesNotExist($path);
+        }
+        $this->assertFileExists($outputPath);
+
+        foreach ([$inputCall, $failureCall] as $callId) {
+            $this->assertDatabaseMissing('workflow_service_calls', ['id' => $callId]);
+        }
+        $this->assertDatabaseHas('workflow_service_calls', ['id' => $outputCall]);
+
+        File::deleteDirectory($storageDirectory);
+    }
+
+    public function test_it_keeps_namespace_service_call_external_payload_referenced_by_retained_call(): void
+    {
+        $storageDirectory = storage_path('framework/testing/namespace-shared-service-call-payloads');
+        File::deleteDirectory($storageDirectory);
+
+        foreach (['tenant-a', 'tenant-b'] as $namespace) {
+            WorkflowNamespace::create([
+                'name' => $namespace,
+                'retention_days' => 30,
+                'status' => 'active',
+                'external_payload_storage' => [
+                    'driver' => 'local',
+                    'enabled' => true,
+                    'config' => [
+                        'uri' => 'file://'.$storageDirectory,
+                    ],
+                ],
+            ]);
+        }
+
+        $path = $storageDirectory.'/payloads/shared-service-call.bin';
+        File::ensureDirectoryExists(dirname($path));
+        file_put_contents($path, 'shared service call payload');
+
+        $tenantACall = $this->addServiceCall([
+            'namespace' => 'tenant-a',
+            'target_namespace' => 'tenant-a',
+            'input_payload_reference' => 'file://'.$path,
+        ]);
+        $tenantBCall = $this->addServiceCall([
+            'namespace' => 'tenant-b',
+            'caller_namespace' => 'tenant-b',
+            'target_namespace' => 'tenant-b',
+            'input_payload_reference' => 'file://'.$path,
+        ]);
+
+        $this->deleteJson('/api/namespaces/tenant-a')
+            ->assertOk()
+            ->assertJsonPath('deleted.workflow_service_calls', 1);
+
+        $this->assertFileExists($path);
+        $this->assertDatabaseMissing('workflow_service_calls', ['id' => $tenantACall]);
+        $this->assertDatabaseHas('workflow_service_calls', ['id' => $tenantBCall]);
+
+        $this->deleteJson('/api/namespaces/tenant-b')
+            ->assertOk()
+            ->assertJsonPath('deleted.external_payloads_deleted', 1)
+            ->assertJsonPath('deleted.workflow_service_calls', 1);
+
+        $this->assertFileDoesNotExist($path);
+
+        File::deleteDirectory($storageDirectory);
+    }
+
+    public function test_it_keeps_namespace_payload_referenced_by_retained_run_when_deleted_namespace_has_no_runs(): void
+    {
+        $storageDirectory = storage_path('framework/testing/namespace-no-run-retained-payloads');
+        File::deleteDirectory($storageDirectory);
+
+        foreach (['tenant-a', 'tenant-b'] as $namespace) {
+            WorkflowNamespace::create([
+                'name' => $namespace,
+                'retention_days' => 30,
+                'status' => 'active',
+                'external_payload_storage' => [
+                    'driver' => 'local',
+                    'enabled' => true,
+                    'config' => [
+                        'uri' => 'file://'.$storageDirectory,
+                    ],
+                ],
+            ]);
+        }
+
+        $tenantBRun = $this->runtimeState('tenant-b', 'wf-tenant-b-retained-no-run-payload');
+        $path = $storageDirectory.'/payloads/shared-no-deleted-runs.bin';
+        $payload = 'retained run payload bytes';
+        File::ensureDirectoryExists(dirname($path));
+        file_put_contents($path, $payload);
+
+        $serviceCallId = $this->addServiceCall([
+            'namespace' => 'tenant-a',
+            'caller_namespace' => 'tenant-a',
+            'target_namespace' => 'tenant-a',
+            'input_payload_reference' => 'file://'.$path,
+        ]);
+        $this->addExternalPayloadHistoryEvent($tenantBRun, 'file://'.$path, $payload);
+
+        $this->deleteJson('/api/namespaces/tenant-a')
+            ->assertOk()
+            ->assertJsonPath('deleted.workflow_service_calls', 1);
+
+        $this->assertFileExists($path);
+        $this->assertDatabaseMissing('workflow_service_calls', ['id' => $serviceCallId]);
+        $this->assertDatabaseHas('workflow_runs', ['id' => $tenantBRun, 'namespace' => 'tenant-b']);
+
+        File::deleteDirectory($storageDirectory);
+    }
+
     public function test_it_keeps_namespace_stream_external_payload_referenced_by_retained_run(): void
     {
         $storageDirectory = storage_path('framework/testing/namespace-shared-stream-payloads');
@@ -852,6 +1021,31 @@ class NamespaceControllerTest extends TestCase
             'created_at' => $now,
             'updated_at' => $now,
         ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $overrides
+     */
+    private function addServiceCall(array $overrides): string
+    {
+        $now = now();
+        $id = (string) Str::ulid();
+
+        DB::table('workflow_service_calls')->insert(array_merge([
+            'id' => $id,
+            'namespace' => 'tenant-a',
+            'endpoint_name' => 'billing',
+            'service_name' => 'ledger',
+            'operation_name' => 'capture',
+            'caller_namespace' => 'tenant-a',
+            'target_namespace' => 'tenant-a',
+            'status' => 'pending',
+            'operation_mode' => 'async',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ], $overrides));
+
+        return $id;
     }
 
     /**

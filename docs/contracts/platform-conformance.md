@@ -23,13 +23,14 @@ The server claims three targets from the suite's matrix:
 ## Fixture sources served by this repo
 
 The fixture catalog in the suite manifest names server-owned surfaces
-as source material for four categories:
+as source material for five categories:
 
 | Category | Source path | Status |
 | --- | --- | --- |
 | `worker_task_lifecycle` (server side) | `tests/Fixtures/` plus the per-route examples in `docs/contracts/external-task-input.md` and `docs/contracts/external-task-result.md` | stable |
 | `signal_query_runtime_contract` (server side) | `GET /api/cluster/info`'s `signal_query_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/signal-query-runtime-scenarios.json`, plus the signal/query control-plane routes documented in the protocol catalog | stable |
 | `child_workflow_runtime_contract` (server side) | `GET /api/cluster/info`'s `child_workflow_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/child-workflow-runtime-scenarios.json`, plus the child scheduling, completion, failure, cancellation, replay, fan-out, and namespace behavior recorded by the worker protocol and history surfaces | stable |
+| `namespace_runtime_contract` (server side) | the public scenario manifest at `static/platform-conformance/namespace-runtime-scenarios.json`, plus namespace, workflow, worker, schedule, search-attribute, Nexus, and operator routes documented in the protocol catalog | stable |
 | `failure_repair_actionability` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, plus the artifact objects published from `GET /api/cluster/info`'s `worker_protocol.external_task_result_contract.fixtures` | stable |
 
 The other categories the server is graded against
@@ -91,6 +92,15 @@ category emits a warning and does not block.
   remains non-passing; every declared outcome alias (`outcome`, `status`,
   `verdict`) and the evaluated gate status must agree before rollup can
   count the evidence as passing.
+- Namespace runtime contract: the public suite's
+  `namespace_runtime_contract` category is the load-bearing namespace
+  parity gate. It requires published-artifact evidence for namespace
+  lifecycle cleanup and recreate, cross-namespace workflow visibility
+  and mutation isolation, PHP worker task-queue isolation, CLI and SDK
+  namespace selection, schedule isolation, Waterline/operator scoped
+  visibility, explicit Nexus crossing, reserved-name refusal, and
+  search-attribute schema and value query isolation. A namespace smoke
+  that omits those cells is nonconforming.
 - Public docs page: <https://durable-workflow.github.io/docs/2.0/compatibility>
 - Normative protocol spec catalog:
   <https://durable-workflow.github.io/docs/2.0/platform-protocol-specs>.

@@ -26,7 +26,7 @@ class NamespaceLifecycleCleanup
             )));
 
             $externalPayloads = app(ExternalPayloadRetentionCleanup::class)
-                ->deleteForRuns($namespace, $runIds, includeNamespaceOwnedReferences: true);
+                ->deleteForNamespaceCleanup($namespace, $runIds, $instanceIds);
 
             if ($externalPayloads['blocked']) {
                 throw new ExternalPayloadStorageUnavailable(
