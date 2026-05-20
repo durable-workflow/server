@@ -208,6 +208,11 @@ class ReplayVerificationContractTest extends TestCase
         $this->assertArrayHasKey('server', $conformance['artifact_policy']['install_channels']);
         $this->assertArrayHasKey('workflow-php', $conformance['artifact_policy']['install_channels']);
         $this->assertArrayHasKey('sdk-python', $conformance['artifact_policy']['install_channels']);
+        $this->assertNotContains('waterline', array_keys($conformance['artifact_policy']['install_channels']));
+
+        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
+            $this->assertContains($artifact, $conformance['artifact_policy']['required_artifact_versions']);
+        }
         $this->assertContains(
             'local_product_source_checkout',
             $conformance['artifact_policy']['forbidden_sources'],
@@ -381,10 +386,19 @@ class ReplayVerificationContractTest extends TestCase
         );
         $this->assertContains('scenario_results', $resultGate['scenario_results_fields']);
         $this->assertContains('artifactVersions', $resultGate['artifact_versions_fields']);
+        $this->assertSame(
+            'replay_verification_contract.replay_conformance.artifact_policy.required_run_record_fields',
+            $resultGate['required_run_record_fields_source'],
+        );
+        $this->assertSame(
+            'replay_verification_contract.replay_conformance.artifact_policy.required_artifact_versions',
+            $resultGate['required_artifact_versions_source'],
+        );
         $this->assertContains('every_required_scenario_has_one_result', $resultGate['pass_requires']);
         $this->assertContains('required_php_and_python_runtimes_are_reported', $resultGate['pass_requires']);
         $this->assertContains('adversarial_refusals_have_actionable_diagnostics', $resultGate['pass_requires']);
         $this->assertContains('each_non_pass_scenario_has_linked_findings', $resultGate['pass_requires']);
+        $this->assertContains('run_record_metadata_is_complete', $resultGate['pass_requires']);
         $this->assertSame('non_passing', $resultGate['smoke_subset_outcome']);
     }
 
@@ -418,6 +432,7 @@ class ReplayVerificationContractTest extends TestCase
                 'cli' => '0.1.45',
                 'sdk-python' => '0.4.59',
                 'workflow' => '2.0.0-alpha.162',
+                'waterline' => '2.0.0-alpha.54',
             ],
             'runtime_matrix' => [
                 'runtimes' => ['sdk-python'],
@@ -485,6 +500,36 @@ class ReplayVerificationContractTest extends TestCase
         $this->assertContains(
             'missing_pass_replay_evidence',
             array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_replay_result_gate_requires_complete_run_record_metadata(): void
+    {
+        $result = $this->completeReplayConformanceResult();
+        unset($result['finished_at'], $result['finding_links']);
+
+        $evaluation = ReplayConformanceResultGate::evaluate($result);
+        $runRecordFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_required_run_record_field',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('finished_at', array_column($runRecordFailures, 'field'));
+        $this->assertContains('finding_links', array_column($runRecordFailures, 'field'));
+    }
+
+    public function test_replay_result_gate_requires_current_artifact_tuple_versions(): void
+    {
+        $result = $this->completeReplayConformanceResult();
+        unset($result['artifactVersions']['waterline']);
+
+        $evaluation = ReplayConformanceResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'waterline',
+            array_column($evaluation['gate_failures'], 'artifact'),
         );
     }
 
@@ -573,16 +618,22 @@ class ReplayVerificationContractTest extends TestCase
 
         return [
             'schema' => ReplayVerificationContract::REPLAY_CONFORMANCE_RESULT_SCHEMA,
+            'started_at' => '2026-05-19T21:59:59Z',
+            'finished_at' => '2026-05-19T22:10:00Z',
+            'outcome' => 'pass',
             'artifactVersions' => [
                 'server' => '0.2.140',
                 'cli' => '0.1.45',
                 'sdk-python' => '0.4.59',
                 'workflow' => '2.0.0-alpha.162',
+                'waterline' => '2.0.0-alpha.54',
             ],
             'runtime_matrix' => [
                 'runtimes' => ['workflow-php', 'sdk-python'],
             ],
             'scenario_results' => $scenarioResults,
+            'findings' => [],
+            'finding_links' => [],
         ];
     }
 }

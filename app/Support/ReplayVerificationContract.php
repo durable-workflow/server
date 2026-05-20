@@ -285,6 +285,13 @@ final class ReplayVerificationContract
                         'workflow-php' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest>',
                         'sdk-python' => 'PyPI package durable-workflow==<latest>',
                     ],
+                    'required_artifact_versions' => [
+                        'server',
+                        'cli',
+                        'workflow-php',
+                        'sdk-python',
+                        'waterline',
+                    ],
                     'forbidden_sources' => [
                         'local_product_source_checkout',
                         'workspace_repo_as_artifact_under_test',

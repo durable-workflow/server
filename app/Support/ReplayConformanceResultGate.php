@@ -24,6 +24,8 @@ final class ReplayConformanceResultGate
             'scenario_statuses_source' => 'replay_verification_contract.replay_conformance.scenario_statuses',
             'required_scenarios_source' => 'replay_verification_contract.replay_conformance.required_scenarios',
             'required_matrix_source' => 'replay_verification_contract.replay_conformance.required_matrix',
+            'required_run_record_fields_source' => 'replay_verification_contract.replay_conformance.artifact_policy.required_run_record_fields',
+            'required_artifact_versions_source' => 'replay_verification_contract.replay_conformance.artifact_policy.required_artifact_versions',
             'artifact_versions_fields' => [
                 'artifact_versions',
                 'artifactVersions',
@@ -48,6 +50,7 @@ final class ReplayConformanceResultGate
                 'in_flight_signal_timing_is_reported_for_each_runtime',
                 'each_pass_scenario_has_replay_evidence',
                 'each_non_pass_scenario_has_linked_findings',
+                'run_record_metadata_is_complete',
                 'published_artifact_versions_are_recorded',
                 'no_local_product_source_artifacts_are_reported',
             ],
@@ -145,6 +148,7 @@ final class ReplayConformanceResultGate
 
         array_push($failures, ...self::artifactVersionFailures($result, $contract));
         array_push($failures, ...self::sourcePolicyFailures($result, $contract));
+        array_push($failures, ...self::runRecordFailures($result, $contract));
         array_push($failures, ...self::runtimeMatrixFailures($result, $contract));
         array_push($failures, ...self::requiredSectionFailures($result, $scenarioResults));
 
@@ -307,9 +311,14 @@ final class ReplayConformanceResultGate
             ?? [];
 
         $failures = [];
-        $installChannels = self::arrayValue($contract['artifact_policy'] ?? [], 'install_channels') ?? [];
-        foreach (array_keys($installChannels) as $artifact) {
-            if (! self::hasArtifactVersion($versions, (string) $artifact)) {
+        $artifactPolicy = self::arrayValue($contract, 'artifact_policy') ?? [];
+        $requiredArtifacts = self::stringList($artifactPolicy['required_artifact_versions'] ?? []);
+        if ($requiredArtifacts === []) {
+            $requiredArtifacts = array_keys(self::arrayValue($artifactPolicy, 'install_channels') ?? []);
+        }
+
+        foreach ($requiredArtifacts as $artifact) {
+            if (! self::hasArtifactVersion($versions, $artifact)) {
                 $failures[] = [
                     'code' => 'missing_artifact_version',
                     'artifact' => $artifact,
@@ -328,6 +337,7 @@ final class ReplayConformanceResultGate
         $aliases = [
             'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
+            'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
         ];
 
         foreach ($aliases[$artifact] ?? [$artifact] as $key) {
@@ -366,6 +376,75 @@ final class ReplayConformanceResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function runRecordFailures(array $result, array $contract): array
+    {
+        $artifactPolicy = self::arrayValue($contract, 'artifact_policy') ?? [];
+        $requiredFields = self::stringList($artifactPolicy['required_run_record_fields'] ?? []);
+        $failures = [];
+
+        foreach ($requiredFields as $field) {
+            if (self::hasRunRecordField($result, $field)) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'missing_required_run_record_field',
+                'field' => $field,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     */
+    private static function hasRunRecordField(array $result, string $field): bool
+    {
+        $aliases = [
+            'artifact_versions' => ['artifact_versions', 'artifactVersions'],
+            'started_at' => ['started_at', 'startedAt'],
+            'finished_at' => ['finished_at', 'finishedAt'],
+            'scenario_results' => ['scenario_results', 'scenarioResults'],
+            'finding_links' => ['finding_links', 'findingLinks'],
+        ];
+
+        foreach ($aliases[$field] ?? [$field] as $key) {
+            if (! array_key_exists($key, $result)) {
+                continue;
+            }
+
+            $value = $result[$key];
+            if (in_array($field, ['findings', 'finding_links'], true)) {
+                if (is_array($value)) {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (in_array($field, ['artifact_versions', 'scenario_results'], true)) {
+                if (is_array($value) && $value !== []) {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (self::stringValue($value) !== '') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

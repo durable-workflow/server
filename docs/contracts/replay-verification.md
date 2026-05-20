@@ -207,8 +207,9 @@ test.
 
 Every run record must carry artifact versions, start and finish
 timestamps, an overall outcome, scenario results, findings, and finding
-links. The required runtime axis is `workflow-php` and `sdk-python`; a
-passing run covers both.
+links. Artifact versions cover the current published tuple: server, CLI,
+PHP workflow runtime, Python SDK, and Waterline. The required runtime
+axis is `workflow-php` and `sdk-python`; a passing run covers both.
 
 The `result_gate` block is the server-published evaluator contract for
 `durable-workflow.v2.replay-conformance.result` documents. It rejects
