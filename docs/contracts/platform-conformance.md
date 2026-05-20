@@ -82,10 +82,11 @@ category emits a warning and does not block.
   required published-artifact install policy, PHP/Python parent-child
   matrix, typed child failure propagation, parent and direct child
   cancellation evidence, replay across parent-worker restart, N=5
-  fan-out concurrency evidence, namespace behavior, run-record fields,
-  the coverage gate that keeps a Python-only smoke subset non-passing,
-  and a result-gate evaluator that rejects incomplete or finding-free
-  non-pass scenario records.
+  fan-out concurrency evidence, namespace behavior, published artifact
+  versions including Waterline, run timestamps and outcome, the coverage
+  gate that keeps a Python-only smoke subset non-passing, and a
+  result-gate evaluator that rejects incomplete, placeholder, or
+  finding-free non-pass scenario records.
 - Public docs page: <https://durable-workflow.github.io/docs/2.0/compatibility>
 - Normative protocol spec catalog:
   <https://durable-workflow.github.io/docs/2.0/platform-protocol-specs>.

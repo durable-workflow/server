@@ -225,6 +225,7 @@ class ClusterInfoTest extends TestCase
 
         $contract = $response->json('child_workflow_runtime_contract');
         $this->assertIsArray($contract);
+        $this->assertArrayHasKey('waterline', $contract['artifact_policy']['install_channels']);
         $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
         $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
         $this->assertContains('php_parent_python_child_cross_language', $contract['required_scenarios']);
@@ -245,6 +246,10 @@ class ClusterInfoTest extends TestCase
         );
         $this->assertContains(
             'every_required_scenario_has_one_result',
+            $contract['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'each_pass_scenario_has_scenario_specific_evidence',
             $contract['result_gate']['pass_requires'],
         );
     }

@@ -22,7 +22,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             $manifest['platform_conformance_suite_authority'],
         );
 
-        foreach (['server', 'cli', 'workflow-php', 'sdk-python'] as $artifact) {
+        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
 
@@ -35,6 +35,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             'artifact_versions',
             'started_at',
             'finished_at',
+            'generated_at',
             'outcome',
             'scenario_results',
             'findings',
@@ -166,9 +167,15 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         );
         $this->assertContains('scenario_results', $resultGate['scenario_results_fields']);
         $this->assertContains('artifactVersions', $resultGate['artifact_versions_fields']);
+        $this->assertContains('published_artifact_versions', $resultGate['artifact_versions_fields']);
         $this->assertContains('every_required_scenario_has_one_result', $resultGate['pass_requires']);
         $this->assertContains(
             'same_language_and_cross_language_parent_child_cells_are_reported',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains('each_pass_scenario_has_scenario_specific_evidence', $resultGate['pass_requires']);
+        $this->assertContains(
+            'run_timestamps_outcome_and_finding_links_are_recorded',
             $resultGate['pass_requires'],
         );
         $this->assertContains('each_non_pass_scenario_has_linked_findings', $resultGate['pass_requires']);
@@ -184,6 +191,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
                 'cli' => '0.1.45',
                 'sdk-python' => '0.4.60',
                 'workflow' => '2.0.0-alpha.164',
+                'waterline' => '2.0.0-alpha.54',
             ],
             'runtime_matrix' => [
                 'runtimes' => ['sdk-python'],
@@ -255,6 +263,87 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertSame(2, $duplicateFailures[0]['count']);
     }
 
+    public function test_result_gate_requires_run_metadata_for_a_passing_result(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        unset($result['started_at'], $result['finished_at'], $result['generated_at'], $result['outcome']);
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $missingFields = $this->missingRunRecordFields($evaluation);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        foreach (['started_at', 'finished_at', 'generated_at', 'outcome'] as $field) {
+            $this->assertContains($field, $missingFields);
+        }
+    }
+
+    public function test_result_gate_requires_started_at_when_generated_at_is_present(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        unset($result['started_at']);
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('started_at', $this->missingRunRecordFields($evaluation));
+    }
+
+    public function test_result_gate_requires_finished_at_when_generated_at_is_present(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        unset($result['finished_at']);
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('finished_at', $this->missingRunRecordFields($evaluation));
+    }
+
+    public function test_result_gate_requires_generated_at_when_start_and_finish_are_present(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        unset($result['generated_at']);
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('generated_at', $this->missingRunRecordFields($evaluation));
+    }
+
+    public function test_result_gate_requires_scenario_specific_runtime_evidence(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        $result['failure_round_trip'] = [
+            'typed_failures' => true,
+        ];
+        $result['cancellation_propagation'] = [
+            'parent_to_child' => ['cancelled' => true],
+            'direct_child' => ['observed_by_parent' => true],
+        ];
+        $result['replay_restart'] = [
+            'decision_sequence_matches' => true,
+        ];
+        $result['fan_out'] = [
+            'child_count' => 5,
+            'overlap_observed' => true,
+        ];
+        $result['namespace_behavior'] = [
+            'same_namespace_lineage' => true,
+            'cross_namespace_verdict' => 'documented',
+        ];
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('missing_failure_round_trip_evidence_cell', $failureCodes);
+        $this->assertContains('missing_parent_child_cancellation_field', $failureCodes);
+        $this->assertContains('missing_direct_child_cancellation_field', $failureCodes);
+        $this->assertContains('missing_replay_restart_field', $failureCodes);
+        $this->assertContains('fan_out_timestamp_count_below_required', $failureCodes);
+        $this->assertContains('missing_namespace_behavior_field', $failureCodes);
+    }
+
     public function test_result_gate_accepts_a_complete_passing_matrix(): void
     {
         $evaluation = ChildWorkflowRuntimeResultGate::evaluate($this->completeChildWorkflowResult());
@@ -263,6 +352,28 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertSame([], $evaluation['missing_scenarios']);
         $this->assertSame([], $evaluation['non_pass_scenarios']);
         $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    /**
+     * @param array<string, mixed> $evaluation
+     *
+     * @return list<string>
+     */
+    private function missingRunRecordFields(array $evaluation): array
+    {
+        $fields = [];
+        foreach ($evaluation['gate_failures'] ?? [] as $failure) {
+            if (! is_array($failure) || ($failure['code'] ?? null) !== 'missing_run_record_field') {
+                continue;
+            }
+
+            $field = $failure['field'] ?? null;
+            if (is_string($field)) {
+                $fields[] = $field;
+            }
+        }
+
+        return $fields;
     }
 
     /**
@@ -277,17 +388,26 @@ class ChildWorkflowRuntimeContractTest extends TestCase
                 'status' => 'pass',
                 'observed_outputs' => [
                     'recorded' => true,
+                    'parent_workflow_id' => 'parent-' . $scenario,
+                    'child_workflow_id' => 'child-' . $scenario,
+                    'parent_final_result' => 'parent-result-' . $scenario,
+                    'child_history_excerpt' => ['ChildWorkflowScheduled', 'ChildRunCompleted'],
                 ],
             ];
         }
 
         return [
             'schema' => ChildWorkflowRuntimeContract::RESULT_SCHEMA,
+            'started_at' => '2026-05-20T05:00:00Z',
+            'finished_at' => '2026-05-20T05:05:00Z',
+            'generated_at' => '2026-05-20T05:05:00Z',
+            'outcome' => 'pass',
             'artifactVersions' => [
                 'server' => '0.2.144',
                 'cli' => '0.1.45',
                 'sdk-python' => '0.4.60',
                 'workflow' => '2.0.0-alpha.164',
+                'waterline' => '2.0.0-alpha.54',
             ],
             'runtime_matrix' => [
                 'runtimes' => ['workflow-php', 'sdk-python'],
@@ -339,23 +459,89 @@ class ChildWorkflowRuntimeContractTest extends TestCase
                 ],
             ],
             'failure_round_trip' => [
-                'typed_failures' => true,
+                'failure_round_trip_cells' => [
+                    [
+                        'scenario' => 'child_failure_round_trip_matrix',
+                        'parent' => 'sdk-python',
+                        'child' => 'sdk-python',
+                        'exception_class' => 'ChildWorkflowError',
+                        'message' => 'python child failed',
+                        'failure_kind' => 'child_workflow',
+                    ],
+                    [
+                        'scenario' => 'child_failure_round_trip_matrix',
+                        'parent' => 'workflow-php',
+                        'child' => 'workflow-php',
+                        'exception_class' => 'ChildWorkflowError',
+                        'message' => 'php child failed',
+                        'failure_kind' => 'child_workflow',
+                    ],
+                    [
+                        'scenario' => 'child_failure_round_trip_matrix',
+                        'parent' => 'workflow-php',
+                        'child' => 'sdk-python',
+                        'exception_class' => 'ChildWorkflowError',
+                        'message' => 'python child failed',
+                        'failure_kind' => 'child_workflow',
+                    ],
+                    [
+                        'scenario' => 'child_failure_round_trip_matrix',
+                        'parent' => 'sdk-python',
+                        'child' => 'workflow-php',
+                        'exception_class' => 'ChildWorkflowError',
+                        'message' => 'php child failed',
+                        'failure_kind' => 'child_workflow',
+                    ],
+                ],
             ],
             'cancellation_propagation' => [
-                'parent_to_child' => ['cancelled' => true],
-                'direct_child' => ['observed_by_parent' => true],
+                'parent_to_child' => [
+                    'cancel_issued_at' => '2026-05-20T05:01:00Z',
+                    'child_cancelled_at' => '2026-05-20T05:01:03Z',
+                    'worker_observed_typed_cancellation' => true,
+                ],
+                'direct_child' => [
+                    'child_cancel_issued_at' => '2026-05-20T05:02:00Z',
+                    'parent_observed_at' => '2026-05-20T05:02:02Z',
+                    'parent_failure_kind' => 'cancelled',
+                ],
             ],
             'replay_restart' => [
-                'decision_sequence_matches' => true,
+                'parent_worker_stopped_at' => '2026-05-20T05:03:00Z',
+                'parent_worker_restarted_at' => '2026-05-20T05:03:05Z',
+                'original_decision_sequence' => ['start_child', 'await_child', 'complete_parent'],
+                'replayed_decision_sequence' => ['start_child', 'await_child', 'complete_parent'],
+                'duplicate_child_scheduled' => false,
             ],
             'fan_out' => [
                 'child_count' => 5,
+                'child_started_at_values' => [
+                    '2026-05-20T05:04:00.000Z',
+                    '2026-05-20T05:04:00.010Z',
+                    '2026-05-20T05:04:00.020Z',
+                    '2026-05-20T05:04:00.030Z',
+                    '2026-05-20T05:04:00.040Z',
+                ],
+                'child_completed_at_values' => [
+                    '2026-05-20T05:04:01.000Z',
+                    '2026-05-20T05:04:01.010Z',
+                    '2026-05-20T05:04:01.020Z',
+                    '2026-05-20T05:04:01.030Z',
+                    '2026-05-20T05:04:01.040Z',
+                ],
+                'aggregate_result' => 15,
                 'overlap_observed' => true,
             ],
             'namespace_behavior' => [
-                'same_namespace_lineage' => true,
+                'parent_namespace' => 'tenant-a',
+                'child_namespace' => 'tenant-a',
+                'lineage_links' => [
+                    ['parent' => 'tenant-a/parent', 'child' => 'tenant-a/child'],
+                ],
                 'cross_namespace_verdict' => 'documented',
             ],
+            'findings' => [],
+            'finding_links' => [],
             'scenario_results' => $scenarioResults,
         ];
     }
