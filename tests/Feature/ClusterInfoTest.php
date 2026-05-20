@@ -10,6 +10,8 @@ use App\Support\ChildWorkflowRuntimeResultGate;
 use App\Support\CoordinationHealthContract;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NamespaceRuntimeResultGate;
+use App\Support\SearchAttributeRuntimeContract;
+use App\Support\SearchAttributeRuntimeResultGate;
 use App\Support\ServerTopology;
 use App\Support\SignalQueryRuntimeContract;
 use App\Support\SignalQueryRuntimeResultGate;
@@ -252,6 +254,50 @@ class ClusterInfoTest extends TestCase
         );
         $this->assertContains(
             'each_pass_scenario_has_scenario_specific_evidence',
+            $contract['result_gate']['pass_requires'],
+        );
+    }
+
+    public function test_it_publishes_the_search_attribute_runtime_conformance_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('search_attribute_runtime_contract.schema', SearchAttributeRuntimeContract::SCHEMA)
+            ->assertJsonPath('search_attribute_runtime_contract.version', SearchAttributeRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'search_attribute_runtime_contract.fixture_category',
+                'search_attribute_runtime_contract',
+            )
+            ->assertJsonPath(
+                'search_attribute_runtime_contract.coverage_gate.smoke_subset_outcome',
+                'non_passing',
+            );
+
+        $contract = $response->json('search_attribute_runtime_contract');
+        $this->assertIsArray($contract);
+        $this->assertArrayHasKey('waterline', $contract['artifact_policy']['install_channels']);
+        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
+        $this->assertContains('cli', $contract['required_matrix']['client_paths']);
+        $this->assertContains('waterline-workflow-list-filter', $contract['required_matrix']['observer_paths']);
+        $this->assertContains('php_worker_start_and_upsert_visibility', $contract['required_scenarios']);
+        $this->assertContains('cli_query_and_error_surface', $contract['required_scenarios']);
+        $this->assertContains('waterline_operator_visibility', $contract['required_scenarios']);
+        $this->assertContains('python_to_php_codec_round_trip', $contract['required_scenarios']);
+        $this->assertContains('php_to_python_codec_round_trip', $contract['required_scenarios']);
+        $this->assertContains('load_and_bounded_latency', $contract['required_scenarios']);
+        $this->assertContains('or_not_query_grammar', $contract['required_scenarios']);
+        $this->assertContains('query_injection_hardening', $contract['required_scenarios']);
+        $this->assertContains(
+            'findings_linked_for_non_pass_scenarios',
+            $contract['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertSame(
+            SearchAttributeRuntimeResultGate::SCHEMA,
+            $contract['result_gate']['schema'],
+        );
+        $this->assertContains(
+            'every_required_scenario_has_one_result',
             $contract['result_gate']['pass_requires'],
         );
     }

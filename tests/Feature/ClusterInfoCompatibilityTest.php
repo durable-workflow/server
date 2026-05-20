@@ -9,6 +9,7 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
 use App\Support\CoordinationHealthContract;
 use App\Support\NamespaceRuntimeContract;
+use App\Support\SearchAttributeRuntimeContract;
 use App\Support\ServerTopology;
 use App\Support\SignalQueryRuntimeContract;
 use App\Support\WorkerProtocol;
@@ -181,6 +182,23 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'result_gate',
                     'finding_policy',
                 ],
+                'search_attribute_runtime_contract' => [
+                    'schema',
+                    'version',
+                    'result_schema',
+                    'result_version',
+                    'fixture_category',
+                    'platform_conformance_suite_authority',
+                    'artifact_policy',
+                    'scenario_statuses',
+                    'topology',
+                    'required_matrix',
+                    'required_scenarios',
+                    'scenario_requirements',
+                    'coverage_gate',
+                    'result_gate',
+                    'finding_policy',
+                ],
                 'child_workflow_runtime_contract' => [
                     'schema',
                     'version',
@@ -272,6 +290,12 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('signal_query_runtime_contract.version', SignalQueryRuntimeContract::VERSION)
             ->assertJsonPath(
                 'signal_query_runtime_contract.platform_conformance_suite_authority',
+                PlatformConformanceSuite::SCHEMA,
+            )
+            ->assertJsonPath('search_attribute_runtime_contract.schema', SearchAttributeRuntimeContract::SCHEMA)
+            ->assertJsonPath('search_attribute_runtime_contract.version', SearchAttributeRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'search_attribute_runtime_contract.platform_conformance_suite_authority',
                 PlatformConformanceSuite::SCHEMA,
             )
             ->assertJsonPath('child_workflow_runtime_contract.schema', ChildWorkflowRuntimeContract::SCHEMA)
