@@ -546,23 +546,26 @@ class ReplayVerificationContractTest extends TestCase
     public function test_replay_result_gate_reports_alias_declared_outcome_mismatch_without_missing_outcome(): void
     {
         foreach (['status', 'verdict'] as $alias) {
-            $result = $this->completeReplayConformanceResult();
-            unset($result['outcome']);
-            $result[$alias] = 'non_passing';
+            foreach (['fail', 'failed', 'error', 'non_passing'] as $outcome) {
+                $result = $this->completeReplayConformanceResult();
+                unset($result['outcome']);
+                $result[$alias] = $outcome;
 
-            $evaluation = ReplayConformanceResultGate::evaluate($result);
-            $mismatchFailures = array_values(array_filter(
-                $evaluation['gate_failures'],
-                static fn (array $failure): bool => ($failure['code'] ?? null) === 'declared_outcome_status_mismatch',
-            ));
+                $evaluation = ReplayConformanceResultGate::evaluate($result);
+                $mismatchFailures = array_values(array_filter(
+                    $evaluation['gate_failures'],
+                    static fn (array $failure): bool => ($failure['code'] ?? null) === 'declared_outcome_status_mismatch',
+                ));
+                $case = $alias . ':' . $outcome;
 
-            $this->assertSame('non_passing', $evaluation['status'], $alias);
-            $this->assertNotContains('outcome', $this->missingReplayRunRecordFields($evaluation), $alias);
-            $this->assertCount(1, $mismatchFailures, $alias);
-            $this->assertSame($alias, $mismatchFailures[0]['field'], $alias);
-            $this->assertSame('non_passing', $mismatchFailures[0]['outcome'], $alias);
-            $this->assertSame('non_passing', $mismatchFailures[0]['declared_status'], $alias);
-            $this->assertSame('pass', $mismatchFailures[0]['evaluated_status'], $alias);
+                $this->assertSame('non_passing', $evaluation['status'], $case);
+                $this->assertNotContains('outcome', $this->missingReplayRunRecordFields($evaluation), $case);
+                $this->assertCount(1, $mismatchFailures, $case);
+                $this->assertSame($alias, $mismatchFailures[0]['field'], $case);
+                $this->assertSame($outcome, $mismatchFailures[0]['outcome'], $case);
+                $this->assertSame('non_passing', $mismatchFailures[0]['declared_status'], $case);
+                $this->assertSame('pass', $mismatchFailures[0]['evaluated_status'], $case);
+            }
         }
     }
 
@@ -587,6 +590,32 @@ class ReplayVerificationContractTest extends TestCase
         $this->assertSame(['php_code_divergence_refusal'], $evaluation['non_pass_scenarios']);
         $this->assertSame([], $evaluation['missing_scenarios']);
         $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_replay_result_gate_accepts_non_passing_status_and_verdict_with_product_findings(): void
+    {
+        foreach (['status', 'verdict'] as $alias) {
+            $result = $this->completeReplayConformanceResult();
+            unset($result['outcome']);
+            $result[$alias] = 'fail';
+            $result['finding_links'] = [
+                [
+                    'scenario_id' => 'php_code_divergence_refusal',
+                    'url' => 'https://tracker.example.invalid/findings/replay-divergence',
+                ],
+            ];
+            $result['scenario_results']['php_code_divergence_refusal']['status'] = 'fail';
+            $result['scenario_results']['php_code_divergence_refusal']['linked_findings'] = [
+                'https://tracker.example.invalid/findings/replay-divergence',
+            ];
+
+            $evaluation = ReplayConformanceResultGate::evaluate($result);
+
+            $this->assertSame('non_passing', $evaluation['status'], $alias);
+            $this->assertSame(['php_code_divergence_refusal'], $evaluation['non_pass_scenarios'], $alias);
+            $this->assertSame([], $this->missingReplayRunRecordFields($evaluation), $alias);
+            $this->assertSame([], $evaluation['gate_failures'], $alias);
+        }
     }
 
     public function test_replay_result_gate_rejects_declared_pass_when_evidence_is_non_passing(): void

@@ -12,6 +12,12 @@ final class ReplayConformanceResultGate
 
     public const VERSION = 2;
 
+    private const OUTCOME_FIELDS = [
+        'outcome',
+        'status',
+        'verdict',
+    ];
+
     /**
      * @return array<string, mixed>
      */
@@ -32,11 +38,7 @@ final class ReplayConformanceResultGate
                 'published_artifact_versions',
                 'publishedArtifactVersions',
             ],
-            'declared_outcome_fields' => [
-                'outcome',
-                'status',
-                'verdict',
-            ],
+            'declared_outcome_fields' => self::OUTCOME_FIELDS,
             'scenario_results_fields' => [
                 'scenario_results',
                 'scenarioResults',
@@ -530,7 +532,7 @@ final class ReplayConformanceResultGate
     private static function declaredOutcomeTokens(array $result): array
     {
         $declaredOutcomes = [];
-        foreach (['outcome', 'status', 'verdict'] as $field) {
+        foreach (self::OUTCOME_FIELDS as $field) {
             $value = strtolower(self::stringValue($result[$field] ?? null));
             if ($value !== '') {
                 $declaredOutcomes[$field] = $value;
@@ -582,48 +584,60 @@ final class ReplayConformanceResultGate
      */
     private static function hasRunRecordField(array $result, string $field): bool
     {
-        $aliases = [
-            'artifact_versions' => [
-                'artifact_versions',
-                'artifactVersions',
-                'published_artifact_versions',
-                'publishedArtifactVersions',
-            ],
-            'started_at' => ['started_at', 'startedAt'],
-            'finished_at' => ['finished_at', 'finishedAt'],
-            'outcome' => ['outcome', 'status', 'verdict'],
-            'scenario_results' => ['scenario_results', 'scenarioResults'],
-            'finding_links' => ['finding_links', 'findingLinks'],
-        ];
+        return match ($field) {
+            'artifact_versions' => self::artifactVersions($result) !== [],
+            'started_at' => self::hasScalarField($result, ['started_at', 'startedAt']),
+            'finished_at' => self::hasScalarField($result, ['finished_at', 'finishedAt']),
+            'outcome' => self::hasScalarField($result, self::OUTCOME_FIELDS),
+            'scenario_results' => self::hasArrayField($result, ['scenario_results', 'scenarioResults'], true),
+            'findings' => self::hasArrayField($result, ['findings']),
+            'finding_links' => self::hasArrayField($result, ['finding_links', 'findingLinks']),
+            default => self::hasScalarField($result, [$field, self::camelize($field)])
+                || self::hasArrayField($result, [$field, self::camelize($field)]),
+        };
+    }
 
-        foreach ($aliases[$field] ?? [$field] as $key) {
+    /**
+     * @param array<string, mixed> $result
+     * @param list<string> $fields
+     */
+    private static function hasScalarField(array $result, array $fields): bool
+    {
+        foreach (array_unique($fields) as $key) {
             if (! array_key_exists($key, $result)) {
                 continue;
             }
 
-            $value = $result[$key];
-            if (in_array($field, ['findings', 'finding_links'], true)) {
-                if (is_array($value)) {
-                    return true;
-                }
-
-                continue;
-            }
-
-            if (in_array($field, ['artifact_versions', 'scenario_results'], true)) {
-                if (is_array($value) && $value !== []) {
-                    return true;
-                }
-
-                continue;
-            }
-
-            if (self::stringValue($value) !== '') {
+            if (self::stringValue($result[$key]) !== '') {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param list<string> $fields
+     */
+    private static function hasArrayField(array $result, array $fields, bool $requireNonEmpty = false): bool
+    {
+        foreach (array_unique($fields) as $key) {
+            if (! array_key_exists($key, $result) || ! is_array($result[$key])) {
+                continue;
+            }
+
+            if (! $requireNonEmpty || $result[$key] !== []) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function camelize(string $field): string
+    {
+        return lcfirst(str_replace(' ', '', ucwords(str_replace('_', ' ', $field))));
     }
 
     /**
