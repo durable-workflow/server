@@ -772,6 +772,14 @@ class WorkflowRunDiagnostics
             ];
         }
 
+        if (data_get($payload, 'execution.liveness_state') === 'workflow_replay_blocked') {
+            $findings[] = [
+                'severity' => 'error',
+                'code' => 'workflow_replay_blocked',
+                'message' => data_get($payload, 'execution.liveness_reason', 'Workflow replay is blocked.'),
+            ];
+        }
+
         foreach ($pendingTasks as $task) {
             if (($task['replay_blocked'] ?? false) === true) {
                 $findings[] = [

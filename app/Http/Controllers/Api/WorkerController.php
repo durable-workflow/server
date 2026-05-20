@@ -17,8 +17,10 @@ use App\Support\WorkflowTaskLeaseRecovery;
 use App\Support\WorkflowTaskPoller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -27,6 +29,7 @@ use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\HistoryPayloadCompression;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
@@ -1436,14 +1439,182 @@ class WorkerController
             return $this->externalPayloadFailure($taskId, (int) $validated['workflow_task_attempt'], $exception, 503);
         }
 
+        $nextTaskId = is_string($outcome['next_task_id'] ?? null)
+            ? $outcome['next_task_id']
+            : null;
+
+        if (
+            ($outcome['recorded'] ?? false) === true
+            && ($outcome['reason'] ?? null) === null
+            && $nextTaskId === null
+        ) {
+            if ($this->workflowTaskFailureBlocksReplay($validated['failure'])) {
+                $this->markWorkflowTaskReplayBlocked($namespace, $taskId, $validated['failure']);
+            } else {
+                $nextTaskId = $this->createRetryWorkflowTask($namespace, $taskId);
+            }
+        }
+
         return WorkerProtocol::json([
             'task_id' => $taskId,
             'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
             'outcome' => 'failed',
             'recorded' => $outcome['recorded'],
             'reason' => $outcome['reason'],
-            'next_task_id' => $outcome['next_task_id'] ?? null,
+            'next_task_id' => $nextTaskId,
         ], $this->workflowOutcomeStatus($outcome['reason']));
+    }
+
+    /**
+     * @param  array<string, mixed>  $failure
+     */
+    private function workflowTaskFailureBlocksReplay(array $failure): bool
+    {
+        $message = strtolower((string) ($failure['message'] ?? ''));
+        $type = strtolower((string) ($failure['type'] ?? ''));
+        $text = $type.' '.$message;
+
+        foreach ([
+            'nondetermin',
+            'non-determin',
+            'determinism',
+            'replay error',
+            'replay failed',
+            'history shape',
+            'history mismatch',
+            'invalidargument',
+            'servererror',
+            'unexpected history',
+            'validationexception',
+            'cannot decode workflow start input',
+            'cannot replay workflow history',
+            'unsupported payload codec',
+            'workflow task completion failed after commands were produced',
+            'no workflow registered',
+        ] as $needle) {
+            if (str_contains($text, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $failure
+     */
+    private function markWorkflowTaskReplayBlocked(string $namespace, string $taskId, array $failure): void
+    {
+        DB::transaction(function () use ($namespace, $taskId, $failure): void {
+            /** @var WorkflowTask|null $task */
+            $task = WorkflowTask::query()
+                ->lockForUpdate()
+                ->whereKey($taskId)
+                ->where('namespace', $namespace)
+                ->first();
+
+            if (! $task instanceof WorkflowTask
+                || $task->task_type !== TaskType::Workflow
+                || $task->status !== TaskStatus::Failed) {
+                return;
+            }
+
+            $payload = is_array($task->payload) ? $task->payload : [];
+            $payload['replay_blocked'] = true;
+            $payload['replay_blocked_reason'] = 'worker_reported_replay_failure';
+
+            if (is_string($failure['type'] ?? null) && trim($failure['type']) !== '') {
+                $payload['replay_blocked_failure_type'] = trim($failure['type']);
+            }
+
+            $task->forceFill(['payload' => $payload])->save();
+
+            $this->projectWorkflowRun((string) $task->workflow_run_id);
+        });
+    }
+
+    private function createRetryWorkflowTask(string $namespace, string $failedTaskId): ?string
+    {
+        return DB::transaction(function () use ($namespace, $failedTaskId): ?string {
+            /** @var WorkflowTask|null $failedTask */
+            $failedTask = WorkflowTask::query()
+                ->lockForUpdate()
+                ->whereKey($failedTaskId)
+                ->where('namespace', $namespace)
+                ->first();
+
+            if (! $failedTask instanceof WorkflowTask
+                || $failedTask->task_type !== TaskType::Workflow
+                || $failedTask->status !== TaskStatus::Failed) {
+                return null;
+            }
+
+            /** @var WorkflowRun|null $run */
+            $run = WorkflowRun::query()
+                ->lockForUpdate()
+                ->find($failedTask->workflow_run_id);
+
+            if (! $run instanceof WorkflowRun || $run->status->isTerminal()) {
+                return null;
+            }
+
+            $hasOpenWorkflowTask = WorkflowTask::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('task_type', TaskType::Workflow->value)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                ->exists();
+
+            if ($hasOpenWorkflowTask) {
+                return null;
+            }
+
+            $payload = is_array($failedTask->payload) ? $failedTask->payload : [];
+            $payload['workflow_task_retry_of'] = $failedTask->id;
+            $payload['workflow_task_retry_after_error'] = $failedTask->last_error;
+            $attemptCount = is_numeric($failedTask->attempt_count)
+                ? max(0, (int) $failedTask->attempt_count)
+                : 0;
+
+            /** @var WorkflowTask $retryTask */
+            $retryTask = WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Ready->value,
+                'attempt_count' => $attemptCount,
+                'available_at' => now(),
+                'payload' => $payload,
+                'connection' => $failedTask->connection ?? $run->connection,
+                'queue' => $failedTask->queue ?? $run->queue,
+                'compatibility' => $failedTask->compatibility ?? $run->compatibility,
+                'priority' => $failedTask->priority ?? $run->priority ?? 5,
+                'fairness_key' => $failedTask->fairness_key ?? $run->fairness_key,
+                'fairness_weight' => $failedTask->fairness_weight ?? $run->fairness_weight ?? 1,
+            ]);
+
+            $this->projectWorkflowRun($run->id);
+
+            return (string) $retryTask->id;
+        });
+    }
+
+    private function projectWorkflowRun(string $runId): void
+    {
+        /** @var WorkflowRun|null $run */
+        $run = WorkflowRun::query()->find($runId);
+
+        if (! $run instanceof WorkflowRun) {
+            return;
+        }
+
+        app(HistoryProjectionRole::class)->projectRun($run->fresh([
+            'instance',
+            'tasks',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'historyEvents',
+        ]) ?? $run);
     }
 
     public function pollQueryTasks(Request $request): JsonResponse

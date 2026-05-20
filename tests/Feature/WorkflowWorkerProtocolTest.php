@@ -2228,6 +2228,14 @@ class WorkflowWorkerProtocolTest extends TestCase
 
         $this->assertSame(TaskStatus::Failed, $task->status);
         $this->assertSame('Determinism violation', $task->last_error);
+        $this->assertTrue(($task->payload['replay_blocked'] ?? false) === true);
+
+        $debug = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-external-worker-fail/debug');
+
+        $debug->assertOk()
+            ->assertJsonPath('execution.liveness_state', 'workflow_replay_blocked')
+            ->assertJsonFragment(['code' => 'workflow_replay_blocked']);
     }
 
     public function test_it_heartbeats_leased_workflow_tasks_and_fences_stale_workers(): void
@@ -4512,6 +4520,166 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('outcome', 'failed')
             ->assertJsonPath('recorded', true)
             ->assertJsonPath('reason', null);
+    }
+
+    public function test_retryable_workflow_task_failure_creates_a_next_workflow_task(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-fail-task-retry',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->registerWorker('php-worker-fail-retry', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-fail-retry',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $fail = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/fail", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'failure' => [
+                    'message' => 'worker process restarted before completion',
+                    'type' => 'RuntimeError',
+                ],
+            ]);
+
+        $fail->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('outcome', 'failed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('reason', null);
+
+        $nextTaskId = $fail->json('next_task_id');
+
+        $this->assertIsString($nextTaskId);
+        $this->assertNotSame($taskId, $nextTaskId);
+
+        $failedTask = WorkflowTask::query()->findOrFail($taskId);
+        $retryTask = WorkflowTask::query()->findOrFail($nextTaskId);
+
+        $this->assertSame(TaskStatus::Failed, $failedTask->status);
+        $this->assertSame(TaskStatus::Ready, $retryTask->status);
+        $this->assertSame($attempt, (int) $failedTask->attempt_count);
+        $this->assertSame($attempt, (int) $retryTask->attempt_count);
+        $this->assertSame($taskId, $retryTask->payload['workflow_task_retry_of'] ?? null);
+
+        $retryPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-fail-retry',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $retryPoll->assertOk()
+            ->assertJsonPath('task.task_id', $nextTaskId)
+            ->assertJsonPath('task.workflow_id', 'wf-fail-task-retry')
+            ->assertJsonPath('task.workflow_task_attempt', $attempt + 1);
+
+        $retryAttempt = (int) $retryPoll->json('task.workflow_task_attempt');
+        $this->assertSame($attempt + 1, $retryAttempt);
+
+        $retryFail = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$nextTaskId}/fail", [
+                'lease_owner' => 'php-worker-fail-retry',
+                'workflow_task_attempt' => $retryAttempt,
+                'failure' => [
+                    'message' => 'worker process restarted during retry',
+                    'type' => 'RuntimeError',
+                ],
+            ]);
+
+        $retryFail->assertOk()
+            ->assertJsonPath('task_id', $nextTaskId)
+            ->assertJsonPath('outcome', 'failed')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('reason', null);
+
+        $secondRetryTaskId = $retryFail->json('next_task_id');
+
+        $this->assertIsString($secondRetryTaskId);
+        $this->assertNotSame($nextTaskId, $secondRetryTaskId);
+
+        $failedRetryTask = WorkflowTask::query()->findOrFail($nextTaskId);
+        $secondRetryTask = WorkflowTask::query()->findOrFail($secondRetryTaskId);
+
+        $this->assertSame(TaskStatus::Failed, $failedRetryTask->status);
+        $this->assertSame(TaskStatus::Ready, $secondRetryTask->status);
+        $this->assertSame($retryAttempt, (int) $failedRetryTask->attempt_count);
+        $this->assertSame($retryAttempt, (int) $secondRetryTask->attempt_count);
+        $this->assertSame($nextTaskId, $secondRetryTask->payload['workflow_task_retry_of'] ?? null);
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/system/metrics')
+            ->assertOk()
+            ->assertJsonPath('metrics.dw_workflow_task_consecutive_failures.max_consecutive_failures', 2)
+            ->assertJsonPath('metrics.dw_workflow_task_consecutive_failures.failed_task_count', 2)
+            ->assertJsonPath('metrics.dw_workflow_task_consecutive_failures.workflow_type_count', 1)
+            ->assertJsonPath(
+                'metrics.dw_workflow_task_consecutive_failures.by_workflow_type.0.workflow_type',
+                'tests.external-greeting-workflow',
+            )
+            ->assertJsonPath(
+                'metrics.dw_workflow_task_consecutive_failures.by_workflow_type.0.max_consecutive_failures',
+                2,
+            )
+            ->assertJsonPath(
+                'metrics.dw_workflow_task_consecutive_failures.by_workflow_type.0.failed_task_count',
+                2,
+            );
+
+        $secondRetryPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-fail-retry',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $secondRetryPoll->assertOk()
+            ->assertJsonPath('task.task_id', $secondRetryTaskId)
+            ->assertJsonPath('task.workflow_id', 'wf-fail-task-retry')
+            ->assertJsonPath('task.workflow_task_attempt', $retryAttempt + 1);
+
+        $secondRetryAttempt = (int) $secondRetryPoll->json('task.workflow_task_attempt');
+        $this->assertSame($retryAttempt + 1, $secondRetryAttempt);
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$secondRetryTaskId}/complete", [
+                'lease_owner' => 'php-worker-fail-retry',
+                'workflow_task_attempt' => $secondRetryAttempt,
+                'commands' => [
+                    [
+                        'type' => 'open_condition_wait',
+                        'condition_key' => 'approval.ready',
+                        'condition_definition_fingerprint' => 'condition-fp-1',
+                    ],
+                ],
+            ]);
+
+        $complete->assertOk()
+            ->assertJsonPath('run_status', 'waiting');
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-fail-task-retry')
+            ->assertOk()
+            ->assertJsonPath('status', 'waiting');
     }
 
     public function test_fail_workflow_task_rejects_wrong_lease_owner(): void
