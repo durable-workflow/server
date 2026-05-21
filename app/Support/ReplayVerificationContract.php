@@ -354,6 +354,47 @@ final class ReplayVerificationContract
                         'in_flight_signal_restart_timing',
                     ],
                 ],
+                'host_runner_contract' => [
+                    'status' => 'required_for_passing_replay_conformance',
+                    'result_schema' => self::REPLAY_CONFORMANCE_RESULT_SCHEMA,
+                    'must_probe_runtime_published_surfaces' => true,
+                    'must_emit_result_for_every_required_scenario' => true,
+                    'smoke_summary_only_outcome' => 'non_passing',
+                    'unexecuted_required_scenario_status' => 'not_covered',
+                    'runtime_shards' => [
+                        'workflow-php' => [
+                            'scope' => 'workflow-php-runtime-shard',
+                            'preferred_command' => 'workflow:v2:replay-conformance',
+                            'fallback_status_when_command_missing' => 'unsupported',
+                            'fallback_finding_type' => 'unsupported_public_surface',
+                        ],
+                        'sdk-python' => [
+                            'scope' => 'sdk-python-runtime-shard',
+                            'completed_history_surface' => 'durable-workflow-replay-verify',
+                            'worker_restart_surface' => 'live_worker_query_replay',
+                            'fallback_status_when_surface_missing' => 'unsupported',
+                            'fallback_finding_type' => 'unsupported_public_surface',
+                        ],
+                    ],
+                    'merge_policy' => [
+                        'input_scopes' => [
+                            'workflow-php-runtime-shard',
+                            'sdk-python-runtime-shard',
+                            'live-server-replay-smoke',
+                        ],
+                        'output_schema' => self::REPLAY_CONFORMANCE_RESULT_SCHEMA,
+                        'requires_required_runtimes' => [
+                            'workflow-php',
+                            'sdk-python',
+                        ],
+                        'requires_sections' => [
+                            'completed_history_replay',
+                            'worker_restart_replay',
+                            'adversarial_replay',
+                            'in_flight_timing',
+                        ],
+                    ],
+                ],
                 'diagnostic_requirements' => [
                     'code_divergence_refusal' => [
                         'required_outcome' => 'non_determinism_error',

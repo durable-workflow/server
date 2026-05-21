@@ -222,6 +222,17 @@ by itself, and harnesses must probe runtime-published surfaces from the
 resolved package under test instead of assuming a command exists in every
 published Composer artifact.
 
+The `host_runner_contract` block is the machine-readable harness contract
+for that merge step. A replay host runner must emit one
+`scenario_results` entry for every required scenario. The PHP runtime
+shard comes from `workflow:v2:replay-conformance` when the resolved
+Composer package exposes it; if a published runtime does not expose the
+claimed surface, the affected scenarios are `unsupported` with a linked
+root-cause finding. The Python shard covers the replay verifier plus live
+worker restart query replay. A smoke summary without the PHP shard,
+adversarial refusal scenarios, and in-flight signal timing remains
+`non_passing`, even when the smoke path itself succeeds.
+
 The `result_gate` block is the server-published evaluator contract for
 `durable-workflow.v2.replay-conformance.result` documents. It rejects
 smoke-only evidence, omitted required scenarios, missing PHP or Python

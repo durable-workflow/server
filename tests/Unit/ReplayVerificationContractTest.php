@@ -382,6 +382,53 @@ class ReplayVerificationContractTest extends TestCase
         }
     }
 
+    public function test_replay_conformance_publishes_host_runner_merge_contract(): void
+    {
+        $manifest = ReplayVerificationContract::manifest();
+        $hostRunner = $manifest['replay_conformance']['host_runner_contract'];
+
+        $this->assertSame('required_for_passing_replay_conformance', $hostRunner['status']);
+        $this->assertSame(
+            ReplayVerificationContract::REPLAY_CONFORMANCE_RESULT_SCHEMA,
+            $hostRunner['result_schema'],
+        );
+        $this->assertTrue($hostRunner['must_probe_runtime_published_surfaces']);
+        $this->assertTrue($hostRunner['must_emit_result_for_every_required_scenario']);
+        $this->assertSame('non_passing', $hostRunner['smoke_summary_only_outcome']);
+        $this->assertSame('not_covered', $hostRunner['unexecuted_required_scenario_status']);
+
+        $this->assertSame(
+            'workflow:v2:replay-conformance',
+            $hostRunner['runtime_shards']['workflow-php']['preferred_command'],
+        );
+        $this->assertSame(
+            'unsupported',
+            $hostRunner['runtime_shards']['workflow-php']['fallback_status_when_command_missing'],
+        );
+        $this->assertSame(
+            'unsupported_public_surface',
+            $hostRunner['runtime_shards']['workflow-php']['fallback_finding_type'],
+        );
+        $this->assertSame(
+            'durable-workflow-replay-verify',
+            $hostRunner['runtime_shards']['sdk-python']['completed_history_surface'],
+        );
+        $this->assertSame(
+            'live_worker_query_replay',
+            $hostRunner['runtime_shards']['sdk-python']['worker_restart_surface'],
+        );
+
+        foreach (['workflow-php-runtime-shard', 'sdk-python-runtime-shard', 'live-server-replay-smoke'] as $scope) {
+            $this->assertContains($scope, $hostRunner['merge_policy']['input_scopes']);
+        }
+        foreach (['workflow-php', 'sdk-python'] as $runtime) {
+            $this->assertContains($runtime, $hostRunner['merge_policy']['requires_required_runtimes']);
+        }
+        foreach (['completed_history_replay', 'worker_restart_replay', 'adversarial_replay', 'in_flight_timing'] as $section) {
+            $this->assertContains($section, $hostRunner['merge_policy']['requires_sections']);
+        }
+    }
+
     public function test_replay_conformance_publishes_an_enforceable_result_gate(): void
     {
         $resultGate = ReplayVerificationContract::manifest()['replay_conformance']['result_gate'];
