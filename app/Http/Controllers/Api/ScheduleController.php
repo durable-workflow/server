@@ -523,7 +523,16 @@ class ScheduleController
      */
     private function formatListItem(WorkflowSchedule $schedule): array
     {
-        return array_merge($schedule->toListItem(), array_filter([
+        $item = $schedule->toListItem();
+        $item['namespace'] = $schedule->namespace;
+        $item['spec'] = $schedule->spec;
+        $item['action'] = is_array($schedule->action)
+            ? WorkflowSchedule::normalizeActionTimeouts($schedule->action)
+            : null;
+        $item['next_fire_at'] = $schedule->next_fire_at?->toIso8601String();
+        $item['last_fired_at'] = $schedule->last_fired_at?->toIso8601String();
+
+        return array_merge($item, array_filter([
             'fires_count' => (int) $schedule->fires_count,
             'jitter_seconds' => (int) $schedule->jitter_seconds > 0 ? (int) $schedule->jitter_seconds : null,
             'max_runs' => $schedule->max_runs !== null ? (int) $schedule->max_runs : null,
@@ -537,6 +546,16 @@ class ScheduleController
     private function formatDetail(WorkflowSchedule $schedule): array
     {
         $detail = $schedule->toDetail();
+
+        $detail['namespace'] = $schedule->namespace;
+        $detail['status'] = $schedule->status?->value;
+        $detail['paused'] = $schedule->isPaused();
+        $detail['note'] = $schedule->note;
+        $detail['fires_count'] = (int) $schedule->fires_count;
+        $detail['failures_count'] = (int) $schedule->failures_count;
+        $detail['next_fire_at'] = $schedule->next_fire_at?->toIso8601String();
+        $detail['last_fired_at'] = $schedule->last_fired_at?->toIso8601String();
+        $detail['paused_at'] = $schedule->paused_at?->toIso8601String();
 
         $detail['jitter_seconds'] = (int) $schedule->jitter_seconds;
         $detail['max_runs'] = $schedule->max_runs !== null ? (int) $schedule->max_runs : null;

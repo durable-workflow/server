@@ -274,15 +274,65 @@ class ScheduleTest extends TestCase
 
         $response->assertOk()
             ->assertJsonPath('schedule_id', 'detail-test')
+            ->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('status', 'active')
+            ->assertJsonPath('paused', false)
             ->assertJsonPath('spec.cron_expressions.0', '0 9 * * *')
             ->assertJsonPath('spec.timezone', 'America/New_York')
             ->assertJsonPath('action.workflow_type', 'ReportWorkflow')
             ->assertJsonPath('action.task_queue', 'reports')
             ->assertJsonPath('overlap_policy', 'skip')
+            ->assertJsonPath('note', 'Daily report')
+            ->assertJsonPath('fires_count', 0)
+            ->assertJsonPath('failures_count', 0)
             ->assertJsonPath('state.paused', false)
             ->assertJsonPath('state.note', 'Daily report')
             ->assertJsonPath('info.fires_count', 0)
             ->assertJsonPath('info.failures_count', 0);
+    }
+
+    public function test_describe_reports_lifecycle_state_after_paused_create_resume_and_pause(): void
+    {
+        $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'schedule_id' => 'lifecycle-describe',
+                'spec' => ['cron_expressions' => ['0 * * * *']],
+                'action' => ['workflow_type' => 'TestWorkflow'],
+                'paused' => true,
+            ])
+            ->assertCreated();
+
+        $this->withHeaders($this->headers())
+            ->getJson('/api/schedules/lifecycle-describe')
+            ->assertOk()
+            ->assertJsonPath('status', 'paused')
+            ->assertJsonPath('paused', true)
+            ->assertJsonPath('state.status', 'paused')
+            ->assertJsonPath('state.paused', true);
+
+        $this->withHeaders($this->headers())
+            ->postJson('/api/schedules/lifecycle-describe/resume')
+            ->assertOk();
+
+        $this->withHeaders($this->headers())
+            ->getJson('/api/schedules/lifecycle-describe')
+            ->assertOk()
+            ->assertJsonPath('status', 'active')
+            ->assertJsonPath('paused', false)
+            ->assertJsonPath('state.status', 'active')
+            ->assertJsonPath('state.paused', false);
+
+        $this->withHeaders($this->headers())
+            ->postJson('/api/schedules/lifecycle-describe/pause')
+            ->assertOk();
+
+        $this->withHeaders($this->headers())
+            ->getJson('/api/schedules/lifecycle-describe')
+            ->assertOk()
+            ->assertJsonPath('status', 'paused')
+            ->assertJsonPath('paused', true)
+            ->assertJsonPath('state.status', 'paused')
+            ->assertJsonPath('state.paused', true);
     }
 
     public function test_it_returns_404_for_nonexistent_schedule(): void
@@ -641,6 +691,10 @@ class ScheduleTest extends TestCase
         $this->assertArrayHasKey('paused', $item);
         $this->assertArrayHasKey('next_fire', $item);
         $this->assertArrayHasKey('last_fire', $item);
+        $this->assertArrayHasKey('next_fire_at', $item);
+        $this->assertArrayHasKey('last_fired_at', $item);
+        $this->assertArrayHasKey('spec', $item);
+        $this->assertArrayHasKey('action', $item);
         $this->assertEquals('ShapeWorkflow', $item['workflow_type']);
         $this->assertFalse($item['paused']);
     }
