@@ -215,6 +215,13 @@ such as `latest`, `current`, `head`, `unresolved`, `placeholder`,
 The required runtime axis is `workflow-php` and `sdk-python`; a passing
 run covers both.
 
+Runtime-specific evidence shards are merged by the conformance harness
+before applying the full `durable-workflow.v2.replay-conformance.result`
+gate. A standalone runtime shard is evidence but not a full passing run
+by itself, and harnesses must probe runtime-published surfaces from the
+resolved package under test instead of assuming a command exists in every
+published Composer artifact.
+
 The `result_gate` block is the server-published evaluator contract for
 `durable-workflow.v2.replay-conformance.result` documents. It rejects
 smoke-only evidence, omitted required scenarios, missing PHP or Python
