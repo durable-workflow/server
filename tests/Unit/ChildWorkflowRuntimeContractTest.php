@@ -170,6 +170,10 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             'link_root_cause_finding_against_docs_or_server_owner',
             $findingPolicy['namespace_contract_gap'],
         );
+        $this->assertSame(
+            'link_root_cause_finding_against_conformance_harness',
+            $findingPolicy['conformance_runner_coverage_gap'],
+        );
     }
 
     public function test_manifest_publishes_an_enforceable_result_gate(): void

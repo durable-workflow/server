@@ -16,7 +16,7 @@ final class ChildWorkflowRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.child-workflow-runtime.contract';
 
-    public const VERSION = 4;
+    public const VERSION = 5;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.child-workflow-runtime.result';
 
@@ -265,6 +265,7 @@ final class ChildWorkflowRuntimeContract
                 'replay_divergence' => 'link_root_cause_finding_against_replay_owner',
                 'namespace_contract_gap' => 'link_root_cause_finding_against_docs_or_server_owner',
                 'unsupported_public_surface' => 'link_root_cause_finding_against_surface_owner',
+                'conformance_runner_coverage_gap' => 'link_root_cause_finding_against_conformance_harness',
             ],
         ];
     }

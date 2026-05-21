@@ -33,7 +33,7 @@ WORKDIR /app
 FROM composer:2 AS workflow-source
 
 ARG WORKFLOW_PACKAGE_SOURCE=https://github.com/durable-workflow/workflow.git
-ARG WORKFLOW_PACKAGE_REF=v2
+ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.172
 ARG WORKFLOW_PACKAGE_COMMIT=
 
 RUN git clone --depth 1 --branch "${WORKFLOW_PACKAGE_REF}" "${WORKFLOW_PACKAGE_SOURCE}" /workflow \
@@ -61,7 +61,7 @@ RUN composer dump-autoload --optimize
 FROM base AS production
 
 ARG WORKFLOW_PACKAGE_SOURCE=https://github.com/durable-workflow/workflow.git
-ARG WORKFLOW_PACKAGE_REF=v2
+ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.172
 
 COPY --from=vendor /app /app
 COPY --from=workflow-source /workflow/.package-provenance /app/.package-provenance
