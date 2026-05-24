@@ -14,7 +14,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $manifest = SearchAttributeRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.contract', $manifest['schema']);
-        $this->assertSame(2, SearchAttributeRuntimeContract::VERSION);
+        $this->assertSame(3, SearchAttributeRuntimeContract::VERSION);
         $this->assertSame(SearchAttributeRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.result', $manifest['result_schema']);
         $this->assertSame('search_attribute_runtime_contract', $manifest['fixture_category']);
@@ -22,6 +22,23 @@ class SearchAttributeRuntimeContractTest extends TestCase
             PlatformConformanceSuite::SCHEMA,
             $manifest['platform_conformance_suite_authority'],
         );
+        $this->assertSame(
+            [
+                'schema' => 'durable-workflow.v2.platform-conformance.runtime-scenarios',
+                'category' => 'search_attribute_runtime_contract',
+                'public_path' => 'https://durable-workflow.com/platform-conformance/search-attribute-runtime-scenarios.json',
+                'source_path' => 'static/platform-conformance/search-attribute-runtime-scenarios.json',
+            ],
+            $manifest['scenario_manifest'],
+        );
+        $this->assertSame(
+            'concrete_published_versions_pinned_at_run_time',
+            $manifest['artifact_policy']['version_requirement'],
+        );
+        $this->assertTrue($manifest['artifact_policy']['placeholder_versions_rejected']);
+        foreach (['latest', 'current', 'head', '<latest>', '${VERSION}', '{{ version }}'] as $example) {
+            $this->assertContains($example, $manifest['artifact_policy']['placeholder_version_examples']);
+        }
 
         foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);

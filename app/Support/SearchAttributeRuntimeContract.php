@@ -16,7 +16,7 @@ final class SearchAttributeRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.contract';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result';
 
@@ -34,8 +34,26 @@ final class SearchAttributeRuntimeContract
             'result_version' => self::RESULT_VERSION,
             'fixture_category' => 'search_attribute_runtime_contract',
             'platform_conformance_suite_authority' => PlatformConformanceSuite::SCHEMA,
+            'scenario_manifest' => [
+                'schema' => 'durable-workflow.v2.platform-conformance.runtime-scenarios',
+                'category' => 'search_attribute_runtime_contract',
+                'public_path' => 'https://durable-workflow.com/platform-conformance/search-attribute-runtime-scenarios.json',
+                'source_path' => 'static/platform-conformance/search-attribute-runtime-scenarios.json',
+            ],
             'artifact_policy' => [
                 'version_source' => 'latest_published_artifacts_at_run_time',
+                'version_requirement' => 'concrete_published_versions_pinned_at_run_time',
+                'placeholder_versions_rejected' => true,
+                'placeholder_version_examples' => [
+                    'latest',
+                    'current',
+                    'head',
+                    'unresolved',
+                    'placeholder',
+                    '<latest>',
+                    '${VERSION}',
+                    '{{ version }}',
+                ],
                 'install_channels' => [
                     'server' => 'docker image durableworkflow/server:<latest>',
                     'cli' => 'official dw install script pinned to its latest release tag',
