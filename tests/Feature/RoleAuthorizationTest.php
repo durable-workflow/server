@@ -54,7 +54,7 @@ class RoleAuthorizationTest extends TestCase
             ->assertJsonPath('role', 'worker');
     }
 
-    public function test_operator_role_can_use_control_plane_but_not_worker_or_admin_plane(): void
+    public function test_operator_role_can_use_control_plane_and_register_diagnostic_workers_but_not_polling_plane(): void
     {
         $this->configureRoleTokens();
 
@@ -66,11 +66,54 @@ class RoleAuthorizationTest extends TestCase
             ->getJson('/api/namespaces')
             ->assertOk();
 
-        $this->withHeaders($this->workerHeaders('operator-token'))
+        $this->withHeaders($this->workerHeaders('worker-token'))
             ->postJson('/api/worker/register', [
-                'worker_id' => 'operator-should-not-work',
+                'worker_id' => 'sdk-worker-v1',
                 'task_queue' => 'default',
                 'runtime' => 'python',
+                'build_id' => 'build-v1',
+            ])
+            ->assertCreated();
+
+        $this->withHeaders($this->workerHeaders('operator-token'))
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'operator-diagnostic-worker',
+                'task_queue' => 'default',
+                'runtime' => 'external',
+                'build_id' => 'build-v2',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('worker_id', 'operator-diagnostic-worker')
+            ->assertJsonPath('runtime', 'external')
+            ->assertJsonPath('build_id', 'build-v2');
+
+        $workers = $this->withHeaders($this->controlHeaders('operator-token'))
+            ->getJson('/api/workers?task_queue=default');
+
+        $workers->assertOk()
+            ->assertJsonCount(2, 'workers');
+
+        $diagnostic = collect($workers->json('workers'))->firstWhere('worker_id', 'operator-diagnostic-worker');
+        self::assertSame('build-v2', $diagnostic['build_id'] ?? null);
+
+        $buildIds = $this->withHeaders($this->controlHeaders('operator-token'))
+            ->getJson('/api/task-queues/default/build-ids');
+
+        $buildIds->assertOk()
+            ->assertJsonCount(2, 'build_ids');
+
+        $byBuild = collect($buildIds->json('build_ids'))->keyBy('build_id');
+        $v1 = $byBuild->get('build-v1');
+        $v2 = $byBuild->get('build-v2');
+        self::assertIsArray($v1);
+        self::assertIsArray($v2);
+        self::assertSame('active', $v1['rollout_status'] ?? null);
+        self::assertSame('active', $v2['rollout_status'] ?? null);
+        self::assertSame(1, $v2['active_worker_count'] ?? null);
+
+        $this->withHeaders($this->workerHeaders('operator-token'))
+            ->postJson('/api/worker/heartbeat', [
+                'worker_id' => 'operator-diagnostic-worker',
             ])
             ->assertForbidden()
             ->assertJsonPath('reason', 'forbidden')
@@ -85,7 +128,7 @@ class RoleAuthorizationTest extends TestCase
             ->assertJsonPath('role', 'operator');
     }
 
-    public function test_admin_role_can_use_admin_and_operator_planes_but_not_worker_plane(): void
+    public function test_admin_role_can_use_admin_and_operator_planes_and_register_diagnostic_workers(): void
     {
         $this->configureRoleTokens();
 
@@ -99,9 +142,19 @@ class RoleAuthorizationTest extends TestCase
 
         $this->withHeaders($this->workerHeaders('admin-token'))
             ->postJson('/api/worker/register', [
-                'worker_id' => 'admin-should-not-work',
+                'worker_id' => 'admin-diagnostic-worker',
                 'task_queue' => 'default',
-                'runtime' => 'python',
+                'runtime' => 'external',
+                'build_id' => 'build-v2',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('worker_id', 'admin-diagnostic-worker')
+            ->assertJsonPath('runtime', 'external')
+            ->assertJsonPath('build_id', 'build-v2');
+
+        $this->withHeaders($this->workerHeaders('admin-token'))
+            ->postJson('/api/worker/heartbeat', [
+                'worker_id' => 'admin-diagnostic-worker',
             ])
             ->assertForbidden()
             ->assertJsonPath('reason', 'forbidden')
@@ -144,9 +197,16 @@ class RoleAuthorizationTest extends TestCase
 
         $this->withHeaders($this->workerHeaders('legacy-token'))
             ->postJson('/api/worker/register', [
-                'worker_id' => 'legacy-admin-not-worker',
+                'worker_id' => 'legacy-admin-diagnostic',
                 'task_queue' => 'default',
-                'runtime' => 'python',
+                'runtime' => 'external',
+                'build_id' => 'build-v2',
+            ])
+            ->assertCreated();
+
+        $this->withHeaders($this->workerHeaders('legacy-token'))
+            ->postJson('/api/worker/heartbeat', [
+                'worker_id' => 'legacy-admin-diagnostic',
             ])
             ->assertForbidden()
             ->assertJsonPath('reason', 'forbidden')
@@ -175,21 +235,17 @@ class RoleAuthorizationTest extends TestCase
             ->assertJsonMissing(['reason' => 'namespace_not_found']);
     }
 
-    public function test_wrong_role_token_cannot_observe_namespace_existence_through_worker_register(): void
+    public function test_operator_diagnostic_worker_register_reports_namespace_errors_after_authorization(): void
     {
         $this->configureRoleTokens();
 
-        // An operator-role token hitting a worker-gated endpoint gets 403 whether
-        // the namespace exists or not.
         $this->withHeaders($this->workerHeadersFor('operator-token', 'default'))
             ->postJson('/api/worker/register', [
                 'worker_id' => 'w-probe',
                 'task_queue' => 'default',
                 'runtime' => 'python',
             ])
-            ->assertForbidden()
-            ->assertJsonPath('reason', 'forbidden')
-            ->assertJsonMissing(['reason' => 'namespace_not_found']);
+            ->assertCreated();
 
         $this->withHeaders($this->workerHeadersFor('operator-token', 'ghost-namespace'))
             ->postJson('/api/worker/register', [
@@ -197,9 +253,9 @@ class RoleAuthorizationTest extends TestCase
                 'task_queue' => 'default',
                 'runtime' => 'python',
             ])
-            ->assertForbidden()
-            ->assertJsonPath('reason', 'forbidden')
-            ->assertJsonMissing(['reason' => 'namespace_not_found']);
+            ->assertNotFound()
+            ->assertJsonPath('reason', 'namespace_not_found')
+            ->assertJsonPath('namespace', 'ghost-namespace');
     }
 
     public function test_wrong_role_token_cannot_observe_namespace_existence_through_system_routes(): void

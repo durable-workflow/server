@@ -177,10 +177,13 @@ Route::middleware([Authenticate::class])->group(function () {
         Route::post('/webhook/{adapter}', [BridgeAdapterController::class, 'webhook']);
     });
 
+    // ── Worker registration diagnostics ──────────────────────────────
+    Route::prefix('worker')->middleware([$authenticated, $wpv, $httpWorker, $workflowBootstrap, $ns])->group(function () {
+        Route::post('/register', [WorkerController::class, 'register']);
+    });
+
     // ── Worker Task Polling ──────────────────────────────────────────
     Route::prefix('worker')->middleware([$worker, $wpv, $httpWorker, $workflowBootstrap, $ns])->group(function () {
-        // Registration
-        Route::post('/register', [WorkerController::class, 'register']);
         Route::post('/heartbeat', [WorkerController::class, 'heartbeat']);
 
         // Worker sessions

@@ -135,9 +135,12 @@ curl -H "Authorization: Bearer $(grep '^DW_ADMIN_TOKEN=' durable-workflow.prod.e
   http://localhost:8080/api/cluster/info
 ```
 
-Register workers with `DW_WORKER_TOKEN` and send operator traffic with
-`DW_OPERATOR_TOKEN`. Put TLS, request logging, and public routing in a reverse
-proxy in front of the API container; do not expose the MySQL or Redis services.
+Register SDK workers with `DW_WORKER_TOKEN` and send operator traffic with
+`DW_OPERATOR_TOKEN`. Operator and admin credentials may also call
+`/api/worker/register` for diagnostic worker registration, while heartbeats,
+task polling, and task completion remain worker-token endpoints. Put TLS,
+request logging, and public routing in a reverse proxy in front of the API
+container; do not expose the MySQL or Redis services.
 
 Persistence and backups:
 
@@ -1006,9 +1009,10 @@ DW_ADMIN_TOKEN=admin-secret
 
 `worker` tokens can call `/api/worker/*` and `/api/cluster/info`. `operator`
 tokens can call workflow, history, schedule, search-attribute, task-queue,
-worker-read, and namespace-read endpoints. `admin` tokens can call admin
-operations such as `/api/system/*`, namespace create/update/delete, and
-worker deletion, and can also use operator endpoints.
+worker-read, namespace-read, and diagnostic `/api/worker/register` endpoints.
+`admin` tokens can call admin operations such as `/api/system/*`, namespace
+create/update/delete, worker deletion, diagnostic `/api/worker/register`, and
+can also use operator endpoints.
 
 ```bash
 curl -H "Authorization: Bearer operator-secret" \
@@ -1329,12 +1333,12 @@ every operator-facing variable the server honors.
 | `DW_AUTH_DRIVER` | `token` | `none`, `token`, or `signature`. |
 | `DW_AUTH_TOKEN` | (unset) | Single shared bearer token (backward-compat credential). |
 | `DW_SIGNATURE_KEY` | (unset) | HMAC key used when `DW_AUTH_DRIVER=signature` and no role-scoped key is configured. |
-| `DW_WORKER_TOKEN` | (unset) | Bearer token for the worker role. |
-| `DW_OPERATOR_TOKEN` | (unset) | Bearer token for the operator role. |
-| `DW_ADMIN_TOKEN` | (unset) | Bearer token for the admin role. |
-| `DW_WORKER_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for workers. |
-| `DW_OPERATOR_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for operators. |
-| `DW_ADMIN_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for admins. |
+| `DW_WORKER_TOKEN` | (unset) | Bearer token for worker registration, polling, heartbeat, and completion. |
+| `DW_OPERATOR_TOKEN` | (unset) | Bearer token for the operator control plane and diagnostic worker registration; polling remains worker-only. |
+| `DW_ADMIN_TOKEN` | (unset) | Bearer token for the admin control plane and diagnostic worker registration; polling remains worker-only. |
+| `DW_WORKER_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for worker registration, polling, heartbeat, and completion. |
+| `DW_OPERATOR_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for the operator control plane and diagnostic worker registration; polling remains worker-only. |
+| `DW_ADMIN_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for the admin control plane and diagnostic worker registration; polling remains worker-only. |
 | `DW_AUTH_BACKWARD_COMPATIBLE` | `true` | Honor `DW_AUTH_TOKEN` / `DW_SIGNATURE_KEY` as a fallback when role credentials are missing. |
 | `DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS` | `false` | Accept forwarded caller/auth headers from a trusted gateway. |
 | `DW_CALLER_TYPE_HEADER` | `X-Workflow-Caller-Type` | Request header carrying the forwarded caller type. |

@@ -1,4 +1,4 @@
-# Role-Based Auth Design (Issue #209 Phase 1)
+# Role-Based Auth Design
 
 Status: implemented in the server route/middleware layer. The built-in
 token/signature behavior now runs through the same `App\Contracts\AuthProvider`
@@ -11,8 +11,8 @@ Current flat auth: any valid token grants access to all endpoints. Workers can c
 
 ### Roles
 - **worker**: Can access `/worker/*` endpoints (task polling, completion) and `/cluster/info`
-- **operator**: Can access workflow control plane (start, signal, query, terminate, etc.)
-- **admin**: Can access system operations, namespace provisioning, worker management
+- **operator**: Can access workflow control plane (start, signal, query, terminate, etc.) and diagnostic worker registration
+- **admin**: Can access system operations, namespace provisioning, worker management, and diagnostic worker registration
 
 ### Implementation
 
@@ -72,7 +72,10 @@ class RequireRole
 // Discovery - all authenticated roles
 Route::get('/cluster/info')->middleware('role:worker,operator,admin');
 
-// Worker plane - worker role only
+// Diagnostic worker registration - all authenticated roles
+Route::post('/worker/register')->middleware('role:worker,operator,admin');
+
+// Worker polling plane - worker role only
 Route::prefix('worker')->middleware('role:worker')->group(...);
 
 // Operator plane - operator or admin
@@ -86,7 +89,7 @@ Route::delete('/workers/{workerId}')->middleware('role:admin');
 ### Endpoint Categorization
 
 **Worker Plane** (role: worker)
-- All `/worker/*` endpoints
+- All `/worker/*` endpoints, with `/worker/register` also available to operator and admin roles for diagnostics
 - `GET /cluster/info`
 
 **Operator Plane** (role: operator, admin)
@@ -97,11 +100,13 @@ Route::delete('/workers/{workerId}')->middleware('role:admin');
 - Task queues: read
 - Workers: read
 - Namespaces: read
+- Diagnostic worker registration: POST /worker/register
 
 **Admin Plane** (role: admin only)
 - System operations: repair, retention, activity timeouts
 - Worker management: DELETE /workers/{id}
 - Namespace provisioning: POST/PUT /namespaces
+- Diagnostic worker registration: POST /worker/register
 
 ### Backward Compatibility
 
@@ -111,8 +116,10 @@ If `role_tokens` not configured, fall back to:
 
 If any role token is configured, the main `auth.token` is still accepted when
 `backward_compatible` is true, but it is admin-scoped rather than full-access.
-This lets operators migrate gradually without leaving worker-plane access on
-the legacy credential.
+This lets operators migrate gradually without leaving worker polling access on
+the legacy credential. The diagnostic registration route remains callable by
+operator and admin credentials so rollout smoke tests can create observable
+build-id cohorts without using a worker-polling token.
 
 Signature auth follows the same rule using `role_signature_keys` and the legacy
 `signature_key`.

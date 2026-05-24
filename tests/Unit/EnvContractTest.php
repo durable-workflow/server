@@ -318,4 +318,39 @@ class EnvContractTest extends TestCase
             }
         }
     }
+
+    public function test_role_scoped_credential_contract_documents_worker_registration_permissions(): void
+    {
+        foreach ([
+            'DW_WORKER_TOKEN',
+            'DW_WORKER_SIGNATURE_KEY',
+            'DW_OPERATOR_TOKEN',
+            'DW_OPERATOR_SIGNATURE_KEY',
+            'DW_ADMIN_TOKEN',
+            'DW_ADMIN_SIGNATURE_KEY',
+        ] as $name) {
+            $description = self::$contract['vars'][$name]['description'] ?? '';
+
+            $this->assertStringContainsString(
+                'worker registration',
+                $description,
+                "{$name} must describe worker registration access",
+            );
+        }
+
+        foreach ([
+            'DW_OPERATOR_TOKEN',
+            'DW_OPERATOR_SIGNATURE_KEY',
+            'DW_ADMIN_TOKEN',
+            'DW_ADMIN_SIGNATURE_KEY',
+        ] as $name) {
+            $description = self::$contract['vars'][$name]['description'] ?? '';
+
+            $this->assertStringContainsString(
+                'polling remains worker-only',
+                $description,
+                "{$name} must keep worker polling separate from diagnostic registration",
+            );
+        }
+    }
 }

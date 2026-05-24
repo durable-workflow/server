@@ -435,10 +435,8 @@ class WorkerProtocolContractTest extends TestCase
         ]);
 
         $this->withHeaders($this->workerHeaders(token: 'operator-token'))
-            ->postJson('/api/worker/register', [
+            ->postJson('/api/worker/heartbeat', [
                 'worker_id' => 'py-worker-wrong-role',
-                'task_queue' => 'default',
-                'runtime' => 'python',
             ])->assertForbidden()
             ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
             ->assertHeaderMissing('X-Durable-Workflow-Control-Plane-Version')

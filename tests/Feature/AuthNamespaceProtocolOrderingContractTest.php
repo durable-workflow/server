@@ -174,11 +174,9 @@ class AuthNamespaceProtocolOrderingContractTest extends TestCase
                 'plane' => 'worker',
                 'token' => 'operator-token',
                 'method' => 'post',
-                'path' => '/api/worker/register',
+                'path' => '/api/worker/heartbeat',
                 'body' => [
                     'worker_id' => 'worker-role-order',
-                    'task_queue' => 'default',
-                    'runtime' => 'python',
                 ],
                 'headers' => [
                     'X-Namespace' => 'ghost-namespace',
