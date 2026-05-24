@@ -37,9 +37,25 @@ as source material for eight categories:
 | `failure_repair_actionability` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, plus the artifact objects published from `GET /api/cluster/info`'s `worker_protocol.external_task_result_contract.fixtures` | stable |
 
 The other categories the server is graded against
-(`control_plane_request_response`, `history_replay_bundles`) live in
-the `cli`, `sdk-python`, and `workflow` repositories and are loaded by
-the harness from there.
+(`control_plane_request_response`, `signal_query_runtime_contract`,
+`search_attribute_runtime_contract`, `namespace_runtime_contract`,
+`child_workflow_runtime_contract`, `saga_runtime_contract`,
+`worker_versioning_runtime_contract`, and `history_replay_bundles`) live
+in the `cli`, `sdk-python`, `workflow`, and `durable-workflow.github.io`
+repositories and are loaded by the harness from there.
+
+The server repo also ships a source-free saga runner at
+`scripts/conformance/sagas-published-artifacts.sh`. Host conformance
+runners can invoke it to exercise `saga_runtime_contract` against the
+current published server image, CLI release artifact, Python SDK, PHP
+workflow runtime, and Waterline package install. The server-only runner
+does not boot a Waterline app or probe Waterline routes; Waterline
+operator visibility remains an explicit unsupported surface until a host
+topology runs Waterline against the saga run database. The script emits
+`durable-workflow.v2.saga-runtime-conformance.result` evidence with every
+required saga scenario reported as `pass`, `fail`, `unsupported`,
+`not_covered`, or `runner_blocked`; a partial run is therefore
+non-passing instead of being recorded as green.
 
 ## Release gate
 
