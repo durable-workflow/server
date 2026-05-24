@@ -9,6 +9,7 @@ use App\Models\WorkerRegistration;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use InvalidArgumentException;
+use Workflow\V2\Enums\DeploymentBlockageReason;
 use Workflow\V2\Enums\DeploymentLifecycleState;
 use Workflow\V2\Support\DeploymentBlockage;
 use Workflow\V2\Support\DeploymentLifecyclePlan;
@@ -31,6 +32,10 @@ use Workflow\V2\Support\WorkerDeployment;
  */
 final class DeploymentLifecycleService
 {
+    public function __construct(
+        private readonly WorkerBuildIdNewStartSelector $newStartSelector,
+    ) {}
+
     /**
      * Parse a deployment name in the form `namespace/task_queue@build_id`
      * (or `@unversioned` for the pre-rollout cohort) into the tuple the
@@ -176,6 +181,7 @@ final class DeploymentLifecycleService
 
         $fleet = $this->fleetSnapshot($namespace, $taskQueue, $deployment->requiredCompatibility);
         $blockages = DeploymentLifecyclePlan::evaluatePromote($deployment, $fleet);
+        $blockages = $this->normalizePromotionBlockages($deployment, $fleet, $blockages);
 
         if ($blockages !== []) {
             return [
@@ -192,8 +198,7 @@ final class DeploymentLifecycleService
         });
 
         return [
-            'deployment' => $this->deploymentFromRollout($rollout)
-                ->withState(DeploymentLifecycleState::Promoted),
+            'deployment' => $this->deploymentFromRollout($rollout),
             'blockages' => [],
         ];
     }
@@ -331,7 +336,9 @@ final class DeploymentLifecycleService
      *     advertised_compatibility: list<string>,
      *     advertised_fingerprints: list<string>,
      *     replay_safety_severity: string|null,
-     *     replay_safety_messages: list<string>
+     *     replay_safety_messages: list<string>,
+     *     stale_workers_supporting_required: int,
+     *     last_stale_required_heartbeat_at: string|null
      * }
      */
     public function fleetSnapshot(string $namespace, string $taskQueue, ?string $required): array
@@ -343,14 +350,16 @@ final class DeploymentLifecycleService
             queue: $taskQueue,
         );
 
-        $active = 0;
-        $supporting = 0;
+        $activeWorkers = [];
+        $supportingWorkers = [];
         $advertised = [];
 
         foreach ($details as $entry) {
-            $active++;
+            $workerKey = $this->fleetWorkerKey($entry['worker_id'] ?? null, 'compatibility', count($activeWorkers));
+            $activeWorkers[$workerKey] = true;
+
             if ($entry['supports_required'] ?? false) {
-                $supporting++;
+                $supportingWorkers[$workerKey] = true;
             }
             foreach ($entry['supported'] ?? [] as $marker) {
                 if (is_string($marker) && $marker !== '') {
@@ -359,16 +368,44 @@ final class DeploymentLifecycleService
             }
         }
 
+        $registrationFleet = $this->workerRegistrationFleetSnapshot($namespace, $taskQueue, $required);
+
+        foreach ($registrationFleet['active_workers'] as $workerId => $worker) {
+            $activeWorkers[$workerId] = true;
+
+            if (($worker['supports_required'] ?? false) === true) {
+                $supportingWorkers[$workerId] = true;
+            }
+
+            $buildId = $worker['build_id'] ?? null;
+            if (is_string($buildId) && $buildId !== '') {
+                $advertised[$buildId] = true;
+            }
+        }
+
         $advertisedList = array_keys($advertised);
         sort($advertisedList);
 
         return [
-            'active_worker_count' => $active,
-            'active_workers_supporting_required' => $supporting,
+            'active_worker_count' => count($activeWorkers),
+            'active_workers_supporting_required' => count($supportingWorkers),
             'advertised_compatibility' => $advertisedList,
             'advertised_fingerprints' => [],
             'replay_safety_severity' => null,
             'replay_safety_messages' => [],
+            'stale_workers_supporting_required' => $registrationFleet['stale_workers_supporting_required'],
+            'last_stale_required_heartbeat_at' => $registrationFleet['last_stale_required_heartbeat_at'],
+        ];
+    }
+
+    public function deploymentPayload(WorkerDeployment $deployment): array
+    {
+        return [
+            ...$deployment->toArray(),
+            'new_start_selected' => $this->newStartSelector->selectedKeyForTaskQueue(
+                $deployment->namespace,
+                $deployment->taskQueue,
+            ) === WorkerBuildIdRollout::buildIdKey($deployment->buildId),
         ];
     }
 
@@ -518,5 +555,213 @@ final class DeploymentLifecycleService
             : null;
 
         return $buildId;
+    }
+
+    /**
+     * @param  list<DeploymentBlockage>  $blockages
+     * @return list<DeploymentBlockage>
+     */
+    private function normalizePromotionBlockages(
+        WorkerDeployment $deployment,
+        array $fleet,
+        array $blockages,
+    ): array {
+        $staleSupporting = (int) ($fleet['stale_workers_supporting_required'] ?? 0);
+
+        return array_map(function (DeploymentBlockage $blockage) use ($deployment, $fleet, $staleSupporting): DeploymentBlockage {
+            if (
+                $blockage->reason === DeploymentBlockageReason::NoCompatibleWorkers
+                && $deployment->requiredCompatibility !== null
+                && $staleSupporting > 0
+            ) {
+                return $this->missingWorkerHeartbeatBlockage($deployment, $fleet, $staleSupporting);
+            }
+
+            if (
+                $blockage->reason === DeploymentBlockageReason::MissingWorkerHeartbeat
+                && $deployment->requiredCompatibility !== null
+                && $staleSupporting === 0
+            ) {
+                return $this->noCompatibleWorkersBlockage($deployment, $fleet);
+            }
+
+            return $blockage;
+        }, $blockages);
+    }
+
+    private function noCompatibleWorkersBlockage(WorkerDeployment $deployment, array $fleet): DeploymentBlockage
+    {
+        $advertised = $this->stringList($fleet['advertised_compatibility'] ?? []);
+        $advertisedText = $advertised === [] ? 'none' : implode(', ', $advertised);
+
+        return new DeploymentBlockage(
+            reason: DeploymentBlockageReason::NoCompatibleWorkers,
+            message: sprintf(
+                'No active worker on %s/%s advertises required compatibility [%s]; active workers advertise [%s].',
+                $deployment->namespace,
+                $deployment->taskQueue,
+                $deployment->requiredCompatibility,
+                $advertisedText,
+            ),
+            scope: $this->blockageScope($deployment),
+            expectedResolution: 'Start at least one worker that advertises compatibility ['
+                .$deployment->requiredCompatibility
+                .'] for this task queue, then retry promotion.',
+        );
+    }
+
+    private function missingWorkerHeartbeatBlockage(
+        WorkerDeployment $deployment,
+        array $fleet,
+        int $staleSupporting,
+    ): DeploymentBlockage {
+        $lastHeartbeat = $fleet['last_stale_required_heartbeat_at'] ?? null;
+        $suffix = is_string($lastHeartbeat) && $lastHeartbeat !== ''
+            ? sprintf(' Last matching heartbeat was %s.', $lastHeartbeat)
+            : '';
+
+        return new DeploymentBlockage(
+            reason: DeploymentBlockageReason::MissingWorkerHeartbeat,
+            message: sprintf(
+                '%d worker(s) for %s/%s advertise required compatibility [%s], but none have a fresh heartbeat.%s',
+                $staleSupporting,
+                $deployment->namespace,
+                $deployment->taskQueue,
+                $deployment->requiredCompatibility,
+                $suffix,
+            ),
+            scope: $this->blockageScope($deployment),
+            expectedResolution: 'Restart or heartbeat a worker that advertises compatibility ['
+                .$deployment->requiredCompatibility
+                .'] for this task queue, then retry promotion.',
+        );
+    }
+
+    /**
+     * @return array{
+     *     active_workers: array<string, array{build_id: string|null, supports_required: bool}>,
+     *     stale_workers_supporting_required: int,
+     *     last_stale_required_heartbeat_at: string|null
+     * }
+     */
+    private function workerRegistrationFleetSnapshot(string $namespace, string $taskQueue, ?string $required): array
+    {
+        $summary = [
+            'active_workers' => [],
+            'stale_workers_supporting_required' => 0,
+            'last_stale_required_heartbeat_at' => null,
+        ];
+
+        if (! Schema::hasTable('workflow_worker_registrations')) {
+            return $summary;
+        }
+
+        $staleAfter = StandaloneWorkerVisibility::staleAfterSeconds(
+            is_numeric(config('server.workers.stale_after_seconds'))
+                ? (int) config('server.workers.stale_after_seconds')
+                : null,
+            is_numeric(config('server.polling.timeout'))
+                ? (int) config('server.polling.timeout')
+                : null,
+        );
+        $cutoff = now()->subSeconds($staleAfter);
+
+        foreach (WorkerRegistration::query()
+            ->where('namespace', $namespace)
+            ->where('task_queue', $taskQueue)
+            ->orderBy('worker_id')
+            ->get() as $worker) {
+            $buildId = is_string($worker->build_id) && trim($worker->build_id) !== ''
+                ? trim($worker->build_id)
+                : null;
+            $supportsRequired = $required === null || $buildId === $required;
+            $heartbeat = $worker->last_heartbeat_at;
+            $isStale = $heartbeat !== null && $heartbeat->lt($cutoff);
+            $status = is_string($worker->status) && trim($worker->status) !== ''
+                ? trim($worker->status)
+                : WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE;
+
+            if ($isStale) {
+                if ($supportsRequired && $required !== null) {
+                    $summary['stale_workers_supporting_required']++;
+                    $current = $summary['last_stale_required_heartbeat_at'];
+                    if ($heartbeat !== null && ($current === null || $heartbeat->gt($current))) {
+                        $summary['last_stale_required_heartbeat_at'] = $heartbeat;
+                    }
+                }
+
+                continue;
+            }
+
+            if ($status === WorkerBuildIdRollout::DRAIN_INTENT_DRAINING) {
+                continue;
+            }
+
+            $summary['active_workers'][$this->fleetWorkerKey($worker->worker_id, 'registration', count($summary['active_workers']))] = [
+                'build_id' => $buildId,
+                'supports_required' => $supportsRequired,
+            ];
+        }
+
+        $summary['last_stale_required_heartbeat_at'] = $summary['last_stale_required_heartbeat_at']?->toJSON();
+
+        return $summary;
+    }
+
+    /**
+     * @return array<string, scalar|null>
+     */
+    private function blockageScope(WorkerDeployment $deployment): array
+    {
+        $scope = [
+            'namespace' => $deployment->namespace,
+            'task_queue' => $deployment->taskQueue,
+            'build_id' => $deployment->buildId,
+            'state' => $deployment->state->value,
+        ];
+
+        if ($deployment->requiredCompatibility !== null) {
+            $scope['required_compatibility'] = $deployment->requiredCompatibility;
+        }
+
+        return $scope;
+    }
+
+    private function fleetWorkerKey(mixed $workerId, string $source, int $offset): string
+    {
+        if (is_string($workerId) && trim($workerId) !== '') {
+            return trim($workerId);
+        }
+
+        return sprintf('%s:%d', $source, $offset);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function stringList(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $strings = [];
+
+        foreach ($value as $entry) {
+            if (! is_string($entry)) {
+                continue;
+            }
+
+            $entry = trim($entry);
+
+            if ($entry !== '') {
+                $strings[$entry] = true;
+            }
+        }
+
+        $strings = array_keys($strings);
+        sort($strings);
+
+        return $strings;
     }
 }

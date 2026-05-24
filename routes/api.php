@@ -227,6 +227,7 @@ Route::middleware([Authenticate::class])->group(function () {
     Route::prefix('task-queues')->middleware([$operator, $cpv, $httpControl, $ns])->group(function () {
         Route::get('/', [TaskQueueController::class, 'index']);
         Route::get('/{taskQueue}/build-ids', [TaskQueueController::class, 'buildIds']);
+        Route::post('/{taskQueue}/build-ids/promote', [TaskQueueController::class, 'promoteBuildId']);
         Route::post('/{taskQueue}/build-ids/drain', [TaskQueueController::class, 'drainBuildId']);
         Route::post('/{taskQueue}/build-ids/resume', [TaskQueueController::class, 'resumeBuildId']);
         // Operator-facing snapshot of priority + fairness dispatch state for

@@ -38,7 +38,7 @@ class WorkflowRunDiagnostics
     public function forRun(string $namespace, WorkflowRun $run, bool $includeLastEventPayload = false): array
     {
         $summary = $this->summary($run);
-        $taskRows = collect($this->pendingWorkflowTaskRows($run, $summary));
+        $taskRows = collect($this->pendingWorkflowTaskRows($namespace, $run, $summary));
         $pendingWorkflowTasks = $taskRows
             ->take(self::TASK_LIMIT)
             ->map(fn (array $task): array => $this->task($task))
@@ -85,7 +85,7 @@ class WorkflowRunDiagnostics
     /**
      * @return list<array<string, mixed>>
      */
-    private function pendingWorkflowTaskRows(WorkflowRun $run, ?WorkflowRunSummary $summary): array
+    private function pendingWorkflowTaskRows(string $namespace, WorkflowRun $run, ?WorkflowRunSummary $summary): array
     {
         $tasks = WorkflowTask::query()
             ->where('workflow_run_id', $run->id)
@@ -98,7 +98,7 @@ class WorkflowRunDiagnostics
             ->get();
 
         $rows = $tasks
-            ->map(fn (WorkflowTask $task): array => $this->workflowTaskRow($task, $run))
+            ->map(fn (WorkflowTask $task): array => $this->workflowTaskRow($namespace, $task, $run))
             ->values()
             ->all();
 
@@ -106,7 +106,7 @@ class WorkflowRunDiagnostics
             return $rows;
         }
 
-        $summaryRow = $this->summaryMissingWorkflowTaskRow($run, $summary, array_column($rows, 'id'));
+        $summaryRow = $this->summaryMissingWorkflowTaskRow($namespace, $run, $summary, array_column($rows, 'id'));
 
         if ($summaryRow !== null) {
             $rows[] = $summaryRow;
@@ -118,7 +118,7 @@ class WorkflowRunDiagnostics
     /**
      * @return array<string, mixed>
      */
-    private function workflowTaskRow(WorkflowTask $task, WorkflowRun $run): array
+    private function workflowTaskRow(string $namespace, WorkflowTask $task, WorkflowRun $run): array
     {
         $compatibility = TaskCompatibility::resolve($task, $run);
 
@@ -134,8 +134,18 @@ class WorkflowRunDiagnostics
             'compatibility' => $compatibility,
             'compatibility_supported' => WorkerCompatibility::supports($compatibility),
             'compatibility_reason' => WorkerCompatibility::mismatchReason($compatibility),
-            'compatibility_supported_in_fleet' => TaskCompatibility::supportedInFleet($task, $run),
-            'compatibility_fleet_reason' => TaskCompatibility::fleetMismatchReason($task, $run),
+            'compatibility_supported_in_fleet' => $this->compatibilitySupportedInNamespaceFleet(
+                $namespace,
+                $compatibility,
+                $task->connection ?? $run->connection,
+                $task->queue ?? $run->queue,
+            ),
+            'compatibility_fleet_reason' => $this->compatibilityNamespaceFleetReason(
+                $namespace,
+                $compatibility,
+                $task->connection ?? $run->connection,
+                $task->queue ?? $run->queue,
+            ),
             'dispatch_failed' => TaskRepairPolicy::dispatchFailed($task),
             'dispatch_overdue' => TaskRepairPolicy::dispatchOverdue($task),
             'claim_failed' => TaskRepairPolicy::claimFailed($task),
@@ -173,6 +183,7 @@ class WorkflowRunDiagnostics
      * @return array<string, mixed>|null
      */
     private function summaryMissingWorkflowTaskRow(
+        string $namespace,
         WorkflowRun $run,
         ?WorkflowRunSummary $summary,
         array $loadedTaskIds,
@@ -219,8 +230,8 @@ class WorkflowRunDiagnostics
             'compatibility' => $compatibility,
             'compatibility_supported' => WorkerCompatibility::supports($compatibility),
             'compatibility_reason' => WorkerCompatibility::mismatchReason($compatibility),
-            'compatibility_supported_in_fleet' => WorkerCompatibilityFleet::supports($compatibility, $connection, $queue),
-            'compatibility_fleet_reason' => WorkerCompatibilityFleet::mismatchReason($compatibility, $connection, $queue),
+            'compatibility_supported_in_fleet' => $this->compatibilitySupportedInNamespaceFleet($namespace, $compatibility, $connection, $queue),
+            'compatibility_fleet_reason' => $this->compatibilityNamespaceFleetReason($namespace, $compatibility, $connection, $queue),
             'dispatch_failed' => false,
             'dispatch_overdue' => false,
             'claim_failed' => false,
@@ -675,15 +686,82 @@ class WorkflowRunDiagnostics
         ?WorkflowRunSummary $summary,
         ?array $taskQueue,
     ): array {
+        $compatibility = $this->stringValue($summary?->compatibility) ?? $this->stringValue($run->compatibility);
+        $connection = $this->stringValue($summary?->connection) ?? $this->stringValue($run->connection);
+        $queue = $this->stringValue($summary?->queue) ?? $this->stringValue($run->queue);
+
         return $this->compact([
             'run' => [
                 'compatibility' => $run->compatibility,
                 'summary_compatibility' => $summary?->compatibility,
                 'task_queue' => $run->queue,
+                'compatibility_supported_in_fleet' => $this->compatibilitySupportedInNamespaceFleet(
+                    $namespace,
+                    $compatibility,
+                    $connection,
+                    $queue,
+                ),
+                'compatibility_fleet_reason' => $this->compatibilityNamespaceFleetReason(
+                    $namespace,
+                    $compatibility,
+                    $connection,
+                    $queue,
+                ),
             ],
             'task_queue_pollers' => is_array($taskQueue) ? ($taskQueue['pollers'] ?? []) : [],
             'namespace_worker_fleet' => StandaloneWorkerVisibility::fleetSummary($namespace),
         ]);
+    }
+
+    private function compatibilitySupportedInNamespaceFleet(
+        string $namespace,
+        ?string $compatibility,
+        ?string $connection,
+        ?string $queue,
+    ): bool {
+        if ($compatibility === null) {
+            return true;
+        }
+
+        foreach (WorkerCompatibilityFleet::detailsForNamespace($namespace, $compatibility, $connection, $queue) as $worker) {
+            if (($worker['supports_required'] ?? false) === true) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function compatibilityNamespaceFleetReason(
+        string $namespace,
+        ?string $compatibility,
+        ?string $connection,
+        ?string $queue,
+    ): ?string {
+        if ($compatibility === null || $this->compatibilitySupportedInNamespaceFleet($namespace, $compatibility, $connection, $queue)) {
+            return null;
+        }
+
+        $advertised = [];
+        foreach (WorkerCompatibilityFleet::detailsForNamespace($namespace, $compatibility, $connection, $queue) as $worker) {
+            foreach (($worker['supported'] ?? []) as $marker) {
+                if (is_string($marker) && trim($marker) !== '') {
+                    $advertised[trim($marker)] = true;
+                }
+            }
+        }
+        ksort($advertised);
+
+        $suffix = $advertised === []
+            ? ''
+            : ' Active workers there advertise ['.implode(', ', array_keys($advertised)).'].';
+
+        return sprintf(
+            'No active worker heartbeat for task queue [%s] advertises compatibility [%s].%s',
+            $queue ?? 'default',
+            $compatibility,
+            $suffix,
+        );
     }
 
     /**
@@ -790,6 +868,32 @@ class WorkflowRunDiagnostics
 
                 break;
             }
+        }
+
+        foreach ($pendingTasks as $task) {
+            $compatibility = $this->stringValue($task['compatibility'] ?? null);
+
+            if (
+                $compatibility === null
+                || ($task['compatibility_supported_in_fleet'] ?? true) === true
+            ) {
+                continue;
+            }
+
+            $findings[] = [
+                'severity' => 'error',
+                'code' => 'no_compatible_worker',
+                'message' => sprintf(
+                    'A workflow task requires compatibility [%s], but no active worker on its task queue advertises that marker.',
+                    $compatibility,
+                ),
+                'task_id' => $this->stringValue($task['task_id'] ?? null),
+                'task_queue' => $this->stringValue($task['queue'] ?? null),
+                'compatibility' => $compatibility,
+                'compatibility_fleet_reason' => $this->stringValue($task['compatibility_fleet_reason'] ?? null),
+            ];
+
+            break;
         }
 
         foreach ($this->pendingActivityQueueFindings($pendingActivities, $activityTaskQueues) as $finding) {

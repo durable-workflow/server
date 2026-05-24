@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Api;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneProtocol;
+use App\Support\ControlPlaneTimestamp;
+use App\Support\DeploymentLifecycleService;
 use App\Support\TaskQueueAdmission;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\TaskQueuePriorityFairnessSurface;
@@ -22,6 +24,7 @@ class TaskQueueController
         private readonly TaskQueueAdmission $admission,
         private readonly TaskQueueBuildIdRolloutSnapshot $buildIdRollouts,
         private readonly TaskQueuePriorityFairnessSurface $priorityFairness,
+        private readonly DeploymentLifecycleService $deployments,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -118,6 +121,55 @@ class TaskQueueController
     }
 
     /**
+     * Promote a build_id cohort so fresh workflow starts on this task
+     * queue pin to that build. Existing runs keep their stamped
+     * compatibility and continue to route only to compatible workers.
+     */
+    public function promoteBuildId(Request $request, string $taskQueue): JsonResponse
+    {
+        if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+            return $response;
+        }
+
+        $validated = $request->validate([
+            'build_id' => ['present', 'nullable', 'string', 'max:255'],
+        ]);
+
+        $namespace = (string) $request->attributes->get('namespace');
+        $publicBuildId = is_string($validated['build_id']) && trim($validated['build_id']) !== ''
+            ? trim($validated['build_id'])
+            : null;
+
+        $result = $this->deployments->promote($namespace, $taskQueue, $publicBuildId);
+
+        if ($result['blockages'] !== []) {
+            return ControlPlaneProtocol::json(
+                $this->buildIdLifecycleRejectionPayload(
+                    $namespace,
+                    $taskQueue,
+                    $publicBuildId,
+                    $result['deployment'] === null
+                        ? null
+                        : $this->deployments->deploymentPayload($result['deployment']),
+                    $result['blockages'],
+                ),
+                409,
+            );
+        }
+
+        return ControlPlaneProtocol::json(
+            $this->buildIdLifecyclePayload(
+                $namespace,
+                $taskQueue,
+                $publicBuildId,
+                $result['deployment'] === null
+                    ? []
+                    : $this->deployments->deploymentPayload($result['deployment']),
+            ),
+        );
+    }
+
+    /**
      * Revert an earlier drain so the build_id cohort can accept work again
      * (rollback path). Passing null for build_id resumes the unversioned
      * cohort. The call is idempotent.
@@ -200,8 +252,122 @@ class TaskQueueController
             'task_queue' => $taskQueue,
             'build_id' => $publicBuildId,
             'drain_intent' => $rollout->drain_intent,
-            'drained_at' => $rollout->drained_at?->toJSON(),
+            'drained_at' => ControlPlaneTimestamp::zuluSecond($rollout->drained_at),
+            'promoted_at' => ControlPlaneTimestamp::zuluSecond($rollout->promoted_at),
+            'rolled_back_at' => ControlPlaneTimestamp::zuluSecond($rollout->rolled_back_at),
+            'new_start_selected' => $this->buildIdRollouts->isNewStartSelected($rollout),
         ]);
+    }
+
+    /**
+     * @param array<string, mixed> $deployment
+     * @return array<string, mixed>
+     */
+    private function buildIdLifecyclePayload(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        array $deployment,
+    ): array {
+        $deployment = $this->normalizeDeploymentLifecycleTimestamps($deployment);
+
+        return [
+            'namespace' => $namespace,
+            'task_queue' => $taskQueue,
+            'build_id' => $buildId,
+            'drain_intent' => ($deployment['state'] ?? null) === 'draining'
+                ? WorkerBuildIdRollout::DRAIN_INTENT_DRAINING
+                : WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE,
+            'drained_at' => ControlPlaneTimestamp::zuluSecond($deployment['drained_at'] ?? null),
+            'promoted_at' => ControlPlaneTimestamp::zuluSecond($deployment['promoted_at'] ?? null),
+            'rolled_back_at' => ControlPlaneTimestamp::zuluSecond($deployment['rolled_back_at'] ?? null),
+            'new_start_selected' => $this->buildIdRollouts->isBuildIdSelectedForNewStarts(
+                $namespace,
+                $taskQueue,
+                $buildId,
+            ),
+            'deployment' => $deployment,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $deployment
+     * @param  list<array<string, mixed>>  $blockages
+     * @return array<string, mixed>
+     */
+    private function buildIdLifecycleRejectionPayload(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        ?array $deployment,
+        array $blockages,
+    ): array {
+        $this->orderBlockages($blockages);
+        $deployment = $deployment === null ? null : $this->normalizeDeploymentLifecycleTimestamps($deployment);
+
+        $primary = $blockages[0] ?? [];
+        $reason = is_string($primary['reason'] ?? null) && $primary['reason'] !== ''
+            ? $primary['reason']
+            : 'deployment_lifecycle_blocked';
+        $message = is_string($primary['message'] ?? null) && $primary['message'] !== ''
+            ? $primary['message']
+            : 'Deployment lifecycle action was rejected.';
+        $expectedResolution = is_string($primary['expected_resolution'] ?? null) && $primary['expected_resolution'] !== ''
+            ? $primary['expected_resolution']
+            : null;
+        $outcome = 'rejected_'.$reason;
+
+        return [
+            'message' => $message,
+            'reason' => $reason,
+            'rejection_reason' => $reason,
+            'expected_resolution' => $expectedResolution,
+            'outcome' => $outcome,
+            'control_plane_outcome' => $outcome,
+            'command_status' => 'rejected',
+            'command_source' => 'control_plane',
+            'namespace' => $namespace,
+            'task_queue' => $taskQueue,
+            'build_id' => $buildId,
+            'deployment' => $deployment,
+            'blockages' => $blockages,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $deployment
+     * @return array<string, mixed>
+     */
+    private function normalizeDeploymentLifecycleTimestamps(array $deployment): array
+    {
+        foreach (['drained_at', 'promoted_at', 'rolled_back_at'] as $field) {
+            $deployment[$field] = ControlPlaneTimestamp::zuluSecond($deployment[$field] ?? null);
+        }
+
+        return $deployment;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $blockages
+     */
+    private function orderBlockages(array &$blockages): void
+    {
+        $rank = static function (string $reason): int {
+            return match ($reason) {
+                'unknown_deployment',
+                'incompatible_policy',
+                'fleet_is_draining' => 0,
+                'no_compatible_workers',
+                'missing_worker_heartbeat',
+                'fingerprint_mismatch' => 1,
+                'replay_safety_failed' => 2,
+                default => 3,
+            };
+        };
+
+        usort($blockages, static function (array $a, array $b) use ($rank): int {
+            return $rank((string) ($a['reason'] ?? '')) <=> $rank((string) ($b['reason'] ?? ''));
+        });
     }
 
     private function stampWorkerDrainStatus(

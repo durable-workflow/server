@@ -35,43 +35,33 @@ use Workflow\V2\Support\StandaloneWorkerVisibility;
  */
 final class WorkflowStartVersionPin
 {
+    public function __construct(
+        private readonly WorkerBuildIdNewStartSelector $newStartSelector,
+    ) {}
+
     public function resolve(string $namespace, string $taskQueue): ?string
     {
         $promoted = $this->promotedBuildId($namespace, $taskQueue);
 
-        if ($promoted !== null) {
-            return $promoted;
+        if ($promoted['found']) {
+            return $promoted['build_id'];
         }
 
         return $this->singleActiveBuildId($namespace, $taskQueue);
     }
 
-    private function promotedBuildId(string $namespace, string $taskQueue): ?string
+    /**
+     * @return array{found: bool, build_id: string|null}
+     */
+    private function promotedBuildId(string $namespace, string $taskQueue): array
     {
-        if (! Schema::hasTable('workflow_worker_build_id_rollouts')) {
-            return null;
+        $rollout = $this->newStartSelector->selectedRolloutForTaskQueue($namespace, $taskQueue);
+
+        if (! $rollout instanceof WorkerBuildIdRollout) {
+            return ['found' => false, 'build_id' => null];
         }
 
-        $hasPromotedAt = Schema::hasColumn('workflow_worker_build_id_rollouts', 'promoted_at');
-        $hasRolledBackAt = Schema::hasColumn('workflow_worker_build_id_rollouts', 'rolled_back_at');
-
-        $query = WorkerBuildIdRollout::query()
-            ->where('namespace', $namespace)
-            ->where('task_queue', $taskQueue)
-            ->where('drain_intent', WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE)
-            ->where('build_id', '!=', WorkerBuildIdRollout::UNVERSIONED_KEY);
-
-        if ($hasRolledBackAt) {
-            $query->whereNull('rolled_back_at');
-        }
-
-        if ($hasPromotedAt) {
-            $query->whereNotNull('promoted_at')->orderByDesc('promoted_at');
-        }
-
-        $rollout = $query->orderByDesc('id')->first();
-
-        return $rollout?->publicBuildId();
+        return ['found' => true, 'build_id' => $rollout->publicBuildId()];
     }
 
     private function singleActiveBuildId(string $namespace, string $taskQueue): ?string

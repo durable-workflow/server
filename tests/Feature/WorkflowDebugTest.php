@@ -20,6 +20,7 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class WorkflowDebugTest extends TestCase
 {
@@ -145,6 +146,49 @@ class WorkflowDebugTest extends TestCase
             ->assertJsonPath('run_id', $runId)
             ->assertJsonPath('control_plane.operation', 'debug_workflow')
             ->assertJsonPath('control_plane.run_id', $runId);
+    }
+
+    public function test_debug_diagnostics_identify_no_compatible_worker_for_pinned_workflow_task(): void
+    {
+        $this->postJson('/api/worker/register', [
+            'worker_id' => 'debug-worker-v1',
+            'task_queue' => 'debug-queue',
+            'runtime' => 'php',
+            'sdk_version' => '1.0.0',
+            'build_id' => 'build-v1',
+            'supported_workflow_types' => ['tests.await-approval-workflow'],
+        ], $this->workerHeaders())->assertCreated();
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-debug-no-compatible-worker',
+            'workflow_type' => 'tests.await-approval-workflow',
+            'task_queue' => 'debug-queue',
+        ], $this->controlPlaneHeadersWithWorkerProtocol());
+
+        $start->assertCreated();
+
+        WorkerCompatibilityFleet::clear();
+
+        $this->postJson('/api/worker/register', [
+            'worker_id' => 'debug-worker-v2',
+            'task_queue' => 'debug-queue',
+            'runtime' => 'php',
+            'sdk_version' => '1.0.0',
+            'build_id' => 'build-v2',
+            'supported_workflow_types' => ['tests.await-approval-workflow'],
+        ], $this->workerHeaders())->assertCreated();
+
+        $debug = $this->getJson(
+            '/api/workflows/wf-debug-no-compatible-worker/debug',
+            $this->controlPlaneHeadersWithWorkerProtocol(),
+        );
+
+        $debug->assertOk()
+            ->assertJsonPath('execution.compatibility', 'build-v1')
+            ->assertJsonPath('pending_workflow_tasks.0.compatibility', 'build-v1')
+            ->assertJsonPath('pending_workflow_tasks.0.compatibility_supported_in_fleet', false)
+            ->assertJsonPath('findings.0.code', 'no_compatible_worker')
+            ->assertJsonPath('findings.0.compatibility', 'build-v1');
     }
 
     public function test_debug_diagnostics_identify_pending_activity_queues_without_active_pollers(): void

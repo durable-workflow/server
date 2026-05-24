@@ -9,6 +9,10 @@ use Workflow\V2\Support\StandaloneWorkerVisibility;
 
 final class TaskQueueBuildIdRolloutSnapshot
 {
+    public function __construct(
+        private readonly WorkerBuildIdNewStartSelector $newStartSelector,
+    ) {}
+
     /**
      * @return array{
      *     namespace: string,
@@ -27,6 +31,19 @@ final class TaskQueueBuildIdRolloutSnapshot
             'stale_after_seconds' => $staleAfter,
             'build_ids' => $this->buildIdEntriesForTaskQueue($namespace, $taskQueue, $staleAfter),
         ];
+    }
+
+    public function isNewStartSelected(WorkerBuildIdRollout $rollout): bool
+    {
+        return $this->newStartSelector->isSelected($rollout);
+    }
+
+    public function isBuildIdSelectedForNewStarts(string $namespace, string $taskQueue, ?string $buildId): bool
+    {
+        $selectedKey = $this->newStartSelector->selectedKeyForTaskQueue($namespace, $taskQueue);
+
+        return $selectedKey !== null
+            && $selectedKey === WorkerBuildIdRollout::buildIdKey($buildId);
     }
 
     /**
@@ -245,6 +262,7 @@ final class TaskQueueBuildIdRolloutSnapshot
                     'total_worker_count' => 0,
                     'runtimes' => [],
                     'sdk_versions' => [],
+                    'workflow_definition_fingerprints' => [],
                     'last_heartbeat_at' => null,
                     'first_seen_at' => null,
                 ];
@@ -265,6 +283,11 @@ final class TaskQueueBuildIdRolloutSnapshot
                     $groups[$key]['sdk_versions'][trim($worker->sdk_version)] = true;
                 }
 
+                foreach ($this->workflowDefinitionFingerprints($worker->workflow_definition_fingerprints ?? []) as $workflowType => $fingerprint) {
+                    $groups[$key]['workflow_definition_fingerprints'][$workflowType] ??= [];
+                    $groups[$key]['workflow_definition_fingerprints'][$workflowType][$fingerprint] = true;
+                }
+
                 if ($heartbeat !== null) {
                     $existing = $groups[$key]['last_heartbeat_at'];
                     if ($existing === null || $heartbeat->gt($existing)) {
@@ -283,6 +306,7 @@ final class TaskQueueBuildIdRolloutSnapshot
         }
 
         $rolloutMap = $this->rolloutsForTaskQueue($namespace, $taskQueue);
+        $selectedNewStartKey = $this->newStartSelector->selectedKeyFromRollouts($rolloutMap);
         $buildIds = [];
 
         foreach ($groups as $group) {
@@ -294,6 +318,7 @@ final class TaskQueueBuildIdRolloutSnapshot
             $rolloutKey = WorkerBuildIdRollout::buildIdKey($group['build_id']);
             $rollout = $rolloutMap[$rolloutKey] ?? null;
             $drainIntent = $rollout?->drain_intent ?? WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE;
+            $fingerprints = $this->fingerprintSummary($group['workflow_definition_fingerprints'] ?? []);
 
             $buildIds[] = [
                 'build_id' => $group['build_id'],
@@ -304,13 +329,18 @@ final class TaskQueueBuildIdRolloutSnapshot
                     $drainIntent,
                 ),
                 'drain_intent' => $drainIntent,
-                'drained_at' => $rollout?->drained_at?->toJSON(),
+                'drained_at' => ControlPlaneTimestamp::zuluSecond($rollout?->drained_at),
+                'promoted_at' => ControlPlaneTimestamp::zuluSecond($rollout?->promoted_at),
+                'rolled_back_at' => ControlPlaneTimestamp::zuluSecond($rollout?->rolled_back_at),
+                'new_start_selected' => $rolloutKey === $selectedNewStartKey,
                 'active_worker_count' => $group['active_worker_count'],
                 'draining_worker_count' => $group['draining_worker_count'],
                 'stale_worker_count' => $group['stale_worker_count'],
                 'total_worker_count' => $group['total_worker_count'],
                 'runtimes' => $runtimes,
                 'sdk_versions' => $sdkVersions,
+                'workflow_definition_fingerprint_count' => $fingerprints['count'],
+                'workflow_definition_fingerprint_conflicts' => $fingerprints['conflicts'],
                 'last_heartbeat_at' => $group['last_heartbeat_at']?->toJSON(),
                 'first_seen_at' => $group['first_seen_at']?->toJSON(),
             ];
@@ -330,13 +360,18 @@ final class TaskQueueBuildIdRolloutSnapshot
                     $rollout->drain_intent,
                 ),
                 'drain_intent' => $rollout->drain_intent,
-                'drained_at' => $rollout->drained_at?->toJSON(),
+                'drained_at' => ControlPlaneTimestamp::zuluSecond($rollout->drained_at),
+                'promoted_at' => ControlPlaneTimestamp::zuluSecond($rollout->promoted_at),
+                'rolled_back_at' => ControlPlaneTimestamp::zuluSecond($rollout->rolled_back_at),
+                'new_start_selected' => $key === $selectedNewStartKey,
                 'active_worker_count' => 0,
                 'draining_worker_count' => 0,
                 'stale_worker_count' => 0,
                 'total_worker_count' => 0,
                 'runtimes' => [],
                 'sdk_versions' => [],
+                'workflow_definition_fingerprint_count' => 0,
+                'workflow_definition_fingerprint_conflicts' => [],
                 'last_heartbeat_at' => null,
                 'first_seen_at' => null,
             ];
@@ -377,6 +412,73 @@ final class TaskQueueBuildIdRolloutSnapshot
         }
 
         return $map;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function workflowDefinitionFingerprints(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $fingerprints = [];
+
+        foreach ($value as $workflowType => $fingerprint) {
+            if (! is_string($workflowType) || ! is_string($fingerprint)) {
+                continue;
+            }
+
+            $workflowType = trim($workflowType);
+            $fingerprint = trim($fingerprint);
+
+            if ($workflowType === '' || $fingerprint === '') {
+                continue;
+            }
+
+            $fingerprints[$workflowType] = $fingerprint;
+        }
+
+        ksort($fingerprints);
+
+        return $fingerprints;
+    }
+
+    /**
+     * @param array<string, array<string, true>> $fingerprintsByWorkflowType
+     * @return array{count: int, conflicts: list<array{workflow_type: string, fingerprint_count: int}>}
+     */
+    private function fingerprintSummary(array $fingerprintsByWorkflowType): array
+    {
+        $count = 0;
+        $conflicts = [];
+
+        foreach ($fingerprintsByWorkflowType as $workflowType => $fingerprints) {
+            if (! is_array($fingerprints)) {
+                continue;
+            }
+
+            $fingerprintCount = count($fingerprints);
+            $count += $fingerprintCount;
+
+            if ($fingerprintCount > 1) {
+                $conflicts[] = [
+                    'workflow_type' => (string) $workflowType,
+                    'fingerprint_count' => $fingerprintCount,
+                ];
+            }
+        }
+
+        usort(
+            $conflicts,
+            static fn (array $a, array $b): int => strcmp($a['workflow_type'], $b['workflow_type']),
+        );
+
+        return [
+            'count' => $count,
+            'conflicts' => $conflicts,
+        ];
     }
 
     /**

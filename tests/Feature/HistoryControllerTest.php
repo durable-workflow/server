@@ -70,6 +70,51 @@ class HistoryControllerTest extends TestCase
         );
     }
 
+    public function test_it_surfaces_run_compatibility_on_history_response_and_start_event(): void
+    {
+        Queue::fake();
+
+        $this->createNamespace('default');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'history-worker-v1',
+                'task_queue' => 'ingest',
+                'runtime' => 'php',
+                'sdk_version' => '1.0.0',
+                'build_id' => 'build-v1',
+                'supported_workflow_types' => ['tests.external-greeting-workflow'],
+            ])
+            ->assertCreated();
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-history-compatibility',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'ingest',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/wf-history-compatibility/runs/{$runId}/history");
+
+        $response->assertOk()
+            ->assertJsonPath('compatibility', 'build-v1')
+            ->assertJsonPath('compatibility_status', 'compatible')
+            ->assertJsonPath('compatibility_supported_in_fleet', true)
+            ->assertJsonPath('compatibility_fleet_reason', null);
+
+        $started = collect($response->json('events'))
+            ->first(static fn (array $event): bool => ($event['event_type'] ?? null) === 'WorkflowStarted');
+
+        $this->assertIsArray($started);
+        $this->assertSame('build-v1', $started['payload']['compatibility'] ?? null);
+    }
+
     public function test_it_paginates_history_with_page_size(): void
     {
         Queue::fake();

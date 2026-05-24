@@ -106,6 +106,11 @@ class DeploymentLifecycleTest extends TestCase
         );
 
         $response->assertStatus(409);
+        $response->assertJsonPath('reason', 'no_compatible_workers');
+        $response->assertJsonPath('rejection_reason', 'no_compatible_workers');
+        $response->assertJsonPath('outcome', 'rejected_no_compatible_workers');
+        $response->assertJsonPath('command_status', 'rejected');
+        $response->assertJsonPath('command_source', 'control_plane');
         $blockages = $response->json('blockages');
         $this->assertIsArray($blockages);
         $this->assertNotEmpty($blockages);
@@ -121,6 +126,43 @@ class DeploymentLifecycleTest extends TestCase
         $this->assertSame('ingest', $first['scope']['task_queue']);
         $this->assertSame('v3', $first['scope']['build_id']);
         $this->assertNotNull($first['expected_resolution']);
+    }
+
+    public function test_promote_responses_identify_effective_new_start_selection_for_competing_promotions(): void
+    {
+        $this->createWorker('w-v1', 'ingest', 'v1');
+        $this->createWorker('w-v2', 'ingest', 'v2');
+
+        $this->travelTo(now()->startOfSecond());
+
+        $this->postJson(
+            '/api/deployments/'.rawurlencode('default/ingest@v1').'/promote',
+            [],
+            $this->apiHeaders(),
+        )->assertOk()
+            ->assertJsonPath('new_start_selected', true);
+
+        $this->postJson(
+            '/api/deployments/'.rawurlencode('default/ingest@v2').'/promote',
+            [],
+            $this->apiHeaders(),
+        )->assertOk()
+            ->assertJsonPath('new_start_selected', true);
+
+        $this->postJson(
+            '/api/deployments/'.rawurlencode('default/ingest@v1').'/promote',
+            [],
+            $this->apiHeaders(),
+        )->assertOk()
+            ->assertJsonPath('new_start_selected', false);
+
+        $deployments = $this->getJson('/api/deployments', $this->apiHeaders())
+            ->assertOk()
+            ->json('deployments');
+        $byName = collect($deployments)->keyBy('name');
+
+        $this->assertFalse($byName['default/ingest@v1']['new_start_selected']);
+        $this->assertTrue($byName['default/ingest@v2']['new_start_selected']);
     }
 
     public function test_drain_moves_the_deployment_to_draining_state(): void

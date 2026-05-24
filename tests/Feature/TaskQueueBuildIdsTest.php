@@ -163,6 +163,29 @@ class TaskQueueBuildIdsTest extends TestCase
         self::assertSame(['sdk-1.0', 'sdk-1.1'], $entry['sdk_versions']);
     }
 
+    public function test_surfaces_workflow_definition_fingerprint_conflicts_per_build_id(): void
+    {
+        WorkerRegistration::query()->create(array_merge(
+            $this->workerAttributes('w-v1-a', 'ingest', 'v1'),
+            ['workflow_definition_fingerprints' => ['Sequence' => 'fingerprint-a']],
+        ));
+        WorkerRegistration::query()->create(array_merge(
+            $this->workerAttributes('w-v1-b', 'ingest', 'v1'),
+            ['workflow_definition_fingerprints' => ['Sequence' => 'fingerprint-b']],
+        ));
+
+        $response = $this->getJson('/api/task-queues/ingest/build-ids', $this->apiHeaders());
+        $entry = collect($response->json('build_ids'))->firstWhere('build_id', 'v1');
+
+        self::assertSame(2, $entry['workflow_definition_fingerprint_count']);
+        self::assertSame([
+            [
+                'workflow_type' => 'Sequence',
+                'fingerprint_count' => 2,
+            ],
+        ], $entry['workflow_definition_fingerprint_conflicts']);
+    }
+
     public function test_orders_build_ids_active_first_then_draining_then_stale_with_unversioned_last(): void
     {
         $this->createWorkerWithHeartbeat('w-stale', 'ingest', build: 'v-stale', heartbeatAgo: 600);
@@ -306,6 +329,27 @@ class TaskQueueBuildIdsTest extends TestCase
             'last_heartbeat_at' => now(),
             'status' => 'active',
         ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function workerAttributes(string $workerId, string $taskQueue, ?string $build = null): array
+    {
+        return [
+            'worker_id' => $workerId,
+            'namespace' => 'default',
+            'task_queue' => $taskQueue,
+            'runtime' => 'php',
+            'sdk_version' => '1.0.0',
+            'build_id' => $build,
+            'supported_workflow_types' => [],
+            'supported_activity_types' => [],
+            'max_concurrent_workflow_tasks' => 100,
+            'max_concurrent_activity_tasks' => 100,
+            'last_heartbeat_at' => now(),
+            'status' => 'active',
+        ];
     }
 
     private function createWorkerWithHeartbeat(

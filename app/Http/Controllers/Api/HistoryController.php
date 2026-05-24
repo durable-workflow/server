@@ -10,8 +10,11 @@ use App\Support\NamespaceWorkflowScope;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class HistoryController
 {
@@ -30,7 +33,7 @@ class HistoryController
             return $response;
         }
 
-        $namespace = $request->attributes->get('namespace');
+        $namespace = (string) $request->attributes->get('namespace');
 
         $validated = $request->validate([
             'wait_new_event' => ['nullable', 'boolean'],
@@ -64,19 +67,16 @@ class HistoryController
         return ControlPlaneProtocol::jsonForRequest($request, [
             'workflow_id' => $workflowId,
             'run_id' => $runId,
+            'compatibility' => $run->compatibility,
+            'compatibility_status' => $this->compatibilityStatus($namespace, $run),
+            'compatibility_supported_in_fleet' => $this->compatibilitySupportedInFleet($namespace, $run),
+            'compatibility_fleet_reason' => $this->compatibilityFleetReason($namespace, $run),
             'events' => $page->map(fn (WorkflowHistoryEvent $event) => [
                 'sequence' => $event->sequence,
                 'event_type' => $event->event_type?->value ?? $event->event_type,
                 'timestamp' => $event->recorded_at?->toJSON(),
                 'principal' => self::eventPrincipal($event),
-                'payload' => is_array($event->payload)
-                    ? $this->payloadEnvelopes->historyPayload(
-                        $namespace,
-                        $event->payload,
-                        $run->payload_codec,
-                        $event->event_type?->value ?? $event->event_type,
-                    )
-                    : [],
+                'payload' => $this->eventPayload($namespace, $run, $event),
             ])->all(),
             'next_page_token' => $hasMore && $lastSequence !== null
                 ? self::encodePageToken((int) $lastSequence)
@@ -96,7 +96,7 @@ class HistoryController
             return $response;
         }
 
-        $namespace = $request->attributes->get('namespace');
+        $namespace = (string) $request->attributes->get('namespace');
 
         $run = NamespaceWorkflowScope::run($namespace, $workflowId, $runId);
 
@@ -121,6 +121,81 @@ class HistoryController
             ->orderBy('sequence')
             ->limit($pageSize + 1)
             ->get();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function eventPayload(string $namespace, WorkflowRun $run, WorkflowHistoryEvent $event): array
+    {
+        $payload = is_array($event->payload)
+            ? $this->payloadEnvelopes->historyPayload(
+                $namespace,
+                $event->payload,
+                $run->payload_codec,
+                $event->event_type?->value ?? $event->event_type,
+            )
+            : [];
+
+        $eventType = $event->event_type?->value ?? $event->event_type;
+
+        if ($eventType === HistoryEventType::WorkflowStarted->value && $run->compatibility !== null) {
+            $payload['compatibility'] ??= $run->compatibility;
+        }
+
+        return $payload;
+    }
+
+    private function compatibilityStatus(string $namespace, WorkflowRun $run): string
+    {
+        if ($run->compatibility === null || $this->compatibilitySupportedInFleet($namespace, $run)) {
+            return 'compatible';
+        }
+
+        return 'no_compatible_worker';
+    }
+
+    private function compatibilitySupportedInFleet(string $namespace, WorkflowRun $run): bool
+    {
+        if ($run->compatibility === null) {
+            return true;
+        }
+
+        foreach (WorkerCompatibilityFleet::detailsForNamespace($namespace, $run->compatibility, $run->connection, $run->queue) as $worker) {
+            if (($worker['supports_required'] ?? false) === true) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function compatibilityFleetReason(string $namespace, WorkflowRun $run): ?string
+    {
+        if ($run->compatibility === null || $this->compatibilitySupportedInFleet($namespace, $run)) {
+            return null;
+        }
+
+        $advertised = [];
+        foreach (WorkerCompatibilityFleet::detailsForNamespace($namespace, $run->compatibility, $run->connection, $run->queue) as $worker) {
+            foreach (($worker['supported'] ?? []) as $marker) {
+                if (is_string($marker) && trim($marker) !== '') {
+                    $advertised[trim($marker)] = true;
+                }
+            }
+        }
+        ksort($advertised);
+
+        $suffix = $advertised === []
+            ? ''
+            : ' Active workers there advertise ['.implode(', ', array_keys($advertised)).'].';
+
+        return sprintf(
+            'No active worker heartbeat for task queue [%s] advertises compatibility [%s].%s',
+            $run->queue ?? 'default',
+            $run->compatibility,
+            $suffix,
+        );
     }
 
     private function decodePageToken(?string $token): ?int

@@ -91,6 +91,32 @@ class WorkflowStartVersionPinningTest extends TestCase
         self::assertSame('v1.0.0', $run->compatibility);
     }
 
+    public function test_promoted_unversioned_cohort_overrides_single_build_fallback(): void
+    {
+        $this->seedWorker('w-v1-only', taskQueue: 'unversioned-first', buildId: 'v1.0.0');
+
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'unversioned-first',
+            'build_id' => WorkerBuildIdRollout::UNVERSIONED_KEY,
+            'drain_intent' => WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE,
+            'promoted_at' => now()->subMinute(),
+        ]);
+
+        $resolver = $this->app->make(WorkflowStartVersionPin::class);
+        self::assertNull($resolver->resolve('default', 'unversioned-first'));
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'unversioned-first',
+            ]);
+
+        $response->assertCreated();
+        $run = WorkflowRun::query()->findOrFail((string) $response->json('run_id'));
+        self::assertNull($run->compatibility);
+    }
+
     public function test_leaves_run_unpinned_when_multiple_active_builds_and_no_promotion(): void
     {
         $this->seedWorker('w-v1', taskQueue: 'mixed', buildId: 'v1.0.0');
@@ -127,6 +153,32 @@ class WorkflowStartVersionPinningTest extends TestCase
             'build_id' => 'v2.0.0',
             'drain_intent' => WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE,
             'promoted_at' => now()->subMinute(),
+        ]);
+
+        $resolver = $this->app->make(WorkflowStartVersionPin::class);
+        self::assertSame('v2.0.0', $resolver->resolve('default', 'shared'));
+    }
+
+    public function test_resolver_breaks_promotion_ties_by_latest_rollout_row(): void
+    {
+        $this->seedWorker('w-v1', taskQueue: 'shared', buildId: 'v1.0.0');
+        $this->seedWorker('w-v2', taskQueue: 'shared', buildId: 'v2.0.0');
+
+        $promotedAt = now()->subMinute();
+
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'shared',
+            'build_id' => 'v1.0.0',
+            'drain_intent' => WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE,
+            'promoted_at' => $promotedAt,
+        ]);
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'shared',
+            'build_id' => 'v2.0.0',
+            'drain_intent' => WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE,
+            'promoted_at' => $promotedAt,
         ]);
 
         $resolver = $this->app->make(WorkflowStartVersionPin::class);

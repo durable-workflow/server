@@ -25,6 +25,7 @@ use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Workflow;
 
@@ -98,7 +99,7 @@ class WorkflowController
         $page = $hasMore ? $workflows->slice(0, $pageSize)->values() : $workflows->values();
 
         return ControlPlaneProtocol::jsonForRequest($request, [
-            'workflows' => $page->map(static fn ($summary) => [
+            'workflows' => $page->map(fn ($summary) => [
                 'workflow_id' => $summary->workflow_instance_id,
                 'run_id' => $summary->id,
                 'workflow_type' => $summary->workflow_type,
@@ -112,6 +113,9 @@ class WorkflowController
                 // mixed worker-version pool without drilling into the
                 // run detail.
                 'compatibility' => $summary->compatibility,
+                'compatibility_status' => $this->summaryCompatibilityStatus((string) $namespace, $summary),
+                'compatibility_supported_in_fleet' => $this->summaryCompatibilitySupportedInFleet((string) $namespace, $summary),
+                'compatibility_fleet_reason' => $this->summaryCompatibilityFleetReason((string) $namespace, $summary),
                 'started_at' => $summary->started_at?->toJSON(),
                 'closed_at' => $summary->closed_at?->toJSON(),
                 'search_attributes' => $summary->getTypedSearchAttributes(),
@@ -374,6 +378,9 @@ class WorkflowController
                 'status' => $run->status->value,
                 'task_queue' => $run->queue,
                 'compatibility' => $run->compatibility,
+                'compatibility_status' => $this->compatibilityStatus((string) $namespace, $run),
+                'compatibility_supported_in_fleet' => $this->compatibilitySupportedInFleet((string) $namespace, $run),
+                'compatibility_fleet_reason' => $this->compatibilityFleetReason((string) $namespace, $run),
                 'started_at' => $run->started_at?->toJSON(),
                 'closed_at' => $run->closed_at?->toJSON(),
             ])->all(),
@@ -1027,6 +1034,9 @@ class WorkflowController
             'run_count' => $description['run_count'] ?? null,
             'is_current_run' => $runDescription['is_current_run'] ?? null,
             'compatibility' => $runDescription['compatibility'] ?? $run->compatibility,
+            'compatibility_status' => $this->compatibilityStatus($namespace, $run),
+            'compatibility_supported_in_fleet' => $this->compatibilitySupportedInFleet($namespace, $run),
+            'compatibility_fleet_reason' => $this->compatibilityFleetReason($namespace, $run),
             'payload_codec' => $run->payload_codec,
             'execution_timeout_seconds' => $description['execution_timeout_seconds'] ?? null,
             'run_timeout_seconds' => $runDescription['run_timeout_seconds'] ?? null,
@@ -1053,6 +1063,117 @@ class WorkflowController
             'search_attributes' => $run->typedSearchAttributes(),
             'actions' => $actions,
         ];
+    }
+
+    private function compatibilityStatus(string $namespace, WorkflowRun $run): string
+    {
+        if ($run->compatibility === null || $this->compatibilitySupportedInFleet($namespace, $run)) {
+            return 'compatible';
+        }
+
+        return 'no_compatible_worker';
+    }
+
+    private function compatibilitySupportedInFleet(string $namespace, WorkflowRun $run): bool
+    {
+        if ($run->compatibility === null) {
+            return true;
+        }
+
+        foreach (WorkerCompatibilityFleet::detailsForNamespace($namespace, $run->compatibility, $run->connection, $run->queue) as $worker) {
+            if (($worker['supports_required'] ?? false) === true) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function compatibilityFleetReason(string $namespace, WorkflowRun $run): ?string
+    {
+        if ($run->compatibility === null || $this->compatibilitySupportedInFleet($namespace, $run)) {
+            return null;
+        }
+
+        $advertised = [];
+        foreach (WorkerCompatibilityFleet::detailsForNamespace($namespace, $run->compatibility, $run->connection, $run->queue) as $worker) {
+            foreach (($worker['supported'] ?? []) as $marker) {
+                if (is_string($marker) && trim($marker) !== '') {
+                    $advertised[trim($marker)] = true;
+                }
+            }
+        }
+        ksort($advertised);
+
+        $suffix = $advertised === []
+            ? ''
+            : ' Active workers there advertise ['.implode(', ', array_keys($advertised)).'].';
+
+        return sprintf(
+            'No active worker heartbeat for task queue [%s] advertises compatibility [%s].%s',
+            $run->queue ?? 'default',
+            $run->compatibility,
+            $suffix,
+        );
+    }
+
+    private function summaryCompatibilityStatus(string $namespace, mixed $summary): string
+    {
+        $compatibility = $this->nonEmptyString($summary->compatibility ?? null);
+
+        if ($compatibility === null || $this->summaryCompatibilitySupportedInFleet($namespace, $summary)) {
+            return 'compatible';
+        }
+
+        return 'no_compatible_worker';
+    }
+
+    private function summaryCompatibilitySupportedInFleet(string $namespace, mixed $summary): bool
+    {
+        $compatibility = $this->nonEmptyString($summary->compatibility ?? null);
+
+        if ($compatibility === null) {
+            return true;
+        }
+
+        $connection = $this->nonEmptyString($summary->connection ?? null);
+        $queue = $this->nonEmptyString($summary->queue ?? null);
+
+        foreach (WorkerCompatibilityFleet::detailsForNamespace($namespace, $compatibility, $connection, $queue) as $worker) {
+            if (($worker['supports_required'] ?? false) === true) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function summaryCompatibilityFleetReason(string $namespace, mixed $summary): ?string
+    {
+        $compatibility = $this->nonEmptyString($summary->compatibility ?? null);
+
+        if ($compatibility === null || $this->summaryCompatibilitySupportedInFleet($namespace, $summary)) {
+            return null;
+        }
+
+        $queue = $this->nonEmptyString($summary->queue ?? null);
+
+        return sprintf(
+            'No active worker heartbeat for task queue [%s] advertises compatibility [%s].',
+            $queue ?? 'default',
+            $compatibility,
+        );
+    }
+
+    private function nonEmptyString(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value === '' ? null : $value;
     }
 
     private function decodePageToken(?string $token): ?int

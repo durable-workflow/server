@@ -40,7 +40,7 @@ class DeploymentController
 
         return ControlPlaneProtocol::json([
             'namespace' => $namespace,
-            'deployments' => array_map(static fn ($d) => $d->toArray(), $deployments),
+            'deployments' => array_map(fn ($d) => $this->lifecycle->deploymentPayload($d), $deployments),
         ]);
     }
 
@@ -76,7 +76,7 @@ class DeploymentController
             return ControlPlaneProtocol::json(['error' => 'deployment_not_found'], 404);
         }
 
-        return ControlPlaneProtocol::json($deployment->toArray());
+        return ControlPlaneProtocol::json($this->lifecycle->deploymentPayload($deployment));
     }
 
     public function promote(Request $request, string $name): JsonResponse
@@ -149,13 +149,20 @@ class DeploymentController
         if ($result['blockages'] !== []) {
             $this->orderBlockages($result['blockages']);
 
-            return ControlPlaneProtocol::json([
-                'deployment' => $result['deployment']?->toArray(),
-                'blockages' => $result['blockages'],
-            ], 409);
+            return ControlPlaneProtocol::json(
+                $this->lifecycleRejectionPayload(
+                    $result['deployment'] === null
+                        ? null
+                        : $this->lifecycle->deploymentPayload($result['deployment']),
+                    $result['blockages'],
+                ),
+                409,
+            );
         }
 
-        return ControlPlaneProtocol::json($result['deployment']?->toArray() ?? []);
+        return ControlPlaneProtocol::json($result['deployment'] === null
+            ? []
+            : $this->lifecycle->deploymentPayload($result['deployment']));
     }
 
     private function decodeName(string $name): string
@@ -189,5 +196,38 @@ class DeploymentController
         usort($blockages, static function (array $a, array $b) use ($rank): int {
             return $rank((string) ($a['reason'] ?? '')) <=> $rank((string) ($b['reason'] ?? ''));
         });
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $deployment
+     * @param  list<array<string, mixed>>  $blockages
+     * @return array<string, mixed>
+     */
+    private function lifecycleRejectionPayload(?array $deployment, array $blockages): array
+    {
+        $primary = $blockages[0] ?? [];
+        $reason = is_string($primary['reason'] ?? null) && $primary['reason'] !== ''
+            ? $primary['reason']
+            : 'deployment_lifecycle_blocked';
+        $message = is_string($primary['message'] ?? null) && $primary['message'] !== ''
+            ? $primary['message']
+            : 'Deployment lifecycle action was rejected.';
+        $expectedResolution = is_string($primary['expected_resolution'] ?? null) && $primary['expected_resolution'] !== ''
+            ? $primary['expected_resolution']
+            : null;
+        $outcome = 'rejected_'.$reason;
+
+        return [
+            'message' => $message,
+            'reason' => $reason,
+            'rejection_reason' => $reason,
+            'expected_resolution' => $expectedResolution,
+            'outcome' => $outcome,
+            'control_plane_outcome' => $outcome,
+            'command_status' => 'rejected',
+            'command_source' => 'control_plane',
+            'deployment' => $deployment,
+            'blockages' => $blockages,
+        ];
     }
 }

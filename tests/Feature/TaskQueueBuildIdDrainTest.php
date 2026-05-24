@@ -10,6 +10,7 @@ use App\Models\WorkflowNamespace;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class TaskQueueBuildIdDrainTest extends TestCase
 {
@@ -27,6 +28,15 @@ class TaskQueueBuildIdDrainTest extends TestCase
         ]);
 
         config(['server.workers.stale_after_seconds' => 60]);
+
+        WorkerCompatibilityFleet::clear();
+    }
+
+    protected function tearDown(): void
+    {
+        WorkerCompatibilityFleet::clear();
+
+        parent::tearDown();
     }
 
     public function test_drain_records_intent_and_returns_drained_timestamp(): void
@@ -179,6 +189,246 @@ class TaskQueueBuildIdDrainTest extends TestCase
         $response->assertOk();
         $response->assertJsonPath('drain_intent', 'active');
         $response->assertJsonPath('drained_at', null);
+    }
+
+    public function test_promote_selects_build_id_for_new_starts_and_surfaces_rollout_state(): void
+    {
+        $this->postJson('/api/worker/register', [
+            'worker_id' => 'w-v2',
+            'task_queue' => 'ingest',
+            'runtime' => 'php',
+            'sdk_version' => '1.0.0',
+            'build_id' => 'v2',
+        ], $this->workerHeaders())->assertCreated();
+
+        $response = $this->postJson(
+            '/api/task-queues/ingest/build-ids/promote',
+            ['build_id' => 'v2'],
+            $this->apiHeaders(),
+        );
+
+        $response->assertOk();
+        $response->assertJsonPath('build_id', 'v2');
+        $response->assertJsonPath('drain_intent', 'active');
+        $response->assertJsonPath('new_start_selected', true);
+        $response->assertJsonPath('deployment.state', 'promoted');
+        self::assertIsString($response->json('promoted_at'));
+        self::assertMatchesRegularExpression(
+            '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/',
+            $response->json('promoted_at'),
+        );
+        self::assertSame($response->json('promoted_at'), $response->json('deployment.promoted_at'));
+
+        $buildIds = $this->getJson('/api/task-queues/ingest/build-ids', $this->apiHeaders());
+        $entry = collect($buildIds->json('build_ids'))->firstWhere('build_id', 'v2');
+
+        self::assertNotNull($entry);
+        self::assertSame($response->json('promoted_at'), $entry['promoted_at']);
+        self::assertTrue($entry['new_start_selected']);
+    }
+
+    public function test_resume_of_older_promoted_build_does_not_report_new_start_selected(): void
+    {
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'ingest',
+            'build_id' => 'v1',
+            'drain_intent' => 'draining',
+            'drained_at' => now()->subMinutes(5),
+            'promoted_at' => now()->subMinutes(10),
+        ]);
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'ingest',
+            'build_id' => 'v2',
+            'drain_intent' => 'active',
+            'promoted_at' => now()->subMinute(),
+        ]);
+
+        $resume = $this->postJson(
+            '/api/task-queues/ingest/build-ids/resume',
+            ['build_id' => 'v1'],
+            $this->apiHeaders(),
+        );
+
+        $resume->assertOk();
+        $resume->assertJsonPath('build_id', 'v1');
+        $resume->assertJsonPath('new_start_selected', false);
+
+        $buildIds = $this->getJson('/api/task-queues/ingest/build-ids', $this->apiHeaders())
+            ->assertOk()
+            ->json('build_ids');
+        $entries = collect($buildIds)->keyBy('build_id');
+
+        self::assertFalse($entries['v1']['new_start_selected']);
+        self::assertTrue($entries['v2']['new_start_selected']);
+    }
+
+    public function test_new_start_selection_breaks_promotion_ties_by_latest_rollout_row(): void
+    {
+        $promotedAt = now()->subMinute();
+
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'ingest',
+            'build_id' => 'v1',
+            'drain_intent' => 'active',
+            'promoted_at' => $promotedAt,
+        ]);
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'ingest',
+            'build_id' => 'v2',
+            'drain_intent' => 'active',
+            'promoted_at' => $promotedAt,
+        ]);
+
+        $buildIds = $this->getJson('/api/task-queues/ingest/build-ids', $this->apiHeaders())
+            ->assertOk()
+            ->json('build_ids');
+        $entries = collect($buildIds)->keyBy('build_id');
+
+        self::assertFalse($entries['v1']['new_start_selected']);
+        self::assertTrue($entries['v2']['new_start_selected']);
+
+        $this->postJson(
+            '/api/task-queues/ingest/build-ids/resume',
+            ['build_id' => 'v1'],
+            $this->apiHeaders(),
+        )->assertOk()
+            ->assertJsonPath('new_start_selected', false);
+    }
+
+    public function test_promote_response_uses_the_same_tie_breaker_as_new_start_routing(): void
+    {
+        $this->postJson('/api/worker/register', [
+            'worker_id' => 'w-v1',
+            'task_queue' => 'ingest',
+            'runtime' => 'php',
+            'sdk_version' => '1.0.0',
+            'build_id' => 'v1',
+        ], $this->workerHeaders())->assertCreated();
+        $this->postJson('/api/worker/register', [
+            'worker_id' => 'w-v2',
+            'task_queue' => 'ingest',
+            'runtime' => 'php',
+            'sdk_version' => '1.0.0',
+            'build_id' => 'v2',
+        ], $this->workerHeaders())->assertCreated();
+
+        $this->travelTo(now());
+
+        $this->postJson(
+            '/api/task-queues/ingest/build-ids/promote',
+            ['build_id' => 'v1'],
+            $this->apiHeaders(),
+        )->assertOk()
+            ->assertJsonPath('new_start_selected', true);
+
+        $this->postJson(
+            '/api/task-queues/ingest/build-ids/promote',
+            ['build_id' => 'v2'],
+            $this->apiHeaders(),
+        )->assertOk()
+            ->assertJsonPath('new_start_selected', true);
+
+        $this->postJson(
+            '/api/task-queues/ingest/build-ids/promote',
+            ['build_id' => 'v1'],
+            $this->apiHeaders(),
+        )->assertOk()
+            ->assertJsonPath('new_start_selected', false);
+    }
+
+    public function test_promote_refuses_when_no_compatible_worker_is_visible(): void
+    {
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'ingest',
+            'build_id' => 'v-missing',
+            'drain_intent' => 'active',
+            'required_compatibility' => 'v-missing',
+        ]);
+
+        $response = $this->postJson(
+            '/api/task-queues/ingest/build-ids/promote',
+            ['build_id' => 'v-missing'],
+            $this->apiHeaders(),
+        );
+
+        $response->assertStatus(409);
+        $response->assertJsonPath('reason', 'no_compatible_workers');
+        $response->assertJsonPath('rejection_reason', 'no_compatible_workers');
+        $response->assertJsonPath('outcome', 'rejected_no_compatible_workers');
+        $response->assertJsonPath('command_status', 'rejected');
+        $response->assertJsonPath('command_source', 'control_plane');
+        self::assertIsString($response->json('message'));
+        self::assertIsString($response->json('expected_resolution'));
+        $reasons = array_column($response->json('blockages'), 'reason');
+        self::assertContains('no_compatible_workers', $reasons);
+    }
+
+    public function test_promote_refuses_no_compatible_workers_when_other_builds_are_active(): void
+    {
+        $this->postJson('/api/worker/register', [
+            'worker_id' => 'w-v1',
+            'task_queue' => 'ingest',
+            'runtime' => 'php',
+            'sdk_version' => '1.0.0',
+            'build_id' => 'v1',
+        ], $this->workerHeaders())->assertCreated();
+
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'ingest',
+            'build_id' => 'v2',
+            'drain_intent' => 'active',
+            'required_compatibility' => 'v2',
+        ]);
+
+        $response = $this->postJson(
+            '/api/task-queues/ingest/build-ids/promote',
+            ['build_id' => 'v2'],
+            $this->apiHeaders(),
+        );
+
+        $response->assertStatus(409);
+        $response->assertJsonPath('reason', 'no_compatible_workers');
+        $response->assertJsonPath('rejection_reason', 'no_compatible_workers');
+        self::assertContains('no_compatible_workers', array_column($response->json('blockages'), 'reason'));
+        self::assertNotContains('missing_worker_heartbeat', array_column($response->json('blockages'), 'reason'));
+    }
+
+    public function test_promote_reports_missing_worker_heartbeat_when_required_build_is_stale(): void
+    {
+        WorkerRegistration::query()->create($this->workerAttributes(
+            'w-stale-v2',
+            'ingest',
+            build: 'v2',
+        ));
+        WorkerRegistration::query()
+            ->where('worker_id', 'w-stale-v2')
+            ->update(['last_heartbeat_at' => now()->subMinutes(5)]);
+
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'ingest',
+            'build_id' => 'v2',
+            'drain_intent' => 'active',
+            'required_compatibility' => 'v2',
+        ]);
+
+        $response = $this->postJson(
+            '/api/task-queues/ingest/build-ids/promote',
+            ['build_id' => 'v2'],
+            $this->apiHeaders(),
+        );
+
+        $response->assertStatus(409);
+        $response->assertJsonPath('reason', 'missing_worker_heartbeat');
+        $response->assertJsonPath('rejection_reason', 'missing_worker_heartbeat');
+        self::assertContains('missing_worker_heartbeat', array_column($response->json('blockages'), 'reason'));
+        self::assertNotContains('no_compatible_workers', array_column($response->json('blockages'), 'reason'));
     }
 
     public function test_build_ids_get_surfaces_drain_intent_for_cohort_with_workers(): void

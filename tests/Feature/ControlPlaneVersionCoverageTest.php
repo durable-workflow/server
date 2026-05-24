@@ -103,6 +103,11 @@ class ControlPlaneVersionCoverageTest extends TestCase
                 'path' => '/api/task-queues/default/build-ids/drain',
                 'body' => ['build_id' => 'v1'],
             ],
+            'task-queues.build_ids_promote' => [
+                'method' => 'post',
+                'path' => '/api/task-queues/default/build-ids/promote',
+                'body' => ['build_id' => 'v1'],
+            ],
             'task-queues.build_ids_resume' => [
                 'method' => 'post',
                 'path' => '/api/task-queues/default/build-ids/resume',
