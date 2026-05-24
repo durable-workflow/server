@@ -26,7 +26,7 @@ spec:
             - name: scheduler
               image: durableworkflow/server:0.2
               command: ["server-entrypoint"]
-              args: ["sh", "-c", "php artisan schedule:evaluate --limit=100; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100"]
+              args: ["sh", "-c", "php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100"]
               envFrom:
                 - configMapRef:
                     name: durable-workflow-config

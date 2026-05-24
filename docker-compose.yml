@@ -4,7 +4,7 @@ services:
       context: .
       args:
         WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.172}
+        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.175}
         WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
     command: ["server-bootstrap"]
     environment:
@@ -43,7 +43,7 @@ services:
       context: .
       args:
         WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.172}
+        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.175}
         WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
     ports:
       - "8080:8080"
@@ -88,7 +88,7 @@ services:
       context: .
       args:
         WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.172}
+        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.175}
         WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
     command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
     environment:
@@ -122,7 +122,7 @@ services:
       context: .
       args:
         WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.172}
+        WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.175}
         WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
     # init: true wires Docker's tini as PID 1 so the `sh -c 'while … sleep 10'`
     # loop reaps any short-lived `php artisan` children instead of leaking
@@ -130,7 +130,7 @@ services:
     # PHP processes (TD-S058 / temporalio/docker-compose#211, #241).
     init: true
     command: >-
-      sh -c 'while true; do php artisan schedule:evaluate --limit=100; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done'
+      sh -c 'while true; do php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done'
     environment:
       APP_NAME: "Durable Workflow Server"
       APP_ENV: local

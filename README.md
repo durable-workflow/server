@@ -236,7 +236,7 @@ The long-running `server`, `worker`, and `scheduler` services each pin
 `DW_SERVER_TOPOLOGY_SHAPE` and `DW_SERVER_PROCESS_CLASS` so
 `GET /api/cluster/info` reports the role class you actually launched during
 local split-role testing.
-The image build fetches the `durable-workflow/workflow` `2.0.0-alpha.172`
+The image build fetches the `durable-workflow/workflow` `2.0.0-alpha.175`
 package source by default so `docker compose up --build` works from a clean checkout. Override
 `WORKFLOW_PACKAGE_SOURCE` or `WORKFLOW_PACKAGE_REF` if you need a different
 package remote or ref during image builds.
@@ -1093,7 +1093,7 @@ docker run --rm -p 8080:8080 \
   durable-workflow-server
 ```
 
-The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.172` tag
+The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.175` tag
 into the build and satisfies the app's Composer path repository from that source. Use
 `--build-arg WORKFLOW_PACKAGE_SOURCE=...` and
 `--build-arg WORKFLOW_PACKAGE_REF=...` to point the image build at another

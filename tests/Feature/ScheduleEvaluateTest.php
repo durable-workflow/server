@@ -6,6 +6,7 @@ use App\Models\SearchAttributeDefinition;
 use App\Models\WorkflowNamespace;
 use App\Support\WorkflowStartService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Mockery\MockInterface;
 use Tests\TestCase;
@@ -31,6 +32,52 @@ class ScheduleEvaluateTest extends TestCase
         $this->artisan('schedule:evaluate')
             ->assertExitCode(0)
             ->expectsOutputToContain('No schedules due');
+    }
+
+    public function test_it_outputs_machine_readable_evaluation_report(): void
+    {
+        $this->fakeStartService(result: [
+            'workflow_id' => 'wf-json-eval',
+            'run_id' => 'run-json-eval',
+            'workflow_type' => 'TestWorkflow',
+            'outcome' => 'started_new',
+            'reason' => null,
+        ]);
+
+        WorkflowSchedule::create([
+            'schedule_id' => 'json-eval-sched',
+            'namespace' => 'default',
+            'spec' => ['cron_expressions' => ['* * * * *'], 'timezone' => 'UTC'],
+            'action' => ['workflow_type' => 'TestWorkflow'],
+            'next_fire_at' => now()->subMinute(),
+        ]);
+
+        $exitCode = Artisan::call('schedule:evaluate', ['--json' => true]);
+        $report = json_decode(trim(Artisan::output()), true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame(0, $exitCode);
+        $this->assertSame('durable-workflow.server.schedule-evaluation.report', $report['schema']);
+        $this->assertSame(1, $report['schema_version']);
+        $this->assertSame(100, $report['limit']);
+        $this->assertSame(1, $report['processed']);
+        $this->assertSame(1, $report['processed_count']);
+        $this->assertSame(1, $report['processed_schedule_count']);
+        $this->assertSame(1, $report['eligible_count']);
+        $this->assertSame(1, $report['eligible_schedule_count']);
+        $this->assertSame(['json-eval-sched'], $report['processed_schedule_ids']);
+        $this->assertSame(['json-eval-sched'], $report['eligible_schedule_ids']);
+        $this->assertSame(1, $report['fired']);
+        $this->assertSame(1, $report['fired_count']);
+        $this->assertSame(1, $report['summary']['processed_count']);
+        $this->assertSame(1, $report['summary']['processed_schedule_count']);
+        $this->assertSame(1, $report['summary']['eligible_schedule_count']);
+        $this->assertCount(1, $report['results']);
+        $this->assertSame('json-eval-sched', $report['results'][0]['schedule_id']);
+        $this->assertSame('wf-json-eval', $report['results'][0]['instance_id']);
+        $this->assertArrayHasKey('evaluated_at', $report);
+        $this->assertArrayHasKey('occurrence_time', $report['results'][0]);
+        $this->assertArrayHasKey('last_fired_at', $report['results'][0]);
+        $this->assertArrayHasKey('next_fire_at', $report['results'][0]);
     }
 
     public function test_it_skips_paused_schedules(): void
@@ -86,6 +133,7 @@ class ScheduleEvaluateTest extends TestCase
 
         $this->artisan('schedule:evaluate')
             ->assertExitCode(0)
+            ->expectsOutputToContain('1 processed')
             ->expectsOutputToContain('fired');
 
         $schedule = WorkflowSchedule::where('schedule_id', 'due-sched')->first();

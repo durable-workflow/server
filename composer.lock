@@ -509,7 +509,7 @@
             "dist": {
                 "type": "path",
                 "url": "/workflow",
-                "reference": "aded435855aa48d0b6eb7c15df743166d5da129b"
+                "reference": "7b4d4a5eb306d1a81ad5683d722675f756c6ba64"
             },
             "require": {
                 "apache/avro": "^1.12",

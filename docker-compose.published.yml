@@ -82,7 +82,7 @@ services:
     platform: ${DW_SERVER_PLATFORM:-}
     init: true
     command: >-
-      sh -c 'while true; do php artisan schedule:evaluate --limit=100; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done'
+      sh -c 'while true; do php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done'
     environment:
       <<: *server-environment
       DW_SERVER_TOPOLOGY_SHAPE: standalone_server

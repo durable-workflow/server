@@ -43,10 +43,102 @@ Artisan::command('server:bootstrap {--force : Run bootstrap commands without a p
     return $seed;
 })->purpose('Run server migrations and seed the default namespace');
 
-Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per evaluation}', function (): int {
+Artisan::command('schedule:evaluate
+    {--limit=100 : Maximum schedules to fire per evaluation}
+    {--json : Emit a machine-readable evaluation report}', function (): int {
     $limit = (int) $this->option('limit');
 
     $results = ScheduleManager::tick($limit);
+
+    $processedCount = count($results);
+    $processedScheduleIds = array_values(array_filter(
+        array_map(
+            static fn (array $row): ?string => isset($row['schedule_id']) && is_string($row['schedule_id'])
+                ? $row['schedule_id']
+                : null,
+            $results,
+        ),
+        static fn (?string $scheduleId): bool => $scheduleId !== null && $scheduleId !== '',
+    ));
+
+    $summary = [
+        'processed' => $processedCount,
+        'processed_count' => $processedCount,
+        'processed_schedule_count' => $processedCount,
+        'eligible_count' => $processedCount,
+        'eligible_schedule_count' => $processedCount,
+        'fired' => 0,
+        'fired_count' => 0,
+        'drained' => 0,
+        'drained_count' => 0,
+        'buffered' => 0,
+        'buffered_count' => 0,
+        'skipped' => 0,
+        'skipped_count' => 0,
+        'failed' => 0,
+        'failed_count' => 0,
+    ];
+
+    foreach ($results as $row) {
+        $outcome = $row['outcome'] ?? null;
+
+        if (isset($row['error'])) {
+            $summary['failed']++;
+            $summary['failed_count']++;
+        } elseif (($row['instance_id'] ?? null) !== null) {
+            if ($outcome === 'drained') {
+                $summary['drained']++;
+                $summary['drained_count']++;
+            } else {
+                $summary['fired']++;
+                $summary['fired_count']++;
+            }
+        } elseif ($outcome === 'buffered' || $outcome === 'buffer_full') {
+            $summary['buffered']++;
+            $summary['buffered_count']++;
+            $summary['skipped']++;
+            $summary['skipped_count']++;
+        } else {
+            $summary['skipped']++;
+            $summary['skipped_count']++;
+        }
+    }
+
+    if ((bool) $this->option('json')) {
+        try {
+            $this->line(json_encode([
+                'schema' => 'durable-workflow.server.schedule-evaluation.report',
+                'schema_version' => 1,
+                'evaluated_at' => now()->toIso8601String(),
+                'limit' => $limit,
+                'processed' => $summary['processed'],
+                'processed_count' => $summary['processed_count'],
+                'processed_schedule_count' => $summary['processed_schedule_count'],
+                'eligible_count' => $summary['eligible_count'],
+                'eligible_schedule_count' => $summary['eligible_schedule_count'],
+                'processed_schedule_ids' => $processedScheduleIds,
+                'eligible_schedule_ids' => $processedScheduleIds,
+                'fired' => $summary['fired'],
+                'fired_count' => $summary['fired_count'],
+                'drained' => $summary['drained'],
+                'drained_count' => $summary['drained_count'],
+                'buffered' => $summary['buffered'],
+                'buffered_count' => $summary['buffered_count'],
+                'skipped' => $summary['skipped'],
+                'skipped_count' => $summary['skipped_count'],
+                'failed' => $summary['failed'],
+                'failed_count' => $summary['failed_count'],
+                'summary' => $summary,
+                'results' => $results,
+            ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+        } catch (\JsonException $exception) {
+            $this->components->error($exception->getMessage());
+
+            return 1;
+        }
+
+        return $summary['failed'] > 0 ? 1 : 0;
+    }
 
     if ($results === []) {
         $this->components->info('No schedules due.');
@@ -92,7 +184,7 @@ Artisan::command('schedule:evaluate {--limit=100 : Maximum schedules to fire per
         }
     }
 
-    $this->components->info(sprintf('Done: %d fired, %d skipped, %d failed.', $fired, $skipped, $failed));
+    $this->components->info(sprintf('Done: %d processed, %d fired, %d skipped, %d failed.', $processedCount, $fired, $skipped, $failed));
 
     return $failed > 0 ? 1 : 0;
 })->purpose('Evaluate due schedules and start their workflows');

@@ -410,7 +410,7 @@ scheduler:
   args:
     - "sh"
     - "-c"
-    - "php artisan schedule:evaluate --limit=100; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100"
+    - "php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100"
 
   resources:
     requests:

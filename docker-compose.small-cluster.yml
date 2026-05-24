@@ -6,7 +6,7 @@ x-server-build: &server-build
   context: .
   args:
     WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-    WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.172}
+    WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.175}
     WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
 
 x-server-environment: &server-environment
@@ -90,7 +90,7 @@ services:
     build: *server-build
     init: true
     command: >-
-      sh -c 'while true; do php artisan schedule:evaluate --limit=100; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done'
+      sh -c 'while true; do php artisan schedule:evaluate --limit=100 --json; php artisan activity:timeout-enforce --limit=100; php artisan history:prune --limit=100; sleep 10; done'
     environment:
       <<: *server-environment
       DW_SERVER_ID: scheduler
