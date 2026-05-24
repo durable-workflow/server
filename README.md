@@ -247,8 +247,9 @@ package remote or ref during image builds.
 ### Using the CLI
 
 ```bash
-# Install the CLI
-composer global require durable-workflow/cli
+# Install the CLI from the public release channel
+curl -fsSL https://durable-workflow.com/install.sh | VERSION=0.1.63 sh
+export PATH="$HOME/.local/bin:$PATH"
 
 # Start a workflow
 dw workflow start --type=my-workflow --input='{"name":"world"}'

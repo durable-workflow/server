@@ -48,12 +48,11 @@ jobs:
 
       - name: Install CLI
         run: |
-          cd /tmp
-          git clone https://github.com/durable-workflow/cli.git
-          cd cli
-          composer install --no-dev --optimize-autoloader
-          chmod +x bin/dw
-          echo "/tmp/cli/bin" >> $GITHUB_PATH
+          install_dir="/tmp/dw-bin"
+          curl -fsSL https://durable-workflow.com/install.sh -o /tmp/dw-install.sh
+          VERSION=0.1.63 DURABLE_WORKFLOW_INSTALL_DIR="$install_dir" sh /tmp/dw-install.sh
+          "$install_dir/dw" --version
+          echo "$install_dir" >> $GITHUB_PATH
 
       - name: Test CLI with compatible server (should succeed)
         env:
