@@ -106,6 +106,11 @@ category emits a warning and does not block.
   schedule-to-workflow cells, invalid cron refusal, and non-existent workflow
   type behavior. The result gate keeps schedule CRUD smoke non-passing until
   every required scenario has concrete evidence or a linked root-cause finding.
+  The published host-runner contract splits the run into cadence, controls,
+  missed-fire/restart, public-client, cross-language, and adversarial shards;
+  any shard the trusted runner has not executed is recorded as `not_covered`
+  with a conformance-harness finding instead of being treated as passing
+  schedule evidence.
 - Child-workflow runtime contract: `GET /api/cluster/info` re-exports
   `child_workflow_runtime_contract`, schema
   `durable-workflow.v2.child-workflow-runtime.contract`. It names the

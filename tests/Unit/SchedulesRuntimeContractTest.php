@@ -14,7 +14,7 @@ class SchedulesRuntimeContractTest extends TestCase
         $manifest = SchedulesRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.schedules-runtime.contract', $manifest['schema']);
-        $this->assertSame(1, SchedulesRuntimeContract::VERSION);
+        $this->assertSame(2, SchedulesRuntimeContract::VERSION);
         $this->assertSame(SchedulesRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.schedules-runtime.result', $manifest['result_schema']);
         $this->assertSame('schedules_runtime_contract', $manifest['fixture_category']);
@@ -98,6 +98,81 @@ class SchedulesRuntimeContractTest extends TestCase
         );
     }
 
+    public function test_manifest_publishes_host_runner_contract_for_full_schedules_coverage(): void
+    {
+        $manifest = SchedulesRuntimeContract::manifest();
+        $hostRunner = $manifest['host_runner_contract'];
+
+        $this->assertSame('required_for_passing_schedules_conformance', $hostRunner['status']);
+        $this->assertSame(SchedulesRuntimeContract::RESULT_SCHEMA, $hostRunner['result_schema']);
+        $this->assertTrue($hostRunner['must_probe_runtime_published_surfaces']);
+        $this->assertTrue($hostRunner['must_emit_result_for_every_required_scenario']);
+        $this->assertSame('non_passing', $hostRunner['smoke_summary_only_outcome']);
+        $this->assertSame('not_covered', $hostRunner['unexecuted_required_scenario_status']);
+        $this->assertSame('conformance_runner_coverage_gap', $hostRunner['coverage_gap_finding_type']);
+        $this->assertSame('conformance_harness', $hostRunner['coverage_gap_owner']);
+
+        foreach ([
+            'published-artifact-install',
+            'cron-cadence-shard',
+            'fixed-rate-cadence-shard',
+            'operator-controls-shard',
+            'missed-fire-restart-shard',
+            'cli-schedule-surface-shard',
+            'sdk-python-schedule-surface-shard',
+            'workflow-php-schedule-surface-shard',
+            'cross-language-schedule-workflow-shard',
+            'adversarial-schedule-input-shard',
+        ] as $scope) {
+            $this->assertContains($scope, $hostRunner['required_execution_scopes']);
+            $this->assertContains($scope, $hostRunner['merge_policy']['input_scopes']);
+        }
+
+        $this->assertSame(
+            ['SchedulesConformancePhpWorkflow'],
+            $hostRunner['runtime_shards']['workflow-php-worker']['must_register_workflows'],
+        );
+        $this->assertSame(
+            ['SchedulesConformancePythonWorkflow'],
+            $hostRunner['runtime_shards']['sdk-python-worker']['must_register_workflows'],
+        );
+        $this->assertSame(
+            'schedules_runtime_contract.required_scenarios',
+            $hostRunner['merge_policy']['requires_required_scenarios'],
+        );
+        foreach (['workflow-php', 'sdk-python'] as $runtime) {
+            $this->assertContains($runtime, $hostRunner['merge_policy']['requires_required_runtimes']);
+        }
+        foreach (['cli', 'sdk-python', 'workflow-php-sdk'] as $client) {
+            $this->assertContains($client, $hostRunner['merge_policy']['requires_required_clients']);
+        }
+        foreach ([
+            'published_artifact_install',
+            'runtime_matrix',
+            'cadence_observations',
+            'operator_controls',
+            'missed_fire_policy',
+            'restart_survival',
+            'cross_language_matrix',
+            'adversarial_outcomes',
+        ] as $section) {
+            $this->assertContains($section, $hostRunner['merge_policy']['requires_sections']);
+        }
+
+        $this->assertSame(
+            [
+                'scenario_status' => 'not_covered',
+                'finding_type' => 'conformance_runner_coverage_gap',
+                'owner' => 'conformance_harness',
+            ],
+            $hostRunner['routing_policy']['missing_required_scenario'],
+        );
+        $this->assertSame(
+            'link_root_cause_finding_against_conformance_harness',
+            $manifest['finding_policy']['conformance_runner_coverage_gap'],
+        );
+    }
+
     public function test_manifest_publishes_an_enforceable_result_gate(): void
     {
         $resultGate = SchedulesRuntimeContract::manifest()['result_gate'];
@@ -164,6 +239,10 @@ class SchedulesRuntimeContractTest extends TestCase
         $this->assertSame(
             $manifest['schedule_policy']['missed_fire_policy'],
             $scenarioManifest['schedule_policy']['missed_fire_policy'],
+        );
+        $this->assertSame(
+            $manifest['host_runner_contract'],
+            $scenarioManifest['host_runner_contract'],
         );
     }
 

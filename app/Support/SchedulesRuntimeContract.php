@@ -17,7 +17,7 @@ final class SchedulesRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.schedules-runtime.contract';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.schedules-runtime.result';
 
@@ -256,6 +256,137 @@ final class SchedulesRuntimeContract
                 'unsupported_public_surface_outcome' => 'non_passing_with_root_cause_finding',
                 'runner_blocked_outcome' => 'non_passing_runner_blocked',
             ],
+            'host_runner_contract' => [
+                'status' => 'required_for_passing_schedules_conformance',
+                'result_schema' => self::RESULT_SCHEMA,
+                'must_probe_runtime_published_surfaces' => true,
+                'must_emit_result_for_every_required_scenario' => true,
+                'smoke_summary_only_outcome' => 'non_passing',
+                'unexecuted_required_scenario_status' => 'not_covered',
+                'coverage_gap_finding_type' => 'conformance_runner_coverage_gap',
+                'coverage_gap_owner' => 'conformance_harness',
+                'required_execution_scopes' => [
+                    'published-artifact-install',
+                    'cron-cadence-shard',
+                    'fixed-rate-cadence-shard',
+                    'operator-controls-shard',
+                    'missed-fire-restart-shard',
+                    'cli-schedule-surface-shard',
+                    'sdk-python-schedule-surface-shard',
+                    'workflow-php-schedule-surface-shard',
+                    'cross-language-schedule-workflow-shard',
+                    'adversarial-schedule-input-shard',
+                ],
+                'runtime_shards' => [
+                    'cli' => [
+                        'scope' => 'cli-schedule-surface-shard',
+                        'must_cover_controls' => [
+                            'list',
+                            'describe',
+                            'pause',
+                            'resume',
+                            'trigger',
+                            'delete',
+                        ],
+                        'fallback_status_when_surface_missing' => 'unsupported',
+                        'fallback_finding_type' => 'unsupported_public_surface',
+                    ],
+                    'sdk-python' => [
+                        'scope' => 'sdk-python-schedule-surface-shard',
+                        'must_cover_controls' => [
+                            'create',
+                            'list',
+                            'describe',
+                            'pause',
+                            'resume',
+                            'trigger',
+                            'delete',
+                        ],
+                        'fallback_status_when_surface_missing' => 'unsupported',
+                        'fallback_finding_type' => 'unsupported_public_surface',
+                    ],
+                    'workflow-php-sdk' => [
+                        'scope' => 'workflow-php-schedule-surface-shard',
+                        'must_cover_controls' => [
+                            'create_or_observe',
+                            'list_or_describe',
+                            'pause',
+                            'resume',
+                            'trigger',
+                            'delete',
+                        ],
+                        'fallback_status_when_surface_missing' => 'unsupported',
+                        'fallback_finding_type' => 'unsupported_public_surface',
+                    ],
+                    'workflow-php-worker' => [
+                        'scope' => 'cross-language-schedule-workflow-shard',
+                        'must_register_workflows' => [
+                            'SchedulesConformancePhpWorkflow',
+                        ],
+                        'fallback_status_when_surface_missing' => 'unsupported',
+                        'fallback_finding_type' => 'unsupported_public_surface',
+                    ],
+                    'sdk-python-worker' => [
+                        'scope' => 'cross-language-schedule-workflow-shard',
+                        'must_register_workflows' => [
+                            'SchedulesConformancePythonWorkflow',
+                        ],
+                        'fallback_status_when_surface_missing' => 'unsupported',
+                        'fallback_finding_type' => 'unsupported_public_surface',
+                    ],
+                ],
+                'merge_policy' => [
+                    'input_scopes' => [
+                        'published-artifact-install',
+                        'cron-cadence-shard',
+                        'fixed-rate-cadence-shard',
+                        'operator-controls-shard',
+                        'missed-fire-restart-shard',
+                        'cli-schedule-surface-shard',
+                        'sdk-python-schedule-surface-shard',
+                        'workflow-php-schedule-surface-shard',
+                        'cross-language-schedule-workflow-shard',
+                        'adversarial-schedule-input-shard',
+                    ],
+                    'output_schema' => self::RESULT_SCHEMA,
+                    'requires_required_runtimes' => [
+                        'workflow-php',
+                        'sdk-python',
+                    ],
+                    'requires_required_clients' => [
+                        'cli',
+                        'sdk-python',
+                        'workflow-php-sdk',
+                    ],
+                    'requires_required_scenarios' => 'schedules_runtime_contract.required_scenarios',
+                    'requires_sections' => [
+                        'published_artifact_install',
+                        'runtime_matrix',
+                        'cadence_observations',
+                        'operator_controls',
+                        'missed_fire_policy',
+                        'restart_survival',
+                        'cross_language_matrix',
+                        'adversarial_outcomes',
+                    ],
+                ],
+                'routing_policy' => [
+                    'missing_required_scenario' => [
+                        'scenario_status' => 'not_covered',
+                        'finding_type' => 'conformance_runner_coverage_gap',
+                        'owner' => 'conformance_harness',
+                    ],
+                    'missing_public_surface' => [
+                        'scenario_status' => 'unsupported',
+                        'finding_type' => 'unsupported_public_surface',
+                        'owner' => 'surface_owner',
+                    ],
+                    'scenario_product_failure' => [
+                        'scenario_status' => 'fail',
+                        'finding_source' => 'schedules_runtime_contract.finding_policy',
+                    ],
+                ],
+            ],
             'result_gate' => SchedulesRuntimeResultGate::spec(),
             'finding_policy' => [
                 'off_cadence_fire' => 'link_root_cause_finding_against_server',
@@ -269,6 +400,8 @@ final class SchedulesRuntimeContract
                 'php_surface_gap' => 'link_root_cause_finding_against_workflow_php',
                 'cross_language_dispatch_gap' => 'link_root_cause_finding_against_server_or_worker_protocol_owner',
                 'documentation_gap' => 'link_root_cause_finding_against_docs',
+                'unsupported_public_surface' => 'link_root_cause_finding_against_surface_owner',
+                'conformance_runner_coverage_gap' => 'link_root_cause_finding_against_conformance_harness',
             ],
         ];
     }

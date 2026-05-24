@@ -369,6 +369,18 @@ class ClusterInfoTest extends TestCase
             $contract['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertSame(
+            'required_for_passing_schedules_conformance',
+            $contract['host_runner_contract']['status'],
+        );
+        $this->assertContains(
+            'cron-cadence-shard',
+            $contract['host_runner_contract']['required_execution_scopes'],
+        );
+        $this->assertSame(
+            'conformance_runner_coverage_gap',
+            $contract['host_runner_contract']['routing_policy']['missing_required_scenario']['finding_type'],
+        );
+        $this->assertSame(
             SchedulesRuntimeResultGate::SCHEMA,
             $contract['result_gate']['schema'],
         );
