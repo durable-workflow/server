@@ -224,6 +224,14 @@ final class DeploymentLifecycleService
             $row->drained_at = $wasDraining ? $row->drained_at : now();
         });
 
+        $this->stampWorkerDrainStatus(
+            $namespace,
+            $taskQueue,
+            $buildId,
+            WorkerBuildIdRollout::DRAIN_INTENT_DRAINING,
+            onlyDraining: false,
+        );
+
         return [
             'deployment' => $this->deploymentFromRollout($rollout),
             'blockages' => [],
@@ -255,18 +263,7 @@ final class DeploymentLifecycleService
             $row->drained_at = null;
         });
 
-        WorkerRegistration::query()
-            ->where('namespace', $namespace)
-            ->where('task_queue', $taskQueue)
-            ->when(
-                $buildId !== null,
-                fn ($q) => $q->where('build_id', $buildId),
-                fn ($q) => $q->where(function ($w) {
-                    $w->whereNull('build_id')->orWhere('build_id', '');
-                }),
-            )
-            ->where('status', 'draining')
-            ->update(['status' => 'active']);
+        $this->stampWorkerDrainStatus($namespace, $taskQueue, $buildId, 'active', onlyDraining: true);
 
         return [
             'deployment' => $this->deploymentFromRollout($rollout),
@@ -427,6 +424,30 @@ final class DeploymentLifecycleService
 
             return $rollout->refresh();
         });
+    }
+
+    private function stampWorkerDrainStatus(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        string $status,
+        bool $onlyDraining,
+    ): void {
+        WorkerRegistration::query()
+            ->where('namespace', $namespace)
+            ->where('task_queue', $taskQueue)
+            ->when(
+                $buildId !== null,
+                fn ($query) => $query->where('build_id', $buildId),
+                fn ($query) => $query->where(function ($worker) {
+                    $worker->whereNull('build_id')->orWhere('build_id', '');
+                }),
+            )
+            ->when(
+                $onlyDraining,
+                fn ($query) => $query->where('status', WorkerBuildIdRollout::DRAIN_INTENT_DRAINING),
+            )
+            ->update(['status' => $status]);
     }
 
     /**

@@ -48,6 +48,11 @@ class WorkerControllerTest extends TestCase
         $response->assertStatus(201)
             ->assertJsonPath('worker_id', 'py-worker-1')
             ->assertJsonPath('registered', true)
+            ->assertJsonPath('namespace', 'default')
+            ->assertJsonPath('task_queue', 'default')
+            ->assertJsonPath('runtime', 'python')
+            ->assertJsonPath('build_id', null)
+            ->assertJsonPath('status', 'active')
             ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION);
 
         $worker = WorkerRegistration::query()
@@ -135,7 +140,7 @@ class WorkerControllerTest extends TestCase
 
     public function test_register_accepts_all_supported_runtimes(): void
     {
-        foreach (['php', 'python', 'rust', 'typescript', 'go', 'java'] as $runtime) {
+        foreach (['php', 'python', 'rust', 'typescript', 'go', 'java', 'external'] as $runtime) {
             $response = $this->withHeaders($this->workerHeaders())
                 ->postJson('/api/worker/register', [
                     'worker_id' => "worker-{$runtime}",
@@ -146,7 +151,7 @@ class WorkerControllerTest extends TestCase
             $response->assertStatus(201);
         }
 
-        $this->assertSame(6, WorkerRegistration::query()->count());
+        $this->assertSame(7, WorkerRegistration::query()->count());
     }
 
     public function test_register_rejects_unsupported_runtime(): void

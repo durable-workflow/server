@@ -146,6 +146,12 @@ class DeploymentLifecycleTest extends TestCase
         $this->assertNotNull($rollout);
         $this->assertSame('draining', $rollout->drain_intent);
         $this->assertNotNull($rollout->drained_at);
+
+        $worker = WorkerRegistration::query()
+            ->where('worker_id', 'w1')
+            ->firstOrFail();
+
+        $this->assertSame('draining', $worker->status);
     }
 
     public function test_resume_returns_a_draining_deployment_to_active(): void
@@ -177,6 +183,35 @@ class DeploymentLifecycleTest extends TestCase
         $this->assertNotNull($rollout);
         $this->assertSame('active', $rollout->drain_intent);
         $this->assertNull($rollout->drained_at);
+    }
+
+    public function test_resume_clears_draining_status_from_matching_workers(): void
+    {
+        $this->createWorker('w1', 'ingest', 'v1');
+
+        WorkerRegistration::query()
+            ->where('worker_id', 'w1')
+            ->update(['status' => 'draining']);
+
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'ingest',
+            'build_id' => 'v1',
+            'drain_intent' => 'draining',
+            'drained_at' => now(),
+        ]);
+
+        $this->postJson(
+            '/api/deployments/'.rawurlencode('default/ingest@v1').'/resume',
+            [],
+            $this->apiHeaders(),
+        )->assertOk();
+
+        $worker = WorkerRegistration::query()
+            ->where('worker_id', 'w1')
+            ->firstOrFail();
+
+        $this->assertSame('active', $worker->status);
     }
 
     public function test_rollback_marks_the_deployment_terminal_and_refuses_a_second_call(): void

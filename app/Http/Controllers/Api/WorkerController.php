@@ -143,7 +143,7 @@ class WorkerController
         $processMetrics = $this->normalizeProcessMetrics($validated['process_metrics'] ?? null);
         $workerProcessReplaced = $this->workerProcessReplaced($existing, $processMetrics);
 
-        WorkerRegistration::updateOrCreate(
+        $registration = WorkerRegistration::updateOrCreate(
             [
                 'worker_id' => $workerId,
                 'namespace' => $namespace,
@@ -194,6 +194,11 @@ class WorkerController
         return WorkerProtocol::json([
             'worker_id' => $workerId,
             'registered' => true,
+            'namespace' => $registration->namespace,
+            'task_queue' => $registration->task_queue,
+            'runtime' => $registration->runtime,
+            'build_id' => $registration->build_id,
+            'status' => $registration->status,
             'heartbeat_interval_seconds' => $this->advertisedHeartbeatIntervalSeconds(),
         ], 201);
     }

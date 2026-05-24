@@ -187,25 +187,13 @@ class TaskQueueController
             : null;
         $rollout->save();
 
-        if (! $draining) {
-            // Clear the draining status we stamped on worker rows so the
-            // next heartbeat is not forced back to draining by the resume
-            // path. Workers that are still running will have their status
-            // restamped to active on their next heartbeat anyway, but
-            // clearing immediately keeps the read endpoint honest.
-            WorkerRegistration::query()
-                ->where('namespace', $namespace)
-                ->where('task_queue', $taskQueue)
-                ->when(
-                    $publicBuildId !== null,
-                    fn ($query) => $query->where('build_id', $publicBuildId),
-                    fn ($query) => $query->where(function ($q) {
-                        $q->whereNull('build_id')->orWhere('build_id', '');
-                    }),
-                )
-                ->where('status', WorkerBuildIdRollout::DRAIN_INTENT_DRAINING)
-                ->update(['status' => 'active']);
-        }
+        $this->stampWorkerDrainStatus(
+            $namespace,
+            $taskQueue,
+            $publicBuildId,
+            $draining ? WorkerBuildIdRollout::DRAIN_INTENT_DRAINING : 'active',
+            $draining,
+        );
 
         return ControlPlaneProtocol::json([
             'namespace' => $namespace,
@@ -214,6 +202,30 @@ class TaskQueueController
             'drain_intent' => $rollout->drain_intent,
             'drained_at' => $rollout->drained_at?->toJSON(),
         ]);
+    }
+
+    private function stampWorkerDrainStatus(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        string $status,
+        bool $draining,
+    ): void {
+        WorkerRegistration::query()
+            ->where('namespace', $namespace)
+            ->where('task_queue', $taskQueue)
+            ->when(
+                $buildId !== null,
+                fn ($query) => $query->where('build_id', $buildId),
+                fn ($query) => $query->where(function ($q) {
+                    $q->whereNull('build_id')->orWhere('build_id', '');
+                }),
+            )
+            ->when(
+                ! $draining,
+                fn ($query) => $query->where('status', WorkerBuildIdRollout::DRAIN_INTENT_DRAINING),
+            )
+            ->update(['status' => $status]);
     }
 
     /**

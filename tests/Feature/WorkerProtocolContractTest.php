@@ -57,7 +57,11 @@ class WorkerProtocolContractTest extends TestCase
             ])
             ->assertCreated()
             ->assertJsonPath('worker_id', 'diagnostic-worker-v2')
-            ->assertJsonPath('registered', true);
+            ->assertJsonPath('registered', true)
+            ->assertJsonPath('task_queue', 'versioned-diagnostics')
+            ->assertJsonPath('runtime', 'external')
+            ->assertJsonPath('build_id', 'build-v2')
+            ->assertJsonPath('status', 'active');
 
         $workers = $this->getJson(
             '/api/workers?task_queue=versioned-diagnostics',

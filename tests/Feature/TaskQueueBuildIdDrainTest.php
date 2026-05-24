@@ -197,8 +197,9 @@ class TaskQueueBuildIdDrainTest extends TestCase
         self::assertNotNull($entry);
         self::assertSame('draining', $entry['drain_intent']);
         self::assertNotNull($entry['drained_at']);
-        self::assertSame('active_with_draining', $entry['rollout_status']);
-        self::assertSame(1, $entry['active_worker_count']);
+        self::assertSame('draining', $entry['rollout_status']);
+        self::assertSame(0, $entry['active_worker_count']);
+        self::assertSame(1, $entry['draining_worker_count']);
     }
 
     public function test_build_ids_get_surfaces_drained_cohort_with_no_live_workers(): void
@@ -265,10 +266,6 @@ class TaskQueueBuildIdDrainTest extends TestCase
             ['build_id' => 'v1'],
             $this->apiHeaders(),
         )->assertOk();
-
-        $this->postJson('/api/worker/heartbeat', [
-            'worker_id' => 'w-drain',
-        ], $this->workerHeaders())->assertOk();
 
         $worker = WorkerRegistration::query()->where('worker_id', 'w-drain')->firstOrFail();
         self::assertSame('draining', $worker->status);
