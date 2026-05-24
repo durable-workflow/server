@@ -176,6 +176,71 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         );
     }
 
+    public function test_manifest_publishes_host_runner_contract_for_full_child_workflow_coverage(): void
+    {
+        $hostRunner = ChildWorkflowRuntimeContract::manifest()['host_runner_contract'];
+
+        $this->assertSame('required_for_passing_child_workflows_conformance', $hostRunner['status']);
+        $this->assertSame(ChildWorkflowRuntimeContract::RESULT_SCHEMA, $hostRunner['result_schema']);
+        $this->assertTrue($hostRunner['must_probe_runtime_published_surfaces']);
+        $this->assertTrue($hostRunner['must_emit_result_for_every_required_scenario']);
+        $this->assertSame('non_passing', $hostRunner['smoke_summary_only_outcome']);
+        $this->assertSame('not_covered', $hostRunner['unexecuted_required_scenario_status']);
+        $this->assertSame('conformance_runner_coverage_gap', $hostRunner['coverage_gap_finding_type']);
+        $this->assertSame('conformance_harness', $hostRunner['coverage_gap_owner']);
+
+        foreach ([
+            'published-artifact-install',
+            'workflow-php-parent-child-shard',
+            'sdk-python-parent-child-shard',
+            'cross-language-parent-child-shard',
+            'failure-round-trip-shard',
+            'cancellation-propagation-shard',
+            'replay-restart-shard',
+            'fan-out-concurrency-shard',
+            'namespace-behavior-shard',
+        ] as $scope) {
+            $this->assertContains($scope, $hostRunner['required_execution_scopes']);
+            $this->assertContains($scope, $hostRunner['merge_policy']['input_scopes']);
+        }
+
+        $this->assertSame(
+            ['PhpParent', 'PhpChild'],
+            $hostRunner['runtime_shards']['workflow-php']['must_register_workflows'],
+        );
+        $this->assertSame(
+            ['PythonParent', 'PythonChild'],
+            $hostRunner['runtime_shards']['sdk-python']['must_register_workflows'],
+        );
+        $this->assertSame(
+            'child_workflow_runtime_contract.required_scenarios',
+            $hostRunner['merge_policy']['requires_required_scenarios'],
+        );
+        foreach (['workflow-php', 'sdk-python'] as $runtime) {
+            $this->assertContains($runtime, $hostRunner['merge_policy']['requires_required_runtimes']);
+        }
+        foreach ([
+            'published_artifact_install',
+            'runtime_matrix',
+            'failure_round_trip',
+            'cancellation_propagation',
+            'replay_restart',
+            'fan_out',
+            'namespace_behavior',
+        ] as $section) {
+            $this->assertContains($section, $hostRunner['merge_policy']['requires_sections']);
+        }
+
+        $this->assertSame(
+            [
+                'scenario_status' => 'not_covered',
+                'finding_type' => 'conformance_runner_coverage_gap',
+                'owner' => 'conformance_harness',
+            ],
+            $hostRunner['routing_policy']['missing_required_scenario'],
+        );
+    }
+
     public function test_manifest_publishes_an_enforceable_result_gate(): void
     {
         $resultGate = ChildWorkflowRuntimeContract::manifest()['result_gate'];

@@ -16,7 +16,7 @@ final class ChildWorkflowRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.child-workflow-runtime.contract';
 
-    public const VERSION = 5;
+    public const VERSION = 6;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.child-workflow-runtime.result';
 
@@ -254,6 +254,86 @@ final class ChildWorkflowRuntimeContract
                 'smoke_subset_outcome' => 'non_passing',
                 'unsupported_public_surface_outcome' => 'non_passing_with_root_cause_finding',
                 'runner_blocked_outcome' => 'non_passing_runner_blocked',
+            ],
+            'host_runner_contract' => [
+                'status' => 'required_for_passing_child_workflows_conformance',
+                'result_schema' => self::RESULT_SCHEMA,
+                'must_probe_runtime_published_surfaces' => true,
+                'must_emit_result_for_every_required_scenario' => true,
+                'smoke_summary_only_outcome' => 'non_passing',
+                'unexecuted_required_scenario_status' => 'not_covered',
+                'coverage_gap_finding_type' => 'conformance_runner_coverage_gap',
+                'coverage_gap_owner' => 'conformance_harness',
+                'required_execution_scopes' => [
+                    'published-artifact-install',
+                    'workflow-php-parent-child-shard',
+                    'sdk-python-parent-child-shard',
+                    'cross-language-parent-child-shard',
+                    'failure-round-trip-shard',
+                    'cancellation-propagation-shard',
+                    'replay-restart-shard',
+                    'fan-out-concurrency-shard',
+                    'namespace-behavior-shard',
+                ],
+                'runtime_shards' => [
+                    'workflow-php' => [
+                        'scope' => 'workflow-php-parent-child-shard',
+                        'must_register_workflows' => [
+                            'PhpParent',
+                            'PhpChild',
+                        ],
+                        'fallback_status_when_surface_missing' => 'unsupported',
+                        'fallback_finding_type' => 'unsupported_public_surface',
+                    ],
+                    'sdk-python' => [
+                        'scope' => 'sdk-python-parent-child-shard',
+                        'must_register_workflows' => [
+                            'PythonParent',
+                            'PythonChild',
+                        ],
+                        'fallback_status_when_surface_missing' => 'unsupported',
+                        'fallback_finding_type' => 'unsupported_public_surface',
+                    ],
+                ],
+                'merge_policy' => [
+                    'input_scopes' => [
+                        'published-artifact-install',
+                        'workflow-php-parent-child-shard',
+                        'sdk-python-parent-child-shard',
+                        'cross-language-parent-child-shard',
+                        'failure-round-trip-shard',
+                        'cancellation-propagation-shard',
+                        'replay-restart-shard',
+                        'fan-out-concurrency-shard',
+                        'namespace-behavior-shard',
+                    ],
+                    'output_schema' => self::RESULT_SCHEMA,
+                    'requires_required_runtimes' => [
+                        'workflow-php',
+                        'sdk-python',
+                    ],
+                    'requires_required_scenarios' => 'child_workflow_runtime_contract.required_scenarios',
+                    'requires_sections' => [
+                        'published_artifact_install',
+                        'runtime_matrix',
+                        'failure_round_trip',
+                        'cancellation_propagation',
+                        'replay_restart',
+                        'fan_out',
+                        'namespace_behavior',
+                    ],
+                ],
+                'routing_policy' => [
+                    'missing_required_scenario' => [
+                        'scenario_status' => 'not_covered',
+                        'finding_type' => 'conformance_runner_coverage_gap',
+                        'owner' => 'conformance_harness',
+                    ],
+                    'scenario_product_failure' => [
+                        'scenario_status' => 'fail',
+                        'finding_source' => 'child_workflow_runtime_contract.finding_policy',
+                    ],
+                ],
             ],
             'result_gate' => ChildWorkflowRuntimeResultGate::spec(),
             'finding_policy' => [

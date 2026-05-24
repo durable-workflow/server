@@ -213,6 +213,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'required_scenarios',
                     'scenario_requirements',
                     'coverage_gate',
+                    'host_runner_contract',
                     'result_gate',
                     'finding_policy',
                 ],

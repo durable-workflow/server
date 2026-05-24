@@ -258,6 +258,14 @@ class ClusterInfoTest extends TestCase
             $contract['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertSame(
+            'required_for_passing_child_workflows_conformance',
+            $contract['host_runner_contract']['status'],
+        );
+        $this->assertSame(
+            'conformance_runner_coverage_gap',
+            $contract['host_runner_contract']['routing_policy']['missing_required_scenario']['finding_type'],
+        );
+        $this->assertSame(
             ChildWorkflowRuntimeResultGate::SCHEMA,
             $contract['result_gate']['schema'],
         );
