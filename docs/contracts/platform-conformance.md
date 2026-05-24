@@ -23,7 +23,7 @@ The server claims three targets from the suite's matrix:
 ## Fixture sources served by this repo
 
 The fixture catalog in the suite manifest names server-owned surfaces
-as source material for seven categories:
+as source material for eight categories:
 
 | Category | Source path | Status |
 | --- | --- | --- |
@@ -32,6 +32,7 @@ as source material for seven categories:
 | `search_attribute_runtime_contract` (server side) | `GET /api/cluster/info`'s `search_attribute_runtime_contract` manifest, the search-attribute control-plane routes, workflow start metadata, workflow-task upsert command, workflow list query parser, and operator visibility surfaces | stable |
 | `schedules_runtime_contract` (server side) | `GET /api/cluster/info`'s `schedules_runtime_contract` manifest, the schedule control-plane routes, scheduler tick entrypoint, schedule history, CLI/SDK/PHP client surfaces, and cross-language dispatch behavior | stable |
 | `child_workflow_runtime_contract` (server side) | `GET /api/cluster/info`'s `child_workflow_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/child-workflow-runtime-scenarios.json`, plus the child scheduling, completion, failure, cancellation, replay, fan-out, and namespace behavior recorded by the worker protocol and history surfaces | stable |
+| `worker_versioning_runtime_contract` (server side) | `GET /api/cluster/info`'s `worker_versioning_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/worker-versioning-runtime-scenarios.json`, worker registration/build-id rollout APIs, workflow start pinning, compatible polling, history/visibility pin surfaces, and CLI/Waterline operator visibility | stable |
 | `namespace_runtime_contract` (server side) | the public scenario manifest at `static/platform-conformance/namespace-runtime-scenarios.json`, plus namespace, workflow, worker, schedule, search-attribute, Nexus, and operator routes documented in the protocol catalog | stable |
 | `failure_repair_actionability` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, plus the artifact objects published from `GET /api/cluster/info`'s `worker_protocol.external_task_result_contract.fixtures` | stable |
 
@@ -126,6 +127,17 @@ category emits a warning and does not block.
   remains non-passing; every declared outcome alias (`outcome`, `status`,
   `verdict`) and the evaluated gate status must agree before rollup can
   count the evidence as passing.
+- Worker-versioning runtime contract: `GET /api/cluster/info` re-exports
+  `worker_versioning_runtime_contract`, schema
+  `durable-workflow.v2.worker-versioning-runtime.contract`. It names the
+  required published-artifact install policy, PHP/Python worker matrix,
+  CLI/Python/PHP/Waterline operator surfaces, pin-on-start evidence,
+  compatible replay after cache eviction or restart, new-start promotion,
+  explicit no-compatible-worker behavior, cross-language PHP/Python
+  pinning, adversarial no-version-bump capture, history API pin evidence,
+  and a result-gate evaluator that rejects smoke-only rollout evidence or
+  uncovered required scenarios as non-passing unless linked findings name
+  the owning public surface.
 - Namespace runtime contract: the public suite's
   `namespace_runtime_contract` category is the load-bearing namespace
   parity gate. It requires published-artifact evidence for namespace

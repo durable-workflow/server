@@ -12,6 +12,7 @@ use App\Support\NamespaceRuntimeContract;
 use App\Support\SearchAttributeRuntimeContract;
 use App\Support\ServerTopology;
 use App\Support\SignalQueryRuntimeContract;
+use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -217,6 +218,24 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'result_gate',
                     'finding_policy',
                 ],
+                'worker_versioning_runtime_contract' => [
+                    'schema',
+                    'version',
+                    'result_schema',
+                    'result_version',
+                    'fixture_category',
+                    'platform_conformance_suite_authority',
+                    'artifact_policy',
+                    'scenario_statuses',
+                    'topology',
+                    'required_matrix',
+                    'required_scenarios',
+                    'scenario_requirements',
+                    'coverage_gate',
+                    'host_runner_contract',
+                    'result_gate',
+                    'finding_policy',
+                ],
                 'namespace_runtime_contract' => [
                     'schema',
                     'version',
@@ -303,6 +322,12 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('child_workflow_runtime_contract.version', ChildWorkflowRuntimeContract::VERSION)
             ->assertJsonPath(
                 'child_workflow_runtime_contract.platform_conformance_suite_authority',
+                PlatformConformanceSuite::SCHEMA,
+            )
+            ->assertJsonPath('worker_versioning_runtime_contract.schema', WorkerVersioningRuntimeContract::SCHEMA)
+            ->assertJsonPath('worker_versioning_runtime_contract.version', WorkerVersioningRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'worker_versioning_runtime_contract.platform_conformance_suite_authority',
                 PlatformConformanceSuite::SCHEMA,
             )
             ->assertJsonPath('namespace_runtime_contract.schema', NamespaceRuntimeContract::SCHEMA)

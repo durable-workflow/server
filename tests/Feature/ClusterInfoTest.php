@@ -17,6 +17,8 @@ use App\Support\SchedulesRuntimeContract;
 use App\Support\SchedulesRuntimeResultGate;
 use App\Support\SignalQueryRuntimeContract;
 use App\Support\SignalQueryRuntimeResultGate;
+use App\Support\WorkerVersioningRuntimeContract;
+use App\Support\WorkerVersioningRuntimeResultGate;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -386,6 +388,62 @@ class ClusterInfoTest extends TestCase
         );
         $this->assertContains(
             'cross_language_schedule_workflow_cells_are_reported',
+            $contract['result_gate']['pass_requires'],
+        );
+    }
+
+    public function test_it_publishes_the_worker_versioning_runtime_conformance_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('worker_versioning_runtime_contract.schema', WorkerVersioningRuntimeContract::SCHEMA)
+            ->assertJsonPath('worker_versioning_runtime_contract.version', WorkerVersioningRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'worker_versioning_runtime_contract.fixture_category',
+                'worker_versioning_runtime_contract',
+            )
+            ->assertJsonPath(
+                'worker_versioning_runtime_contract.coverage_gate.smoke_subset_outcome',
+                'non_passing',
+            )
+            ->assertJsonPath(
+                'worker_versioning_runtime_contract.scenario_manifest.suite_version',
+                PlatformConformanceSuite::VERSION,
+            );
+
+        $contract = $response->json('worker_versioning_runtime_contract');
+        $this->assertIsArray($contract);
+        $this->assertArrayHasKey('waterline', $contract['artifact_policy']['install_channels']);
+        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
+        $this->assertContains('cli', $contract['required_matrix']['client_paths']);
+        $this->assertContains('Waterline worker and workflow views', $contract['required_matrix']['operator_visibility_paths']);
+        $this->assertContains('pin_on_start', $contract['required_scenarios']);
+        $this->assertContains('replay_only_by_compatible_workers', $contract['required_scenarios']);
+        $this->assertContains('new_starts_to_promoted_version', $contract['required_scenarios']);
+        $this->assertContains('replay_across_cache_eviction', $contract['required_scenarios']);
+        $this->assertContains('no_compatible_worker_behavior', $contract['required_scenarios']);
+        $this->assertContains('cross_language_php_python_pinning', $contract['required_scenarios']);
+        $this->assertContains('adversarial_no_version_bump', $contract['required_scenarios']);
+        $this->assertContains('history_api_version_pin', $contract['required_scenarios']);
+        $this->assertContains(
+            'findings_linked_for_non_pass_scenarios',
+            $contract['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertSame(
+            'required_for_passing_worker_versioning_conformance',
+            $contract['host_runner_contract']['status'],
+        );
+        $this->assertSame(
+            'conformance_runner_coverage_gap',
+            $contract['host_runner_contract']['routing_policy']['missing_required_scenario']['finding_type'],
+        );
+        $this->assertSame(
+            WorkerVersioningRuntimeResultGate::SCHEMA,
+            $contract['result_gate']['schema'],
+        );
+        $this->assertContains(
+            'pin_replay_promotion_no_compatible_and_history_sections_are_reported',
             $contract['result_gate']['pass_requires'],
         );
     }
