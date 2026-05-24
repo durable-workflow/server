@@ -57,31 +57,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract image metadata
+      - name: Extract exact image metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
           images: |
             ${{ env.DOCKERHUB_IMAGE }}
             ${{ env.GHCR_IMAGE }}
-          # On a release tag like 0.1.0, produces tags:
+          # On a release tag like 0.1.0, produces immutable tags:
           #   durableworkflow/server:0.1.0
-          #   durableworkflow/server:0.1
-          #   durableworkflow/server:0
-          #   durableworkflow/server:latest
           #   ghcr.io/durable-workflow/server:0.1.0
-          #   ghcr.io/durable-workflow/server:0.1
-          #   ghcr.io/durable-workflow/server:0
-          #   ghcr.io/durable-workflow/server:latest
-          # workflow_dispatch with a semver input reproduces the same aliases
+          # workflow_dispatch with a semver input reproduces the same exact tags
           # from the default branch, so skipped tag-triggered releases can be
           # republished after workflow-only fixes.
           tags: |
             type=semver,pattern={{version}},value=${{ steps.release_publish.outputs.tag }},enable=${{ steps.release_publish.outputs.is_semver == 'true' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release_publish.outputs.tag }},enable=${{ steps.release_publish.outputs.is_semver == 'true' }}
-            type=semver,pattern={{major}},value=${{ steps.release_publish.outputs.tag }},enable=${{ steps.release_publish.outputs.is_semver == 'true' }}
-            type=raw,value=latest,enable=${{ steps.release_publish.outputs.is_semver == 'true' }}
             type=raw,value=${{ steps.release_publish.outputs.tag }},enable=${{ steps.release_publish.outputs.is_semver != 'true' }}
+          flavor: |
+            latest=false
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -108,7 +101,8 @@ jobs:
           echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
           echo "Using workflow package version: $LATEST_TAG"
 
-      - name: Build and push
+      - name: Build and push exact image tags
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -121,3 +115,51 @@ jobs:
           provenance: false
           build-args: |
             WORKFLOW_PACKAGE_REF=${{ steps.workflow.outputs.tag }}
+
+      - name: Resolve rolling image aliases
+        id: rolling
+        if: ${{ steps.release_publish.outputs.is_semver == 'true' && steps.build.outcome == 'success' }}
+        env:
+          RELEASE_TAG: ${{ steps.release_publish.outputs.tag }}
+          DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_IMAGE }}
+          GHCR_IMAGE: ${{ env.GHCR_IMAGE }}
+          RELEASE_IMAGE_TAG_SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}.git
+        run: scripts/ci/resolve-release-image-rolling-tags.sh
+
+      - name: Promote rolling image aliases
+        id: promote_rolling
+        if: ${{ steps.rolling.outputs.rolling_should_promote == 'true' }}
+        env:
+          RELEASE_TAG: ${{ steps.release_publish.outputs.tag }}
+          DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_IMAGE }}
+          GHCR_IMAGE: ${{ env.GHCR_IMAGE }}
+          ROLLING_SHOULD_PROMOTE: ${{ steps.rolling.outputs.rolling_should_promote }}
+          RELEASE_IMAGE_TAG_SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}.git
+        run: scripts/ci/promote-release-image-rolling-tags.sh
+
+      - name: Write release image publish evidence
+        if: ${{ always() }}
+        env:
+          RELEASE_TAG: ${{ steps.release_publish.outputs.tag || github.event.inputs.tag || github.ref_name }}
+          DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_IMAGE }}
+          GHCR_IMAGE: ${{ env.GHCR_IMAGE }}
+          VALIDATION_OUTCOME: ${{ steps.release_publish.outcome || 'skipped' }}
+          EXACT_PUBLISH_OUTCOME: ${{ steps.build.outcome || 'skipped' }}
+          ROLLING_GUARD_OUTCOME: ${{ steps.rolling.outcome || 'skipped' }}
+          ROLLING_PROMOTE_OUTCOME: ${{ steps.promote_rolling.outcome || 'skipped' }}
+          ROLLING_ARTIFACT_STATUS: ${{ steps.promote_rolling.outputs.artifact_status || steps.rolling.outputs.artifact_status }}
+          ROLLING_SHOULD_PROMOTE: ${{ steps.promote_rolling.outputs.rolling_should_promote || steps.rolling.outputs.rolling_should_promote || 'false' }}
+          ROLLING_SUPERSEDED_BY: ${{ steps.promote_rolling.outputs.superseded_by || steps.rolling.outputs.superseded_by }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: scripts/ci/write-release-image-publish-evidence.sh
+
+      - name: Upload release image publish evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-image-publish-evidence
+          path: release-image-publish-evidence.json
+          if-no-files-found: error
