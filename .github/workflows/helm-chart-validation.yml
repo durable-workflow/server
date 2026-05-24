@@ -89,7 +89,7 @@ jobs:
       - name: Upload rendered manifests
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v3.2.2
+        uses: actions/upload-artifact@v4
         with:
           name: helm-rendered-manifests
           path: rendered/
@@ -189,7 +189,7 @@ jobs:
       - name: Upload smoke artifacts
         if: failure()
         continue-on-error: true
-        uses: actions/upload-artifact@v3.2.2
+        uses: actions/upload-artifact@v4
         with:
           name: helm-chart-kind-smoke
           path: ${{ runner.temp }}/helm-smoke

@@ -64,7 +64,7 @@ jobs:
 
       - name: Upload Kubernetes smoke artifacts
         if: failure()
-        uses: actions/upload-artifact@v3.2.2
+        uses: actions/upload-artifact@v4
         with:
           name: kubernetes-kind-smoke-artifacts
           path: ${{ runner.temp }}/k8s-kind-smoke-artifacts
