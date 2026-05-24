@@ -1,0 +1,483 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 1,
+  "category": "schedules_runtime_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 7,
+  "description": "Public scenario manifest for Temporal-parity schedule conformance. Harnesses use these scenario ids and criteria when evaluating published Durable Workflow artifacts.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_resolved_versions": true,
+    "rejects_placeholder_versions": true,
+    "implementation_tests_are_not_sources": true
+  },
+  "common_result_evidence": [
+    "suite_version",
+    "scenario_id",
+    "status",
+    "started_at",
+    "finished_at",
+    "generated_at",
+    "published_artifact_versions",
+    "implementation_identity",
+    "runtime_matrix",
+    "topology",
+    "cadence_observations",
+    "operator_controls",
+    "missed_fire_policy",
+    "restart_survival",
+    "cross_language_matrix",
+    "adversarial_outcomes",
+    "observed_outputs",
+    "linked_findings"
+  ],
+  "schedule_policy": {
+    "missed_fire_policy": "fire_once_on_resume_then_skip_remaining_missed",
+    "pause_policy": "paused schedules do not fire; resume computes the next fire from resume time without automatic catch-up",
+    "restart_policy": "active schedule rows survive server restart and fire at the first due tick after restart"
+  },
+  "required_matrix": {
+    "runtimes": [
+      "workflow-php",
+      "sdk-python"
+    ],
+    "client_paths": [
+      "cli",
+      "sdk-python",
+      "workflow-php-sdk"
+    ],
+    "schedule_types": [
+      "cron_expression",
+      "fixed_rate_interval"
+    ],
+    "cross_language_cells": [
+      {
+        "schedule_creator": "sdk-python",
+        "workflow_runtime": "workflow-php",
+        "scenario": "python_created_php_workflow"
+      },
+      {
+        "schedule_creator": "workflow-php-sdk",
+        "workflow_runtime": "sdk-python",
+        "scenario": "php_created_python_workflow"
+      }
+    ]
+  },
+  "scenario_requirements": {
+    "cron_cadence": {
+      "cron_expression": "* * * * *",
+      "minimum_observed_fires": 4,
+      "required_fields": [
+        "actual_fire_timestamps",
+        "nominal_fire_timestamps",
+        "drift_ms"
+      ]
+    },
+    "fixed_rate_cadence": {
+      "interval": "PT30S",
+      "minimum_observed_fires": 8,
+      "required_fields": [
+        "actual_fire_timestamps",
+        "nominal_fire_timestamps",
+        "drift_ms"
+      ]
+    },
+    "invalid_cron_refusal": {
+      "required_behavior": "server_refuses_before_persisting_schedule",
+      "required_fields": [
+        "refused",
+        "typed_error",
+        "persisted"
+      ]
+    },
+    "missed_fire_policy": {
+      "expected_policy": "fire_once_on_resume_then_skip_remaining_missed",
+      "required_fields": [
+        "documented_policy",
+        "observed_policy",
+        "catchup_fire_count",
+        "post_resume_normal_fire_observed"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "published_artifact_install_only",
+      "title": "Published artifact install only",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "cli",
+        "python_sdk_runtime",
+        "workflow_php_runtime",
+        "waterline"
+      ],
+      "operations": [
+        "install the server image, CLI, Python SDK, PHP workflow runtime, and Waterline from published channels",
+        "record the resolved artifact name and version for every actor",
+        "run no product code from a local checkout"
+      ],
+      "pass_criteria": [
+        "the result document records every resolved artifact version",
+        "all actors under test came from published install channels",
+        "local product source checkouts are not used as artifacts under test"
+      ],
+      "unsupported_when": [
+        "the implementation does not claim the actor or target under test"
+      ]
+    },
+    {
+      "id": "cron_cadence",
+      "title": "Cron cadence",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "scheduler_tick",
+        "worker",
+        "sdk_client"
+      ],
+      "operations": [
+        "create a schedule with cron expression * * * * * on the shared schedules conformance task queue",
+        "observe at least four nominal minute boundaries and record nominal and actual fire timestamps",
+        "capture drift in milliseconds for every observed fire"
+      ],
+      "pass_criteria": [
+        "at least four cron fires are observed from published artifacts",
+        "every observed fire is tied to the expected nominal occurrence time",
+        "drift samples are recorded for every nominal and actual timestamp pair"
+      ]
+    },
+    {
+      "id": "fixed_rate_cadence",
+      "title": "Fixed-rate cadence",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "scheduler_tick",
+        "worker",
+        "sdk_client"
+      ],
+      "operations": [
+        "create a schedule with a PT30S fixed-rate interval on the shared schedules conformance task queue",
+        "observe at least eight expected interval boundaries and record nominal and actual fire timestamps",
+        "capture drift in milliseconds for every observed fire"
+      ],
+      "pass_criteria": [
+        "at least eight fixed-rate fires are observed from published artifacts",
+        "no duplicate or skipped interval is reported as passing evidence",
+        "drift samples are recorded for every nominal and actual timestamp pair"
+      ]
+    },
+    {
+      "id": "list_describe_visibility",
+      "title": "List and describe visibility",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "cli_client",
+        "python_sdk_client",
+        "php_sdk_client"
+      ],
+      "operations": [
+        "create active cron and fixed-rate schedules",
+        "list and describe those schedules through CLI, Python SDK, and PHP-facing client paths",
+        "capture cron or interval definition, last_fire_at, next_fire_at, and paused state"
+      ],
+      "pass_criteria": [
+        "all claimed public clients can observe the same schedule identities",
+        "operator-visible fields include cron or interval, last_fire_at, next_fire_at, and paused",
+        "client outputs agree on schedule state without reading server internals"
+      ]
+    },
+    {
+      "id": "pause_resume_no_fire_window",
+      "title": "Pause and resume no-fire window",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "scheduler_tick",
+        "worker",
+        "operator_client"
+      ],
+      "operations": [
+        "pause an active schedule through a public control path",
+        "keep the schedule paused for at least 120 seconds while scheduler ticks continue",
+        "resume the schedule and observe the next normal fire"
+      ],
+      "pass_criteria": [
+        "fires_during_pause_count is exactly zero",
+        "resume changes the schedule back to active state",
+        "the next fire is computed from resume time instead of replaying the pause window"
+      ]
+    },
+    {
+      "id": "delete_stops_future_fires",
+      "title": "Delete stops future fires",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "scheduler_tick",
+        "worker",
+        "operator_client"
+      ],
+      "operations": [
+        "delete an active schedule through a public control path",
+        "list and describe schedules after deletion",
+        "continue scheduler ticks long enough to cover at least one later nominal fire time"
+      ],
+      "pass_criteria": [
+        "the deleted schedule is absent from list and describe outputs",
+        "no later workflow fire is attributed to the deleted schedule",
+        "delete evidence names the public surface used"
+      ]
+    },
+    {
+      "id": "missed_fire_policy",
+      "title": "Missed-fire policy",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "scheduler_tick",
+        "worker"
+      ],
+      "operations": [
+        "store an active schedule and stop scheduler evaluation through one or more nominal fire times",
+        "restart evaluation and observe catch-up behavior",
+        "record documented_policy, observed_policy, catchup_fire_count, and post_resume_normal_fire_observed"
+      ],
+      "pass_criteria": [
+        "observed_policy equals fire_once_on_resume_then_skip_remaining_missed",
+        "catchup_fire_count is exactly one for the overdue occurrence",
+        "a later normal fire is observed after catch-up without replaying every missed occurrence"
+      ]
+    },
+    {
+      "id": "restart_survival",
+      "title": "Restart survival",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "scheduler_tick",
+        "worker",
+        "operator_client"
+      ],
+      "operations": [
+        "create an active schedule and confirm it is persisted",
+        "restart the server process while keeping durable storage",
+        "list the schedule after restart and observe a post-restart fire within the documented deadline"
+      ],
+      "pass_criteria": [
+        "the schedule is listed after restart with its durable definition intact",
+        "the schedule fires after restart within the restart_fire_deadline_seconds window",
+        "restart evidence distinguishes server restart from worker-only restart"
+      ]
+    },
+    {
+      "id": "cli_schedule_surface",
+      "title": "CLI schedule surface",
+      "claim_targets": [
+        "cli_json_client",
+        "standalone_server"
+      ],
+      "actors": [
+        "server",
+        "cli_client"
+      ],
+      "operations": [
+        "create or observe schedules through the official CLI",
+        "list and describe schedules through CLI JSON output",
+        "pause, resume, trigger, and delete a schedule through CLI commands or record unsupported commands with findings"
+      ],
+      "pass_criteria": [
+        "CLI evidence covers create_or_observe, list_observed, and control_observed",
+        "machine-readable output exposes stable schedule identity and state fields",
+        "any unsupported CLI command is non-passing and links a focused finding"
+      ]
+    },
+    {
+      "id": "python_sdk_schedule_surface",
+      "title": "Python SDK schedule surface",
+      "claim_targets": [
+        "official_sdk",
+        "standalone_server"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_client"
+      ],
+      "operations": [
+        "create or observe schedules through the Python SDK",
+        "list and describe schedules through Python SDK APIs",
+        "pause, resume, trigger, and delete a schedule through Python SDK APIs"
+      ],
+      "pass_criteria": [
+        "Python SDK evidence covers create_or_observe, list_observed, and control_observed",
+        "SDK-visible state agrees with server and CLI schedule state",
+        "typed errors are recorded for unsupported or invalid operations"
+      ]
+    },
+    {
+      "id": "php_schedule_surface",
+      "title": "PHP schedule surface",
+      "claim_targets": [
+        "official_sdk",
+        "standalone_server"
+      ],
+      "actors": [
+        "server",
+        "php_sdk_client"
+      ],
+      "operations": [
+        "create or observe schedules through the PHP-facing workflow SDK surface",
+        "list or describe schedules through the PHP-facing client path",
+        "pause, resume, trigger, or delete a schedule through PHP-facing APIs when claimed"
+      ],
+      "pass_criteria": [
+        "PHP SDK evidence covers create_or_observe, list_observed, and control_observed for claimed operations",
+        "PHP-facing schedule state agrees with server and CLI schedule state",
+        "any unsupported PHP-facing operation is non-passing and links a focused finding"
+      ]
+    },
+    {
+      "id": "python_created_php_workflow",
+      "title": "Python-created schedule starts PHP workflow",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "python_sdk_client",
+        "php_worker",
+        "cli_client"
+      ],
+      "operations": [
+        "create a schedule from the Python SDK targeting a PHP workflow type on the shared task queue",
+        "run the PHP worker from the published workflow package",
+        "observe schedule visibility through CLI and workflow completion through public APIs"
+      ],
+      "pass_criteria": [
+        "schedule_creator is sdk-python and workflow_runtime is workflow-php",
+        "the PHP workflow completes from a scheduled fire",
+        "CLI visibility confirms the schedule without requiring Python-only state"
+      ]
+    },
+    {
+      "id": "php_created_python_workflow",
+      "title": "PHP-created schedule starts Python workflow",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "php_sdk_client",
+        "python_worker",
+        "cli_client"
+      ],
+      "operations": [
+        "create a schedule from the PHP-facing SDK surface targeting a Python workflow type on the shared task queue",
+        "run the Python worker from the published Python SDK package",
+        "observe schedule visibility through CLI and workflow completion through public APIs"
+      ],
+      "pass_criteria": [
+        "schedule_creator is workflow-php-sdk and workflow_runtime is sdk-python",
+        "the Python workflow completes from a scheduled fire",
+        "CLI visibility confirms the schedule without requiring PHP-only state"
+      ]
+    },
+    {
+      "id": "invalid_cron_refusal",
+      "title": "Invalid cron refusal",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "operator_client"
+      ],
+      "operations": [
+        "attempt to create a schedule with an invalid cron expression through a public client path",
+        "capture the typed error returned by the server or client",
+        "verify that no schedule row or list result persists the invalid definition"
+      ],
+      "pass_criteria": [
+        "refused is true",
+        "typed_error is true",
+        "persisted is explicitly false"
+      ]
+    },
+    {
+      "id": "nonexistent_workflow_type_outcome",
+      "title": "Nonexistent workflow type outcome",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "operator_client",
+        "worker"
+      ],
+      "operations": [
+        "create or attempt to create a schedule targeting a workflow type that no worker registers",
+        "observe create-time validation or the first scheduled fire outcome",
+        "capture the operator-visible error or pending-worker state"
+      ],
+      "pass_criteria": [
+        "behavior is one of refused_at_create, fails_at_fire_time, or accepted_pending_worker",
+        "silent acceptance with no operator-visible outcome is not reported as passing",
+        "the result links a focused finding if the behavior is unsupported or ambiguous"
+      ]
+    }
+  ]
+}

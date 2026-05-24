@@ -13,11 +13,14 @@ use App\Support\NamespaceRuntimeResultGate;
 use App\Support\SearchAttributeRuntimeContract;
 use App\Support\SearchAttributeRuntimeResultGate;
 use App\Support\ServerTopology;
+use App\Support\SchedulesRuntimeContract;
+use App\Support\SchedulesRuntimeResultGate;
 use App\Support\SignalQueryRuntimeContract;
 use App\Support\SignalQueryRuntimeResultGate;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
+use Workflow\V2\Support\PlatformConformanceSuite;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class ClusterInfoTest extends TestCase
@@ -319,6 +322,58 @@ class ClusterInfoTest extends TestCase
         );
         $this->assertContains(
             'every_required_scenario_has_one_result',
+            $contract['result_gate']['pass_requires'],
+        );
+    }
+
+    public function test_it_publishes_the_schedules_runtime_conformance_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('schedules_runtime_contract.schema', SchedulesRuntimeContract::SCHEMA)
+            ->assertJsonPath('schedules_runtime_contract.version', SchedulesRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'schedules_runtime_contract.fixture_category',
+                'schedules_runtime_contract',
+            )
+            ->assertJsonPath(
+                'schedules_runtime_contract.coverage_gate.smoke_subset_outcome',
+                'non_passing',
+            )
+            ->assertJsonPath(
+                'schedules_runtime_contract.scenario_manifest.suite_version',
+                PlatformConformanceSuite::VERSION,
+            );
+
+        $contract = $response->json('schedules_runtime_contract');
+        $this->assertIsArray($contract);
+        $this->assertArrayHasKey('waterline', $contract['artifact_policy']['install_channels']);
+        $this->assertSame(
+            'fire_once_on_resume_then_skip_remaining_missed',
+            $contract['schedule_policy']['missed_fire_policy'],
+        );
+        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
+        $this->assertContains('cli', $contract['required_matrix']['client_paths']);
+        $this->assertContains('workflow-php-sdk', $contract['required_matrix']['client_paths']);
+        $this->assertContains('cron_cadence', $contract['required_scenarios']);
+        $this->assertContains('fixed_rate_cadence', $contract['required_scenarios']);
+        $this->assertContains('pause_resume_no_fire_window', $contract['required_scenarios']);
+        $this->assertContains('missed_fire_policy', $contract['required_scenarios']);
+        $this->assertContains('restart_survival', $contract['required_scenarios']);
+        $this->assertContains('cli_schedule_surface', $contract['required_scenarios']);
+        $this->assertContains('python_created_php_workflow', $contract['required_scenarios']);
+        $this->assertContains('php_created_python_workflow', $contract['required_scenarios']);
+        $this->assertContains(
+            'findings_linked_for_non_pass_scenarios',
+            $contract['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertSame(
+            SchedulesRuntimeResultGate::SCHEMA,
+            $contract['result_gate']['schema'],
+        );
+        $this->assertContains(
+            'cross_language_schedule_workflow_cells_are_reported',
             $contract['result_gate']['pass_requires'],
         );
     }

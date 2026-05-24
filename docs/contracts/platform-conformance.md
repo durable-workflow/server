@@ -23,13 +23,14 @@ The server claims three targets from the suite's matrix:
 ## Fixture sources served by this repo
 
 The fixture catalog in the suite manifest names server-owned surfaces
-as source material for six categories:
+as source material for seven categories:
 
 | Category | Source path | Status |
 | --- | --- | --- |
 | `worker_task_lifecycle` (server side) | `tests/Fixtures/` plus the per-route examples in `docs/contracts/external-task-input.md` and `docs/contracts/external-task-result.md` | stable |
 | `signal_query_runtime_contract` (server side) | `GET /api/cluster/info`'s `signal_query_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/signal-query-runtime-scenarios.json`, plus the signal/query control-plane routes documented in the protocol catalog | stable |
 | `search_attribute_runtime_contract` (server side) | `GET /api/cluster/info`'s `search_attribute_runtime_contract` manifest, the search-attribute control-plane routes, workflow start metadata, workflow-task upsert command, workflow list query parser, and operator visibility surfaces | stable |
+| `schedules_runtime_contract` (server side) | `GET /api/cluster/info`'s `schedules_runtime_contract` manifest, the schedule control-plane routes, scheduler tick entrypoint, schedule history, CLI/SDK/PHP client surfaces, and cross-language dispatch behavior | stable |
 | `child_workflow_runtime_contract` (server side) | `GET /api/cluster/info`'s `child_workflow_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/child-workflow-runtime-scenarios.json`, plus the child scheduling, completion, failure, cancellation, replay, fan-out, and namespace behavior recorded by the worker protocol and history surfaces | stable |
 | `namespace_runtime_contract` (server side) | the public scenario manifest at `static/platform-conformance/namespace-runtime-scenarios.json`, plus namespace, workflow, worker, schedule, search-attribute, Nexus, and operator routes documented in the protocol catalog | stable |
 | `failure_repair_actionability` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, plus the artifact objects published from `GET /api/cluster/info`'s `worker_protocol.external_task_result_contract.fixtures` | stable |
@@ -96,6 +97,15 @@ category emits a warning and does not block.
   hardening, run-record fields, the coverage gate that keeps smoke-only
   search-attribute evidence non-passing, and a result-gate evaluator that
   rejects incomplete, placeholder, or finding-free non-pass scenario records.
+- Schedules runtime contract: `GET /api/cluster/info` re-exports
+  `schedules_runtime_contract`, schema
+  `durable-workflow.v2.schedules-runtime.contract`. It names the required
+  published-artifact install policy, cron and fixed-rate cadence evidence,
+  list/describe/pause/resume/delete controls, the documented missed-fire
+  policy, restart survival, CLI/Python/PHP client surfaces, cross-language
+  schedule-to-workflow cells, invalid cron refusal, and non-existent workflow
+  type behavior. The result gate keeps schedule CRUD smoke non-passing until
+  every required scenario has concrete evidence or a linked root-cause finding.
 - Child-workflow runtime contract: `GET /api/cluster/info` re-exports
   `child_workflow_runtime_contract`, schema
   `durable-workflow.v2.child-workflow-runtime.contract`. It names the

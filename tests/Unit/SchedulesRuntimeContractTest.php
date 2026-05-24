@@ -1,0 +1,622 @@
+<?php
+
+namespace Tests\Unit;
+
+use App\Support\SchedulesRuntimeContract;
+use App\Support\SchedulesRuntimeResultGate;
+use PHPUnit\Framework\TestCase;
+use Workflow\V2\Support\PlatformConformanceSuite;
+
+class SchedulesRuntimeContractTest extends TestCase
+{
+    public function test_manifest_requires_published_artifacts_and_run_record_fields(): void
+    {
+        $manifest = SchedulesRuntimeContract::manifest();
+
+        $this->assertSame('durable-workflow.v2.schedules-runtime.contract', $manifest['schema']);
+        $this->assertSame(1, SchedulesRuntimeContract::VERSION);
+        $this->assertSame(SchedulesRuntimeContract::VERSION, $manifest['version']);
+        $this->assertSame('durable-workflow.v2.schedules-runtime.result', $manifest['result_schema']);
+        $this->assertSame('schedules_runtime_contract', $manifest['fixture_category']);
+        $this->assertSame(
+            PlatformConformanceSuite::SCHEMA,
+            $manifest['platform_conformance_suite_authority'],
+        );
+        $this->assertSame(
+            PlatformConformanceSuite::SCHEMA,
+            $manifest['scenario_manifest']['suite_schema'],
+        );
+        $this->assertSame(
+            PlatformConformanceSuite::VERSION,
+            $manifest['scenario_manifest']['suite_version'],
+        );
+        $this->assertSame(
+            'concrete_published_versions_pinned_at_run_time',
+            $manifest['artifact_policy']['version_requirement'],
+        );
+        $this->assertTrue($manifest['artifact_policy']['placeholder_versions_rejected']);
+
+        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
+            $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
+        }
+
+        foreach ([
+            'artifact_versions',
+            'started_at',
+            'finished_at',
+            'generated_at',
+            'outcome',
+            'scenario_results',
+            'findings',
+            'finding_links',
+            'topology',
+            'runtime_matrix',
+            'cadence_observations',
+            'operator_controls',
+            'missed_fire_policy',
+            'restart_survival',
+            'cross_language_matrix',
+            'adversarial_outcomes',
+        ] as $field) {
+            $this->assertContains($field, $manifest['artifact_policy']['required_run_record_fields']);
+        }
+    }
+
+    public function test_manifest_names_the_full_schedules_matrix_and_policy(): void
+    {
+        $manifest = SchedulesRuntimeContract::manifest();
+
+        $this->assertSame(
+            'fire_once_on_resume_then_skip_remaining_missed',
+            $manifest['schedule_policy']['missed_fire_policy'],
+        );
+        $this->assertContains('cron_cadence', $manifest['required_scenarios']);
+        $this->assertContains('fixed_rate_cadence', $manifest['required_scenarios']);
+        $this->assertContains('pause_resume_no_fire_window', $manifest['required_scenarios']);
+        $this->assertContains('missed_fire_policy', $manifest['required_scenarios']);
+        $this->assertContains('restart_survival', $manifest['required_scenarios']);
+        $this->assertContains('cli_schedule_surface', $manifest['required_scenarios']);
+        $this->assertContains('php_schedule_surface', $manifest['required_scenarios']);
+        $this->assertContains('python_created_php_workflow', $manifest['required_scenarios']);
+        $this->assertContains('php_created_python_workflow', $manifest['required_scenarios']);
+        $this->assertContains('invalid_cron_refusal', $manifest['required_scenarios']);
+
+        $matrix = $manifest['required_matrix'];
+        $this->assertContains('workflow-php', $matrix['runtimes']);
+        $this->assertContains('sdk-python', $matrix['runtimes']);
+        $this->assertContains('cli', $matrix['client_paths']);
+        $this->assertContains('workflow-php-sdk', $matrix['client_paths']);
+        $this->assertContains('cron_expression', $matrix['schedule_types']);
+        $this->assertContains('fixed_rate_interval', $matrix['schedule_types']);
+        $this->assertContains(
+            [
+                'schedule_creator' => 'sdk-python',
+                'workflow_runtime' => 'workflow-php',
+                'scenario' => 'python_created_php_workflow',
+            ],
+            $matrix['cross_language_cells'],
+        );
+    }
+
+    public function test_manifest_publishes_an_enforceable_result_gate(): void
+    {
+        $resultGate = SchedulesRuntimeContract::manifest()['result_gate'];
+
+        $this->assertSame(SchedulesRuntimeResultGate::SCHEMA, $resultGate['schema']);
+        $this->assertSame(SchedulesRuntimeResultGate::VERSION, $resultGate['version']);
+        $this->assertSame(
+            SchedulesRuntimeContract::RESULT_SCHEMA,
+            $resultGate['evaluates_result_schema'],
+        );
+        $this->assertContains('scenario_results', $resultGate['scenario_results_fields']);
+        $this->assertContains('artifactVersions', $resultGate['artifact_versions_fields']);
+        $this->assertContains(
+            'cross_language_schedule_workflow_cells_are_reported',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'cadence_operator_missed_restart_cross_language_and_adversarial_sections_are_reported',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'cadence_observation_counts_match_scenario_requirements',
+            $resultGate['pass_requires'],
+        );
+        $this->assertSame('non_passing', $resultGate['smoke_subset_outcome']);
+        $this->assertTrue($resultGate['artifact_version_policy']['requires_recorded_and_pinned_versions']);
+        $this->assertTrue($resultGate['artifact_version_policy']['rejects_placeholder_versions']);
+        foreach (['latest', 'current', 'head', 'unresolved', 'placeholder', '<latest>'] as $example) {
+            $this->assertContains($example, $resultGate['artifact_version_policy']['placeholder_version_examples']);
+        }
+    }
+
+    public function test_scenario_manifest_source_path_is_published_and_matches_contract(): void
+    {
+        $manifest = SchedulesRuntimeContract::manifest();
+        $scenarioManifestPath = dirname(__DIR__, 2) . '/' . $manifest['scenario_manifest']['source_path'];
+
+        $this->assertFileExists(
+            $scenarioManifestPath,
+            'cluster info must not advertise a schedule scenario manifest source path that is missing from the release tree',
+        );
+
+        $scenarioManifest = json_decode(
+            (string) file_get_contents($scenarioManifestPath),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+
+        $this->assertSame($manifest['scenario_manifest']['schema'], $scenarioManifest['schema']);
+        $this->assertSame($manifest['scenario_manifest']['category'], $scenarioManifest['category']);
+        $this->assertSame($manifest['scenario_manifest']['suite_schema'], $scenarioManifest['suite_schema']);
+        $this->assertSame($manifest['scenario_manifest']['suite_version'], $scenarioManifest['suite_version']);
+        $this->assertSame(PlatformConformanceSuite::VERSION, $scenarioManifest['suite_version']);
+        $this->assertSame($manifest['scenario_statuses'], $scenarioManifest['result_statuses']);
+        $this->assertSame(
+            $manifest['required_scenarios'],
+            array_column($scenarioManifest['scenarios'], 'id'),
+        );
+        $this->assertSame(
+            $manifest['scenario_requirements']['fixed_rate_cadence']['minimum_observed_fires'],
+            $scenarioManifest['scenario_requirements']['fixed_rate_cadence']['minimum_observed_fires'],
+        );
+        $this->assertSame(
+            $manifest['schedule_policy']['missed_fire_policy'],
+            $scenarioManifest['schedule_policy']['missed_fire_policy'],
+        );
+    }
+
+    public function test_result_gate_rejects_schedule_smoke_subset_even_when_the_smoke_passes(): void
+    {
+        $evaluation = SchedulesRuntimeResultGate::evaluate([
+            'schema' => SchedulesRuntimeContract::RESULT_SCHEMA,
+            'artifactVersions' => [
+                'server' => '0.2.174',
+                'cli' => '0.1.56',
+                'sdk-python' => '0.4.74',
+                'workflow' => '2.0.0-alpha.175',
+                'waterline' => '2.0.0-alpha.57',
+            ],
+            'scenario_results' => [
+                'published_artifact_install_only' => [
+                    'status' => 'pass',
+                    'observed_outputs' => [
+                        'artifact_sources' => ['server' => 'published_docker_image'],
+                    ],
+                ],
+                'python_sdk_schedule_surface' => [
+                    'status' => 'pass',
+                    'observed_outputs' => [
+                        'create_or_observe' => true,
+                        'list_observed' => true,
+                        'control_observed' => true,
+                    ],
+                ],
+                'invalid_cron_refusal' => [
+                    'status' => 'pass',
+                    'observed_outputs' => [
+                        'refused' => true,
+                        'typed_error' => true,
+                        'persisted' => false,
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertTrue($evaluation['smoke_subset_detected']);
+        $this->assertContains('cron_cadence', $evaluation['missing_scenarios']);
+        $this->assertContains(
+            'smoke_subset_cannot_pass',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_requires_findings_for_non_pass_scenarios(): void
+    {
+        $result = $this->completeSchedulesResult();
+        $result['scenario_results']['fixed_rate_cadence']['status'] = 'fail';
+        unset($result['scenario_results']['fixed_rate_cadence']['linked_findings']);
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('fixed_rate_cadence', $evaluation['non_pass_scenarios']);
+        $this->assertContains(
+            'missing_non_pass_finding',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_missing_missed_fire_and_restart_evidence(): void
+    {
+        $result = $this->completeSchedulesResult();
+        unset($result['missed_fire_policy']['post_resume_normal_fire_observed']);
+        unset($result['restart_survival']['fired_after_restart']);
+        unset($result['scenario_results']['missed_fire_policy']['observed_outputs']['post_resume_normal_fire_observed']);
+        unset($result['scenario_results']['restart_survival']['observed_outputs']['fired_after_restart']);
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('missing_post_resume_normal_fire_evidence', $failureCodes);
+        $this->assertContains('missing_restart_survival_evidence', $failureCodes);
+    }
+
+    public function test_result_gate_requires_cadence_counts_from_the_manifest(): void
+    {
+        $result = $this->completeSchedulesResult();
+        $shortFixedRateCadence = [
+            'actual_fire_timestamps' => [
+                '2026-05-24T05:00:00Z',
+                '2026-05-24T05:00:30Z',
+                '2026-05-24T05:01:00Z',
+                '2026-05-24T05:01:30Z',
+            ],
+            'nominal_fire_timestamps' => [
+                '2026-05-24T05:00:00Z',
+                '2026-05-24T05:00:30Z',
+                '2026-05-24T05:01:00Z',
+                '2026-05-24T05:01:30Z',
+            ],
+            'drift_ms' => [0, 15, 12, 18],
+        ];
+        $result['scenario_results']['fixed_rate_cadence']['observed_outputs'] = $shortFixedRateCadence;
+        $result['cadence_observations']['fixed_rate'] = $shortFixedRateCadence;
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+        $fixedRateTimestampFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'insufficient_cadence_fire_timestamps'
+                && ($failure['scenario_id'] ?? null) === 'fixed_rate_cadence'
+                && ($failure['field'] ?? null) === 'actual_fire_timestamps',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($fixedRateTimestampFailures);
+        $this->assertSame(8, $fixedRateTimestampFailures[0]['minimum_observed_fires']);
+        $this->assertSame(4, $fixedRateTimestampFailures[0]['observed_count']);
+    }
+
+    public function test_result_gate_rejects_forbidden_sources_reported_in_scenario_outputs(): void
+    {
+        $result = $this->completeSchedulesResult();
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['server'] =
+            'local_product_source_checkout';
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+        $forbiddenSourceFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'forbidden_artifact_source'
+                && ($failure['scenario_id'] ?? null) === 'published_artifact_install_only'
+                && ($failure['artifact'] ?? null) === 'server',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($forbiddenSourceFailures);
+    }
+
+    public function test_result_gate_requires_each_published_artifact_install_source(): void
+    {
+        $result = $this->completeSchedulesResult();
+        unset($result['artifact_sources']);
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources'] = [
+            'server' => 'published_docker_image',
+        ];
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+        $missingCliSourceFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_published_artifact_install_source'
+                && ($failure['artifact'] ?? null) === 'cli',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($missingCliSourceFailures);
+    }
+
+    public function test_result_gate_rejects_placeholder_artifact_versions_embedded_in_install_channel_strings(): void
+    {
+        $result = $this->completeSchedulesResult();
+        $result['artifactVersions'] = [
+            'server' => 'durableworkflow/server:head',
+            'cli' => 'durable-workflow-cli==current',
+            'sdk-python' => 'durable-workflow==unresolved',
+            'workflow' => 'durable-workflow/workflow:placeholder',
+            'waterline' => 'durable-workflow/waterline:<latest>',
+        ];
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+        $placeholderFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'placeholder_artifact_version',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame(
+            ['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'],
+            array_column($placeholderFailures, 'artifact'),
+        );
+    }
+
+    public function test_result_gate_rejects_each_advertised_placeholder_word_inside_an_artifact_version(): void
+    {
+        foreach (['latest', 'current', 'head', 'unresolved', 'placeholder'] as $placeholder) {
+            $result = $this->completeSchedulesResult();
+            $result['artifactVersions']['server'] = 'durableworkflow/server:' . $placeholder;
+
+            $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+            $serverPlaceholderFailures = array_values(array_filter(
+                $evaluation['gate_failures'],
+                static fn (array $failure): bool => ($failure['code'] ?? null) === 'placeholder_artifact_version'
+                    && ($failure['artifact'] ?? null) === 'server',
+            ));
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertCount(1, $serverPlaceholderFailures);
+            $this->assertSame('durableworkflow/server:' . $placeholder, $serverPlaceholderFailures[0]['version']);
+        }
+    }
+
+    public function test_result_gate_requires_invalid_cron_to_report_explicit_not_persisted(): void
+    {
+        $result = $this->completeSchedulesResult();
+        unset($result['adversarial_outcomes']['invalid_cron']['persisted']);
+        unset($result['scenario_results']['invalid_cron_refusal']['observed_outputs']['persisted']);
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'missing_invalid_cron_refusal_evidence',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_distinguishes_php_worker_runtime_from_php_sdk_client(): void
+    {
+        $result = $this->completeSchedulesResult();
+        $result['runtime_matrix']['runtimes'] = ['workflow-php-sdk', 'sdk-python'];
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+        $runtimeFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_required_runtime'
+                && ($failure['runtime'] ?? null) === 'workflow-php',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($runtimeFailures);
+    }
+
+    public function test_result_gate_distinguishes_php_sdk_client_from_php_worker_runtime(): void
+    {
+        $result = $this->completeSchedulesResult();
+        $result['runtime_matrix']['client_paths'] = ['cli', 'sdk-python', 'workflow-php'];
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+        $clientFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_required_client_path'
+                && ($failure['client_path'] ?? null) === 'workflow-php-sdk',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($clientFailures);
+    }
+
+    public function test_result_gate_accepts_a_complete_passing_matrix(): void
+    {
+        $evaluation = SchedulesRuntimeResultGate::evaluate($this->completeSchedulesResult());
+
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $evaluation['missing_scenarios']);
+        $this->assertSame([], $evaluation['non_pass_scenarios']);
+        $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function completeSchedulesResult(): array
+    {
+        $artifactSources = [
+            'server' => 'published_docker_image',
+            'cli' => 'official_install_script',
+            'sdk-python' => 'pypi_release',
+            'workflow' => 'composer_release',
+            'waterline' => 'published_waterline_release',
+        ];
+        $cronCadence = [
+            'actual_fire_timestamps' => [
+                '2026-05-24T05:00:00Z',
+                '2026-05-24T05:01:00Z',
+                '2026-05-24T05:02:00Z',
+                '2026-05-24T05:03:00Z',
+            ],
+            'nominal_fire_timestamps' => [
+                '2026-05-24T05:00:00Z',
+                '2026-05-24T05:01:00Z',
+                '2026-05-24T05:02:00Z',
+                '2026-05-24T05:03:00Z',
+            ],
+            'drift_ms' => [0, 20, 30, 10],
+        ];
+        $fixedRateCadence = [
+            'actual_fire_timestamps' => [
+                '2026-05-24T05:00:00Z',
+                '2026-05-24T05:00:30Z',
+                '2026-05-24T05:01:00Z',
+                '2026-05-24T05:01:30Z',
+                '2026-05-24T05:02:00Z',
+                '2026-05-24T05:02:30Z',
+                '2026-05-24T05:03:00Z',
+                '2026-05-24T05:03:30Z',
+            ],
+            'nominal_fire_timestamps' => [
+                '2026-05-24T05:00:00Z',
+                '2026-05-24T05:00:30Z',
+                '2026-05-24T05:01:00Z',
+                '2026-05-24T05:01:30Z',
+                '2026-05-24T05:02:00Z',
+                '2026-05-24T05:02:30Z',
+                '2026-05-24T05:03:00Z',
+                '2026-05-24T05:03:30Z',
+            ],
+            'drift_ms' => [0, 15, 12, 18, 20, 16, 14, 19],
+        ];
+        $listDescribe = [
+            'cli_list_observed' => true,
+            'sdk_list_observed' => true,
+            'last_fire_at_observed' => true,
+            'next_fire_at_observed' => true,
+            'pause_state_observed' => true,
+        ];
+        $pauseResume = [
+            'fires_during_pause_count' => 0,
+            'resumed_after_pause' => true,
+        ];
+        $delete = [
+            'absent_from_list_after_delete' => true,
+            'no_fires_after_delete' => true,
+        ];
+        $missedFirePolicy = [
+            'documented_policy' => 'fire_once_on_resume_then_skip_remaining_missed',
+            'observed_policy' => 'fire_once_on_resume_then_skip_remaining_missed',
+            'catchup_fire_count' => 1,
+            'post_resume_normal_fire_observed' => true,
+        ];
+        $restartSurvival = [
+            'schedule_listed_after_restart' => true,
+            'fired_after_restart' => true,
+        ];
+        $clientSurfaces = [
+            'cli' => [
+                'create_or_observe' => true,
+                'list_observed' => true,
+                'control_observed' => true,
+            ],
+            'sdk-python' => [
+                'create_or_observe' => true,
+                'list_observed' => true,
+                'control_observed' => true,
+            ],
+            'workflow-php-sdk' => [
+                'create_or_observe' => true,
+                'list_observed' => true,
+                'control_observed' => true,
+            ],
+        ];
+        $pythonCreatedPhp = [
+            'schedule_creator' => 'sdk-python',
+            'workflow_runtime' => 'workflow-php',
+            'schedule_visible_in_cli' => true,
+            'workflow_completed' => true,
+        ];
+        $phpCreatedPython = [
+            'schedule_creator' => 'workflow-php-sdk',
+            'workflow_runtime' => 'sdk-python',
+            'schedule_visible_in_cli' => true,
+            'workflow_completed' => true,
+        ];
+        $invalidCron = [
+            'refused' => true,
+            'typed_error' => true,
+            'persisted' => false,
+        ];
+        $nonexistentWorkflow = [
+            'behavior' => 'fails_at_fire_time',
+            'operator_visible_failure' => true,
+        ];
+        $scenarioResults = [
+            'published_artifact_install_only' => [
+                'status' => 'pass',
+                'observed_outputs' => [
+                    'artifact_sources' => $artifactSources,
+                ],
+            ],
+            'cron_cadence' => ['status' => 'pass', 'observed_outputs' => $cronCadence],
+            'fixed_rate_cadence' => ['status' => 'pass', 'observed_outputs' => $fixedRateCadence],
+            'list_describe_visibility' => ['status' => 'pass', 'observed_outputs' => $listDescribe],
+            'pause_resume_no_fire_window' => ['status' => 'pass', 'observed_outputs' => $pauseResume],
+            'delete_stops_future_fires' => ['status' => 'pass', 'observed_outputs' => $delete],
+            'missed_fire_policy' => ['status' => 'pass', 'observed_outputs' => $missedFirePolicy],
+            'restart_survival' => ['status' => 'pass', 'observed_outputs' => $restartSurvival],
+            'cli_schedule_surface' => ['status' => 'pass', 'observed_outputs' => $clientSurfaces['cli']],
+            'python_sdk_schedule_surface' => ['status' => 'pass', 'observed_outputs' => $clientSurfaces['sdk-python']],
+            'php_schedule_surface' => ['status' => 'pass', 'observed_outputs' => $clientSurfaces['workflow-php-sdk']],
+            'python_created_php_workflow' => ['status' => 'pass', 'observed_outputs' => $pythonCreatedPhp],
+            'php_created_python_workflow' => ['status' => 'pass', 'observed_outputs' => $phpCreatedPython],
+            'invalid_cron_refusal' => ['status' => 'pass', 'observed_outputs' => $invalidCron],
+            'nonexistent_workflow_type_outcome' => ['status' => 'pass', 'observed_outputs' => $nonexistentWorkflow],
+        ];
+
+        return [
+            'schema' => SchedulesRuntimeContract::RESULT_SCHEMA,
+            'outcome' => 'pass',
+            'started_at' => '2026-05-24T05:00:00Z',
+            'finished_at' => '2026-05-24T05:08:00Z',
+            'generated_at' => '2026-05-24T05:08:01Z',
+            'artifactVersions' => [
+                'server' => '0.2.174',
+                'cli' => '0.1.56',
+                'sdk-python' => '0.4.74',
+                'workflow' => '2.0.0-alpha.175',
+                'waterline' => '2.0.0-alpha.57',
+            ],
+            'artifact_sources' => $artifactSources,
+            'topology' => [
+                'namespace' => 'schedules-conformance',
+                'task_queue' => 'schedules-shared',
+            ],
+            'runtime_matrix' => [
+                'runtimes' => ['workflow-php', 'sdk-python'],
+                'client_paths' => ['cli', 'sdk-python', 'workflow-php-sdk'],
+                'schedule_types' => ['cron_expression', 'fixed_rate_interval'],
+                'cross_language_cells' => [
+                    [
+                        'scenario' => 'python_created_php_workflow',
+                        'schedule_creator' => 'sdk-python',
+                        'workflow_runtime' => 'workflow-php',
+                    ],
+                    [
+                        'scenario' => 'php_created_python_workflow',
+                        'schedule_creator' => 'workflow-php-sdk',
+                        'workflow_runtime' => 'sdk-python',
+                    ],
+                ],
+            ],
+            'cadence_observations' => [
+                'cron' => $cronCadence,
+                'fixed_rate' => $fixedRateCadence,
+            ],
+            'operator_controls' => [
+                'list_describe' => $listDescribe,
+                'pause_resume' => $pauseResume,
+                'delete' => $delete,
+            ],
+            'missed_fire_policy' => $missedFirePolicy,
+            'restart_survival' => $restartSurvival,
+            'client_surfaces' => $clientSurfaces,
+            'cross_language_matrix' => [
+                'cross_language_cells' => [
+                    $pythonCreatedPhp,
+                    $phpCreatedPython,
+                ],
+            ],
+            'adversarial_outcomes' => [
+                'invalid_cron' => $invalidCron,
+                'nonexistent_workflow_type' => $nonexistentWorkflow,
+            ],
+            'scenario_results' => $scenarioResults,
+            'findings' => [
+                'summary' => 'passing run',
+            ],
+            'finding_links' => [
+                'all' => ['not_applicable' => 'passing run'],
+            ],
+        ];
+    }
+}

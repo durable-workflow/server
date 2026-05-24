@@ -18,6 +18,7 @@ use App\Support\ReplayVerificationContract;
 use App\Support\SearchAttributeRuntimeContract;
 use App\Support\ServerReadiness;
 use App\Support\ServerTopology;
+use App\Support\SchedulesRuntimeContract;
 use App\Support\SignalQueryRuntimeContract;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\WorkerProtocol;
@@ -122,6 +123,7 @@ class HealthController
             'workflow_streams' => true,
             'replay_verification_contract' => true,
             'search_attribute_runtime_contract' => true,
+            'schedules_runtime_contract' => true,
             'child_workflow_runtime_contract' => true,
             'embedded_v2_import' => $embeddedV2ImportAvailable,
             'payload_codecs' => CodecRegistry::universal(),
@@ -167,6 +169,7 @@ class HealthController
             'platform_conformance_suite' => PlatformConformanceSuite::manifest(),
             'signal_query_runtime_contract' => SignalQueryRuntimeContract::manifest(),
             'search_attribute_runtime_contract' => SearchAttributeRuntimeContract::manifest(),
+            'schedules_runtime_contract' => SchedulesRuntimeContract::manifest(),
             'child_workflow_runtime_contract' => ChildWorkflowRuntimeContract::manifest(),
             'namespace_runtime_contract' => NamespaceRuntimeContract::manifest(),
             'auth_composition_contract' => AuthCompositionContract::manifest(),

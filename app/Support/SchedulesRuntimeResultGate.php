@@ -1,0 +1,1473 @@
+<?php
+
+namespace App\Support;
+
+/**
+ * Evaluates schedules conformance results against the full recurring-work
+ * matrix exposed by SchedulesRuntimeContract.
+ */
+final class SchedulesRuntimeResultGate
+{
+    public const SCHEMA = 'durable-workflow.v2.schedules-runtime.result-gate';
+
+    public const VERSION = 1;
+
+    /**
+     * @return array<string, mixed>
+     */
+    public static function spec(): array
+    {
+        return [
+            'schema' => self::SCHEMA,
+            'version' => self::VERSION,
+            'evaluates_result_schema' => SchedulesRuntimeContract::RESULT_SCHEMA,
+            'scenario_statuses_source' => 'schedules_runtime_contract.scenario_statuses',
+            'required_scenarios_source' => 'schedules_runtime_contract.required_scenarios',
+            'required_matrix_source' => 'schedules_runtime_contract.required_matrix',
+            'artifact_versions_fields' => [
+                'artifact_versions',
+                'artifactVersions',
+                'published_artifact_versions',
+                'publishedArtifactVersions',
+            ],
+            'declared_outcome_fields' => [
+                'outcome',
+                'status',
+                'verdict',
+            ],
+            'scenario_results_fields' => [
+                'scenario_results',
+                'scenarioResults',
+            ],
+            'declared_outcomes_source' => 'schedules_runtime_contract.coverage_gate.*_outcome',
+            'non_pass_statuses' => [
+                'fail',
+                'unsupported',
+                'not_covered',
+                'runner_blocked',
+            ],
+            'artifact_version_policy' => [
+                'requires_recorded_and_pinned_versions' => true,
+                'rejects_placeholder_versions' => true,
+                'placeholder_version_examples' => [
+                    'latest',
+                    'current',
+                    'head',
+                    'unresolved',
+                    'placeholder',
+                    '<latest>',
+                    '${VERSION}',
+                    '{{ version }}',
+                ],
+            ],
+            'pass_requires' => [
+                'every_required_scenario_has_one_result',
+                'every_result_uses_a_published_status',
+                'required_php_and_python_workers_are_reported',
+                'required_cli_python_and_php_clients_are_reported',
+                'cron_and_fixed_rate_schedule_types_are_reported',
+                'cross_language_schedule_workflow_cells_are_reported',
+                'cadence_operator_missed_restart_cross_language_and_adversarial_sections_are_reported',
+                'each_pass_scenario_has_observed_outputs',
+                'each_pass_scenario_has_scenario_specific_evidence',
+                'cadence_observation_counts_match_scenario_requirements',
+                'each_non_pass_scenario_has_linked_findings',
+                'run_timestamps_outcome_and_finding_links_are_recorded',
+                'overall_outcome_matches_gate_status',
+                'published_artifact_versions_are_recorded_and_pinned',
+                'no_local_product_source_artifacts_are_reported',
+            ],
+            'smoke_subset_outcome' => 'non_passing',
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed>|null $contract
+     *
+     * @return array<string, mixed>
+     */
+    public static function evaluate(array $result, ?array $contract = null): array
+    {
+        $contract ??= SchedulesRuntimeContract::manifest();
+
+        $failures = [];
+        $requiredScenarios = self::stringList($contract['required_scenarios'] ?? []);
+        $allowedStatuses = self::stringList($contract['scenario_statuses'] ?? []);
+        $duplicateScenarioCounts = [];
+        $scenarioResults = self::scenarioResultsById($result, $duplicateScenarioCounts);
+        $scenarioStatuses = [];
+        $missingScenarios = [];
+        $nonPassScenarios = [];
+
+        foreach ($duplicateScenarioCounts as $scenarioId => $count) {
+            $failures[] = [
+                'code' => 'duplicate_scenario_result',
+                'scenario_id' => $scenarioId,
+                'count' => $count,
+            ];
+        }
+
+        foreach ($requiredScenarios as $scenarioId) {
+            if (! array_key_exists($scenarioId, $scenarioResults)) {
+                $missingScenarios[] = $scenarioId;
+                $failures[] = [
+                    'code' => 'missing_required_scenario',
+                    'scenario_id' => $scenarioId,
+                ];
+                continue;
+            }
+
+            $scenarioResult = $scenarioResults[$scenarioId];
+            $status = self::stringValue($scenarioResult['status'] ?? null);
+            $scenarioStatuses[$scenarioId] = $status;
+
+            if (! in_array($status, $allowedStatuses, true)) {
+                $failures[] = [
+                    'code' => 'invalid_scenario_status',
+                    'scenario_id' => $scenarioId,
+                    'status' => $status,
+                    'allowed_statuses' => $allowedStatuses,
+                ];
+                continue;
+            }
+
+            if ($status === 'pass') {
+                if (! self::hasObservedOutputs($scenarioResult)) {
+                    $failures[] = [
+                        'code' => 'missing_pass_observed_outputs',
+                        'scenario_id' => $scenarioId,
+                    ];
+                }
+            } else {
+                $nonPassScenarios[] = $scenarioId;
+                if (! self::hasLinkedFindings($scenarioResult, $result)) {
+                    $failures[] = [
+                        'code' => 'missing_non_pass_finding',
+                        'scenario_id' => $scenarioId,
+                        'status' => $status,
+                    ];
+                }
+            }
+        }
+
+        $reportedScenarioIds = array_keys($scenarioResults);
+        $unknownScenarios = array_values(array_diff($reportedScenarioIds, $requiredScenarios));
+        foreach ($unknownScenarios as $scenarioId) {
+            $scenarioResult = $scenarioResults[$scenarioId];
+            $status = self::stringValue($scenarioResult['status'] ?? null);
+            if (! in_array($status, $allowedStatuses, true)) {
+                $failures[] = [
+                    'code' => 'invalid_extra_scenario_status',
+                    'scenario_id' => $scenarioId,
+                    'status' => $status,
+                    'allowed_statuses' => $allowedStatuses,
+                ];
+            }
+        }
+
+        array_push($failures, ...self::runRecordFailures($result, $contract));
+        array_push($failures, ...self::declaredOutcomeFailures($result, $contract));
+        array_push($failures, ...self::artifactVersionFailures($result, $contract));
+        array_push($failures, ...self::sourcePolicyFailures($result, $contract, $scenarioResults));
+        array_push($failures, ...self::matrixFailures($result, $contract));
+        array_push($failures, ...self::requiredSectionFailures($result, $scenarioResults));
+        array_push($failures, ...self::scenarioSpecificEvidenceFailures($result, $contract, $scenarioResults));
+
+        $smokeSubsetDetected = self::isSmokeSubset($scenarioStatuses, $contract);
+        if ($smokeSubsetDetected) {
+            $failures[] = [
+                'code' => 'smoke_subset_cannot_pass',
+                'reason' => 'Schedule CRUD smoke coverage is not a complete recurring-work conformance result.',
+            ];
+        }
+
+        $evidencePasses = $failures === []
+            && $missingScenarios === []
+            && $nonPassScenarios === []
+            && count($scenarioStatuses) >= count($requiredScenarios);
+        $evaluatedStatus = $evidencePasses ? 'pass' : 'non_passing';
+
+        array_push($failures, ...self::declaredOutcomeStatusFailures($result, $contract, $evaluatedStatus));
+
+        $passes = $evaluatedStatus === 'pass' && $failures === [];
+
+        return [
+            'schema' => self::SCHEMA,
+            'version' => self::VERSION,
+            'status' => $passes ? 'pass' : 'non_passing',
+            'required_scenarios' => $requiredScenarios,
+            'reported_scenarios' => $reportedScenarioIds,
+            'missing_scenarios' => $missingScenarios,
+            'non_pass_scenarios' => $nonPassScenarios,
+            'unknown_scenarios' => $unknownScenarios,
+            'duplicate_scenarios' => $duplicateScenarioCounts,
+            'scenario_statuses' => $scenarioStatuses,
+            'smoke_subset_detected' => $smokeSubsetDetected,
+            'gate_failures' => $failures,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, int> $duplicateScenarioCounts
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    private static function scenarioResultsById(array $result, array &$duplicateScenarioCounts): array
+    {
+        $raw = self::arrayField($result, ['scenario_results', 'scenarioResults']) ?? [];
+
+        $results = [];
+        $seen = [];
+        foreach ($raw as $key => $value) {
+            if (! is_array($value)) {
+                continue;
+            }
+
+            $scenarioId = is_string($key) ? $key : self::stringValue($value['scenario_id'] ?? $value['id'] ?? null);
+            if ($scenarioId === '') {
+                continue;
+            }
+
+            if (isset($seen[$scenarioId])) {
+                $duplicateScenarioCounts[$scenarioId] = ($duplicateScenarioCounts[$scenarioId] ?? 1) + 1;
+            } else {
+                $seen[$scenarioId] = true;
+            }
+
+            $value['scenario_id'] = $scenarioId;
+            $results[$scenarioId] = $value;
+        }
+
+        return $results;
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     */
+    private static function hasObservedOutputs(array $scenarioResult): bool
+    {
+        foreach ([
+            'observed_outputs',
+            'observedOutputs',
+            'cadence_observations',
+            'cadenceObservations',
+            'operator_controls',
+            'operatorControls',
+            'missed_fire_policy',
+            'missedFirePolicy',
+            'restart_survival',
+            'restartSurvival',
+            'cross_language_matrix',
+            'crossLanguageMatrix',
+            'adversarial_outcomes',
+            'adversarialOutcomes',
+            'client_surface',
+            'clientSurface',
+        ] as $field) {
+            $value = self::arrayField($scenarioResult, [$field]);
+            if ($value !== null && $value !== []) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     * @param array<string, mixed> $result
+     */
+    private static function hasLinkedFindings(array $scenarioResult, array $result): bool
+    {
+        foreach (['linked_findings', 'linkedFindings', 'finding_links', 'findingLinks'] as $field) {
+            $value = self::arrayField($scenarioResult, [$field]);
+            if ($value !== null && $value !== []) {
+                return true;
+            }
+        }
+
+        $scenarioId = self::stringValue($scenarioResult['scenario_id'] ?? null);
+        foreach (['finding_links', 'findingLinks', 'findings'] as $field) {
+            $links = self::arrayField($result, [$field]);
+            if ($links === null) {
+                continue;
+            }
+
+            if (array_key_exists($scenarioId, $links) && $links[$scenarioId] !== []) {
+                return true;
+            }
+
+            foreach ($links as $link) {
+                if (! is_array($link)) {
+                    continue;
+                }
+
+                $linkedScenario = self::stringValue($link['scenario_id'] ?? $link['scenario'] ?? null);
+                if ($linkedScenario === $scenarioId) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function runRecordFailures(array $result, array $contract): array
+    {
+        $requiredFields = self::stringList($contract['artifact_policy']['required_run_record_fields'] ?? []);
+        $failures = [];
+
+        foreach ($requiredFields as $field) {
+            if (self::hasRunRecordField($result, $field)) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'missing_run_record_field',
+                'field' => $field,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     */
+    private static function hasRunRecordField(array $result, string $field): bool
+    {
+        return match ($field) {
+            'artifact_versions' => self::artifactVersions($result) !== [],
+            'started_at' => self::hasScalarField($result, ['started_at', 'startedAt']),
+            'finished_at' => self::hasScalarField($result, ['finished_at', 'finishedAt']),
+            'generated_at' => self::hasScalarField($result, ['generated_at', 'generatedAt']),
+            'outcome' => self::hasScalarField($result, ['outcome', 'status', 'verdict']),
+            'scenario_results' => self::hasArrayField($result, ['scenario_results', 'scenarioResults']),
+            'findings' => self::hasArrayField($result, ['findings']),
+            'finding_links' => self::hasArrayField($result, ['finding_links', 'findingLinks']),
+            default => self::hasScalarField($result, [$field, self::camelize($field)])
+                || self::hasArrayField($result, [$field, self::camelize($field)]),
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function declaredOutcomeFailures(array $result, array $contract): array
+    {
+        $declaredOutcomes = self::declaredOutcomeTokens($result);
+        if ($declaredOutcomes === []) {
+            return [];
+        }
+
+        $allowedOutcomes = self::declaredOutcomes($contract);
+        $failures = [];
+        foreach ($declaredOutcomes as $field => $outcome) {
+            if (in_array($outcome, $allowedOutcomes, true)) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'invalid_declared_outcome',
+                'field' => $field,
+                'outcome' => $outcome,
+                'allowed_outcomes' => $allowedOutcomes,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function declaredOutcomeStatusFailures(array $result, array $contract, string $evaluatedStatus): array
+    {
+        $declaredOutcomes = self::declaredOutcomeTokens($result);
+        if ($declaredOutcomes === []) {
+            return [];
+        }
+
+        $allowedOutcomes = self::declaredOutcomes($contract);
+        $failures = [];
+        $declaredStatuses = [];
+        foreach ($declaredOutcomes as $field => $outcome) {
+            if (! in_array($outcome, $allowedOutcomes, true)) {
+                continue;
+            }
+
+            $declaredStatus = $outcome === 'pass' ? 'pass' : 'non_passing';
+            $declaredStatuses[$field] = $declaredStatus;
+            if ($declaredStatus === $evaluatedStatus) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'declared_outcome_status_mismatch',
+                'field' => $field,
+                'outcome' => $outcome,
+                'declared_status' => $declaredStatus,
+                'evaluated_status' => $evaluatedStatus,
+            ];
+        }
+
+        if (count(array_unique($declaredStatuses)) > 1) {
+            $failures[] = [
+                'code' => 'conflicting_outcome_tokens',
+                'declared_outcomes' => array_intersect_key($declaredOutcomes, $declaredStatuses),
+                'declared_statuses' => $declaredStatuses,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, string>
+     */
+    private static function declaredOutcomeTokens(array $result): array
+    {
+        $declaredOutcomes = [];
+        foreach (['outcome', 'status', 'verdict'] as $field) {
+            $value = self::stringValue($result[$field] ?? null);
+            if ($value !== '') {
+                $declaredOutcomes[$field] = $value;
+            }
+        }
+
+        return $declaredOutcomes;
+    }
+
+    /**
+     * @param array<string, mixed> $contract
+     *
+     * @return list<string>
+     */
+    private static function declaredOutcomes(array $contract): array
+    {
+        $outcomes = ['pass'];
+        $coverageGate = self::arrayField($contract, ['coverage_gate']) ?? [];
+        foreach ($coverageGate as $key => $value) {
+            if (! is_string($key) || ! str_ends_with($key, '_outcome')) {
+                continue;
+            }
+
+            $outcome = self::stringValue($value);
+            if ($outcome !== '') {
+                $outcomes[] = $outcome;
+            }
+        }
+
+        return array_values(array_unique($outcomes));
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function artifactVersionFailures(array $result, array $contract): array
+    {
+        $versions = self::artifactVersions($result);
+        $installChannels = self::arrayField($contract['artifact_policy'] ?? [], ['install_channels']) ?? [];
+        $failures = [];
+
+        foreach (array_keys($installChannels) as $artifact) {
+            $version = self::artifactVersionValue($versions, (string) $artifact);
+            if ($version === '') {
+                $failures[] = [
+                    'code' => 'missing_artifact_version',
+                    'artifact' => $artifact,
+                ];
+                continue;
+            }
+
+            if (self::isPlaceholderVersion($version)) {
+                $failures[] = [
+                    'code' => 'placeholder_artifact_version',
+                    'artifact' => $artifact,
+                    'version' => $version,
+                ];
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     *
+     * @return array<mixed>
+     */
+    private static function artifactVersions(array $result): array
+    {
+        return self::arrayField($result, ['artifact_versions', 'artifactVersions', 'published_artifact_versions', 'publishedArtifactVersions']) ?? [];
+    }
+
+    /**
+     * @param array<mixed> $versions
+     */
+    private static function artifactVersionValue(array $versions, string $artifact): string
+    {
+        $aliases = [
+            'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
+            'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
+            'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
+        ];
+
+        foreach ($aliases[$artifact] ?? [$artifact] as $key) {
+            $version = self::stringValue($versions[$key] ?? null);
+            if (array_key_exists($key, $versions) && $version !== '') {
+                return $version;
+            }
+        }
+
+        return '';
+    }
+
+    private static function isPlaceholderVersion(string $version): bool
+    {
+        $normalized = strtolower(trim($version));
+        if ($normalized === '') {
+            return false;
+        }
+
+        if (preg_match('/<[^>]+>|\$\{[^}]+}|{{[^}]+}}/', $normalized) === 1) {
+            return true;
+        }
+
+        return preg_match(
+            '/(^|[^a-z0-9])(latest|current|head|unresolved|placeholder)([^a-z0-9]|$)/',
+            $normalized,
+        ) === 1;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     * @param array<string, array<string, mixed>> $scenarioResults
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function sourcePolicyFailures(array $result, array $contract, array $scenarioResults): array
+    {
+        $artifactPolicy = self::arrayField($contract, ['artifact_policy']) ?? [];
+        $forbiddenSources = self::stringList($artifactPolicy['forbidden_sources'] ?? []);
+        $reportedSourceSets = [];
+        $topLevelSources = self::arrayField($result, ['artifact_sources', 'artifactSources']);
+        if ($topLevelSources !== null) {
+            $reportedSourceSets[] = [
+                'sources' => $topLevelSources,
+                'scenario_id' => null,
+            ];
+        }
+
+        foreach ($scenarioResults as $scenarioId => $scenarioResult) {
+            $outputs = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs']) ?? [];
+            $scenarioSources = self::arrayField($outputs, ['artifact_sources', 'artifactSources']);
+            if ($scenarioSources === null) {
+                continue;
+            }
+
+            $reportedSourceSets[] = [
+                'sources' => $scenarioSources,
+                'scenario_id' => $scenarioId,
+            ];
+        }
+
+        $failures = [];
+
+        foreach ($reportedSourceSets as $sourceSet) {
+            foreach ($sourceSet['sources'] as $artifact => $source) {
+                $source = self::stringValue($source);
+                if (! in_array($source, $forbiddenSources, true)) {
+                    continue;
+                }
+
+                $failure = [
+                    'code' => 'forbidden_artifact_source',
+                    'artifact' => $artifact,
+                    'source' => $source,
+                ];
+                if ($sourceSet['scenario_id'] !== null) {
+                    $failure['scenario_id'] = $sourceSet['scenario_id'];
+                }
+
+                $failures[] = $failure;
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function matrixFailures(array $result, array $contract): array
+    {
+        $matrix = self::arrayField($result, ['runtime_matrix', 'runtimeMatrix']) ?? [];
+        $contractMatrix = self::arrayField($contract, ['required_matrix']) ?? [];
+        $failures = [];
+
+        foreach (self::stringList($contractMatrix['runtimes'] ?? []) as $runtime) {
+            if (! self::matrixRuntimeListContains($matrix, ['runtimes', 'workers', 'worker_runtimes', 'workerRuntimes'], $runtime)) {
+                $failures[] = [
+                    'code' => 'missing_required_runtime',
+                    'runtime' => $runtime,
+                ];
+            }
+        }
+
+        foreach (self::stringList($contractMatrix['client_paths'] ?? []) as $client) {
+            if (! self::matrixClientListContains($matrix, ['client_paths', 'clientPaths', 'clients'], $client)) {
+                $failures[] = [
+                    'code' => 'missing_required_client_path',
+                    'client_path' => $client,
+                ];
+            }
+        }
+
+        foreach (self::stringList($contractMatrix['schedule_types'] ?? []) as $scheduleType) {
+            if (! self::matrixTokenListContains($matrix, ['schedule_types', 'scheduleTypes'], $scheduleType)) {
+                $failures[] = [
+                    'code' => 'missing_required_schedule_type',
+                    'schedule_type' => $scheduleType,
+                ];
+            }
+        }
+
+        foreach (($contractMatrix['cross_language_cells'] ?? []) as $requiredCell) {
+            if (! is_array($requiredCell) || self::matrixHasCrossLanguageCell($matrix, $requiredCell)) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'missing_required_cross_language_cell',
+                'scenario' => $requiredCell['scenario'] ?? null,
+                'schedule_creator' => $requiredCell['schedule_creator'] ?? null,
+                'workflow_runtime' => $requiredCell['workflow_runtime'] ?? null,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<mixed> $matrix
+     * @param list<string> $fields
+     */
+    private static function matrixRuntimeListContains(array $matrix, array $fields, string $expected): bool
+    {
+        foreach ($fields as $field) {
+            foreach (self::stringList($matrix[$field] ?? []) as $reported) {
+                if (self::sameRuntimeSurface($reported, $expected)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<mixed> $matrix
+     * @param list<string> $fields
+     */
+    private static function matrixClientListContains(array $matrix, array $fields, string $expected): bool
+    {
+        foreach ($fields as $field) {
+            foreach (self::stringList($matrix[$field] ?? []) as $reported) {
+                if (self::sameClientSurface($reported, $expected)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<mixed> $matrix
+     * @param list<string> $fields
+     */
+    private static function matrixTokenListContains(array $matrix, array $fields, string $expected): bool
+    {
+        foreach ($fields as $field) {
+            foreach (self::stringList($matrix[$field] ?? []) as $reported) {
+                if (self::sameNormalizedToken($reported, $expected)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<mixed> $matrix
+     * @param array<string, mixed> $requiredCell
+     */
+    private static function matrixHasCrossLanguageCell(array $matrix, array $requiredCell): bool
+    {
+        $reportedCells = [];
+        foreach (['cross_language_cells', 'crossLanguageCells', 'cells', 'runtime_cells', 'runtimeCells'] as $field) {
+            $value = self::arrayField($matrix, [$field]);
+            if ($value !== null) {
+                $reportedCells = array_merge($reportedCells, $value);
+            }
+        }
+
+        foreach ($reportedCells as $cell) {
+            if (! is_array($cell)) {
+                continue;
+            }
+
+            if (self::stringValue($cell['scenario'] ?? $cell['scenario_id'] ?? null)
+                !== self::stringValue($requiredCell['scenario'] ?? null)) {
+                continue;
+            }
+
+            if (! self::sameClientSurface(
+                self::stringField($cell, ['schedule_creator', 'scheduleCreator', 'creator', 'client']),
+                self::stringValue($requiredCell['schedule_creator'] ?? null),
+            )) {
+                continue;
+            }
+
+            if (! self::sameRuntimeSurface(
+                self::stringField($cell, ['workflow_runtime', 'workflowRuntime', 'worker', 'runtime']),
+                self::stringValue($requiredCell['workflow_runtime'] ?? null),
+            )) {
+                continue;
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, array<string, mixed>> $scenarioResults
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function requiredSectionFailures(array $result, array $scenarioResults): array
+    {
+        $sections = [
+            'cadence_observations' => ['cron_cadence', 'fixed_rate_cadence'],
+            'operator_controls' => ['list_describe_visibility', 'pause_resume_no_fire_window', 'delete_stops_future_fires'],
+            'missed_fire_policy' => ['missed_fire_policy'],
+            'restart_survival' => ['restart_survival'],
+            'cross_language_matrix' => ['python_created_php_workflow', 'php_created_python_workflow'],
+            'adversarial_outcomes' => ['invalid_cron_refusal', 'nonexistent_workflow_type_outcome'],
+        ];
+
+        $failures = [];
+        foreach ($sections as $section => $scenarios) {
+            if (self::sectionValue($result, $section) !== null) {
+                continue;
+            }
+
+            $coveredByScenarioOutputs = true;
+            foreach ($scenarios as $scenarioId) {
+                if (! isset($scenarioResults[$scenarioId]) || ! self::hasObservedOutputs($scenarioResults[$scenarioId])) {
+                    $coveredByScenarioOutputs = false;
+                    break;
+                }
+            }
+
+            if (! $coveredByScenarioOutputs) {
+                $failures[] = [
+                    'code' => 'missing_required_section',
+                    'section' => $section,
+                    'scenarios' => $scenarios,
+                ];
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     * @param array<string, array<string, mixed>> $scenarioResults
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function scenarioSpecificEvidenceFailures(array $result, array $contract, array $scenarioResults): array
+    {
+        $failures = [];
+        foreach ($scenarioResults as $scenarioId => $scenarioResult) {
+            if (self::stringValue($scenarioResult['status'] ?? null) !== 'pass') {
+                continue;
+            }
+
+            match ($scenarioId) {
+                'published_artifact_install_only' => array_push($failures, ...self::publishedArtifactEvidenceFailures($result, $contract, $scenarioResult)),
+                'cron_cadence' => array_push($failures, ...self::cadenceEvidenceFailures($result, $contract, $scenarioResult, 'cron_cadence', 'cron')),
+                'fixed_rate_cadence' => array_push($failures, ...self::cadenceEvidenceFailures($result, $contract, $scenarioResult, 'fixed_rate_cadence', 'fixed_rate')),
+                'list_describe_visibility' => array_push($failures, ...self::listDescribeEvidenceFailures($result, $scenarioResult)),
+                'pause_resume_no_fire_window' => array_push($failures, ...self::pauseResumeEvidenceFailures($result, $scenarioResult)),
+                'delete_stops_future_fires' => array_push($failures, ...self::deleteEvidenceFailures($result, $scenarioResult)),
+                'missed_fire_policy' => array_push($failures, ...self::missedFireEvidenceFailures($result, $contract, $scenarioResult)),
+                'restart_survival' => array_push($failures, ...self::restartEvidenceFailures($result, $scenarioResult)),
+                'cli_schedule_surface' => array_push($failures, ...self::clientSurfaceEvidenceFailures($result, $scenarioResult, 'cli')),
+                'python_sdk_schedule_surface' => array_push($failures, ...self::clientSurfaceEvidenceFailures($result, $scenarioResult, 'sdk-python')),
+                'php_schedule_surface' => array_push($failures, ...self::clientSurfaceEvidenceFailures($result, $scenarioResult, 'workflow-php-sdk')),
+                'python_created_php_workflow' => array_push($failures, ...self::crossLanguageEvidenceFailures($result, $scenarioResult, 'sdk-python', 'workflow-php')),
+                'php_created_python_workflow' => array_push($failures, ...self::crossLanguageEvidenceFailures($result, $scenarioResult, 'workflow-php-sdk', 'sdk-python')),
+                'invalid_cron_refusal' => array_push($failures, ...self::invalidCronEvidenceFailures($result, $scenarioResult)),
+                'nonexistent_workflow_type_outcome' => array_push($failures, ...self::nonexistentWorkflowEvidenceFailures($result, $contract, $scenarioResult)),
+                default => null,
+            };
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function publishedArtifactEvidenceFailures(array $result, array $contract, array $scenarioResult): array
+    {
+        $outputs = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs']) ?? [];
+        $topLevelSources = self::arrayField($result, ['artifact_sources', 'artifactSources']) ?? [];
+        $scenarioSources = self::arrayField($outputs, ['artifact_sources', 'artifactSources']) ?? [];
+        $sources = array_replace($topLevelSources, $scenarioSources);
+        $installChannels = self::arrayField($contract['artifact_policy'] ?? [], ['install_channels']) ?? [];
+        $failures = [];
+
+        foreach (array_keys($installChannels) as $artifact) {
+            $source = self::artifactVersionValue($sources, (string) $artifact);
+            if ($source !== '') {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'missing_published_artifact_install_source',
+                'scenario_id' => 'published_artifact_install_only',
+                'artifact' => $artifact,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function cadenceEvidenceFailures(
+        array $result,
+        array $contract,
+        array $scenarioResult,
+        string $scenarioId,
+        string $kind,
+    ): array
+    {
+        $section = self::sectionValue($result, 'cadence_observations') ?? [];
+        $evidence = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs'])
+            ?? self::arrayField($section, [$kind])
+            ?? [];
+        $requirements = self::arrayField($contract, ['scenario_requirements', 'scenarioRequirements']) ?? [];
+        $scenarioRequirements = self::arrayField($requirements, [$scenarioId]) ?? [];
+        $requiredFields = self::stringList($scenarioRequirements['required_fields'] ?? []);
+        if ($requiredFields === []) {
+            $requiredFields = ['actual_fire_timestamps', 'nominal_fire_timestamps', 'drift_ms'];
+        }
+        $minimumObservedFires = self::intField($scenarioRequirements, [
+            'minimum_observed_fires',
+            'minimumObservedFires',
+        ]);
+        if ($minimumObservedFires < 1) {
+            $minimumObservedFires = 2;
+        }
+        $failures = [];
+
+        foreach ($requiredFields as $field) {
+            if (! self::hasArrayField($evidence, [$field, self::camelize($field)])) {
+                $failures[] = [
+                    'code' => 'missing_cadence_evidence_field',
+                    'scenario_id' => $scenarioId,
+                    'field' => $field,
+                ];
+            }
+        }
+
+        foreach ($requiredFields as $field) {
+            $values = self::arrayField($evidence, [$field, self::camelize($field)]) ?? [];
+            if (count($values) >= $minimumObservedFires) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => $field === 'drift_ms'
+                    ? 'insufficient_cadence_drift_samples'
+                    : 'insufficient_cadence_fire_timestamps',
+                'scenario_id' => $scenarioId,
+                'field' => $field,
+                'minimum_observed_fires' => $minimumObservedFires,
+                'observed_count' => count($values),
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function listDescribeEvidenceFailures(array $result, array $scenarioResult): array
+    {
+        $section = self::sectionValue($result, 'operator_controls') ?? [];
+        $evidence = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs'])
+            ?? self::arrayField($section, ['list_describe', 'listDescribe'])
+            ?? [];
+        $failures = [];
+
+        foreach (['cli_list_observed', 'sdk_list_observed', 'last_fire_at_observed', 'next_fire_at_observed', 'pause_state_observed'] as $field) {
+            if (! self::hasTruthyField($evidence, [$field, self::camelize($field)])) {
+                $failures[] = [
+                    'code' => 'missing_list_describe_visibility_evidence',
+                    'field' => $field,
+                ];
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function pauseResumeEvidenceFailures(array $result, array $scenarioResult): array
+    {
+        $section = self::sectionValue($result, 'operator_controls') ?? [];
+        $evidence = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs'])
+            ?? self::arrayField($section, ['pause_resume', 'pauseResume'])
+            ?? [];
+
+        if (self::intField($evidence, ['fires_during_pause_count', 'firesDuringPauseCount']) === 0
+            && self::hasTruthyField($evidence, ['resumed_after_pause', 'resumedAfterPause'])) {
+            return [];
+        }
+
+        return [[
+            'code' => 'missing_pause_no_fire_window_evidence',
+            'scenario_id' => 'pause_resume_no_fire_window',
+        ]];
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function deleteEvidenceFailures(array $result, array $scenarioResult): array
+    {
+        $section = self::sectionValue($result, 'operator_controls') ?? [];
+        $evidence = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs'])
+            ?? self::arrayField($section, ['delete', 'delete_control', 'deleteControl'])
+            ?? [];
+
+        if (self::hasTruthyField($evidence, ['absent_from_list_after_delete', 'absentFromListAfterDelete'])
+            && self::hasTruthyField($evidence, ['no_fires_after_delete', 'noFiresAfterDelete'])) {
+            return [];
+        }
+
+        return [[
+            'code' => 'missing_delete_stops_future_fires_evidence',
+            'scenario_id' => 'delete_stops_future_fires',
+        ]];
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function missedFireEvidenceFailures(array $result, array $contract, array $scenarioResult): array
+    {
+        $expected = self::stringValue($contract['schedule_policy']['missed_fire_policy'] ?? null);
+        $evidence = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs'])
+            ?? self::sectionValue($result, 'missed_fire_policy')
+            ?? [];
+        $observed = self::stringField($evidence, ['observed_policy', 'observedPolicy']);
+        $documented = self::stringField($evidence, ['documented_policy', 'documentedPolicy']);
+        $failures = [];
+
+        if ($observed !== $expected || $documented !== $expected) {
+            $failures[] = [
+                'code' => 'missed_fire_policy_mismatch',
+                'expected_policy' => $expected,
+                'observed_policy' => $observed,
+                'documented_policy' => $documented,
+            ];
+        }
+
+        if (self::intField($evidence, ['catchup_fire_count', 'catchupFireCount']) !== 1) {
+            $failures[] = [
+                'code' => 'missing_missed_fire_catchup_count_evidence',
+                'expected_count' => 1,
+            ];
+        }
+
+        if (! self::hasTruthyField($evidence, ['post_resume_normal_fire_observed', 'postResumeNormalFireObserved'])) {
+            $failures[] = [
+                'code' => 'missing_post_resume_normal_fire_evidence',
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function restartEvidenceFailures(array $result, array $scenarioResult): array
+    {
+        $evidence = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs'])
+            ?? self::sectionValue($result, 'restart_survival')
+            ?? [];
+
+        if (self::hasTruthyField($evidence, ['schedule_listed_after_restart', 'scheduleListedAfterRestart'])
+            && self::hasTruthyField($evidence, ['fired_after_restart', 'firedAfterRestart'])) {
+            return [];
+        }
+
+        return [[
+            'code' => 'missing_restart_survival_evidence',
+            'scenario_id' => 'restart_survival',
+        ]];
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function clientSurfaceEvidenceFailures(array $result, array $scenarioResult, string $client): array
+    {
+        $surfaces = self::arrayField($result, ['client_surfaces', 'clientSurfaces']) ?? [];
+        $evidence = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs'])
+            ?? self::arrayField($surfaces, [$client])
+            ?? [];
+
+        foreach (['create_or_observe', 'list_observed', 'control_observed'] as $field) {
+            if (! self::hasTruthyField($evidence, [$field, self::camelize($field)])) {
+                return [[
+                    'code' => 'missing_client_surface_evidence',
+                    'client' => $client,
+                    'field' => $field,
+                ]];
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function crossLanguageEvidenceFailures(
+        array $result,
+        array $scenarioResult,
+        string $creator,
+        string $runtime,
+    ): array {
+        $matrix = self::sectionValue($result, 'cross_language_matrix') ?? [];
+        $evidence = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs'])
+            ?? self::findCrossLanguageObservation($matrix, $creator, $runtime)
+            ?? [];
+
+        if (self::sameClientSurface(self::stringField($evidence, ['schedule_creator', 'scheduleCreator', 'creator']), $creator)
+            && self::sameRuntimeSurface(self::stringField($evidence, ['workflow_runtime', 'workflowRuntime', 'runtime']), $runtime)
+            && self::hasTruthyField($evidence, ['schedule_visible_in_cli', 'scheduleVisibleInCli'])
+            && self::hasTruthyField($evidence, ['workflow_completed', 'workflowCompleted'])) {
+            return [];
+        }
+
+        return [[
+            'code' => 'missing_cross_language_schedule_workflow_evidence',
+            'schedule_creator' => $creator,
+            'workflow_runtime' => $runtime,
+        ]];
+    }
+
+    /**
+     * @param array<mixed> $matrix
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function findCrossLanguageObservation(array $matrix, string $creator, string $runtime): ?array
+    {
+        $cells = self::arrayField($matrix, ['cross_language_cells', 'crossLanguageCells', 'cells']) ?? $matrix;
+        foreach ($cells as $cell) {
+            if (! is_array($cell)) {
+                continue;
+            }
+
+            if (self::sameClientSurface(self::stringField($cell, ['schedule_creator', 'scheduleCreator', 'creator']), $creator)
+                && self::sameRuntimeSurface(self::stringField($cell, ['workflow_runtime', 'workflowRuntime', 'runtime']), $runtime)) {
+                return $cell;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function invalidCronEvidenceFailures(array $result, array $scenarioResult): array
+    {
+        $section = self::sectionValue($result, 'adversarial_outcomes') ?? [];
+        $evidence = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs'])
+            ?? self::arrayField($section, ['invalid_cron', 'invalidCron'])
+            ?? [];
+
+        if (self::hasTruthyField($evidence, ['refused'])
+            && self::hasTruthyField($evidence, ['typed_error', 'typedError'])
+            && self::hasExplicitFalseField($evidence, ['persisted'])) {
+            return [];
+        }
+
+        return [[
+            'code' => 'missing_invalid_cron_refusal_evidence',
+            'scenario_id' => 'invalid_cron_refusal',
+        ]];
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function nonexistentWorkflowEvidenceFailures(array $result, array $contract, array $scenarioResult): array
+    {
+        $section = self::sectionValue($result, 'adversarial_outcomes') ?? [];
+        $evidence = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs'])
+            ?? self::arrayField($section, ['nonexistent_workflow_type', 'nonexistentWorkflowType'])
+            ?? [];
+        $behavior = self::stringField($evidence, ['behavior', 'observed_behavior', 'observedBehavior']);
+        $allowed = self::stringList($contract['scenario_requirements']['nonexistent_workflow_type_outcome']['allowed_behaviors'] ?? []);
+
+        if (in_array($behavior, $allowed, true)
+            && ($behavior !== 'accepted_pending_worker' || self::hasTruthyField($evidence, ['operator_visible_failure', 'operatorVisibleFailure']))) {
+            return [];
+        }
+
+        return [[
+            'code' => 'missing_nonexistent_workflow_type_outcome_evidence',
+            'scenario_id' => 'nonexistent_workflow_type_outcome',
+            'behavior' => $behavior,
+            'allowed_behaviors' => $allowed,
+        ]];
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     */
+    private static function sectionValue(array $result, string $section): ?array
+    {
+        return self::arrayField($result, [$section, self::camelize($section)]);
+    }
+
+    /**
+     * @param array<string, string> $scenarioStatuses
+     * @param array<string, mixed> $contract
+     */
+    private static function isSmokeSubset(array $scenarioStatuses, array $contract): bool
+    {
+        if ($scenarioStatuses === []) {
+            return false;
+        }
+
+        $requiredScenarios = self::stringList($contract['required_scenarios'] ?? []);
+        $smokeScenarios = [
+            'published_artifact_install_only',
+            'python_sdk_schedule_surface',
+            'invalid_cron_refusal',
+        ];
+        $reported = array_keys($scenarioStatuses);
+
+        return array_diff($reported, $smokeScenarios) === []
+            && count($reported) < count($requiredScenarios);
+    }
+
+    private static function sameRuntimeSurface(string $reported, string $expected): bool
+    {
+        return self::normalizeRuntimeSurface($reported) === self::normalizeRuntimeSurface($expected);
+    }
+
+    private static function sameClientSurface(string $reported, string $expected): bool
+    {
+        return self::normalizeClientSurface($reported) === self::normalizeClientSurface($expected);
+    }
+
+    private static function sameNormalizedToken(string $reported, string $expected): bool
+    {
+        return self::normalizeToken($reported) === self::normalizeToken($expected);
+    }
+
+    private static function normalizeRuntimeSurface(string $value): string
+    {
+        $normalized = self::normalizeToken($value);
+        $aliases = [
+            'php' => 'workflowphp',
+            'phpworker' => 'workflowphp',
+            'phpruntime' => 'workflowphp',
+            'workflow' => 'workflowphp',
+            'workflowphp' => 'workflowphp',
+            'workflowphpworker' => 'workflowphp',
+            'workflowphpruntime' => 'workflowphp',
+            'python' => 'sdkpython',
+            'pythonworker' => 'sdkpython',
+            'pythonruntime' => 'sdkpython',
+            'pythonsdk' => 'sdkpython',
+            'sdkpython' => 'sdkpython',
+        ];
+
+        return $aliases[$normalized] ?? $normalized;
+    }
+
+    private static function normalizeClientSurface(string $value): string
+    {
+        $normalized = self::normalizeToken($value);
+        $aliases = [
+            'dw' => 'cli',
+            'durableworkflowcli' => 'cli',
+            'python' => 'sdkpython',
+            'pythonclient' => 'sdkpython',
+            'pythonsdk' => 'sdkpython',
+            'sdkpython' => 'sdkpython',
+            'phpclient' => 'workflowphpsdk',
+            'phpsdk' => 'workflowphpsdk',
+            'workflowphpclient' => 'workflowphpsdk',
+            'workflowphpsdk' => 'workflowphpsdk',
+        ];
+
+        return $aliases[$normalized] ?? $normalized;
+    }
+
+    private static function normalizeToken(string $value): string
+    {
+        return str_replace(['_', '-', ' '], '', strtolower($value));
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @param list<string> $fields
+     */
+    private static function stringField(array $value, array $fields): string
+    {
+        foreach ($fields as $field) {
+            $string = self::stringValue($value[$field] ?? null);
+            if ($string !== '') {
+                return $string;
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @param list<string> $fields
+     */
+    private static function hasTruthyField(array $value, array $fields): bool
+    {
+        foreach ($fields as $field) {
+            if (! array_key_exists($field, $value)) {
+                continue;
+            }
+
+            $fieldValue = $value[$field];
+            if ($fieldValue === true || $fieldValue === 1 || $fieldValue === '1' || $fieldValue === 'true') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @param list<string> $fields
+     */
+    private static function hasExplicitFalseField(array $value, array $fields): bool
+    {
+        foreach ($fields as $field) {
+            if (! array_key_exists($field, $value)) {
+                continue;
+            }
+
+            $fieldValue = $value[$field];
+            if ($fieldValue === false || $fieldValue === 0 || $fieldValue === '0') {
+                return true;
+            }
+
+            if (is_string($fieldValue) && strtolower(trim($fieldValue)) === 'false') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @param list<string> $fields
+     */
+    private static function intField(array $value, array $fields): int
+    {
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $value) && is_numeric($value[$field])) {
+                return (int) $value[$field];
+            }
+        }
+
+        return -1;
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @param list<string> $fields
+     */
+    private static function hasScalarField(array $value, array $fields): bool
+    {
+        foreach ($fields as $field) {
+            if (! array_key_exists($field, $value)) {
+                continue;
+            }
+
+            if (is_scalar($value[$field]) && self::stringValue($value[$field]) !== '') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @param list<string> $fields
+     */
+    private static function hasArrayField(array $value, array $fields): bool
+    {
+        foreach ($fields as $field) {
+            if (isset($value[$field]) && is_array($value[$field]) && $value[$field] !== []) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<mixed> $value
+     * @param list<string> $fields
+     *
+     * @return array<mixed>|null
+     */
+    private static function arrayField(array $value, array $fields): ?array
+    {
+        foreach ($fields as $field) {
+            if (isset($value[$field]) && is_array($value[$field])) {
+                return $value[$field];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function stringList(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $strings = [];
+        foreach ($value as $item) {
+            if (is_scalar($item)) {
+                $string = self::stringValue($item);
+                if ($string !== '') {
+                    $strings[] = $string;
+                }
+            }
+        }
+
+        return $strings;
+    }
+
+    private static function stringValue(mixed $value): string
+    {
+        if ($value === null || is_array($value) || is_object($value)) {
+            return '';
+        }
+
+        return trim((string) $value);
+    }
+
+    private static function camelize(string $field): string
+    {
+        return preg_replace_callback(
+            '/_([a-z])/',
+            static fn (array $matches): string => strtoupper($matches[1]),
+            $field,
+        ) ?? $field;
+    }
+}
