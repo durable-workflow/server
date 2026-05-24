@@ -468,6 +468,89 @@ class NamespaceControllerTest extends TestCase
         File::deleteDirectory($storageDirectory);
     }
 
+    public function test_it_scrubs_caller_side_service_call_state_when_namespace_is_deleted(): void
+    {
+        $storageDirectory = storage_path('framework/testing/namespace-caller-service-call-payloads');
+        $storageRoots = [
+            'tenant-a' => $storageDirectory.'/tenant-a',
+            'tenant-b' => $storageDirectory.'/tenant-b',
+        ];
+        File::deleteDirectory($storageDirectory);
+
+        foreach ($storageRoots as $namespace => $root) {
+            WorkflowNamespace::create([
+                'name' => $namespace,
+                'retention_days' => 30,
+                'status' => 'active',
+                'external_payload_storage' => [
+                    'driver' => 'local',
+                    'enabled' => true,
+                    'config' => [
+                        'uri' => 'file://'.$root,
+                    ],
+                ],
+            ]);
+        }
+
+        $callerWorkflow = 'wf-tenant-a-caller-cleanup';
+        $callerRun = $this->runtimeState('tenant-a', $callerWorkflow);
+        $inputPath = $storageRoots['tenant-b'].'/payloads/service-input.bin';
+        $outputPath = $storageRoots['tenant-b'].'/payloads/service-output.bin';
+
+        foreach ([$inputPath, $outputPath] as $path) {
+            File::ensureDirectoryExists(dirname($path));
+            file_put_contents($path, 'payload:'.$path);
+        }
+
+        $serviceCallId = $this->addServiceCall([
+            'namespace' => 'tenant-b',
+            'caller_namespace' => 'tenant-a',
+            'caller_workflow_instance_id' => $callerWorkflow,
+            'caller_workflow_run_id' => $callerRun,
+            'target_namespace' => 'tenant-b',
+            'input_payload_reference' => 'file://'.$inputPath,
+            'output_payload_reference' => 'file://'.$outputPath,
+            'caller_principal_subject' => 'svc:tenant-a',
+            'caller_principal_method' => 'token',
+            'caller_principal_roles' => json_encode(['worker']),
+            'caller_principal_tenant' => 'tenant-a',
+            'caller_principal_claims' => json_encode(['scope' => 'nexus.invoke']),
+        ]);
+
+        $this->deleteJson('/api/namespaces/tenant-a')
+            ->assertOk()
+            ->assertJsonPath('deleted.workflow_service_call_caller_contexts', 1);
+
+        $this->assertFileExists($inputPath);
+        $this->assertFileExists($outputPath);
+        $this->assertDatabaseHas('workflow_service_calls', [
+            'id' => $serviceCallId,
+            'namespace' => 'tenant-b',
+            'target_namespace' => 'tenant-b',
+            'caller_namespace' => null,
+            'caller_workflow_instance_id' => null,
+            'caller_workflow_run_id' => null,
+            'input_payload_reference' => 'file://'.$inputPath,
+            'output_payload_reference' => 'file://'.$outputPath,
+            'caller_principal_subject' => null,
+            'caller_principal_method' => null,
+            'caller_principal_roles' => null,
+            'caller_principal_tenant' => null,
+            'caller_principal_claims' => null,
+        ]);
+
+        $this->postJson('/api/namespaces', ['name' => 'tenant-a'])
+            ->assertCreated();
+
+        $this->withHeaders(['X-Namespace' => 'tenant-a'])
+            ->getJson('/api/workflows/'.$callerWorkflow.'/nexus-operations')
+            ->assertOk()
+            ->assertJsonPath('count', 0)
+            ->assertJsonCount(0, 'nexus_operations');
+
+        File::deleteDirectory($storageDirectory);
+    }
+
     public function test_it_keeps_namespace_service_call_external_payload_referenced_by_retained_call(): void
     {
         $storageDirectory = storage_path('framework/testing/namespace-shared-service-call-payloads');

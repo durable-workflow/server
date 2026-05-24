@@ -65,6 +65,11 @@ class NamespaceLifecycleCleanup
                 'namespace' => [$namespace],
                 'target_namespace' => [$namespace],
             ]);
+            $deleted['workflow_service_call_caller_contexts'] = $this->scrubServiceCallCallerContexts(
+                $namespace,
+                $runIds,
+                $instanceIds,
+            );
 
             foreach ([
                 'activity_executions',
@@ -185,6 +190,77 @@ class NamespaceLifecycleCleanup
                 }
             })
             ->delete();
+    }
+
+    /**
+     * Recreate safety for caller-indexed Nexus history: target-owned service
+     * calls may remain visible to their target namespace, but a deleted caller
+     * namespace must not inherit those rows when the same name is recreated.
+     *
+     * @param list<string> $runIds
+     * @param list<string> $instanceIds
+     */
+    private function scrubServiceCallCallerContexts(string $namespace, array $runIds, array $instanceIds): int
+    {
+        $table = 'workflow_service_calls';
+
+        if (! Schema::hasTable($table)) {
+            return 0;
+        }
+
+        $conditions = $this->serviceCallCallerContextConditions($namespace, $runIds, $instanceIds);
+
+        if ($conditions === []) {
+            return 0;
+        }
+
+        $updates = array_fill_keys(array_values(array_filter([
+            Schema::hasColumn($table, 'caller_namespace') ? 'caller_namespace' : null,
+            Schema::hasColumn($table, 'caller_workflow_instance_id') ? 'caller_workflow_instance_id' : null,
+            Schema::hasColumn($table, 'caller_workflow_run_id') ? 'caller_workflow_run_id' : null,
+            Schema::hasColumn($table, 'caller_principal_subject') ? 'caller_principal_subject' : null,
+            Schema::hasColumn($table, 'caller_principal_method') ? 'caller_principal_method' : null,
+            Schema::hasColumn($table, 'caller_principal_roles') ? 'caller_principal_roles' : null,
+            Schema::hasColumn($table, 'caller_principal_tenant') ? 'caller_principal_tenant' : null,
+            Schema::hasColumn($table, 'caller_principal_claims') ? 'caller_principal_claims' : null,
+        ])), null);
+
+        if ($updates === []) {
+            return 0;
+        }
+
+        return DB::table($table)
+            ->where(function ($query) use ($conditions): void {
+                foreach ($conditions as $column => $values) {
+                    $query->orWhereIn($column, $values);
+                }
+            })
+            ->update($updates);
+    }
+
+    /**
+     * @param list<string> $runIds
+     * @param list<string> $instanceIds
+     * @return array<string, list<string>>
+     */
+    private function serviceCallCallerContextConditions(string $namespace, array $runIds, array $instanceIds): array
+    {
+        $table = 'workflow_service_calls';
+        $conditions = [];
+
+        if (Schema::hasColumn($table, 'caller_namespace')) {
+            $conditions['caller_namespace'] = [$namespace];
+        }
+
+        if ($instanceIds !== [] && Schema::hasColumn($table, 'caller_workflow_instance_id')) {
+            $conditions['caller_workflow_instance_id'] = $instanceIds;
+        }
+
+        if ($runIds !== [] && Schema::hasColumn($table, 'caller_workflow_run_id')) {
+            $conditions['caller_workflow_run_id'] = $runIds;
+        }
+
+        return $conditions;
     }
 
     /**
