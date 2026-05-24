@@ -46,6 +46,41 @@ class WorkerProtocolContractTest extends TestCase
             ->assertJsonMissingPath('control_plane');
     }
 
+    public function test_external_diagnostic_worker_registration_surfaces_build_id_cohort(): void
+    {
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'diagnostic-worker-v2',
+                'task_queue' => 'versioned-diagnostics',
+                'runtime' => 'external',
+                'build_id' => 'build-v2',
+            ])
+            ->assertCreated()
+            ->assertJsonPath('worker_id', 'diagnostic-worker-v2')
+            ->assertJsonPath('registered', true);
+
+        $workers = $this->getJson(
+            '/api/workers?task_queue=versioned-diagnostics',
+            $this->controlPlaneHeaders(),
+        );
+
+        $workers->assertOk()
+            ->assertJsonCount(1, 'workers')
+            ->assertJsonPath('workers.0.worker_id', 'diagnostic-worker-v2')
+            ->assertJsonPath('workers.0.runtime', 'external')
+            ->assertJsonPath('workers.0.build_id', 'build-v2');
+
+        $buildIds = $this->getJson(
+            '/api/task-queues/versioned-diagnostics/build-ids',
+            $this->controlPlaneHeaders(),
+        );
+
+        $buildIds->assertOk()
+            ->assertJsonPath('build_ids.0.build_id', 'build-v2')
+            ->assertJsonPath('build_ids.0.rollout_status', 'active')
+            ->assertJsonPath('build_ids.0.active_worker_count', 1);
+    }
+
     public function test_workflow_task_command_validation_errors_use_worker_protocol_contract(): void
     {
         Queue::fake();

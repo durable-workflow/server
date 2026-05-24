@@ -67,7 +67,7 @@ class WorkerController
         $validated = $request->validate([
             'worker_id' => ['nullable', 'string', 'max:255'],
             'task_queue' => ['required', 'string', 'max:255'],
-            'runtime' => ['required', 'string', 'in:php,python,rust,typescript,go,java'],
+            'runtime' => ['required', 'string', 'in:php,python,rust,typescript,go,java,external'],
             'sdk_version' => ['nullable', 'string', 'max:64'],
             'build_id' => ['nullable', 'string', 'max:255'],
             'supported_workflow_types' => ['nullable', 'array'],
