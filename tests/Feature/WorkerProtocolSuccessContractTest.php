@@ -1362,6 +1362,133 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $this->assertContains('ActivityCompleted', $eventTypes);
     }
 
+    public function test_failed_workflow_read_response_includes_activity_failure_context(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-failure-context-contract',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $workflowId = (string) $start->json('workflow_id');
+        $codec = (string) config('workflows.serializer');
+
+        $this->registerWorker(
+            workerId: 'worker-failure-context-scheduler',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+        $this->registerWorker(
+            workerId: 'activity-failure-context-worker',
+            taskQueue: 'contract-compensations',
+            supportedActivityTypes: ['cancel_flight'],
+        );
+        $this->registerWorker(
+            workerId: 'worker-failure-context-resume',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-failure-context-scheduler',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll);
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-failure-context-scheduler',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [
+                [
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'cancel_flight',
+                    'arguments' => Serializer::serializeWithCodec($codec, []),
+                    'queue' => 'contract-compensations',
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('run_status', 'waiting');
+
+        $activityPoll = $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'activity-failure-context-worker',
+            'task_queue' => 'contract-compensations',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($activityPoll)
+            ->assertJsonPath('task.activity_type', 'cancel_flight');
+
+        $activityTaskId = (string) $activityPoll->json('task.task_id');
+        $activityAttemptId = (string) $activityPoll->json('task.activity_attempt_id');
+
+        $failActivity = $this->postJson("/api/worker/activity-tasks/{$activityTaskId}/fail", [
+            'activity_attempt_id' => $activityAttemptId,
+            'lease_owner' => 'activity-failure-context-worker',
+            'failure' => [
+                'message' => 'cancel_flight typed compensation failure',
+                'type' => 'TypedCompensationError',
+                'non_retryable' => true,
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($failActivity)
+            ->assertJsonPath('outcome', 'failed')
+            ->assertJsonStructure(['next_task_id']);
+
+        $resumePoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-failure-context-resume',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($resumePoll)
+            ->assertJsonPath('task.workflow_event_type', 'ActivityFailed')
+            ->assertJsonPath('task.activity_type', 'cancel_flight');
+
+        $resumeTaskId = (string) $resumePoll->json('task.task_id');
+        $resumeAttempt = (int) $resumePoll->json('task.workflow_task_attempt');
+
+        $failWorkflow = $this->postJson("/api/worker/workflow-tasks/{$resumeTaskId}/complete", [
+            'lease_owner' => 'worker-failure-context-resume',
+            'workflow_task_attempt' => $resumeAttempt,
+            'commands' => [
+                [
+                    'type' => 'fail_workflow',
+                    'message' => 'compensation failed for unknown: activity failed',
+                    'exception_class' => 'RuntimeException',
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($failWorkflow)
+            ->assertJsonPath('run_status', 'failed');
+
+        $state = $this->getJson("/api/workflows/{$workflowId}", $this->apiHeaders());
+
+        $state->assertOk()
+            ->assertJsonPath('status', 'failed')
+            ->assertJsonPath('is_terminal', true)
+            ->assertJsonPath('error', 'compensation failed for unknown: activity failed')
+            ->assertJsonPath('failure.message', 'compensation failed for unknown: activity failed')
+            ->assertJsonPath('failure.activity_failures.0.activity_type', 'cancel_flight')
+            ->assertJsonPath('failure.activity_failures.0.message', 'cancel_flight typed compensation failure')
+            ->assertJsonPath('failure.failures.0.message', 'cancel_flight typed compensation failure')
+            ->assertJsonPath('failures.0.message', 'cancel_flight typed compensation failure');
+    }
+
     public function test_start_timer_completion_uses_worker_protocol_contract(): void
     {
         Queue::fake();
@@ -1437,6 +1564,68 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $eventTypes = array_column($history->json('events'), 'event_type');
 
         $this->assertContains('TimerScheduled', $eventTypes);
+    }
+
+    public function test_service_mode_poll_dispatches_timer_job_on_local_queue(): void
+    {
+        Queue::fake();
+
+        config([
+            'server.mode' => 'service',
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-service-timer-contract',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $this->registerWorker(
+            workerId: 'worker-service-timer-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-service-timer-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll);
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-service-timer-contract',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [
+                [
+                    'type' => 'start_timer',
+                    'delay_seconds' => 0,
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('run_status', 'waiting')
+            ->assertJsonStructure(['created_task_ids']);
+
+        $timerTaskId = (string) $complete->json('created_task_ids.0');
+
+        Queue::assertPushed(
+            RunTimerTask::class,
+            static fn (RunTimerTask $job): bool => $job->taskId === $timerTaskId
+                && $job->queue === null,
+        );
     }
 
     public function test_timer_resume_task_exposes_worker_protocol_context(): void

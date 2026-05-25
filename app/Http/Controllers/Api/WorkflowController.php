@@ -22,11 +22,14 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 use LogicException;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Support\WorkerCompatibilityFleet;
+use Workflow\V2\Support\FailureSnapshots;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Workflow;
 
 class WorkflowController
@@ -1018,8 +1021,9 @@ class WorkflowController
             ];
         $isCurrentRun = ($runDescription['is_current_run'] ?? null) !== false;
         $actions['can_query'] = $isCurrentRun && $this->canServeQuery($namespace, $run);
+        $terminalFailure = $this->terminalFailurePayload($run);
 
-        return [
+        $payload = [
             'workflow_id' => $run->workflow_instance_id,
             'run_id' => $run->id,
             'namespace' => $namespace,
@@ -1063,6 +1067,176 @@ class WorkflowController
             'search_attributes' => $run->typedSearchAttributes(),
             'actions' => $actions,
         ];
+
+        if ($terminalFailure !== null) {
+            $payload['error'] = $terminalFailure['message'] ?? null;
+            $payload['failure'] = $terminalFailure;
+            $payload['exception'] = $terminalFailure['exception'] ?? null;
+            $payload['failures'] = $terminalFailure['failures'] ?? [];
+        }
+
+        return $payload;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function terminalFailurePayload(WorkflowRun $run): ?array
+    {
+        if ($run->status !== RunStatus::Failed) {
+            return null;
+        }
+
+        $failures = $this->compactFailureSnapshots(FailureSnapshots::forRun($run));
+        $activityFailures = $this->activityFailureSummaries($run);
+
+        if ($failures === [] && $activityFailures === []) {
+            return null;
+        }
+
+        $terminal = $this->terminalFailureSnapshot($failures);
+        $message = $this->nonEmptyString($terminal['message'] ?? null)
+            ?? $this->lastActivityFailureMessage($activityFailures);
+        $exception = $this->failureExceptionPayload($terminal);
+
+        return $this->withoutNullOrEmptyArrays([
+            'message' => $message,
+            'exception_type' => $this->nonEmptyString($terminal['exception_type'] ?? null),
+            'exception_class' => $this->nonEmptyString($terminal['exception_class'] ?? null),
+            'failure_category' => $this->nonEmptyString($terminal['failure_category'] ?? null),
+            'non_retryable' => $terminal['non_retryable'] ?? null,
+            'source_kind' => $this->nonEmptyString($terminal['source_kind'] ?? null),
+            'source_id' => $this->nonEmptyString($terminal['source_id'] ?? null),
+            'event_sequence' => $terminal['event_sequence'] ?? null,
+            'exception' => $exception,
+            'activity_failures' => $activityFailures,
+            'failures' => $failures,
+        ]);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $failures
+     * @return array<string, mixed>
+     */
+    private function terminalFailureSnapshot(array $failures): array
+    {
+        for ($index = count($failures) - 1; $index >= 0; $index--) {
+            $failure = $failures[$index];
+
+            if (($failure['source_kind'] ?? null) === 'workflow_run'
+                || ($failure['propagation_kind'] ?? null) === 'terminal'
+            ) {
+                return $failure;
+            }
+        }
+
+        return $failures === [] ? [] : $failures[count($failures) - 1];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $failures
+     * @return list<array<string, mixed>>
+     */
+    private function compactFailureSnapshots(array $failures): array
+    {
+        return array_values(array_map(function (array $failure): array {
+            return $this->withoutNullOrEmptyArrays([
+                'id' => $this->nonEmptyString($failure['id'] ?? null),
+                'source_kind' => $this->nonEmptyString($failure['source_kind'] ?? null),
+                'source_id' => $this->nonEmptyString($failure['source_id'] ?? null),
+                'propagation_kind' => $this->nonEmptyString($failure['propagation_kind'] ?? null),
+                'failure_category' => $this->nonEmptyString($failure['failure_category'] ?? null),
+                'non_retryable' => $failure['non_retryable'] ?? null,
+                'handled' => $failure['handled'] ?? null,
+                'exception_type' => $this->nonEmptyString($failure['exception_type'] ?? null),
+                'exception_class' => $this->nonEmptyString($failure['exception_class'] ?? null),
+                'message' => $this->nonEmptyString($failure['message'] ?? null),
+                'event_sequence' => $failure['event_sequence'] ?? null,
+                'history_authority' => $this->nonEmptyString($failure['history_authority'] ?? null),
+            ]);
+        }, $failures));
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function activityFailureSummaries(WorkflowRun $run): array
+    {
+        $run->loadMissing('historyEvents');
+
+        return $run->historyEvents
+            ->filter(static fn ($event): bool => $event instanceof WorkflowHistoryEvent
+                && in_array($event->event_type, [
+                    HistoryEventType::ActivityFailed,
+                    HistoryEventType::ActivityTimedOut,
+                ], true))
+            ->map(function (WorkflowHistoryEvent $event): array {
+                $payload = is_array($event->payload) ? $event->payload : [];
+
+                return $this->withoutNullOrEmptyArrays([
+                    'event_sequence' => $event->sequence,
+                    'event_type' => $event->event_type->value,
+                    'activity_type' => $this->nonEmptyString($payload['activity_type'] ?? null),
+                    'activity_class' => $this->nonEmptyString($payload['activity_class'] ?? null),
+                    'activity_execution_id' => $this->nonEmptyString($payload['activity_execution_id'] ?? null),
+                    'activity_attempt_id' => $this->nonEmptyString($payload['activity_attempt_id'] ?? null),
+                    'failure_id' => $this->nonEmptyString($payload['failure_id'] ?? null),
+                    'failure_category' => $this->nonEmptyString($payload['failure_category'] ?? null),
+                    'exception_type' => $this->nonEmptyString($payload['exception_type'] ?? null),
+                    'exception_class' => $this->nonEmptyString($payload['exception_class'] ?? null),
+                    'message' => $this->nonEmptyString($payload['message'] ?? null),
+                    'non_retryable' => $payload['non_retryable'] ?? null,
+                ]);
+            })
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $activityFailures
+     */
+    private function lastActivityFailureMessage(array $activityFailures): ?string
+    {
+        for ($index = count($activityFailures) - 1; $index >= 0; $index--) {
+            $message = $this->nonEmptyString($activityFailures[$index]['message'] ?? null);
+
+            if ($message !== null) {
+                return $message;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $failure
+     * @return array<string, mixed>|null
+     */
+    private function failureExceptionPayload(array $failure): ?array
+    {
+        $exception = is_array($failure['exception_payload'] ?? null)
+            ? $failure['exception_payload']
+            : [];
+
+        $payload = $this->withoutNullOrEmptyArrays([
+            'type' => $this->nonEmptyString($failure['exception_type'] ?? null)
+                ?? $this->nonEmptyString($exception['type'] ?? null),
+            'class' => $this->nonEmptyString($failure['exception_class'] ?? null)
+                ?? $this->nonEmptyString($exception['__constructor'] ?? null),
+            'message' => $this->nonEmptyString($failure['message'] ?? null)
+                ?? $this->nonEmptyString($exception['message'] ?? null),
+        ]);
+
+        return $payload === [] ? null : $payload;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function withoutNullOrEmptyArrays(array $payload): array
+    {
+        return array_filter($payload, static fn (mixed $value): bool => $value !== null && $value !== []);
     }
 
     private function compatibilityStatus(string $namespace, WorkflowRun $run): string
