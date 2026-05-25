@@ -244,6 +244,7 @@ final class NamespaceRuntimeContract
                         'tenant_b_scoped_views',
                         'detail_namespace_identity',
                         'unscoped_view_authority',
+                        'api_captures',
                     ],
                 ],
                 'search_attribute_schema_and_value_query_isolation' => [

@@ -116,6 +116,10 @@ class NamespaceRuntimeContractTest extends TestCase
             $manifest['scenario_requirements']['schedule_namespace_isolation']['evidence'],
         );
         $this->assertSame(
+            ['tenant_a_scoped_views', 'tenant_b_scoped_views', 'detail_namespace_identity', 'unscoped_view_authority', 'api_captures'],
+            $manifest['scenario_requirements']['waterline_operator_namespace_visibility']['evidence'],
+        );
+        $this->assertSame(
             ['refused_names', 'typed_errors', 'valid_control_name_accepted', 'stored_namespace_names'],
             $manifest['scenario_requirements']['reserved_namespace_name_refusal']['evidence'],
         );
@@ -261,6 +265,7 @@ class NamespaceRuntimeContractTest extends TestCase
     {
         $result = $this->completeNamespaceResult();
         unset(
+            $result['waterline_operator_visibility']['api_captures'],
             $result['sdk_namespace_selection']['cross_namespace_lookup_denied'],
             $result['schedule_namespace_isolation']['cross_namespace_schedule_mutation_denied'],
             $result['adversarial_namespace_names']['valid_control_name_accepted'],
@@ -282,6 +287,13 @@ class NamespaceRuntimeContractTest extends TestCase
         );
         $this->assertContains(
             ['schedule_namespace_isolation', 'cross_namespace_schedule_mutation_denied'],
+            array_map(
+                static fn (array $failure): array => [$failure['scenario_id'] ?? null, $failure['field'] ?? null],
+                $missingEvidence,
+            ),
+        );
+        $this->assertContains(
+            ['waterline_operator_namespace_visibility', 'api_captures'],
             array_map(
                 static fn (array $failure): array => [$failure['scenario_id'] ?? null, $failure['field'] ?? null],
                 $missingEvidence,
@@ -474,6 +486,17 @@ class NamespaceRuntimeContractTest extends TestCase
                 'tenant_b_scoped_views' => ['tenant-b-run'],
                 'detail_namespace_identity' => 'tenant-a',
                 'unscoped_view_authority' => 'explicit operator-wide authority required',
+                'api_captures' => [
+                    'tenant_a_scoped_views' => [
+                        'workflow_list' => ['path' => '/api/flows/completed', 'status' => 200],
+                    ],
+                    'tenant_b_scoped_views' => [
+                        'workflow_list' => ['path' => '/api/flows/completed', 'status' => 200],
+                    ],
+                    'unscoped_view_authority' => [
+                        'workflow_list' => ['path' => '/api/flows/completed', 'status' => 200],
+                    ],
+                ],
             ],
             'search_attribute_value_query_isolation' => [
                 'schema_isolation' => true,

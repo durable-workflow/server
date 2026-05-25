@@ -145,6 +145,7 @@ final class NamespaceRuntimeResultGate
                     'detailNamespaceIdentity',
                 ],
                 'unscoped_view_authority' => ['unscoped_view_authority', 'unscopedViewAuthority'],
+                'api_captures' => ['api_captures', 'apiCaptures'],
             ],
         ],
         'search_attribute_schema_and_value_query_isolation' => [
