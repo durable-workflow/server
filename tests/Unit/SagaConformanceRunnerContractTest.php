@@ -70,14 +70,14 @@ class SagaConformanceRunnerContractTest extends TestCase
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
 
         $this->assertStringContainsString(
-            "Workflow::child('php.book-trip.failure', new ChildWorkflowOptions(queue: PHP_QUEUE), \$payload);",
-            $source,
-            'child workflow calls must pass the workflow type before child options',
-        );
-        $this->assertStringContainsString(
             "Workflow::activity(\n                    \$step['action'],\n                    new ActivityOptions(queue: runtime_queue((string) (\$payload['forward_runtime'] ?? 'workflow-php'))),\n                    \$payload\n                );",
             $source,
             'forward activity calls must pass the activity type before activity options',
+        );
+        $this->assertStringContainsString(
+            "Workflow::activity(\n                        'saga_planned_failure',\n                        new ActivityOptions(queue: runtime_queue((string) (\$payload['forward_runtime'] ?? 'workflow-php'))),\n                        \$payload\n                    );",
+            $source,
+            'planned saga failures should be activity failures so compensation scenarios exercise the activity/compensation contract',
         );
         $this->assertStringContainsString(
             'Workflow::activity($compensation, $options, $payload);',
@@ -90,9 +90,9 @@ class SagaConformanceRunnerContractTest extends TestCase
             'pause activity calls must pass the activity type before activity options',
         );
         $this->assertStringNotContainsString(
-            "Workflow::child(new ChildWorkflowOptions(queue: PHP_QUEUE), 'php.book-trip.failure', \$payload);",
+            "Workflow::activity(new ActivityOptions(queue: runtime_queue((string) (\$payload['forward_runtime'] ?? 'workflow-php'))), 'saga_planned_failure', \$payload);",
             $source,
-            'generated child workflow calls must not use the pre-v2 options-first order',
+            'generated planned-failure activity calls must not use the pre-v2 options-first order',
         );
         $this->assertStringNotContainsString(
             'Workflow::activity($options, $compensation, $payload);',
@@ -541,6 +541,58 @@ class SagaConformanceRunnerContractTest extends TestCase
             '"runnerBlocked": False',
             $source,
             'once the orchestrator reaches scenario execution, failures should be product or focused scenario evidence rather than runner-blocked noise',
+        );
+    }
+
+    public function test_php_runner_uses_published_workflow_fiber_runner(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            'use Workflow\V2\Worker\WorkflowFiberRunner;',
+            $source,
+            'the PHP saga worker must use the published worker-protocol replay runner instead of a partial local replay loop',
+        );
+        $this->assertStringContainsString(
+            'WorkflowFiberRunner::forClass(',
+            $source,
+            'PHP workflow tasks must be replayed by the package runner that understands persisted command sequences',
+        );
+        $this->assertStringContainsString(
+            'complete_workflow_task($task, $step->commands);',
+            $source,
+            'the generated PHP worker must submit the package runner command envelope directly',
+        );
+        $this->assertStringNotContainsString(
+            'function complete_current_call(',
+            $source,
+            'the saga handoff must not keep the ad hoc PHP command replay loop that can re-emit completed steps',
+        );
+    }
+
+    public function test_planned_saga_failures_are_activity_failures_with_bounded_waits(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            "saga_planned_failure = define_activity(\"saga_planned_failure\")",
+            $source,
+            'Python planned failures must be registered as activities rather than child workflows',
+        );
+        $this->assertStringContainsString(
+            "except ActivityFailed:",
+            $source,
+            'Python saga workflows must compensate planned activity failures without replaying through child failure paths',
+        );
+        $this->assertStringContainsString(
+            'WAIT_RESULT_TIMEOUT_SECONDS = float(os.environ.get("DW_SAGAS_WAIT_RESULT_TIMEOUT", "45"))',
+            $source,
+            'scenario waits must be short enough to record focused product evidence before the host runner timeout',
+        );
+        $this->assertStringNotContainsString(
+            'python.book-trip.failure',
+            $source,
+            'the saga runner should not use child workflows to inject planned step failures',
         );
     }
 

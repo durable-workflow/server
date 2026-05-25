@@ -969,13 +969,8 @@ declare(strict_types=1);
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Type;
-use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\ActivityOptions;
-use Workflow\V2\Support\ChildWorkflowCall;
-use Workflow\V2\Support\ChildWorkflowOptions;
-use Workflow\V2\Support\TimerCall;
-use Workflow\V2\Support\WorkflowExecution;
+use Workflow\V2\Worker\WorkflowFiberRunner;
 use Workflow\V2\Workflow;
 
 require __DIR__.'/vendor/autoload.php';
@@ -987,15 +982,6 @@ const PROTOCOL_VERSION = '1.7';
 const PHP_QUEUE = 'sagas-php';
 const PYTHON_QUEUE = 'sagas-python';
 const WORKER_ID = 'php-sagas-worker';
-
-#[Type('php.book-trip.failure')]
-final class PhpFailureWorkflow extends Workflow
-{
-    public function handle(array $payload): array
-    {
-        throw new \RuntimeException((string) ($payload['failure_message'] ?? 'planned saga failure'));
-    }
-}
 
 #[Type('php.book-trip')]
 final class PhpBookTripWorkflow extends Workflow
@@ -1013,10 +999,6 @@ final class PhpBookTripWorkflow extends Workflow
 
         try {
             foreach ($steps as $step) {
-                if ($failStep === $step['action'] && $failureMode === 'before_forward') {
-                    Workflow::child('php.book-trip.failure', new ChildWorkflowOptions(queue: PHP_QUEUE), $payload);
-                }
-
                 Workflow::activity(
                     $step['action'],
                     new ActivityOptions(queue: runtime_queue((string) ($payload['forward_runtime'] ?? 'workflow-php'))),
@@ -1025,25 +1007,31 @@ final class PhpBookTripWorkflow extends Workflow
                 $completed[] = $step['action'];
 
                 $compensation = $step['compensation'];
-                $this->addCompensation(function () use ($compensation, $payload, $compensationRuntime, $pauseAfterFirstCompensation, $pauseSeconds, &$completed): void {
-                    $options = new ActivityOptions(
-                        queue: runtime_queue($compensationRuntime),
-                        maxAttempts: compensation_max_attempts($compensation, $payload),
-                        backoff: [0]
-                    );
-                    Workflow::activity($compensation, $options, $payload);
-                    $completed[] = $compensation;
+                if ($compensation !== '') {
+                    $this->addCompensation(function () use ($compensation, $payload, $compensationRuntime, $pauseAfterFirstCompensation, $pauseSeconds, &$completed): void {
+                        $options = new ActivityOptions(
+                            queue: runtime_queue($compensationRuntime),
+                            maxAttempts: compensation_max_attempts($compensation, $payload),
+                            backoff: [0]
+                        );
+                        Workflow::activity($compensation, $options, $payload);
+                        $completed[] = $compensation;
 
-                    if ($pauseAfterFirstCompensation && $compensation === 'refund_card') {
-                        Workflow::activity('pause_after_refund', new ActivityOptions(queue: runtime_queue($compensationRuntime)), $payload);
-                        $completed[] = 'pause_after_refund';
-                        Workflow::timer($pauseSeconds);
-                    }
-                });
-                $compensations[] = $compensation;
+                        if ($pauseAfterFirstCompensation && $compensation === 'refund_card') {
+                            Workflow::activity('pause_after_refund', new ActivityOptions(queue: runtime_queue($compensationRuntime)), $payload);
+                            $completed[] = 'pause_after_refund';
+                            Workflow::timer($pauseSeconds);
+                        }
+                    });
+                    $compensations[] = $compensation;
+                }
 
                 if ($failStep === $step['action'] && $failureMode === 'after_forward') {
-                    Workflow::child('php.book-trip.failure', new ChildWorkflowOptions(queue: PHP_QUEUE), $payload);
+                    Workflow::activity(
+                        'saga_planned_failure',
+                        new ActivityOptions(queue: runtime_queue((string) ($payload['forward_runtime'] ?? 'workflow-php'))),
+                        $payload
+                    );
                 }
             }
 
@@ -1176,75 +1164,6 @@ function history_events(array $task): array
     return is_array($events) ? $events : [];
 }
 
-function event_sequence(array $event): ?int
-{
-    $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
-    $sequence = $payload['sequence'] ?? $event['sequence'] ?? null;
-    return is_int($sequence) ? $sequence : null;
-}
-
-function event_for_sequence(array $task, int $sequence, array $eventTypes): ?array
-{
-    foreach (history_events($task) as $event) {
-        if (! is_array($event) || ! in_array($event['event_type'] ?? null, $eventTypes, true)) {
-            continue;
-        }
-        if (event_sequence($event) === $sequence) {
-            return $event;
-        }
-    }
-    return null;
-}
-
-function event_payload(array $event): array
-{
-    $payload = $event['payload'] ?? [];
-    return is_array($payload) ? $payload : [];
-}
-
-function decode_history_value(mixed $value, string $codec): mixed
-{
-    if ($value === null) {
-        return null;
-    }
-    if (is_array($value) && isset($value['codec'], $value['blob'])) {
-        return Serializer::unserializeWithCodec((string) $value['codec'], (string) $value['blob']);
-    }
-    if (is_string($value)) {
-        return Serializer::unserializeWithCodec($codec, $value);
-    }
-    return $value;
-}
-
-function activity_result(array $event, string $codec): mixed
-{
-    $payload = event_payload($event);
-    $payloadCodec = is_string($payload['payload_codec'] ?? null) && $payload['payload_codec'] !== ''
-        ? $payload['payload_codec']
-        : $codec;
-    return decode_history_value($payload['result'] ?? null, $payloadCodec);
-}
-
-function child_result(array $event, string $codec): mixed
-{
-    $payload = event_payload($event);
-    $payloadCodec = is_string($payload['payload_codec'] ?? null) && $payload['payload_codec'] !== ''
-        ? $payload['payload_codec']
-        : $codec;
-    return decode_history_value($payload['output'] ?? null, $payloadCodec);
-}
-
-function failure_from_event(array $event, string $fallback): \RuntimeException
-{
-    $payload = event_payload($event);
-    $message = $payload['message'] ?? null;
-    if (! is_string($message) || $message === '') {
-        $exception = $payload['exception'] ?? null;
-        $message = is_array($exception) && is_string($exception['message'] ?? null) ? $exception['message'] : $fallback;
-    }
-    return new \RuntimeException($message);
-}
-
 function complete_workflow_task(array $task, array $commands): void
 {
     request_json('POST', '/worker/workflow-tasks/'.$task['task_id'].'/complete', [
@@ -1286,168 +1205,43 @@ function fail_workflow_task(array $task, \Throwable $throwable): void
     ]]);
 }
 
-function workflow_input(array $task, string $codec): array
-{
-    $input = decode_payload($task['arguments'] ?? null, $codec);
-    $input = is_array($input) && array_is_list($input) ? ($input[0] ?? []) : $input;
-    return is_array($input) ? $input : [];
-}
-
-function workflow_run(array $task, string $codec): WorkflowRun
-{
-    $run = new WorkflowRun();
-    $run->id = (string) ($task['run_id'] ?? $task['workflow_run_id'] ?? '');
-    $run->workflow_instance_id = (string) ($task['workflow_id'] ?? $task['workflow_instance_id'] ?? '');
-    $run->workflow_type = (string) ($task['workflow_type'] ?? '');
-    $run->payload_codec = $codec;
-    return $run;
-}
-
-function workflow_for_task(array $task, WorkflowRun $run): Workflow
+function workflow_class_for_task(array $task): string
 {
     return match ($task['workflow_type'] ?? '') {
-        'php.book-trip' => new PhpBookTripWorkflow($run),
-        'php.book-trip.failure' => new PhpFailureWorkflow($run),
+        'php.book-trip' => PhpBookTripWorkflow::class,
         default => throw new \RuntimeException('unknown PHP workflow type '.var_export($task['workflow_type'] ?? null, true)),
     };
 }
 
-function retry_policy_from_options(?ActivityOptions $options): ?array
+function workflow_arguments(array $task, string $codec): array
 {
-    if (! $options instanceof ActivityOptions || ! $options->hasRetryOverrides()) {
-        return null;
-    }
-    $policy = [];
-    if ($options->maxAttempts !== null) {
-        $policy['max_attempts'] = $options->maxAttempts;
-    }
-    if ($options->backoff !== null) {
-        $policy['backoff_seconds'] = is_array($options->backoff) ? array_values($options->backoff) : [$options->backoff];
-    }
-    if ($options->nonRetryableErrorTypes !== []) {
-        $policy['non_retryable_error_types'] = array_values($options->nonRetryableErrorTypes);
-    }
-    return $policy === [] ? null : $policy;
-}
-
-function complete_current_call(array $task, mixed $current, int $sequence, string $codec): bool
-{
-    if ($current instanceof ActivityCall) {
-        if (event_for_sequence($task, $sequence, ['ActivityCompleted', 'ActivityFailed', 'ActivityCancelled', 'ActivityTimedOut'])) {
-            return false;
-        }
-        $command = [
-            'type' => 'schedule_activity',
-            'activity_type' => $current->activity,
-            'queue' => $current->options?->queue ?: PHP_QUEUE,
-            'arguments' => envelope($current->arguments, $codec),
-        ];
-        $retryPolicy = retry_policy_from_options($current->options);
-        if ($retryPolicy !== null) {
-            $command['retry_policy'] = $retryPolicy;
-        }
-        foreach ([
-            'start_to_close_timeout' => $current->options?->startToCloseTimeout,
-            'schedule_to_start_timeout' => $current->options?->scheduleToStartTimeout,
-            'schedule_to_close_timeout' => $current->options?->scheduleToCloseTimeout,
-            'heartbeat_timeout' => $current->options?->heartbeatTimeout,
-        ] as $field => $value) {
-            if ($value !== null) {
-                $command[$field] = $value;
-            }
-        }
-        complete_workflow_task($task, [$command]);
-        return true;
+    $arguments = decode_payload($task['arguments'] ?? null, $codec);
+    if (is_array($arguments) && array_is_list($arguments)) {
+        return $arguments;
     }
 
-    if ($current instanceof ChildWorkflowCall) {
-        if (event_for_sequence($task, $sequence, ['ChildRunCompleted', 'ChildRunFailed', 'ChildRunCancelled', 'ChildRunTerminated'])) {
-            return false;
-        }
-        $command = [
-            'type' => 'start_child_workflow',
-            'workflow_type' => $current->workflow,
-            'queue' => $current->options?->queue ?: PHP_QUEUE,
-            'arguments' => envelope($current->arguments, $codec),
-        ];
-        complete_workflow_task($task, [$command]);
-        return true;
-    }
-
-    if ($current instanceof TimerCall) {
-        if (event_for_sequence($task, $sequence, ['TimerFired'])) {
-            return false;
-        }
-        complete_workflow_task($task, [['type' => 'start_timer', 'delay_seconds' => $current->seconds]]);
-        return true;
-    }
-
-    throw new \RuntimeException('unsupported PHP workflow yield '.get_debug_type($current));
-}
-
-function replay_event(array $event, mixed $current, string $codec): mixed
-{
-    $eventType = $event['event_type'] ?? null;
-    if ($current instanceof ActivityCall) {
-        if ($eventType === 'ActivityCompleted') {
-            return activity_result($event, $codec);
-        }
-        throw failure_from_event($event, 'activity failed');
-    }
-    if ($current instanceof ChildWorkflowCall) {
-        if ($eventType === 'ChildRunCompleted') {
-            return child_result($event, $codec);
-        }
-        throw failure_from_event($event, 'child workflow failed');
-    }
-    if ($current instanceof TimerCall) {
-        return null;
-    }
-    throw new \RuntimeException('unsupported PHP workflow yield '.get_debug_type($current));
-}
-
-function resolution_event(array $task, mixed $current, int $sequence): ?array
-{
-    if ($current instanceof ActivityCall) {
-        return event_for_sequence($task, $sequence, ['ActivityCompleted', 'ActivityFailed', 'ActivityCancelled', 'ActivityTimedOut']);
-    }
-    if ($current instanceof ChildWorkflowCall) {
-        return event_for_sequence($task, $sequence, ['ChildRunCompleted', 'ChildRunFailed', 'ChildRunCancelled', 'ChildRunTerminated']);
-    }
-    if ($current instanceof TimerCall) {
-        return event_for_sequence($task, $sequence, ['TimerFired']);
-    }
-    return null;
+    return is_array($arguments) ? [$arguments] : [];
 }
 
 function handle_workflow_task(array $task): void
 {
     $codec = task_codec($task);
-    $run = workflow_run($task, $codec);
-    $workflow = workflow_for_task($task, $run);
-    $input = workflow_input($task, $codec);
 
     try {
-        $execution = WorkflowExecution::start($workflow, [$input]);
-        $sequence = 1;
-        while ($execution->valid()) {
-            $current = $execution->current();
-            $event = resolution_event($task, $current, $sequence);
-            if (is_array($event)) {
-                try {
-                    $value = replay_event($event, $current, $codec);
-                    $execution->send($value);
-                } catch (\Throwable $throwable) {
-                    $execution->throw($throwable);
-                }
-                $sequence++;
-                continue;
-            }
-            if (complete_current_call($task, $current, $sequence, $codec)) {
-                return;
-            }
+        $runner = WorkflowFiberRunner::forClass(
+            workflow_class_for_task($task),
+            (string) ($task['workflow_id'] ?? $task['workflow_instance_id'] ?? ''),
+            (string) ($task['run_id'] ?? $task['workflow_run_id'] ?? ''),
+            workflow_arguments($task, $codec),
+            $codec,
+            history_events($task),
+            NAMESPACE_NAME,
+        );
+        $step = $runner->step();
+        if ($step->commands === []) {
+            throw new \RuntimeException('PHP workflow runner produced no worker commands for a leased workflow task');
         }
-        complete_workflow_task($task, [['type' => 'complete_workflow', 'result' => envelope($execution->getReturn(), $codec)]]);
+        complete_workflow_task($task, $step->commands);
     } catch (\Throwable $throwable) {
         fail_workflow_task($task, $throwable);
     }
@@ -1500,6 +1294,19 @@ function handle_activity_task(array $task): void
         return;
     }
 
+    if (
+        $activityType === (string) ($payload['fail_step'] ?? '')
+        && ($payload['failure_mode'] ?? null) === 'before_forward'
+    ) {
+        fail_activity_task($task, $activityType.' planned saga failure before forward effect', 'PlannedSagaStepFailure');
+        return;
+    }
+
+    if ($activityType === 'saga_planned_failure') {
+        fail_activity_task($task, (string) ($payload['failure_message'] ?? 'planned saga failure'), 'PlannedSagaFailure');
+        return;
+    }
+
     $kind = in_array($activityType, ['cancel_flight', 'cancel_hotel', 'refund_card'], true) ? 'compensation' : 'forward';
     if ($activityType === 'pause_after_refund') {
         $kind = 'marker';
@@ -1513,7 +1320,7 @@ request_json('POST', '/worker/register', [
     'task_queue' => PHP_QUEUE,
     'runtime' => 'php',
     'sdk_version' => 'durable-workflow-php/published-artifact',
-    'supported_workflow_types' => ['php.book-trip', 'php.book-trip.failure'],
+    'supported_workflow_types' => ['php.book-trip'],
     'supported_activity_types' => [
         'reserve_flight',
         'reserve_hotel',
@@ -1523,6 +1330,7 @@ request_json('POST', '/worker/register', [
         'cancel_hotel',
         'refund_card',
         'pause_after_refund',
+        'saga_planned_failure',
     ],
     'max_concurrent_workflow_tasks' => 1,
     'max_concurrent_activity_tasks' => 1,
@@ -1559,7 +1367,7 @@ from pathlib import Path
 from typing import Any
 
 from durable_workflow import Client, Worker, activity, workflow
-from durable_workflow.errors import ActivityFailed, ChildWorkflowFailed
+from durable_workflow.errors import ActivityFailed
 
 
 PHP_QUEUE = "sagas-php"
@@ -1600,6 +1408,8 @@ def activity_kind(name: str) -> str:
         return "compensation"
     if name == "pause_after_refund":
         return "marker"
+    if name == "saga_planned_failure":
+        return "marker"
     return "forward"
 
 
@@ -1619,6 +1429,12 @@ async def activity_body(activity_type: str, payload: dict[str, Any]) -> dict[str
     if activity_type == "cancel_flight" and payload.get("cancel_flight_fail"):
         append_row({"scenario_id": scenario, "kind": "compensation_attempt", "step": activity_type})
         raise TypedCancelFlightError("cancel_flight typed compensation failure")
+
+    if activity_type == str(payload.get("fail_step") or "") and payload.get("failure_mode") == "before_forward":
+        raise RuntimeError(f"{activity_type} planned saga failure before forward effect")
+
+    if activity_type == "saga_planned_failure":
+        raise RuntimeError(str(payload.get("failure_message") or "planned saga failure"))
 
     append_row({"scenario_id": scenario, "kind": activity_kind(activity_type), "step": activity_type})
     return {"activity": activity_type, "runtime": "sdk-python"}
@@ -1640,12 +1456,7 @@ cancel_flight = define_activity("cancel_flight")
 cancel_hotel = define_activity("cancel_hotel")
 refund_card = define_activity("refund_card")
 pause_after_refund = define_activity("pause_after_refund")
-
-
-@workflow.defn(name="python.book-trip.failure")
-class PythonFailureWorkflow:
-    def run(self, ctx, payload: dict[str, Any]):
-        raise RuntimeError(str(payload.get("failure_message") or "planned saga failure"))
+saga_planned_failure = define_activity("saga_planned_failure")
 
 
 @workflow.defn(name="python.book-trip")
@@ -1664,12 +1475,6 @@ class PythonBookTripWorkflow:
             for step in steps():
                 action = step["action"]
                 compensation = step["compensation"]
-                if fail_step == action and failure_mode == "before_forward":
-                    yield ctx.start_child_workflow(
-                        "python.book-trip.failure",
-                        [payload],
-                        task_queue=PYTHON_QUEUE,
-                    )
 
                 yield ctx.schedule_activity(action, [payload], queue=runtime_queue(forward_runtime))
                 completed.append(action)
@@ -1678,14 +1483,14 @@ class PythonBookTripWorkflow:
                     compensations.append(compensation)
 
                 if fail_step == action and failure_mode == "after_forward":
-                    yield ctx.start_child_workflow(
-                        "python.book-trip.failure",
+                    yield ctx.schedule_activity(
+                        "saga_planned_failure",
                         [payload],
-                        task_queue=PYTHON_QUEUE,
+                        queue=runtime_queue(forward_runtime),
                     )
 
             return {"status": "completed", "activity_log": completed, "compensations": compensations}
-        except ChildWorkflowFailed:
+        except ActivityFailed:
             if not compensations:
                 raise
 
@@ -1720,7 +1525,7 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue=PYTHON_QUEUE,
-        workflows=[PythonBookTripWorkflow, PythonFailureWorkflow],
+        workflows=[PythonBookTripWorkflow],
         activities=[
             reserve_flight,
             reserve_hotel,
@@ -1730,6 +1535,7 @@ async def main() -> None:
             cancel_hotel,
             refund_card,
             pause_after_refund,
+            saga_planned_failure,
         ],
         worker_id="python-sagas-worker",
         max_concurrent_workflow_tasks=1,
@@ -1772,6 +1578,8 @@ PHP_WORKER_CONTAINER = os.environ.get("DW_SAGAS_PHP_WORKER_CONTAINER", "dw-sagas
 ACTIVE_PYTHON_WORKER_PID = PYTHON_WORKER_PID
 RESTARTED_PYTHON_WORKERS: list[subprocess.Popen[Any]] = []
 TERMINAL_STATUSES = {"completed", "failed", "terminated", "canceled", "cancelled"}
+WAIT_RESULT_TIMEOUT_SECONDS = float(os.environ.get("DW_SAGAS_WAIT_RESULT_TIMEOUT", "45"))
+WAIT_FOR_ACTIVITY_TIMEOUT_SECONDS = float(os.environ.get("DW_SAGAS_WAIT_FOR_ACTIVITY_TIMEOUT", "45"))
 SCENARIO_REQUIRED_FIELDS = {
     "published_artifact_install_only": [
         "resolved_artifact_versions",
@@ -2071,7 +1879,8 @@ def compact_state(desc: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-async def wait_result(client: Client, workflow_id: str, failures: list[str], timeout: float = 120.0) -> dict[str, Any]:
+async def wait_result(client: Client, workflow_id: str, failures: list[str], timeout: float | None = None) -> dict[str, Any]:
+    timeout = WAIT_RESULT_TIMEOUT_SECONDS if timeout is None else timeout
     deadline = time.monotonic() + timeout
     last_desc: dict[str, Any] | None = None
     while time.monotonic() < deadline:
@@ -2454,7 +2263,7 @@ async def run_basic_scenario(
 
 
 async def wait_for_activity(client: Client, workflow_id: str, run_id: str, activity_type: str) -> bool:
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + WAIT_FOR_ACTIVITY_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         activity_types = completed_activity_types(await history(client, workflow_id, run_id))
         if activity_type in activity_types:
