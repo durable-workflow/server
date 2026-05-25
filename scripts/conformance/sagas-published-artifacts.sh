@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: sagas-published-artifacts.sh [--result-dir DIR] [--keep-run-root]
+Usage: sagas-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--keep-run-root]
 
 Runs the public saga runtime contract against published artifacts only.
 
@@ -36,6 +36,15 @@ while [[ $# -gt 0 ]]; do
       result_dir="${2:?--result-dir requires a value}"
       shift 2
       ;;
+    --result-dir=*)
+      result_dir="${1#--result-dir=}"
+      if [[ -z "$result_dir" ]]; then
+        printf '%s\n' '--result-dir requires a value' >&2
+        usage >&2
+        exit 2
+      fi
+      shift
+      ;;
     --keep-run-root)
       keep_run_root=1
       shift
@@ -64,6 +73,30 @@ require_command() {
 timestamp() {
   date -u '+%Y-%m-%dT%H:%M:%SZ'
 }
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/../.." && pwd)"
+saga_scenario_manifest="${DW_SAGAS_SCENARIO_MANIFEST:-$repo_root/static/platform-conformance/saga-runtime-scenarios.json}"
+
+read_saga_suite_version() {
+  local version=""
+
+  if [[ -f "$saga_scenario_manifest" ]]; then
+    version="$(sed -n 's/^[[:space:]]*"suite_version"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$saga_scenario_manifest" | head -n 1)"
+  fi
+
+  if [[ -z "$version" ]]; then
+    version="${DW_SAGAS_SUITE_VERSION:-}"
+  fi
+
+  if [[ -n "$version" ]]; then
+    printf '%s' "$version"
+  else
+    printf 'null'
+  fi
+}
+
+saga_suite_version="$(read_saga_suite_version)"
 
 run_root="${DW_SAGAS_RUN_ROOT:-}"
 if [[ -z "$run_root" ]]; then
@@ -213,6 +246,32 @@ emit_required_null_fields() {
   done < <(scenario_required_fields "$scenario_id")
 }
 
+emit_structured_findings_array() {
+  local scenario_id="$1"
+  local finding="$2"
+  local artifact_versions_json="$3"
+  local owning_surface="${4:-conformance_harness}"
+
+  if [[ -z "$finding" ]]; then
+    printf '[]'
+    return
+  fi
+
+  printf '[\n        {\n'
+  printf '          "scenario_id": '
+  json_string "$scenario_id"
+  printf ',\n          "owning_surface": '
+  json_string "$owning_surface"
+  printf ',\n          "artifact_versions": %s' "$artifact_versions_json"
+  printf ',\n          "observed_behavior": '
+  json_string "$finding"
+  printf ',\n          "expected_behavior": '
+  json_string "the saga scenario executes against published artifacts and records the compensation evidence required by the public contract"
+  printf ',\n          "next_acceptance_criterion": '
+  json_string "run this saga scenario against the complete published artifact set and record passing evidence or a focused product finding"
+  printf '\n        }\n      ]'
+}
+
 emit_findings_array() {
   local finding="$1"
 
@@ -239,7 +298,7 @@ emit_blocked_install_scenario_result() {
       "resolved_artifact_versions": $artifact_versions_json,
       "artifact_sources": $artifact_sources_json,
       "local_product_source_checkouts_used": false,
-      "findings": $(emit_findings_array "$finding")
+      "findings": $(emit_structured_findings_array "published_artifact_install_only" "$finding" "$artifact_versions_json")
     }
 JSON
 }
@@ -247,6 +306,7 @@ JSON
 emit_blocked_scenario_result() {
   local scenario_id="$1"
   local finding="$2"
+  local artifact_versions_json="$3"
 
   printf '    {\n'
   printf '      "scenario_id": '
@@ -254,7 +314,7 @@ emit_blocked_scenario_result() {
   printf ',\n      "status": "runner_blocked"'
   emit_required_null_fields "$scenario_id"
   printf ',\n      "findings": '
-  emit_findings_array "$finding"
+  emit_structured_findings_array "$scenario_id" "$finding" "$artifact_versions_json"
   printf '\n    }'
 }
 
@@ -281,7 +341,7 @@ emit_blocked_scenario_results() {
     if [[ "$scenario_id" == "published_artifact_install_only" ]]; then
       emit_blocked_install_scenario_result "$install_status" "$install_finding" "$artifact_versions_json" "$artifact_sources_json"
     else
-      emit_blocked_scenario_result "$scenario_id" "scenario did not execute because the saga conformance runner was blocked: $reason"
+      emit_blocked_scenario_result "$scenario_id" "scenario did not execute because the saga conformance runner was blocked: $reason" "$artifact_versions_json"
     fi
   done
 }
@@ -298,7 +358,7 @@ blocked_result() {
     artifact_versions_json="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("published_artifact_versions", {}), sort_keys=True))' "$result_dir/run-metadata.json" 2>/dev/null || printf '{}')"
     artifact_sources_json="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("artifact_sources", {}), sort_keys=True))' "$result_dir/run-metadata.json" 2>/dev/null || printf '{}')"
   elif command -v python3 >/dev/null 2>&1 && [[ -f "$result_dir/pins.json" ]]; then
-    artifact_versions_json="$(python3 -c 'import json,sys; pins=json.load(open(sys.argv[1])); print(json.dumps({k:pins[k] for k in ("server","cli","sdk-python","workflow","waterline") if k in pins}, sort_keys=True))' "$result_dir/pins.json" 2>/dev/null || printf '{}')"
+    artifact_versions_json="$(python3 -c 'import json,sys; pins=json.load(open(sys.argv[1])); print(json.dumps({k:pins[k] for k in ("server","cli","workflow-php","sdk-python","waterline") if k in pins}, sort_keys=True))' "$result_dir/pins.json" 2>/dev/null || printf '{}')"
     artifact_sources_json="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("artifact_sources", {}), sort_keys=True))' "$result_dir/pins.json" 2>/dev/null || printf '{}')"
   fi
 
@@ -308,7 +368,7 @@ blocked_result() {
   "schema": "durable-workflow.v2.saga-runtime-conformance.result",
   "schema_version": 1,
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
-  "suite_version": 12,
+  "suite_version": $saga_suite_version,
   "category": "saga_runtime_contract",
   "outcome": "error",
   "runner_blocked": true,
@@ -328,7 +388,13 @@ JSON
       "id": "runner-prerequisite-missing",
       "severity": "P0",
       "surface": "conformance-runner",
-      "summary": $(json_string "$reason")
+      "summary": $(json_string "$reason"),
+      "scenario_id": "published_artifact_install_only",
+      "owning_surface": "conformance_harness",
+      "artifact_versions": $artifact_versions_json,
+      "observed_behavior": $(json_string "$reason"),
+      "expected_behavior": "the saga runner installs and executes every required scenario against the complete published artifact set",
+      "next_acceptance_criterion": "register or repair the saga host runner so it exercises published artifacts and records per-scenario evidence"
     }
   ]
 }
@@ -588,14 +654,14 @@ pins = {
     "server_image": server_image,
     "cli": cli_version,
     "cli_installer_url": cli_installer_url,
+    "workflow-php": workflow_version,
     "sdk-python": python_version,
-    "workflow": workflow_version,
     "waterline": waterline_version,
     "artifact_sources": {
         "server": "docker",
         "cli": "github-release",
+        "workflow-php": "packagist",
         "sdk-python": "pypi",
-        "workflow": "packagist",
         "waterline": "packagist",
     },
 }
@@ -616,7 +682,7 @@ fi
 cp "$result_dir/pins.json" "$run_root/pins.json"
 
 server_image="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server_image"])' "$run_root/pins.json")"
-workflow_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workflow"])' "$run_root/pins.json")"
+workflow_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workflow-php"])' "$run_root/pins.json")"
 python_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sdk-python"])' "$run_root/pins.json")"
 cli_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cli"])' "$run_root/pins.json")"
 cli_installer_url="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cli_installer_url"])' "$run_root/pins.json")"
@@ -660,7 +726,7 @@ fi
 docker run --rm -v "$run_root/waterline:/app" composer:2 \
   composer require --no-interaction --no-progress "durable-workflow/waterline:$waterline_version"
 
-python3 - "$run_root/pins.json" "$result_dir/server-image-digest.txt" "$result_dir/run-metadata.json" <<'PY'
+python3 - "$run_root/pins.json" "$result_dir/server-image-digest.txt" "$result_dir/run-metadata.json" "$saga_suite_version" <<'PY'
 from __future__ import annotations
 
 import json
@@ -669,17 +735,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 pins = json.loads(Path(sys.argv[1]).read_text())
+suite_version = json.loads(sys.argv[4])
 metadata = {
     "experiment": "sagas",
     "schema": "durable-workflow.v2.saga-runtime-conformance.metadata",
     "suite_schema": "durable-workflow.v2.platform-conformance.suite",
-    "suite_version": 12,
+    "suite_version": suite_version,
     "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     "published_artifact_versions": {
         "server": pins["server"],
         "cli": pins["cli"],
+        "workflow-php": pins["workflow-php"],
         "sdk-python": pins["sdk-python"],
-        "workflow": pins["workflow"],
         "waterline": pins["waterline"],
     },
     "artifact_sources": pins["artifact_sources"],
@@ -1617,6 +1684,20 @@ SCENARIO_REQUIRED_FIELDS = {
         "operator_visibility_snapshots",
     ],
 }
+SCENARIO_EXPECTED_BEHAVIOR = {
+    "published_artifact_install_only": "all artifacts are resolved from complete published channels and no local product checkout is used as an artifact under test",
+    "forward_success_path": "A, B, C, and D complete with no compensation rows and a completed terminal state",
+    "failure_at_d_reverse_compensation": "after D fails, C, B, and A compensate in reverse order and the workflow reaches a documented terminal state",
+    "failure_at_c_reverse_compensation": "after C fails, B and A compensate in reverse order and D is not invoked",
+    "failure_at_a_no_compensation": "A failing before its forward effect records no completed forward rows and no compensation rows",
+    "compensation_retry_idempotence": "a retrying compensation may retry the task but applies the underlying business undo exactly once",
+    "compensation_failure_visibility": "a definitive compensation failure is visible in the terminal failure shape and operator surfaces",
+    "mid_compensation_worker_restart": "after a worker restart, compensation resumes from the recorded step without duplicate compensation effects",
+    "php_workflow_python_compensation": "a PHP workflow can call Python compensation handlers in the correct order and observe their result shapes",
+    "python_workflow_php_compensation": "a Python workflow can call PHP compensation handlers in the correct order and observe their result shapes",
+    "typed_compensation_error_round_trip": "a typed compensation error survives the worker boundary and is visible in the workflow failure shape",
+    "operator_visible_mid_compensation_status": "operators can tell which forward steps completed and which compensations are running, completed, pending, or failed",
+}
 EXPECTED = {
     "forward_success_path": {
         "forward": ["reserve_flight", "reserve_hotel", "charge_card", "send_confirmation"],
@@ -1631,6 +1712,11 @@ EXPECTED = {
     "failure_at_c_reverse_compensation": {
         "forward": ["reserve_flight", "reserve_hotel"],
         "compensation": ["cancel_hotel", "cancel_flight"],
+        "output_status": "compensated",
+    },
+    "failure_at_c_after_forward_compensation": {
+        "forward": ["reserve_flight", "reserve_hotel", "charge_card"],
+        "compensation": ["refund_card", "cancel_hotel", "cancel_flight"],
         "output_status": "compensated",
     },
     "failure_at_a_no_compensation": {
@@ -1744,8 +1830,14 @@ def apply_manifest_fields(scenario: dict[str, Any], entries: list[dict[str, Any]
         if value is None:
             missing.append(field)
     if missing:
+        scenario_id = str(scenario["scenario_id"])
         scenario.setdefault("findings", []).append(
-            "scenario evidence missing required field(s): " + ", ".join(missing)
+            finding(
+                "scenario evidence missing required field(s): " + ", ".join(missing),
+                "conformance_harness",
+                scenario_id=scenario_id,
+                next_acceptance_criterion="emit all scenario-specific evidence fields required by the saga scenario manifest",
+            )
         )
         if scenario.get("status") == "pass":
             scenario["status"] = "fail"
@@ -1919,8 +2011,44 @@ def scenario_status(failures: list[str]) -> str:
     return "pass" if not failures else "fail"
 
 
-def finding(summary: str, surface: str = "runtime") -> dict[str, str]:
-    return {"severity": "P0", "surface": surface, "summary": summary}
+def current_artifact_versions() -> dict[str, Any]:
+    metadata_path = RESULT_DIR / "run-metadata.json"
+    if not metadata_path.exists():
+        return {}
+    metadata = read_json(metadata_path)
+    versions = metadata.get("published_artifact_versions")
+    return versions if isinstance(versions, dict) else {}
+
+
+def finding(
+    summary: str,
+    surface: str = "runtime",
+    *,
+    scenario_id: str | None = None,
+    observed_behavior: str | None = None,
+    expected_behavior: str | None = None,
+    next_acceptance_criterion: str | None = None,
+) -> dict[str, Any]:
+    item: dict[str, Any] = {"severity": "P0", "surface": surface, "summary": summary}
+    if scenario_id is None:
+        return item
+
+    item.update(
+        {
+            "scenario_id": scenario_id,
+            "owning_surface": surface,
+            "artifact_versions": current_artifact_versions(),
+            "observed_behavior": observed_behavior or summary,
+            "expected_behavior": expected_behavior
+            or SCENARIO_EXPECTED_BEHAVIOR.get(
+                scenario_id,
+                "the scenario produces the saga compensation evidence required by the public contract",
+            ),
+            "next_acceptance_criterion": next_acceptance_criterion
+            or "re-run this saga scenario against the complete published artifact set and record passing evidence",
+        }
+    )
+    return item
 
 
 def parse_json_stdout(stdout: str) -> Any:
@@ -2062,6 +2190,7 @@ async def run_basic_scenario(
     language: str,
     payload: dict[str, Any],
     row_scenario_id: str | None = None,
+    expected_id: str | None = None,
 ) -> dict[str, Any]:
     failures: list[str] = []
     workflow_type = f"{language}.book-trip"
@@ -2075,7 +2204,8 @@ async def run_basic_scenario(
     actual_forward = steps_for(rows, "forward")
     actual_compensation = steps_for(rows, "compensation")
 
-    expected = EXPECTED[scenario_id]
+    expected_key = expected_id or scenario_id
+    expected = EXPECTED[expected_key]
     if actual_forward != expected["forward"]:
         failures.append(f"{language} {scenario_id} forward rows expected {expected['forward']}, got {actual_forward}")
     if actual_compensation != expected["compensation"]:
@@ -2263,9 +2393,15 @@ async def run_recovery(client: Client, language: str) -> dict[str, Any]:
             restart_php_worker()
     output = await wait_result(client, workflow_id, failures)
     rows = side_rows(scenario_id)
+    actual_forward = steps_for(rows, "forward")
     compensation = steps_for(rows, "compensation")
-    if compensation != EXPECTED["failure_at_c_reverse_compensation"]["compensation"]:
-        failures.append(f"{language} recovery compensation expected {EXPECTED['failure_at_c_reverse_compensation']['compensation']}, got {compensation}")
+    expected = EXPECTED["failure_at_c_after_forward_compensation"]
+    if actual_forward != expected["forward"]:
+        failures.append(f"{language} recovery forward rows expected {expected['forward']}, got {actual_forward}")
+    if compensation != expected["compensation"]:
+        failures.append(f"{language} recovery compensation expected {expected['compensation']}, got {compensation}")
+    if output.get("status") != expected["output_status"]:
+        failures.append(f"{language} recovery output.status expected {expected['output_status']}, got {output.get('status')}")
     duplicates = {step: count for step, count in counts(compensation).items() if count > 1}
     if duplicates:
         failures.append(f"{language} recovery duplicate compensation counts: {duplicates}")
@@ -2279,12 +2415,13 @@ async def run_recovery(client: Client, language: str) -> dict[str, Any]:
         "workflow_id": workflow_id,
         "run_id": handle.run_id,
         "restart_timing": {"observed_pause_after_refund": observed_pause, "pre_restart_state": restart_state},
-        "resumed_compensation_step": "cancel_flight",
+        "resumed_compensation_step": "cancel_hotel",
         "duplicate_compensation_counts": duplicates,
         "observed_output": output,
         "workflow_status": final_state,
+        "forward_rows": actual_forward,
         "compensation_order": compensation,
-        "side_store_deltas": {"compensation_rows": compensation},
+        "side_store_deltas": {"forward_rows": actual_forward, "compensation_rows": compensation},
         "history_activity_completed": completed_activity_types(history_payload),
         "history_dump": history_payload,
         "history_dumps": {"workflow_history": history_payload},
@@ -2304,6 +2441,7 @@ async def run_cross_language(client: Client, scenario_id: str, workflow_language
         workflow_language,
         {**payload, "scenario_id": scenario_id},
         row_scenario_id=scenario_id,
+        expected_id="failure_at_c_after_forward_compensation",
     )
     compensation_runtimes = [row.get("runtime") for row in side_rows(scenario_id) if row.get("kind") == "compensation"]
     expected_runtime = "sdk-python" if compensation_runtime == "sdk-python" else "workflow-php"
@@ -2358,6 +2496,9 @@ async def run_operator_visibility(client: Client) -> dict[str, Any]:
                 "against the run database"
             ),
             "waterline_operator_visibility",
+            scenario_id=scenario_id,
+            observed_behavior="Waterline was install-verified but not booted in the server-only saga topology",
+            next_acceptance_criterion="run saga operator visibility with a published Waterline app or keep this unsupported surface routed to Waterline coverage",
         )
     ]
     status = "unsupported" if unsupported_findings and not failures else scenario_status(failures)
@@ -2460,6 +2601,10 @@ def fold_scenarios(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
             status = "pass"
         else:
             status = "fail"
+        scenario_findings: list[Any] = [
+            finding(failure, "runtime", scenario_id=scenario_id)
+            for failure in failures
+        ] + entry_findings
         folded.append(
             {
                 "scenario_id": scenario_id,
@@ -2467,7 +2612,7 @@ def fold_scenarios(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "started_at": entries[0].get("started_at"),
                 "finished_at": entries[-1].get("finished_at"),
                 "evidence": entries,
-                "findings": failures + entry_findings,
+                "findings": scenario_findings,
             }
         )
         apply_manifest_fields(folded[-1], entries)
@@ -2538,7 +2683,12 @@ async def main() -> None:
                 item["summary"] = f"{scenario['scenario_id']}: {item.get('summary', 'scenario finding')}"
                 findings.append(item)
             else:
-                findings.append(finding(f"{scenario['scenario_id']}: {scenario_finding}"))
+                findings.append(
+                    finding(
+                        f"{scenario['scenario_id']}: {scenario_finding}",
+                        scenario_id=str(scenario["scenario_id"]),
+                    )
+                )
 
     required_ids = {
         "published_artifact_install_only",
@@ -2556,11 +2706,27 @@ async def main() -> None:
     }
     covered_ids = {str(item["scenario_id"]) for item in scenario_results}
     for missing in sorted(required_ids - covered_ids):
-        missing_scenario = {"scenario_id": missing, "status": "not_covered", "findings": ["scenario did not execute"]}
+        missing_scenario = {
+            "scenario_id": missing,
+            "status": "not_covered",
+            "findings": [
+                finding(
+                    "scenario did not execute",
+                    "coverage",
+                    scenario_id=missing,
+                    next_acceptance_criterion="add this scenario to the published-artifact saga runner and record its required evidence",
+                )
+            ],
+        }
         apply_manifest_fields(missing_scenario, [])
         scenario_results.append(missing_scenario)
         for missing_finding in missing_scenario["findings"]:
-            findings.append(finding(f"{missing}: {missing_finding}", "coverage"))
+            if isinstance(missing_finding, dict):
+                item = dict(missing_finding)
+                item["summary"] = f"{missing}: {item.get('summary', 'scenario finding')}"
+                findings.append(item)
+            else:
+                findings.append(finding(f"{missing}: {missing_finding}", "coverage", scenario_id=missing))
 
     outcome = "pass" if all(item.get("status") == "pass" for item in scenario_results) else "fail"
     finished_at = ts()
@@ -2568,7 +2734,7 @@ async def main() -> None:
         "schema": "durable-workflow.v2.saga-runtime-conformance.result",
         "schema_version": 1,
         "suite_schema": "durable-workflow.v2.platform-conformance.suite",
-        "suite_version": 12,
+        "suite_version": metadata["suite_version"],
         "category": "saga_runtime_contract",
         "outcome": outcome,
         "runner_blocked": False,

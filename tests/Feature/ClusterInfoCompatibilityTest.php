@@ -9,6 +9,7 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
 use App\Support\CoordinationHealthContract;
 use App\Support\NamespaceRuntimeContract;
+use App\Support\SagaRuntimeContract;
 use App\Support\SearchAttributeRuntimeContract;
 use App\Support\ServerTopology;
 use App\Support\SignalQueryRuntimeContract;
@@ -221,6 +222,25 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'result_gate',
                     'finding_policy',
                 ],
+                'saga_runtime_contract' => [
+                    'schema',
+                    'version',
+                    'result_schema',
+                    'result_version',
+                    'fixture_category',
+                    'platform_conformance_suite_authority',
+                    'scenario_manifest',
+                    'artifact_policy',
+                    'scenario_statuses',
+                    'topology',
+                    'required_matrix',
+                    'required_scenarios',
+                    'scenario_requirements',
+                    'coverage_gate',
+                    'host_runner_contract',
+                    'result_gate',
+                    'finding_policy',
+                ],
                 'skew_refusal_matrix_contract' => [
                     'schema',
                     'version',
@@ -349,6 +369,12 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('child_workflow_runtime_contract.version', ChildWorkflowRuntimeContract::VERSION)
             ->assertJsonPath(
                 'child_workflow_runtime_contract.platform_conformance_suite_authority',
+                PlatformConformanceSuite::SCHEMA,
+            )
+            ->assertJsonPath('saga_runtime_contract.schema', SagaRuntimeContract::SCHEMA)
+            ->assertJsonPath('saga_runtime_contract.version', SagaRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'saga_runtime_contract.platform_conformance_suite_authority',
                 PlatformConformanceSuite::SCHEMA,
             )
             ->assertJsonPath('skew_refusal_matrix_contract.schema', SkewRefusalMatrixContract::SCHEMA)

@@ -34,6 +34,27 @@ class SagaConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_runner_accepts_equals_form_result_dir(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            'Usage: sagas-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--keep-run-root]',
+            $source,
+            'the published runner contract must document both result directory flag forms',
+        );
+        $this->assertStringContainsString(
+            '--result-dir=*)',
+            $source,
+            'host runners may pass --result-dir=<dir>; this must not exit before sagas-result.json can be written',
+        );
+        $this->assertStringContainsString(
+            'result_dir="${1#--result-dir=}"',
+            $source,
+            'the equals-form result directory must be parsed before prerequisite checks run',
+        );
+    }
+
     public function test_generated_php_saga_workflows_pass_type_before_options(): void
     {
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
@@ -121,6 +142,89 @@ class SagaConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_artifact_metadata_uses_manifest_php_workflow_key(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            '"workflow-php": workflow_version',
+            $source,
+            'resolved pins must use the saga manifest artifact key for the PHP workflow package',
+        );
+        $this->assertStringContainsString(
+            '"workflow-php": "packagist"',
+            $source,
+            'artifact sources must use the same manifest key as published artifact versions',
+        );
+        $this->assertStringContainsString(
+            '["workflow-php"])',
+            $source,
+            'the installer handoff must read the PHP workflow package through the manifest artifact key',
+        );
+        $this->assertStringContainsString(
+            '"workflow-php": pins["workflow-php"]',
+            $source,
+            'run metadata must emit workflow-php in published_artifact_versions',
+        );
+        $this->assertStringContainsString(
+            '("server","cli","workflow-php","sdk-python","waterline")',
+            $source,
+            'blocked results must preserve the canonical saga artifact key set',
+        );
+        $this->assertStringNotContainsString(
+            '"workflow": workflow_version',
+            $source,
+            'resolved pins must not publish the legacy workflow key as the canonical PHP workflow artifact',
+        );
+        $this->assertStringNotContainsString(
+            '"workflow": pins["workflow"]',
+            $source,
+            'run metadata must not emit the legacy workflow artifact key',
+        );
+    }
+
+    public function test_runner_reports_suite_version_from_saga_scenario_manifest(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+        $manifest = json_decode(
+            $this->read('static/platform-conformance/saga-runtime-scenarios.json'),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+
+        $this->assertStringContainsString(
+            'saga_scenario_manifest="${DW_SAGAS_SCENARIO_MANIFEST:-$repo_root/static/platform-conformance/saga-runtime-scenarios.json}"',
+            $source,
+            'the runner must use the advertised saga scenario manifest as its suite-version source',
+        );
+        $this->assertSame(
+            12,
+            $manifest['suite_version'],
+            'the shipped saga runner handoff must stay aligned with the current public saga suite version',
+        );
+        $this->assertStringContainsString(
+            'saga_suite_version="$(read_saga_suite_version)"',
+            $source,
+            'the runner must resolve suite_version before writing result metadata',
+        );
+        $this->assertStringContainsString(
+            '"suite_version": $saga_suite_version',
+            $source,
+            'blocked saga results must report the manifest suite version instead of a hardcoded value',
+        );
+        $this->assertStringContainsString(
+            '"suite_version": metadata["suite_version"]',
+            $source,
+            'completed saga results must carry the manifest suite version through run metadata',
+        );
+        $this->assertStringNotContainsString(
+            '"suite_version": 12',
+            $source,
+            'the saga runner must not hardcode a suite version that can drift from the public manifest',
+        );
+    }
+
     public function test_restarted_python_worker_stays_available_for_later_scenarios(): void
     {
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
@@ -144,6 +248,47 @@ class SagaConformanceRunnerContractTest extends TestCase
             "if restarted is not None:\n        restarted.terminate()",
             $source,
             'the mid-compensation recovery scenario must not stop the replacement before cross-language and typed-error scenarios run',
+        );
+    }
+
+    public function test_after_forward_charge_card_scenarios_use_after_forward_expectations(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            "\"failure_at_c_after_forward_compensation\": {\n        \"forward\": [\"reserve_flight\", \"reserve_hotel\", \"charge_card\"],\n        \"compensation\": [\"refund_card\", \"cancel_hotel\", \"cancel_flight\"],",
+            $source,
+            'after-forward charge_card failures must expect the charge and refund rows',
+        );
+        $this->assertStringContainsString(
+            'expected_id: str | None = None',
+            $source,
+            'shared scenario checks must allow callers to use scenario-specific evidence with different row expectations',
+        );
+        $this->assertStringContainsString(
+            'expected_id="failure_at_c_after_forward_compensation"',
+            $source,
+            'cross-language compensation scenarios must validate after-forward charge_card evidence',
+        );
+        $this->assertStringContainsString(
+            'EXPECTED["failure_at_c_after_forward_compensation"]',
+            $source,
+            'mid-compensation recovery must validate after-forward charge_card evidence',
+        );
+        $this->assertStringContainsString(
+            '"resumed_compensation_step": "cancel_hotel"',
+            $source,
+            'restart recovery must report the step resumed after refund_card',
+        );
+        $this->assertStringNotContainsString(
+            '"resumed_compensation_step": "cancel_flight"',
+            $source,
+            'restart recovery must not skip over cancel_hotel in its evidence',
+        );
+        $this->assertStringNotContainsString(
+            'compensation != EXPECTED["failure_at_c_reverse_compensation"]["compensation"]',
+            $source,
+            'restart recovery must not reuse before-forward charge_card compensation expectations',
         );
     }
 
@@ -177,6 +322,47 @@ class SagaConformanceRunnerContractTest extends TestCase
             $oldEndpointProbeFinding,
             $source,
             'Waterline coverage gaps must be recorded as topology support findings instead of failed endpoint probes',
+        );
+    }
+
+    public function test_non_pass_findings_include_routable_contract_fields(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            'emit_structured_findings_array()',
+            $source,
+            'blocked saga results must emit structured scenario findings',
+        );
+        $this->assertStringContainsString(
+            '"scenario_id": scenario_id',
+            $source,
+            'runtime findings must preserve the scenario identity',
+        );
+        $this->assertStringContainsString(
+            '"owning_surface": surface',
+            $source,
+            'runtime findings must route to the owning public surface',
+        );
+        $this->assertStringContainsString(
+            '"artifact_versions": current_artifact_versions()',
+            $source,
+            'runtime findings must carry the published artifact tuple under test',
+        );
+        $this->assertStringContainsString(
+            '"observed_behavior": observed_behavior or summary',
+            $source,
+            'runtime findings must describe the observed behavior',
+        );
+        $this->assertStringContainsString(
+            '"next_acceptance_criterion": next_acceptance_criterion',
+            $source,
+            'runtime findings must name the next criterion for turning the scenario green',
+        );
+        $this->assertStringNotContainsString(
+            '"findings": ["scenario did not execute"]',
+            $source,
+            'missing scenario findings must not be plain strings',
         );
     }
 

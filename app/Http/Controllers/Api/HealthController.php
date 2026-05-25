@@ -15,6 +15,7 @@ use App\Support\FilesystemDiskAvailability;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NexusContract;
 use App\Support\ReplayVerificationContract;
+use App\Support\SagaRuntimeContract;
 use App\Support\SearchAttributeRuntimeContract;
 use App\Support\ServerReadiness;
 use App\Support\ServerTopology;
@@ -127,6 +128,7 @@ class HealthController
             'search_attribute_runtime_contract' => true,
             'schedules_runtime_contract' => true,
             'child_workflow_runtime_contract' => true,
+            'saga_runtime_contract' => true,
             'skew_refusal_matrix_contract' => true,
             'worker_versioning_runtime_contract' => true,
             'embedded_v2_import' => $embeddedV2ImportAvailable,
@@ -175,6 +177,7 @@ class HealthController
             'search_attribute_runtime_contract' => SearchAttributeRuntimeContract::manifest(),
             'schedules_runtime_contract' => SchedulesRuntimeContract::manifest(),
             'child_workflow_runtime_contract' => ChildWorkflowRuntimeContract::manifest(),
+            'saga_runtime_contract' => SagaRuntimeContract::manifest(),
             'skew_refusal_matrix_contract' => SkewRefusalMatrixContract::manifest(),
             'worker_versioning_runtime_contract' => WorkerVersioningRuntimeContract::manifest(),
             'namespace_runtime_contract' => NamespaceRuntimeContract::manifest(),

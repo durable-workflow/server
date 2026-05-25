@@ -10,6 +10,8 @@ use App\Support\ChildWorkflowRuntimeResultGate;
 use App\Support\CoordinationHealthContract;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NamespaceRuntimeResultGate;
+use App\Support\SagaRuntimeContract;
+use App\Support\SagaRuntimeResultGate;
 use App\Support\SearchAttributeRuntimeContract;
 use App\Support\SearchAttributeRuntimeResultGate;
 use App\Support\ServerTopology;
@@ -480,6 +482,62 @@ class ClusterInfoTest extends TestCase
         );
         $this->assertContains(
             'pin_replay_promotion_no_compatible_and_history_sections_are_reported',
+            $contract['result_gate']['pass_requires'],
+        );
+    }
+
+    public function test_it_publishes_the_saga_runtime_conformance_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('saga_runtime_contract.schema', SagaRuntimeContract::SCHEMA)
+            ->assertJsonPath('saga_runtime_contract.version', SagaRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'saga_runtime_contract.fixture_category',
+                'saga_runtime_contract',
+            )
+            ->assertJsonPath(
+                'saga_runtime_contract.coverage_gate.runner_blocked_outcome',
+                'non_passing_runner_blocked',
+            )
+            ->assertJsonPath(
+                'saga_runtime_contract.host_runner_contract.runner_path',
+                'scripts/conformance/sagas-published-artifacts.sh',
+            );
+
+        $contract = $response->json('saga_runtime_contract');
+        $this->assertIsArray($contract);
+        $this->assertArrayHasKey('waterline', $contract['artifact_policy']['install_channels']);
+        $this->assertTrue($contract['artifact_policy']['release_records_without_assets_are_rejected']);
+        $this->assertContains('workflow-php', $contract['required_matrix']['workflow_runtimes']);
+        $this->assertContains('sdk-python', $contract['required_matrix']['workflow_runtimes']);
+        $this->assertContains('workflow-php', $contract['required_matrix']['activity_runtimes']);
+        $this->assertContains('sdk-python', $contract['required_matrix']['activity_runtimes']);
+        $this->assertContains('failure_at_d_reverse_compensation', $contract['required_scenarios']);
+        $this->assertContains('compensation_retry_idempotence', $contract['required_scenarios']);
+        $this->assertContains('mid_compensation_worker_restart', $contract['required_scenarios']);
+        $this->assertContains('php_workflow_python_compensation', $contract['required_scenarios']);
+        $this->assertContains('python_workflow_php_compensation', $contract['required_scenarios']);
+        $this->assertContains('typed_compensation_error_round_trip', $contract['required_scenarios']);
+        $this->assertContains('operator_visible_mid_compensation_status', $contract['required_scenarios']);
+        $this->assertContains(
+            'runner_blocked_false_for_product_evidence',
+            $contract['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertSame(
+            'required_for_passing_sagas_conformance',
+            $contract['host_runner_contract']['status'],
+        );
+        $this->assertSame(
+            'conformance_runner_coverage_gap',
+            $contract['host_runner_contract']['routing_policy']['missing_required_scenario']['finding_type'],
+        );
+        $this->assertSame(
+            SagaRuntimeResultGate::SCHEMA,
+            $contract['result_gate']['schema'],
+        );
+        $this->assertContains(
+            'runner_blocked_false_for_product_evidence',
             $contract['result_gate']['pass_requires'],
         );
     }

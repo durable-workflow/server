@@ -32,6 +32,7 @@ categories and runtime contracts:
 | `search_attribute_runtime_contract` (server side) | `GET /api/cluster/info`'s `search_attribute_runtime_contract` manifest, the search-attribute control-plane routes, workflow start metadata, workflow-task upsert command, workflow list query parser, and operator visibility surfaces | stable |
 | `schedules_runtime_contract` (server side) | `GET /api/cluster/info`'s `schedules_runtime_contract` manifest, the schedule control-plane routes, scheduler tick entrypoint, schedule history, CLI/SDK/PHP client surfaces, and cross-language dispatch behavior | stable |
 | `child_workflow_runtime_contract` (server side) | `GET /api/cluster/info`'s `child_workflow_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/child-workflow-runtime-scenarios.json`, plus the child scheduling, completion, failure, cancellation, replay, fan-out, and namespace behavior recorded by the worker protocol and history surfaces | stable |
+| `saga_runtime_contract` (server side) | `GET /api/cluster/info`'s `saga_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/saga-runtime-scenarios.json`, and `scripts/conformance/sagas-published-artifacts.sh`, which is the host-runner handoff for published-artifact saga compensation evidence | stable |
 | `skew_refusal_matrix_contract` (server side) | `GET /api/cluster/info`'s `skew_refusal_matrix_contract` manifest, the CLI/Python/PHP worker/Waterline version-pair matrix, worker registration skew classifications, Waterline render classifications, and request/response evidence requirements for skewed operations | stable |
 | `worker_versioning_runtime_contract` (server side) | `GET /api/cluster/info`'s `worker_versioning_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/worker-versioning-runtime-scenarios.json`, worker registration/build-id rollout APIs, workflow start pinning, compatible polling, history/visibility pin surfaces, and CLI/Waterline operator visibility | stable |
 | `namespace_runtime_contract` (server side) | the public scenario manifest at `static/platform-conformance/namespace-runtime-scenarios.json`, plus namespace, workflow, worker, schedule, search-attribute, Nexus, and operator routes documented in the protocol catalog | stable |
@@ -44,16 +45,18 @@ loads those companion fixtures alongside the server-owned manifests.
 
 The server repo also ships a source-free saga runner at
 `scripts/conformance/sagas-published-artifacts.sh`. Host conformance
-runners can invoke it to exercise `saga_runtime_contract` against the
-current published server image, CLI release artifact, Python SDK, PHP
-workflow runtime, and Waterline package install. The server-only runner
-does not boot a Waterline app or probe Waterline routes; Waterline
-operator visibility remains an explicit unsupported surface until a host
-topology runs Waterline against the saga run database. The script emits
+runners can discover that handoff from `GET /api/cluster/info` under
+`saga_runtime_contract.host_runner_contract` and invoke it to exercise
+`saga_runtime_contract` against the current published server image, CLI
+release artifact, Python SDK, PHP workflow runtime, and Waterline package
+install. The server-only runner does not boot a Waterline app or probe
+Waterline routes; Waterline operator visibility remains an explicit
+unsupported surface until a host topology runs Waterline against the saga
+run database. The script emits
 `durable-workflow.v2.saga-runtime-conformance.result` evidence with every
 required saga scenario reported as `pass`, `fail`, `unsupported`,
-`not_covered`, or `runner_blocked`; a partial run is therefore
-non-passing instead of being recorded as green.
+`not_covered`, or `runner_blocked`; a partial or runner-blocked run is
+therefore non-passing instead of being recorded as green.
 
 ## Release gate
 
@@ -141,6 +144,18 @@ category emits a warning and does not block.
   remains non-passing; every declared outcome alias (`outcome`, `status`,
   `verdict`) and the evaluated gate status must agree before rollup can
   count the evidence as passing.
+- Saga runtime contract: `GET /api/cluster/info` re-exports
+  `saga_runtime_contract`, schema
+  `durable-workflow.v2.saga-runtime.contract`. It names the required
+  published-artifact install policy, the source-free host runner script,
+  PHP/Python workflow and activity matrices, reverse compensation order,
+  early-failure, retry idempotence, compensation failure visibility,
+  worker-restart replay, cross-language compensation, typed compensation
+  error, and operator visibility evidence. A result with
+  `runner_blocked=true`, an incomplete release asset handoff, a smoke-only
+  subset, a missing Waterline visibility finding, or any non-pass scenario
+  without a root-cause finding is non-passing and cannot be counted as
+  saga product evidence.
 - Skew-refusal matrix contract: `GET /api/cluster/info` re-exports
   `skew_refusal_matrix_contract`, schema
   `durable-workflow.v2.skew-refusal-matrix.contract`. It names the
