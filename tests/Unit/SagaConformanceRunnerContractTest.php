@@ -361,9 +361,24 @@ class SagaConformanceRunnerContractTest extends TestCase
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
 
         $this->assertStringContainsString(
-            'DW_SAGAS_SERVER_PORT          Host port for the published server. Defaults to a free 127.0.0.1 port.',
+            'DW_SAGAS_SERVER_PORT          Host port for the published server. Defaults to a free port.',
             $source,
             'published-artifact saga runs must be able to avoid fixed host port collisions',
+        );
+        $this->assertStringContainsString(
+            'DW_SAGAS_SERVER_BIND_HOST     Docker host interface for the server port. Defaults to 0.0.0.0.',
+            $source,
+            'the server port must be publishable beyond loopback for containerized host-runner topologies',
+        );
+        $this->assertStringContainsString(
+            'DW_SAGAS_SERVER_CONNECT_HOST  First host/address to probe. Defaults to 127.0.0.1.',
+            $source,
+            'host runners must retain a localhost-first probe while allowing automatic fallbacks',
+        );
+        $this->assertStringContainsString(
+            'DW_SAGAS_SERVER_URL           Exact server URL to use; disables automatic endpoint probing.',
+            $source,
+            'operators must still be able to pin an explicit server URL when the host topology needs one',
         );
         $this->assertStringContainsString(
             'choose_free_port()',
@@ -371,9 +386,29 @@ class SagaConformanceRunnerContractTest extends TestCase
             'the saga runner must choose a per-run host port when no override is supplied',
         );
         $this->assertStringContainsString(
-            'server_base_url="${DW_SAGAS_SERVER_URL:-http://${server_connect_host}:${server_port}}"',
+            'server_bind_host="${DW_SAGAS_SERVER_BIND_HOST:-0.0.0.0}"',
             $source,
-            'generated workers and the orchestrator must share the resolved server endpoint',
+            'the default compose publish address must not be loopback-only when the host runner may execute inside a container',
+        );
+        $this->assertStringContainsString(
+            'server_url_candidates=()',
+            $source,
+            'the saga runner must probe multiple candidate server URLs before declaring the server unreachable',
+        );
+        $this->assertStringContainsString(
+            'default_route_gateway()',
+            $source,
+            'containerized host runners need a default-gateway fallback for ports published on the Docker host',
+        );
+        $this->assertStringContainsString(
+            'docker_bridge_gateway()',
+            $source,
+            'the runner should also try Docker bridge gateway discovery when localhost is not the right namespace',
+        );
+        $this->assertStringContainsString(
+            'server_base_url="${server_url_candidates[0]}"',
+            $source,
+            'generated workers and the orchestrator must start from the first resolved endpoint candidate',
         );
         $this->assertStringContainsString(
             '- "${server_bind_host}:${server_port}:8080"',
@@ -384,6 +419,21 @@ class SagaConformanceRunnerContractTest extends TestCase
             'wait_for_server_ready',
             $source,
             'host reachability must be checked before scenario failures are counted as product evidence',
+        );
+        $this->assertStringContainsString(
+            'export DW_SAGAS_SERVER_URL="$server_base_url"',
+            $source,
+            'the PHP worker, Python worker, CLI, and orchestrator must share the endpoint that actually answered readiness',
+        );
+        $this->assertStringContainsString(
+            'update_run_metadata_server_url',
+            $source,
+            'run metadata must record the actual reachable endpoint instead of a failed first probe',
+        );
+        $this->assertStringContainsString(
+            'server-url-candidates.txt',
+            $source,
+            'unreachable-server findings must leave the probed endpoints as diagnostic evidence',
         );
         $this->assertStringContainsString(
             'define(\'BASE_URL\', getenv(\'DW_SAGAS_SERVER_API_URL\') ?: \'http://127.0.0.1:8080/api\');',

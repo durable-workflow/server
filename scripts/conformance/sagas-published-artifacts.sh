@@ -24,7 +24,10 @@ Environment overrides:
   DW_CLI_VERSION                GitHub release tag for the official CLI installer.
   DW_WATERLINE_VERSION          Composer version for durable-workflow/waterline.
   DW_SAGAS_SKIP_DOCKER_PULL=1   Reuse local image instead of pulling.
-  DW_SAGAS_SERVER_PORT          Host port for the published server. Defaults to a free 127.0.0.1 port.
+  DW_SAGAS_SERVER_PORT          Host port for the published server. Defaults to a free port.
+  DW_SAGAS_SERVER_BIND_HOST     Docker host interface for the server port. Defaults to 0.0.0.0.
+  DW_SAGAS_SERVER_CONNECT_HOST  First host/address to probe. Defaults to 127.0.0.1.
+  DW_SAGAS_SERVER_URL           Exact server URL to use; disables automatic endpoint probing.
 USAGE
 }
 
@@ -459,38 +462,138 @@ if [[ "${#missing[@]}" -gt 0 ]]; then
 fi
 
 choose_free_port() {
+  local host="${1:-127.0.0.1}"
+
+  python3 - "$host" <<'PY'
+from __future__ import annotations
+
+import socket
+import sys
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.bind((sys.argv[1], 0))
+    print(sock.getsockname()[1])
+PY
+}
+
+default_route_gateway() {
   python3 - <<'PY'
 from __future__ import annotations
 
 import socket
 
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-    sock.bind(("127.0.0.1", 0))
-    print(sock.getsockname()[1])
+try:
+    with open("/proc/net/route", encoding="utf-8") as handle:
+        for line in handle.readlines()[1:]:
+            fields = line.strip().split()
+            if len(fields) < 3 or fields[1] != "00000000":
+                continue
+            gateway_hex = fields[2]
+            if gateway_hex == "00000000":
+                continue
+            print(socket.inet_ntoa(bytes.fromhex(gateway_hex)[::-1]))
+            break
+except OSError:
+    pass
 PY
 }
 
-server_bind_host="${DW_SAGAS_SERVER_BIND_HOST:-127.0.0.1}"
+docker_bridge_gateway() {
+  docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true
+}
+
+server_url_override="${DW_SAGAS_SERVER_URL:-}"
+server_bind_host="${DW_SAGAS_SERVER_BIND_HOST:-0.0.0.0}"
 server_connect_host="${DW_SAGAS_SERVER_CONNECT_HOST:-127.0.0.1}"
-server_port="${DW_SAGAS_SERVER_PORT:-$(choose_free_port)}"
-server_base_url="${DW_SAGAS_SERVER_URL:-http://${server_connect_host}:${server_port}}"
+server_port="${DW_SAGAS_SERVER_PORT:-$(choose_free_port "$server_bind_host")}"
+server_url_candidates=()
+
+add_server_url_candidate() {
+  local candidate="$1"
+  local existing
+
+  [[ -n "$candidate" ]] || return
+  for existing in "${server_url_candidates[@]}"; do
+    if [[ "$existing" == "$candidate" ]]; then
+      return
+    fi
+  done
+  server_url_candidates+=("$candidate")
+}
+
+build_server_url_candidates() {
+  local gateway
+
+  if [[ -n "$server_url_override" ]]; then
+    add_server_url_candidate "${server_url_override%/}"
+    return
+  fi
+
+  add_server_url_candidate "http://${server_connect_host}:${server_port}"
+  add_server_url_candidate "http://127.0.0.1:${server_port}"
+  add_server_url_candidate "http://localhost:${server_port}"
+
+  if [[ "$server_bind_host" != "0.0.0.0" && "$server_bind_host" != "127.0.0.1" && "$server_bind_host" != "localhost" ]]; then
+    add_server_url_candidate "http://${server_bind_host}:${server_port}"
+  fi
+
+  gateway="$(default_route_gateway)"
+  if [[ -n "$gateway" ]]; then
+    add_server_url_candidate "http://${gateway}:${server_port}"
+  fi
+
+  gateway="$(docker_bridge_gateway)"
+  if [[ -n "$gateway" && "$gateway" != "<no value>" ]]; then
+    add_server_url_candidate "http://${gateway}:${server_port}"
+  fi
+
+  add_server_url_candidate "http://host.docker.internal:${server_port}"
+}
+
+build_server_url_candidates
+server_base_url="${server_url_candidates[0]}"
 server_api_url="${server_base_url%/}/api"
 
 wait_for_server_ready() {
   local attempt
+  local candidate
+  local candidate_api_url
 
   for attempt in $(seq 1 90); do
-    if curl -fsS \
-      -H "Accept: application/json" \
-      -H "Authorization: Bearer sagas-token" \
-      -H "X-Namespace: default" \
-      "$server_api_url/ready" >/dev/null 2>&1; then
-      return 0
-    fi
+    for candidate in "${server_url_candidates[@]}"; do
+      candidate_api_url="${candidate%/}/api"
+      if curl -fsS \
+        -H "Accept: application/json" \
+        -H "Authorization: Bearer sagas-token" \
+        -H "X-Namespace: default" \
+        "$candidate_api_url/ready" >/dev/null 2>&1; then
+        server_base_url="${candidate%/}"
+        server_api_url="$candidate_api_url"
+        export DW_SAGAS_SERVER_URL="$server_base_url"
+        export DW_SAGAS_SERVER_API_URL="$server_api_url"
+        return 0
+      fi
+    done
     sleep 1
   done
 
   return 1
+}
+
+update_run_metadata_server_url() {
+  python3 - "$result_dir/run-metadata.json" "$server_base_url" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+metadata = json.loads(path.read_text(encoding="utf-8"))
+metadata["server_url"] = sys.argv[2]
+path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  cp "$result_dir/run-metadata.json" "$run_root/run-metadata.json"
 }
 
 cat > "$run_root/resolve-pins.py" <<'PY'
@@ -2964,7 +3067,9 @@ export DW_SAGAS_SERVER_API_URL="$server_api_url"
 export DW_SAGAS_PHP_WORKER_CONTAINER="$php_worker_container"
 
 printf '%s\n' "$server_base_url" > "$result_dir/server-url.txt"
+printf '%s\n' "${server_url_candidates[@]}" > "$result_dir/server-url-candidates.txt"
 cp "$result_dir/server-url.txt" "$run_root/server-url.txt"
+cp "$result_dir/server-url-candidates.txt" "$run_root/server-url-candidates.txt"
 
 docker compose -f "$run_root/compose.yml" run --rm server server-bootstrap
 docker compose -f "$run_root/compose.yml" up -d --wait
@@ -2972,9 +3077,13 @@ docker compose -f "$run_root/compose.yml" up -d --wait
 if ! wait_for_server_ready; then
   docker compose -f "$run_root/compose.yml" ps > "$result_dir/docker-compose-ps.log" 2>&1 || true
   docker compose -f "$run_root/compose.yml" logs server > "$result_dir/server.log" 2>&1 || true
-  blocked_result "saga conformance server passed container startup but was not reachable from the host at $server_base_url; see docker-compose-ps.log and server.log" "$started_at"
+  blocked_result "saga conformance server passed container startup but was not reachable from the host at any candidate endpoint listed in server-url-candidates.txt; see docker-compose-ps.log and server.log" "$started_at"
   exit 1
 fi
+
+printf '%s\n' "$server_base_url" > "$result_dir/server-url.txt"
+cp "$result_dir/server-url.txt" "$run_root/server-url.txt"
+update_run_metadata_server_url
 
 server_queue_worker_cid="$(docker compose -f "$run_root/compose.yml" ps -q server-queue-worker)"
 server_queue_worker_running="$(docker inspect -f '{{.State.Running}}' "$server_queue_worker_cid" 2>/dev/null || true)"
