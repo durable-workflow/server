@@ -1930,7 +1930,14 @@ async def wait_result(client: Client, workflow_id: str, failures: list[str], tim
     deadline = time.monotonic() + timeout
     last_desc: dict[str, Any] | None = None
     while time.monotonic() < deadline:
-        desc = await client._request("GET", f"/workflows/{workflow_id}")
+        try:
+            desc = await client._request("GET", f"/workflows/{workflow_id}")
+        except Exception as exc:
+            failures.append(f"{workflow_id} describe failed while waiting for terminal state: {type(exc).__name__}: {exc}")
+            return {
+                "status": "workflow_result_unavailable",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
         last_desc = desc
         status = desc.get("status")
         if desc.get("is_terminal") or status in TERMINAL_STATUSES:
@@ -1942,7 +1949,15 @@ async def wait_result(client: Client, workflow_id: str, failures: list[str], tim
                 }
             envelope = desc.get("output_envelope")
             if envelope is not None:
-                return serializer.decode_envelope(envelope)
+                try:
+                    return serializer.decode_envelope(envelope)
+                except Exception as exc:
+                    failures.append(f"{workflow_id} output envelope decode failed: {type(exc).__name__}: {exc}")
+                    return {
+                        "status": "workflow_output_decode_failed",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "raw_output_envelope": envelope,
+                    }
             output = desc.get("output")
             return output if isinstance(output, dict) else {"raw": output}
         await asyncio.sleep(0.5)
@@ -2067,6 +2082,41 @@ def finding(
         }
     )
     return item
+
+
+def scenario_exception_result(
+    scenario_id: str,
+    label: str,
+    exc: Exception,
+    *,
+    language: str | None = None,
+) -> dict[str, Any]:
+    summary = f"{label} raised before scenario evidence was fully collected: {type(exc).__name__}: {exc}"
+    result: dict[str, Any] = {
+        "scenario_id": scenario_id,
+        "status": "fail",
+        "failures": [summary],
+        "exception": {
+            "type": type(exc).__name__,
+            "message": str(exc),
+        },
+    }
+    if language is not None:
+        result["language"] = language
+    return result
+
+
+async def capture_scenario(
+    scenario_id: str,
+    label: str,
+    awaitable: Any,
+    *,
+    language: str | None = None,
+) -> dict[str, Any]:
+    try:
+        return await awaitable
+    except Exception as exc:
+        return scenario_exception_result(scenario_id, label, exc, language=language)
 
 
 def parse_json_stdout(stdout: str) -> Any:
@@ -2664,29 +2714,59 @@ async def main() -> None:
     for scenario_id, overrides in basic_payloads.items():
         for language in ("php", "python"):
             row_id = f"{scenario_id}_{language}"
-            result = await run_basic_scenario(
-                client,
+            result = await capture_scenario(
                 scenario_id,
-                language,
-                {**base_payload(row_id), **overrides},
-                row_scenario_id=row_id,
+                f"{language} {scenario_id}",
+                run_basic_scenario(
+                    client,
+                    scenario_id,
+                    language,
+                    {**base_payload(row_id), **overrides},
+                    row_scenario_id=row_id,
+                ),
+                language=language,
             )
             result["started_at"] = started_at
             result["finished_at"] = ts()
             results.append(result)
 
     for language in ("php", "python"):
-        for runner in (run_retry_idempotence, run_compensation_failure, run_recovery):
-            result = await runner(client, language)
+        for runner, scenario_id in (
+            (run_retry_idempotence, "compensation_retry_idempotence"),
+            (run_compensation_failure, "compensation_failure_visibility"),
+            (run_recovery, "mid_compensation_worker_restart"),
+        ):
+            result = await capture_scenario(
+                scenario_id,
+                f"{language} {scenario_id}",
+                runner(client, language),
+                language=language,
+            )
             result["started_at"] = started_at
             result["finished_at"] = ts()
             results.append(result)
 
     for result in (
-        await run_cross_language(client, "php_workflow_python_compensation", "php", "sdk-python"),
-        await run_cross_language(client, "python_workflow_php_compensation", "python", "workflow-php"),
-        await run_typed_error(client),
-        await run_operator_visibility(client),
+        await capture_scenario(
+            "php_workflow_python_compensation",
+            "PHP workflow with Python compensation",
+            run_cross_language(client, "php_workflow_python_compensation", "php", "sdk-python"),
+        ),
+        await capture_scenario(
+            "python_workflow_php_compensation",
+            "Python workflow with PHP compensation",
+            run_cross_language(client, "python_workflow_php_compensation", "python", "workflow-php"),
+        ),
+        await capture_scenario(
+            "typed_compensation_error_round_trip",
+            "typed compensation error round trip",
+            run_typed_error(client),
+        ),
+        await capture_scenario(
+            "operator_visible_mid_compensation_status",
+            "operator visible mid-compensation status",
+            run_operator_visibility(client),
+        ),
     ):
         result["started_at"] = started_at
         result["finished_at"] = ts()

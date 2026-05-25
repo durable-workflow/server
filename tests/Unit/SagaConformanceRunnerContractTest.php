@@ -397,6 +397,37 @@ class SagaConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_orchestrator_records_scenario_exceptions_before_exiting(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            'async def capture_scenario(',
+            $source,
+            'scenario-level errors must be converted into conformance findings instead of aborting the whole runner',
+        );
+        $this->assertStringContainsString(
+            'return scenario_exception_result(scenario_id, label, exc, language=language)',
+            $source,
+            'captured scenario exceptions must retain scenario and runtime identity',
+        );
+        $this->assertStringContainsString(
+            'output envelope decode failed',
+            $source,
+            'workflow output decode failures must be reported as scenario evidence rather than crashing before sagas-result.json is written',
+        );
+        $this->assertStringContainsString(
+            'describe failed while waiting for terminal state',
+            $source,
+            'control-plane read failures must be reported as scenario evidence rather than crashing before sagas-result.json is written',
+        );
+        $this->assertStringContainsString(
+            '"runnerBlocked": False',
+            $source,
+            'once the orchestrator reaches scenario execution, failures should be product or focused scenario evidence rather than runner-blocked noise',
+        );
+    }
+
     private function read(string $path): string
     {
         $source = file_get_contents(dirname(__DIR__, 2).'/'.$path);
