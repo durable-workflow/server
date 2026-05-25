@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Workflow\V2\Support\PlatformConformanceSuite;
 
 class SagaConformanceRunnerContractTest extends TestCase
 {
@@ -214,7 +215,7 @@ class SagaConformanceRunnerContractTest extends TestCase
             'the runner must use the advertised saga scenario manifest as its suite-version source',
         );
         $this->assertSame(
-            12,
+            PlatformConformanceSuite::VERSION,
             $manifest['suite_version'],
             'the shipped saga runner handoff must stay aligned with the current public saga suite version',
         );
@@ -234,7 +235,7 @@ class SagaConformanceRunnerContractTest extends TestCase
             'completed saga results must carry the manifest suite version through run metadata',
         );
         $this->assertStringNotContainsString(
-            '"suite_version": 12',
+            '"suite_version": ' . PlatformConformanceSuite::VERSION,
             $source,
             'the saga runner must not hardcode a suite version that can drift from the public manifest',
         );

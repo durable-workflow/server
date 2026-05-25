@@ -21,6 +21,31 @@ final class SkewRefusalMatrixContractTest extends TestCase
             PlatformConformanceSuite::SCHEMA,
             $manifest['platform_conformance_suite_authority'],
         );
+        $this->assertSame(
+            PlatformConformanceSuite::SCHEMA,
+            $manifest['scenario_manifest']['suite_schema'],
+        );
+        $this->assertSame(
+            PlatformConformanceSuite::VERSION,
+            $manifest['scenario_manifest']['suite_version'],
+        );
+        $this->assertSame(
+            'static/platform-conformance/skew-refusal-matrix-scenarios.json',
+            $manifest['scenario_manifest']['source_path'],
+        );
+        $this->assertSame(
+            [
+                'published_artifact_install_only',
+                'cli_version_pair_matrix',
+                'sdk_python_version_pair_matrix',
+                'workflow_worker_version_pair_matrix',
+                'waterline_version_pair_matrix',
+                'future_version_boundary_matrix',
+                'request_response_capture_for_skewed_operations',
+                'focused_finding_routing',
+            ],
+            $manifest['required_scenarios'],
+        );
 
         foreach (['server', 'cli', 'sdk-python', 'workflow', 'waterline'] as $artifact) {
             $this->assertContains($artifact, $manifest['artifact_policy']['required_artifacts']);
@@ -37,6 +62,96 @@ final class SkewRefusalMatrixContractTest extends TestCase
         ] as $field) {
             $this->assertContains($field, $manifest['artifact_policy']['required_run_record_fields']);
         }
+    }
+
+    public function test_scenario_manifest_source_path_is_published_and_matches_contract(): void
+    {
+        $manifest = SkewRefusalMatrixContract::manifest();
+        $scenarioManifestPath = dirname(__DIR__, 2) . '/' . $manifest['scenario_manifest']['source_path'];
+
+        $this->assertFileExists(
+            $scenarioManifestPath,
+            'cluster info must not advertise a skew-refusal scenario manifest source path that is missing from the release tree',
+        );
+
+        $scenarioManifest = json_decode(
+            (string) file_get_contents($scenarioManifestPath),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+
+        $this->assertSame($manifest['scenario_manifest']['schema'], $scenarioManifest['schema']);
+        $this->assertSame($manifest['scenario_manifest']['version'], $scenarioManifest['version']);
+        $this->assertSame($manifest['scenario_manifest']['category'], $scenarioManifest['category']);
+        $this->assertSame($manifest['scenario_manifest']['suite_schema'], $scenarioManifest['suite_schema']);
+        $this->assertSame($manifest['scenario_manifest']['suite_version'], $scenarioManifest['suite_version']);
+        $this->assertSame(PlatformConformanceSuite::VERSION, $scenarioManifest['suite_version']);
+        $this->assertSame($manifest['result_schema'], $scenarioManifest['result_schema']);
+        $this->assertSame($manifest['scenario_statuses'], $scenarioManifest['result_statuses']);
+        $this->assertSame(
+            $manifest['required_scenarios'],
+            array_column($scenarioManifest['scenarios'], 'id'),
+        );
+        $this->assertSame(
+            $manifest['artifact_policy']['required_artifacts'],
+            $scenarioManifest['artifact_policy']['required_artifacts'],
+        );
+        $this->assertSame(
+            $manifest['artifact_policy']['required_run_record_fields'],
+            $scenarioManifest['artifact_policy']['required_run_record_fields'],
+        );
+
+        foreach ($manifest['artifact_policy']['required_run_record_fields'] as $field) {
+            $this->assertContains(
+                $field,
+                $scenarioManifest['common_result_evidence'],
+                sprintf('public skew scenario manifest must advertise run record field %s', $field),
+            );
+        }
+
+        $this->assertNotContains('linked_findings', $scenarioManifest['common_result_evidence']);
+        $this->assertContains(
+            'finding_links',
+            $scenarioManifest['scenario_requirements']['focused_finding_routing']['required_fields'],
+        );
+        $this->assertNotContains(
+            'linked_findings',
+            $scenarioManifest['scenario_requirements']['focused_finding_routing']['required_fields'],
+        );
+        $this->assertSame(array_keys($manifest['required_surfaces']), $scenarioManifest['required_matrix']['surfaces']);
+        $this->assertSame(
+            $manifest['required_surfaces']['cli']['required_pairing_classes'],
+            $scenarioManifest['required_matrix']['pairing_classes'],
+        );
+
+        foreach ($manifest['required_surfaces'] as $surface => $surfaceContract) {
+            $this->assertSame(
+                $surfaceContract['operation_groups'],
+                $scenarioManifest['required_matrix']['operation_groups'][$surface],
+                sprintf('public skew scenario manifest operation groups drifted for %s', $surface),
+            );
+        }
+
+        $this->assertSame(
+            $manifest['worker_skew_classification']['allowed'],
+            $scenarioManifest['required_matrix']['worker_skew_classifications'],
+        );
+        $this->assertSame(
+            $manifest['waterline_skew_classification']['allowed'],
+            $scenarioManifest['required_matrix']['waterline_skew_classifications'],
+        );
+        $this->assertSame(
+            [
+                ...$manifest['worker_skew_classification']['blocking'],
+                ...$manifest['waterline_skew_classification']['blocking'],
+            ],
+            $scenarioManifest['required_matrix']['blocking_classifications'],
+        );
+        $this->assertSame(
+            $manifest['host_runner_contract'],
+            $scenarioManifest['host_runner_contract'],
+        );
     }
 
     public function test_required_surfaces_cover_full_skew_matrix(): void
@@ -126,6 +241,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
         $this->assertSame('required_for_passing_skew_refusal_matrix_conformance', $hostRunner['status']);
         $this->assertSame(SkewRefusalMatrixContract::RESULT_SCHEMA, $hostRunner['result_schema']);
         $this->assertTrue($hostRunner['must_execute_against_published_artifacts']);
+        $this->assertSame($manifest['required_scenarios'], $hostRunner['required_scenarios']);
         $this->assertTrue($hostRunner['must_record_runner_blocked_false_for_product_evidence']);
         $this->assertTrue($hostRunner['must_emit_result_for_every_required_surface_pairing_operation_group']);
         $this->assertTrue($hostRunner['must_capture_request_response_for_every_skewed_operation']);

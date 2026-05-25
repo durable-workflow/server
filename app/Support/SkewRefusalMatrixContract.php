@@ -33,6 +33,23 @@ final class SkewRefusalMatrixContract
             'result_version' => self::RESULT_VERSION,
             'fixture_category' => 'skew_refusal_matrix_contract',
             'platform_conformance_suite_authority' => PlatformConformanceSuite::SCHEMA,
+            'scenario_manifest' => [
+                'schema' => 'durable-workflow.v2.platform-conformance.runtime-scenarios',
+                'version' => 1,
+                'category' => 'skew_refusal_matrix_contract',
+                'suite_schema' => PlatformConformanceSuite::SCHEMA,
+                'suite_version' => PlatformConformanceSuite::VERSION,
+                'public_path' => 'https://durable-workflow.github.io/platform-conformance/skew-refusal-matrix-scenarios.json',
+                'source_path' => 'static/platform-conformance/skew-refusal-matrix-scenarios.json',
+            ],
+            'required_scenarios' => self::requiredScenarios(),
+            'scenario_statuses' => [
+                'pass',
+                'fail',
+                'unsupported',
+                'not_covered',
+                'runner_blocked',
+            ],
             'artifact_policy' => [
                 'version_source' => 'latest_published_artifacts_at_run_time',
                 'version_requirement' => 'concrete_published_versions_pinned_at_run_time',
@@ -302,6 +319,7 @@ final class SkewRefusalMatrixContract
             'host_runner_contract' => [
                 'status' => 'required_for_passing_skew_refusal_matrix_conformance',
                 'result_schema' => self::RESULT_SCHEMA,
+                'required_scenarios' => self::requiredScenarios(),
                 'must_execute_against_published_artifacts' => true,
                 'must_record_runner_blocked_false_for_product_evidence' => true,
                 'must_emit_result_for_every_required_surface_pairing_operation_group' => true,
@@ -474,6 +492,23 @@ final class SkewRefusalMatrixContract
             'backward_skew',
             'forward_skew',
             'outside_window',
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function requiredScenarios(): array
+    {
+        return [
+            'published_artifact_install_only',
+            'cli_version_pair_matrix',
+            'sdk_python_version_pair_matrix',
+            'workflow_worker_version_pair_matrix',
+            'waterline_version_pair_matrix',
+            'future_version_boundary_matrix',
+            'request_response_capture_for_skewed_operations',
+            'focused_finding_routing',
         ];
     }
 

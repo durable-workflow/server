@@ -3,7 +3,7 @@
   "version": 2,
   "category": "schedules_runtime_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
-  "suite_version": 12,
+  "suite_version": 15,
   "description": "Public scenario manifest for Temporal-parity schedule conformance. Harnesses use these scenario ids and criteria when evaluating published Durable Workflow artifacts.",
   "fixture_type": "published_artifact_runtime_scenario_manifest",
   "result_statuses": [

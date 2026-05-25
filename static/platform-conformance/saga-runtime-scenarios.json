@@ -3,7 +3,7 @@
   "version": 1,
   "category": "saga_runtime_contract",
   "suite_schema": "durable-workflow.v2.platform-conformance.suite",
-  "suite_version": 12,
+  "suite_version": 15,
   "description": "Public scenario manifest for published-artifact saga compensation conformance. Harnesses use these scenario ids and criteria when evaluating Durable Workflow saga behavior across PHP and Python runtimes.",
   "fixture_type": "published_artifact_runtime_scenario_manifest",
   "result_schema": "durable-workflow.v2.saga-runtime-conformance.result",
