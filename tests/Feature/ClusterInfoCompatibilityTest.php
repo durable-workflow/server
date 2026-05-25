@@ -256,6 +256,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'worker_skew_classification',
                     'waterline_skew_classification',
                     'coverage_gate',
+                    'host_runner_contract',
                     'result_gate',
                     'finding_policy',
                 ],

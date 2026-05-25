@@ -112,6 +112,81 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'smoke_only_results_remain_non_passing',
             $manifest['result_gate']['pass_requires'],
         );
+        $this->assertContains(
+            'each_non_pass_cell_has_a_focused_finding_link',
+            $manifest['result_gate']['pass_requires'],
+        );
+    }
+
+    public function test_manifest_publishes_host_runner_contract_for_full_skew_matrix(): void
+    {
+        $manifest = SkewRefusalMatrixContract::manifest();
+        $hostRunner = $manifest['host_runner_contract'];
+
+        $this->assertSame('required_for_passing_skew_refusal_matrix_conformance', $hostRunner['status']);
+        $this->assertSame(SkewRefusalMatrixContract::RESULT_SCHEMA, $hostRunner['result_schema']);
+        $this->assertTrue($hostRunner['must_execute_against_published_artifacts']);
+        $this->assertTrue($hostRunner['must_record_runner_blocked_false_for_product_evidence']);
+        $this->assertTrue($hostRunner['must_emit_result_for_every_required_surface_pairing_operation_group']);
+        $this->assertTrue($hostRunner['must_capture_request_response_for_every_skewed_operation']);
+        $this->assertSame('non_passing_smoke_only', $hostRunner['smoke_summary_only_outcome']);
+        $this->assertSame('not_covered', $hostRunner['unexecuted_required_cell_status']);
+        $this->assertSame('conformance_runner_coverage_gap', $hostRunner['coverage_gap_finding_type']);
+        $this->assertSame('conformance_harness', $hostRunner['coverage_gap_owner']);
+
+        foreach ([
+            'published-artifact-install',
+            'cli-skew-surface-shard',
+            'sdk-python-skew-surface-shard',
+            'workflow-worker-skew-surface-shard',
+            'waterline-skew-surface-shard',
+            'future-version-boundary-shard',
+            'request-response-evidence-shard',
+        ] as $scope) {
+            $this->assertContains($scope, $hostRunner['required_execution_scopes']);
+        }
+
+        foreach (['cli', 'sdk-python', 'workflow-worker', 'waterline'] as $surface) {
+            $this->assertArrayHasKey($surface, $hostRunner['runtime_shards']);
+            $this->assertSame(
+                ['compatible', 'backward_skew', 'forward_skew', 'outside_window'],
+                $hostRunner['runtime_shards'][$surface]['must_cover_pairing_classes'],
+            );
+            $this->assertSame('not_covered', $hostRunner['runtime_shards'][$surface]['fallback_status_when_surface_missing']);
+            $this->assertSame(
+                'conformance_runner_coverage_gap',
+                $hostRunner['runtime_shards'][$surface]['fallback_finding_type'],
+            );
+        }
+
+        $this->assertContains(
+            'workflow_control_plane',
+            $hostRunner['runtime_shards']['cli']['must_cover_operation_groups'],
+        );
+        $this->assertContains(
+            'worker_lifecycle',
+            $hostRunner['runtime_shards']['workflow-worker']['must_cover_operation_groups'],
+        );
+        $this->assertSame(
+            'register_and_drop',
+            $hostRunner['runtime_shards']['workflow-worker']['blocking_classification'],
+        );
+        $this->assertContains(
+            'waterline_render',
+            $hostRunner['runtime_shards']['waterline']['must_cover_operation_groups'],
+        );
+        $this->assertSame(
+            'stale_render',
+            $hostRunner['runtime_shards']['waterline']['blocking_classification'],
+        );
+        $this->assertSame(
+            'conformance_runner_coverage_gap',
+            $hostRunner['routing_policy']['missing_required_cell']['finding_type'],
+        );
+        $this->assertSame(
+            'durable-workflow/waterline',
+            $hostRunner['routing_policy']['waterline_stale_render']['owner'],
+        );
     }
 
     public function test_skewed_operations_require_wire_evidence(): void
@@ -264,6 +339,47 @@ final class SkewRefusalMatrixContractTest extends TestCase
         );
         $this->assertContains(
             'missing_linked_findings_for_non_pass_cells',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_requires_focused_findings_for_each_uncovered_matrix_cell(): void
+    {
+        $result = $this->completeSkewResult();
+        unset($result['operation_evidence']['sdk-python']['outside_window']['worker_lifecycle']);
+        $result['outcome'] = 'fail';
+        $result['finding_links'] = [
+            'cli.compatible.cluster_info_probe' => 'https://durable-workflow.github.io/conformance/findings/cli-cluster-info-skew',
+        ];
+
+        $evaluation = SkewRefusalMatrixResultGate::evaluate($result);
+        $focusedFindingFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_focused_findings_for_non_pass_cells',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertCount(1, $focusedFindingFailures);
+        $this->assertContains(
+            'sdk-python.outside_window.worker_lifecycle',
+            $focusedFindingFailures[0]['non_pass_cells'],
+        );
+    }
+
+    public function test_result_gate_accepts_surface_scoped_findings_for_uncovered_matrix_cells(): void
+    {
+        $result = $this->completeSkewResult();
+        unset($result['operation_evidence']['sdk-python']['outside_window']['worker_lifecycle']);
+        $result['outcome'] = 'fail';
+        $result['finding_links'] = [
+            'sdk-python.outside_window' => 'https://durable-workflow.github.io/conformance/findings/sdk-python-worker-skew',
+        ];
+
+        $evaluation = SkewRefusalMatrixResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotContains(
+            'missing_focused_findings_for_non_pass_cells',
             array_column($evaluation['gate_failures'], 'code'),
         );
     }

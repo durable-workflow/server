@@ -178,7 +178,13 @@ category emits a warning and does not block.
   is blocking. Its result gate rejects cluster-info smoke as passing evidence
   and requires current published artifact versions, every required surface,
   every pairing class, every operation group, request/response evidence, and
-  linked findings for any non-pass cell before rollup can count the result.
+  focused linked findings for any non-pass cell before rollup can count the
+  result. Its `host_runner_contract` names the CLI, Python SDK, PHP worker,
+  Waterline, future-version boundary, and request/response evidence shards a
+  runner must execute against published artifacts; uncovered cells must be
+  recorded as `not_covered` with `conformance_runner_coverage_gap` findings
+  owned by the conformance harness, while `register_and_drop` and
+  `stale_render` route as blocking product gaps.
 - Worker-versioning runtime contract: `GET /api/cluster/info` re-exports
   `worker_versioning_runtime_contract`, schema
   `durable-workflow.v2.worker-versioning-runtime.contract`. It names the

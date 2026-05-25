@@ -669,7 +669,9 @@ the required CLI, Python SDK, PHP worker, and Waterline pairings, the compatible
 and intentionally skewed version classes, the allowed worker and Waterline
 classifications, and the wire evidence a conformance run must capture before a
 skew result can pass. Smoke-only compatibility evidence is explicitly
-non-passing under that contract.
+non-passing under that contract. The manifest also publishes the host-runner
+handoff for the full matrix, including focused coverage-gap findings for any
+unexecuted cell.
 
 ### Worker Protocol
 - `POST /api/worker/register` — Register a worker

@@ -71,6 +71,7 @@ final class SkewRefusalMatrixResultGate
                 'worker_skew_is_classified_as_register_refused_or_register_and_serve',
                 'waterline_skew_is_classified_as_banner_or_render_refused',
                 'non_pass_pairings_or_operations_have_linked_findings',
+                'each_non_pass_cell_has_a_focused_finding_link',
                 'request_response_evidence_is_present_for_each_skewed_operation',
                 'smoke_only_results_remain_non_passing',
                 'overall_outcome_matches_gate_status',
@@ -216,15 +217,24 @@ final class SkewRefusalMatrixResultGate
             $nonPassCells[] = 'smoke_only';
         }
 
-        if (array_values(array_unique($nonPassCells)) !== [] && ! self::hasLinkedFindings($result)) {
+        $uniqueNonPassCells = array_values(array_unique($nonPassCells));
+        if ($uniqueNonPassCells !== [] && ! self::hasLinkedFindings($result)) {
             $failures[] = [
                 'code' => 'missing_linked_findings_for_non_pass_cells',
-                'non_pass_cells' => array_values(array_unique($nonPassCells)),
+                'non_pass_cells' => $uniqueNonPassCells,
             ];
+        } elseif ($uniqueNonPassCells !== []) {
+            $missingFocusedFindingCells = self::nonPassCellsMissingFocusedFindings($result, $uniqueNonPassCells);
+            if ($missingFocusedFindingCells !== []) {
+                $failures[] = [
+                    'code' => 'missing_focused_findings_for_non_pass_cells',
+                    'non_pass_cells' => $missingFocusedFindingCells,
+                ];
+            }
         }
 
         $evidencePasses = $failures === []
-            && array_values(array_unique($nonPassCells)) === []
+            && $uniqueNonPassCells === []
             && ! self::boolField($result, ['runner_blocked', 'runnerBlocked']);
         $evaluatedStatus = $evidencePasses ? 'pass' : 'non_passing';
 
@@ -239,7 +249,7 @@ final class SkewRefusalMatrixResultGate
             'reported_surfaces' => $reportedSurfaces,
             'missing_surfaces' => array_values(array_diff(array_keys($requiredSurfaces), $reportedSurfaces)),
             'smoke_subset_detected' => $smokeSubsetDetected,
-            'non_pass_cells' => array_values(array_unique($nonPassCells)),
+            'non_pass_cells' => $uniqueNonPassCells,
             'gate_failures' => $failures,
         ];
     }
@@ -1359,6 +1369,118 @@ final class SkewRefusalMatrixResultGate
         }
 
         return false;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param list<string> $nonPassCells
+     * @return list<string>
+     */
+    private static function nonPassCellsMissingFocusedFindings(array $result, array $nonPassCells): array
+    {
+        $tokens = self::focusedFindingTokens($result);
+
+        return array_values(array_filter(
+            $nonPassCells,
+            static fn (string $cell): bool => ! self::cellHasFocusedFinding($cell, $tokens),
+        ));
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @return list<string>
+     */
+    private static function focusedFindingTokens(array $result): array
+    {
+        $tokens = [];
+        foreach (['finding_links', 'findingLinks', 'findings', 'linked_findings', 'linkedFindings'] as $field) {
+            self::collectFocusedFindingTokens(self::arrayField($result, [$field]) ?? [], $tokens);
+        }
+
+        return array_keys($tokens);
+    }
+
+    /**
+     * @param mixed $raw
+     * @param array<string, true> $tokens
+     */
+    private static function collectFocusedFindingTokens(mixed $raw, array &$tokens): void
+    {
+        if (! is_array($raw)) {
+            if (is_string($raw) && self::isFindingCellToken($raw)) {
+                $tokens[$raw] = true;
+            }
+
+            return;
+        }
+
+        $composedToken = self::composedFindingToken($raw);
+        if ($composedToken !== '') {
+            $tokens[$composedToken] = true;
+        }
+
+        foreach ($raw as $key => $value) {
+            if (is_string($key) && self::isFindingCellToken($key)) {
+                $tokens[$key] = true;
+            }
+
+            if (is_string($value) && self::isFindingCellToken($value)) {
+                $tokens[$value] = true;
+            }
+
+            if (is_array($value)) {
+                self::collectFocusedFindingTokens($value, $tokens);
+            }
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $finding
+     */
+    private static function composedFindingToken(array $finding): string
+    {
+        foreach (['cell', 'matrix_cell', 'matrixCell', 'non_pass_cell', 'nonPassCell'] as $field) {
+            $cell = self::stringValue($finding[$field] ?? null);
+            if (self::isFindingCellToken($cell)) {
+                return $cell;
+            }
+        }
+
+        $parts = [];
+        foreach (['surface', 'pairing_class', 'pairingClass', 'operation_group', 'operationGroup'] as $field) {
+            $value = self::stringValue($finding[$field] ?? null);
+            if ($value !== '') {
+                $parts[] = $value;
+            }
+        }
+
+        $token = implode('.', $parts);
+
+        return self::isFindingCellToken($token) ? $token : '';
+    }
+
+    /**
+     * @param list<string> $tokens
+     */
+    private static function cellHasFocusedFinding(string $cell, array $tokens): bool
+    {
+        foreach ($tokens as $token) {
+            if (
+                $token === $cell
+                || ($token !== '' && str_starts_with($cell, $token.'.'))
+                || str_starts_with($token, $cell.'.')
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function isFindingCellToken(string $token): bool
+    {
+        return $token === 'smoke_only'
+            || preg_match('/^(cli|sdk-python|workflow-worker|waterline)(\.[A-Za-z0-9_-]+){0,3}$/', $token) === 1;
     }
 
     /**
