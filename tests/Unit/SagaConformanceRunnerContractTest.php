@@ -356,6 +356,72 @@ class SagaConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_runner_uses_per_run_server_endpoint_and_worker_container(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            'DW_SAGAS_SERVER_PORT          Host port for the published server. Defaults to a free 127.0.0.1 port.',
+            $source,
+            'published-artifact saga runs must be able to avoid fixed host port collisions',
+        );
+        $this->assertStringContainsString(
+            'choose_free_port()',
+            $source,
+            'the saga runner must choose a per-run host port when no override is supplied',
+        );
+        $this->assertStringContainsString(
+            'server_base_url="${DW_SAGAS_SERVER_URL:-http://${server_connect_host}:${server_port}}"',
+            $source,
+            'generated workers and the orchestrator must share the resolved server endpoint',
+        );
+        $this->assertStringContainsString(
+            '- "${server_bind_host}:${server_port}:8080"',
+            $source,
+            'the compose server must bind the resolved per-run host port instead of hardcoding 8080',
+        );
+        $this->assertStringContainsString(
+            'wait_for_server_ready',
+            $source,
+            'host reachability must be checked before scenario failures are counted as product evidence',
+        );
+        $this->assertStringContainsString(
+            'define(\'BASE_URL\', getenv(\'DW_SAGAS_SERVER_API_URL\') ?: \'http://127.0.0.1:8080/api\');',
+            $source,
+            'the generated PHP worker must use the resolved endpoint handed to its container',
+        );
+        $this->assertStringContainsString(
+            'SERVER_URL = os.environ.get("DW_SAGAS_SERVER_URL", "http://127.0.0.1:8080").rstrip("/")',
+            $source,
+            'the Python worker and orchestrator must use the resolved endpoint rather than localhost:8080',
+        );
+        $this->assertStringContainsString(
+            'php_worker_container="${DW_SAGAS_PHP_WORKER_CONTAINER:-dw-sagas-php-worker-${run_label}}"',
+            $source,
+            'parallel saga runs must not share one global PHP worker container name',
+        );
+        $this->assertStringContainsString(
+            'docker run -d --name "$php_worker_container" --network host',
+            $source,
+            'the PHP worker launch must use the per-run container name',
+        );
+        $this->assertStringNotContainsString(
+            '- "8080:8080"',
+            $source,
+            'published-artifact sagas must not require exclusive ownership of host port 8080',
+        );
+        $this->assertStringNotContainsString(
+            'docker run -d --name dw-sagas-php-worker',
+            $source,
+            'parallel saga runs must not collide on a fixed PHP worker container',
+        );
+        $this->assertStringNotContainsString(
+            'Client("http://localhost:8080"',
+            $source,
+            'host Python clients must not be pinned to localhost:8080',
+        );
+    }
+
     public function test_non_pass_findings_include_routable_contract_fields(): void
     {
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');

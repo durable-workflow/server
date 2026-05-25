@@ -24,6 +24,7 @@ Environment overrides:
   DW_CLI_VERSION                GitHub release tag for the official CLI installer.
   DW_WATERLINE_VERSION          Composer version for durable-workflow/waterline.
   DW_SAGAS_SKIP_DOCKER_PULL=1   Reuse local image instead of pulling.
+  DW_SAGAS_SERVER_PORT          Host port for the published server. Defaults to a free 127.0.0.1 port.
 USAGE
 }
 
@@ -112,6 +113,8 @@ if [[ -z "$run_root" ]]; then
   run_root="$(mktemp -d "${TMPDIR:-/tmp}/dw-sagas.XXXXXX")"
 fi
 mkdir -p "$run_root"
+run_label="$(basename "$run_root" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_.-' '-')"
+php_worker_container="${DW_SAGAS_PHP_WORKER_CONTAINER:-dw-sagas-php-worker-${run_label}}"
 
 if [[ -z "$result_dir" ]]; then
   result_dir="$run_root"
@@ -124,7 +127,7 @@ cleanup() {
   if [[ -n "${python_worker_pid:-}" ]]; then
     kill "$python_worker_pid" >/dev/null 2>&1 || true
   fi
-  docker rm -f dw-sagas-php-worker >/dev/null 2>&1 || true
+  docker rm -f "$php_worker_container" >/dev/null 2>&1 || true
   if [[ -f "$run_root/compose.yml" ]]; then
     docker compose -f "$run_root/compose.yml" down -v >/dev/null 2>&1 || true
   fi
@@ -455,6 +458,41 @@ if [[ "${#missing[@]}" -gt 0 ]]; then
   exit 1
 fi
 
+choose_free_port() {
+  python3 - <<'PY'
+from __future__ import annotations
+
+import socket
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+}
+
+server_bind_host="${DW_SAGAS_SERVER_BIND_HOST:-127.0.0.1}"
+server_connect_host="${DW_SAGAS_SERVER_CONNECT_HOST:-127.0.0.1}"
+server_port="${DW_SAGAS_SERVER_PORT:-$(choose_free_port)}"
+server_base_url="${DW_SAGAS_SERVER_URL:-http://${server_connect_host}:${server_port}}"
+server_api_url="${server_base_url%/}/api"
+
+wait_for_server_ready() {
+  local attempt
+
+  for attempt in $(seq 1 90); do
+    if curl -fsS \
+      -H "Accept: application/json" \
+      -H "Authorization: Bearer sagas-token" \
+      -H "X-Namespace: default" \
+      "$server_api_url/ready" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  return 1
+}
+
 cat > "$run_root/resolve-pins.py" <<'PY'
 from __future__ import annotations
 
@@ -743,7 +781,7 @@ docker run --rm -v "$run_root/waterline:/app" composer:2 \
     "durable-workflow/workflow:$workflow_version" \
     "durable-workflow/waterline:$waterline_version"
 
-python3 - "$run_root/pins.json" "$result_dir/server-image-digest.txt" "$result_dir/run-metadata.json" "$saga_suite_version" <<'PY'
+python3 - "$run_root/pins.json" "$result_dir/server-image-digest.txt" "$result_dir/run-metadata.json" "$saga_suite_version" "$server_base_url" <<'PY'
 from __future__ import annotations
 
 import json
@@ -770,13 +808,14 @@ metadata = {
     "artifact_sources": pins["artifact_sources"],
     "server_image": pins["server_image"],
     "server_image_digest": Path(sys.argv[2]).read_text().strip(),
+    "server_url": sys.argv[5],
     "local_product_source_checkouts_used": False,
 }
 Path(sys.argv[3]).write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
 PY
 cp "$result_dir/run-metadata.json" "$run_root/run-metadata.json"
 
-cat > "$run_root/compose.yml" <<'YAML'
+cat > "$run_root/compose.yml" <<YAML
 x-server-environment: &server-environment
   DW_AUTH_DRIVER: token
   DW_AUTH_TOKEN: sagas-token
@@ -794,7 +833,7 @@ services:
       DW_SERVER_TOPOLOGY_SHAPE: standalone_server
       DW_SERVER_PROCESS_CLASS: server_http_node
     ports:
-      - "8080:8080"
+      - "${server_bind_host}:${server_port}:8080"
     volumes:
       - server-db:/app/database
     healthcheck:
@@ -838,7 +877,7 @@ use Workflow\V2\Workflow;
 
 require __DIR__.'/vendor/autoload.php';
 
-const BASE_URL = 'http://localhost:8080/api';
+define('BASE_URL', getenv('DW_SAGAS_SERVER_API_URL') ?: 'http://127.0.0.1:8080/api');
 const TOKEN = 'sagas-token';
 const NAMESPACE_NAME = 'default';
 const PROTOCOL_VERSION = '1.7';
@@ -1423,6 +1462,7 @@ from durable_workflow.errors import ActivityFailed, ChildWorkflowFailed
 PHP_QUEUE = "sagas-php"
 PYTHON_QUEUE = "sagas-python"
 SIDE_STORE = Path(os.environ["SAGA_SIDE_STORE"])
+SERVER_URL = os.environ.get("DW_SAGAS_SERVER_URL", "http://127.0.0.1:8080").rstrip("/")
 
 
 def now() -> str:
@@ -1573,7 +1613,7 @@ class PythonBookTripWorkflow:
 
 
 async def main() -> None:
-    client = Client("http://localhost:8080", token="sagas-token", namespace="default")
+    client = Client(SERVER_URL, token="sagas-token", namespace="default")
     worker = Worker(
         client,
         task_queue=PYTHON_QUEUE,
@@ -1624,6 +1664,8 @@ RUN_ROOT = Path(os.environ["RUN_ROOT"])
 RESULT_DIR = Path(os.environ["RESULT_DIR"])
 SIDE_STORE = Path(os.environ["SAGA_SIDE_STORE"])
 PYTHON_WORKER_PID = int(os.environ["PYTHON_WORKER_PID"])
+SERVER_URL = os.environ.get("DW_SAGAS_SERVER_URL", "http://127.0.0.1:8080").rstrip("/")
+PHP_WORKER_CONTAINER = os.environ.get("DW_SAGAS_PHP_WORKER_CONTAINER", "dw-sagas-php-worker")
 ACTIVE_PYTHON_WORKER_PID = PYTHON_WORKER_PID
 RESTARTED_PYTHON_WORKERS: list[subprocess.Popen[Any]] = []
 TERMINAL_STATUSES = {"completed", "failed", "terminated", "canceled", "cancelled"}
@@ -2142,7 +2184,7 @@ def cli_snapshot(label: str, args: list[str], timeout: float = 45.0) -> dict[str
     command = [
         str(RUN_ROOT / "cli" / "bin" / "dw"),
         *args,
-        "--server=http://localhost:8080",
+        f"--server={SERVER_URL}",
         "--namespace=default",
         "--token=sagas-token",
     ]
@@ -2174,7 +2216,7 @@ async def control_plane_snapshot(client: Client, label: str, path: str) -> dict[
 
 def http_snapshot(label: str, path: str, timeout: float = 15.0) -> dict[str, Any]:
     request = urllib.request.Request(
-        f"http://localhost:8080{path}",
+        f"{SERVER_URL}{path}",
         headers={
             "Accept": "application/json",
             "Authorization": "Bearer sagas-token",
@@ -2337,18 +2379,20 @@ def restart_python_worker() -> subprocess.Popen[Any]:
 
 
 def restart_php_worker() -> None:
-    subprocess.run(["docker", "rm", "-f", "dw-sagas-php-worker"], check=False)
+    subprocess.run(["docker", "rm", "-f", PHP_WORKER_CONTAINER], check=False)
     subprocess.run(
         [
             "docker",
             "run",
             "-d",
             "--name",
-            "dw-sagas-php-worker",
+            PHP_WORKER_CONTAINER,
             "--network",
             "host",
             "-e",
             f"SAGA_SIDE_STORE=/run-root/{SIDE_STORE.name}",
+            "-e",
+            f"DW_SAGAS_SERVER_API_URL={SERVER_URL}/api",
             "-v",
             f"{RUN_ROOT}:/run-root",
             "-v",
@@ -2690,7 +2734,7 @@ def fold_scenarios(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def main() -> None:
     started_at = os.environ["STARTED_AT"]
     metadata = read_json(RESULT_DIR / "run-metadata.json")
-    client = Client("http://localhost:8080", token="sagas-token", namespace="default")
+    client = Client(SERVER_URL, token="sagas-token", namespace="default")
     results: list[dict[str, Any]] = []
 
     install_scenario = {
@@ -2845,6 +2889,7 @@ async def main() -> None:
         "implementation_identity": {
             "server_image": metadata["server_image"],
             "server_image_digest": metadata["server_image_digest"],
+            "server_url": metadata.get("server_url"),
         },
         "runtime_matrix": {
             "workflow_runtimes": ["workflow-php", "sdk-python"],
@@ -2855,7 +2900,7 @@ async def main() -> None:
             ],
         },
         "topology": {
-            "server": "published Docker image",
+            "server": f"published Docker image exposed at {metadata.get('server_url')}",
             "server_queue_worker": "same published Docker image running php artisan queue:work against the shared database queue",
             "php_worker": "composer:2 container with durable-workflow/workflow package",
             "python_worker": "venv with durable-workflow PyPI package",
@@ -2914,9 +2959,22 @@ export SAGA_SIDE_STORE="$run_root/side-store.jsonl"
 export RUN_ROOT="$run_root"
 export RESULT_DIR="$result_dir"
 export STARTED_AT="$started_at"
+export DW_SAGAS_SERVER_URL="$server_base_url"
+export DW_SAGAS_SERVER_API_URL="$server_api_url"
+export DW_SAGAS_PHP_WORKER_CONTAINER="$php_worker_container"
+
+printf '%s\n' "$server_base_url" > "$result_dir/server-url.txt"
+cp "$result_dir/server-url.txt" "$run_root/server-url.txt"
 
 docker compose -f "$run_root/compose.yml" run --rm server server-bootstrap
 docker compose -f "$run_root/compose.yml" up -d --wait
+
+if ! wait_for_server_ready; then
+  docker compose -f "$run_root/compose.yml" ps > "$result_dir/docker-compose-ps.log" 2>&1 || true
+  docker compose -f "$run_root/compose.yml" logs server > "$result_dir/server.log" 2>&1 || true
+  blocked_result "saga conformance server passed container startup but was not reachable from the host at $server_base_url; see docker-compose-ps.log and server.log" "$started_at"
+  exit 1
+fi
 
 server_queue_worker_cid="$(docker compose -f "$run_root/compose.yml" ps -q server-queue-worker)"
 server_queue_worker_running="$(docker inspect -f '{{.State.Running}}' "$server_queue_worker_cid" 2>/dev/null || true)"
@@ -2926,9 +2984,10 @@ if [[ -z "$server_queue_worker_cid" || "$server_queue_worker_running" != "true" 
   exit 1
 fi
 
-docker rm -f dw-sagas-php-worker >/dev/null 2>&1 || true
-docker run -d --name dw-sagas-php-worker --network host \
+docker rm -f "$php_worker_container" >/dev/null 2>&1 || true
+docker run -d --name "$php_worker_container" --network host \
   -e "SAGA_SIDE_STORE=/run-root/side-store.jsonl" \
+  -e "DW_SAGAS_SERVER_API_URL=$server_api_url" \
   -v "$run_root:/run-root" \
   -v "$run_root/php-worker:/work" \
   -w /work \
@@ -2946,7 +3005,7 @@ orchestrate_status=$?
 set -e
 
 cp "$run_root/logs/"* "$result_dir/" 2>/dev/null || true
-docker logs dw-sagas-php-worker > "$result_dir/php-worker.log" 2>&1 || true
+docker logs "$php_worker_container" > "$result_dir/php-worker.log" 2>&1 || true
 docker compose -f "$run_root/compose.yml" logs server > "$result_dir/server.log" 2>&1 || true
 docker compose -f "$run_root/compose.yml" logs server-queue-worker > "$result_dir/server-queue-worker.log" 2>&1 || true
 
