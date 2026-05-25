@@ -49,7 +49,10 @@ runners can discover that handoff from `GET /api/cluster/info` under
 `saga_runtime_contract.host_runner_contract` and invoke it to exercise
 `saga_runtime_contract` against the current published server image, CLI
 release artifact, Python SDK, PHP workflow runtime, and Waterline package
-install. The server-only runner does not boot a Waterline app or probe
+install. Saga evidence records the PHP package under the runtime key
+`workflow-php` and the platform release key `workflow` so both the runtime
+contract and release coverage compare the same published artifact. The
+server-only runner does not boot a Waterline app or probe
 Waterline routes; Waterline operator visibility remains an explicit
 unsupported surface until a host topology runs Waterline against the saga
 run database. The script emits

@@ -37,6 +37,11 @@
       "sdk-python",
       "waterline"
     ],
+    "release_artifact_aliases": {
+      "workflow-php": [
+        "workflow"
+      ]
+    },
     "placeholder_version_examples": [
       "latest",
       "current",

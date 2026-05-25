@@ -65,6 +65,9 @@ final class SagaRuntimeContract
                     'sdk-python' => 'PyPI package durable-workflow==<latest>',
                     'waterline' => 'published Waterline package matching the latest complete release set',
                 ],
+                'release_artifact_aliases' => [
+                    'workflow-php' => ['workflow'],
+                ],
                 'forbidden_sources' => [
                     'local_product_source_checkout',
                     'workspace_repo_as_artifact_under_test',

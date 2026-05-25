@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: sagas-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--keep-run-root]
+Usage: sagas-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--keep-run-root[=1|true]]
 
 Runs the public saga runtime contract against published artifacts only.
 
@@ -47,6 +47,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     --keep-run-root)
       keep_run_root=1
+      shift
+      ;;
+    --keep-run-root=*)
+      keep_run_root="${1#--keep-run-root=}"
+      if [[ "$keep_run_root" == "true" ]]; then
+        keep_run_root=1
+      elif [[ "$keep_run_root" != "1" ]]; then
+        keep_run_root=0
+      fi
       shift
       ;;
     -h|--help)
@@ -358,7 +367,7 @@ blocked_result() {
     artifact_versions_json="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("published_artifact_versions", {}), sort_keys=True))' "$result_dir/run-metadata.json" 2>/dev/null || printf '{}')"
     artifact_sources_json="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("artifact_sources", {}), sort_keys=True))' "$result_dir/run-metadata.json" 2>/dev/null || printf '{}')"
   elif command -v python3 >/dev/null 2>&1 && [[ -f "$result_dir/pins.json" ]]; then
-    artifact_versions_json="$(python3 -c 'import json,sys; pins=json.load(open(sys.argv[1])); print(json.dumps({k:pins[k] for k in ("server","cli","workflow-php","sdk-python","waterline") if k in pins}, sort_keys=True))' "$result_dir/pins.json" 2>/dev/null || printf '{}')"
+    artifact_versions_json="$(python3 -c 'import json,sys; pins=json.load(open(sys.argv[1])); print(json.dumps({k:pins[k] for k in ("server","cli","workflow","workflow-php","sdk-python","waterline") if k in pins}, sort_keys=True))' "$result_dir/pins.json" 2>/dev/null || printf '{}')"
     artifact_sources_json="$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("artifact_sources", {}), sort_keys=True))' "$result_dir/pins.json" 2>/dev/null || printf '{}')"
   fi
 
@@ -420,15 +429,19 @@ JSON
 started_at="$(timestamp)"
 
 on_error() {
-  local code=$?
+  local code="${1:-$?}"
+  local line="${2:-unknown}"
+  local command="${3:-unknown}"
+  command="${command//$run_root/<run-root>}"
+  command="${command//$result_dir/<result-dir>}"
 
   if [[ "$code" -ne 0 && ! -f "$result_dir/sagas-result.json" ]]; then
-    blocked_result "saga conformance runner exited before producing sagas-result.json (exit $code)" "$started_at"
+    blocked_result "saga conformance runner exited before producing sagas-result.json (exit $code at line $line while running: $command)" "$started_at"
   fi
 
   exit "$code"
 }
-trap on_error ERR
+trap 'on_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
 
 missing=()
 for command_name in docker python3 curl; do
@@ -654,12 +667,14 @@ pins = {
     "server_image": server_image,
     "cli": cli_version,
     "cli_installer_url": cli_installer_url,
+    "workflow": workflow_version,
     "workflow-php": workflow_version,
     "sdk-python": python_version,
     "waterline": waterline_version,
     "artifact_sources": {
         "server": "docker",
         "cli": "github-release",
+        "workflow": "packagist",
         "workflow-php": "packagist",
         "sdk-python": "pypi",
         "waterline": "packagist",
@@ -745,6 +760,7 @@ metadata = {
     "published_artifact_versions": {
         "server": pins["server"],
         "cli": pins["cli"],
+        "workflow": pins["workflow"],
         "workflow-php": pins["workflow-php"],
         "sdk-python": pins["sdk-python"],
         "waterline": pins["waterline"],

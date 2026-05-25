@@ -59,6 +59,10 @@ class SagaRuntimeContractTest extends TestCase
         foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
+        $this->assertSame(
+            ['workflow'],
+            $manifest['artifact_policy']['release_artifact_aliases']['workflow-php'],
+        );
     }
 
     public function test_manifest_names_full_saga_matrix(): void
@@ -134,6 +138,11 @@ class SagaRuntimeContractTest extends TestCase
         $this->assertTrue($scenarioManifest['artifact_policy']['rejects_placeholder_versions']);
         $this->assertTrue($scenarioManifest['artifact_policy']['requires_artifact_sources_for_each_required_artifact']);
         $this->assertTrue($scenarioManifest['artifact_policy']['requires_local_product_source_checkouts_used_false']);
+        $this->assertSame(
+            $manifest['artifact_policy']['release_artifact_aliases'],
+            $scenarioManifest['artifact_policy']['release_artifact_aliases'],
+            'public saga scenario manifest must advertise the same release artifact aliases as cluster info',
+        );
         $this->assertSame(
             $manifest['host_runner_contract']['runner_path'],
             $scenarioManifest['host_runner_contract']['runner_path'],

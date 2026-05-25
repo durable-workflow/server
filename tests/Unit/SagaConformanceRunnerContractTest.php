@@ -39,7 +39,7 @@ class SagaConformanceRunnerContractTest extends TestCase
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
 
         $this->assertStringContainsString(
-            'Usage: sagas-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--keep-run-root]',
+            'Usage: sagas-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--keep-run-root[=1|true]]',
             $source,
             'the published runner contract must document both result directory flag forms',
         );
@@ -52,6 +52,16 @@ class SagaConformanceRunnerContractTest extends TestCase
             'result_dir="${1#--result-dir=}"',
             $source,
             'the equals-form result directory must be parsed before prerequisite checks run',
+        );
+        $this->assertStringContainsString(
+            '--keep-run-root=*)',
+            $source,
+            'host runners may pass boolean runner flags in equals form without blocking before evidence can be written',
+        );
+        $this->assertStringContainsString(
+            'if [[ "$keep_run_root" == "true" ]]; then',
+            $source,
+            'true-valued equals-form runner flags must preserve the run root instead of parsing as false',
         );
     }
 
@@ -152,9 +162,19 @@ class SagaConformanceRunnerContractTest extends TestCase
             'resolved pins must use the saga manifest artifact key for the PHP workflow package',
         );
         $this->assertStringContainsString(
+            '"workflow": workflow_version',
+            $source,
+            'resolved pins must also publish the platform release artifact key used by coverage comparison',
+        );
+        $this->assertStringContainsString(
             '"workflow-php": "packagist"',
             $source,
             'artifact sources must use the same manifest key as published artifact versions',
+        );
+        $this->assertStringContainsString(
+            '"workflow": "packagist"',
+            $source,
+            'artifact sources must include the platform release artifact alias for coverage comparison',
         );
         $this->assertStringContainsString(
             '["workflow-php"])',
@@ -167,19 +187,14 @@ class SagaConformanceRunnerContractTest extends TestCase
             'run metadata must emit workflow-php in published_artifact_versions',
         );
         $this->assertStringContainsString(
-            '("server","cli","workflow-php","sdk-python","waterline")',
-            $source,
-            'blocked results must preserve the canonical saga artifact key set',
-        );
-        $this->assertStringNotContainsString(
-            '"workflow": workflow_version',
-            $source,
-            'resolved pins must not publish the legacy workflow key as the canonical PHP workflow artifact',
-        );
-        $this->assertStringNotContainsString(
             '"workflow": pins["workflow"]',
             $source,
-            'run metadata must not emit the legacy workflow artifact key',
+            'run metadata must also emit workflow in published_artifact_versions for release coverage',
+        );
+        $this->assertStringContainsString(
+            '("server","cli","workflow","workflow-php","sdk-python","waterline")',
+            $source,
+            'blocked results must preserve both the platform release key and saga runtime key for the PHP package',
         );
     }
 
