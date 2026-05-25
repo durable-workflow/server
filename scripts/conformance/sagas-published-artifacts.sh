@@ -739,7 +739,9 @@ if [[ ! -x "$run_root/cli/bin/dw" ]]; then
   exit 1
 fi
 docker run --rm -v "$run_root/waterline:/app" composer:2 \
-  composer require --no-interaction --no-progress "durable-workflow/waterline:$waterline_version"
+  composer require --no-interaction --no-progress \
+    "durable-workflow/workflow:$workflow_version" \
+    "durable-workflow/waterline:$waterline_version"
 
 python3 - "$run_root/pins.json" "$result_dir/server-image-digest.txt" "$result_dir/run-metadata.json" "$saga_suite_version" <<'PY'
 from __future__ import annotations

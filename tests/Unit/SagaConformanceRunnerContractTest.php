@@ -340,6 +340,22 @@ class SagaConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_waterline_install_verification_pins_matching_workflow_artifact(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            "\"durable-workflow/workflow:\$workflow_version\" \\\n    \"durable-workflow/waterline:\$waterline_version\"",
+            $source,
+            'the Waterline install check must root-pin the matching alpha workflow artifact instead of leaving it as a transitive unstable dependency',
+        );
+        $this->assertStringNotContainsString(
+            "composer require --no-interaction --no-progress \"durable-workflow/waterline:\$waterline_version\"",
+            $source,
+            'the Waterline install check must not require Waterline alone in a fresh Composer root',
+        );
+    }
+
     public function test_non_pass_findings_include_routable_contract_fields(): void
     {
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
