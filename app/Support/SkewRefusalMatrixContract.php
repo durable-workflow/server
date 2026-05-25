@@ -31,11 +31,22 @@ final class SkewRefusalMatrixContract
             'version' => self::VERSION,
             'result_schema' => self::RESULT_SCHEMA,
             'result_version' => self::RESULT_VERSION,
+            'fixture_category' => 'skew_refusal_matrix_contract',
             'platform_conformance_suite_authority' => PlatformConformanceSuite::SCHEMA,
             'artifact_policy' => [
                 'version_source' => 'latest_published_artifacts_at_run_time',
                 'version_requirement' => 'concrete_published_versions_pinned_at_run_time',
                 'placeholder_versions_rejected' => true,
+                'placeholder_version_examples' => [
+                    'latest',
+                    'current',
+                    'head',
+                    'unresolved',
+                    'placeholder',
+                    '<latest>',
+                    '${VERSION}',
+                    '{{ version }}',
+                ],
                 'required_artifacts' => [
                     'server',
                     'cli',
@@ -179,6 +190,8 @@ final class SkewRefusalMatrixContract
                 'cluster_info_probe' => [
                     'requests' => ['GET /api/cluster/info'],
                     'evidence' => [
+                        'request',
+                        'status',
                         'status_code',
                         'response_body',
                         'client_or_observer_version',
@@ -189,13 +202,18 @@ final class SkewRefusalMatrixContract
                 'workflow_control_plane' => [
                     'requests' => [
                         'POST /api/workflows',
-                        'GET /api/workflows/{id}',
-                        'GET /api/workflows/{id}/history',
-                        'POST /api/workflows/{id}/signals',
-                        'POST /api/workflows/{id}/queries',
-                        'POST /api/workflows/{id}/updates',
-                        'POST /api/workflows/{id}/cancel',
-                        'POST /api/workflows/{id}/terminate',
+                        'GET /api/workflows/{workflowId}',
+                        'GET /api/workflows/{workflowId}/runs',
+                        'GET /api/workflows/{workflowId}/runs/{runId}',
+                        'GET /api/workflows/{workflowId}/runs/{runId}/history',
+                        'POST /api/workflows/{workflowId}/signal/{signalName}',
+                        'POST /api/workflows/{workflowId}/query/{queryName}',
+                        'POST /api/workflows/{workflowId}/update/{updateName}',
+                        'POST /api/workflows/{workflowId}/runs/{runId}/signal/{signalName}',
+                        'POST /api/workflows/{workflowId}/runs/{runId}/query/{queryName}',
+                        'POST /api/workflows/{workflowId}/runs/{runId}/update/{updateName}',
+                        'POST /api/workflows/{workflowId}/cancel',
+                        'POST /api/workflows/{workflowId}/terminate',
                     ],
                     'evidence' => self::wireEvidenceFields(),
                 ],
@@ -230,7 +248,8 @@ final class SkewRefusalMatrixContract
                         'screenshot_or_dom_snapshot',
                         'server_version',
                         'waterline_version',
-                        'classification',
+                        'status',
+                        'waterline_skew_classification',
                     ],
                 ],
             ],
@@ -270,6 +289,7 @@ final class SkewRefusalMatrixContract
                 'all_required_surfaces_required' => true,
                 'all_pairing_classes_required_per_surface' => true,
                 'all_operation_groups_required_per_surface' => true,
+                'all_advertised_requests_required_per_operation_group' => true,
                 'runner_blocked_outcome' => 'non_passing_runner_blocked',
                 'uncovered_surface_outcome' => 'non_passing_not_covered',
                 'compatible_pairs_must_pass' => true,
@@ -278,6 +298,7 @@ final class SkewRefusalMatrixContract
                 'silent_failure_is_blocking' => true,
                 'corrupt_is_blocking' => true,
             ],
+            'result_gate' => SkewRefusalMatrixResultGate::spec(),
             'finding_policy' => [
                 'silent_success' => [
                     'severity' => 'blocker',
@@ -308,6 +329,16 @@ final class SkewRefusalMatrixContract
                     'severity' => 'tracking',
                     'route_to' => 'surface_owner',
                     'requires_acceptance' => true,
+                ],
+                'required_for_non_pass' => [
+                    'owning_surface',
+                    'artifact_versions',
+                    'pairing_class',
+                    'operation_group',
+                    'observed_behavior',
+                    'expected_behavior',
+                    'request_response_evidence',
+                    'next_acceptance_criterion',
                 ],
             ],
         ];
@@ -342,7 +373,7 @@ final class SkewRefusalMatrixContract
             'client_or_worker_version',
             'server_version',
             'compatibility_window',
-            'classification',
+            'status',
         ];
     }
 }

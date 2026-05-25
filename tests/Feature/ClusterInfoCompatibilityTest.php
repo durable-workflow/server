@@ -246,6 +246,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'version',
                     'result_schema',
                     'result_version',
+                    'fixture_category',
                     'platform_conformance_suite_authority',
                     'artifact_policy',
                     'status_taxonomy',
@@ -255,6 +256,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'worker_skew_classification',
                     'waterline_skew_classification',
                     'coverage_gate',
+                    'result_gate',
                     'finding_policy',
                 ],
                 'worker_versioning_runtime_contract' => [

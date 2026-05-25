@@ -20,6 +20,7 @@ use App\Support\SchedulesRuntimeResultGate;
 use App\Support\SignalQueryRuntimeContract;
 use App\Support\SignalQueryRuntimeResultGate;
 use App\Support\SkewRefusalMatrixContract;
+use App\Support\SkewRefusalMatrixResultGate;
 use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkerVersioningRuntimeResultGate;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -314,11 +315,26 @@ class ClusterInfoTest extends TestCase
 
         $this->assertSame(['register_and_drop'], $contract['worker_skew_classification']['blocking']);
         $this->assertSame(['stale_render'], $contract['waterline_skew_classification']['blocking']);
+        $this->assertTrue($contract['coverage_gate']['all_advertised_requests_required_per_operation_group']);
+        $this->assertContains('request', $contract['operation_groups']['cluster_info_probe']['evidence']);
+        $this->assertContains('status', $contract['operation_groups']['cluster_info_probe']['evidence']);
         $this->assertContains('request_body', $contract['operation_groups']['worker_lifecycle']['evidence']);
+        $this->assertContains('status', $contract['operation_groups']['worker_lifecycle']['evidence']);
         $this->assertContains('response_body', $contract['operation_groups']['workflow_control_plane']['evidence']);
+        $this->assertContains('status', $contract['operation_groups']['workflow_control_plane']['evidence']);
         $this->assertContains(
             'screenshot_or_dom_snapshot',
             $contract['operation_groups']['waterline_render']['evidence'],
+        );
+        $this->assertContains('status', $contract['operation_groups']['waterline_render']['evidence']);
+        $this->assertContains(
+            'waterline_skew_classification',
+            $contract['operation_groups']['waterline_render']['evidence'],
+        );
+        $this->assertSame(SkewRefusalMatrixResultGate::SCHEMA, $contract['result_gate']['schema']);
+        $this->assertContains(
+            'smoke_only_results_remain_non_passing',
+            $contract['result_gate']['pass_requires'],
         );
     }
 

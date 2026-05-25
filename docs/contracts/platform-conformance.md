@@ -169,9 +169,10 @@ category emits a warning and does not block.
   Worker skew is classified as `register_refused`, `register_and_serve`, or
   `register_and_drop`; `register_and_drop` is blocking. Waterline skew is
   classified as `banner`, `render_refused`, or `stale_render`; `stale_render`
-  is blocking. A cluster-info smoke alone remains `non_passing_smoke_only`
-  until every required surface, pairing class, and operation group has current
-  evidence or a linked finding.
+  is blocking. Its result gate rejects cluster-info smoke as passing evidence
+  and requires current published artifact versions, every required surface,
+  every pairing class, every operation group, request/response evidence, and
+  linked findings for any non-pass cell before rollup can count the result.
 - Worker-versioning runtime contract: `GET /api/cluster/info` re-exports
   `worker_versioning_runtime_contract`, schema
   `durable-workflow.v2.worker-versioning-runtime.contract`. It names the
