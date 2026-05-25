@@ -146,6 +146,7 @@ final class NamespaceRuntimeResultGate
                 ],
                 'unscoped_view_authority' => ['unscoped_view_authority', 'unscopedViewAuthority'],
                 'api_captures' => ['api_captures', 'apiCaptures'],
+                'operator_surface_matrix' => ['operator_surface_matrix', 'operatorSurfaceMatrix'],
             ],
         ],
         'search_attribute_schema_and_value_query_isolation' => [
@@ -239,6 +240,7 @@ final class NamespaceRuntimeResultGate
                 'each_pass_scenario_has_observed_outputs',
                 'each_pass_scenario_has_scenario_specific_evidence',
                 'each_pass_scenario_has_concrete_named_evidence_fields',
+                'waterline_operator_visibility_has_scoped_surface_verdicts',
                 'each_non_pass_scenario_has_linked_findings',
                 'run_timestamps_outcome_and_finding_links_are_recorded',
                 'overall_outcome_matches_gate_status',
@@ -341,6 +343,7 @@ final class NamespaceRuntimeResultGate
         array_push($failures, ...self::matrixFailures($result, $contract));
         array_push($failures, ...self::requiredSectionFailures($result, $scenarioResults));
         array_push($failures, ...self::scenarioSpecificEvidenceFailures($result, $scenarioResults));
+        array_push($failures, ...self::semanticEvidenceFailures($result, $scenarioResults));
 
         $smokeSubsetDetected = self::isSmokeSubset($scenarioStatuses, $contract);
         if ($smokeSubsetDetected) {
@@ -979,6 +982,134 @@ final class NamespaceRuntimeResultGate
     }
 
     /**
+     * @param array<string, mixed> $result
+     * @param array<string, array<string, mixed>> $scenarioResults
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function semanticEvidenceFailures(array $result, array $scenarioResults): array
+    {
+        $failures = [];
+
+        if (self::isPassScenario($scenarioResults, 'waterline_operator_namespace_visibility')) {
+            array_push(
+                $failures,
+                ...self::waterlineEvidenceFailures(
+                    self::scenarioEvidenceSection(
+                        $result,
+                        $scenarioResults['waterline_operator_namespace_visibility'],
+                        'waterline_operator_visibility',
+                    ) ?? [],
+                ),
+            );
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $section
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function waterlineEvidenceFailures(array $section): array
+    {
+        $matrix = self::firstArrayField($section, ['operator_surface_matrix', 'operatorSurfaceMatrix']);
+        if ($matrix === null) {
+            return [[
+                'code' => 'missing_waterline_operator_surface_matrix',
+                'scenario_id' => 'waterline_operator_namespace_visibility',
+            ]];
+        }
+
+        $failures = [];
+        foreach ([
+            'tenant_a' => 'tenant-a',
+            'tenant_b' => 'tenant-b',
+        ] as $tenantKey => $expectedNamespace) {
+            $tenant = self::pathArray($matrix, ['tenant_scoped_surfaces', $tenantKey])
+                ?? self::pathArray($matrix, ['tenantScopedSurfaces', $tenantKey]);
+
+            if ($tenant === null) {
+                $failures[] = [
+                    'code' => 'missing_waterline_tenant_surface_verdict',
+                    'scenario_id' => 'waterline_operator_namespace_visibility',
+                    'tenant' => $tenantKey,
+                ];
+                continue;
+            }
+
+            $namespace = self::stringValue($tenant['namespace'] ?? null);
+            if ($namespace === '') {
+                $failures[] = [
+                    'code' => 'missing_waterline_tenant_surface_namespace',
+                    'scenario_id' => 'waterline_operator_namespace_visibility',
+                    'tenant' => $tenantKey,
+                ];
+            } elseif ($namespace !== $expectedNamespace) {
+                $failures[] = [
+                    'code' => 'mismatched_waterline_tenant_surface_namespace',
+                    'scenario_id' => 'waterline_operator_namespace_visibility',
+                    'tenant' => $tenantKey,
+                    'expected_namespace' => $expectedNamespace,
+                    'actual_namespace' => $namespace,
+                ];
+            }
+
+            foreach ([
+                'active_namespace_visible',
+                'workflow_list_scoped',
+                'workflow_detail_scoped',
+                'schedule_list_scoped',
+                'schedule_detail_scoped',
+                'search_attribute_values_scoped',
+                'operator_api_scoped',
+                'api_captures_scoped',
+            ] as $field) {
+                if (($tenant[$field] ?? null) === true) {
+                    continue;
+                }
+
+                $failures[] = [
+                    'code' => 'waterline_operator_surface_verdict_failed',
+                    'scenario_id' => 'waterline_operator_namespace_visibility',
+                    'tenant' => $tenantKey,
+                    'field' => $field,
+                ];
+            }
+        }
+
+        $unscoped = self::pathArray($matrix, ['unscoped_authority'])
+            ?? self::pathArray($matrix, ['unscopedAuthority']);
+        if ($unscoped === null) {
+            $failures[] = [
+                'code' => 'missing_waterline_unscoped_authority_verdict',
+                'scenario_id' => 'waterline_operator_namespace_visibility',
+            ];
+        } else {
+            foreach ([
+                'documented_cluster_authority',
+                'dashboard_cluster_authority_visible',
+                'workflow_list_cluster_authority',
+                'schedule_list_cluster_authority',
+                'operator_api_cluster_authority',
+            ] as $field) {
+                if (($unscoped[$field] ?? null) === true) {
+                    continue;
+                }
+
+                $failures[] = [
+                    'code' => 'waterline_unscoped_authority_verdict_failed',
+                    'scenario_id' => 'waterline_operator_namespace_visibility',
+                    'field' => $field,
+                ];
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
      * @param array<string, array<string, mixed>> $scenarioResults
      */
     private static function isPassScenario(array $scenarioResults, string $scenarioId): bool
@@ -1158,6 +1289,43 @@ final class NamespaceRuntimeResultGate
         }
 
         return false;
+    }
+
+    /**
+     * @param array<mixed> $value
+     * @param list<string> $fields
+     *
+     * @return array<mixed>|null
+     */
+    private static function firstArrayField(array $value, array $fields): ?array
+    {
+        foreach ($fields as $field) {
+            if (isset($value[$field]) && is_array($value[$field])) {
+                return $value[$field];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<mixed> $value
+     * @param list<string> $path
+     *
+     * @return array<mixed>|null
+     */
+    private static function pathArray(array $value, array $path): ?array
+    {
+        $cursor = $value;
+        foreach ($path as $segment) {
+            if (! is_array($cursor) || ! isset($cursor[$segment])) {
+                return null;
+            }
+
+            $cursor = $cursor[$segment];
+        }
+
+        return is_array($cursor) ? $cursor : null;
     }
 
     private static function nonEmptyValue(mixed $value): bool

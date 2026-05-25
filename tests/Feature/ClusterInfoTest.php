@@ -569,6 +569,14 @@ class ClusterInfoTest extends TestCase
         $this->assertContains('nexus_explicit_cross_namespace_invocation', $contract['required_scenarios']);
         $this->assertContains('waterline_operator_namespace_visibility', $contract['required_scenarios']);
         $this->assertContains(
+            'waterline-operator-namespace-shard',
+            $contract['host_runner_contract']['required_execution_scopes'],
+        );
+        $this->assertSame(
+            'waterline:namespace-conformance',
+            $contract['host_runner_contract']['runtime_shards']['waterline']['artisan_command'],
+        );
+        $this->assertContains(
             'search_attribute_value_query_isolation_reported',
             $contract['coverage_gate']['passing_outcome_requires'],
         );

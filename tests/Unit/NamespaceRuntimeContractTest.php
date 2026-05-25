@@ -97,6 +97,7 @@ class NamespaceRuntimeContractTest extends TestCase
             'php_worker_behavior_reported',
             'schedule_namespace_isolation_reported',
             'waterline_operator_visibility_reported',
+            'waterline_operator_surface_verdicts_reported',
             'search_attribute_value_query_isolation_reported',
             'namespace_lifecycle_cleanup_reported',
             'nexus_cross_namespace_behavior_reported',
@@ -116,12 +117,20 @@ class NamespaceRuntimeContractTest extends TestCase
             $manifest['scenario_requirements']['schedule_namespace_isolation']['evidence'],
         );
         $this->assertSame(
-            ['tenant_a_scoped_views', 'tenant_b_scoped_views', 'detail_namespace_identity', 'unscoped_view_authority', 'api_captures'],
+            ['tenant_a_scoped_views', 'tenant_b_scoped_views', 'detail_namespace_identity', 'unscoped_view_authority', 'api_captures', 'operator_surface_matrix'],
             $manifest['scenario_requirements']['waterline_operator_namespace_visibility']['evidence'],
         );
         $this->assertSame(
             ['refused_names', 'typed_errors', 'valid_control_name_accepted', 'stored_namespace_names'],
             $manifest['scenario_requirements']['reserved_namespace_name_refusal']['evidence'],
+        );
+        $this->assertContains(
+            'waterline-operator-namespace-shard',
+            $manifest['host_runner_contract']['required_execution_scopes'],
+        );
+        $this->assertSame(
+            'waterline:namespace-conformance',
+            $manifest['host_runner_contract']['runtime_shards']['waterline']['artisan_command'],
         );
     }
 
@@ -145,6 +154,10 @@ class NamespaceRuntimeContractTest extends TestCase
         );
         $this->assertContains(
             'each_pass_scenario_has_concrete_named_evidence_fields',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'waterline_operator_visibility_has_scoped_surface_verdicts',
             $resultGate['pass_requires'],
         );
         $this->assertSame('non_passing', $resultGate['smoke_subset_outcome']);
@@ -304,6 +317,76 @@ class NamespaceRuntimeContractTest extends TestCase
             array_map(
                 static fn (array $failure): array => [$failure['scenario_id'] ?? null, $failure['field'] ?? null],
                 $missingEvidence,
+            ),
+        );
+    }
+
+    public function test_result_gate_requires_waterline_operator_surface_verdicts(): void
+    {
+        $result = $this->completeNamespaceResult();
+        unset($result['waterline_operator_visibility']['operator_surface_matrix']);
+
+        $missing = NamespaceRuntimeResultGate::evaluate($result);
+        $this->assertSame('non_passing', $missing['status']);
+        $this->assertContains(
+            'missing_waterline_operator_surface_matrix',
+            array_column($missing['gate_failures'], 'code'),
+        );
+
+        $result = $this->completeNamespaceResult();
+        $result['waterline_operator_visibility']['operator_surface_matrix']['tenant_scoped_surfaces']['tenant_a']['workflow_list_scoped'] = false;
+        $failed = NamespaceRuntimeResultGate::evaluate($result);
+        $this->assertSame('non_passing', $failed['status']);
+        $this->assertContains(
+            ['waterline_operator_surface_verdict_failed', 'tenant_a', 'workflow_list_scoped'],
+            array_map(
+                static fn (array $failure): array => [
+                    $failure['code'] ?? null,
+                    $failure['tenant'] ?? null,
+                    $failure['field'] ?? null,
+                ],
+                $failed['gate_failures'],
+            ),
+        );
+
+        foreach ([
+            'tenant_a' => ['expected' => 'tenant-a', 'actual' => 'tenant-b'],
+            'tenant_b' => ['expected' => 'tenant-b', 'actual' => 'tenant-a'],
+        ] as $tenantKey => $namespaces) {
+            $result = $this->completeNamespaceResult();
+            $result['waterline_operator_visibility']['operator_surface_matrix']['tenant_scoped_surfaces'][$tenantKey]['namespace'] = $namespaces['actual'];
+            $mismatchedTenant = NamespaceRuntimeResultGate::evaluate($result);
+            $this->assertSame('non_passing', $mismatchedTenant['status']);
+            $this->assertContains(
+                [
+                    'mismatched_waterline_tenant_surface_namespace',
+                    $tenantKey,
+                    $namespaces['expected'],
+                    $namespaces['actual'],
+                ],
+                array_map(
+                    static fn (array $failure): array => [
+                        $failure['code'] ?? null,
+                        $failure['tenant'] ?? null,
+                        $failure['expected_namespace'] ?? null,
+                        $failure['actual_namespace'] ?? null,
+                    ],
+                    $mismatchedTenant['gate_failures'],
+                ),
+            );
+        }
+
+        $result = $this->completeNamespaceResult();
+        $result['waterline_operator_visibility']['operator_surface_matrix']['unscoped_authority']['documented_cluster_authority'] = false;
+        $unscoped = NamespaceRuntimeResultGate::evaluate($result);
+        $this->assertContains(
+            ['waterline_unscoped_authority_verdict_failed', 'documented_cluster_authority'],
+            array_map(
+                static fn (array $failure): array => [
+                    $failure['code'] ?? null,
+                    $failure['field'] ?? null,
+                ],
+                $unscoped['gate_failures'],
             ),
         );
     }
@@ -497,6 +580,19 @@ class NamespaceRuntimeContractTest extends TestCase
                         'workflow_list' => ['path' => '/api/flows/completed', 'status' => 200],
                     ],
                 ],
+                'operator_surface_matrix' => [
+                    'tenant_scoped_surfaces' => [
+                        'tenant_a' => $this->waterlineTenantSurfaceMatrix('tenant-a'),
+                        'tenant_b' => $this->waterlineTenantSurfaceMatrix('tenant-b'),
+                    ],
+                    'unscoped_authority' => [
+                        'documented_cluster_authority' => true,
+                        'dashboard_cluster_authority_visible' => true,
+                        'workflow_list_cluster_authority' => true,
+                        'schedule_list_cluster_authority' => true,
+                        'operator_api_cluster_authority' => true,
+                    ],
+                ],
             ],
             'search_attribute_value_query_isolation' => [
                 'schema_isolation' => true,
@@ -563,6 +659,24 @@ class NamespaceRuntimeContractTest extends TestCase
                 'recorded' => true,
                 'scenario' => $scenario,
             ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function waterlineTenantSurfaceMatrix(string $namespace): array
+    {
+        return [
+            'namespace' => $namespace,
+            'active_namespace_visible' => true,
+            'workflow_list_scoped' => true,
+            'workflow_detail_scoped' => true,
+            'schedule_list_scoped' => true,
+            'schedule_detail_scoped' => true,
+            'search_attribute_values_scoped' => true,
+            'operator_api_scoped' => true,
+            'api_captures_scoped' => true,
         ];
     }
 }
