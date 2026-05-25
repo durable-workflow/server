@@ -61,6 +61,12 @@ required saga scenario reported as `pass`, `fail`, `unsupported`,
 `not_covered`, or `runner_blocked`; a partial or runner-blocked run is
 therefore non-passing instead of being recorded as green.
 
+Migration upgrade coverage is deliberately outside this server claim while
+the public platform conformance suite omits a migration category. A future
+server claim for that coverage must point at a downloadable public scenario
+manifest and published-artifact result records; runner-blocked migration
+records remain non-passing.
+
 ## Release gate
 
 A release of `durable-workflow/server` must produce a passing harness
