@@ -663,6 +663,14 @@ identity only; CLI and SDK compatibility must be decided from
 `worker_protocol.version`. Unknown, missing, or undiscoverable protocol
 manifests should fail closed.
 
+The same cluster-info response publishes `skew_refusal_matrix_contract`, a
+machine-readable matrix for published-artifact compatibility checks. It names
+the required CLI, Python SDK, PHP worker, and Waterline pairings, the compatible
+and intentionally skewed version classes, the allowed worker and Waterline
+classifications, and the wire evidence a conformance run must capture before a
+skew result can pass. Smoke-only compatibility evidence is explicitly
+non-passing under that contract.
+
 ### Worker Protocol
 - `POST /api/worker/register` — Register a worker
 - `POST /api/worker/heartbeat` — Worker fleet heartbeat (free task slots, basic process metrics)

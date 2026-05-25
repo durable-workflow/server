@@ -17,6 +17,7 @@ use App\Support\SchedulesRuntimeContract;
 use App\Support\SchedulesRuntimeResultGate;
 use App\Support\SignalQueryRuntimeContract;
 use App\Support\SignalQueryRuntimeResultGate;
+use App\Support\SkewRefusalMatrixContract;
 use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkerVersioningRuntimeResultGate;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -281,6 +282,41 @@ class ClusterInfoTest extends TestCase
         $this->assertContains(
             'each_pass_scenario_has_scenario_specific_evidence',
             $contract['result_gate']['pass_requires'],
+        );
+    }
+
+    public function test_it_publishes_the_skew_refusal_matrix_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('capabilities.skew_refusal_matrix_contract', true)
+            ->assertJsonPath('skew_refusal_matrix_contract.schema', SkewRefusalMatrixContract::SCHEMA)
+            ->assertJsonPath('skew_refusal_matrix_contract.version', SkewRefusalMatrixContract::VERSION)
+            ->assertJsonPath(
+                'skew_refusal_matrix_contract.coverage_gate.smoke_only_outcome',
+                'non_passing_smoke_only',
+            );
+
+        $contract = $response->json('skew_refusal_matrix_contract');
+        $this->assertIsArray($contract);
+        foreach (['server', 'cli', 'sdk-python', 'workflow', 'waterline'] as $artifact) {
+            $this->assertContains($artifact, $contract['artifact_policy']['required_artifacts']);
+        }
+        foreach (['cli', 'sdk-python', 'workflow-worker', 'waterline'] as $surface) {
+            $this->assertArrayHasKey($surface, $contract['required_surfaces']);
+            $this->assertSame(
+                ['compatible', 'backward_skew', 'forward_skew', 'outside_window'],
+                $contract['required_surfaces'][$surface]['required_pairing_classes'],
+            );
+        }
+
+        $this->assertSame(['register_and_drop'], $contract['worker_skew_classification']['blocking']);
+        $this->assertSame(['stale_render'], $contract['waterline_skew_classification']['blocking']);
+        $this->assertContains('request_body', $contract['operation_groups']['worker_lifecycle']['evidence']);
+        $this->assertContains('response_body', $contract['operation_groups']['workflow_control_plane']['evidence']);
+        $this->assertContains(
+            'screenshot_or_dom_snapshot',
+            $contract['operation_groups']['waterline_render']['evidence'],
         );
     }
 

@@ -22,8 +22,8 @@ The server claims three targets from the suite's matrix:
 
 ## Fixture sources served by this repo
 
-The fixture catalog in the suite manifest names server-owned surfaces
-as source material for eight categories:
+The server publishes or serves source material for these conformance
+categories and runtime contracts:
 
 | Category | Source path | Status |
 | --- | --- | --- |
@@ -32,17 +32,15 @@ as source material for eight categories:
 | `search_attribute_runtime_contract` (server side) | `GET /api/cluster/info`'s `search_attribute_runtime_contract` manifest, the search-attribute control-plane routes, workflow start metadata, workflow-task upsert command, workflow list query parser, and operator visibility surfaces | stable |
 | `schedules_runtime_contract` (server side) | `GET /api/cluster/info`'s `schedules_runtime_contract` manifest, the schedule control-plane routes, scheduler tick entrypoint, schedule history, CLI/SDK/PHP client surfaces, and cross-language dispatch behavior | stable |
 | `child_workflow_runtime_contract` (server side) | `GET /api/cluster/info`'s `child_workflow_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/child-workflow-runtime-scenarios.json`, plus the child scheduling, completion, failure, cancellation, replay, fan-out, and namespace behavior recorded by the worker protocol and history surfaces | stable |
+| `skew_refusal_matrix_contract` (server side) | `GET /api/cluster/info`'s `skew_refusal_matrix_contract` manifest, the CLI/Python/PHP worker/Waterline version-pair matrix, worker registration skew classifications, Waterline render classifications, and request/response evidence requirements for skewed operations | stable |
 | `worker_versioning_runtime_contract` (server side) | `GET /api/cluster/info`'s `worker_versioning_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/worker-versioning-runtime-scenarios.json`, worker registration/build-id rollout APIs, workflow start pinning, compatible polling, history/visibility pin surfaces, and CLI/Waterline operator visibility | stable |
 | `namespace_runtime_contract` (server side) | the public scenario manifest at `static/platform-conformance/namespace-runtime-scenarios.json`, plus namespace, workflow, worker, schedule, search-attribute, Nexus, and operator routes documented in the protocol catalog | stable |
 | `failure_repair_actionability` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, plus the artifact objects published from `GET /api/cluster/info`'s `worker_protocol.external_task_result_contract.fixtures` | stable |
 
-The other categories the server is graded against
-(`control_plane_request_response`, `signal_query_runtime_contract`,
-`search_attribute_runtime_contract`, `namespace_runtime_contract`,
-`child_workflow_runtime_contract`, `saga_runtime_contract`,
-`worker_versioning_runtime_contract`, and `history_replay_bundles`) live
-in the `cli`, `sdk-python`, `workflow`, and `durable-workflow.github.io`
-repositories and are loaded by the harness from there.
+Several categories the server is graded against also span client,
+runtime, observer, and documentation behavior in the `cli`, `sdk-python`,
+`workflow`, and `durable-workflow.github.io` repositories. The harness
+loads those companion fixtures alongside the server-owned manifests.
 
 The server repo also ships a source-free saga runner at
 `scripts/conformance/sagas-published-artifacts.sh`. Host conformance
@@ -143,6 +141,19 @@ category emits a warning and does not block.
   remains non-passing; every declared outcome alias (`outcome`, `status`,
   `verdict`) and the evaluated gate status must agree before rollup can
   count the evidence as passing.
+- Skew-refusal matrix contract: `GET /api/cluster/info` re-exports
+  `skew_refusal_matrix_contract`, schema
+  `durable-workflow.v2.skew-refusal-matrix.contract`. It names the
+  published-artifact install policy, required CLI, Python SDK, PHP worker,
+  and Waterline surfaces, compatible/backward-skew/forward-skew/outside-window
+  pairing classes, workflow, worker, schedule, cluster-info, and Waterline
+  operation groups, and the wire evidence required for every skewed operation.
+  Worker skew is classified as `register_refused`, `register_and_serve`, or
+  `register_and_drop`; `register_and_drop` is blocking. Waterline skew is
+  classified as `banner`, `render_refused`, or `stale_render`; `stale_render`
+  is blocking. A cluster-info smoke alone remains `non_passing_smoke_only`
+  until every required surface, pairing class, and operation group has current
+  evidence or a linked finding.
 - Worker-versioning runtime contract: `GET /api/cluster/info` re-exports
   `worker_versioning_runtime_contract`, schema
   `durable-workflow.v2.worker-versioning-runtime.contract`. It names the

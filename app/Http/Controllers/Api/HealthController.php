@@ -20,6 +20,7 @@ use App\Support\ServerReadiness;
 use App\Support\ServerTopology;
 use App\Support\SchedulesRuntimeContract;
 use App\Support\SignalQueryRuntimeContract;
+use App\Support\SkewRefusalMatrixContract;
 use App\Support\TaskQueueBuildIdRolloutSnapshot;
 use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkerProtocol;
@@ -126,6 +127,7 @@ class HealthController
             'search_attribute_runtime_contract' => true,
             'schedules_runtime_contract' => true,
             'child_workflow_runtime_contract' => true,
+            'skew_refusal_matrix_contract' => true,
             'worker_versioning_runtime_contract' => true,
             'embedded_v2_import' => $embeddedV2ImportAvailable,
             'payload_codecs' => CodecRegistry::universal(),
@@ -173,6 +175,7 @@ class HealthController
             'search_attribute_runtime_contract' => SearchAttributeRuntimeContract::manifest(),
             'schedules_runtime_contract' => SchedulesRuntimeContract::manifest(),
             'child_workflow_runtime_contract' => ChildWorkflowRuntimeContract::manifest(),
+            'skew_refusal_matrix_contract' => SkewRefusalMatrixContract::manifest(),
             'worker_versioning_runtime_contract' => WorkerVersioningRuntimeContract::manifest(),
             'namespace_runtime_contract' => NamespaceRuntimeContract::manifest(),
             'auth_composition_contract' => AuthCompositionContract::manifest(),

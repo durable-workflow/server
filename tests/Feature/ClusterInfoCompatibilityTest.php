@@ -12,6 +12,7 @@ use App\Support\NamespaceRuntimeContract;
 use App\Support\SearchAttributeRuntimeContract;
 use App\Support\ServerTopology;
 use App\Support\SignalQueryRuntimeContract;
+use App\Support\SkewRefusalMatrixContract;
 use App\Support\WorkerVersioningRuntimeContract;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -60,6 +61,8 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'payload_codec_envelope',
                     'payload_codec_envelope_responses',
                     'bridge_adapter_outcome_contract',
+                    'skew_refusal_matrix_contract',
+                    'worker_versioning_runtime_contract',
                     'payload_codecs',
                     'response_compression',
                 ],
@@ -218,6 +221,22 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'result_gate',
                     'finding_policy',
                 ],
+                'skew_refusal_matrix_contract' => [
+                    'schema',
+                    'version',
+                    'result_schema',
+                    'result_version',
+                    'platform_conformance_suite_authority',
+                    'artifact_policy',
+                    'status_taxonomy',
+                    'pairing_classes',
+                    'required_surfaces',
+                    'operation_groups',
+                    'worker_skew_classification',
+                    'waterline_skew_classification',
+                    'coverage_gate',
+                    'finding_policy',
+                ],
                 'worker_versioning_runtime_contract' => [
                     'schema',
                     'version',
@@ -288,6 +307,14 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('control_plane.version', ControlPlaneProtocol::VERSION)
             ->assertJsonPath('worker_protocol.version', WorkerProtocol::VERSION)
             ->assertJsonPath('client_compatibility.authority', 'protocol_manifests')
+            ->assertJsonPath(
+                'client_compatibility.skew_refusal_matrix_contract.schema',
+                SkewRefusalMatrixContract::SCHEMA,
+            )
+            ->assertJsonPath(
+                'client_compatibility.skew_refusal_matrix_contract.cluster_info_path',
+                'skew_refusal_matrix_contract',
+            )
             ->assertJsonPath('surface_stability_contract.schema', SurfaceStabilityContract::SCHEMA)
             ->assertJsonPath('surface_stability_contract.version', SurfaceStabilityContract::VERSION)
             ->assertJsonPath(
@@ -322,6 +349,12 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('child_workflow_runtime_contract.version', ChildWorkflowRuntimeContract::VERSION)
             ->assertJsonPath(
                 'child_workflow_runtime_contract.platform_conformance_suite_authority',
+                PlatformConformanceSuite::SCHEMA,
+            )
+            ->assertJsonPath('skew_refusal_matrix_contract.schema', SkewRefusalMatrixContract::SCHEMA)
+            ->assertJsonPath('skew_refusal_matrix_contract.version', SkewRefusalMatrixContract::VERSION)
+            ->assertJsonPath(
+                'skew_refusal_matrix_contract.platform_conformance_suite_authority',
                 PlatformConformanceSuite::SCHEMA,
             )
             ->assertJsonPath('worker_versioning_runtime_contract.schema', WorkerVersioningRuntimeContract::SCHEMA)
@@ -649,6 +682,10 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('client_compatibility.authority', 'protocol_manifests')
             ->assertJsonPath('client_compatibility.top_level_version_role', 'informational')
             ->assertJsonPath('client_compatibility.fail_closed', true)
+            ->assertJsonPath(
+                'client_compatibility.skew_refusal_matrix_contract.version',
+                SkewRefusalMatrixContract::VERSION,
+            )
             ->assertJsonPath(
                 'client_compatibility.required_protocols.auth_composition.schema',
                 AuthCompositionContract::SCHEMA,

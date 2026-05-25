@@ -34,6 +34,11 @@ final class ClientCompatibility
             'authority' => 'protocol_manifests',
             'top_level_version_role' => 'informational',
             'fail_closed' => true,
+            'skew_refusal_matrix_contract' => [
+                'schema' => SkewRefusalMatrixContract::SCHEMA,
+                'version' => SkewRefusalMatrixContract::VERSION,
+                'cluster_info_path' => 'skew_refusal_matrix_contract',
+            ],
             'required_protocols' => [
                 'auth_composition' => [
                     'schema' => AuthCompositionContract::SCHEMA,
