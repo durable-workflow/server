@@ -360,6 +360,58 @@ class WorkflowControllerDelegationTest extends TestCase
         $terminate->assertJsonMissingPath('command_reason');
     }
 
+    public function test_cancel_noop_success_keeps_gateway_status(): void
+    {
+        WorkflowInstance::query()->create([
+            'id' => 'wf-delegate-cancel-noop',
+            'workflow_class' => 'Tests\\Fixtures\\InteractiveCommandWorkflow',
+            'workflow_type' => 'tests.interactive-command-workflow',
+            'namespace' => 'default',
+            'run_count' => 0,
+        ]);
+
+        $this->mock(WorkflowControlPlane::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('cancel')
+                ->once()
+                ->withArgs(function (
+                    string $workflowId,
+                    array $options,
+                ): bool {
+                    $commandContext = $options['command_context'] ?? null;
+                    $attributes = $commandContext->attributes();
+                    $context = $attributes['context'] ?? [];
+
+                    return $workflowId === 'wf-delegate-cancel-noop'
+                        && ($attributes['source'] ?? null) === 'control_plane'
+                        && (($context['request']['path'] ?? null) === '/api/workflows/wf-delegate-cancel-noop/cancel')
+                        && (($context['server']['command'] ?? null) === 'cancel')
+                        && ($options['namespace'] ?? null) === 'default'
+                        && ($options['strict_configured_type_validation'] ?? null) === true;
+                })
+                ->andReturn([
+                    'accepted' => true,
+                    'workflow_instance_id' => 'wf-delegate-cancel-noop',
+                    'command_status' => 'accepted',
+                    'outcome' => 'cancel_not_needed',
+                    'command_reason' => 'already_terminal',
+                    'status' => 200,
+                ]);
+        });
+
+        $cancel = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-delegate-cancel-noop/cancel');
+
+        $cancel->assertOk()
+            ->assertHeader('X-Durable-Workflow-Control-Plane-Version', '2')
+            ->assertJsonPath('workflow_id', 'wf-delegate-cancel-noop')
+            ->assertJsonPath('control_plane.operation', 'cancel')
+            ->assertJsonPath('outcome', 'cancel_not_needed')
+            ->assertJsonPath('reason', 'already_terminal');
+        $cancel->assertJsonMissingPath('accepted');
+        $cancel->assertJsonMissingPath('workflow_command_id');
+        $cancel->assertJsonMissingPath('command_reason');
+    }
+
     public function test_control_plane_command_endpoints_return_not_found_when_the_gateway_cannot_load_the_workflow(): void
     {
         WorkflowInstance::query()->create([

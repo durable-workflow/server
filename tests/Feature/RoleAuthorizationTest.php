@@ -213,6 +213,51 @@ class RoleAuthorizationTest extends TestCase
             ->assertJsonPath('role', 'admin');
     }
 
+    public function test_legacy_token_becomes_admin_scoped_when_principal_tokens_are_configured(): void
+    {
+        config([
+            'server.auth.driver' => 'token',
+            'server.auth.token' => 'legacy-token',
+            'server.auth.role_tokens' => [
+                'worker' => null,
+                'operator' => null,
+                'admin' => null,
+            ],
+            'server.auth.principal_tokens' => json_encode([
+                [
+                    'token' => 'alice-token',
+                    'subject' => 'alice',
+                    'roles' => ['operator'],
+                ],
+            ]),
+            'server.auth.backward_compatible' => true,
+        ]);
+
+        $this->withHeaders($this->controlHeaders('alice-token'))
+            ->getJson('/api/workflows')
+            ->assertOk();
+
+        $this->withHeaders($this->workerHeaders('alice-token'))
+            ->postJson('/api/worker/heartbeat', [
+                'worker_id' => 'alice-worker',
+            ])
+            ->assertForbidden()
+            ->assertJsonPath('reason', 'forbidden')
+            ->assertJsonPath('role', 'operator');
+
+        $this->withHeaders($this->controlHeaders('legacy-token'))
+            ->getJson('/api/system/retention')
+            ->assertOk();
+
+        $this->withHeaders($this->workerHeaders('legacy-token'))
+            ->postJson('/api/worker/heartbeat', [
+                'worker_id' => 'legacy-admin-diagnostic',
+            ])
+            ->assertForbidden()
+            ->assertJsonPath('reason', 'forbidden')
+            ->assertJsonPath('role', 'admin');
+    }
+
     // ── TD-S049: namespace existence must not leak through role-gated endpoints ──
 
     public function test_wrong_role_token_cannot_observe_namespace_existence_through_workflows(): void

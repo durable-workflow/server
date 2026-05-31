@@ -1,0 +1,137 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "category": "principal_attribution_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 15,
+  "description": "Published-artifact scenarios proving server-derived, non-spoofable principal attribution on workflow history and operator surfaces.",
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "required_top_level_fields": [
+    "published_artifact_versions",
+    "resolved_artifact_versions",
+    "started_at",
+    "finished_at",
+    "generated_at",
+    "outcome",
+    "runner_blocked",
+    "scenario_results",
+    "findings",
+    "topology",
+    "actor_matrix",
+    "history_dumps",
+    "spoofing_attempts",
+    "operator_visibility",
+    "anonymous_observations"
+  ],
+  "worker_terminal_event_policy": {
+    "events": ["WorkflowCompleted", "WorkflowFailed"],
+    "expected_authenticated_worker_principal": {
+      "type": "auth:token",
+      "id": "worker:principal-attribution"
+    },
+    "documented_system_principals": [],
+    "pass_condition": "each worker-caused terminal event principal matches the authenticated worker principal unless a system principal is listed here"
+  },
+  "scenarios": [
+    {
+      "id": "published_artifact_install_only",
+      "title": "Published artifact installation",
+      "required_fields": ["resolved_artifact_versions", "artifact_sources", "local_product_source_checkouts_used"]
+    },
+    {
+      "id": "named_token_actor_matrix",
+      "title": "Named token actor matrix",
+      "required_fields": ["actors", "credentials", "rotation_observations"]
+    },
+    {
+      "id": "start_signal_cancel_spoofing",
+      "title": "Start, signal, cancel, and spoofing attribution",
+      "required_fields": ["history_events", "recorded_principals", "spoofing_attempts"]
+    },
+    {
+      "id": "query_attribution",
+      "title": "Query attribution",
+      "required_fields": ["query_result", "recorded_principal", "history_or_query_task_surface"]
+    },
+    {
+      "id": "completion_failure_attribution",
+      "title": "Completion and failure attribution",
+      "required_fields": ["completion_event_principal", "failure_event_principal", "worker_principal", "expected_worker_principal", "documented_system_principals"]
+    },
+    {
+      "id": "server_originated_events",
+      "title": "Server-originated event classification",
+      "required_fields": ["event_types", "principal_values", "classification"]
+    },
+    {
+      "id": "anonymous_attribution",
+      "title": "Anonymous attribution",
+      "required_fields": ["anonymous_principal", "documented_value", "history_events"]
+    },
+    {
+      "id": "python_sdk_visibility",
+      "title": "Python SDK visibility",
+      "required_fields": ["client_operation", "recorded_principal", "shape_matches_http"]
+    },
+    {
+      "id": "php_client_visibility",
+      "title": "PHP client visibility",
+      "required_fields": ["client_operation", "recorded_principal", "shape_matches_http"]
+    },
+    {
+      "id": "cli_operator_visibility",
+      "title": "CLI operator visibility",
+      "required_fields": ["command", "output_sample", "principal_visible"]
+    },
+    {
+      "id": "waterline_operator_visibility",
+      "title": "Waterline operator visibility",
+      "required_fields": ["surface", "output_sample", "principal_visible"]
+    }
+  ],
+  "scenario_requirements": {
+    "published_artifact_install_only": {
+      "required_fields": ["resolved_artifact_versions", "artifact_sources", "local_product_source_checkouts_used"]
+    },
+    "named_token_actor_matrix": {
+      "required_fields": ["actors", "credentials", "rotation_observations"]
+    },
+    "start_signal_cancel_spoofing": {
+      "required_fields": ["history_events", "recorded_principals", "spoofing_attempts"]
+    },
+    "query_attribution": {
+      "required_fields": ["query_result", "recorded_principal", "history_or_query_task_surface"]
+    },
+    "completion_failure_attribution": {
+      "required_fields": ["completion_event_principal", "failure_event_principal", "worker_principal", "expected_worker_principal", "documented_system_principals"]
+    },
+    "server_originated_events": {
+      "required_fields": ["event_types", "principal_values", "classification"]
+    },
+    "anonymous_attribution": {
+      "required_fields": ["anonymous_principal", "documented_value", "history_events"]
+    },
+    "python_sdk_visibility": {
+      "required_fields": ["client_operation", "recorded_principal", "shape_matches_http"]
+    },
+    "php_client_visibility": {
+      "required_fields": ["client_operation", "recorded_principal", "shape_matches_http"]
+    },
+    "cli_operator_visibility": {
+      "required_fields": ["command", "output_sample", "principal_visible"]
+    },
+    "waterline_operator_visibility": {
+      "required_fields": ["surface", "output_sample", "principal_visible"]
+    }
+  },
+  "host_runner_contract": {
+    "runner_repository": "server",
+    "runner_path": "scripts/conformance/principal-attribution-published-artifacts.sh",
+    "runner_command": "scripts/conformance/principal-attribution-published-artifacts.sh --result-dir <result-dir>"
+  }
+}

@@ -64,6 +64,7 @@
         "existingSecret": { "type": "string" },
         "serverKey":      { "type": "string" },
         "authToken":      { "type": "string" },
+        "principalTokens":{ "type": "string" },
         "workerToken":    { "type": "string" },
         "operatorToken":  { "type": "string" },
         "adminToken":     { "type": "string" },

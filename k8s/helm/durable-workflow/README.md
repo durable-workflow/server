@@ -117,8 +117,9 @@ The three referenced Secrets must contain:
 * **Redis credentials** (only when Redis enforces AUTH): `REDIS_USERNAME`,
   `REDIS_PASSWORD`
 * **app credentials**: `DW_SERVER_KEY`, `DW_WORKER_TOKEN`,
-  `DW_OPERATOR_TOKEN`, `DW_ADMIN_TOKEN`, plus optional `DW_AUTH_TOKEN` when
-  you keep `config.auth.backwardCompatible: true`.
+  `DW_OPERATOR_TOKEN`, `DW_ADMIN_TOKEN`, optional `DW_PRINCIPAL_TOKENS` for
+  named bearer-token principals, plus optional `DW_AUTH_TOKEN` when you keep
+  `config.auth.backwardCompatible: true`.
 
 The chart accepts existing Secret names directly, so it composes cleanly with
 the External Secrets Operator, Vault Secret Operator, Secrets Store CSI
@@ -137,7 +138,7 @@ Driver, or any GitOps secret bridge that produces a Kubernetes `Secret`.
 | `Deployment` (`*-worker`) | Worker pool. Independent scale axis. | `worker.enabled: false` |
 | `CronJob` (`*-scheduler`) | Singleton scheduler/maintenance runner. **`concurrencyPolicy: Forbid`** is enforced — see below. | `scheduler.enabled: false` |
 | `ConfigMap` (`*-config`) | All non-secret config (DB host, Redis host, auth driver, metrics knobs). | Always rendered. |
-| `Secret` (`*-app-secrets`) | Server signing key + role-scoped tokens. | `auth.existingSecret` is set. |
+| `Secret` (`*-app-secrets`) | Server signing key, role-scoped tokens, and named principal token map. | `auth.existingSecret` is set. |
 | `Secret` (`*-database`) | DB username/password. | `externalDatabase.existingSecret` is set. |
 | `Secret` (`*-redis`) | Redis username/password. | `externalRedis.existingSecret` is set or no inline credentials supplied. |
 | `ServiceAccount` (`*`) | Namespace-scoped SA for every workload. | `serviceAccount.create: false` |

@@ -55,6 +55,141 @@ class AuthenticateMiddlewareTest extends TestCase
             ->assertOk();
     }
 
+    public function test_token_driver_accepts_named_principal_tokens(): void
+    {
+        config([
+            'server.auth.driver' => 'token',
+            'server.auth.token' => null,
+            'server.auth.backward_compatible' => false,
+            'server.auth.principal_tokens' => json_encode([
+                [
+                    'token' => 'alice-token',
+                    'subject' => 'alice',
+                    'roles' => ['operator'],
+                    'tenant' => 'tenant-a',
+                    'label' => 'Alice Example',
+                    'claims' => ['scope' => 'workflow.audit'],
+                ],
+            ]),
+        ]);
+
+        $this->withHeaders($this->controlPlaneHeaders([
+            'Authorization' => 'Bearer alice-token',
+            'X-Namespace' => 'default',
+        ]))
+            ->getJson('/api/workflows')
+            ->assertOk();
+    }
+
+    public function test_token_driver_accepts_named_principal_tokens_without_claims(): void
+    {
+        config([
+            'server.auth.driver' => 'token',
+            'server.auth.token' => null,
+            'server.auth.backward_compatible' => false,
+            'server.auth.principal_tokens' => json_encode([
+                [
+                    'token' => 'alice-token',
+                    'subject' => 'alice',
+                    'roles' => ['operator'],
+                    'label' => 'Alice Example',
+                ],
+            ]),
+        ]);
+
+        $this->withHeaders($this->controlPlaneHeaders([
+            'Authorization' => 'Bearer alice-token',
+            'X-Namespace' => 'default',
+        ]))
+            ->getJson('/api/workflows')
+            ->assertOk();
+    }
+
+    public function test_token_driver_accepts_named_principal_tokens_with_empty_claims_object(): void
+    {
+        config([
+            'server.auth.driver' => 'token',
+            'server.auth.token' => null,
+            'server.auth.backward_compatible' => false,
+            'server.auth.principal_tokens' => json_encode([
+                [
+                    'token' => 'alice-token',
+                    'subject' => 'alice',
+                    'roles' => ['operator'],
+                    'label' => 'Alice Example',
+                    'claims' => (object) [],
+                ],
+            ]),
+        ]);
+
+        $this->withHeaders($this->controlPlaneHeaders([
+            'Authorization' => 'Bearer alice-token',
+            'X-Namespace' => 'default',
+        ]))
+            ->getJson('/api/workflows')
+            ->assertOk();
+    }
+
+    public function test_token_driver_rejects_list_shaped_named_principal_token_claims(): void
+    {
+        config([
+            'server.auth.driver' => 'token',
+            'server.auth.token' => null,
+            'server.auth.backward_compatible' => false,
+            'server.auth.principal_tokens' => json_encode([
+                [
+                    'token' => 'alice-token',
+                    'subject' => 'alice',
+                    'roles' => ['operator'],
+                    'claims' => ['workflow.audit'],
+                ],
+            ]),
+        ]);
+
+        $this->withHeaders(['Authorization' => 'Bearer alice-token'])
+            ->getJson('/api/cluster/info')
+            ->assertStatus(500)
+            ->assertJsonPath('reason', 'server_error')
+            ->assertJsonPath('message', 'DW_PRINCIPAL_TOKENS entry 0 claims must be a JSON object, not a list.');
+    }
+
+    public function test_token_driver_rejects_invalid_named_principal_token_config(): void
+    {
+        config([
+            'server.auth.driver' => 'token',
+            'server.auth.token' => null,
+            'server.auth.principal_tokens' => json_encode([
+                ['token' => 'bad-token', 'subject' => 'mallory', 'roles' => ['root']],
+            ]),
+        ]);
+
+        $this->withHeaders(['Authorization' => 'Bearer bad-token'])
+            ->getJson('/api/cluster/info')
+            ->assertStatus(500);
+    }
+
+    public function test_token_driver_redacts_malformed_principal_token_map_entries(): void
+    {
+        $configuredBearer = 'principal-map-entry-value-that-must-stay-redacted';
+
+        config([
+            'server.auth.driver' => 'token',
+            'server.auth.token' => null,
+            'server.auth.backward_compatible' => false,
+            'server.auth.principal_tokens' => json_encode([
+                $configuredBearer => 'not-an-object',
+            ]),
+        ]);
+
+        $response = $this->withHeaders(['Authorization' => 'Bearer '.$configuredBearer])
+            ->getJson('/api/cluster/info')
+            ->assertStatus(500)
+            ->assertJsonPath('reason', 'server_error')
+            ->assertJsonPath('message', 'DW_PRINCIPAL_TOKENS map entry 0 must be an object.');
+
+        $this->assertStringNotContainsString($configuredBearer, $response->getContent());
+    }
+
     public function test_token_driver_rejects_missing_token(): void
     {
         config(['server.auth.driver' => 'token', 'server.auth.token' => 'test-secret-token']);

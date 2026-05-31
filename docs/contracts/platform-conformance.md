@@ -33,6 +33,7 @@ categories and runtime contracts:
 | `schedules_runtime_contract` (server side) | `GET /api/cluster/info`'s `schedules_runtime_contract` manifest, the schedule control-plane routes, scheduler tick entrypoint, schedule history, CLI/SDK/PHP client surfaces, and cross-language dispatch behavior | stable |
 | `child_workflow_runtime_contract` (server side) | `GET /api/cluster/info`'s `child_workflow_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/child-workflow-runtime-scenarios.json`, plus the child scheduling, completion, failure, cancellation, replay, fan-out, and namespace behavior recorded by the worker protocol and history surfaces | stable |
 | `saga_runtime_contract` (server side) | `GET /api/cluster/info`'s `saga_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/saga-runtime-scenarios.json`, and `scripts/conformance/sagas-published-artifacts.sh`, which is the host-runner handoff for published-artifact saga compensation evidence | stable |
+| `principal_attribution_contract` (server side) | `GET /api/cluster/info`'s `principal_attribution_contract` manifest, the public scenario manifest at `static/platform-conformance/principal-attribution-scenarios.json`, and `scripts/conformance/principal-attribution-published-artifacts.sh`, which is the host-runner handoff for source-free principal attribution evidence | stable |
 | `skew_refusal_matrix_contract` (server side) | `GET /api/cluster/info`'s `skew_refusal_matrix_contract` manifest, the CLI/Python/PHP worker/Waterline version-pair matrix, worker registration skew classifications, Waterline render classifications, and request/response evidence requirements for skewed operations | stable |
 | `worker_versioning_runtime_contract` (server side) | `GET /api/cluster/info`'s `worker_versioning_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/worker-versioning-runtime-scenarios.json`, worker registration/build-id rollout APIs, workflow start pinning, compatible polling, history/visibility pin surfaces, and CLI/Waterline operator visibility | stable |
 | `namespace_runtime_contract` (server side) | the public scenario manifest at `static/platform-conformance/namespace-runtime-scenarios.json`, plus namespace, workflow, worker, schedule, search-attribute, Nexus, and operator routes documented in the protocol catalog | stable |
@@ -60,6 +61,17 @@ run database. The script emits
 required saga scenario reported as `pass`, `fail`, `unsupported`,
 `not_covered`, or `runner_blocked`; a partial or runner-blocked run is
 therefore non-passing instead of being recorded as green.
+
+The server repo also ships a source-free principal-attribution runner at
+`scripts/conformance/principal-attribution-published-artifacts.sh`. Host
+conformance runners can discover that handoff from `GET /api/cluster/info`
+under `principal_attribution_contract.host_runner_contract` and invoke it
+against the current published server image plus public CLI, Python SDK, PHP
+workflow, and Waterline packages. Principal-attribution evidence must record
+the server-derived actor for workflow start, signal, query, cancellation,
+completion, failure, anonymous, and server-originated history surfaces, plus
+adversarial payload/header spoofing attempts. Any missing public surface is
+non-passing unless it links a focused root-cause finding.
 
 Migration upgrade coverage is deliberately outside this server claim while
 the public platform conformance suite omits a migration category. A future

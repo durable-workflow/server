@@ -232,6 +232,78 @@ class WorkflowHistoryPrincipalAttributionTest extends TestCase
         }
     }
 
+    public function test_named_principal_tokens_preserve_actor_identity_across_rotation_and_spoof_attempts(): void
+    {
+        Queue::fake();
+
+        config([
+            'server.auth.provider' => null,
+            'server.auth.driver' => 'token',
+            'server.auth.token' => null,
+            'server.auth.backward_compatible' => false,
+            'server.auth.principal_tokens' => json_encode([
+                [
+                    'token' => 'alice-token-v1',
+                    'subject' => 'alice',
+                    'roles' => ['operator'],
+                    'label' => 'Alice',
+                ],
+                [
+                    'token' => 'alice-token-v2',
+                    'subject' => 'alice',
+                    'roles' => ['operator'],
+                    'label' => 'Alice',
+                ],
+                [
+                    'token' => 'bob-token',
+                    'subject' => 'bob',
+                    'roles' => ['operator'],
+                    'label' => 'Bob',
+                ],
+            ]),
+        ]);
+
+        $start = $this->withHeaders($this->bearerHeaders('alice-token-v1'))
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-principal-token-map',
+                'workflow_type' => 'tests.interactive-command-workflow',
+                'principal' => 'mallory',
+            ]);
+
+        $start->assertCreated();
+
+        $this->withHeaders($this->bearerHeaders('bob-token', [
+            'X-Workflow-Principal-Id' => 'mallory',
+            'X-Workflow-Principal-Type' => 'attacker',
+        ]))->postJson('/api/workflows/wf-principal-token-map/signal/advance', [
+            'input' => ['Ada'],
+            'principal' => 'mallory',
+        ])->assertAccepted();
+
+        $this->withHeaders($this->bearerHeaders('alice-token-v2'))
+            ->postJson('/api/workflows/wf-principal-token-map/cancel', [
+                'reason' => 'credential rotated',
+            ])->assertOk();
+
+        $expected = [
+            'start' => 'alice',
+            'signal' => 'bob',
+            'cancel' => 'alice',
+        ];
+
+        foreach ($expected as $type => $principalId) {
+            $command = WorkflowCommand::query()
+                ->where('workflow_instance_id', 'wf-principal-token-map')
+                ->where('command_type', $type)
+                ->latest('command_sequence')
+                ->firstOrFail();
+
+            $this->assertSame($principalId, $command->principalId());
+            $this->assertSame('auth:token', $command->principalType());
+            $this->assertNotSame('mallory', $command->principalId());
+        }
+    }
+
     public function test_history_api_response_surfaces_the_principal_at_event_top_level(): void
     {
         Queue::fake();
@@ -281,5 +353,18 @@ class WorkflowHistoryPrincipalAttributionTest extends TestCase
         }
 
         return array_merge($headers, $extra);
+    }
+
+    /**
+     * @param  array<string, string>  $extra
+     * @return array<string, string>
+     */
+    private function bearerHeaders(string $token, array $extra = []): array
+    {
+        return array_merge([
+            'Authorization' => 'Bearer '.$token,
+            'X-Namespace' => 'default',
+            'X-Durable-Workflow-Control-Plane-Version' => '2',
+        ], $extra);
     }
 }

@@ -152,6 +152,12 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_ADMIN_TOKEN',
         ],
+        'DW_PRINCIPAL_TOKENS' => [
+            'description' => 'JSON token map for named bearer-token principals; each entry supplies token, subject, roles, optional tenant, label, and non-secret claims.',
+            'default' => null,
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_PRINCIPAL_TOKENS',
+        ],
         'DW_WORKER_SIGNATURE_KEY' => [
             'description' => 'HMAC signature key for the worker role (worker registration, poll, heartbeat, completion endpoints) when DW_AUTH_DRIVER=signature.',
             'default' => null,

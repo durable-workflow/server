@@ -289,6 +289,10 @@ not depend on regular resources Helm or Argo create afterward.
 - name: DW_AUTH_TOKEN
   value: {{ .Values.auth.authToken | quote }}
 {{- end }}
+{{- if .Values.auth.principalTokens }}
+- name: DW_PRINCIPAL_TOKENS
+  value: {{ .Values.auth.principalTokens | quote }}
+{{- end }}
 {{- if .Values.auth.workerToken }}
 - name: DW_WORKER_TOKEN
   value: {{ .Values.auth.workerToken | quote }}

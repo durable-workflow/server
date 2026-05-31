@@ -294,6 +294,55 @@ class HealthControllerTest extends TestCase
             ->assertJsonPath('checks.auth.driver', 'token');
     }
 
+    public function test_readiness_check_treats_empty_principal_token_map_as_missing_auth_credential(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        config([
+            'server.auth.driver' => 'token',
+            'server.auth.token' => null,
+            'server.auth.role_tokens' => [],
+            'server.auth.principal_tokens' => '{}',
+        ]);
+
+        $response = $this->getJson('/api/ready');
+
+        $response->assertStatus(503)
+            ->assertJsonPath('status', 'not_ready')
+            ->assertJsonPath('checks.auth.status', 'missing')
+            ->assertJsonPath('checks.auth.driver', 'token');
+    }
+
+    public function test_readiness_check_rejects_malformed_principal_token_config(): void
+    {
+        WorkflowNamespace::query()->create([
+            'name' => 'default',
+            'description' => 'Default namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]);
+
+        config([
+            'server.auth.driver' => 'token',
+            'server.auth.token' => null,
+            'server.auth.role_tokens' => [],
+            'server.auth.principal_tokens' => '{"alice":',
+        ]);
+
+        $response = $this->getJson('/api/ready');
+
+        $response->assertStatus(503)
+            ->assertJsonPath('status', 'not_ready')
+            ->assertJsonPath('checks.auth.status', 'invalid')
+            ->assertJsonPath('checks.auth.driver', 'token')
+            ->assertJsonPath('checks.auth.message', 'DW_PRINCIPAL_TOKENS must be valid JSON.');
+    }
+
     public function test_readiness_check_accepts_custom_auth_provider_without_builtin_credentials(): void
     {
         WorkflowNamespace::query()->create([

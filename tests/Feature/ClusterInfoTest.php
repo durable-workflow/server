@@ -10,6 +10,7 @@ use App\Support\ChildWorkflowRuntimeResultGate;
 use App\Support\CoordinationHealthContract;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NamespaceRuntimeResultGate;
+use App\Support\PrincipalAttributionContract;
 use App\Support\SagaRuntimeContract;
 use App\Support\SagaRuntimeResultGate;
 use App\Support\SearchAttributeRuntimeContract;
@@ -580,6 +581,46 @@ class ClusterInfoTest extends TestCase
         $this->assertContains(
             'runner_blocked_false_for_product_evidence',
             $contract['result_gate']['pass_requires'],
+        );
+    }
+
+    public function test_it_publishes_the_principal_attribution_conformance_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('principal_attribution_contract.schema', PrincipalAttributionContract::SCHEMA)
+            ->assertJsonPath('principal_attribution_contract.version', PrincipalAttributionContract::VERSION)
+            ->assertJsonPath(
+                'principal_attribution_contract.fixture_category',
+                'principal_attribution_contract',
+            )
+            ->assertJsonPath(
+                'principal_attribution_contract.coverage_gate.runner_blocked_outcome',
+                'non_passing_runner_blocked',
+            )
+            ->assertJsonPath(
+                'principal_attribution_contract.host_runner_contract.runner_path',
+                'scripts/conformance/principal-attribution-published-artifacts.sh',
+            );
+
+        $contract = $response->json('principal_attribution_contract');
+        $this->assertIsArray($contract);
+        $this->assertContains('named_token_actor_matrix', $contract['required_scenarios']);
+        $this->assertContains('start_signal_cancel_spoofing', $contract['required_scenarios']);
+        $this->assertContains('completion_failure_attribution', $contract['required_scenarios']);
+        $this->assertContains('cli_operator_visibility', $contract['required_scenarios']);
+        $this->assertContains('waterline_operator_visibility', $contract['required_scenarios']);
+        $this->assertContains(
+            'runner_blocked_false_for_product_evidence',
+            $contract['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertContains(
+            'X-Workflow-Principal-Id',
+            $contract['spoofing_guards']['request_headers'],
+        );
+        $this->assertSame(
+            'required_for_passing_principal_attribution_conformance',
+            $contract['host_runner_contract']['status'],
         );
     }
 
@@ -1906,7 +1947,7 @@ class ClusterInfoTest extends TestCase
 
         $this->getJson('/api/cluster/info')
             ->assertStatus(500)
-            ->assertSee('DW_AUTH_TOKEN is not configured');
+            ->assertSee('DW_AUTH_TOKEN or DW_PRINCIPAL_TOKENS is not configured');
     }
 
     public function test_it_rejects_requests_when_signature_auth_is_enabled_but_key_is_not_configured(): void

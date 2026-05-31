@@ -140,6 +140,7 @@ auth:
   # manager (Vault, AWS Secrets Manager, GCP Secret Manager, etc.).
   serverKey: ""               # DW_SERVER_KEY (base64:...)
   authToken: ""               # DW_AUTH_TOKEN — legacy unscoped token
+  principalTokens: ""         # DW_PRINCIPAL_TOKENS — JSON named-principal token map
   workerToken: ""             # DW_WORKER_TOKEN
   operatorToken: ""           # DW_OPERATOR_TOKEN
   adminToken: ""              # DW_ADMIN_TOKEN

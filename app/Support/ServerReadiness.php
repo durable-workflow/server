@@ -2,6 +2,8 @@
 
 namespace App\Support;
 
+use App\Auth\AuthException;
+use App\Auth\ConfiguredAuthProvider;
 use App\Contracts\AuthProvider;
 use App\Models\WorkflowNamespace;
 use Illuminate\Support\Facades\DB;
@@ -266,13 +268,31 @@ final class ServerReadiness
         if ($driver === 'token') {
             $token = config('server.auth.token');
             $roleTokens = array_filter((array) config('server.auth.role_tokens', []));
+            $backwardCompatible = (bool) config('server.auth.backward_compatible', true);
 
-            return $token || $roleTokens !== []
+            try {
+                $principalTokens = ConfiguredAuthProvider::parsePrincipalTokens(
+                    config('server.auth.principal_tokens'),
+                );
+            } catch (AuthException $exception) {
+                return [
+                    'status' => 'invalid',
+                    'driver' => $driver,
+                    'message' => $exception->getMessage(),
+                    'remediation' => 'Set DW_PRINCIPAL_TOKENS to valid JSON named-principal token entries, or clear it and configure DW_AUTH_TOKEN or role-scoped DW_WORKER_TOKEN/DW_OPERATOR_TOKEN/DW_ADMIN_TOKEN values.',
+                ];
+            }
+
+            $hasLegacyToken = is_string($token) && $token !== '';
+            $hasRoleTokens = $roleTokens !== [];
+            $hasPrincipalTokens = $principalTokens !== [];
+
+            return ($backwardCompatible && $hasLegacyToken) || $hasRoleTokens || $hasPrincipalTokens
                 ? ['status' => 'ok', 'driver' => $driver]
                 : [
                     'status' => 'missing',
                     'driver' => $driver,
-                    'remediation' => 'Set DW_AUTH_TOKEN or role-scoped DW_WORKER_TOKEN/DW_OPERATOR_TOKEN/DW_ADMIN_TOKEN values.',
+                    'remediation' => 'Set DW_AUTH_TOKEN, DW_PRINCIPAL_TOKENS, or role-scoped DW_WORKER_TOKEN/DW_OPERATOR_TOKEN/DW_ADMIN_TOKEN values.',
                 ];
         }
 

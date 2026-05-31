@@ -35,7 +35,8 @@ The manifests expect you to provide:
 
 - an external MySQL or PostgreSQL database;
 - external Redis or another supported lock-capable cache backend;
-- real database, Redis, worker, operator, and admin secrets;
+- real database, Redis, worker, operator, admin, and optional named principal
+  token secrets;
 - an ingress, gateway, or load balancer owned by your cluster platform;
 - backup, restore, monitoring, and rollout procedures for your environment.
 
@@ -61,4 +62,3 @@ this manifest contract does not add automatic cross-region orchestration. Use
 overlays or direct
 patches for namespace, image, resource, replica, ingress, and secret-manager
 integration choices.
-

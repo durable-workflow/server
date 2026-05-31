@@ -1037,6 +1037,20 @@ configured, the legacy token is treated as an admin token and no longer grants
 worker-plane access. Set `DW_AUTH_BACKWARD_COMPATIBLE=false` to
 require role-scoped credentials only.
 
+For audit trails that need stable actor names rather than role labels, set
+`DW_PRINCIPAL_TOKENS` to a JSON object or array. Each entry maps one bearer
+token to a server-derived principal subject and role set; clients cannot
+override these values with request payloads or headers.
+
+```env
+DW_AUTH_DRIVER=token
+DW_AUTH_BACKWARD_COMPATIBLE=false
+DW_PRINCIPAL_TOKENS='[{"token":"alice-v1","subject":"alice","roles":["operator"],"label":"Alice"},{"token":"alice-v2","subject":"alice","roles":["operator"],"label":"Alice"},{"token":"bob-token","subject":"bob","roles":["operator"],"label":"Bob"},{"token":"worker-token","subject":"worker:principal-conformance","roles":["worker"]}]'
+```
+
+The same subject may appear on more than one token, which lets operators
+rotate credentials without changing the recorded principal identity.
+
 ### Signature Authentication
 
 Signature auth supports the same role split with role-scoped HMAC keys:
@@ -1347,6 +1361,7 @@ every operator-facing variable the server honors.
 | `DW_WORKER_TOKEN` | (unset) | Bearer token for worker registration, polling, heartbeat, and completion. |
 | `DW_OPERATOR_TOKEN` | (unset) | Bearer token for the operator control plane and diagnostic worker registration; polling remains worker-only. |
 | `DW_ADMIN_TOKEN` | (unset) | Bearer token for the admin control plane and diagnostic worker registration; polling remains worker-only. |
+| `DW_PRINCIPAL_TOKENS` | (unset) | JSON token map for named bearer-token principals used by audit attribution. |
 | `DW_WORKER_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for worker registration, polling, heartbeat, and completion. |
 | `DW_OPERATOR_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for the operator control plane and diagnostic worker registration; polling remains worker-only. |
 | `DW_ADMIN_SIGNATURE_KEY` | (unset) | Role-scoped HMAC key for the admin control plane and diagnostic worker registration; polling remains worker-only. |

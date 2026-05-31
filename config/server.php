@@ -151,6 +151,7 @@ return [
             'operator' => EnvAuditor::env('DW_OPERATOR_TOKEN', 'WORKFLOW_SERVER_OPERATOR_TOKEN'),
             'admin' => EnvAuditor::env('DW_ADMIN_TOKEN', 'WORKFLOW_SERVER_ADMIN_TOKEN'),
         ],
+        'principal_tokens' => EnvAuditor::env('DW_PRINCIPAL_TOKENS', 'WORKFLOW_SERVER_PRINCIPAL_TOKENS'),
         'role_signature_keys' => [
             'worker' => EnvAuditor::env('DW_WORKER_SIGNATURE_KEY', 'WORKFLOW_SERVER_WORKER_SIGNATURE_KEY'),
             'operator' => EnvAuditor::env('DW_OPERATOR_SIGNATURE_KEY', 'WORKFLOW_SERVER_OPERATOR_SIGNATURE_KEY'),
