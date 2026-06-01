@@ -915,9 +915,9 @@ final class SkewRefusalMatrixContractTest extends TestCase
         $runner = $this->read('scripts/conformance/skew-published-artifacts.mjs');
 
         $this->assertStringContainsString(
-            'matched_proxy_capture: exactCapture',
+            'matched_proxy_capture: matchedCapture',
             $runner,
-            'request/response evidence must be anchored to the exact recording-proxy capture',
+            'request/response evidence must be anchored to a selected recording-proxy capture',
         );
         $this->assertStringContainsString(
             'wire_evidence_gap',
@@ -943,6 +943,63 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'body: body ?? null,',
             $runner,
             'request-response captures must not synthesize request bodies from the runner template',
+        );
+    }
+
+    public function test_skew_runner_counts_guarded_preflight_refusals_for_advertised_operations(): void
+    {
+        $runner = $this->read('scripts/conformance/skew-published-artifacts.mjs');
+
+        $this->assertStringContainsString(
+            'artifact_compatibility_refusal',
+            $runner,
+            'client-side compatibility refusals must be typed so refusal evidence names the skew context',
+        );
+        $this->assertStringContainsString(
+            'selectCompatibilityGuardCapture',
+            $runner,
+            'a refused artifact invocation must attach the guard request/response it actually sent',
+        );
+        $this->assertStringContainsString(
+            "selected_proxy_capture_kind: guardCaptureUsed ? 'guard_refusal_preflight' : 'advertised_operation'",
+            $runner,
+            'guarded refusals must be distinguishable from exact advertised-operation captures',
+        );
+        $this->assertStringContainsString(
+            'evidence.advertised_request',
+            $runner,
+            'guarded refusal rows must still name the advertised operation that was invoked',
+        );
+        $this->assertStringContainsString(
+            'evidence.guard_request',
+            $runner,
+            'guarded refusal rows must expose the real preflight request used as request/response evidence',
+        );
+    }
+
+    public function test_skew_runner_prepares_independent_fixtures_for_dependent_operations(): void
+    {
+        $runner = $this->read('scripts/conformance/skew-published-artifacts.mjs');
+
+        $this->assertStringContainsString(
+            'prepareOperationFixture',
+            $runner,
+            'dependent operation rows must not reuse workflow or schedule state mutated by earlier rows',
+        );
+        $this->assertStringContainsString(
+            'prepareWorkflowFixture',
+            $runner,
+            'workflow describe, signal, cancel, and terminate rows need independent active workflow fixtures',
+        );
+        $this->assertStringContainsString(
+            'prepareScheduleFixture',
+            $runner,
+            'schedule describe and trigger rows need independent schedule fixtures',
+        );
+        $this->assertStringContainsString(
+            'Compatible fixture setup returned HTTP',
+            $runner,
+            'fixture setup failures must be explicit coverage evidence instead of silent compatible-cell failures',
         );
     }
 

@@ -451,7 +451,7 @@ async function probeOperation({
 }) {
   const pairing = pairingClasses[pairingClass];
   const state = pairingState(context, surfaceName, pairingClass);
-  const { method, path: requestPath } = materializeRequest(
+  let { method, path: requestPath } = materializeRequest(
     requestTemplate,
     context.runId,
     state,
@@ -496,6 +496,34 @@ async function probeOperation({
     });
   }
 
+  const fixtureGap = await prepareOperationFixture({
+    surfaceName,
+    pairingClass,
+    operationGroup,
+    requestTemplate,
+    context,
+    state,
+  });
+  ({ method, path: requestPath } = materializeRequest(
+    requestTemplate,
+    context.runId,
+    state,
+  ));
+  if (fixtureGap) {
+    return notCoveredProbe({
+      surfaceName,
+      surface,
+      pairingClass,
+      operationGroup,
+      requestTemplate,
+      method,
+      requestPath,
+      context,
+      status: fixtureGap.status,
+      reason: fixtureGap.reason,
+    });
+  }
+
   const invocation = await invokeSurfaceOperation({
     surfaceName,
     surface,
@@ -528,6 +556,7 @@ async function probeOperation({
   const matchedCapture = invocation.matched_proxy_capture;
   const wireRequest = normalizedCaptureRequest(matchedCapture);
   const wireResponse = normalizedCaptureResponse(matchedCapture);
+  const evidenceRequest = invocation.evidence_request ?? wireRequest;
   const response = invocation.response;
   const protocolGap = protocolEvidenceGap(operationGroup, pairing, wireRequest);
 
@@ -567,7 +596,7 @@ async function probeOperation({
       surface: surfaceName,
       pairing_class: pairingClass,
       operation_group: operationGroup,
-      request: `${wireRequest.method} ${wireRequest.path}`,
+      request: `${evidenceRequest.method} ${evidenceRequest.path}`,
       status,
       status_code: response.status,
       response_body: response.body,
@@ -586,7 +615,7 @@ async function probeOperation({
       surface: surfaceName,
       pairing_class: pairingClass,
       operation_group: operationGroup,
-      request: `${wireRequest.method} ${wireRequest.path}`,
+      request: `${evidenceRequest.method} ${evidenceRequest.path}`,
       response_status: response.status,
       response_body: response.body,
       screenshot_or_dom_snapshot: domSnapshotForWaterline(classification ?? status, response, pairingClass, context),
@@ -605,8 +634,8 @@ async function probeOperation({
       surface: surfaceName,
       pairing_class: pairingClass,
       operation_group: operationGroup,
-      request_method: wireRequest.method,
-      request_path: wireRequest.path,
+      request_method: evidenceRequest.method,
+      request_path: evidenceRequest.path,
       request_headers: wireRequest.headers,
       request_body: wireRequest.body ?? null,
       response_status: response.status,
@@ -619,6 +648,20 @@ async function probeOperation({
       request_response_capture_id: captureId,
       artifact_invocation: invocation.artifact_invocation,
     };
+  }
+
+  if (invocation.guard_proxy_capture) {
+    evidence.guard_request = `${wireRequest.method} ${wireRequest.path}`;
+    evidence.guard_response_status = wireResponse.status;
+    evidence.guard_response_body = wireResponse.body;
+    evidence.wire_request_method = wireRequest.method;
+    evidence.wire_request_path = wireRequest.path;
+    evidence.advertised_request = `${method} ${requestPath}`;
+    capture.advertised_request = {
+      method,
+      path: requestPath,
+    };
+    capture.guard_proxy_capture = invocation.guard_proxy_capture.id;
   }
 
   if (status === 'loud_refuse') {
@@ -968,6 +1011,216 @@ function workflowWorkerDependencyGap({
       'Workflow package availability alone is not live worker coordination.',
     ].filter(Boolean).join(' '),
   };
+}
+
+async function prepareOperationFixture({
+  surfaceName,
+  pairingClass,
+  operationGroup,
+  requestTemplate,
+  context,
+  state,
+}) {
+  if (operationGroup === 'workflow_control_plane') {
+    return prepareWorkflowFixture({
+      surfaceName,
+      pairingClass,
+      requestTemplate,
+      context,
+      state,
+    });
+  }
+
+  if (operationGroup === 'schedule_control_plane') {
+    return prepareScheduleFixture({
+      surfaceName,
+      pairingClass,
+      requestTemplate,
+      context,
+      state,
+    });
+  }
+
+  return null;
+}
+
+async function prepareWorkflowFixture({
+  surfaceName,
+  pairingClass,
+  requestTemplate,
+  context,
+  state,
+}) {
+  if (
+    requestTemplate === 'POST /api/workflows'
+    || workflowWorkerDependentRequests.has(requestTemplate)
+  ) {
+    return null;
+  }
+
+  const fixtureKey = [
+    surfaceName,
+    pairingClass,
+    'workflow',
+    normalizeRequestKey(requestTemplate),
+  ].join('.');
+  context.operationFixtures ??= {};
+  if (context.operationFixtures[fixtureKey]) {
+    Object.assign(state, context.operationFixtures[fixtureKey]);
+    return null;
+  }
+
+  const workflowId = `skew-${context.runId}-${surfaceName.replace(/[^a-z0-9]+/gi, '-')}-${pairingClass}-${normalizeRequestKey(requestTemplate)}`;
+  let response;
+  try {
+    response = await requestJson(
+      context.serverUrl,
+      'POST',
+      '/api/workflows',
+      fixtureHeaders(context),
+      {
+        workflow_type: 'skew_conformance_workflow',
+        workflow_id: workflowId,
+        task_queue: 'skew-conformance',
+        input: [],
+      },
+    );
+  } catch (error) {
+    return {
+      status: 'runner_blocked',
+      reason: `Compatible workflow fixture setup failed before ${requestTemplate}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  if (response.status >= 400 || response.status === 0) {
+    return {
+      status: 'not_covered',
+      reason: [
+        `${requestTemplate} requires an active workflow fixture before the skewed artifact request is invoked.`,
+        `Compatible fixture setup returned HTTP ${response.status}.`,
+      ].join(' '),
+    };
+  }
+
+  const fixture = {
+    workflowId,
+    runId: workflowRunIdFromBody(response.body),
+  };
+  if (requestTemplate.includes('{runId}') && !fixture.runId) {
+    return {
+      status: 'not_covered',
+      reason: `${requestTemplate} requires a workflow fixture run id, but the compatible fixture start response did not report one.`,
+    };
+  }
+
+  context.operationFixtures[fixtureKey] = fixture;
+  Object.assign(state, fixture);
+
+  return null;
+}
+
+async function prepareScheduleFixture({
+  surfaceName,
+  pairingClass,
+  requestTemplate,
+  context,
+  state,
+}) {
+  if (requestTemplate === 'POST /api/schedules') {
+    return null;
+  }
+
+  const fixtureKey = [
+    surfaceName,
+    pairingClass,
+    'schedule',
+    normalizeRequestKey(requestTemplate),
+  ].join('.');
+  context.operationFixtures ??= {};
+  if (context.operationFixtures[fixtureKey]) {
+    Object.assign(state, context.operationFixtures[fixtureKey]);
+    return null;
+  }
+
+  const scheduleId = `schedule-${context.runId}-${surfaceName.replace(/[^a-z0-9]+/gi, '-')}-${pairingClass}-${normalizeRequestKey(requestTemplate)}`;
+  let response;
+  try {
+    response = await requestJson(
+      context.serverUrl,
+      'POST',
+      '/api/schedules',
+      fixtureHeaders(context),
+      {
+        schedule_id: scheduleId,
+        spec: {
+          intervals: [
+            {
+              every: 'PT1M',
+            },
+          ],
+          timezone: 'UTC',
+        },
+        action: {
+          workflow_type: 'skew_conformance_workflow',
+          task_queue: 'skew-conformance',
+          input: [],
+        },
+        overlap_policy: 'skip',
+        paused: true,
+      },
+    );
+  } catch (error) {
+    return {
+      status: 'runner_blocked',
+      reason: `Compatible schedule fixture setup failed before ${requestTemplate}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  if (response.status >= 400 || response.status === 0) {
+    return {
+      status: 'not_covered',
+      reason: [
+        `${requestTemplate} requires a schedule fixture before the skewed artifact request is invoked.`,
+        `Compatible fixture setup returned HTTP ${response.status}.`,
+      ].join(' '),
+    };
+  }
+
+  const fixture = { scheduleId };
+  context.operationFixtures[fixtureKey] = fixture;
+  Object.assign(state, fixture);
+
+  return null;
+}
+
+function fixtureHeaders(context) {
+  return {
+    ...context.baseHeaders,
+    'X-Durable-Workflow-Control-Plane-Version': pairingClasses.compatible.controlPlaneVersion,
+    'X-Durable-Workflow-Protocol-Version': pairingClasses.compatible.workerProtocolVersion,
+  };
+}
+
+function workflowRunIdFromBody(body) {
+  return firstStringValue(
+    body?.run_id,
+    body?.runId,
+    body?.workflow_run_id,
+    body?.workflowRunId,
+    body?.result?.run_id,
+    body?.result?.runId,
+    body?.result?.workflow_run_id,
+    body?.result?.workflowRunId,
+    body?.run?.run_id,
+    body?.run?.runId,
+    body?.run?.id,
+    body?.workflow?.run_id,
+    body?.workflow?.runId,
+    body?.execution?.run_id,
+    body?.execution?.runId,
+    body?.execution?.workflow_run_id,
+    body?.execution?.workflowRunId,
+  );
 }
 
 function liveWorkflowWorkerState() {
@@ -1708,25 +1961,42 @@ async function runArtifactWithProxy({
   const artifactResponse = artifactOutputResponse(surfaceName, operationGroup, stdoutJson);
   const artifactOutputAuthoritative = surfaceName === 'waterline'
     && operationGroup === 'waterline_render';
-  const fallbackReason = exactCapture === null
+  const artifactRefusal = exactCapture === null && pairingClass !== 'compatible'
+    ? artifactCompatibilityRefusalResponse({
+      surfaceName,
+      pairingClass,
+      operationGroup,
+      pairing,
+      processResult: proxyResult.process,
+      stdoutJson,
+    })
+    : null;
+  const guardCapture = artifactRefusal
+    ? selectCompatibilityGuardCapture(proxyResult.captures, pairing, operationGroup)
+    : null;
+  const matchedCapture = exactCapture ?? guardCapture;
+  const guardCaptureUsed = exactCapture === null && guardCapture !== null;
+  const fallbackReason = matchedCapture === null
     ? proxyResult.captures.length > 0
       ? 'advertised_operation_not_observed'
       : 'artifact_did_not_contact_surface'
     : artifactOutputAuthoritative
     ? 'artifact_did_not_report_waterline_render_response'
     : 'artifact_response_unavailable';
-  const fallbackMessage = exactCapture === null
+  const fallbackMessage = matchedCapture === null
     ? proxyResult.captures.length > 0
       ? 'The published artifact contacted the recording proxy, but no captured request matched the advertised operation.'
       : 'The published artifact invocation did not contact the recording proxy for the advertised operation.'
     : artifactOutputAuthoritative
     ? 'The Composer-installed Waterline artifact probe did not emit render response evidence.'
     : 'The matched recording-proxy capture did not include response evidence.';
-  const response = exactCapture === null
+  const response = matchedCapture === null
     ? null
-    : artifactOutputAuthoritative
+    : guardCaptureUsed
+      ? artifactRefusal
+      : artifactOutputAuthoritative
       ? artifactResponse
-      : exactCapture.response;
+      : matchedCapture.response;
   const normalizedResponse = response
     ?? {
     status: 0,
@@ -1744,9 +2014,11 @@ async function runArtifactWithProxy({
 
   updatePairingStateFromResponse(context, surfaceName, pairingClass, normalizedResponse.body);
 
-  const responseSource = exactCapture === null
+  const responseSource = matchedCapture === null
     ? 'no_matched_proxy_capture'
-    : artifactResponse !== null && artifactOutputAuthoritative
+    : guardCaptureUsed
+      ? 'artifact_refusal_guarded_by_proxy_capture'
+      : artifactResponse !== null && artifactOutputAuthoritative
       ? 'artifact_stdout'
       : artifactOutputAuthoritative
         ? 'artifact_stdout_missing'
@@ -1757,8 +2029,15 @@ async function runArtifactWithProxy({
       ...normalizedResponse,
       artifact_exit_code: proxyResult.process.exitCode,
     },
-    matched_proxy_capture: exactCapture,
-    wire_evidence_gap: exactCapture === null
+    matched_proxy_capture: matchedCapture,
+    guard_proxy_capture: guardCaptureUsed ? guardCapture : null,
+    evidence_request: guardCaptureUsed
+      ? {
+        method,
+        path: requestPath,
+      }
+      : null,
+    wire_evidence_gap: matchedCapture === null
       ? {
         status: 'not_covered',
         reason: fallbackMessage,
@@ -1774,13 +2053,89 @@ async function runArtifactWithProxy({
       timed_out: proxyResult.process.timedOut,
       stdout_excerpt: redactKnownSecrets(proxyResult.process.stdout.slice(0, 4000)),
       stderr_excerpt: redactKnownSecrets(proxyResult.process.stderr.slice(0, 4000)),
-      matched_proxy_capture: exactCapture?.id ?? null,
-      selected_proxy_capture: exactCapture?.id ?? null,
+      matched_proxy_capture: matchedCapture?.id ?? null,
+      selected_proxy_capture: matchedCapture?.id ?? null,
+      selected_proxy_capture_kind: guardCaptureUsed ? 'guard_refusal_preflight' : 'advertised_operation',
       response_source: responseSource,
       target_url: targetUrl ?? context.serverUrl,
     },
     proxy_captures: proxyResult.captures,
   };
+}
+
+function artifactCompatibilityRefusalResponse({
+  surfaceName,
+  pairingClass,
+  operationGroup,
+  pairing,
+  processResult,
+  stdoutJson,
+}) {
+  const message = artifactCompatibilityRefusalMessage(stdoutJson, processResult);
+  if (!message) {
+    return null;
+  }
+
+  return {
+    status: 400,
+    headers: {},
+    body: {
+      reason: 'artifact_compatibility_refusal',
+      message,
+      surface: surfaceName,
+      pairing_class: pairingClass,
+      operation_group: operationGroup,
+      compatibility_window: pairing.compatibilityWindow,
+      expected_control_plane_version: pairing.controlPlaneVersion,
+      expected_worker_protocol_version: pairing.workerProtocolVersion,
+      next_step: 'Upgrade the older side, pin the client to the advertised range, or connect to a server that supports the requested protocol.',
+    },
+  };
+}
+
+function artifactCompatibilityRefusalMessage(stdoutJson, processResult) {
+  const candidates = [];
+  if (stdoutJson && typeof stdoutJson === 'object') {
+    candidates.push(
+      stringValue(stdoutJson.message),
+      stringValue(stdoutJson.reason),
+      stringValue(stdoutJson.exception_type),
+      JSON.stringify(redactJsonSecrets(stdoutJson.body ?? null)),
+      JSON.stringify(redactJsonSecrets(stdoutJson.errors ?? null)),
+    );
+  }
+  candidates.push(processResult.stderr, processResult.stdout);
+
+  const text = redactKnownSecrets(candidates.filter(Boolean).join('\n')).trim();
+  if (text === '') {
+    return '';
+  }
+
+  const artifactReportedFailure = processResult.exitCode !== 0
+    || processResult.timedOut
+    || (stdoutJson && typeof stdoutJson === 'object' && stdoutJson.ok === false);
+  if (!artifactReportedFailure) {
+    return '';
+  }
+
+  const compatibilityText = /(server compatibility error|compatib|unsupported|outside.*window|protocol|control_plane|worker_protocol|request_contract|version)/i;
+  if (!compatibilityText.test(text)) {
+    return '';
+  }
+
+  return text.slice(0, 2000);
+}
+
+function selectCompatibilityGuardCapture(captures, pairing, operationGroup) {
+  const expectation = protocolExpectationForOperation(operationGroup, pairing);
+  const matchingHeader = captures.filter((capture) => headerValue(
+    capture?.request?.headers ?? {},
+    expectation.header,
+  ) === expectation.expected);
+
+  return matchingHeader.find((capture) => normalizeOperationRequest(
+    `${capture.request.method} ${capture.request.path}`,
+  ) === 'GET /api/cluster/info') ?? matchingHeader[0] ?? null;
 }
 
 function artifactOutputResponse(surfaceName, operationGroup, stdoutJson) {
@@ -2558,6 +2913,7 @@ function isProtocolRefusal(response) {
       || reason === 'unsupported_control_plane_version'
       || reason === 'missing_protocol_version'
       || reason === 'unsupported_protocol_version'
+      || reason === 'artifact_compatibility_refusal'
     );
 }
 
