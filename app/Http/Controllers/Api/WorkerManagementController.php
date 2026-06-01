@@ -6,6 +6,8 @@ use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneProtocol;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class WorkerManagementController
 {
@@ -135,10 +137,28 @@ class WorkerManagementController
         }
 
         $worker->delete();
+        $this->deleteCompatibilityHeartbeats($namespace, $workerId);
 
         return ControlPlaneProtocol::json([
             'worker_id' => $workerId,
             'outcome' => 'deregistered',
         ]);
+    }
+
+    private function deleteCompatibilityHeartbeats(string $namespace, string $workerId): void
+    {
+        $connection = config('workflows.storage.connection');
+        $connection = is_string($connection) && $connection !== '' ? $connection : null;
+        $schema = $connection === null ? Schema::getFacadeRoot() : Schema::connection($connection);
+
+        if (! $schema->hasTable('workflow_worker_compatibility_heartbeats')) {
+            return;
+        }
+
+        DB::connection($connection)
+            ->table('workflow_worker_compatibility_heartbeats')
+            ->where('namespace', $namespace)
+            ->where('worker_id', $workerId)
+            ->delete();
     }
 }

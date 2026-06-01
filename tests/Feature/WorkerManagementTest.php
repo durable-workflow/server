@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class WorkerManagementTest extends TestCase
@@ -301,6 +302,49 @@ class WorkerManagementTest extends TestCase
                 ->where('namespace', 'default')
                 ->first()
         );
+    }
+
+    public function test_deregister_removes_worker_compatibility_heartbeats(): void
+    {
+        $this->createWorker('worker-a', 'queue', 'php');
+        $this->createWorker('worker-b', 'queue', 'php');
+        $now = now();
+
+        DB::table('workflow_worker_compatibility_heartbeats')->insert([
+            'worker_id' => 'worker-a',
+            'scope_key' => 'default:queue:a',
+            'namespace' => 'default',
+            'queue' => 'queue',
+            'supported' => json_encode(['build-v1'], JSON_THROW_ON_ERROR),
+            'recorded_at' => $now,
+            'expires_at' => $now->copy()->addMinute(),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        DB::table('workflow_worker_compatibility_heartbeats')->insert([
+            'worker_id' => 'worker-b',
+            'scope_key' => 'default:queue:b',
+            'namespace' => 'default',
+            'queue' => 'queue',
+            'supported' => json_encode(['build-v2'], JSON_THROW_ON_ERROR),
+            'recorded_at' => $now,
+            'expires_at' => $now->copy()->addMinute(),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        $this->deleteJson('/api/workers/worker-a', [], $this->apiHeaders())
+            ->assertOk()
+            ->assertJsonPath('outcome', 'deregistered');
+
+        self::assertFalse(DB::table('workflow_worker_compatibility_heartbeats')
+            ->where('worker_id', 'worker-a')
+            ->where('namespace', 'default')
+            ->exists());
+        self::assertTrue(DB::table('workflow_worker_compatibility_heartbeats')
+            ->where('worker_id', 'worker-b')
+            ->where('namespace', 'default')
+            ->exists());
     }
 
     public function test_deregister_returns_404_for_unknown_worker(): void

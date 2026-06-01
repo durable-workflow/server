@@ -549,6 +549,22 @@ class ClusterInfoTest extends TestCase
             $contract['host_runner_contract']['status'],
         );
         $this->assertSame(
+            'scripts/conformance/worker-versioning-published-artifacts.sh',
+            $contract['host_runner_contract']['runner_path'],
+        );
+        $this->assertContains(
+            'compatible_replay_delivery_counts',
+            $contract['host_runner_contract']['evidence_shards'],
+        );
+        $this->assertContains(
+            'cache_eviction_delivery_counts',
+            $contract['host_runner_contract']['evidence_shards'],
+        );
+        $this->assertContains(
+            'cross_language_php_python_delivery_counts',
+            $contract['host_runner_contract']['evidence_shards'],
+        );
+        $this->assertSame(
             'conformance_runner_coverage_gap',
             $contract['host_runner_contract']['routing_policy']['missing_required_scenario']['finding_type'],
         );

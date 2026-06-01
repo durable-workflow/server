@@ -78,6 +78,8 @@ final class WorkerVersioningRuntimeResultGate
                 'run_timestamps_outcome_and_finding_links_are_recorded',
                 'overall_outcome_matches_gate_status',
                 'published_artifact_versions_are_recorded_and_pinned',
+                'published_artifact_install_evidence_reported',
+                'published_artifact_worker_execution_reported_for_replay_and_cross_language_cells',
                 'no_local_product_source_artifacts_are_reported',
             ],
             'smoke_subset_outcome' => 'non_passing',
@@ -580,7 +582,12 @@ final class WorkerVersioningRuntimeResultGate
         $artifactPolicy = self::arrayField($contract, ['artifact_policy']) ?? [];
         $forbiddenSources = array_values(array_unique(array_merge(
             self::stringList($artifactPolicy['forbidden_sources'] ?? []),
-            ['local_checkout_artifact'],
+            [
+                'local_checkout_artifact',
+                'local_checkout',
+                'local_source_checkout',
+                'workspace_repo',
+            ],
         )));
         $reportedSourceSets = [];
         foreach (['artifact_sources', 'artifactSources', 'source_paths', 'sourcePaths'] as $field) {
@@ -617,7 +624,7 @@ final class WorkerVersioningRuntimeResultGate
         foreach ($reportedSourceSets as $sourceSet) {
             foreach ($sourceSet['sources'] as $artifact => $source) {
                 $source = self::stringValue($source);
-                if (! in_array($source, $forbiddenSources, true)) {
+                if (! self::isForbiddenArtifactSource($source, $forbiddenSources)) {
                     continue;
                 }
 
@@ -868,6 +875,7 @@ final class WorkerVersioningRuntimeResultGate
 
         array_push($failures, ...self::routingInvariantFailures($scenarioResults));
         array_push($failures, ...self::crossLanguageInvariantFailures($scenarioResults));
+        array_push($failures, ...self::publishedWorkerExecutionEvidenceFailures($scenarioResults));
 
         return $failures;
     }
@@ -886,19 +894,40 @@ final class WorkerVersioningRuntimeResultGate
         $scenarioSources = self::arrayField($outputs, ['artifact_sources', 'artifactSources', 'install_sources', 'installSources']) ?? [];
         $sources = array_replace($topLevelSources, $scenarioSources);
         $installChannels = self::arrayField($contract['artifact_policy'] ?? [], ['install_channels']) ?? [];
+        $artifactPolicy = self::arrayField($contract, ['artifact_policy']) ?? [];
+        $forbiddenInstallSources = array_values(array_unique(array_merge(
+            self::stringList($artifactPolicy['forbidden_sources'] ?? []),
+            [
+                'local_checkout_artifact',
+                'local_checkout',
+                'local_source_checkout',
+                'workspace_repo',
+                'not_exercised',
+            ],
+        )));
         $failures = [];
 
         foreach (array_keys($installChannels) as $artifact) {
             $source = self::artifactVersionValue($sources, (string) $artifact);
-            if ($source !== '') {
+            if ($source === '') {
+                $failures[] = [
+                    'code' => 'missing_published_artifact_install_source',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                ];
+
                 continue;
             }
 
-            $failures[] = [
-                'code' => 'missing_published_artifact_install_source',
-                'scenario_id' => 'published_artifact_install_only',
-                'artifact' => $artifact,
-            ];
+            if (self::isForbiddenArtifactSource($source, $forbiddenInstallSources)) {
+                $failures[] = [
+                    'code' => 'forbidden_published_artifact_install_source',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                    'source' => $source,
+                    'field' => 'artifact_sources',
+                ];
+            }
         }
 
         if (! self::hasExplicitFalseField($outputs, [
@@ -915,7 +944,132 @@ final class WorkerVersioningRuntimeResultGate
             ];
         }
 
+        $installEvidence = self::arrayField($outputs, [
+            'artifact_install_evidence',
+            'artifactInstallEvidence',
+            'install_evidence',
+            'installEvidence',
+        ]);
+        if ($installEvidence === null) {
+            $failures[] = [
+                'code' => 'missing_published_artifact_install_evidence',
+                'scenario_id' => 'published_artifact_install_only',
+                'field' => 'artifact_install_evidence',
+            ];
+
+            return $failures;
+        }
+
+        if (! self::hasExplicitFalseField($installEvidence, [
+            'local_product_source_checkouts_used',
+            'localProductSourceCheckoutsUsed',
+        ])) {
+            $failures[] = [
+                'code' => 'local_product_source_checkouts_used_must_be_false',
+                'scenario_id' => 'published_artifact_install_only',
+                'field' => 'artifact_install_evidence.local_product_source_checkouts_used',
+                'value' => $installEvidence['local_product_source_checkouts_used']
+                    ?? $installEvidence['localProductSourceCheckoutsUsed']
+                    ?? null,
+            ];
+        }
+
+        $installArtifacts = self::arrayField($installEvidence, ['artifacts']) ?? [];
+        foreach (array_keys($installChannels) as $artifact) {
+            $entry = self::artifactInstallEntry($installArtifacts, (string) $artifact);
+            if ($entry === null) {
+                $failures[] = [
+                    'code' => 'missing_published_artifact_install_evidence_artifact',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                    'field' => 'artifact_install_evidence.artifacts',
+                ];
+                continue;
+            }
+
+            $status = strtolower(self::stringField($entry, ['status', 'result', 'outcome']));
+            if ($status !== 'pass') {
+                $failures[] = [
+                    'code' => 'published_artifact_install_evidence_not_pass',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                    'status' => $status,
+                    'field' => 'artifact_install_evidence.artifacts.status',
+                ];
+            }
+
+            $source = self::stringField($entry, ['source', 'install_source', 'installSource', 'artifact_source', 'artifactSource']);
+            if ($source === '') {
+                $failures[] = [
+                    'code' => 'missing_published_artifact_install_evidence_source',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                    'field' => 'artifact_install_evidence.artifacts.source',
+                ];
+            } elseif (self::isForbiddenArtifactSource($source, $forbiddenInstallSources)) {
+                $failures[] = [
+                    'code' => 'forbidden_published_artifact_install_evidence_source',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                    'source' => $source,
+                    'field' => 'artifact_install_evidence.artifacts.source',
+                ];
+            }
+        }
+
         return $failures;
+    }
+
+    /**
+     * @param list<string> $forbiddenSources
+     */
+    private static function isForbiddenArtifactSource(string $source, array $forbiddenSources): bool
+    {
+        $source = strtolower(trim($source));
+        if ($source === '') {
+            return false;
+        }
+
+        $normalizedSource = self::normalizeToken($source);
+
+        foreach ($forbiddenSources as $forbiddenSource) {
+            $forbiddenSource = strtolower(trim($forbiddenSource));
+            if ($forbiddenSource === '') {
+                continue;
+            }
+
+            if ($source === $forbiddenSource || str_contains($source, $forbiddenSource)) {
+                return true;
+            }
+
+            $normalizedForbidden = self::normalizeToken($forbiddenSource);
+            if ($normalizedForbidden !== ''
+                && ($normalizedSource === $normalizedForbidden || str_contains($normalizedSource, $normalizedForbidden))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<mixed> $installArtifacts
+     * @return array<string, mixed>|null
+     */
+    private static function artifactInstallEntry(array $installArtifacts, string $artifact): ?array
+    {
+        foreach ($installArtifacts as $entry) {
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            $reported = self::stringField($entry, ['artifact', 'name', 'id']);
+            if ($reported === $artifact || ($artifact === 'workflow-php' && $reported === 'workflow')) {
+                return $entry;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -1079,6 +1233,55 @@ final class WorkerVersioningRuntimeResultGate
             'cross_language_php_python_pinning',
             'python_v1_to_php_v2_incompatible_delivery_count',
         );
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $scenarioResults
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function publishedWorkerExecutionEvidenceFailures(array $scenarioResults): array
+    {
+        $failures = [];
+        $scenarios = [
+            'replay_only_by_compatible_workers' => [
+                'published_artifact_worker_execution',
+                'divergent_workflow_execution_observed',
+            ],
+            'replay_across_cache_eviction' => [
+                'published_artifact_worker_execution',
+                'divergent_workflow_execution_observed',
+            ],
+            'cross_language_php_python_pinning' => [
+                'published_artifact_worker_execution',
+            ],
+        ];
+
+        foreach ($scenarios as $scenarioId => $requiredTrueFields) {
+            $evidence = self::passingScenarioEvidence($scenarioResults, $scenarioId);
+            if ($evidence === null) {
+                continue;
+            }
+
+            foreach ($requiredTrueFields as $field) {
+                $aliases = [$field, self::camelize($field)];
+                if (self::fieldExists($evidence, $aliases) && self::truthyField($evidence, $aliases)) {
+                    continue;
+                }
+
+                $failures[] = [
+                    'code' => $field === 'divergent_workflow_execution_observed'
+                        ? 'divergent_workflow_execution_not_observed'
+                        : 'published_artifact_worker_execution_missing',
+                    'scenario_id' => $scenarioId,
+                    'field' => $field,
+                    'expected' => true,
+                    'actual' => $evidence[$field] ?? $evidence[self::camelize($field)] ?? null,
+                ];
+            }
+        }
 
         return $failures;
     }
