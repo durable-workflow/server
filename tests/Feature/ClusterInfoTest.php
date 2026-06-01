@@ -379,6 +379,10 @@ class ClusterInfoTest extends TestCase
             'smoke_only_results_remain_non_passing',
             $contract['result_gate']['pass_requires'],
         );
+        $this->assertContains(
+            'operation_capture_ids_resolve_to_attached_request_response_captures',
+            $contract['result_gate']['pass_requires'],
+        );
     }
 
     public function test_it_publishes_the_search_attribute_runtime_conformance_contract(): void

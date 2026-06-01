@@ -73,6 +73,7 @@ final class SkewRefusalMatrixResultGate
                 'non_pass_pairings_or_operations_have_linked_findings',
                 'each_non_pass_cell_has_a_focused_finding_link',
                 'request_response_evidence_is_present_for_each_skewed_operation',
+                'operation_capture_ids_resolve_to_attached_request_response_captures',
                 'smoke_only_results_remain_non_passing',
                 'overall_outcome_matches_gate_status',
             ],
@@ -115,6 +116,7 @@ final class SkewRefusalMatrixResultGate
         $surfaceResults = self::surfaceResults($result);
         $pairingResults = self::pairingResults($result, $requiredSurfaces);
         $operationEvidence = self::operationEvidence($result, $requiredSurfaces);
+        $requestResponseCaptureIds = self::requestResponseCaptureIds($result);
         $reportedSurfaces = array_values(array_unique(array_merge(
             array_keys($surfaceResults),
             array_keys($pairingResults),
@@ -200,6 +202,7 @@ final class SkewRefusalMatrixResultGate
                                 $index,
                                 $contract,
                                 $statusTaxonomy,
+                                $requestResponseCaptureIds,
                                 $nonPassCells,
                             ),
                         );
@@ -397,6 +400,34 @@ final class SkewRefusalMatrixResultGate
         }
 
         return $evidence;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @return array<string, true>
+     */
+    private static function requestResponseCaptureIds(array $result): array
+    {
+        $raw = self::arrayField($result, ['request_response_captures', 'requestResponseCaptures']) ?? [];
+        $captures = self::arrayField($raw, ['captures']) ?? $raw;
+        $ids = [];
+
+        foreach ($captures as $key => $capture) {
+            if (is_string($key) && $key !== '') {
+                $ids[$key] = true;
+            }
+
+            if (! is_array($capture)) {
+                continue;
+            }
+
+            $id = self::stringValue($capture['id'] ?? $capture['capture_id'] ?? $capture['captureId'] ?? null);
+            if ($id !== '') {
+                $ids[$id] = true;
+            }
+        }
+
+        return $ids;
     }
 
     /**
@@ -617,6 +648,7 @@ final class SkewRefusalMatrixResultGate
      * @param array<string, mixed> $evidence
      * @param array<string, mixed> $contract
      * @param list<string> $statusTaxonomy
+     * @param array<string, true> $requestResponseCaptureIds
      * @param list<string> $nonPassCells
      * @return list<array<string, mixed>>
      */
@@ -629,6 +661,7 @@ final class SkewRefusalMatrixResultGate
         int $index,
         array $contract,
         array $statusTaxonomy,
+        array $requestResponseCaptureIds,
         array &$nonPassCells,
     ): array {
         $failures = [];
@@ -698,6 +731,28 @@ final class SkewRefusalMatrixResultGate
             }
         }
 
+        $captureId = self::requestResponseCaptureId($evidence);
+        if ($captureId === '') {
+            $failures[] = [
+                'code' => 'missing_request_response_capture_id',
+                'surface' => $surface,
+                'pairing_class' => $pairingClass,
+                'operation_group' => $operationGroup,
+                'index' => $index,
+            ];
+            $nonPassCells[] = $cell;
+        } elseif (! isset($requestResponseCaptureIds[$captureId])) {
+            $failures[] = [
+                'code' => 'missing_request_response_capture',
+                'surface' => $surface,
+                'pairing_class' => $pairingClass,
+                'operation_group' => $operationGroup,
+                'index' => $index,
+                'request_response_capture_id' => $captureId,
+            ];
+            $nonPassCells[] = $cell;
+        }
+
         if ($status === 'loud_refuse') {
             $refusalFailures = self::refusalRequirementFailures($surface, $surfaceContract, $pairingClass, $evidence, 'operation');
             if ($refusalFailures !== []) {
@@ -764,6 +819,20 @@ final class SkewRefusalMatrixResultGate
         }
 
         return array_keys($requests);
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     */
+    private static function requestResponseCaptureId(array $row): string
+    {
+        return self::stringValue(
+            $row['request_response_capture_id']
+                ?? $row['requestResponseCaptureId']
+                ?? $row['capture_id']
+                ?? $row['captureId']
+                ?? null,
+        );
     }
 
     /**
@@ -1513,6 +1582,8 @@ final class SkewRefusalMatrixResultGate
             'surface_results' => self::hasArrayField($row, ['surface_results', 'surfaceResults']),
             'pairing_results' => self::hasArrayField($row, ['pairing_results', 'pairingResults']),
             'operation_evidence' => self::hasArrayField($row, ['operation_evidence', 'operationEvidence']),
+            'request_response_captures' => array_key_exists('request_response_captures', $row)
+                || array_key_exists('requestResponseCaptures', $row),
             'findings' => array_key_exists('findings', $row) && is_array($row['findings']),
             'finding_links' => (array_key_exists('finding_links', $row) && is_array($row['finding_links']))
                 || (array_key_exists('findingLinks', $row) && is_array($row['findingLinks'])),
@@ -1521,6 +1592,7 @@ final class SkewRefusalMatrixResultGate
             'request_body' => array_key_exists('request_body', $row) || array_key_exists('requestBody', $row),
             'response_headers' => array_key_exists('response_headers', $row) || array_key_exists('responseHeaders', $row),
             'response_body' => array_key_exists('response_body', $row) || array_key_exists('responseBody', $row),
+            'request_response_capture_id' => self::requestResponseCaptureId($row) !== '',
             default => self::hasScalarField($row, [$field, self::camelize($field)])
                 || self::hasArrayField($row, [$field, self::camelize($field)]),
         };

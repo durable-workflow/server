@@ -35,6 +35,7 @@
       "surface_results",
       "pairing_results",
       "operation_evidence",
+      "request_response_captures",
       "findings",
       "finding_links"
     ]

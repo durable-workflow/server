@@ -58,6 +58,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'surface_results',
             'pairing_results',
             'operation_evidence',
+            'request_response_captures',
             'finding_links',
         ] as $field) {
             $this->assertContains($field, $manifest['artifact_policy']['required_run_record_fields']);
@@ -229,6 +230,10 @@ final class SkewRefusalMatrixContractTest extends TestCase
         );
         $this->assertContains(
             'each_non_pass_cell_has_a_focused_finding_link',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'operation_capture_ids_resolve_to_attached_request_response_captures',
             $manifest['result_gate']['pass_requires'],
         );
     }
@@ -956,6 +961,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
         $this->assertNotContains('POST /api/workflows/{id}/updates', $workflowRequests);
         $this->assertContains('request', $manifest['operation_groups']['cluster_info_probe']['evidence']);
         $this->assertContains('status', $manifest['operation_groups']['cluster_info_probe']['evidence']);
+        $this->assertContains('request_response_capture_id', $manifest['operation_groups']['cluster_info_probe']['evidence']);
 
         foreach ([
             'workflow_control_plane',
@@ -974,6 +980,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
                 'server_version',
                 'compatibility_window',
                 'status',
+                'request_response_capture_id',
             ] as $field) {
                 $this->assertContains($field, $manifest['operation_groups'][$group]['evidence']);
             }
@@ -989,6 +996,10 @@ final class SkewRefusalMatrixContractTest extends TestCase
         );
         $this->assertContains(
             'screenshot_or_dom_snapshot',
+            $manifest['operation_groups']['waterline_render']['evidence'],
+        );
+        $this->assertContains(
+            'request_response_capture_id',
             $manifest['operation_groups']['waterline_render']['evidence'],
         );
         $this->assertNotContains(
@@ -1157,6 +1168,32 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'POST /api/schedules/{id}/trigger',
             array_column($missingRequestFailures, 'advertised_request'),
         );
+    }
+
+    public function test_result_gate_requires_operation_rows_to_attach_request_response_captures(): void
+    {
+        $result = $this->completeSkewResult();
+        $result['outcome'] = 'fail';
+        $missingCaptureId = $result['operation_evidence']['cli']['outside_window']['workflow_control_plane'][0]['request_response_capture_id'];
+        unset($result['operation_evidence']['cli']['outside_window']['workflow_control_plane'][0]['request_response_capture_id']);
+        $result['operation_evidence']['sdk-python']['outside_window']['schedule_control_plane'][0]['request_response_capture_id'] = 'missing-capture-id';
+        $result['finding_links'] = [
+            'cli.outside_window.workflow_control_plane' => 'https://durable-workflow.github.io/conformance/findings/cli-workflow-skew',
+            'sdk-python.outside_window.schedule_control_plane' => 'https://durable-workflow.github.io/conformance/findings/sdk-python-schedule-skew',
+        ];
+
+        $evaluation = SkewRefusalMatrixResultGate::evaluate($result);
+        $codes = array_column($evaluation['gate_failures'], 'code');
+        $missingCaptureFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_request_response_capture',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('missing_request_response_capture_id', $codes);
+        $this->assertContains('missing_request_response_capture', $codes);
+        $this->assertSame('missing-capture-id', $missingCaptureFailures[0]['request_response_capture_id']);
+        $this->assertIsString($missingCaptureId);
     }
 
     public function test_result_gate_rejects_operation_evidence_for_the_wrong_advertised_request_group(): void
@@ -1359,6 +1396,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'surface_results' => [],
             'pairing_results' => [],
             'operation_evidence' => [],
+            'request_response_captures' => [],
             'findings' => [],
             'finding_links' => [],
         ];
@@ -1376,13 +1414,15 @@ final class SkewRefusalMatrixContractTest extends TestCase
 
                 foreach ($surfaceContract['operation_groups'] as $operationGroup) {
                     foreach ($contract['operation_groups'][$operationGroup]['requests'] as $request) {
-                        $result['operation_evidence'][$surface][$pairingClass][$operationGroup][] = $this->operationEvidence(
+                        $evidence = $this->operationEvidence(
                             $surface,
                             $pairingClass,
                             $operationGroup,
                             $status,
                             $request,
                         );
+                        $result['operation_evidence'][$surface][$pairingClass][$operationGroup][] = $evidence;
+                        $result['request_response_captures'][] = $this->requestResponseCapture($evidence);
                     }
                 }
             }
@@ -1465,6 +1505,7 @@ final class SkewRefusalMatrixContractTest extends TestCase
         };
 
         $row['status'] = $status;
+        $row['request_response_capture_id'] = 'capture-'.md5($surface.'|'.$pairingClass.'|'.$operationGroup.'|'.$request);
 
         if ($status === 'loud_refuse') {
             $row['refusal_requirements_met'] = SkewRefusalMatrixContract::manifest()['required_surfaces'][$surface]['refusal_requirements'];
@@ -1483,6 +1524,27 @@ final class SkewRefusalMatrixContractTest extends TestCase
         }
 
         return $row;
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     * @return array<string, mixed>
+     */
+    private function requestResponseCapture(array $evidence): array
+    {
+        $request = $evidence['request'] ?? null;
+        if (! is_string($request)) {
+            $request = trim((string) ($evidence['request_method'] ?? 'GET')).' '.trim((string) ($evidence['request_path'] ?? '/'));
+        }
+
+        return [
+            'id' => $evidence['request_response_capture_id'],
+            'request' => $request,
+            'response' => [
+                'status' => $evidence['response_status'] ?? $evidence['status_code'] ?? 200,
+                'body' => $evidence['response_body'] ?? [],
+            ],
+        ];
     }
 
     private function read(string $path): string

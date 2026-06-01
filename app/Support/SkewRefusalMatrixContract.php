@@ -92,6 +92,7 @@ final class SkewRefusalMatrixContract
                     'surface_results',
                     'pairing_results',
                     'operation_evidence',
+                    'request_response_captures',
                     'findings',
                     'finding_links',
                 ],
@@ -214,6 +215,7 @@ final class SkewRefusalMatrixContract
                         'client_or_observer_version',
                         'server_version',
                         'protocol_manifest_versions',
+                        'request_response_capture_id',
                     ],
                 ],
                 'workflow_control_plane' => [
@@ -267,6 +269,7 @@ final class SkewRefusalMatrixContract
                         'waterline_version',
                         'status',
                         'waterline_skew_classification',
+                        'request_response_capture_id',
                     ],
                 ],
             ],
@@ -539,6 +542,7 @@ final class SkewRefusalMatrixContract
             'server_version',
             'compatibility_window',
             'status',
+            'request_response_capture_id',
         ];
     }
 }
