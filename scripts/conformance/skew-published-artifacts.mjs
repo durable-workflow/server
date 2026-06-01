@@ -1028,6 +1028,8 @@ async function invokeCliOperation({
       DURABLE_WORKFLOW_SERVER_URL: '__DW_SKEW_PROXY_URL__',
       DURABLE_WORKFLOW_AUTH_TOKEN: process.env.DW_SKEW_AUTH_TOKEN ?? 'dev-token',
       DURABLE_WORKFLOW_NAMESPACE: context.namespace,
+      DURABLE_WORKFLOW_CONTROL_PLANE_VERSION: pairing.controlPlaneVersion,
+      DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION: pairing.workerProtocolVersion,
       DURABLE_WORKFLOW_TLS_VERIFY: 'false',
       DW_ENV: '',
     },
@@ -1049,7 +1051,7 @@ function cliArgsFor(requestTemplate, context, pairingClass) {
 
   switch (requestTemplate) {
     case 'GET /api/cluster/info':
-      return [...global, 'server:info', '--json'];
+      return [...global, 'server:info', '--output=json'];
     case 'POST /api/workflows':
       return [
         ...global,
@@ -1100,7 +1102,7 @@ function cliArgsFor(requestTemplate, context, pairingClass) {
     case 'POST /api/schedules/{id}/trigger':
       return [...global, 'schedule:trigger', scheduleId, '--overlap-policy=skip', '--json'];
     default:
-      return [...global, 'server:info', '--json'];
+      return [...global, 'server:info', '--output=json'];
   }
 }
 
@@ -1140,6 +1142,8 @@ async function invokePythonSdkOperation({
     args: [script, JSON.stringify(payload)],
     env: {
       DW_SKEW_AUTH_TOKEN: process.env.DW_SKEW_AUTH_TOKEN ?? 'dev-token',
+      DURABLE_WORKFLOW_CONTROL_PLANE_VERSION: pairing.controlPlaneVersion,
+      DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION: pairing.workerProtocolVersion,
     },
     timeoutMs: Number.parseInt(process.env.DW_SKEW_PYTHON_TIMEOUT_MS ?? '20000', 10),
   });
@@ -1322,11 +1326,33 @@ async def run(payload: dict[str, Any]) -> dict[str, Any]:
         elif op == "POST /api/workflows/{workflowId}/update/{updateName}":
             result = await client.update_workflow(workflow_id, "approve", args=[], wait_for="accepted")
         elif op == "POST /api/workflows/{workflowId}/runs/{runId}/signal/{signalName}":
-            result = await client.signal_workflow(workflow_id, "advance", args=[{"source": "skew-conformance"}])
+            result = await client._request(
+                "POST",
+                f"/workflows/{workflow_id}/runs/{run_id}/signal/advance",
+                json={
+                    "input": client._payload_envelope(
+                        [{"source": "skew-conformance"}],
+                        kind="signal",
+                        workflow_id=workflow_id,
+                        signal_name="advance",
+                    )
+                },
+                context=workflow_id,
+            )
         elif op == "POST /api/workflows/{workflowId}/runs/{runId}/query/{queryName}":
-            result = await client.query_workflow(workflow_id, "currentState", args=[])
+            result = await client._request(
+                "POST",
+                f"/workflows/{workflow_id}/runs/{run_id}/query/currentState",
+                json={},
+                context=workflow_id,
+            )
         elif op == "POST /api/workflows/{workflowId}/runs/{runId}/update/{updateName}":
-            result = await client.update_workflow(workflow_id, "approve", args=[], wait_for="accepted")
+            result = await client._request(
+                "POST",
+                f"/workflows/{workflow_id}/runs/{run_id}/update/approve",
+                json={"wait_for": "accepted"},
+                context=workflow_id,
+            )
         elif op == "POST /api/workflows/{workflowId}/cancel":
             result = await client.cancel_workflow(workflow_id, reason="skew conformance boundary probe")
         elif op == "POST /api/workflows/{workflowId}/terminate":
@@ -2017,13 +2043,73 @@ function headerValue(headers, wantedHeader) {
 function updatePairingStateFromResponse(context, surfaceName, pairingClass, body) {
   const state = pairingState(context, surfaceName, pairingClass);
   if (body && typeof body === 'object') {
-    const workflowId = stringValue(body.workflow_id);
-    const runId = stringValue(body.run_id);
-    const scheduleId = stringValue(body.schedule_id);
-    const taskId = stringValue(body.task?.task_id)
-      || stringValue(body.task_id)
-      || stringValue(body.result?.task?.task_id)
-      || stringValue(body.result?.task_id);
+    const workflowId = firstStringValue(
+      body.workflow_id,
+      body.workflowId,
+      body.workflow_instance_id,
+      body.workflowInstanceId,
+      body.result?.workflow_id,
+      body.result?.workflowId,
+      body.result?.workflow_instance_id,
+      body.result?.workflowInstanceId,
+      body.workflow?.workflow_id,
+      body.workflow?.workflowId,
+      body.workflow?.workflow_instance_id,
+      body.workflow?.workflowInstanceId,
+      body.workflow?.id,
+      body.execution?.workflow_id,
+      body.execution?.workflowId,
+      body.execution?.workflow_instance_id,
+      body.execution?.workflowInstanceId,
+    );
+    const runId = firstStringValue(
+      body.run_id,
+      body.runId,
+      body.workflow_run_id,
+      body.workflowRunId,
+      body.result?.run_id,
+      body.result?.runId,
+      body.result?.workflow_run_id,
+      body.result?.workflowRunId,
+      body.run?.run_id,
+      body.run?.runId,
+      body.run?.id,
+      body.workflow?.run_id,
+      body.workflow?.runId,
+      body.execution?.run_id,
+      body.execution?.runId,
+      body.execution?.workflow_run_id,
+      body.execution?.workflowRunId,
+      firstArrayObjectStringValue(body.runs, ['run_id', 'runId', 'id']),
+    );
+    const scheduleId = firstStringValue(
+      body.schedule_id,
+      body.scheduleId,
+      body.result?.schedule_id,
+      body.result?.scheduleId,
+      body.result?.schedule?.schedule_id,
+      body.result?.schedule?.scheduleId,
+      body.result?.schedule?.id,
+      body.schedule?.schedule_id,
+      body.schedule?.scheduleId,
+      body.schedule?.id,
+    );
+    const taskId = firstStringValue(
+      body.task?.task_id,
+      body.task?.taskId,
+      body.task?.id,
+      body.task_id,
+      body.taskId,
+      body.result?.task?.task_id,
+      body.result?.task?.taskId,
+      body.result?.task?.id,
+      body.result?.task_id,
+      body.result?.taskId,
+      body.workflow_task?.task_id,
+      body.workflowTask?.taskId,
+      body.result?.workflow_task?.task_id,
+      body.result?.workflowTask?.taskId,
+    );
     if (workflowId) {
       state.workflowId = workflowId;
     }
@@ -2037,6 +2123,36 @@ function updatePairingStateFromResponse(context, surfaceName, pairingClass, body
       state.taskId = taskId;
     }
   }
+}
+
+function firstStringValue(...values) {
+  for (const value of values) {
+    const candidate = stringValue(value);
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return '';
+}
+
+function firstArrayObjectStringValue(values, fields) {
+  if (!Array.isArray(values)) {
+    return '';
+  }
+
+  for (const value of values) {
+    if (!value || typeof value !== 'object') {
+      continue;
+    }
+
+    const candidate = firstStringValue(...fields.map((field) => value[field]));
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return '';
 }
 
 function pairingState(context, surfaceName, pairingClass) {

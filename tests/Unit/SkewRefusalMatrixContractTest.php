@@ -492,6 +492,16 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'CLI matrix cells must invoke the installed dw artifact',
         );
         $this->assertStringContainsString(
+            "return [...global, 'server:info', '--output=json'];",
+            $runner,
+            'CLI cluster-info probes must use the shared output option because server:info does not define --json',
+        );
+        $this->assertStringNotContainsString(
+            "return [...global, 'server:info', '--json'];",
+            $runner,
+            'the runner must not invoke server:info with an unsupported command-local --json option',
+        );
+        $this->assertStringContainsString(
             'invokePythonSdkOperation',
             $runner,
             'Python matrix cells must invoke the installed durable-workflow package',
@@ -557,9 +567,34 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'Python SDK probes must pass auth outside recorded JSON argv payloads',
         );
         $this->assertStringContainsString(
+            'DURABLE_WORKFLOW_CONTROL_PLANE_VERSION: pairing.controlPlaneVersion',
+            $runner,
+            'CLI and Python artifact invocations must receive the row control-plane version when the published artifact supports conformance overrides',
+        );
+        $this->assertStringContainsString(
+            'DURABLE_WORKFLOW_WORKER_PROTOCOL_VERSION: pairing.workerProtocolVersion',
+            $runner,
+            'CLI and Python artifact invocations must receive the row worker protocol version when the published artifact supports conformance overrides',
+        );
+        $this->assertStringContainsString(
             'token=os.environ.get("DW_SKEW_AUTH_TOKEN")',
             $runner,
             'the generated Python probe must read auth from its environment instead of argv JSON',
+        );
+        $this->assertStringContainsString(
+            'f"/workflows/{workflow_id}/runs/{run_id}/signal/advance"',
+            $runner,
+            'Python SDK run-specific signal rows must produce exact advertised request evidence',
+        );
+        $this->assertStringContainsString(
+            'f"/workflows/{workflow_id}/runs/{run_id}/query/currentState"',
+            $runner,
+            'Python SDK run-specific query rows must produce exact advertised request evidence',
+        );
+        $this->assertStringContainsString(
+            'f"/workflows/{workflow_id}/runs/{run_id}/update/approve"',
+            $runner,
+            'Python SDK run-specific update rows must produce exact advertised request evidence',
         );
         $this->assertStringNotContainsString(
             'token: process.env.DW_SKEW_AUTH_TOKEN',
@@ -802,6 +837,36 @@ final class SkewRefusalMatrixContractTest extends TestCase
             $runner,
             'the recording proxy must preserve artifact-sent control-plane headers instead of manufacturing skew',
         );
+    }
+
+    public function test_skew_runner_tracks_artifact_returned_ids_for_follow_on_rows(): void
+    {
+        $runner = $this->read('scripts/conformance/skew-published-artifacts.mjs');
+
+        $this->assertStringContainsString(
+            'function firstStringValue(...values)',
+            $runner,
+            'compatible-cell workflow and schedule follow-on probes must reuse IDs returned by the artifact response',
+        );
+        $this->assertStringContainsString(
+            "firstArrayObjectStringValue(body.runs, ['run_id', 'runId', 'id'])",
+            $runner,
+            'list-runs responses must be able to seed later run-specific probes',
+        );
+        foreach ([
+            'body.workflow_instance_id',
+            'body.result?.workflow_instance_id',
+            'body.workflow?.id',
+            'body.execution?.workflow_run_id',
+            'body.result?.schedule?.id',
+            'body.workflowTask?.taskId',
+        ] as $responseShape) {
+            $this->assertStringContainsString(
+                $responseShape,
+                $runner,
+                sprintf('the skew runner must preserve response ID shape %s for dependent operation evidence', $responseShape),
+            );
+        }
     }
 
     public function test_skew_runner_rejects_silent_outside_window_and_failed_waterline_requests(): void
