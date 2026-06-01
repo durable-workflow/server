@@ -16,7 +16,7 @@ final class ChildWorkflowRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.child-workflow-runtime.contract';
 
-    public const VERSION = 6;
+    public const VERSION = 7;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.child-workflow-runtime.result';
 
@@ -34,6 +34,14 @@ final class ChildWorkflowRuntimeContract
             'result_version' => self::RESULT_VERSION,
             'fixture_category' => 'child_workflow_runtime_contract',
             'platform_conformance_suite_authority' => PlatformConformanceSuite::SCHEMA,
+            'scenario_manifest' => [
+                'schema' => 'durable-workflow.v2.platform-conformance.runtime-scenarios',
+                'category' => 'child_workflow_runtime_contract',
+                'suite_schema' => PlatformConformanceSuite::SCHEMA,
+                'suite_version' => PlatformConformanceSuite::VERSION,
+                'public_path' => 'https://durable-workflow.github.io/platform-conformance/child-workflow-runtime-scenarios.json',
+                'source_path' => 'static/platform-conformance/child-workflow-runtime-scenarios.json',
+            ],
             'artifact_policy' => [
                 'version_source' => 'latest_published_artifacts_at_run_time',
                 'install_channels' => [

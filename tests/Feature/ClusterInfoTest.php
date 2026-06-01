@@ -252,6 +252,14 @@ class ClusterInfoTest extends TestCase
 
         $contract = $response->json('child_workflow_runtime_contract');
         $this->assertIsArray($contract);
+        $this->assertSame(
+            'https://durable-workflow.github.io/platform-conformance/child-workflow-runtime-scenarios.json',
+            $contract['scenario_manifest']['public_path'],
+        );
+        $this->assertSame(
+            'static/platform-conformance/child-workflow-runtime-scenarios.json',
+            $contract['scenario_manifest']['source_path'],
+        );
         $this->assertArrayHasKey('waterline', $contract['artifact_policy']['install_channels']);
         $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
         $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);

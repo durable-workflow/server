@@ -21,6 +21,22 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             PlatformConformanceSuite::SCHEMA,
             $manifest['platform_conformance_suite_authority'],
         );
+        $this->assertSame(
+            'durable-workflow.v2.platform-conformance.runtime-scenarios',
+            $manifest['scenario_manifest']['schema'],
+        );
+        $this->assertSame(
+            'child_workflow_runtime_contract',
+            $manifest['scenario_manifest']['category'],
+        );
+        $this->assertSame(
+            'https://durable-workflow.github.io/platform-conformance/child-workflow-runtime-scenarios.json',
+            $manifest['scenario_manifest']['public_path'],
+        );
+        $this->assertSame(
+            'static/platform-conformance/child-workflow-runtime-scenarios.json',
+            $manifest['scenario_manifest']['source_path'],
+        );
 
         foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
@@ -43,6 +59,54 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         ] as $field) {
             $this->assertContains($field, $manifest['artifact_policy']['required_run_record_fields']);
         }
+    }
+
+    public function test_public_scenario_manifest_matches_required_child_workflow_matrix(): void
+    {
+        $manifestPath = dirname(__DIR__, 2) . '/static/platform-conformance/child-workflow-runtime-scenarios.json';
+        $scenarioManifest = json_decode(
+            file_get_contents($manifestPath) ?: '',
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $contract = ChildWorkflowRuntimeContract::manifest();
+
+        $this->assertSame('child_workflow_runtime_contract', $scenarioManifest['category']);
+        $this->assertSame($contract['result_schema'], $scenarioManifest['result_schema']);
+        $this->assertSame($contract['scenario_statuses'], $scenarioManifest['result_statuses']);
+        $this->assertSame(
+            $contract['required_scenarios'],
+            array_column($scenarioManifest['scenarios'], 'id'),
+        );
+        $this->assertSame(
+            $contract['required_matrix'],
+            $scenarioManifest['required_matrix'],
+        );
+        $this->assertContains(
+            'workflow-php',
+            $scenarioManifest['artifact_policy']['required_artifacts'],
+        );
+        $this->assertContains(
+            'sdk-python',
+            $scenarioManifest['artifact_policy']['required_artifacts'],
+        );
+        $this->assertContains(
+            'direct_child_cancellation_observed_by_parent',
+            array_column($scenarioManifest['scenarios'], 'id'),
+        );
+        $this->assertContains(
+            'worker_restart_replay_preserves_child_outcome',
+            array_column($scenarioManifest['scenarios'], 'id'),
+        );
+        $this->assertContains(
+            'concurrent_child_fan_out',
+            array_column($scenarioManifest['scenarios'], 'id'),
+        );
+        $this->assertContains(
+            'child_workflow_namespace_contract',
+            array_column($scenarioManifest['scenarios'], 'id'),
+        );
     }
 
     public function test_manifest_names_full_parent_child_runtime_matrix(): void

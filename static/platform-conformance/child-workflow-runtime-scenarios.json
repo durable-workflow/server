@@ -1,0 +1,405 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 1,
+  "category": "child_workflow_runtime_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 15,
+  "description": "Public scenario manifest for Temporal-parity child-workflow conformance. Harnesses use these scenario ids and criteria when evaluating published Durable Workflow artifacts across PHP and Python runtimes.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_schema": "durable-workflow.v2.child-workflow-runtime.result",
+  "result_version": 1,
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_published_artifact_versions": true,
+    "rejects_placeholder_versions": true,
+    "implementation_tests_are_not_sources": true,
+    "required_artifacts": [
+      "server",
+      "cli",
+      "workflow-php",
+      "sdk-python",
+      "waterline"
+    ],
+    "release_artifact_aliases": {
+      "workflow-php": [
+        "workflow"
+      ]
+    },
+    "forbidden_sources": [
+      "local_product_source_checkout",
+      "workspace_repo_as_artifact_under_test"
+    ],
+    "placeholder_version_examples": [
+      "latest",
+      "current",
+      "head",
+      "unresolved",
+      "placeholder",
+      "<latest>",
+      "2.0.0-alpha.<latest>",
+      "${VERSION}",
+      "{{ version }}"
+    ]
+  },
+  "common_result_evidence": [
+    "suite_version",
+    "scenario_id",
+    "status",
+    "started_at",
+    "finished_at",
+    "generated_at",
+    "outcome",
+    "artifact_versions",
+    "published_artifact_install",
+    "runtime_matrix",
+    "parent_workflow_id",
+    "child_workflow_id",
+    "parent_history",
+    "child_history",
+    "observed_outputs",
+    "linked_findings"
+  ],
+  "topology": {
+    "task_queue": "cw-shared",
+    "required_workers": [
+      "workflow-php",
+      "sdk-python"
+    ],
+    "workflow_types": {
+      "workflow-php": {
+        "parent": "PhpParent",
+        "child": "PhpChild"
+      },
+      "sdk-python": {
+        "parent": "PythonParent",
+        "child": "PythonChild"
+      }
+    },
+    "namespace_cases": [
+      "same_namespace_lineage",
+      "cross_namespace_child_start_or_documented_unsupported_contract"
+    ]
+  },
+  "required_matrix": {
+    "runtimes": [
+      "workflow-php",
+      "sdk-python"
+    ],
+    "same_language_cells": [
+      {
+        "parent": "sdk-python",
+        "child": "sdk-python",
+        "scenario": "python_parent_python_child_baseline"
+      },
+      {
+        "parent": "workflow-php",
+        "child": "workflow-php",
+        "scenario": "php_parent_php_child_baseline"
+      }
+    ],
+    "cross_language_cells": [
+      {
+        "parent": "workflow-php",
+        "child": "sdk-python",
+        "scenario": "php_parent_python_child_cross_language"
+      },
+      {
+        "parent": "sdk-python",
+        "child": "workflow-php",
+        "scenario": "python_parent_php_child_cross_language"
+      }
+    ],
+    "failure_round_trip_cells": [
+      {
+        "parent": "sdk-python",
+        "child": "sdk-python",
+        "scenario": "child_failure_round_trip_matrix"
+      },
+      {
+        "parent": "workflow-php",
+        "child": "workflow-php",
+        "scenario": "child_failure_round_trip_matrix"
+      },
+      {
+        "parent": "workflow-php",
+        "child": "sdk-python",
+        "scenario": "child_failure_round_trip_matrix"
+      },
+      {
+        "parent": "sdk-python",
+        "child": "workflow-php",
+        "scenario": "child_failure_round_trip_matrix"
+      }
+    ]
+  },
+  "scenario_requirements": {
+    "published_artifact_install_only": {
+      "required_fields": [
+        "server_image",
+        "cli_release",
+        "workflow_php_package",
+        "sdk_python_package",
+        "waterline_artifact"
+      ],
+      "expected_behavior": "all artifacts are resolved from published channels and no local product checkout is used as an artifact under test"
+    },
+    "child_result_round_trip": {
+      "required_fields": [
+        "parent_workflow_id",
+        "child_workflow_id",
+        "parent_final_result",
+        "child_history_excerpt"
+      ],
+      "expected_behavior": "the parent observes the child result without string-shaped payload loss"
+    },
+    "child_failure_round_trip_matrix": {
+      "required_fields": [
+        "exception_class",
+        "message",
+        "failure_kind"
+      ],
+      "expected_behavior": "each same-language and cross-language parent/child pair reports the original typed child failure at the parent"
+    },
+    "parent_cancellation_propagates_to_child": {
+      "required_fields": [
+        "cancel_issued_at",
+        "child_cancelled_at",
+        "worker_observed_typed_cancellation"
+      ],
+      "expected_behavior": "parent cancellation requests child cancellation and the child reaches a cancelled terminal state"
+    },
+    "direct_child_cancellation_observed_by_parent": {
+      "required_fields": [
+        "child_cancel_issued_at",
+        "parent_observed_at",
+        "parent_failure_kind"
+      ],
+      "expected_behavior": "direct child cancellation is observed by the parent as typed cancellation, not timeout"
+    },
+    "worker_restart_replay_preserves_child_outcome": {
+      "required_fields": [
+        "parent_worker_stopped_at",
+        "parent_worker_restarted_at",
+        "original_decision_sequence",
+        "replayed_decision_sequence"
+      ],
+      "expected_behavior": "a restarted parent worker replays the recorded child outcome without scheduling a duplicate child"
+    },
+    "concurrent_child_fan_out": {
+      "required_fields": [
+        "child_count",
+        "child_started_at_values",
+        "child_completed_at_values",
+        "aggregate_result",
+        "overlap_observed"
+      ],
+      "required_child_count": 5,
+      "expected_behavior": "five children run concurrently and the parent aggregates their results"
+    },
+    "child_workflow_namespace_contract": {
+      "required_fields": [
+        "parent_namespace",
+        "child_namespace",
+        "lineage_links",
+        "cross_namespace_verdict"
+      ],
+      "expected_behavior": "same-namespace lineage is recorded and cross-namespace child start behavior is either supported or linked to a documented root-cause finding"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "published_artifact_install_only",
+      "status": "required_for_passing_child_workflows_conformance",
+      "runtime_scope": "published-artifact-install",
+      "expected_behavior": "all artifacts are resolved from published install channels",
+      "required_evidence": [
+        "server_image",
+        "cli_release",
+        "workflow_php_package",
+        "sdk_python_package",
+        "waterline_artifact"
+      ]
+    },
+    {
+      "id": "python_parent_python_child_baseline",
+      "status": "required_for_passing_child_workflows_conformance",
+      "runtime_scope": "sdk-python-parent-child-shard",
+      "parent_runtime": "sdk-python",
+      "child_runtime": "sdk-python",
+      "expected_behavior": "Python parent starts Python child, receives the exact child result, and records child schedule/completion events",
+      "required_evidence": [
+        "parent_workflow_id",
+        "child_workflow_id",
+        "parent_final_result",
+        "child_history_excerpt"
+      ]
+    },
+    {
+      "id": "php_parent_php_child_baseline",
+      "status": "required_for_passing_child_workflows_conformance",
+      "runtime_scope": "workflow-php-parent-child-shard",
+      "parent_runtime": "workflow-php",
+      "child_runtime": "workflow-php",
+      "expected_behavior": "PHP parent starts PHP child, receives the exact child result, and records child schedule/completion events",
+      "required_evidence": [
+        "parent_workflow_id",
+        "child_workflow_id",
+        "parent_final_result",
+        "child_history_excerpt"
+      ]
+    },
+    {
+      "id": "php_parent_python_child_cross_language",
+      "status": "required_for_passing_child_workflows_conformance",
+      "runtime_scope": "cross-language-parent-child-shard",
+      "parent_runtime": "workflow-php",
+      "child_runtime": "sdk-python",
+      "expected_behavior": "PHP parent starts Python child by workflow type and receives the typed child result",
+      "required_evidence": [
+        "parent_workflow_id",
+        "child_workflow_id",
+        "parent_final_result",
+        "child_history_excerpt"
+      ]
+    },
+    {
+      "id": "python_parent_php_child_cross_language",
+      "status": "required_for_passing_child_workflows_conformance",
+      "runtime_scope": "cross-language-parent-child-shard",
+      "parent_runtime": "sdk-python",
+      "child_runtime": "workflow-php",
+      "expected_behavior": "Python parent starts PHP child by workflow type and receives the typed child result",
+      "required_evidence": [
+        "parent_workflow_id",
+        "child_workflow_id",
+        "parent_final_result",
+        "child_history_excerpt"
+      ]
+    },
+    {
+      "id": "child_failure_round_trip_matrix",
+      "status": "required_for_passing_child_workflows_conformance",
+      "runtime_scope": "failure-round-trip-shard",
+      "expected_behavior": "typed child failures preserve exception class, message, and failure kind across all parent/child runtime cells",
+      "required_evidence": [
+        "exception_class",
+        "message",
+        "failure_kind",
+        "failure_round_trip_cells"
+      ]
+    },
+    {
+      "id": "parent_cancellation_propagates_to_child",
+      "status": "required_for_passing_child_workflows_conformance",
+      "runtime_scope": "cancellation-propagation-shard",
+      "expected_behavior": "cancelling the parent cancels the scheduled child and the child worker observes typed cancellation",
+      "required_evidence": [
+        "cancel_issued_at",
+        "child_cancelled_at",
+        "worker_observed_typed_cancellation"
+      ]
+    },
+    {
+      "id": "direct_child_cancellation_observed_by_parent",
+      "status": "required_for_passing_child_workflows_conformance",
+      "runtime_scope": "cancellation-propagation-shard",
+      "expected_behavior": "direct child cancellation is surfaced to the parent as typed cancellation rather than timeout",
+      "required_evidence": [
+        "child_cancel_issued_at",
+        "parent_observed_at",
+        "parent_failure_kind"
+      ]
+    },
+    {
+      "id": "worker_restart_replay_preserves_child_outcome",
+      "status": "required_for_passing_child_workflows_conformance",
+      "runtime_scope": "replay-restart-shard",
+      "expected_behavior": "a parent worker restart replays child completion deterministically and does not schedule a duplicate child",
+      "required_evidence": [
+        "parent_worker_stopped_at",
+        "parent_worker_restarted_at",
+        "original_decision_sequence",
+        "replayed_decision_sequence"
+      ]
+    },
+    {
+      "id": "concurrent_child_fan_out",
+      "status": "required_for_passing_child_workflows_conformance",
+      "runtime_scope": "fan-out-concurrency-shard",
+      "expected_behavior": "a parent starts five children concurrently and aggregates all child results",
+      "required_evidence": [
+        "child_count",
+        "child_started_at_values",
+        "child_completed_at_values",
+        "aggregate_result",
+        "overlap_observed"
+      ]
+    },
+    {
+      "id": "child_workflow_namespace_contract",
+      "status": "required_for_passing_child_workflows_conformance",
+      "runtime_scope": "namespace-behavior-shard",
+      "expected_behavior": "child workflow lineage records namespace identity and cross-namespace behavior is supported or linked to a documented contract finding",
+      "required_evidence": [
+        "parent_namespace",
+        "child_namespace",
+        "lineage_links",
+        "cross_namespace_verdict"
+      ]
+    }
+  ],
+  "coverage_gate": {
+    "passing_outcome_requires": [
+      "all_required_scenarios_reported",
+      "all_required_runtimes_present",
+      "same_language_cells_reported",
+      "cross_language_cells_reported",
+      "failure_round_trip_cells_reported",
+      "parent_cancellation_reported",
+      "direct_child_cancellation_reported",
+      "replay_restart_reported",
+      "fan_out_concurrency_reported",
+      "namespace_behavior_reported",
+      "required_run_metadata_recorded",
+      "declared_outcome_matches_evaluated_status",
+      "scenario_specific_evidence_reported",
+      "published_artifact_install_evidence_reported",
+      "omitted_required_scenarios_link_findings",
+      "artifact_versions_match_latest_published_set",
+      "no_local_product_source_artifacts",
+      "findings_linked_for_non_pass_scenarios"
+    ],
+    "uncovered_required_scenario_outcome": "non_passing",
+    "smoke_subset_outcome": "non_passing",
+    "unsupported_public_surface_outcome": "non_passing_with_root_cause_finding",
+    "runner_blocked_outcome": "non_passing_runner_blocked"
+  },
+  "finding_policy": {
+    "required_for_non_pass": [
+      "scenario_id",
+      "owning_surface",
+      "artifact_versions",
+      "observed_behavior",
+      "expected_behavior",
+      "next_acceptance_criterion"
+    ],
+    "root_cause_owners": {
+      "child_result_not_observed": "server",
+      "cancellation_leak": "server",
+      "cancellation_observed_as_timeout": "parent_sdk",
+      "failure_type_erased": "codec_or_dispatch_owner",
+      "fan_out_serialized": "server",
+      "replay_divergence": "workflow_or_sdk-python",
+      "namespace_contract_gap": "docs_or_server",
+      "unsupported_public_surface": "surface_owner",
+      "conformance_runner_coverage_gap": "conformance_harness"
+    }
+  }
+}
