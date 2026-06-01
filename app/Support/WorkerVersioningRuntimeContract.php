@@ -288,6 +288,7 @@ final class WorkerVersioningRuntimeContract
                     'all_required_scenarios_reported',
                     'pin_on_start_and_history_pin_reported',
                     'compatible_replay_and_cache_eviction_reported',
+                    'compatible_replay_and_cache_eviction_have_zero_incompatible_delivery',
                     'new_start_promotion_reported',
                     'no_compatible_worker_behavior_reported',
                     'cli_python_php_and_waterline_surfaces_reported',

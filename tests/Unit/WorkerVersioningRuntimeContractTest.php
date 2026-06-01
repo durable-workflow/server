@@ -90,6 +90,10 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             array_keys($manifest['scenario_requirements']),
             'every required worker-versioning scenario must declare scenario-specific evidence fields',
         );
+        $this->assertContains(
+            'compatible_replay_and_cache_eviction_have_zero_incompatible_delivery',
+            $manifest['coverage_gate']['passing_outcome_requires'],
+        );
     }
 
     public function test_scenario_manifest_source_path_is_published_and_matches_contract(): void
@@ -194,6 +198,78 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         $this->assertSame([], $evaluation['missing_scenarios']);
         $this->assertSame([], $evaluation['non_pass_scenarios']);
         $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_result_gate_rejects_compatible_replay_when_v2_receives_v1_run_task(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['scenario_results']['replay_only_by_compatible_workers']['observed_outputs'][
+            'v2_worker_task_count_for_v1_run'
+        ] = 1;
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'incompatible_delivery_count_nonzero'
+                && ($failure['scenario_id'] ?? null) === 'replay_only_by_compatible_workers'
+                && ($failure['field'] ?? null) === 'v2_worker_task_count_for_v1_run',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($failures);
+    }
+
+    public function test_result_gate_rejects_compatible_replay_without_v1_worker_delivery(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['scenario_results']['replay_only_by_compatible_workers']['observed_outputs']['v1_worker_task_count'] = 0;
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'compatible_worker_task_count_not_positive'
+                && ($failure['scenario_id'] ?? null) === 'replay_only_by_compatible_workers',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($failures);
+    }
+
+    public function test_result_gate_rejects_cache_eviction_when_incompatible_delivery_is_nonzero(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['scenario_results']['replay_across_cache_eviction']['observed_outputs'][
+            'incompatible_delivery_count'
+        ] = 1;
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'incompatible_delivery_count_nonzero'
+                && ($failure['scenario_id'] ?? null) === 'replay_across_cache_eviction'
+                && ($failure['field'] ?? null) === 'incompatible_delivery_count',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($failures);
+    }
+
+    public function test_result_gate_rejects_cache_eviction_when_replay_worker_does_not_match_pin(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['scenario_results']['replay_across_cache_eviction']['observed_outputs'][
+            'replay_worker_build_id'
+        ] = 'v2';
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'replay_worker_build_id_mismatch'
+                && ($failure['scenario_id'] ?? null) === 'replay_across_cache_eviction',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($failures);
     }
 
     public function test_result_gate_enforces_every_declared_scenario_required_field(): void

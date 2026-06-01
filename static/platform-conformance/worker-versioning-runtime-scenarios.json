@@ -292,6 +292,7 @@
         "record which worker receives every workflow task for the v1 run"
       ],
       "pass_criteria": [
+        "the result records v1 and v2 worker task counts for the same v1-pinned run",
         "all workflow tasks for the v1-pinned run are delivered only to v1-compatible workers",
         "v2 receives zero tasks for the v1 run",
         "the v1 workflow completes with the v1 result ordering"
@@ -331,7 +332,7 @@
       ],
       "pass_criteria": [
         "replay after eviction is handled by a v1-compatible worker",
-        "v2 receives zero tasks for the v1 run",
+        "the incompatible delivery count for the v1 run is exactly zero",
         "the workflow completes without nondeterminism"
       ]
     },

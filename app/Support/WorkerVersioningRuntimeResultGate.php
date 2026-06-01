@@ -70,6 +70,7 @@ final class WorkerVersioningRuntimeResultGate
                 'cross_language_and_adversarial_sections_are_reported',
                 'each_pass_scenario_has_observed_outputs',
                 'each_pass_scenario_has_scenario_specific_evidence',
+                'compatible_replay_counts_prove_zero_incompatible_delivery',
                 'each_non_pass_scenario_has_linked_findings',
                 'run_timestamps_outcome_and_finding_links_are_recorded',
                 'overall_outcome_matches_gate_status',
@@ -862,6 +863,8 @@ final class WorkerVersioningRuntimeResultGate
             array_push($failures, ...self::publishedArtifactEvidenceFailures($result, $contract, $publishedArtifactResult));
         }
 
+        array_push($failures, ...self::routingInvariantFailures($scenarioResults));
+
         return $failures;
     }
 
@@ -909,6 +912,184 @@ final class WorkerVersioningRuntimeResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $scenarioResults
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function routingInvariantFailures(array $scenarioResults): array
+    {
+        $failures = [];
+        $pinOnStart = self::passingScenarioEvidence($scenarioResults, 'pin_on_start');
+        $pinnedBuildId = $pinOnStart === null
+            ? ''
+            : self::stringField($pinOnStart, ['run_compatibility', 'runCompatibility']);
+
+        $compatibleReplay = self::passingScenarioEvidence($scenarioResults, 'replay_only_by_compatible_workers');
+        if ($compatibleReplay !== null) {
+            self::requirePositiveCount(
+                $failures,
+                $compatibleReplay,
+                'replay_only_by_compatible_workers',
+                'v1_worker_task_count',
+                'compatible_worker_task_count_not_positive',
+            );
+            self::requireZeroCount(
+                $failures,
+                $compatibleReplay,
+                'replay_only_by_compatible_workers',
+                'v2_worker_task_count_for_v1_run',
+            );
+        }
+
+        $cacheEviction = self::passingScenarioEvidence($scenarioResults, 'replay_across_cache_eviction');
+        if ($cacheEviction !== null) {
+            self::requireTruthyField(
+                $failures,
+                $cacheEviction,
+                'replay_across_cache_eviction',
+                'cache_eviction_observed',
+            );
+            self::requireZeroCount(
+                $failures,
+                $cacheEviction,
+                'replay_across_cache_eviction',
+                'incompatible_delivery_count',
+            );
+
+            $replayWorkerBuildId = self::stringField($cacheEviction, [
+                'replay_worker_build_id',
+                'replayWorkerBuildId',
+            ]);
+            if (
+                $pinnedBuildId !== ''
+                && $replayWorkerBuildId !== ''
+                && $replayWorkerBuildId !== $pinnedBuildId
+            ) {
+                $failures[] = [
+                    'code' => 'replay_worker_build_id_mismatch',
+                    'scenario_id' => 'replay_across_cache_eviction',
+                    'field' => 'replay_worker_build_id',
+                    'expected' => $pinnedBuildId,
+                    'actual' => $replayWorkerBuildId,
+                ];
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $scenarioResults
+     * @return array<string, mixed>|null
+     */
+    private static function passingScenarioEvidence(array $scenarioResults, string $scenarioId): ?array
+    {
+        $scenarioResult = $scenarioResults[$scenarioId] ?? null;
+        if (! is_array($scenarioResult) || self::stringValue($scenarioResult['status'] ?? null) !== 'pass') {
+            return null;
+        }
+
+        $observedOutputs = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs']) ?? [];
+
+        return array_replace($scenarioResult, $observedOutputs);
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $failures
+     * @param array<string, mixed> $evidence
+     */
+    private static function requireZeroCount(array &$failures, array $evidence, string $scenarioId, string $field): void
+    {
+        $aliases = [$field, self::camelize($field)];
+        if (! self::fieldExists($evidence, $aliases)) {
+            return;
+        }
+
+        $count = self::intField($evidence, $aliases);
+        if ($count === null) {
+            $failures[] = [
+                'code' => 'invalid_numeric_evidence_field',
+                'scenario_id' => $scenarioId,
+                'field' => $field,
+                'expected' => 'integer_zero',
+                'actual' => $evidence[$field] ?? $evidence[self::camelize($field)] ?? null,
+            ];
+
+            return;
+        }
+
+        if ($count !== 0) {
+            $failures[] = [
+                'code' => 'incompatible_delivery_count_nonzero',
+                'scenario_id' => $scenarioId,
+                'field' => $field,
+                'expected' => 0,
+                'actual' => $count,
+            ];
+        }
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $failures
+     * @param array<string, mixed> $evidence
+     */
+    private static function requirePositiveCount(
+        array &$failures,
+        array $evidence,
+        string $scenarioId,
+        string $field,
+        string $code,
+    ): void {
+        $aliases = [$field, self::camelize($field)];
+        if (! self::fieldExists($evidence, $aliases)) {
+            return;
+        }
+
+        $count = self::intField($evidence, $aliases);
+        if ($count === null) {
+            $failures[] = [
+                'code' => 'invalid_numeric_evidence_field',
+                'scenario_id' => $scenarioId,
+                'field' => $field,
+                'expected' => 'positive_integer',
+                'actual' => $evidence[$field] ?? $evidence[self::camelize($field)] ?? null,
+            ];
+
+            return;
+        }
+
+        if ($count < 1) {
+            $failures[] = [
+                'code' => $code,
+                'scenario_id' => $scenarioId,
+                'field' => $field,
+                'expected' => '>=1',
+                'actual' => $count,
+            ];
+        }
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $failures
+     * @param array<string, mixed> $evidence
+     */
+    private static function requireTruthyField(array &$failures, array $evidence, string $scenarioId, string $field): void
+    {
+        $aliases = [$field, self::camelize($field)];
+        if (! self::fieldExists($evidence, $aliases) || self::truthyField($evidence, $aliases)) {
+            return;
+        }
+
+        $failures[] = [
+            'code' => 'scenario_field_must_be_true',
+            'scenario_id' => $scenarioId,
+            'field' => $field,
+            'expected' => true,
+            'actual' => $evidence[$field] ?? $evidence[self::camelize($field)] ?? null,
+        ];
     }
 
     /**
@@ -1110,6 +1291,73 @@ final class WorkerVersioningRuntimeResultGate
             }
 
             if (is_string($fieldValue) && strtolower(trim($fieldValue)) === 'false') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @param list<string> $fields
+     */
+    private static function fieldExists(array $value, array $fields): bool
+    {
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $value)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @param list<string> $fields
+     */
+    private static function intField(array $value, array $fields): ?int
+    {
+        foreach ($fields as $field) {
+            if (! array_key_exists($field, $value)) {
+                continue;
+            }
+
+            $fieldValue = $value[$field];
+            if (is_int($fieldValue)) {
+                return $fieldValue;
+            }
+
+            if (is_float($fieldValue) && floor($fieldValue) === $fieldValue) {
+                return (int) $fieldValue;
+            }
+
+            if (is_string($fieldValue) && preg_match('/^-?\d+$/', trim($fieldValue)) === 1) {
+                return (int) trim($fieldValue);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @param list<string> $fields
+     */
+    private static function truthyField(array $value, array $fields): bool
+    {
+        foreach ($fields as $field) {
+            if (! array_key_exists($field, $value)) {
+                continue;
+            }
+
+            $fieldValue = $value[$field];
+            if ($fieldValue === true || $fieldValue === 1 || $fieldValue === '1') {
+                return true;
+            }
+
+            if (is_string($fieldValue) && strtolower(trim($fieldValue)) === 'true') {
                 return true;
             }
         }
