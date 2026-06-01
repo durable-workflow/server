@@ -11,6 +11,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\CommandContext;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -43,6 +44,7 @@ final class WorkflowQueryTaskBroker
         WorkflowRun $run,
         string $queryName,
         array $queryArguments,
+        ?CommandContext $commandContext = null,
     ): array {
         if ($run->status->isTerminal() && $run->status !== RunStatus::Completed) {
             return $this->queryFailed(
@@ -80,7 +82,7 @@ final class WorkflowQueryTaskBroker
         }
 
         try {
-            $task = $this->enqueue($namespace, $run, $queryName, $queryArguments);
+            $task = $this->enqueue($namespace, $run, $queryName, $queryArguments, $commandContext);
         } catch (QueryTaskQueueFullException $exception) {
             return $this->queryFailed(
                 $run,
@@ -106,7 +108,7 @@ final class WorkflowQueryTaskBroker
                 ? $this->resultEnvelope($namespace, $result['result_envelope'])
                 : null;
 
-            return [
+            $payload = [
                 'success' => true,
                 'workflow_instance_id' => $run->workflow_instance_id,
                 'workflow_id' => $run->workflow_instance_id,
@@ -118,6 +120,13 @@ final class WorkflowQueryTaskBroker
                 'reason' => null,
                 'status' => 200,
             ];
+
+            $principal = $this->taskPrincipal($task);
+            if ($principal !== null) {
+                $payload['principal'] = $principal;
+            }
+
+            return $payload;
         }
 
         if (($result['status'] ?? null) === 'failed') {
@@ -174,9 +183,12 @@ final class WorkflowQueryTaskBroker
         WorkflowRun $run,
         string $queryName,
         array $queryArguments,
+        ?CommandContext $commandContext = null,
     ): array {
         $queryTaskId = Str::ulid()->toBase32();
         $taskQueue = $this->taskQueue($run);
+        $commandContextAttributes = $commandContext?->attributes();
+        $principal = $this->commandContextPrincipal($commandContextAttributes);
         $task = [
             'query_task_id' => $queryTaskId,
             'status' => 'pending',
@@ -192,6 +204,14 @@ final class WorkflowQueryTaskBroker
             'attempt_count' => 0,
             'created_at' => now()->toJSON(),
         ];
+
+        if ($commandContextAttributes !== null) {
+            $task['command_context'] = $commandContextAttributes;
+        }
+
+        if ($principal !== null) {
+            $task['principal'] = $principal;
+        }
 
         $this->putTask($task);
 
@@ -917,7 +937,7 @@ final class WorkflowQueryTaskBroker
     {
         $run = WorkflowRun::query()->find($task['run_id'] ?? null);
 
-        return [
+        $payload = [
             'query_task_id' => $task['query_task_id'],
             'query_task_attempt' => (int) ($task['attempt_count'] ?? 1),
             'workflow_id' => $task['workflow_id'],
@@ -942,6 +962,70 @@ final class WorkflowQueryTaskBroker
             'lease_owner' => $task['lease_owner'] ?? null,
             'lease_expires_at' => $task['lease_expires_at'] ?? null,
         ];
+
+        $principal = $this->taskPrincipal($task);
+        if ($principal !== null) {
+            $payload['principal'] = $principal;
+        }
+
+        if (is_array($task['command_context'] ?? null)) {
+            $payload['command_context'] = $task['command_context'];
+        }
+
+        return $payload;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $attributes
+     * @return array{type: string, id: string, label?: string}|null
+     */
+    private function commandContextPrincipal(?array $attributes): ?array
+    {
+        $context = $attributes['context'] ?? null;
+
+        if (! is_array($context)) {
+            return null;
+        }
+
+        return $this->principalPayload($context['principal'] ?? null);
+    }
+
+    /**
+     * @param  array<string, mixed>  $task
+     * @return array{type: string, id: string, label?: string}|null
+     */
+    private function taskPrincipal(array $task): ?array
+    {
+        return $this->principalPayload($task['principal'] ?? null);
+    }
+
+    /**
+     * @return array{type: string, id: string, label?: string}|null
+     */
+    private function principalPayload(mixed $value): ?array
+    {
+        if (! is_array($value)) {
+            return null;
+        }
+
+        $type = $this->stringValue($value['type'] ?? null);
+        $id = $this->stringValue($value['id'] ?? null);
+
+        if ($type === null || $id === null) {
+            return null;
+        }
+
+        $principal = [
+            'type' => $type,
+            'id' => $id,
+        ];
+
+        $label = $this->stringValue($value['label'] ?? null);
+        if ($label !== null) {
+            $principal['label'] = $label;
+        }
+
+        return $principal;
     }
 
     /**

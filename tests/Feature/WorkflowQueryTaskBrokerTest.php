@@ -28,6 +28,7 @@ use Symfony\Component\Process\Process;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\CommandContext;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -144,6 +145,42 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 (string) ($stored['result_envelope']['blob'] ?? ''),
             ),
         );
+    }
+
+    public function test_worker_routed_query_task_exposes_server_derived_principal(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-principal');
+        $this->registerPythonWorker('python-query-principal-worker', 'python-queries', ['python.queryable']);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue(
+            'default',
+            $run,
+            'current',
+            $this->queryArguments(),
+            CommandContext::controlPlane()->withPrincipal('auth:test-header', 'bob', 'Bob'),
+        );
+
+        $poll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-principal-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $poll->assertOk()
+            ->assertJsonPath('task.query_task_id', $task['query_task_id'])
+            ->assertJsonPath('task.principal.type', 'auth:test-header')
+            ->assertJsonPath('task.principal.id', 'bob')
+            ->assertJsonPath('task.principal.label', 'Bob')
+            ->assertJsonPath('task.command_context.context.principal.type', 'auth:test-header')
+            ->assertJsonPath('task.command_context.context.principal.id', 'bob');
+
+        $stored = $broker->task((string) $task['query_task_id']);
+
+        $this->assertSame('auth:test-header', $stored['principal']['type'] ?? null);
+        $this->assertSame('bob', $stored['principal']['id'] ?? null);
     }
 
     public function test_query_rejects_non_completed_terminal_run_before_enqueuing_worker_task(): void

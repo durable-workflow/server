@@ -374,8 +374,14 @@ PY
 server_bind_host="${DW_PRINCIPAL_ATTRIBUTION_SERVER_BIND_HOST:-127.0.0.1}"
 server_connect_host="${DW_PRINCIPAL_ATTRIBUTION_SERVER_CONNECT_HOST:-127.0.0.1}"
 server_port="${DW_PRINCIPAL_ATTRIBUTION_SERVER_PORT:-$(choose_free_port)}"
+anonymous_server_port="${DW_PRINCIPAL_ATTRIBUTION_ANONYMOUS_SERVER_PORT:-$(choose_free_port)}"
+if [[ "$anonymous_server_port" == "$server_port" ]]; then
+  anonymous_server_port="$(choose_free_port)"
+fi
 server_base_url="${DW_PRINCIPAL_ATTRIBUTION_SERVER_URL:-http://${server_connect_host}:${server_port}}"
+anonymous_server_base_url="${DW_PRINCIPAL_ATTRIBUTION_ANONYMOUS_SERVER_URL:-http://${server_connect_host}:${anonymous_server_port}}"
 server_api_url="${server_base_url%/}/api"
+anonymous_server_api_url="${anonymous_server_base_url%/}/api"
 
 cat > "$run_root/resolve-pins.py" <<'PY'
 from __future__ import annotations
@@ -883,6 +889,15 @@ x-server-environment: &server-environment
   DB_DATABASE: /app/database/database.sqlite
   QUEUE_CONNECTION: database
 
+x-anonymous-server-environment: &anonymous-server-environment
+  DW_AUTH_DRIVER: none
+  DW_WORKER_POLL_TIMEOUT: "1"
+  DW_WORKER_POLL_INTERVAL_MS: "100"
+  DW_QUERY_TASK_TIMEOUT: "3"
+  DB_CONNECTION: sqlite
+  DB_DATABASE: /app/database/database.sqlite
+  QUEUE_CONNECTION: database
+
 services:
   server:
     image: durable-workflow-principal-attribution-server:run
@@ -913,15 +928,53 @@ services:
       server:
         condition: service_healthy
 
+  anonymous-server:
+    image: durable-workflow-principal-attribution-server:run
+    environment:
+      <<: *anonymous-server-environment
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: server_http_node
+    ports:
+      - "${server_bind_host}:${anonymous_server_port}:8080"
+    volumes:
+      - anonymous-server-db:/app/database
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+
+  anonymous-server-queue-worker:
+    image: durable-workflow-principal-attribution-server:run
+    command: ["php", "artisan", "queue:work", "--sleep=1", "--tries=3", "--max-time=3600"]
+    environment:
+      <<: *anonymous-server-environment
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: worker_node
+    volumes:
+      - anonymous-server-db:/app/database
+    depends_on:
+      anonymous-server:
+        condition: service_healthy
+
 volumes:
   server-db:
+  anonymous-server-db:
 YAML
 
 docker compose -f "$run_root/compose.yml" run --rm server server-bootstrap > "$result_dir/server-bootstrap.log" 2>&1
+docker compose -f "$run_root/compose.yml" run --rm anonymous-server server-bootstrap > "$result_dir/anonymous-server-bootstrap.log" 2>&1
 docker compose -f "$run_root/compose.yml" up -d --wait > "$result_dir/docker-compose-up.log" 2>&1
 
 for _ in $(seq 1 90); do
   if curl -fsS "$server_api_url/ready" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+for _ in $(seq 1 90); do
+  if curl -fsS "$anonymous_server_api_url/ready" >/dev/null 2>&1; then
     break
   fi
   sleep 1
@@ -932,6 +985,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -945,8 +999,13 @@ from typing import Any
 
 SERVER_URL = os.environ["SERVER_URL"].rstrip("/")
 API = SERVER_URL + "/api"
+ANONYMOUS_SERVER_URL = os.environ["ANONYMOUS_SERVER_URL"].rstrip("/")
+ANONYMOUS_API = ANONYMOUS_SERVER_URL + "/api"
 RESULT_DIR = Path(os.environ["RESULT_DIR"])
 DW_BIN = Path(os.environ["DW_BIN"])
+PYTHON_BIN = Path(os.environ["PYTHON_BIN"])
+WORKFLOW_PHP_AUTOLOAD = Path(os.environ["WORKFLOW_PHP_AUTOLOAD"])
+PHP_BIN = os.environ.get("PHP_BIN", "php")
 STARTED_AT = os.environ["STARTED_AT"]
 SUITE_VERSION = json.loads(os.environ["PRINCIPAL_ATTRIBUTION_SUITE_VERSION"])
 
@@ -971,20 +1030,21 @@ def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def request(method: str, path: str, *, token: str, body: dict[str, Any] | None = None, headers: dict[str, str] | None = None, timeout: int = 10, allowed: set[int] | None = None) -> dict[str, Any]:
+def request(method: str, path: str, *, token: str | None, body: dict[str, Any] | None = None, headers: dict[str, str] | None = None, timeout: int = 10, allowed: set[int] | None = None, api: str = API) -> dict[str, Any]:
     allowed = allowed or set(range(200, 300))
     data = None if body is None else json.dumps(body).encode("utf-8")
     req_headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {token}",
         "X-Namespace": "default",
         "X-Durable-Workflow-Control-Plane-Version": "2",
         "X-Durable-Workflow-Protocol-Version": "1.7",
     }
+    if token:
+        req_headers["Authorization"] = f"Bearer {token}"
     if headers:
         req_headers.update(headers)
-    req = urllib.request.Request(API + path, data=data, method=method, headers=req_headers)
+    req = urllib.request.Request(api + path, data=data, method=method, headers=req_headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             payload = response.read().decode("utf-8")
@@ -1211,6 +1271,7 @@ def principal_from_query_observation(query_observation: dict[str, Any]) -> dict[
                 ["query_principal"],
                 ["audit", "principal"],
                 ["command_context", "principal"],
+                ["command_context", "context", "principal"],
             ],
         ),
     ):
@@ -1220,6 +1281,155 @@ def principal_from_query_observation(query_observation: dict[str, Any]) -> dict[
                 return principal
 
     return None
+
+
+def run_python_sdk_client_operation(workflow_id: str) -> dict[str, Any]:
+    if not PYTHON_BIN.exists():
+        return {"status": "not_covered", "errors": [f"Python SDK interpreter missing at {PYTHON_BIN}"]}
+
+    code = r'''
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+
+from durable_workflow import Client
+
+
+async def main() -> None:
+    workflow_id = os.environ["WORKFLOW_ID"]
+    async with Client(os.environ["SERVER_URL"], token=os.environ["TOKEN"], namespace="default") as client:
+        handle = await client.start_workflow(
+            workflow_type=os.environ["WORKFLOW_TYPE"],
+            task_queue=os.environ["TASK_QUEUE"],
+            workflow_id=workflow_id,
+            input=[{"client": "python-sdk"}],
+        )
+        await client.signal_workflow(workflow_id, "nudge", args=[{"client": "python-sdk"}])
+        print(json.dumps({"workflow_id": workflow_id, "run_id": handle.run_id}))
+
+
+asyncio.run(main())
+'''
+    env = {
+        **os.environ,
+        "SERVER_URL": SERVER_URL,
+        "TOKEN": TOKENS["bob"],
+        "WORKFLOW_ID": workflow_id,
+        "WORKFLOW_TYPE": WORKFLOW_TYPE,
+        "TASK_QUEUE": MAIN_TASK_QUEUE,
+    }
+    completed = subprocess.run(
+        [str(PYTHON_BIN), "-c", code],
+        check=False,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+
+    if completed.returncode != 0:
+        return {"status": "fail", "errors": [completed.stdout[-4000:]], "output": completed.stdout[-4000:]}
+
+    try:
+        payload = json.loads(completed.stdout.strip().splitlines()[-1])
+    except Exception as exc:  # noqa: BLE001 - conformance result captures product failures
+        return {"status": "fail", "errors": [f"Python SDK output was not JSON: {exc}; output={completed.stdout[-4000:]}"]}
+
+    return {"status": "pass", "client_operation": "python-sdk start_workflow + signal_workflow", **payload, "output": completed.stdout[-4000:]}
+
+
+def run_php_client_operation(workflow_id: str) -> dict[str, Any]:
+    if not WORKFLOW_PHP_AUTOLOAD.exists():
+        return {"status": "not_covered", "errors": [f"Workflow PHP autoload missing at {WORKFLOW_PHP_AUTOLOAD}"]}
+    if shutil.which(PHP_BIN) is None and not Path(PHP_BIN).exists():
+        return {"status": "not_covered", "errors": [f"PHP binary missing: {PHP_BIN}"]}
+
+    code = r'''
+$autoload = getenv('WORKFLOW_PHP_AUTOLOAD');
+require $autoload;
+
+function dw_request(string $method, string $path, ?array $body = null): array {
+    $headers = [
+        'Accept: application/json',
+        'Content-Type: application/json',
+        'Authorization: Bearer '.getenv('TOKEN'),
+        'X-Namespace: default',
+        'X-Durable-Workflow-Control-Plane-Version: 2',
+    ];
+    $options = [
+        'http' => [
+            'method' => $method,
+            'header' => implode("\r\n", $headers),
+            'ignore_errors' => true,
+            'timeout' => 10,
+        ],
+    ];
+    if ($body !== null) {
+        $options['http']['content'] = json_encode($body);
+    }
+    $response = file_get_contents(rtrim(getenv('SERVER_URL'), '/').'/api'.$path, false, stream_context_create($options));
+    $status = 0;
+    foreach (($http_response_header ?? []) as $header) {
+        if (preg_match('/^HTTP\/\S+\s+(\d+)/', $header, $matches)) {
+            $status = (int) $matches[1];
+            break;
+        }
+    }
+    if ($response === false || $status < 200 || $status >= 300) {
+        fwrite(STDERR, $method.' '.$path.' failed with HTTP '.$status.': '.(string) $response);
+        exit(1);
+    }
+    $decoded = json_decode((string) $response, true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+$workflowId = getenv('WORKFLOW_ID');
+$start = dw_request('POST', '/workflows', [
+    'workflow_id' => $workflowId,
+    'workflow_type' => getenv('WORKFLOW_TYPE'),
+    'task_queue' => getenv('TASK_QUEUE'),
+    'input' => [['client' => 'php']],
+]);
+dw_request('POST', '/workflows/'.$workflowId.'/signal/nudge', [
+    'input' => [['client' => 'php']],
+]);
+echo json_encode([
+    'workflow_id' => $workflowId,
+    'run_id' => $start['run_id'] ?? null,
+    'autoload' => $autoload,
+]).PHP_EOL;
+'''
+    env = {
+        **os.environ,
+        "SERVER_URL": SERVER_URL,
+        "TOKEN": TOKENS["alice_v1"],
+        "WORKFLOW_ID": workflow_id,
+        "WORKFLOW_TYPE": WORKFLOW_TYPE,
+        "TASK_QUEUE": MAIN_TASK_QUEUE,
+        "WORKFLOW_PHP_AUTOLOAD": str(WORKFLOW_PHP_AUTOLOAD),
+    }
+    completed = subprocess.run(
+        [PHP_BIN, "-r", code],
+        check=False,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+
+    if completed.returncode != 0:
+        return {"status": "fail", "errors": [completed.stdout[-4000:]], "output": completed.stdout[-4000:]}
+
+    try:
+        payload = json.loads(completed.stdout.strip().splitlines()[-1])
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "fail", "errors": [f"PHP client output was not JSON: {exc}; output={completed.stdout[-4000:]}"]}
+
+    return {"status": "pass", "client_operation": "php published package autoload + HTTP start/signal client", **payload, "output": completed.stdout[-4000:]}
 
 
 def install_status_and_findings(evidence: dict[str, Any]) -> tuple[str, list[str]]:
@@ -1248,16 +1458,6 @@ def install_status_and_findings(evidence: dict[str, Any]) -> tuple[str, list[str
 
 def scenario(status: str, scenario_id: str, **fields: Any) -> dict[str, Any]:
     return {"scenario_id": scenario_id, "status": status, **fields}
-
-
-def missing_required_principal(scenario_id: str, reason: str) -> dict[str, Any]:
-    return {
-        "classification": "coverage_gap_not_observed",
-        "principal_present": False,
-        "required_named_principal": True,
-        "scenario_id": scenario_id,
-        "reason": reason,
-    }
 
 
 def current_artifact_versions() -> dict[str, Any]:
@@ -1343,6 +1543,69 @@ def main() -> int:
     fail_history = history(fail_id, fail_run)
     history_dumps["failure"] = fail_history
     fail_principals = event_principals(fail_history)
+
+    anonymous_id = f"pa-anonymous-{int(time.time())}"
+    anonymous_start = request(
+        "POST",
+        "/workflows",
+        token=None,
+        api=ANONYMOUS_API,
+        body={
+            "workflow_id": anonymous_id,
+            "workflow_type": WORKFLOW_TYPE,
+            "task_queue": MAIN_TASK_QUEUE,
+            "input": [{"workflow_id": anonymous_id}],
+            "principal": "mallory",
+        },
+        headers={
+            "X-Workflow-Principal-Id": "mallory",
+            "X-Forwarded-User": "mallory",
+        },
+    )
+    anonymous_run = str(anonymous_start["run_id"])
+    request(
+        "POST",
+        f"/workflows/{anonymous_id}/signal/nudge",
+        token=None,
+        api=ANONYMOUS_API,
+        body={"input": [{"signal": "anonymous"}], "principal": "mallory"},
+        headers={"X-Workflow-Principal-Id": "mallory", "X-Forwarded-User": "mallory"},
+        allowed={200, 202},
+    )
+    request(
+        "POST",
+        f"/workflows/{anonymous_id}/cancel",
+        token=None,
+        api=ANONYMOUS_API,
+        body={"reason": "anonymous principal attribution"},
+        allowed={200, 202, 409},
+    )
+    anonymous_history = request(
+        "GET",
+        f"/workflows/{anonymous_id}/runs/{anonymous_run}/history",
+        token=None,
+        api=ANONYMOUS_API,
+    )
+    history_dumps["anonymous"] = anonymous_history
+    anonymous_principals = event_principals(anonymous_history)
+
+    python_client_id = f"pa-python-{int(time.time())}"
+    python_operation = run_python_sdk_client_operation(python_client_id)
+    python_history: dict[str, Any] = {}
+    python_principals: dict[str, Any] = {}
+    if python_operation.get("status") == "pass" and isinstance(python_operation.get("run_id"), str):
+        python_history = history(python_client_id, str(python_operation["run_id"]), token_name="bob")
+        history_dumps["python_sdk"] = python_history
+        python_principals = event_principals(python_history)
+
+    php_client_id = f"pa-php-{int(time.time())}"
+    php_operation = run_php_client_operation(php_client_id)
+    php_history: dict[str, Any] = {}
+    php_principals: dict[str, Any] = {}
+    if php_operation.get("status") == "pass" and isinstance(php_operation.get("run_id"), str):
+        php_history = history(php_client_id, str(php_operation["run_id"]), token_name="alice_v1")
+        history_dumps["php_client"] = php_history
+        php_principals = event_principals(php_history)
 
     cli_output = ""
     cli_json_ok = False
@@ -1440,16 +1703,42 @@ def main() -> int:
     server_originated = {event: principal for event, principal in {**main_principals, **complete_principals, **fail_principals}.items() if principal is None}
     scenario_results.append(scenario("pass", "server_originated_events", event_types=list(server_originated), principal_values=server_originated, classification="explicit_null_for_events_without_originating_control_plane_command"))
 
-    scenario_results.append(scenario("not_covered", "anonymous_attribution", anonymous_principal=None, documented_value={"type": "server", "id": "anonymous"}, history_events=[]))
-    findings.append(finding("anonymous_attribution", "server", "anonymous mode was not exercised in this pass", "anonymous behavior is explicitly recorded or documented", "run the anonymous-auth topology and record the event principal value"))
+    expected_anonymous_principal = {"type": "server", "id": "anonymous"}
+    anonymous_failures = []
+    for event_type in ["WorkflowStarted", "SignalReceived", "WorkflowCancelled"]:
+        if not principal_matches(anonymous_principals.get(event_type), expected_anonymous_principal):
+            anonymous_failures.append(f"{event_type} anonymous principal expected {expected_anonymous_principal!r}, got {anonymous_principals.get(event_type)!r}")
+    if any(isinstance(value, dict) and value.get("id") == "mallory" for value in anonymous_principals.values()):
+        anonymous_failures.append("spoofed anonymous principal mallory appeared in history")
+    scenario_results.append(scenario("pass" if not anonymous_failures else "fail", "anonymous_attribution", anonymous_principal=anonymous_principals.get("WorkflowStarted"), documented_value=expected_anonymous_principal, history_events=list(anonymous_principals), recorded_principals=anonymous_principals, findings=anonymous_failures))
+    if anonymous_failures:
+        findings.append(finding("anonymous_attribution", "server", f"anonymous attribution failures: {anonymous_failures}", "auth-disabled requests record principal type=server id=anonymous and ignore caller-supplied principal fields", "fix auth-disabled command context attribution before marking anonymous principal coverage pass"))
 
-    python_sdk_gap = "Python SDK client operation was not exercised by this runner revision"
-    scenario_results.append(scenario("not_covered", "python_sdk_visibility", client_operation=None, recorded_principal=missing_required_principal("python_sdk_visibility", python_sdk_gap), shape_matches_http=None))
-    findings.append(finding("python_sdk_visibility", "sdk-python", python_sdk_gap, "Python-authored client calls record the same principal shape as raw HTTP", "extend the host runner to install durable-workflow from PyPI and run a Python client cell"))
+    python_recorded_principal = python_principals.get("SignalReceived") or python_principals.get("WorkflowStarted")
+    python_failures = list(python_operation.get("errors", [])) if isinstance(python_operation.get("errors"), list) else []
+    if python_operation.get("status") != "pass":
+        python_failures.append(f"Python SDK operation status={python_operation.get('status')}")
+    if not principal_matches(python_principals.get("WorkflowStarted"), {"type": "auth:token", "id": "bob"}):
+        python_failures.append(f"Python SDK start principal expected bob, got {python_principals.get('WorkflowStarted')!r}")
+    if not principal_matches(python_principals.get("SignalReceived"), {"type": "auth:token", "id": "bob"}):
+        python_failures.append(f"Python SDK signal principal expected bob, got {python_principals.get('SignalReceived')!r}")
+    python_shape_matches_http = isinstance(python_recorded_principal, dict) and isinstance(python_recorded_principal.get("type"), str) and isinstance(python_recorded_principal.get("id"), str)
+    scenario_results.append(scenario("pass" if not python_failures else "fail", "python_sdk_visibility", client_operation=python_operation, recorded_principal=python_recorded_principal, shape_matches_http=python_shape_matches_http, history_events=list(python_principals), findings=python_failures))
+    if python_failures:
+        findings.append(finding("python_sdk_visibility", "sdk-python", f"Python SDK attribution failures: {python_failures}", "Python-authored client calls record the same principal shape as raw HTTP", "fix Python SDK credential propagation or server attribution shape before marking Python visibility pass"))
 
-    php_client_gap = "PHP client operation was not exercised by this runner revision"
-    scenario_results.append(scenario("not_covered", "php_client_visibility", client_operation=None, recorded_principal=missing_required_principal("php_client_visibility", php_client_gap), shape_matches_http=None))
-    findings.append(finding("php_client_visibility", "workflow", php_client_gap, "PHP-authored client calls record the same principal shape as raw HTTP", "extend the host runner to install durable-workflow/workflow from Packagist and run a PHP client cell"))
+    php_recorded_principal = php_principals.get("SignalReceived") or php_principals.get("WorkflowStarted")
+    php_failures = list(php_operation.get("errors", [])) if isinstance(php_operation.get("errors"), list) else []
+    if php_operation.get("status") != "pass":
+        php_failures.append(f"PHP client operation status={php_operation.get('status')}")
+    if not principal_matches(php_principals.get("WorkflowStarted"), {"type": "auth:token", "id": "alice"}):
+        php_failures.append(f"PHP client start principal expected alice, got {php_principals.get('WorkflowStarted')!r}")
+    if not principal_matches(php_principals.get("SignalReceived"), {"type": "auth:token", "id": "alice"}):
+        php_failures.append(f"PHP client signal principal expected alice, got {php_principals.get('SignalReceived')!r}")
+    php_shape_matches_http = isinstance(php_recorded_principal, dict) and isinstance(php_recorded_principal.get("type"), str) and isinstance(php_recorded_principal.get("id"), str)
+    scenario_results.append(scenario("pass" if not php_failures else "fail", "php_client_visibility", client_operation=php_operation, recorded_principal=php_recorded_principal, shape_matches_http=php_shape_matches_http, history_events=list(php_principals), findings=php_failures))
+    if php_failures:
+        findings.append(finding("php_client_visibility", "workflow", f"PHP client attribution failures: {php_failures}", "PHP-authored client calls record the same principal shape as raw HTTP", "fix PHP credential propagation or server attribution shape before marking PHP visibility pass"))
 
     scenario_results.append(scenario("pass" if cli_json_ok else "fail", "cli_operator_visibility", command=f"dw workflow:history {main_id} {main_run} --output=json", output_sample=cli_output[:4000], principal_visible=cli_json_ok))
     if not cli_json_ok:
@@ -1474,12 +1763,12 @@ def main() -> int:
         "published_artifact_versions": versions,
         "resolved_artifact_versions": versions,
         "artifact_sources": pins.get("artifact_sources", {}),
-        "topology": {"server_url": SERVER_URL, "task_queues": {"main": MAIN_TASK_QUEUE, "completion": COMPLETE_TASK_QUEUE, "failure": FAIL_TASK_QUEUE}, "auth_driver": "token", "principal_tokens": ["alice", "bob", "worker"]},
+        "topology": {"server_url": SERVER_URL, "anonymous_server_url": ANONYMOUS_SERVER_URL, "task_queues": {"main": MAIN_TASK_QUEUE, "completion": COMPLETE_TASK_QUEUE, "failure": FAIL_TASK_QUEUE}, "auth_driver": "token", "anonymous_auth_driver": "none", "principal_tokens": ["alice", "bob", "worker"]},
         "actor_matrix": {"alice": {"credentials": ["alice-token-v1", "alice-token-v2"]}, "bob": {"credentials": ["bob-token"]}},
         "history_dumps": history_dumps,
         "spoofing_attempts": {"payload_values": ["mallory"], "headers": ["X-Workflow-Principal-Id", "X-Forwarded-User", "Authorization-Override"]},
         "operator_visibility": {"cli_history_json_principal_visible": cli_json_ok, "waterline": "not_covered"},
-        "anonymous_observations": {"status": "not_covered"},
+        "anonymous_observations": {"status": "pass" if not anonymous_failures else "fail", "anonymous_principal": anonymous_principals.get("WorkflowStarted"), "documented_value": expected_anonymous_principal, "history_events": list(anonymous_principals)},
         "scenario_results": scenario_results,
         "findings": findings,
     }
@@ -1500,8 +1789,11 @@ if __name__ == "__main__":
 PY
 
 SERVER_URL="$server_base_url" \
+ANONYMOUS_SERVER_URL="$anonymous_server_base_url" \
 RESULT_DIR="$result_dir" \
 DW_BIN="$run_root/cli/bin/dw" \
+PYTHON_BIN="$run_root/artifacts/python-sdk/bin/python" \
+WORKFLOW_PHP_AUTOLOAD="$run_root/artifacts/workflow-php/vendor/autoload.php" \
 STARTED_AT="$started_at" \
 PRINCIPAL_ATTRIBUTION_SUITE_VERSION="$principal_suite_version" \
 python3 "$run_root/orchestrate.py" | tee "$result_dir/orchestrate.log"

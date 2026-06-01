@@ -134,20 +134,16 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('recorded_query_principal = principal_from_query_observation(query_observation)', $script);
         $this->assertStringContainsString('principal_id(recorded_query_principal) != "bob"', $script);
         $this->assertStringContainsString('recorded_principal=recorded_query_principal', $script);
+        $this->assertStringContainsString('["command_context", "context", "principal"]', $script);
         $this->assertStringNotContainsString('recorded_principal=None', $script);
-        $this->assertStringContainsString('def missing_required_principal(scenario_id: str, reason: str)', $script);
-        $this->assertStringContainsString('"classification": "coverage_gap_not_observed"', $script);
-        $this->assertStringContainsString('"required_named_principal": True', $script);
-        $this->assertStringContainsString('python_sdk_gap = "Python SDK client operation was not exercised by this runner revision"', $script);
-        $this->assertStringContainsString(
-            'recorded_principal=missing_required_principal("python_sdk_visibility", python_sdk_gap)',
-            $script,
-        );
-        $this->assertStringContainsString('php_client_gap = "PHP client operation was not exercised by this runner revision"', $script);
-        $this->assertStringContainsString(
-            'recorded_principal=missing_required_principal("php_client_visibility", php_client_gap)',
-            $script,
-        );
+        $this->assertStringContainsString('ANONYMOUS_SERVER_URL="$anonymous_server_base_url"', $script);
+        $this->assertStringContainsString('anonymous_auth_driver": "none"', $script);
+        $this->assertStringContainsString('run_python_sdk_client_operation', $script);
+        $this->assertStringContainsString('python_operation = run_python_sdk_client_operation(python_client_id)', $script);
+        $this->assertStringContainsString('run_php_client_operation', $script);
+        $this->assertStringContainsString('php_operation = run_php_client_operation(php_client_id)', $script);
+        $this->assertStringNotContainsString('Python SDK client operation was not exercised by this runner revision', $script);
+        $this->assertStringNotContainsString('PHP client operation was not exercised by this runner revision', $script);
 
         $this->assertStringContainsString('"--output=json"', $script);
         $this->assertStringContainsString('--output=json', $script);

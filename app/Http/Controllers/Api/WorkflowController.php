@@ -565,13 +565,21 @@ class WorkflowController
 
         $externalStorage = $this->externalPayloadStorage->driverFor($namespace);
         $queryEnvelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $externalStorage);
+        $commandContext = $this->commandContexts->make(
+            $request,
+            workflowId: $workflowId,
+            commandName: 'query',
+            metadata: array_filter([
+                'query_name' => $queryName,
+            ], static fn (mixed $value): bool => $value !== null),
+        );
 
         if ($run instanceof WorkflowRun
             && ($this->queryTasks->hasWorkerFor($namespace, $run) || ! $this->canReplayQueryInProcess($run))) {
             return $this->resultMapper->query(
                 $workflowId,
                 $queryName,
-                $this->queryTasks->query($namespace, $run, $queryName, $queryEnvelope),
+                $this->queryTasks->query($namespace, $run, $queryName, $queryEnvelope, $commandContext),
                 $this->controlPlaneRunId($request),
             );
         }
@@ -582,14 +590,7 @@ class WorkflowController
             [
                 'namespace' => $namespace,
                 'arguments' => PayloadEnvelopeResolver::resolveToArray($validated['input'] ?? null, 'input', $externalStorage),
-                'command_context' => $this->commandContexts->make(
-                    $request,
-                    workflowId: $workflowId,
-                    commandName: 'query',
-                    metadata: array_filter([
-                        'query_name' => $queryName,
-                    ], static fn (mixed $value): bool => $value !== null),
-                ),
+                'command_context' => $commandContext,
                 'strict_configured_type_validation' => true,
             ],
         );
