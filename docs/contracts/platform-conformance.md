@@ -34,7 +34,7 @@ categories and runtime contracts:
 | `child_workflow_runtime_contract` (server side) | `GET /api/cluster/info`'s `child_workflow_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/child-workflow-runtime-scenarios.json`, plus the child scheduling, completion, failure, cancellation, replay, fan-out, and namespace behavior recorded by the worker protocol and history surfaces | stable |
 | `saga_runtime_contract` (server side) | `GET /api/cluster/info`'s `saga_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/saga-runtime-scenarios.json`, and `scripts/conformance/sagas-published-artifacts.sh`, which is the host-runner handoff for published-artifact saga compensation evidence | stable |
 | `principal_attribution_contract` (server side) | `GET /api/cluster/info`'s `principal_attribution_contract` manifest, the public scenario manifest at `static/platform-conformance/principal-attribution-scenarios.json`, and `scripts/conformance/principal-attribution-published-artifacts.sh`, which is the host-runner handoff for source-free principal attribution evidence | stable |
-| `skew_refusal_matrix_contract` (server side) | `GET /api/cluster/info`'s `skew_refusal_matrix_contract` manifest, the CLI/Python/PHP worker/Waterline version-pair matrix, worker registration skew classifications, Waterline render classifications, and request/response evidence requirements for skewed operations | stable |
+| `skew_refusal_matrix_contract` (server side) | `GET /api/cluster/info`'s `skew_refusal_matrix_contract` manifest, the public scenario manifest at `static/platform-conformance/skew-refusal-matrix-scenarios.json`, and `scripts/conformance/skew-published-artifacts.sh`, which is the host-runner handoff for the CLI/Python/PHP worker/Waterline skew matrix, worker registration skew classifications, Waterline render classifications, and request/response evidence requirements | stable |
 | `worker_versioning_runtime_contract` (server side) | `GET /api/cluster/info`'s `worker_versioning_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/worker-versioning-runtime-scenarios.json`, worker registration/build-id rollout APIs, workflow start pinning, compatible polling, history/visibility pin surfaces, and CLI/Waterline operator visibility | stable |
 | `namespace_runtime_contract` (server side) | the public scenario manifest at `static/platform-conformance/namespace-runtime-scenarios.json`, plus namespace, workflow, worker, schedule, search-attribute, Nexus, and operator routes documented in the protocol catalog | stable |
 | `failure_repair_actionability` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, plus the artifact objects published from `GET /api/cluster/info`'s `worker_protocol.external_task_result_contract.fixtures` | stable |
@@ -191,12 +191,13 @@ category emits a warning and does not block.
   and requires current published artifact versions, every required surface,
   every pairing class, every operation group, request/response evidence, and
   focused linked findings for any non-pass cell before rollup can count the
-  result. Its `host_runner_contract` names the CLI, Python SDK, PHP worker,
-  Waterline, future-version boundary, and request/response evidence shards a
-  runner must execute against published artifacts; uncovered cells must be
-  recorded as `not_covered` with `conformance_runner_coverage_gap` findings
-  owned by the conformance harness, while `register_and_drop` and
-  `stale_render` route as blocking product gaps.
+  result. Its `host_runner_contract` names
+  `scripts/conformance/skew-published-artifacts.sh` as the executable handoff
+  and lists the CLI, Python SDK, PHP worker, Waterline, future-version
+  boundary, and request/response evidence shards a runner must execute against
+  published artifacts; uncovered cells must be recorded as `not_covered` with
+  `conformance_runner_coverage_gap` findings owned by the conformance harness,
+  while `register_and_drop` and `stale_render` route as blocking product gaps.
 - Worker-versioning runtime contract: `GET /api/cluster/info` re-exports
   `worker_versioning_runtime_contract`, schema
   `durable-workflow.v2.worker-versioning-runtime.contract`. It names the

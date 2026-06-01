@@ -227,7 +227,17 @@
   },
   "host_runner_contract": {
     "status": "required_for_passing_skew_refusal_matrix_conformance",
+    "runner_repository": "server",
+    "runner_path": "scripts/conformance/skew-published-artifacts.sh",
+    "runner_command": "scripts/conformance/skew-published-artifacts.sh --result-dir <result-dir>",
     "result_schema": "durable-workflow.v2.skew-refusal-matrix.result",
+    "result_files": [
+      "pins.json",
+      "run-metadata.json",
+      "skew-result.json",
+      "skew-record.json",
+      "request-response-captures.json"
+    ],
     "required_scenarios": [
       "published_artifact_install_only",
       "cli_version_pair_matrix",

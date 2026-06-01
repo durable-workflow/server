@@ -680,20 +680,22 @@ final class SkewRefusalMatrixResultGate
             $nonPassCells[] = $cell;
         }
 
-        foreach (self::stringList($contract['operation_groups'][$operationGroup]['evidence'] ?? []) as $field) {
-            if (self::hasRunRecordField($evidence, $field)) {
-                continue;
-            }
+        if (! self::isCoverageGapStatus($status)) {
+            foreach (self::stringList($contract['operation_groups'][$operationGroup]['evidence'] ?? []) as $field) {
+                if (self::hasRunRecordField($evidence, $field)) {
+                    continue;
+                }
 
-            $failures[] = [
-                'code' => 'missing_operation_evidence_field',
-                'surface' => $surface,
-                'pairing_class' => $pairingClass,
-                'operation_group' => $operationGroup,
-                'index' => $index,
-                'field' => $field,
-            ];
-            $nonPassCells[] = $cell;
+                $failures[] = [
+                    'code' => 'missing_operation_evidence_field',
+                    'surface' => $surface,
+                    'pairing_class' => $pairingClass,
+                    'operation_group' => $operationGroup,
+                    'index' => $index,
+                    'field' => $field,
+                ];
+                $nonPassCells[] = $cell;
+            }
         }
 
         if ($status === 'loud_refuse') {
@@ -940,6 +942,11 @@ final class SkewRefusalMatrixResultGate
     private static function surfaceSpecificClassificationFailures(string $surface, string $pairingClass, array $row, array $contract): array
     {
         $failures = [];
+        $status = self::resultStatus($row);
+
+        if (self::isCoverageGapStatus($status)) {
+            return [];
+        }
 
         if ($surface === 'workflow-worker') {
             $classification = self::stringValue(
@@ -1339,7 +1346,16 @@ final class SkewRefusalMatrixResultGate
      */
     private static function statusAllowedForPairingClass(string $status, string $pairingClass, array $contract): bool
     {
+        if (self::isCoverageGapStatus($status)) {
+            return true;
+        }
+
         return in_array($status, self::stringList($contract['pairing_classes'][$pairingClass]['expected_statuses'] ?? []), true);
+    }
+
+    private static function isCoverageGapStatus(string $status): bool
+    {
+        return in_array($status, ['not_covered', 'runner_blocked'], true);
     }
 
     /**

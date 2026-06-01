@@ -318,7 +318,17 @@ final class SkewRefusalMatrixContract
             ],
             'host_runner_contract' => [
                 'status' => 'required_for_passing_skew_refusal_matrix_conformance',
+                'runner_repository' => 'server',
+                'runner_path' => 'scripts/conformance/skew-published-artifacts.sh',
+                'runner_command' => 'scripts/conformance/skew-published-artifacts.sh --result-dir <result-dir>',
                 'result_schema' => self::RESULT_SCHEMA,
+                'result_files' => [
+                    'pins.json',
+                    'run-metadata.json',
+                    'skew-result.json',
+                    'skew-record.json',
+                    'request-response-captures.json',
+                ],
                 'required_scenarios' => self::requiredScenarios(),
                 'must_execute_against_published_artifacts' => true,
                 'must_record_runner_blocked_false_for_product_evidence' => true,

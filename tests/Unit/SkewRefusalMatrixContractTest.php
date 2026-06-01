@@ -239,7 +239,23 @@ final class SkewRefusalMatrixContractTest extends TestCase
         $hostRunner = $manifest['host_runner_contract'];
 
         $this->assertSame('required_for_passing_skew_refusal_matrix_conformance', $hostRunner['status']);
+        $this->assertSame('server', $hostRunner['runner_repository']);
+        $this->assertSame('scripts/conformance/skew-published-artifacts.sh', $hostRunner['runner_path']);
+        $this->assertSame(
+            'scripts/conformance/skew-published-artifacts.sh --result-dir <result-dir>',
+            $hostRunner['runner_command'],
+        );
         $this->assertSame(SkewRefusalMatrixContract::RESULT_SCHEMA, $hostRunner['result_schema']);
+        $this->assertSame(
+            [
+                'pins.json',
+                'run-metadata.json',
+                'skew-result.json',
+                'skew-record.json',
+                'request-response-captures.json',
+            ],
+            $hostRunner['result_files'],
+        );
         $this->assertTrue($hostRunner['must_execute_against_published_artifacts']);
         $this->assertSame($manifest['required_scenarios'], $hostRunner['required_scenarios']);
         $this->assertTrue($hostRunner['must_record_runner_blocked_false_for_product_evidence']);
@@ -302,6 +318,303 @@ final class SkewRefusalMatrixContractTest extends TestCase
         $this->assertSame(
             'durable-workflow/waterline',
             $hostRunner['routing_policy']['waterline_stale_render']['owner'],
+        );
+    }
+
+    public function test_published_artifact_runner_handoff_covers_full_matrix_outputs(): void
+    {
+        $shell = $this->read('scripts/conformance/skew-published-artifacts.sh');
+        $runner = $this->read('scripts/conformance/skew-published-artifacts.mjs');
+
+        $this->assertStringContainsString(
+            'Usage: skew-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--keep-run-root[=1|true]]',
+            $shell,
+            'the skew runner must document the host handoff flag forms',
+        );
+        $this->assertStringContainsString(
+            'DW_SKEW_SERVER_URL',
+            $shell,
+            'host runners must be able to attach the skew matrix to an already running published server',
+        );
+        $this->assertStringContainsString(
+            'DW_SERVER_IMAGE must use an exact patch semver tag or an image digest',
+            $shell,
+            'the skew runner must not record rolling server image tags as published-artifact evidence',
+        );
+        $this->assertStringContainsString(
+            'docker image pull "$server_image"',
+            $shell,
+            'the skew runner must pull the exact published server image before compose startup so stale local tags cannot be recorded as current artifact evidence',
+        );
+        $this->assertStringContainsString(
+            "tr -c 'a-z0-9_-' '-'",
+            $shell,
+            'the skew runner must replace dots and other invalid characters before deriving the Docker Compose project name',
+        );
+        $this->assertStringNotContainsString(
+            "tr -c 'a-z0-9_." . "-' '-'",
+            $shell,
+            'the default mktemp basename contains a dot, which is not valid in Docker Compose project names',
+        );
+        $this->assertStringContainsString(
+            'docker-image-pull.log',
+            $shell,
+            'server image pull failures must leave diagnostics before the runner writes a blocked result',
+        );
+        $this->assertStringContainsString(
+            'docker-image-inspect.json',
+            $shell,
+            'server image resolution evidence should be attached for compose-backed skew runs',
+        );
+        $this->assertStringContainsString(
+            'probed published server version mismatch',
+            $runner,
+            'the Node runner must refuse to record skew evidence when DW_SKEW_SERVER_URL points at a server that does not match DW_SERVER_VERSION',
+        );
+        $this->assertStringContainsString(
+            'did not report a server version from GET /api/cluster/info',
+            $runner,
+            'the Node runner must fail closed when cluster-info cannot prove the probed server artifact version',
+        );
+        $this->assertStringContainsString(
+            'skew conformance requires exact published artifact semver pins',
+            $runner,
+            'the result recorder must reject floating package constraints before emitting published-artifact evidence',
+        );
+        $this->assertStringContainsString(
+            'isExactSemverVersion',
+            $runner,
+            'the result recorder must have a concrete semver guard beyond placeholder-string checks',
+        );
+        $this->assertStringNotContainsString(
+            'extractServerVersion(clusterInfo.body) ?? artifactVersions.server',
+            $runner,
+            'the skew runner must not fall back to the requested server pin when the probed server did not advertise that version',
+        );
+        $this->assertStringContainsString(
+            'const operationGroups = {',
+            $runner,
+            'the skew runner must carry operation-group request templates instead of reporting cluster-info smoke only',
+        );
+        $this->assertStringContainsString(
+            "'workflow_control_plane'",
+            $runner,
+            'CLI and Python coverage must include workflow control-plane operations',
+        );
+        $this->assertStringContainsString(
+            "'schedule_control_plane'",
+            $runner,
+            'CLI and Python coverage must include schedule operations',
+        );
+        $this->assertStringContainsString(
+            "'worker_lifecycle'",
+            $runner,
+            'Python and PHP worker skew coverage must include worker lifecycle operations',
+        );
+        $this->assertStringContainsString(
+            "'waterline_render'",
+            $runner,
+            'Waterline skew coverage must include render probes with DOM evidence',
+        );
+        $this->assertStringContainsString(
+            'request-response-captures.json',
+            $runner,
+            'every skewed operation must be attachable as request/response evidence',
+        );
+        $this->assertStringContainsString(
+            'DURABLE_WORKFLOW_INSTALL_DIR',
+            $shell,
+            'the skew runner must install the CLI through the official published installer before reporting CLI evidence',
+        );
+        $this->assertStringContainsString(
+            'python3 -m venv',
+            $shell,
+            'the skew runner must isolate and install the published Python SDK artifact before reporting SDK evidence',
+        );
+        $this->assertStringContainsString(
+            'durable-workflow==${DW_PYTHON_SDK_VERSION}',
+            $shell,
+            'the skew runner must pin the Python SDK to the published artifact version under test',
+        );
+        $this->assertStringContainsString(
+            'durable-workflow/workflow:${workflow_version}',
+            $shell,
+            'the skew runner must install the PHP workflow package from Packagist before worker-shard evidence can pass',
+        );
+        $this->assertStringContainsString(
+            'Workflow install requires an exact durable-workflow/workflow version',
+            $shell,
+            'the skew runner must not install floating workflow package constraints as published-artifact evidence',
+        );
+        $this->assertStringContainsString(
+            'durable-workflow/waterline:${DW_WATERLINE_VERSION}',
+            $shell,
+            'the skew runner must install Waterline from Packagist before Waterline-shard evidence can pass',
+        );
+        $this->assertStringContainsString(
+            'Waterline install requires an exact durable-workflow/waterline version',
+            $shell,
+            'the skew runner must not install floating Waterline package constraints as published-artifact evidence',
+        );
+        $this->assertStringContainsString(
+            'DW_WORKFLOW_PHP_VERSION or DW_WORKFLOW_VERSION is required as an exact workflow pin before installing Waterline',
+            $shell,
+            'the Waterline install check must require a concrete workflow package pin before composer can resolve dependencies',
+        );
+        $this->assertStringNotContainsString(
+            '${workflow_version:-^2.0.0-alpha@alpha}',
+            $shell,
+            'the Waterline install check must not fall back to a floating workflow alpha constraint',
+        );
+        $this->assertStringContainsString(
+            'DW_SKEW_ARTIFACTS_JSON',
+            $shell,
+            'the shell handoff must tell the Node runner which published artifacts were actually installed',
+        );
+        $this->assertStringContainsString(
+            'published-artifact-invocation-recording-proxy',
+            $runner,
+            'the Node runner must use an artifact invocation path with recorded proxy evidence rather than direct server-only probes',
+        );
+        $this->assertStringContainsString(
+            'invokeCliOperation',
+            $runner,
+            'CLI matrix cells must invoke the installed dw artifact',
+        );
+        $this->assertStringContainsString(
+            'invokePythonSdkOperation',
+            $runner,
+            'Python matrix cells must invoke the installed durable-workflow package',
+        );
+        $this->assertStringContainsString(
+            'DW_SKEW_AUTH_TOKEN: process.env.DW_SKEW_AUTH_TOKEN',
+            $runner,
+            'Python SDK probes must pass auth outside recorded JSON argv payloads',
+        );
+        $this->assertStringContainsString(
+            'token=os.environ.get("DW_SKEW_AUTH_TOKEN")',
+            $runner,
+            'the generated Python probe must read auth from its environment instead of argv JSON',
+        );
+        $this->assertStringNotContainsString(
+            'token: process.env.DW_SKEW_AUTH_TOKEN',
+            $runner,
+            'Python SDK probes must not serialize auth into artifact_invocation.args',
+        );
+        $this->assertStringContainsString(
+            'redactJsonSecrets(parsed)',
+            $runner,
+            'artifact argv redaction must sanitize JSON payload tokens before writing evidence files',
+        );
+        $this->assertStringContainsString(
+            'isSensitiveKey(key)',
+            $runner,
+            'JSON argv redaction must identify token-like fields rather than only --token= flags',
+        );
+        $this->assertStringContainsString(
+            'notCoveredProbe',
+            $runner,
+            'unimplemented shards must emit explicit not_covered evidence instead of pretending public artifacts were exercised',
+        );
+        $this->assertStringContainsString(
+            'workflowWorkerDependentRequests',
+            $runner,
+            'CLI and Python query/update probes must be distinguishable from worker-independent workflow control-plane probes',
+        );
+        $this->assertStringContainsString(
+            'requires a live compatible published workflow worker for skew_conformance_workflow',
+            $runner,
+            'worker-backed CLI and Python probes must stay not_covered until the published worker shard is booted',
+        );
+        $this->assertStringContainsString(
+            'futureVersionBoundary',
+            $runner,
+            'future-version boundary evidence must be emitted for client, worker, observer, and server surfaces',
+        );
+        $this->assertStringContainsString(
+            'register_and_drop',
+            $runner,
+            'worker skew must classify register-and-drop as a blocking product finding',
+        );
+        $this->assertStringContainsString(
+            'stale_render',
+            $runner,
+            'Waterline stale render must classify as a blocking product finding',
+        );
+        $this->assertMatchesRegularExpression(
+            "/const pairingStatusPriority = \\[\\s*'corrupt',\\s*'silent_success',\\s*'silent_failure',\\s*'not_covered',\\s*'runner_blocked',\\s*\\];/s",
+            $runner,
+            'product blocker statuses must outrank not_covered and runner_blocked when a pairing mixes product and coverage gaps',
+        );
+        $this->assertStringContainsString(
+            'const prioritizedStatus = pairingStatusPriority.find((value) => statuses.includes(value));',
+            $runner,
+            'pairing summaries must use the explicit status priority instead of observed row order',
+        );
+        $this->assertStringNotContainsString(
+            "statuses.find((value) => ['corrupt', 'silent_success', 'silent_failure', 'not_covered', 'runner_blocked'].includes(value))",
+            $runner,
+            'observed row order must not decide the blocking status for a mixed pairing',
+        );
+        $this->assertStringContainsString(
+            'row.worker_skew_classification === findingStatus',
+            $runner,
+            'worker product-gap findings should attach the capture for the row that produced the blocking classification',
+        );
+        $this->assertStringContainsString(
+            'row.waterline_skew_classification === findingStatus',
+            $runner,
+            'Waterline product-gap findings should attach the capture for the row that produced the blocking classification',
+        );
+        $this->assertStringContainsString(
+            "if (status === 'not_covered' || status === 'runner_blocked')",
+            $runner,
+            'missing-cell coverage gaps and host-environment runner gaps must route to the conformance harness',
+        );
+        $this->assertStringContainsString(
+            "return 'conformance_harness';",
+            $runner,
+            'runner-owned skew gaps must be owned by the conformance harness rather than artifact repositories',
+        );
+        $this->assertStringContainsString(
+            'server_artifact_source="published_server_url"',
+            $shell,
+            'existing published server URLs must be recorded as URL-backed server artifacts',
+        );
+        $this->assertStringContainsString(
+            'server_artifact_source="docker"',
+            $shell,
+            'server artifacts started from a resolved Docker image must be recorded as Docker-backed artifacts',
+        );
+        $this->assertStringContainsString(
+            'SERVER_ARTIFACT_SOURCE="$server_artifact_source"',
+            $shell,
+            'the artifact manifest must use the resolved server artifact source, not only the original DW_SERVER_IMAGE env',
+        );
+        $this->assertStringContainsString(
+            'docker-compose-up.log',
+            $shell,
+            'server image pull or startup failures must still write blocked result files with compose diagnostics',
+        );
+        $this->assertStringContainsString(
+            'published server failed to start from ${server_image}',
+            $shell,
+            'docker compose startup failures must be wrapped with write_blocked_result instead of exiting before result files are written',
+        );
+        $this->assertStringContainsString(
+            'compose_cleanup_needed=1',
+            $shell,
+            'the skew runner must clean up compose resources after any attempted startup, even before server readiness is confirmed',
+        );
+        $this->assertStringContainsString(
+            '"$server_started" == "1" || "$compose_cleanup_needed" == "1"',
+            $shell,
+            'compose cleanup must not depend only on a successfully started server',
+        );
+        $this->assertStringNotContainsString(
+            'published_release_version',
+            $runner,
+            'artifact sources must come from actual installation handoff records, not version environment variables alone',
         );
     }
 
@@ -604,6 +917,46 @@ final class SkewRefusalMatrixContractTest extends TestCase
         $this->assertContains('waterline_skew_classification', array_column($missingFields, 'field'));
     }
 
+    public function test_result_gate_routes_not_covered_waterline_render_without_product_classification(): void
+    {
+        $result = $this->completeSkewResult();
+        $result['outcome'] = 'fail';
+        $result['pairing_results']['waterline']['outside_window']['status'] = 'not_covered';
+        unset($result['pairing_results']['waterline']['outside_window']['waterline_skew_classification']);
+
+        foreach ($result['operation_evidence']['waterline']['outside_window']['waterline_render'] as &$row) {
+            $row['status'] = 'not_covered';
+            $row['response_status'] = 0;
+            $row['response_body'] = [
+                'coverage_gap' => true,
+                'reason' => 'Waterline published-artifact invoker is not available in this runner.',
+            ];
+            $row['screenshot_or_dom_snapshot'] = [
+                'type' => 'not_covered',
+                'reason' => 'Waterline published-artifact invoker is not available in this runner.',
+            ];
+            $row['coverage_gap_reason'] = 'Waterline published-artifact invoker is not available in this runner.';
+            unset($row['waterline_skew_classification']);
+        }
+        unset($row);
+
+        $result['finding_links'] = [
+            'waterline.outside_window' => 'https://durable-workflow.github.io/conformance/findings/waterline-skew-coverage-gap',
+        ];
+
+        $evaluation = SkewRefusalMatrixResultGate::evaluate($result);
+        $codes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('blocking_pairing_status', $codes);
+        $this->assertContains('blocking_operation_status', $codes);
+        $this->assertNotContains('unexpected_pairing_status', $codes);
+        $this->assertNotContains('unexpected_operation_status', $codes);
+        $this->assertNotContains('missing_operation_evidence_field', $codes);
+        $this->assertNotContains('missing_waterline_skew_classification', $codes);
+        $this->assertNotContains('missing_focused_findings_for_non_pass_cells', $codes);
+    }
+
     public function test_result_gate_blocks_register_and_drop_and_stale_render(): void
     {
         $result = $this->completeSkewResult();
@@ -807,5 +1160,13 @@ final class SkewRefusalMatrixContractTest extends TestCase
         }
 
         return $row;
+    }
+
+    private function read(string $path): string
+    {
+        $source = file_get_contents(dirname(__DIR__, 2).'/'.$path);
+        $this->assertNotFalse($source, "{$path} must be readable");
+
+        return $source;
     }
 }

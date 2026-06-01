@@ -322,6 +322,14 @@ class ClusterInfoTest extends TestCase
             'required_for_passing_skew_refusal_matrix_conformance',
             $contract['host_runner_contract']['status'],
         );
+        $this->assertSame(
+            'scripts/conformance/skew-published-artifacts.sh',
+            $contract['host_runner_contract']['runner_path'],
+        );
+        $this->assertContains(
+            'request-response-captures.json',
+            $contract['host_runner_contract']['result_files'],
+        );
         $this->assertTrue($contract['host_runner_contract']['must_execute_against_published_artifacts']);
         $this->assertTrue(
             $contract['host_runner_contract']['must_emit_result_for_every_required_surface_pairing_operation_group'],
