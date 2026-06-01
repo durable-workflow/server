@@ -203,6 +203,12 @@ const workflowTaskCompletionRequests = new Set([
   'POST /api/worker/workflow-tasks/{task}/fail',
 ]);
 
+const workerTaskFixtureRequests = new Set([
+  'POST /api/worker/workflow-tasks/poll',
+  'POST /api/worker/workflow-tasks/{task}/complete',
+  'POST /api/worker/workflow-tasks/{task}/fail',
+]);
+
 main().catch((error) => {
   const now = timestamp();
   const reason = error instanceof Error ? error.message : String(error);
@@ -474,28 +480,6 @@ async function probeOperation({
     });
   }
 
-  const workerDependencyGap = workflowWorkerDependencyGap({
-    surfaceName,
-    operationGroup,
-    requestTemplate,
-    context,
-    state,
-  });
-  if (workerDependencyGap) {
-    return notCoveredProbe({
-      surfaceName,
-      surface,
-      pairingClass,
-      operationGroup,
-      requestTemplate,
-      method,
-      requestPath,
-      context,
-      status: workerDependencyGap.status,
-      reason: workerDependencyGap.reason,
-    });
-  }
-
   const fixtureGap = await prepareOperationFixture({
     surfaceName,
     pairingClass,
@@ -521,6 +505,29 @@ async function probeOperation({
       context,
       status: fixtureGap.status,
       reason: fixtureGap.reason,
+    });
+  }
+
+  const workerDependencyGap = workflowWorkerDependencyGap({
+    surfaceName,
+    pairingClass,
+    operationGroup,
+    requestTemplate,
+    context,
+    state,
+  });
+  if (workerDependencyGap) {
+    return notCoveredProbe({
+      surfaceName,
+      surface,
+      pairingClass,
+      operationGroup,
+      requestTemplate,
+      method,
+      requestPath,
+      context,
+      status: workerDependencyGap.status,
+      reason: workerDependencyGap.reason,
     });
   }
 
@@ -971,6 +978,7 @@ function waterlineSurfaceUrlFor(record = {}) {
 
 function workflowWorkerDependencyGap({
   surfaceName,
+  pairingClass,
   operationGroup,
   requestTemplate,
   context,
@@ -981,11 +989,15 @@ function workflowWorkerDependencyGap({
     && workflowTaskCompletionRequests.has(requestTemplate)
     && !state.taskId
   ) {
+    if (!requiresPublishedWorkerTaskId(pairingClass)) {
+      return null;
+    }
+
     return {
       status: 'not_covered',
       reason: [
-        `${requestTemplate} requires a workflow task id obtained from a successful published-artifact poll before completing or failing a task.`,
-        'Synthetic task ids are not valid published-artifact skew evidence.',
+        `${requestTemplate} requires a workflow task id obtained from a successful fixture poll before completing or failing an inside-window task.`,
+        'Protocol-refusal rows may use the advertised task placeholder only when the server must reject before task lookup.',
       ].join(' '),
     };
   }
@@ -1003,6 +1015,10 @@ function workflowWorkerDependencyGap({
     return null;
   }
 
+  if (pairingClass !== 'compatible') {
+    return null;
+  }
+
   return {
     status: 'not_covered',
     reason: [
@@ -1011,6 +1027,50 @@ function workflowWorkerDependencyGap({
       'Workflow package availability alone is not live worker coordination.',
     ].filter(Boolean).join(' '),
   };
+}
+
+function requiresPublishedWorkerTaskId(pairingClass) {
+  const pairing = pairingClasses[pairingClass];
+  if (!pairing) {
+    return true;
+  }
+
+  return workerProtocolCompatible(
+    pairing.workerProtocolVersion,
+    pairingClasses.compatible.workerProtocolVersion,
+  );
+}
+
+function workerProtocolCompatible(workerProtocolVersion, serverWorkerProtocolVersion) {
+  const worker = parseProtocolVersion(workerProtocolVersion);
+  const server = parseProtocolVersion(serverWorkerProtocolVersion);
+  if (worker === null || server === null) {
+    return workerProtocolVersion === serverWorkerProtocolVersion;
+  }
+
+  return worker.major === server.major && worker.minor <= server.minor;
+}
+
+function parseProtocolVersion(value) {
+  const match = String(value ?? '').match(/^(\d+)\.(\d+)$/);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    major: Number.parseInt(match[1], 10),
+    minor: Number.parseInt(match[2], 10),
+  };
+}
+
+function taskIdForPublishedWorkerProbe(state, pairingClass) {
+  if (state.taskId) {
+    return state.taskId;
+  }
+
+  return requiresPublishedWorkerTaskId(pairingClass)
+    ? ''
+    : 'poll-task-id-required';
 }
 
 async function prepareOperationFixture({
@@ -1040,6 +1100,159 @@ async function prepareOperationFixture({
       state,
     });
   }
+
+  if (operationGroup === 'worker_lifecycle') {
+    return prepareWorkerTaskFixture({
+      surfaceName,
+      pairingClass,
+      requestTemplate,
+      context,
+      state,
+    });
+  }
+
+  return null;
+}
+
+async function prepareWorkerTaskFixture({
+  surfaceName,
+  pairingClass,
+  requestTemplate,
+  context,
+  state,
+}) {
+  if (
+    !workerTaskFixtureRequests.has(requestTemplate)
+    || !requiresPublishedWorkerTaskId(pairingClass)
+    || (surfaceName !== 'sdk-python' && surfaceName !== 'workflow-worker')
+  ) {
+    return null;
+  }
+
+  const fixtureKey = [
+    surfaceName,
+    pairingClass,
+    'worker-task',
+    normalizeRequestKey(requestTemplate),
+  ].join('.');
+  context.operationFixtures ??= {};
+  if (context.operationFixtures[fixtureKey]) {
+    Object.assign(state, context.operationFixtures[fixtureKey]);
+    return null;
+  }
+
+  const workerId = state.workerId;
+  const taskQueue = 'skew-conformance';
+  const workerHeaders = fixtureWorkerHeaders(context, pairingClass);
+
+  let registerResponse;
+  try {
+    registerResponse = await requestJson(
+      context.serverUrl,
+      'POST',
+      '/api/worker/register',
+      workerHeaders,
+      {
+        worker_id: workerId,
+        task_queue: taskQueue,
+        runtime: workerRuntimeForSurface(surfaceName),
+        supported_workflow_types: ['skew_conformance_workflow'],
+        supported_activity_types: [],
+      },
+    );
+  } catch (error) {
+    return {
+      status: 'runner_blocked',
+      reason: `Worker task fixture registration failed before ${requestTemplate}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  if (registerResponse.status >= 400 || registerResponse.status === 0) {
+    return {
+      status: 'not_covered',
+      reason: [
+        `${requestTemplate} requires a workflow-capable worker registration before fixture polling.`,
+        `Compatible worker fixture registration returned HTTP ${registerResponse.status}.`,
+      ].join(' '),
+    };
+  }
+
+  const workflowId = `skew-${context.runId}-${surfaceName.replace(/[^a-z0-9]+/gi, '-')}-${pairingClass}-worker-${normalizeRequestKey(requestTemplate)}`;
+  let startResponse;
+  try {
+    startResponse = await requestJson(
+      context.serverUrl,
+      'POST',
+      '/api/workflows',
+      fixtureHeaders(context),
+      {
+        workflow_type: 'skew_conformance_workflow',
+        workflow_id: workflowId,
+        task_queue: taskQueue,
+        input: [],
+      },
+    );
+  } catch (error) {
+    return {
+      status: 'runner_blocked',
+      reason: `Worker task fixture workflow start failed before ${requestTemplate}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  if (startResponse.status >= 400 || startResponse.status === 0) {
+    return {
+      status: 'not_covered',
+      reason: [
+        `${requestTemplate} requires a queued workflow task before the published-artifact worker request is invoked.`,
+        `Compatible worker task fixture start returned HTTP ${startResponse.status}.`,
+      ].join(' '),
+    };
+  }
+
+  const fixture = {
+    workflowId,
+    runId: workflowRunIdFromBody(startResponse.body),
+  };
+
+  if (requestTemplate === 'POST /api/worker/workflow-tasks/poll') {
+    context.operationFixtures[fixtureKey] = fixture;
+    Object.assign(state, fixture);
+    return null;
+  }
+
+  let pollResponse;
+  try {
+    pollResponse = await requestJson(
+      context.serverUrl,
+      'POST',
+      '/api/worker/workflow-tasks/poll',
+      workerHeaders,
+      {
+        worker_id: workerId,
+        task_queue: taskQueue,
+      },
+    );
+  } catch (error) {
+    return {
+      status: 'runner_blocked',
+      reason: `Worker task fixture poll failed before ${requestTemplate}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  const taskId = workflowTaskIdFromBody(pollResponse.body);
+  if (pollResponse.status >= 400 || pollResponse.status === 0 || !taskId) {
+    return {
+      status: 'not_covered',
+      reason: [
+        `${requestTemplate} requires a workflow task id obtained from a compatible fixture poll.`,
+        `Compatible worker task fixture poll returned HTTP ${pollResponse.status} without a task id.`,
+      ].join(' '),
+    };
+  }
+
+  fixture.taskId = taskId;
+  context.operationFixtures[fixtureKey] = fixture;
+  Object.assign(state, fixture);
 
   return null;
 }
@@ -1201,6 +1414,18 @@ function fixtureHeaders(context) {
   };
 }
 
+function fixtureWorkerHeaders(context, pairingClass) {
+  return {
+    ...context.baseHeaders,
+    'X-Durable-Workflow-Protocol-Version': pairingClasses[pairingClass]?.workerProtocolVersion
+      ?? pairingClasses.compatible.workerProtocolVersion,
+  };
+}
+
+function workerRuntimeForSurface(surfaceName) {
+  return surfaceName === 'sdk-python' ? 'python' : 'php';
+}
+
 function workflowRunIdFromBody(body) {
   return firstStringValue(
     body?.run_id,
@@ -1220,6 +1445,29 @@ function workflowRunIdFromBody(body) {
     body?.execution?.runId,
     body?.execution?.workflow_run_id,
     body?.execution?.workflowRunId,
+  );
+}
+
+function workflowTaskIdFromBody(body) {
+  return firstStringValue(
+    body?.task?.task_id,
+    body?.task?.taskId,
+    body?.task?.id,
+    body?.task_id,
+    body?.taskId,
+    body?.workflow_task?.task_id,
+    body?.workflowTask?.taskId,
+    body?.workflow_task?.id,
+    body?.workflowTask?.id,
+    body?.result?.task?.task_id,
+    body?.result?.task?.taskId,
+    body?.result?.task?.id,
+    body?.result?.task_id,
+    body?.result?.taskId,
+    body?.result?.workflow_task?.task_id,
+    body?.result?.workflowTask?.taskId,
+    body?.result?.workflow_task?.id,
+    body?.result?.workflowTask?.id,
   );
 }
 
@@ -1380,7 +1628,7 @@ async function invokePythonSdkOperation({
     run_id: state.runId || `run-${context.runId}`,
     schedule_id: state.scheduleId,
     worker_id: state.workerId,
-    task_id: state.taskId || '',
+    task_id: taskIdForPublishedWorkerProbe(state, pairingClass),
   };
 
   return runArtifactWithProxy({
@@ -1423,7 +1671,7 @@ async function invokeWorkflowWorkerOperation({
     worker_protocol_version: pairing.workerProtocolVersion,
     worker_id: state.workerId,
     task_queue: 'skew-conformance',
-    task_id: state.taskId || '',
+    task_id: taskIdForPublishedWorkerProbe(state, pairingClass),
   };
   const docker = phpDockerInvocation(availability, script, payload);
 
@@ -1614,7 +1862,7 @@ async def run(payload: dict[str, Any]) -> dict[str, Any]:
             result = await client.register_worker(
                 worker_id=worker_id,
                 task_queue="skew-conformance",
-                supported_workflow_types=[],
+                supported_workflow_types=["skew_conformance_workflow"],
                 supported_activity_types=[],
             )
         elif op == "POST /api/worker/heartbeat":
@@ -1626,7 +1874,7 @@ async def run(payload: dict[str, Any]) -> dict[str, Any]:
                 task_id=task_id,
                 lease_owner=worker_id,
                 workflow_task_attempt=1,
-                commands=[],
+                commands=[{"type": "complete_workflow", "result": None}],
             )
         elif op == "POST /api/worker/workflow-tasks/{task}/fail":
             result = await client.fail_workflow_task(
@@ -1634,7 +1882,7 @@ async def run(payload: dict[str, Any]) -> dict[str, Any]:
                 lease_owner=worker_id,
                 workflow_task_attempt=1,
                 message="skew conformance boundary probe",
-                exception_type="SkewConformanceFailure",
+                failure_type="SkewConformanceFailure",
             )
         elif op == "POST /api/schedules":
             handle = await client.create_schedule(
@@ -1791,7 +2039,7 @@ if ($operation === 'GET /api/cluster/info') {
         'POST /api/worker/register' => skew_call(static fn (): ?array => $client->registerWorker(
             $workerId,
             $taskQueue,
-            [],
+            ['skew_conformance_workflow'],
             [],
             'php',
             'durable-workflow/workflow',
@@ -1807,7 +2055,10 @@ if ($operation === 'GET /api/cluster/info') {
         )),
         'POST /api/worker/workflow-tasks/{task}/complete' => skew_call(static fn (): ?array => $client->completeWorkflowTask(
             $taskId,
-            [],
+            [[
+                'type' => 'complete_workflow',
+                'result' => null,
+            ]],
             $workerId,
             1,
         )),

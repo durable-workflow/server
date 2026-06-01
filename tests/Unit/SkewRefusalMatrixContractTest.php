@@ -642,19 +642,85 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'the skew runner must not treat a Composer-installed workflow package as proof that query/update probes can be served',
         );
         $this->assertStringContainsString(
-            'requires a workflow task id obtained from a successful published-artifact poll',
+            'requires a workflow task id obtained from a successful fixture poll before completing or failing an inside-window task',
             $runner,
             'complete/fail probes must stay not_covered until poll returns a real task id',
         );
         $this->assertStringContainsString(
-            'Synthetic task ids are not valid published-artifact skew evidence.',
+            'Protocol-refusal rows may use the advertised task placeholder only when the server must reject before task lookup.',
             $runner,
-            'worker lifecycle probes must not manufacture task ids for complete/fail rows',
+            'worker lifecycle probes must distinguish inside-window task interop from unsupported protocol refusal',
         );
         $this->assertStringNotContainsString(
             'task-skew-conformance',
             $runner,
             'published-artifact worker complete/fail probes must use task ids obtained from poll rather than a synthetic fixture id',
+        );
+        $this->assertStringContainsString(
+            "if (pairingClass !== 'compatible')",
+            $runner,
+            'skewed query/update rows must reach the artifact so unsupported control-plane versions can refuse before worker dispatch',
+        );
+        $this->assertStringContainsString(
+            'workerProtocolCompatible(',
+            $runner,
+            'worker task-id prerequisites must be based on the worker protocol compatibility window',
+        );
+        $this->assertStringContainsString(
+            'prepareWorkerTaskFixture',
+            $runner,
+            'inside-window worker lifecycle probes must prepare real queued workflow tasks before polling, completing, or failing tasks',
+        );
+        $this->assertStringContainsString(
+            "supported_workflow_types: ['skew_conformance_workflow']",
+            $runner,
+            'worker task fixtures must register workflow-capable workers so poll evidence can lease tasks',
+        );
+        $this->assertStringContainsString(
+            'supported_workflow_types=["skew_conformance_workflow"]',
+            $runner,
+            'the Python worker lifecycle probe must advertise workflow capability before polling',
+        );
+        $this->assertStringContainsString(
+            'failure_type="SkewConformanceFailure"',
+            $runner,
+            'the generated Python worker probe must use the SDK fail_workflow_task failure_type keyword',
+        );
+        $this->assertStringContainsString(
+            'commands=[{"type": "complete_workflow", "result": None}]',
+            $runner,
+            'inside-window Python complete probes must send a server-valid workflow completion command',
+        );
+        $this->assertStringNotContainsString(
+            'commands=[]',
+            $runner,
+            'inside-window Python complete probes must not send an empty command list',
+        );
+        $this->assertStringContainsString(
+            <<<'PHP'
+$client->completeWorkflowTask(
+            $taskId,
+            [[
+                'type' => 'complete_workflow',
+                'result' => null,
+            ]],
+PHP,
+            $runner,
+            'inside-window PHP worker complete probes must send a server-valid workflow completion command',
+        );
+        $this->assertStringNotContainsString(
+            <<<'PHP'
+$client->completeWorkflowTask(
+            $taskId,
+            [],
+PHP,
+            $runner,
+            'inside-window PHP worker complete probes must not send an empty command list',
+        );
+        $this->assertStringNotContainsString(
+            'exception_type="SkewConformanceFailure"',
+            $runner,
+            'the generated Python worker probe must not use the legacy exception_type keyword',
         );
         $this->assertStringContainsString(
             'futureVersionBoundary',
