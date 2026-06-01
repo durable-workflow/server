@@ -198,6 +198,11 @@ const workflowWorkerDependentRequests = new Set([
   'POST /api/workflows/{workflowId}/runs/{runId}/update/{updateName}',
 ]);
 
+const workflowTaskCompletionRequests = new Set([
+  'POST /api/worker/workflow-tasks/{task}/complete',
+  'POST /api/worker/workflow-tasks/{task}/fail',
+]);
+
 main().catch((error) => {
   const now = timestamp();
   const reason = error instanceof Error ? error.message : String(error);
@@ -286,6 +291,7 @@ async function main() {
     protocolManifestVersions,
     serverUrl,
     runId: `skew-${Date.now().toString(36)}`,
+    liveWorkflowWorker: liveWorkflowWorkerState(),
   };
 
   const surfaceResults = {};
@@ -450,15 +456,7 @@ async function probeOperation({
     context.runId,
     state,
   );
-  const headers = { ...context.baseHeaders };
-  const body = bodyForRequest(method, requestPath, context.runId, state);
   const surfaceVersion = context.artifactVersions[surface.artifact];
-
-  if (operationGroup === 'worker_lifecycle') {
-    headers['X-Durable-Workflow-Protocol-Version'] = pairing.workerProtocolVersion;
-  } else if (operationGroup !== 'cluster_info_probe' && operationGroup !== 'waterline_render') {
-    headers['X-Durable-Workflow-Control-Plane-Version'] = pairing.controlPlaneVersion;
-  }
 
   const availability = invocationAvailability(surfaceName);
   if (!availability.available) {
@@ -470,15 +468,19 @@ async function probeOperation({
       requestTemplate,
       method,
       requestPath,
-      headers,
-      body,
       context,
       status: availability.status,
       reason: availability.reason,
     });
   }
 
-  const workerDependencyGap = workflowWorkerDependencyGap(surfaceName, operationGroup, requestTemplate);
+  const workerDependencyGap = workflowWorkerDependencyGap({
+    surfaceName,
+    operationGroup,
+    requestTemplate,
+    context,
+    state,
+  });
   if (workerDependencyGap) {
     return notCoveredProbe({
       surfaceName,
@@ -488,8 +490,6 @@ async function probeOperation({
       requestTemplate,
       method,
       requestPath,
-      headers,
-      body,
       context,
       status: workerDependencyGap.status,
       reason: workerDependencyGap.reason,
@@ -504,19 +504,41 @@ async function probeOperation({
     requestTemplate,
     method,
     requestPath,
-    headers,
-    body,
     context,
     clusterInfo,
   });
-  const response = invocation.response;
 
-  const status = classifyEvidenceStatus({
-    surfaceName,
-    pairingClass,
-    operationGroup,
-    response,
-  });
+  if (invocation.wire_evidence_gap) {
+    return notCoveredProbe({
+      surfaceName,
+      surface,
+      pairingClass,
+      operationGroup,
+      requestTemplate,
+      method,
+      requestPath,
+      context,
+      status: invocation.wire_evidence_gap.status,
+      reason: invocation.wire_evidence_gap.reason,
+      artifactInvocation: invocation.artifact_invocation,
+      proxyCaptures: invocation.proxy_captures,
+    });
+  }
+
+  const matchedCapture = invocation.matched_proxy_capture;
+  const wireRequest = normalizedCaptureRequest(matchedCapture);
+  const wireResponse = normalizedCaptureResponse(matchedCapture);
+  const response = invocation.response;
+  const protocolGap = protocolEvidenceGap(operationGroup, pairing, wireRequest);
+
+  const status = protocolGap
+    ? 'not_covered'
+    : classifyEvidenceStatus({
+      surfaceName,
+      pairingClass,
+      operationGroup,
+      response,
+    });
   const captureId = [
     surfaceName,
     pairingClass,
@@ -533,17 +555,8 @@ async function probeOperation({
     client_or_worker_version: surfaceVersion,
     server_version: context.observedServerVersion,
     compatibility_window: pairing.compatibilityWindow,
-    request: {
-      method,
-      path: requestPath,
-      headers: redactHeaders(headers),
-      body: body ?? null,
-    },
-    response: {
-      status: response.status,
-      headers: response.headers,
-      body: response.body,
-    },
+    request: wireRequest,
+    response: wireResponse,
     artifact_invocation: invocation.artifact_invocation,
     proxy_captures: invocation.proxy_captures,
   };
@@ -554,7 +567,7 @@ async function probeOperation({
       surface: surfaceName,
       pairing_class: pairingClass,
       operation_group: operationGroup,
-      request: `${method} ${requestPath}`,
+      request: `${wireRequest.method} ${wireRequest.path}`,
       status,
       status_code: response.status,
       response_body: response.body,
@@ -566,32 +579,36 @@ async function probeOperation({
       artifact_invocation: invocation.artifact_invocation,
     };
   } else if (operationGroup === 'waterline_render') {
-    const classification = waterlineClassification(pairingClass, response);
+    const classification = status === 'not_covered' || status === 'runner_blocked'
+      ? null
+      : waterlineClassification(pairingClass, response);
     evidence = {
       surface: surfaceName,
       pairing_class: pairingClass,
       operation_group: operationGroup,
-      request: `${method} ${requestPath}`,
+      request: `${wireRequest.method} ${wireRequest.path}`,
       response_status: response.status,
       response_body: response.body,
-      screenshot_or_dom_snapshot: domSnapshotForWaterline(classification, response, pairingClass, context),
+      screenshot_or_dom_snapshot: domSnapshotForWaterline(classification ?? status, response, pairingClass, context),
       server_version: context.observedServerVersion,
       waterline_version: surfaceVersion,
       status,
-      waterline_skew_classification: classification,
       compatibility_window: pairing.compatibilityWindow,
       request_response_capture_id: captureId,
       artifact_invocation: invocation.artifact_invocation,
     };
+    if (classification) {
+      evidence.waterline_skew_classification = classification;
+    }
   } else {
     evidence = {
       surface: surfaceName,
       pairing_class: pairingClass,
       operation_group: operationGroup,
-      request_method: method,
-      request_path: requestPath,
-      request_headers: redactHeaders(headers),
-      request_body: body ?? null,
+      request_method: wireRequest.method,
+      request_path: wireRequest.path,
+      request_headers: wireRequest.headers,
+      request_body: wireRequest.body ?? null,
       response_status: response.status,
       response_headers: response.headers,
       response_body: response.body,
@@ -609,11 +626,23 @@ async function probeOperation({
     evidence.refusal_context = loudRefusalContext(surfaceName, surfaceVersion, context, pairing, response);
   }
 
+  if (protocolGap) {
+    evidence.coverage_gap_reason = protocolGap.reason;
+    evidence.expected_protocol_header = protocolGap.header;
+    evidence.expected_protocol_version = protocolGap.expected;
+    evidence.observed_protocol_version = protocolGap.observed;
+  }
+
+  const coverageGapReason = waterlineCoverageGapReason(operationGroup, status, response);
+  if (coverageGapReason && !evidence.coverage_gap_reason) {
+    evidence.coverage_gap_reason = coverageGapReason;
+  }
+
   if (surfaceName === 'workflow-worker') {
     evidence.worker_skew_classification = workerClassification(pairingClass, response, operationGroup);
   }
 
-  if (surfaceName === 'waterline') {
+  if (surfaceName === 'waterline' && status !== 'not_covered' && status !== 'runner_blocked') {
     evidence.waterline_skew_classification = waterlineClassification(pairingClass, response);
   }
 
@@ -628,11 +657,11 @@ function notCoveredProbe({
   requestTemplate,
   method,
   requestPath,
-  headers,
-  body,
   context,
   status,
   reason,
+  artifactInvocation = null,
+  proxyCaptures = [],
 }) {
   const surfaceVersion = context.artifactVersions[surface.artifact];
   const pairing = pairingClasses[pairingClass];
@@ -665,19 +694,19 @@ function notCoveredProbe({
     request: {
       method,
       path: requestPath,
-      headers: redactHeaders(headers),
-      body: body ?? null,
-      not_sent: true,
-      not_sent_reason: reason,
+      headers: {},
+      body: null,
+      not_observed: true,
+      not_observed_reason: reason,
     },
     response,
-    artifact_invocation: {
+    artifact_invocation: artifactInvocation ?? {
       status,
       reason,
       surface: surfaceName,
       artifact: surface.artifact,
     },
-    proxy_captures: [],
+    proxy_captures: proxyCaptures,
   };
 
   let evidence;
@@ -696,6 +725,7 @@ function notCoveredProbe({
       compatibility_window: pairing.compatibilityWindow,
       request_response_capture_id: captureId,
       coverage_gap_reason: reason,
+      artifact_invocation: artifactInvocation ?? undefined,
     };
   } else if (operationGroup === 'waterline_render') {
     evidence = {
@@ -717,6 +747,7 @@ function notCoveredProbe({
       compatibility_window: pairing.compatibilityWindow,
       request_response_capture_id: captureId,
       coverage_gap_reason: reason,
+      artifact_invocation: artifactInvocation ?? undefined,
     };
   } else {
     evidence = {
@@ -725,8 +756,8 @@ function notCoveredProbe({
       operation_group: operationGroup,
       request_method: method,
       request_path: requestPath,
-      request_headers: redactHeaders(headers),
-      request_body: body ?? null,
+      request_headers: {},
+      request_body: null,
       response_status: 0,
       response_headers: {},
       response_body: response.body,
@@ -736,6 +767,7 @@ function notCoveredProbe({
       status,
       request_response_capture_id: captureId,
       coverage_gap_reason: reason,
+      artifact_invocation: artifactInvocation ?? undefined,
     };
   }
 
@@ -767,6 +799,7 @@ function artifactInstallSummary(surfaceName) {
     status: stringValue(record.status) || 'not_covered',
     source: stringValue(record.source) || artifactSources()[surfaces[surfaceName].artifact] || null,
     path: stringValue(record.executable || record.python || record.app_dir || record.package_dir) || null,
+    surface_url: surfaceName === 'waterline' ? waterlineSurfaceUrlFor(record) || null : null,
     reason: stringValue(record.reason) || null,
   };
 }
@@ -811,18 +844,69 @@ function invocationAvailability(surfaceName) {
   }
 
   if (surfaceName === 'workflow-worker') {
+    const appDir = stringValue(record.app_dir) || envValue('DW_SKEW_WORKFLOW_APP_DIR');
+    if (appDir && fs.existsSync(path.join(appDir, 'vendor/autoload.php'))) {
+      if (executableOnPath('docker')) {
+        return { available: true, appDir, phpImage: envValue('DW_SKEW_PHP_IMAGE') || 'composer:2' };
+      }
+
+      return {
+        available: false,
+        status: 'runner_blocked',
+        reason: 'Docker is required to run the published durable-workflow/workflow probe through its Composer-installed package.',
+      };
+    }
+
     return {
       available: false,
-      status: 'not_covered',
-      reason: 'durable-workflow/workflow was installed from Packagist, but this runner does not yet boot a PHP worker process through the package API',
+      status: 'runner_blocked',
+      reason: 'Workflow artifact install completed without vendor/autoload.php for the Composer-installed package.',
     };
   }
 
   if (surfaceName === 'waterline') {
+    const appDir = stringValue(record.app_dir) || envValue('DW_SKEW_WATERLINE_APP_DIR');
+    const surfaceUrl = waterlineSurfaceUrlFor(record);
+    if (!surfaceUrl) {
+      return {
+        available: false,
+        status: 'not_covered',
+        reason: [
+          'Waterline render evidence requires DW_SKEW_WATERLINE_URL pointing at a running Composer-installed Waterline HTTP surface.',
+          'Composer package install alone is not Waterline render evidence.',
+        ].join(' '),
+      };
+    }
+
+    if (!isHttpUrl(surfaceUrl)) {
+      return {
+        available: false,
+        status: 'runner_blocked',
+        reason: `DW_SKEW_WATERLINE_URL must be an http(s) URL for a running Waterline surface; got ${surfaceUrl}`,
+      };
+    }
+
+    if (appDir && fs.existsSync(path.join(appDir, 'vendor/autoload.php'))) {
+      if (executableOnPath('docker')) {
+        return {
+          available: true,
+          appDir,
+          surfaceUrl,
+          phpImage: envValue('DW_SKEW_PHP_IMAGE') || 'composer:2',
+        };
+      }
+
+      return {
+        available: false,
+        status: 'runner_blocked',
+        reason: 'Docker is required to run the published durable-workflow/waterline probe through its Composer-installed package.',
+      };
+    }
+
     return {
       available: false,
-      status: 'not_covered',
-      reason: 'durable-workflow/waterline was installed from Packagist, but this runner does not yet boot a Waterline app and capture DOM evidence',
+      status: 'runner_blocked',
+      reason: 'Waterline artifact install completed without vendor/autoload.php for the Composer-installed package.',
     };
   }
 
@@ -833,7 +917,36 @@ function invocationAvailability(surfaceName) {
   };
 }
 
-function workflowWorkerDependencyGap(surfaceName, operationGroup, requestTemplate) {
+function waterlineSurfaceUrlFor(record = {}) {
+  const url = stringValue(record.surface_url)
+    || stringValue(record.surfaceUrl)
+    || envValue('DW_SKEW_WATERLINE_URL')
+    || envValue('DW_SKEW_WATERLINE_BASE_URL');
+
+  return url ? trimTrailingSlash(url) : '';
+}
+
+function workflowWorkerDependencyGap({
+  surfaceName,
+  operationGroup,
+  requestTemplate,
+  context,
+  state,
+}) {
+  if (
+    operationGroup === 'worker_lifecycle'
+    && workflowTaskCompletionRequests.has(requestTemplate)
+    && !state.taskId
+  ) {
+    return {
+      status: 'not_covered',
+      reason: [
+        `${requestTemplate} requires a workflow task id obtained from a successful published-artifact poll before completing or failing a task.`,
+        'Synthetic task ids are not valid published-artifact skew evidence.',
+      ].join(' '),
+    };
+  }
+
   if (
     (surfaceName !== 'cli' && surfaceName !== 'sdk-python')
     || operationGroup !== 'workflow_control_plane'
@@ -842,17 +955,29 @@ function workflowWorkerDependencyGap(surfaceName, operationGroup, requestTemplat
     return null;
   }
 
-  const workerAvailability = invocationAvailability('workflow-worker');
-  if (workerAvailability.available) {
+  const liveWorker = context.liveWorkflowWorker ?? liveWorkflowWorkerState();
+  if (liveWorker.ready) {
     return null;
   }
 
   return {
-    status: workerAvailability.status,
+    status: 'not_covered',
     reason: [
       `${requestTemplate} requires a live compatible published workflow worker for skew_conformance_workflow.`,
-      workerAvailability.reason,
+      liveWorker.reason,
+      'Workflow package availability alone is not live worker coordination.',
     ].filter(Boolean).join(' '),
+  };
+}
+
+function liveWorkflowWorkerState() {
+  const rawReady = envValue('DW_SKEW_LIVE_WORKFLOW_WORKER_READY').toLowerCase();
+  const ready = ['1', 'true', 'yes'].includes(rawReady);
+
+  return {
+    ready,
+    reason: envValue('DW_SKEW_LIVE_WORKFLOW_WORKER_REASON')
+      || 'The runner has not booted a live published durable-workflow/workflow worker process.',
   };
 }
 
@@ -863,6 +988,14 @@ async function invokeSurfaceOperation(options) {
 
   if (options.surfaceName === 'sdk-python') {
     return invokePythonSdkOperation(options);
+  }
+
+  if (options.surfaceName === 'workflow-worker') {
+    return invokeWorkflowWorkerOperation(options);
+  }
+
+  if (options.surfaceName === 'waterline') {
+    return invokeWaterlineOperation(options);
   }
 
   throw new Error(`no artifact invoker registered for ${options.surfaceName}`);
@@ -992,6 +1125,7 @@ async function invokePythonSdkOperation({
     run_id: state.runId || `run-${context.runId}`,
     schedule_id: state.scheduleId,
     worker_id: state.workerId,
+    task_id: state.taskId || '',
   };
 
   return runArtifactWithProxy({
@@ -1009,6 +1143,113 @@ async function invokePythonSdkOperation({
     },
     timeoutMs: Number.parseInt(process.env.DW_SKEW_PYTHON_TIMEOUT_MS ?? '20000', 10),
   });
+}
+
+async function invokeWorkflowWorkerOperation({
+  surfaceName,
+  pairingClass,
+  operationGroup,
+  requestTemplate,
+  method,
+  requestPath,
+  context,
+}) {
+  const availability = invocationAvailability(surfaceName);
+  const script = ensureWorkflowWorkerProbeScript();
+  const pairing = pairingClasses[pairingClass];
+  const state = pairingState(context, 'workflow-worker', pairingClass);
+  const payload = {
+    operation: requestTemplate,
+    base_url: '__DW_SKEW_PROXY_URL__',
+    namespace: context.namespace,
+    control_plane_version: pairing.controlPlaneVersion,
+    worker_protocol_version: pairing.workerProtocolVersion,
+    worker_id: state.workerId,
+    task_queue: 'skew-conformance',
+    task_id: state.taskId || '',
+  };
+  const docker = phpDockerInvocation(availability, script, payload);
+
+  return runArtifactWithProxy({
+    surfaceName,
+    pairingClass,
+    operationGroup,
+    method,
+    requestPath,
+    context,
+    pairing,
+    command: docker.command,
+    args: docker.args,
+    env: {
+      DW_SKEW_AUTH_TOKEN: process.env.DW_SKEW_AUTH_TOKEN ?? 'dev-token',
+    },
+    timeoutMs: Number.parseInt(process.env.DW_SKEW_WORKFLOW_TIMEOUT_MS ?? '30000', 10),
+  });
+}
+
+async function invokeWaterlineOperation({
+  surfaceName,
+  pairingClass,
+  operationGroup,
+  requestTemplate,
+  method,
+  requestPath,
+  context,
+}) {
+  const availability = invocationAvailability(surfaceName);
+  const script = ensureWaterlineProbeScript();
+  const pairing = pairingClasses[pairingClass];
+  const state = pairingState(context, 'waterline', pairingClass);
+  const payload = {
+    operation: requestTemplate,
+    base_url: '__DW_SKEW_PROXY_URL__',
+    namespace: context.namespace,
+    control_plane_version: pairing.controlPlaneVersion,
+    workflow_id: state.workflowId,
+    request_path: requestPath,
+  };
+  const docker = phpDockerInvocation(availability, script, payload);
+
+  return runArtifactWithProxy({
+    surfaceName,
+    pairingClass,
+    operationGroup,
+    method,
+    requestPath,
+    targetUrl: availability.surfaceUrl,
+    context,
+    pairing,
+    command: docker.command,
+    args: docker.args,
+    env: {
+      DW_SKEW_AUTH_TOKEN: process.env.DW_SKEW_AUTH_TOKEN ?? 'dev-token',
+    },
+    timeoutMs: Number.parseInt(process.env.DW_SKEW_WATERLINE_TIMEOUT_MS ?? '30000', 10),
+  });
+}
+
+function phpDockerInvocation(availability, script, payload) {
+  return {
+    command: 'docker',
+    args: [
+      'run',
+      '--rm',
+      '--network',
+      'host',
+      '-e',
+      'DW_SKEW_AUTH_TOKEN',
+      '-v',
+      `${availability.appDir}:/app`,
+      '-v',
+      `${script}:/tmp/dw-skew-probe.php:ro`,
+      '-w',
+      '/app',
+      availability.phpImage || 'composer:2',
+      'php',
+      '/tmp/dw-skew-probe.php',
+      JSON.stringify(payload),
+    ],
+  };
 }
 
 function ensurePythonProbeScript() {
@@ -1054,6 +1295,7 @@ async def run(payload: dict[str, Any]) -> dict[str, Any]:
     run_id = payload["run_id"]
     schedule_id = payload["schedule_id"]
     worker_id = payload["worker_id"]
+    task_id = payload["task_id"]
     try:
         if op == "GET /api/cluster/info":
             result = await client.get_cluster_info()
@@ -1102,14 +1344,14 @@ async def run(payload: dict[str, Any]) -> dict[str, Any]:
             result = await client.poll_workflow_task(worker_id=worker_id, task_queue="skew-conformance", timeout=1.0)
         elif op == "POST /api/worker/workflow-tasks/{task}/complete":
             result = await client.complete_workflow_task(
-                task_id="task-skew-conformance",
+                task_id=task_id,
                 lease_owner=worker_id,
                 workflow_task_attempt=1,
                 commands=[],
             )
         elif op == "POST /api/worker/workflow-tasks/{task}/fail":
             result = await client.fail_workflow_task(
-                task_id="task-skew-conformance",
+                task_id=task_id,
                 lease_owner=worker_id,
                 workflow_task_attempt=1,
                 message="skew conformance boundary probe",
@@ -1156,12 +1398,264 @@ if __name__ == "__main__":
   return scriptPath;
 }
 
+function ensureWorkflowWorkerProbeScript() {
+  const scriptPath = path.join(runRoot, 'workflow-worker-skew-probe.php');
+  if (fs.existsSync(scriptPath)) {
+    return scriptPath;
+  }
+
+  fs.writeFileSync(scriptPath, String.raw`<?php
+declare(strict_types=1);
+
+require __DIR__.'/../app/vendor/autoload.php';
+
+function skew_json(mixed $value): void
+{
+    echo json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), PHP_EOL;
+}
+
+function skew_payload(): array
+{
+    $payload = json_decode($GLOBALS['argv'][1] ?? '{}', true);
+
+    return is_array($payload) ? $payload : [];
+}
+
+function skew_public(mixed $value): mixed
+{
+    if (is_array($value)) {
+        $public = [];
+        foreach ($value as $key => $nested) {
+            $public[$key] = skew_public($nested);
+        }
+
+        return $public;
+    }
+
+    if (is_object($value)) {
+        if (method_exists($value, 'toArray')) {
+            return skew_public($value->toArray());
+        }
+
+        return skew_public(get_object_vars($value));
+    }
+
+    return $value;
+}
+
+function skew_call(callable $operation): array
+{
+    try {
+        return [
+            'ok' => true,
+            'result' => skew_public($operation()),
+        ];
+    } catch (\Throwable $exception) {
+        $status = method_exists($exception, 'status')
+            ? (int) $exception->status()
+            : (($exception->getCode() >= 100 && $exception->getCode() <= 599) ? (int) $exception->getCode() : 0);
+        $body = method_exists($exception, 'body') ? $exception->body() : null;
+        $reason = method_exists($exception, 'reason') ? $exception->reason() : null;
+
+        return [
+            'ok' => false,
+            'exception_type' => get_class($exception),
+            'message' => $exception->getMessage(),
+            'status_code' => $status,
+            'reason' => $reason,
+            'body' => skew_public($body),
+        ];
+    }
+}
+
+$payload = skew_payload();
+$operation = (string) ($payload['operation'] ?? '');
+$baseUrl = (string) ($payload['base_url'] ?? '');
+$namespace = (string) ($payload['namespace'] ?? 'default');
+$token = (string) (getenv('DW_SKEW_AUTH_TOKEN') ?: 'dev-token');
+$controlPlaneVersion = (string) ($payload['control_plane_version'] ?? \Workflow\V2\Client\ControlPlaneClient::CONTROL_PLANE_VERSION);
+$workerProtocolVersion = (string) ($payload['worker_protocol_version'] ?? \Workflow\V2\Support\WorkerProtocolVersion::VERSION);
+$workerId = (string) ($payload['worker_id'] ?? 'worker-skew-conformance');
+$taskQueue = (string) ($payload['task_queue'] ?? 'skew-conformance');
+$taskId = (string) ($payload['task_id'] ?? '');
+$http = new \Illuminate\Http\Client\Factory();
+
+if ($operation === 'GET /api/cluster/info') {
+    $client = new \Workflow\V2\Client\ControlPlaneClient(
+        $http,
+        $baseUrl,
+        $token,
+        $namespace,
+        $controlPlaneVersion,
+        12,
+    );
+    $path = '/api/cluster/info';
+    $response = skew_call(static fn (): array => $client->clusterInfo());
+} else {
+    $client = new \Workflow\V2\Worker\WorkerProtocolClient(
+        $http,
+        $baseUrl,
+        $token,
+        $namespace,
+        $workerProtocolVersion,
+        12,
+    );
+    $path = match ($operation) {
+        'POST /api/worker/register' => '/api/worker/register',
+        'POST /api/worker/heartbeat' => '/api/worker/heartbeat',
+        'POST /api/worker/workflow-tasks/poll' => '/api/worker/workflow-tasks/poll',
+        'POST /api/worker/workflow-tasks/{task}/complete' => '/api/worker/workflow-tasks/'.rawurlencode($taskId).'/complete',
+        'POST /api/worker/workflow-tasks/{task}/fail' => '/api/worker/workflow-tasks/'.rawurlencode($taskId).'/fail',
+        default => '/api/worker/register',
+    };
+    $response = match ($operation) {
+        'POST /api/worker/register' => skew_call(static fn (): ?array => $client->registerWorker(
+            $workerId,
+            $taskQueue,
+            [],
+            [],
+            'php',
+            'durable-workflow/workflow',
+        )),
+        'POST /api/worker/heartbeat' => skew_call(static fn (): ?array => $client->heartbeatWorker($workerId)),
+        'POST /api/worker/workflow-tasks/poll' => skew_call(static fn (): array => $client->pollWorkflowTasks(
+            null,
+            $taskQueue,
+            1,
+            null,
+            1,
+            $workerId,
+        )),
+        'POST /api/worker/workflow-tasks/{task}/complete' => skew_call(static fn (): ?array => $client->completeWorkflowTask(
+            $taskId,
+            [],
+            $workerId,
+            1,
+        )),
+        'POST /api/worker/workflow-tasks/{task}/fail' => skew_call(static fn (): ?array => $client->failWorkflowTask(
+            $taskId,
+            'skew conformance boundary probe',
+            'SkewConformanceFailure',
+            null,
+            $workerId,
+            1,
+        )),
+        default => skew_call(static fn (): ?array => $client->registerWorker($workerId, $taskQueue)),
+    };
+}
+
+skew_json([
+    'artifact' => 'durable-workflow/workflow',
+    'control_plane_version' => $controlPlaneVersion,
+    'worker_protocol_version' => $workerProtocolVersion,
+    'operation' => $operation,
+    'request_path' => $path,
+    'response' => $response,
+]);
+`);
+
+  return scriptPath;
+}
+
+function ensureWaterlineProbeScript() {
+  const scriptPath = path.join(runRoot, 'waterline-skew-probe.php');
+  if (fs.existsSync(scriptPath)) {
+    return scriptPath;
+  }
+
+  fs.writeFileSync(scriptPath, String.raw`<?php
+declare(strict_types=1);
+
+require __DIR__.'/../app/vendor/autoload.php';
+
+function skew_json(mixed $value): void
+{
+    echo json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), PHP_EOL;
+}
+
+function skew_payload(): array
+{
+    $payload = json_decode($GLOBALS['argv'][1] ?? '{}', true);
+
+    return is_array($payload) ? $payload : [];
+}
+
+function skew_request(string $method, string $baseUrl, string $path, array $headers): array
+{
+    $headerLines = [];
+    foreach ($headers as $name => $value) {
+        $headerLines[] = $name.': '.$value;
+    }
+
+    $responseBody = @file_get_contents(rtrim($baseUrl, '/').$path, false, stream_context_create([
+        'http' => [
+            'method' => $method,
+            'header' => implode("\r\n", $headerLines),
+            'ignore_errors' => true,
+            'timeout' => 12,
+        ],
+    ]));
+    $responseHeaders = $http_response_header ?? [];
+    $status = 0;
+    if (isset($responseHeaders[0]) && preg_match('/\s(\d{3})\s/', $responseHeaders[0], $matches) === 1) {
+        $status = (int) $matches[1];
+    }
+
+    $decoded = is_string($responseBody) ? json_decode($responseBody, true) : null;
+
+    return [
+        'status_code' => $status,
+        'headers' => $responseHeaders,
+        'body' => is_array($decoded) ? $decoded : $responseBody,
+        'dom_snapshot' => is_string($responseBody) ? substr($responseBody, 0, 1200) : null,
+    ];
+}
+
+$payload = skew_payload();
+$operation = (string) ($payload['operation'] ?? '');
+$baseUrl = (string) ($payload['base_url'] ?? '');
+$namespace = (string) ($payload['namespace'] ?? 'default');
+$token = (string) (getenv('DW_SKEW_AUTH_TOKEN') ?: 'dev-token');
+$controlPlaneVersion = (string) ($payload['control_plane_version'] ?? '2');
+$apiFloorMissing = class_exists(\Waterline\Support\WorkflowPackageApiFloor::class)
+    ? \Waterline\Support\WorkflowPackageApiFloor::findMissing()
+    : ['Waterline\Support\WorkflowPackageApiFloor'];
+
+$path = match ($operation) {
+    'GET /api/cluster/info' => '/api/cluster/info',
+    'GET /waterline/api/v2/health' => '/waterline/api/v2/health',
+    'GET /waterline/api/flows/running' => '/waterline/api/flows/running',
+    'GET /waterline/api/flows/{id}' => '/waterline/api/flows/'.rawurlencode((string) ($payload['workflow_id'] ?? 'skew-conformance')),
+    default => (string) ($payload['request_path'] ?? '/waterline/api/v2/health'),
+};
+$headers = [
+    'Accept' => 'application/json,text/html',
+    'Authorization' => 'Bearer '.$token,
+    'X-Namespace' => $namespace,
+    'X-Durable-Workflow-Control-Plane-Version' => $controlPlaneVersion,
+];
+$response = skew_request('GET', $baseUrl, $path, $headers);
+
+skew_json([
+    'artifact' => 'durable-workflow/waterline',
+    'control_plane_version' => $controlPlaneVersion,
+    'operation' => $operation,
+    'request_path' => $path,
+    'api_floor_missing' => $apiFloorMissing,
+    'response' => $response,
+]);
+`);
+
+  return scriptPath;
+}
+
 async function runArtifactWithProxy({
   surfaceName,
   pairingClass,
   operationGroup,
   method,
   requestPath,
+  targetUrl = null,
   context,
   pairing,
   command,
@@ -1170,9 +1664,7 @@ async function runArtifactWithProxy({
   timeoutMs,
 }) {
   const proxyResult = await withRecordingProxy({
-    targetUrl: context.serverUrl,
-    controlPlaneVersion: pairing.controlPlaneVersion,
-    workerProtocolVersion: pairing.workerProtocolVersion,
+    targetUrl: targetUrl ?? context.serverUrl,
   }, async (proxyUrl) => {
     const rewrittenArgs = args.map((arg) => arg.replaceAll('__DW_SKEW_PROXY_URL__', proxyUrl));
     const rewrittenEnv = Object.fromEntries(
@@ -1186,18 +1678,37 @@ async function runArtifactWithProxy({
   });
 
   const exactCapture = selectProxyCapture(proxyResult.captures, method, requestPath);
-  const selectedCapture = exactCapture
-    ?? proxyResult.captures.find((capture) => isProtocolRefusal(capture.response))
-    ?? null;
   const stdoutJson = parseJson(proxyResult.process.stdout.trim());
-  const response = selectedCapture?.response ?? {
+  const artifactResponse = artifactOutputResponse(surfaceName, operationGroup, stdoutJson);
+  const artifactOutputAuthoritative = surfaceName === 'waterline'
+    && operationGroup === 'waterline_render';
+  const fallbackReason = exactCapture === null
+    ? proxyResult.captures.length > 0
+      ? 'advertised_operation_not_observed'
+      : 'artifact_did_not_contact_surface'
+    : artifactOutputAuthoritative
+    ? 'artifact_did_not_report_waterline_render_response'
+    : 'artifact_response_unavailable';
+  const fallbackMessage = exactCapture === null
+    ? proxyResult.captures.length > 0
+      ? 'The published artifact contacted the recording proxy, but no captured request matched the advertised operation.'
+      : 'The published artifact invocation did not contact the recording proxy for the advertised operation.'
+    : artifactOutputAuthoritative
+    ? 'The Composer-installed Waterline artifact probe did not emit render response evidence.'
+    : 'The matched recording-proxy capture did not include response evidence.';
+  const response = exactCapture === null
+    ? null
+    : artifactOutputAuthoritative
+      ? artifactResponse
+      : exactCapture.response;
+  const normalizedResponse = response
+    ?? {
     status: 0,
     headers: {},
     body: {
-      reason: exactCapture === null && proxyResult.captures.length > 0
-        ? 'advertised_operation_not_observed'
-        : 'artifact_did_not_contact_server',
-      message: 'The published artifact invocation did not produce wire evidence for the advertised operation.',
+      reason: fallbackReason,
+      message: fallbackMessage,
+      observed_proxy_requests: proxyResult.captures.map((capture) => `${capture.request.method} ${capture.request.path}`),
       exit_code: proxyResult.process.exitCode,
       artifact_output: redactJsonSecrets(stdoutJson),
       stdout: redactKnownSecrets(proxyResult.process.stdout.slice(0, 2000)),
@@ -1205,13 +1716,28 @@ async function runArtifactWithProxy({
     },
   };
 
-  updatePairingStateFromResponse(context, surfaceName, pairingClass, response.body);
+  updatePairingStateFromResponse(context, surfaceName, pairingClass, normalizedResponse.body);
+
+  const responseSource = exactCapture === null
+    ? 'no_matched_proxy_capture'
+    : artifactResponse !== null && artifactOutputAuthoritative
+      ? 'artifact_stdout'
+      : artifactOutputAuthoritative
+        ? 'artifact_stdout_missing'
+        : 'recording_proxy';
 
   return {
     response: {
-      ...response,
+      ...normalizedResponse,
       artifact_exit_code: proxyResult.process.exitCode,
     },
+    matched_proxy_capture: exactCapture,
+    wire_evidence_gap: exactCapture === null
+      ? {
+        status: 'not_covered',
+        reason: fallbackMessage,
+      }
+      : null,
     artifact_invocation: {
       surface: surfaceName,
       pairing_class: pairingClass,
@@ -1222,13 +1748,68 @@ async function runArtifactWithProxy({
       timed_out: proxyResult.process.timedOut,
       stdout_excerpt: redactKnownSecrets(proxyResult.process.stdout.slice(0, 4000)),
       stderr_excerpt: redactKnownSecrets(proxyResult.process.stderr.slice(0, 4000)),
-      selected_proxy_capture: selectedCapture?.id ?? null,
+      matched_proxy_capture: exactCapture?.id ?? null,
+      selected_proxy_capture: exactCapture?.id ?? null,
+      response_source: responseSource,
+      target_url: targetUrl ?? context.serverUrl,
     },
     proxy_captures: proxyResult.captures,
   };
 }
 
-async function withRecordingProxy({ targetUrl, controlPlaneVersion, workerProtocolVersion }, callback) {
+function artifactOutputResponse(surfaceName, operationGroup, stdoutJson) {
+  if (surfaceName !== 'waterline' || operationGroup !== 'waterline_render') {
+    return null;
+  }
+
+  const rawResponse = stdoutJson && typeof stdoutJson === 'object'
+    ? stdoutJson.response
+    : null;
+  if (!rawResponse || typeof rawResponse !== 'object') {
+    return null;
+  }
+
+  const status = integerValue(rawResponse.status)
+    ?? integerValue(rawResponse.status_code)
+    ?? 0;
+
+  return {
+    status,
+    headers: normalizeArtifactHeaders(rawResponse.headers),
+    body: rawResponse.body ?? null,
+    dom_snapshot: typeof rawResponse.dom_snapshot === 'string'
+      ? rawResponse.dom_snapshot
+      : null,
+    source: 'published_waterline_artifact',
+  };
+}
+
+function normalizeArtifactHeaders(headers) {
+  if (!headers || typeof headers !== 'object') {
+    return {};
+  }
+
+  if (!Array.isArray(headers)) {
+    return Object.fromEntries(
+      Object.entries(headers).map(([key, value]) => [key.toLowerCase(), Array.isArray(value) ? value.join(', ') : String(value)]),
+    );
+  }
+
+  const normalized = {};
+  for (const line of headers) {
+    const value = String(line);
+    const index = value.indexOf(':');
+    if (index <= 0) {
+      continue;
+    }
+
+    normalized[value.slice(0, index).trim().toLowerCase()] = value.slice(index + 1).trim();
+  }
+
+  return normalized;
+}
+
+async function withRecordingProxy({ targetUrl }, callback) {
   const captures = [];
   const server = http.createServer(async (request, response) => {
     const chunks = [];
@@ -1239,12 +1820,6 @@ async function withRecordingProxy({ targetUrl, controlPlaneVersion, workerProtoc
       delete headers.host;
       delete headers.connection;
       delete headers['content-length'];
-
-      if ((request.url ?? '').startsWith('/api/worker')) {
-        headers['x-durable-workflow-protocol-version'] = workerProtocolVersion;
-      } else {
-        headers['x-durable-workflow-control-plane-version'] = controlPlaneVersion;
-      }
 
       const requestUrl = new URL(request.url ?? '/', targetUrl);
       const capture = {
@@ -1371,12 +1946,84 @@ function selectProxyCapture(captures, method, requestPath) {
   ) === normalized) ?? null;
 }
 
+function normalizedCaptureRequest(capture) {
+  return {
+    method: stringValue(capture?.request?.method) || 'GET',
+    path: stringValue(capture?.request?.path) || '/',
+    headers: capture?.request?.headers && typeof capture.request.headers === 'object'
+      ? redactHeaders(capture.request.headers)
+      : {},
+    body: capture?.request?.body ?? null,
+  };
+}
+
+function normalizedCaptureResponse(capture) {
+  return {
+    status: integerValue(capture?.response?.status) ?? 0,
+    headers: capture?.response?.headers && typeof capture.response.headers === 'object'
+      ? capture.response.headers
+      : {},
+    body: capture?.response?.body ?? null,
+  };
+}
+
+function protocolEvidenceGap(operationGroup, pairing, wireRequest) {
+  const expectation = protocolExpectationForOperation(operationGroup, pairing);
+  if (!expectation) {
+    return null;
+  }
+
+  const observed = headerValue(wireRequest.headers, expectation.header);
+  if (observed === expectation.expected) {
+    return null;
+  }
+
+  return {
+    header: expectation.header,
+    expected: expectation.expected,
+    observed: observed || null,
+    reason: [
+      `Matched artifact request did not send ${expectation.header}: ${expectation.expected}.`,
+      'The row is a coverage gap because the published artifact did not exercise the requested skew pairing.',
+    ].join(' '),
+  };
+}
+
+function protocolExpectationForOperation(operationGroup, pairing) {
+  if (operationGroup === 'worker_lifecycle') {
+    return {
+      header: 'X-Durable-Workflow-Protocol-Version',
+      expected: pairing.workerProtocolVersion,
+    };
+  }
+
+  return {
+    header: 'X-Durable-Workflow-Control-Plane-Version',
+    expected: pairing.controlPlaneVersion,
+  };
+}
+
+function headerValue(headers, wantedHeader) {
+  const wanted = wantedHeader.toLowerCase();
+  for (const [key, value] of Object.entries(headers ?? {})) {
+    if (key.toLowerCase() === wanted) {
+      return Array.isArray(value) ? value.join(', ') : String(value);
+    }
+  }
+
+  return '';
+}
+
 function updatePairingStateFromResponse(context, surfaceName, pairingClass, body) {
   const state = pairingState(context, surfaceName, pairingClass);
   if (body && typeof body === 'object') {
     const workflowId = stringValue(body.workflow_id);
     const runId = stringValue(body.run_id);
     const scheduleId = stringValue(body.schedule_id);
+    const taskId = stringValue(body.task?.task_id)
+      || stringValue(body.task_id)
+      || stringValue(body.result?.task?.task_id)
+      || stringValue(body.result?.task_id);
     if (workflowId) {
       state.workflowId = workflowId;
     }
@@ -1385,6 +2032,9 @@ function updatePairingStateFromResponse(context, surfaceName, pairingClass, body
     }
     if (scheduleId) {
       state.scheduleId = scheduleId;
+    }
+    if (taskId) {
+      state.taskId = taskId;
     }
   }
 }
@@ -1397,6 +2047,7 @@ function pairingState(context, surfaceName, pairingClass) {
     runId: '',
     scheduleId: `schedule-${context.runId}-${surfaceName.replace(/[^a-z0-9]+/gi, '-')}-${pairingClass}`,
     workerId: `worker-${context.runId}-${surfaceName.replace(/[^a-z0-9]+/gi, '-')}-${pairingClass}`,
+    taskId: '',
   };
 
   return context.pairingState[key];
@@ -1483,11 +2134,23 @@ function classifyEvidenceStatus({ surfaceName, pairingClass, operationGroup, res
       return 'silent_failure';
     }
 
+    if (pairingClass === 'outside_window') {
+      return 'silent_success';
+    }
+
     return 'pass';
   }
 
   if (operationGroup === 'waterline_render') {
     const classification = waterlineClassification(pairingClass, response);
+    if (isWaterlineTransportFailure(response) || isWaterlineSurfaceMissing(response)) {
+      return 'not_covered';
+    }
+
+    if (pairingClass === 'compatible' && response.status >= 400) {
+      return 'silent_failure';
+    }
+
     if (classification === 'stale_render') {
       return 'silent_success';
     }
@@ -1674,15 +2337,18 @@ function workerClassification(pairingClass, response, operationGroup = '') {
 }
 
 function waterlineClassification(pairingClass, response) {
-  if (pairingClass === 'compatible') {
-    return 'banner';
-  }
-
   if (response.status >= 400) {
     return 'render_refused';
   }
 
-  const bodyText = JSON.stringify(response.body ?? '').toLowerCase();
+  if (pairingClass === 'compatible') {
+    return 'banner';
+  }
+
+  const bodyText = JSON.stringify({
+    body: response.body ?? '',
+    dom_snapshot: response.dom_snapshot ?? '',
+  }).toLowerCase();
   if (bodyText.includes('compat') || bodyText.includes('version') || bodyText.includes('skew')) {
     return 'banner';
   }
@@ -1691,6 +2357,18 @@ function waterlineClassification(pairingClass, response) {
 }
 
 function domSnapshotForWaterline(classification, response, pairingClass, context) {
+  if (typeof response.dom_snapshot === 'string' && response.dom_snapshot !== '') {
+    return {
+      type: 'dom_snapshot',
+      source: response.source ?? 'published_waterline_artifact',
+      classification,
+      pairing_class: pairingClass,
+      server_version: context.observedServerVersion,
+      status_code: response.status,
+      dom_excerpt: response.dom_snapshot.slice(0, 1200),
+    };
+  }
+
   return {
     type: 'dom_snapshot',
     classification,
@@ -1699,6 +2377,49 @@ function domSnapshotForWaterline(classification, response, pairingClass, context
     status_code: response.status,
     body_excerpt: JSON.stringify(response.body ?? '').slice(0, 500),
   };
+}
+
+function isWaterlineTransportFailure(response) {
+  const reason = response?.body?.reason;
+  return response.status === 0
+    || response.status >= 500
+    || reason === 'skew_proxy_upstream_error'
+    || reason === 'artifact_did_not_contact_server'
+    || reason === 'artifact_did_not_contact_surface'
+    || reason === 'advertised_operation_not_observed'
+    || reason === 'artifact_did_not_report_waterline_render_response';
+}
+
+function isWaterlineSurfaceMissing(response) {
+  const reason = response?.body?.reason;
+  if (reason === 'not_found' || reason === 'route_not_found') {
+    return true;
+  }
+
+  if (response.status !== 404) {
+    return false;
+  }
+
+  const bodyText = JSON.stringify(response.body ?? '').toLowerCase();
+  return !bodyText.includes('compat')
+    && !bodyText.includes('version')
+    && !bodyText.includes('skew');
+}
+
+function waterlineCoverageGapReason(operationGroup, status, response) {
+  if (operationGroup !== 'waterline_render' || status !== 'not_covered') {
+    return '';
+  }
+
+  if (isWaterlineSurfaceMissing(response)) {
+    return 'The running Waterline surface did not serve the advertised render route; route-missing responses are not valid render_refused evidence.';
+  }
+
+  if (isWaterlineTransportFailure(response)) {
+    return 'The running Waterline surface was unavailable or returned a transport failure; no render classification was captured.';
+  }
+
+  return '';
 }
 
 function loudRefusalContext(surfaceName, surfaceVersion, context, pairing, response) {
@@ -1734,7 +2455,7 @@ function materializeRequest(template, runId, state = {}) {
     '{signalName}': 'advance',
     '{queryName}': 'currentState',
     '{updateName}': 'approve',
-    '{task}': state.taskId || `task-${runId}`,
+    '{task}': state.taskId || 'poll-task-id-required',
     '{id}': state.scheduleId || `schedule-${runId}`,
   };
 
@@ -1743,81 +2464,6 @@ function materializeRequest(template, runId, state = {}) {
   }
 
   return { method, path: requestPath };
-}
-
-function bodyForRequest(method, requestPath, runId, state = {}) {
-  if (method !== 'POST' && method !== 'PUT' && method !== 'PATCH') {
-    return undefined;
-  }
-
-  if (requestPath === '/api/workflows') {
-    return {
-      workflow_id: state.workflowId || `skew-${runId}`,
-      workflow_type: 'skew_conformance_workflow',
-      task_queue: 'skew-conformance',
-      input: { source: 'skew-conformance' },
-    };
-  }
-
-  if (requestPath.startsWith('/api/workflows/') && requestPath.includes('/signal/')) {
-    return { payload: { source: 'skew-conformance' } };
-  }
-
-  if (requestPath.startsWith('/api/workflows/') && requestPath.includes('/query/')) {
-    return { args: { source: 'skew-conformance' } };
-  }
-
-  if (requestPath.startsWith('/api/workflows/') && requestPath.includes('/update/')) {
-    return { args: { source: 'skew-conformance' } };
-  }
-
-  if (requestPath.endsWith('/cancel') || requestPath.endsWith('/terminate')) {
-    return { reason: 'skew conformance boundary probe' };
-  }
-
-  if (requestPath === '/api/schedules') {
-    return {
-      schedule_id: state.scheduleId || `schedule-${runId}`,
-      spec: { intervals: [{ every: 'PT1M' }] },
-      action: {
-        type: 'start_workflow',
-        workflow_type: 'skew_conformance_workflow',
-        workflow_id: `scheduled-${state.workflowId || `skew-${runId}`}`,
-        task_queue: 'skew-conformance',
-      },
-    };
-  }
-
-  if (requestPath.includes('/api/schedules/') && requestPath.endsWith('/trigger')) {
-    return { overlap_policy: 'skip' };
-  }
-
-  if (requestPath === '/api/worker/register') {
-    return {
-      worker_id: state.workerId || `worker-${runId}`,
-      task_queue: 'skew-conformance',
-      workflows: [],
-      activities: [],
-    };
-  }
-
-  if (requestPath === '/api/worker/heartbeat') {
-    return { worker_id: state.workerId || `worker-${runId}` };
-  }
-
-  if (requestPath === '/api/worker/workflow-tasks/poll') {
-    return { worker_id: state.workerId || `worker-${runId}`, task_queue: 'skew-conformance', timeout_seconds: 0 };
-  }
-
-  if (requestPath.includes('/api/worker/workflow-tasks/') && requestPath.endsWith('/complete')) {
-    return { worker_id: state.workerId || `worker-${runId}`, commands: [] };
-  }
-
-  if (requestPath.includes('/api/worker/workflow-tasks/') && requestPath.endsWith('/fail')) {
-    return { worker_id: state.workerId || `worker-${runId}`, reason: 'skew conformance boundary probe' };
-  }
-
-  return { source: 'skew-conformance' };
 }
 
 async function requestJson(baseUrl, method, requestPath, headers, body = undefined) {
@@ -2049,6 +2695,23 @@ function envValue(name) {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : '';
 }
 
+function executableOnPath(name) {
+  const pathValue = process.env.PATH ?? '';
+  for (const directory of pathValue.split(path.delimiter)) {
+    if (!directory) {
+      continue;
+    }
+
+    try {
+      fs.accessSync(path.join(directory, name), fs.constants.X_OK);
+      return true;
+    } catch {
+    }
+  }
+
+  return false;
+}
+
 function isPlaceholderVersion(value) {
   const normalized = String(value).trim().toLowerCase();
   return [
@@ -2077,6 +2740,27 @@ function stringValue(value) {
   }
 
   return '';
+}
+
+function integerValue(value) {
+  if (Number.isInteger(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) {
+    return Number.parseInt(value.trim(), 10);
+  }
+
+  return null;
+}
+
+function isHttpUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 function trimTrailingSlash(value) {

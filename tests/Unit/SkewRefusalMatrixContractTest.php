@@ -461,6 +461,16 @@ final class SkewRefusalMatrixContractTest extends TestCase
             $shell,
             'the Waterline install check must require a concrete workflow package pin before composer can resolve dependencies',
         );
+        $this->assertStringContainsString(
+            'DW_SKEW_WATERLINE_URL',
+            $shell,
+            'Waterline render evidence must require a running Waterline HTTP surface in addition to Composer package install',
+        );
+        $this->assertStringContainsString(
+            'surface_url: env.WATERLINE_SURFACE_URL',
+            $shell,
+            'the artifact handoff must carry the Waterline surface URL that was actually rendered through',
+        );
         $this->assertStringNotContainsString(
             '${workflow_version:-^2.0.0-alpha@alpha}',
             $shell,
@@ -485,6 +495,61 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'invokePythonSdkOperation',
             $runner,
             'Python matrix cells must invoke the installed durable-workflow package',
+        );
+        $this->assertStringContainsString(
+            'invokeWorkflowWorkerOperation',
+            $runner,
+            'PHP worker matrix cells must execute the Composer-installed durable-workflow/workflow artifact instead of remaining installed-only evidence',
+        );
+        $this->assertStringContainsString(
+            'invokeWaterlineOperation',
+            $runner,
+            'Waterline matrix cells must execute the Composer-installed durable-workflow/waterline artifact instead of remaining installed-only evidence',
+        );
+        $this->assertStringContainsString(
+            'workflow-worker-skew-probe.php',
+            $runner,
+            'the workflow worker shard must generate a PHP probe that requires the published package autoload file',
+        );
+        $this->assertStringContainsString(
+            'waterline-skew-probe.php',
+            $runner,
+            'the Waterline shard must generate a PHP probe that requires the published package autoload file',
+        );
+        $this->assertStringContainsString(
+            'WorkflowPackageApiFloor::findMissing()',
+            $runner,
+            'Waterline evidence must include the published package API-floor detector output',
+        );
+        $this->assertStringContainsString(
+            'waterlineSurfaceUrlFor(record)',
+            $runner,
+            'Waterline render evidence must distinguish installed package metadata from a running Waterline surface',
+        );
+        $this->assertStringContainsString(
+            'Composer package install alone is not Waterline render evidence.',
+            $runner,
+            'the runner must mark Waterline render rows not_covered instead of attributing direct server responses to Waterline',
+        );
+        $this->assertStringContainsString(
+            "'--network'",
+            $runner,
+            'Dockerized PHP probes must use the host network so the recording proxy captures requests from inside the container',
+        );
+        $this->assertStringContainsString(
+            "'DW_SKEW_AUTH_TOKEN'",
+            $runner,
+            'Dockerized PHP probes must pass auth through the environment rather than serialized argv payloads',
+        );
+        $this->assertStringNotContainsString(
+            'this runner does not yet boot a PHP worker process through the package API',
+            $runner,
+            'the workflow package shard must no longer report installed artifacts as not_covered without executing a probe',
+        );
+        $this->assertStringNotContainsString(
+            'this runner does not yet boot a Waterline app and capture DOM evidence',
+            $runner,
+            'the Waterline package shard must no longer report installed artifacts as not_covered without executing a probe',
         );
         $this->assertStringContainsString(
             'DW_SKEW_AUTH_TOKEN: process.env.DW_SKEW_AUTH_TOKEN',
@@ -525,6 +590,31 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'requires a live compatible published workflow worker for skew_conformance_workflow',
             $runner,
             'worker-backed CLI and Python probes must stay not_covered until the published worker shard is booted',
+        );
+        $this->assertStringContainsString(
+            'DW_SKEW_LIVE_WORKFLOW_WORKER_READY',
+            $runner,
+            'worker-backed CLI and Python probes must require an explicit live-worker coordination signal, not only an installed package',
+        );
+        $this->assertStringContainsString(
+            'Workflow package availability alone is not live worker coordination.',
+            $runner,
+            'the skew runner must not treat a Composer-installed workflow package as proof that query/update probes can be served',
+        );
+        $this->assertStringContainsString(
+            'requires a workflow task id obtained from a successful published-artifact poll',
+            $runner,
+            'complete/fail probes must stay not_covered until poll returns a real task id',
+        );
+        $this->assertStringContainsString(
+            'Synthetic task ids are not valid published-artifact skew evidence.',
+            $runner,
+            'worker lifecycle probes must not manufacture task ids for complete/fail rows',
+        );
+        $this->assertStringNotContainsString(
+            'task-skew-conformance',
+            $runner,
+            'published-artifact worker complete/fail probes must use task ids obtained from poll rather than a synthetic fixture id',
         );
         $this->assertStringContainsString(
             'futureVersionBoundary',
@@ -615,6 +705,174 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'published_release_version',
             $runner,
             'artifact sources must come from actual installation handoff records, not version environment variables alone',
+        );
+    }
+
+    public function test_skew_runner_does_not_attribute_waterline_render_to_proxy_response(): void
+    {
+        $runner = $this->read('scripts/conformance/skew-published-artifacts.mjs');
+
+        $this->assertStringContainsString(
+            "const artifactOutputAuthoritative = surfaceName === 'waterline'",
+            $runner,
+            'Waterline render evidence must use the Composer-installed artifact probe output as the response authority',
+        );
+        $this->assertStringContainsString(
+            "&& operationGroup === 'waterline_render'",
+            $runner,
+        );
+        $this->assertStringContainsString(
+            'artifactOutputResponse(surfaceName, operationGroup, stdoutJson)',
+            $runner,
+            'the runner must parse Waterline response and DOM evidence from artifact stdout',
+        );
+        $this->assertStringContainsString(
+            'artifact_did_not_report_waterline_render_response',
+            $runner,
+            'missing Waterline artifact output must be non-pass instead of falling back to proxy-selected output',
+        );
+        $this->assertStringContainsString(
+            'targetUrl: availability.surfaceUrl',
+            $runner,
+            'Waterline render probes must send the recording proxy to the running Waterline HTTP surface, not directly to the server',
+        );
+        $this->assertStringContainsString(
+            'targetUrl = null',
+            $runner,
+            'non-Waterline probes may still default the recording proxy to the published server URL',
+        );
+        $this->assertStringContainsString(
+            'artifact_did_not_contact_surface',
+            $runner,
+            'missing Waterline surface traffic must not be described as a successful server refusal',
+        );
+        $this->assertStringContainsString(
+            "source: 'published_waterline_artifact'",
+            $runner,
+            'DOM snapshots must be attributed to the published Waterline artifact output',
+        );
+        $this->assertStringNotContainsString(
+            'const response = selectedCapture?.response ?? {',
+            $runner,
+            'Waterline render rows must not blindly prefer the recording proxy response',
+        );
+    }
+
+    public function test_skew_runner_uses_published_php_clients_for_worker_protocol_rows(): void
+    {
+        $runner = $this->read('scripts/conformance/skew-published-artifacts.mjs');
+
+        $this->assertStringContainsString(
+            'new \Workflow\V2\Client\ControlPlaneClient',
+            $runner,
+            'workflow-worker cluster-info probes must use the Composer-installed control-plane client',
+        );
+        $this->assertStringContainsString(
+            '$controlPlaneVersion',
+            $runner,
+            'workflow-worker cluster-info probes must send the row control-plane version from the artifact client',
+        );
+        $this->assertStringContainsString(
+            '$client->clusterInfo()',
+            $runner,
+            'workflow-worker cluster-info probes must execute the package API rather than a hand-written request',
+        );
+        $this->assertStringContainsString(
+            'new \Workflow\V2\Worker\WorkerProtocolClient',
+            $runner,
+            'worker lifecycle probes must use the Composer-installed worker protocol client',
+        );
+        $this->assertStringContainsString(
+            '$workerProtocolVersion',
+            $runner,
+            'worker lifecycle probes must send the row worker protocol version from the artifact client',
+        );
+        $this->assertStringNotContainsString(
+            "function skew_worker_body",
+            $runner,
+            'worker lifecycle probes must not assemble hand-written worker HTTP payloads',
+        );
+        $this->assertStringNotContainsString(
+            "headers['x-durable-workflow-protocol-version'] = workerProtocolVersion",
+            $runner,
+            'the recording proxy must preserve artifact-sent worker protocol headers instead of manufacturing skew',
+        );
+        $this->assertStringNotContainsString(
+            "headers['x-durable-workflow-control-plane-version'] = controlPlaneVersion",
+            $runner,
+            'the recording proxy must preserve artifact-sent control-plane headers instead of manufacturing skew',
+        );
+    }
+
+    public function test_skew_runner_rejects_silent_outside_window_and_failed_waterline_requests(): void
+    {
+        $runner = $this->read('scripts/conformance/skew-published-artifacts.mjs');
+
+        $this->assertStringContainsString(
+            "if (pairingClass === 'outside_window')",
+            $runner,
+            'outside-window cluster-info rows must not be allowed to pass silently',
+        );
+        $this->assertStringContainsString(
+            "return 'silent_success';",
+            $runner,
+            'a non-refusing outside-window cluster-info response must be blocking evidence',
+        );
+        $this->assertStringContainsString(
+            'isWaterlineTransportFailure(response)',
+            $runner,
+            'Waterline 0/5xx/proxy failures must be classified before render_refused can pass a skewed row',
+        );
+        $this->assertStringContainsString(
+            'isWaterlineSurfaceMissing(response)',
+            $runner,
+            'missing Waterline routes must stay coverage gaps instead of counting as loud render refusals',
+        );
+        $this->assertStringContainsString(
+            'route-missing responses are not valid render_refused evidence',
+            $runner,
+            'missing Waterline route findings must explain why the row is a coverage gap',
+        );
+        $this->assertStringContainsString(
+            "reason === 'skew_proxy_upstream_error'",
+            $runner,
+            'proxy upstream failures must stay non-pass for Waterline render evidence',
+        );
+    }
+
+    public function test_skew_runner_records_only_matched_proxy_wire_evidence(): void
+    {
+        $runner = $this->read('scripts/conformance/skew-published-artifacts.mjs');
+
+        $this->assertStringContainsString(
+            'matched_proxy_capture: exactCapture',
+            $runner,
+            'request/response evidence must be anchored to the exact recording-proxy capture',
+        );
+        $this->assertStringContainsString(
+            'wire_evidence_gap',
+            $runner,
+            'cells without a matched artifact request must be recorded as coverage gaps',
+        );
+        $this->assertStringContainsString(
+            'protocolEvidenceGap(operationGroup, pairing, wireRequest)',
+            $runner,
+            'matched artifact requests must prove the row protocol version instead of inheriting the runner template',
+        );
+        $this->assertStringContainsString(
+            'request_headers: wireRequest.headers',
+            $runner,
+            'operation evidence must report artifact-sent headers from the matched proxy request',
+        );
+        $this->assertStringNotContainsString(
+            'request_headers: redactHeaders(headers)',
+            $runner,
+            'operation evidence must not synthesize skew headers from the runner template',
+        );
+        $this->assertStringNotContainsString(
+            'body: body ?? null,',
+            $runner,
+            'request-response captures must not synthesize request bodies from the runner template',
         );
     }
 

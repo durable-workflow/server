@@ -25,6 +25,7 @@ Environment overrides:
   DW_PYTHON_SDK_VERSION        Published PyPI durable-workflow version under test.
   DW_WORKFLOW_PHP_VERSION      Published durable-workflow/workflow version under test.
   DW_WATERLINE_VERSION         Published Waterline version under test.
+  DW_SKEW_WATERLINE_URL        Running Composer-installed Waterline HTTP surface to render through.
   DW_SKEW_SERVER_PORT          Host port for the published server. Defaults to a free port.
   DW_SKEW_AUTH_TOKEN           Token used against the published server. Defaults to dev-token.
   DW_SKEW_NAMESPACE            Namespace used for probes. Defaults to default.
@@ -334,6 +335,7 @@ waterline_status="not_covered"
 waterline_reason="DW_WATERLINE_VERSION is required to install the published Waterline artifact"
 waterline_app_dir=""
 waterline_source="not_installed"
+waterline_surface_url="${DW_SKEW_WATERLINE_URL:-${DW_SKEW_WATERLINE_BASE_URL:-}}"
 if [[ -n "${DW_WATERLINE_VERSION:-}" ]]; then
   mkdir -p "$run_root/waterline"
   if ! is_exact_semver "$DW_WATERLINE_VERSION"; then
@@ -382,6 +384,7 @@ WATERLINE_STATUS="$waterline_status" \
 WATERLINE_REASON="$waterline_reason" \
 WATERLINE_SOURCE="$waterline_source" \
 WATERLINE_APP_DIR="$waterline_app_dir" \
+WATERLINE_SURFACE_URL="$waterline_surface_url" \
 node - <<'NODE' > "$artifact_manifest"
 const env = process.env;
 const surface = (status, reason, source, extra = {}) => ({
@@ -412,7 +415,10 @@ const manifest = {
     cli: surface(env.CLI_STATUS, env.CLI_REASON, env.CLI_SOURCE, { executable: env.CLI_EXECUTABLE }),
     'sdk-python': surface(env.PYTHON_STATUS, env.PYTHON_REASON, env.PYTHON_SOURCE, { python: env.PYTHON_EXECUTABLE }),
     workflow: surface(env.WORKFLOW_STATUS, env.WORKFLOW_REASON, env.WORKFLOW_SOURCE, { app_dir: env.WORKFLOW_APP_DIR }),
-    waterline: surface(env.WATERLINE_STATUS, env.WATERLINE_REASON, env.WATERLINE_SOURCE, { app_dir: env.WATERLINE_APP_DIR }),
+    waterline: surface(env.WATERLINE_STATUS, env.WATERLINE_REASON, env.WATERLINE_SOURCE, {
+      app_dir: env.WATERLINE_APP_DIR,
+      surface_url: env.WATERLINE_SURFACE_URL,
+    }),
   },
   local_product_source_checkouts_used: false,
 };
