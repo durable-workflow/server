@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use App\Support\PrincipalAttributionContract;
+use App\Support\PrincipalAttributionResultGate;
 use PHPUnit\Framework\TestCase;
 use Workflow\V2\Support\PlatformConformanceSuite;
 
@@ -89,6 +90,308 @@ class PrincipalAttributionContractTest extends TestCase
             'documented_system_principals',
             $manifest['scenario_requirements']['completion_failure_attribution']['required_fields'],
         );
+    }
+
+    public function test_manifest_publishes_enforceable_principal_attribution_result_gate(): void
+    {
+        $manifest = PrincipalAttributionContract::manifest();
+
+        $this->assertSame(PrincipalAttributionResultGate::SCHEMA, $manifest['result_gate']['schema']);
+        $this->assertSame(
+            PrincipalAttributionContract::RESULT_SCHEMA,
+            $manifest['result_gate']['evaluates_result_schema'],
+        );
+        $this->assertContains(
+            'each_non_pass_scenario_has_focused_linked_findings',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'omitted_required_scenarios_link_focused_findings',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'resolved_artifact_versions_are_recorded_and_pinned',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'published_artifact_install_sources_are_complete',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'published_artifact_install_local_product_source_checkouts_used_false',
+            $manifest['result_gate']['pass_requires'],
+        );
+    }
+
+    public function test_result_gate_rejects_role_token_smoke_subset_as_complete_evidence(): void
+    {
+        $result = $this->principalAttributionResult([
+            'outcome' => 'pass',
+            'scenario_results' => [
+                'start_signal_cancel_spoofing' => $this->scenario(
+                    'start_signal_cancel_spoofing',
+                    'pass',
+                    $this->scenarioEvidence('start_signal_cancel_spoofing'),
+                ),
+            ],
+        ]);
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+        $codes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('missing_required_scenario', $codes);
+        $this->assertContains('declared_pass_with_non_passing_evidence', $codes);
+        $this->assertContains('smoke_subset_cannot_pass', $codes);
+        $this->assertContains('named_token_actor_matrix', $evaluation['missing_scenarios']);
+        $this->assertContains('query_attribution', $evaluation['missing_scenarios']);
+    }
+
+    public function test_result_gate_requires_focused_findings_for_non_pass_principal_cells(): void
+    {
+        $result = $this->principalAttributionResult([
+            'outcome' => 'fail',
+            'scenario_results' => [
+                ...$this->passingScenarioResults(),
+                'waterline_operator_visibility' => $this->scenario(
+                    'waterline_operator_visibility',
+                    'unsupported',
+                    $this->scenarioEvidence('waterline_operator_visibility'),
+                ),
+            ],
+        ]);
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+        $focusedFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_focused_linked_finding',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame(['waterline_operator_visibility'], array_column($focusedFailures, 'scenario_id'));
+    }
+
+    public function test_result_gate_accepts_complete_non_passing_evidence_when_uncovered_cell_is_routed(): void
+    {
+        $finding = $this->focusedFinding('waterline_operator_visibility', 'waterline');
+        $result = $this->principalAttributionResult([
+            'outcome' => 'fail',
+            'scenario_results' => [
+                ...$this->passingScenarioResults(),
+                'waterline_operator_visibility' => $this->scenario(
+                    'waterline_operator_visibility',
+                    'unsupported',
+                    [
+                        ...$this->scenarioEvidence('waterline_operator_visibility'),
+                        'linked_findings' => [$finding],
+                    ],
+                ),
+            ],
+            'findings' => [$finding],
+        ]);
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame(['waterline_operator_visibility'], $evaluation['non_pass_scenarios']);
+        $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_result_gate_accepts_complete_passing_principal_attribution_matrix(): void
+    {
+        $evaluation = PrincipalAttributionResultGate::evaluate($this->principalAttributionResult());
+
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $evaluation['missing_scenarios']);
+        $this->assertSame([], $evaluation['non_pass_scenarios']);
+        $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_result_gate_rejects_complete_pass_with_non_passing_declared_outcome_tokens(): void
+    {
+        foreach ([
+            ['outcome', 'fail'],
+            ['outcome', 'non_passing'],
+            ['status', 'fail'],
+            ['status', 'non_passing'],
+            ['verdict', 'fail'],
+            ['verdict', 'non_passing'],
+        ] as [$field, $outcome]) {
+            $result = $this->principalAttributionResult([$field => $outcome]);
+
+            $evaluation = PrincipalAttributionResultGate::evaluate($result);
+            $failureCodes = array_column($evaluation['gate_failures'], 'code');
+            $mismatchFailures = array_values(array_filter(
+                $evaluation['gate_failures'],
+                static fn (array $failure): bool => ($failure['code'] ?? null) === 'declared_outcome_status_mismatch',
+            ));
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertContains('declared_outcome_status_mismatch', $failureCodes);
+            $this->assertContains(
+                [
+                    'code' => 'declared_outcome_status_mismatch',
+                    'field' => $field,
+                    'outcome' => $outcome,
+                    'declared_status' => 'non_passing',
+                    'evaluated_status' => 'pass',
+                ],
+                $mismatchFailures,
+            );
+        }
+    }
+
+    public function test_result_gate_rejects_runner_blocked_complete_matrix_as_passing_evidence(): void
+    {
+        foreach (['runner_blocked', 'runnerBlocked'] as $field) {
+            $result = $this->principalAttributionResult();
+            unset($result['runner_blocked']);
+            $result[$field] = true;
+
+            $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertContains(
+                'runner_blocked_result_is_not_product_evidence',
+                array_column($evaluation['gate_failures'], 'code'),
+            );
+        }
+    }
+
+    public function test_result_gate_requires_separate_published_and_resolved_artifact_version_fields(): void
+    {
+        $result = $this->principalAttributionResult([
+            'artifact_versions' => $this->artifactVersions(),
+        ]);
+        unset($result['resolved_artifact_versions']);
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+        $missingRunRecordFields = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_run_record_field',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            [
+                'code' => 'missing_run_record_field',
+                'field' => 'resolved_artifact_versions',
+            ],
+            $missingRunRecordFields,
+        );
+
+        $result = $this->principalAttributionResult([
+            'artifact_versions' => $this->artifactVersions(),
+        ]);
+        unset($result['published_artifact_versions']);
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+        $missingRunRecordFields = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_run_record_field',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            [
+                'code' => 'missing_run_record_field',
+                'field' => 'published_artifact_versions',
+            ],
+            $missingRunRecordFields,
+        );
+    }
+
+    public function test_result_gate_rejects_published_install_scenario_local_source_policy_violations(): void
+    {
+        $result = $this->principalAttributionResult();
+        $result['scenario_results']['published_artifact_install_only']['local_product_source_checkouts_used'] = true;
+        $result['scenario_results']['published_artifact_install_only']['artifact_sources']['server'] =
+            'workspace_repo_as_artifact_under_test';
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+        $localSourceFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'local_product_source_checkout_used',
+        ));
+        $forbiddenSourceFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'forbidden_artifact_source',
+        ));
+        $explicitFalseFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'local_product_source_checkouts_used_must_be_false',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            [
+                'code' => 'local_product_source_checkout_used',
+                'field' => 'local_product_source_checkouts_used',
+                'scenario_id' => 'published_artifact_install_only',
+            ],
+            $localSourceFailures,
+        );
+        $this->assertContains(
+            [
+                'code' => 'forbidden_artifact_source',
+                'artifact' => 'server',
+                'source' => 'workspace_repo_as_artifact_under_test',
+                'field' => 'artifact_sources',
+                'scenario_id' => 'published_artifact_install_only',
+            ],
+            $forbiddenSourceFailures,
+        );
+        $this->assertContains(
+            [
+                'code' => 'local_product_source_checkouts_used_must_be_false',
+                'scenario_id' => 'published_artifact_install_only',
+                'field' => 'local_product_source_checkouts_used',
+                'value' => true,
+            ],
+            $explicitFalseFailures,
+        );
+    }
+
+    public function test_result_gate_requires_complete_published_install_scenario_sources_and_versions(): void
+    {
+        $result = $this->principalAttributionResult();
+        $result['scenario_results']['published_artifact_install_only']['artifact_sources'] = [
+            'server' => 'docker-image',
+        ];
+        $result['scenario_results']['published_artifact_install_only']['resolved_artifact_versions'] = [
+            'server' => '0.2.228',
+        ];
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+        $missingSourceFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_published_artifact_install_source',
+        ));
+        $missingVersionFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_published_artifact_install_version',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        foreach (['cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
+            $this->assertContains(
+                [
+                    'code' => 'missing_published_artifact_install_source',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                ],
+                $missingSourceFailures,
+            );
+            $this->assertContains(
+                [
+                    'code' => 'missing_published_artifact_install_version',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'field' => 'resolved_artifact_versions',
+                    'artifact' => $artifact,
+                ],
+                $missingVersionFailures,
+            );
+        }
     }
 
     public function test_scenario_manifest_source_path_matches_contract(): void
@@ -264,12 +567,25 @@ class PrincipalAttributionContractTest extends TestCase
             }
 
             $scenarioResults = array_column($result['scenario_results'], null, 'scenario_id');
+            $topLevelFindings = array_column($result['findings'], null, 'scenario_id');
             foreach ($scenarioManifest['scenario_requirements'] as $scenarioId => $requirements) {
                 $this->assertArrayHasKey($scenarioId, $scenarioResults);
                 $this->assertSame('runner_blocked', $scenarioResults[$scenarioId]['status']);
+                $this->assertArrayHasKey($scenarioId, $topLevelFindings);
+                $this->assertFocusedPrincipalFinding($scenarioId, $topLevelFindings[$scenarioId]);
 
                 foreach ($requirements['required_fields'] as $requiredField) {
                     $this->assertArrayHasKey($requiredField, $scenarioResults[$scenarioId]);
+                }
+
+                foreach (['linked_findings', 'findings'] as $findingField) {
+                    $this->assertArrayHasKey($findingField, $scenarioResults[$scenarioId]);
+                    $this->assertIsArray($scenarioResults[$scenarioId][$findingField]);
+                    $this->assertNotEmpty($scenarioResults[$scenarioId][$findingField]);
+                    $this->assertFocusedPrincipalFinding(
+                        $scenarioId,
+                        $scenarioResults[$scenarioId][$findingField][0],
+                    );
                 }
             }
 
@@ -278,6 +594,27 @@ class PrincipalAttributionContractTest extends TestCase
             $this->assertSame([], $result['spoofing_attempts']['payload_values']);
             $this->assertFalse($result['spoofing_attempts']['executed']);
             $this->assertSame('runner_blocked', $result['anonymous_observations']['status']);
+
+            $evaluation = PrincipalAttributionResultGate::evaluate($result);
+            $failureCodes = array_column($evaluation['gate_failures'], 'code');
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertNotContains('missing_focused_linked_finding', $failureCodes);
+            $this->assertContains('runner_blocked_result_is_not_product_evidence', $failureCodes);
+
+            $recordPath = $resultDir.'/principal-attribution-record.json';
+            $this->assertFileExists($recordPath);
+            $record = json_decode(
+                (string) file_get_contents($recordPath),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $this->assertTrue($record['runnerBlocked']);
+            $recordFindings = array_column($record['findings'], null, 'scenario_id');
+            foreach (array_keys($scenarioManifest['scenario_requirements']) as $scenarioId) {
+                $this->assertArrayHasKey($scenarioId, $recordFindings);
+                $this->assertFocusedPrincipalFinding($scenarioId, $recordFindings[$scenarioId]);
+            }
         } finally {
             $this->removeTree($tempRoot);
         }
@@ -320,6 +657,415 @@ class PrincipalAttributionContractTest extends TestCase
         );
     }
 
+    public function test_result_gate_accepts_complete_passing_matrix(): void
+    {
+        $evaluation = PrincipalAttributionResultGate::evaluate($this->completePrincipalAttributionResult());
+
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $evaluation['gate_failures']);
+        $this->assertFalse($evaluation['smoke_subset_detected']);
+    }
+
+    public function test_result_gate_rejects_role_token_smoke_subset_even_when_declared_pass(): void
+    {
+        $result = $this->completePrincipalAttributionResult();
+        $result['scenario_results'] = [
+            'published_artifact_install_only' => $result['scenario_results']['published_artifact_install_only'],
+            'start_signal_cancel_spoofing' => $result['scenario_results']['start_signal_cancel_spoofing'],
+            'cli_operator_visibility' => $result['scenario_results']['cli_operator_visibility'],
+        ];
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertTrue($evaluation['smoke_subset_detected']);
+        $this->assertContains('query_attribution', $evaluation['missing_scenarios']);
+        $this->assertContains('python_sdk_visibility', $evaluation['missing_scenarios']);
+        $this->assertContains('waterline_operator_visibility', $evaluation['missing_scenarios']);
+        $this->assertContains(
+            'smoke_subset_cannot_pass',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+        $this->assertContains(
+            'declared_pass_with_non_passing_evidence',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_requires_structured_findings_for_non_pass_scenarios(): void
+    {
+        $result = $this->completePrincipalAttributionResult();
+        $result['outcome'] = 'fail';
+        $result['scenario_results']['waterline_operator_visibility'] = [
+            'status' => 'unsupported',
+            'findings' => [
+                'Waterline operator surface was not exercised.',
+            ],
+        ];
+        $result['findings'] = [
+            'Waterline operator surface was not exercised.',
+        ];
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('waterline_operator_visibility', $evaluation['non_pass_scenarios']);
+        $this->assertContains(
+            'missing_focused_linked_finding',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+
+        $finding = $this->structuredPrincipalFinding(
+            'waterline_operator_visibility',
+            'Waterline operator surface was not exercised by this runner revision.',
+            'waterline',
+            'Waterline selected-run history exposes event principal.',
+            'Extend the host topology to boot Waterline against the published server and capture selected-run history.',
+        );
+        $result['scenario_results']['waterline_operator_visibility']['findings'] = [$finding];
+        $result['scenario_results']['waterline_operator_visibility']['linked_findings'] = [$finding];
+        $result['findings'] = [$finding];
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('waterline_operator_visibility', $evaluation['non_pass_scenarios']);
+        $this->assertNotContains(
+            'missing_focused_linked_finding',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_bare_string_links_for_non_pass_scenarios(): void
+    {
+        $result = $this->completePrincipalAttributionResult();
+        $result['outcome'] = 'fail';
+        $result['scenario_results']['waterline_operator_visibility'] = [
+            'scenario_id' => 'waterline_operator_visibility',
+            'status' => 'unsupported',
+            'linked_findings' => ['waterline-operator-gap'],
+        ];
+        $result['finding_links'] = [
+            'waterline_operator_visibility' => ['waterline-operator-gap'],
+        ];
+        $result['findings'] = ['waterline-operator-gap'];
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('waterline_operator_visibility', $evaluation['non_pass_scenarios']);
+        $this->assertContains(
+            'missing_focused_linked_finding',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_generic_structured_findings_without_matching_scenario_id(): void
+    {
+        foreach ([
+            null,
+            'cli_operator_visibility',
+        ] as $linkedScenarioId) {
+            $finding = $this->structuredPrincipalFinding(
+                'waterline_operator_visibility',
+                'Waterline operator surface was not exercised by this runner revision.',
+                'waterline',
+                'Waterline selected-run history exposes event principal.',
+                'Extend the host topology to boot Waterline against the published server and capture selected-run history.',
+            );
+
+            if ($linkedScenarioId === null) {
+                unset($finding['scenario_id']);
+            } else {
+                $finding['scenario_id'] = $linkedScenarioId;
+            }
+
+            $result = $this->completePrincipalAttributionResult();
+            $result['outcome'] = 'fail';
+            $result['scenario_results']['waterline_operator_visibility'] = [
+                'scenario_id' => 'waterline_operator_visibility',
+                'status' => 'unsupported',
+                'linked_findings' => [$finding],
+            ];
+            $result['findings'] = [$finding];
+
+            $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertContains('waterline_operator_visibility', $evaluation['non_pass_scenarios']);
+            $this->assertContains(
+                'missing_focused_linked_finding',
+                array_column($evaluation['gate_failures'], 'code'),
+            );
+        }
+    }
+
+    public function test_result_gate_rejects_bare_string_and_generic_findings_for_omitted_scenarios(): void
+    {
+        foreach ([
+            'bare_string' => [
+                'finding_links' => ['waterline_operator_visibility' => ['waterline-operator-gap']],
+                'findings' => ['waterline-operator-gap'],
+            ],
+            'generic_structured' => [
+                'finding_links' => ['waterline_operator_visibility' => [[
+                    'id' => 'waterline-operator-gap',
+                    'owning_surface' => 'waterline',
+                    'artifact_versions' => $this->artifactVersions(),
+                    'observed_behavior' => 'Waterline operator surface was not exercised.',
+                    'expected_behavior' => 'Waterline selected-run history exposes event principal.',
+                    'next_acceptance_criterion' => 'Exercise Waterline operator history against published artifacts.',
+                ]]],
+                'findings' => [[
+                    'id' => 'waterline-operator-gap',
+                    'owning_surface' => 'waterline',
+                    'artifact_versions' => $this->artifactVersions(),
+                    'observed_behavior' => 'Waterline operator surface was not exercised.',
+                    'expected_behavior' => 'Waterline selected-run history exposes event principal.',
+                    'next_acceptance_criterion' => 'Exercise Waterline operator history against published artifacts.',
+                ]],
+            ],
+        ] as $case) {
+            $result = $this->completePrincipalAttributionResult();
+            unset($result['scenario_results']['waterline_operator_visibility']);
+            $result = [
+                ...$result,
+                ...$case,
+            ];
+
+            $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertContains('waterline_operator_visibility', $evaluation['missing_scenarios']);
+            $this->assertContains(
+                'missing_focused_finding_for_omitted_scenario',
+                array_column($evaluation['gate_failures'], 'code'),
+            );
+        }
+    }
+
+    public function test_result_gate_resolves_string_links_to_structured_matching_scenario_findings(): void
+    {
+        $finding = $this->structuredPrincipalFinding(
+            'waterline_operator_visibility',
+            'Waterline operator surface was not exercised by this runner revision.',
+            'waterline',
+            'Waterline selected-run history exposes event principal.',
+            'Extend the host topology to boot Waterline against the published server and capture selected-run history.',
+        );
+        $finding['id'] = 'waterline-operator-gap';
+
+        $result = $this->completePrincipalAttributionResult();
+        $result['outcome'] = 'fail';
+        $result['scenario_results']['waterline_operator_visibility'] = [
+            'scenario_id' => 'waterline_operator_visibility',
+            'status' => 'unsupported',
+            'linked_findings' => ['waterline-operator-gap'],
+        ];
+        $result['findings'] = [$finding];
+        $result['finding_links'] = [
+            'waterline_operator_visibility' => ['waterline-operator-gap'],
+        ];
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('waterline_operator_visibility', $evaluation['non_pass_scenarios']);
+        $this->assertNotContains(
+            'missing_focused_linked_finding',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function completePrincipalAttributionResult(): array
+    {
+        $versions = [
+            'server' => '0.2.228',
+            'cli' => '0.1.75',
+            'workflow-php' => '2.0.0-alpha.187',
+            'sdk-python' => '0.4.84',
+            'waterline' => '2.0.0-alpha.69',
+        ];
+
+        $alice = ['type' => 'auth:token', 'id' => 'alice'];
+        $bob = ['type' => 'auth:token', 'id' => 'bob'];
+        $worker = ['type' => 'auth:token', 'id' => 'worker:principal-attribution'];
+        $anonymous = ['type' => 'server', 'id' => 'anonymous'];
+
+        return [
+            'schema' => PrincipalAttributionContract::RESULT_SCHEMA,
+            'outcome' => 'pass',
+            'runner_blocked' => false,
+            'started_at' => '2026-06-01T21:00:00Z',
+            'finished_at' => '2026-06-01T21:05:00Z',
+            'generated_at' => '2026-06-01T21:05:00Z',
+            'published_artifact_versions' => $versions,
+            'resolved_artifact_versions' => $versions,
+            'artifact_sources' => [
+                'server' => 'docker image durableworkflow/server:0.2.228',
+                'cli' => 'official release install asset',
+                'workflow-php' => 'composer package durable-workflow/workflow',
+                'sdk-python' => 'PyPI durable-workflow',
+                'waterline' => 'published Waterline package',
+            ],
+            'topology' => [
+                'auth_driver' => 'token',
+                'anonymous_auth_driver' => 'none',
+            ],
+            'actor_matrix' => [
+                'alice' => ['credentials' => ['alice-token-v1', 'alice-token-v2']],
+                'bob' => ['credentials' => ['bob-token']],
+            ],
+            'history_dumps' => [
+                'main' => [
+                    'events' => [
+                        ['type' => 'WorkflowStarted', 'principal' => $alice],
+                        ['type' => 'SignalReceived', 'principal' => $bob],
+                        ['type' => 'WorkflowCancelled', 'principal' => $alice],
+                    ],
+                ],
+            ],
+            'spoofing_attempts' => [
+                'payload_values' => ['mallory'],
+                'headers' => ['X-Workflow-Principal-Id', 'X-Workflow-Caller-Type', 'X-Forwarded-User'],
+            ],
+            'operator_visibility' => [
+                'cli_history_json_principal_visible' => true,
+                'waterline' => ['principal_visible' => true],
+            ],
+            'anonymous_observations' => [
+                'status' => 'pass',
+                'anonymous_principal' => $anonymous,
+            ],
+            'scenario_results' => [
+                'published_artifact_install_only' => [
+                    'status' => 'pass',
+                    'resolved_artifact_versions' => $versions,
+                    'artifact_sources' => [
+                        'server' => 'docker image durableworkflow/server:0.2.228',
+                        'cli' => 'official release install asset',
+                        'workflow-php' => 'composer package durable-workflow/workflow',
+                        'sdk-python' => 'PyPI durable-workflow',
+                        'waterline' => 'published Waterline package',
+                    ],
+                    'local_product_source_checkouts_used' => false,
+                ],
+                'named_token_actor_matrix' => [
+                    'status' => 'pass',
+                    'actors' => ['alice', 'bob'],
+                    'credentials' => ['alice' => ['alice-token-v1', 'alice-token-v2'], 'bob' => ['bob-token']],
+                    'rotation_observations' => ['alice_v1_start' => 'alice', 'alice_v2_cancel' => 'alice'],
+                ],
+                'start_signal_cancel_spoofing' => [
+                    'status' => 'pass',
+                    'history_events' => ['WorkflowStarted', 'SignalReceived', 'WorkflowCancelled'],
+                    'recorded_principals' => [
+                        'WorkflowStarted' => $alice,
+                        'SignalReceived' => $bob,
+                        'WorkflowCancelled' => $alice,
+                    ],
+                    'spoofing_attempts' => [
+                        'payload_values' => ['mallory'],
+                        'headers' => ['X-Workflow-Principal-Id', 'X-Workflow-Caller-Type', 'X-Forwarded-User'],
+                    ],
+                ],
+                'query_attribution' => [
+                    'status' => 'pass',
+                    'query_result' => ['principal' => $bob],
+                    'recorded_principal' => $bob,
+                    'history_or_query_task_surface' => ['command_context' => ['context' => ['principal' => $bob]]],
+                ],
+                'completion_failure_attribution' => [
+                    'status' => 'pass',
+                    'completion_event_principal' => $worker,
+                    'failure_event_principal' => $worker,
+                    'worker_principal' => $worker,
+                    'expected_worker_principal' => $worker,
+                    'documented_system_principals' => [],
+                ],
+                'server_originated_events' => [
+                    'status' => 'pass',
+                    'event_types' => ['TimerFired'],
+                    'principal_values' => ['TimerFired' => null],
+                    'classification' => 'explicit_null_for_events_without_originating_control_plane_command',
+                ],
+                'anonymous_attribution' => [
+                    'status' => 'pass',
+                    'anonymous_principal' => $anonymous,
+                    'documented_value' => $anonymous,
+                    'history_events' => ['WorkflowStarted', 'SignalReceived', 'WorkflowCancelled'],
+                ],
+                'python_sdk_visibility' => [
+                    'status' => 'pass',
+                    'client_operation' => ['status' => 'pass', 'client' => 'sdk-python'],
+                    'recorded_principal' => $bob,
+                    'shape_matches_http' => true,
+                ],
+                'php_client_visibility' => [
+                    'status' => 'pass',
+                    'client_operation' => ['status' => 'pass', 'client' => 'workflow-php'],
+                    'recorded_principal' => $alice,
+                    'shape_matches_http' => true,
+                ],
+                'cli_operator_visibility' => [
+                    'status' => 'pass',
+                    'command' => 'dw workflow:history pa-main run --output=json',
+                    'output_sample' => '{"events":[{"principal":{"type":"auth:token","id":"alice"}}]}',
+                    'principal_visible' => true,
+                ],
+                'waterline_operator_visibility' => [
+                    'status' => 'pass',
+                    'surface' => 'selected-run history',
+                    'output_sample' => '{"events":[{"principal":{"type":"auth:token","id":"alice"}}]}',
+                    'principal_visible' => true,
+                ],
+            ],
+            'findings' => [],
+            'local_product_source_checkouts_used' => false,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function structuredPrincipalFinding(
+        string $scenarioId,
+        string $observed,
+        string $owner,
+        string $expected,
+        string $nextAcceptance,
+    ): array {
+        return [
+            'scenario_id' => $scenarioId,
+            'owning_surface' => $owner,
+            'artifact_versions' => [
+                'server' => '0.2.228',
+                'cli' => '0.1.75',
+                'workflow-php' => '2.0.0-alpha.187',
+                'sdk-python' => '0.4.84',
+                'waterline' => '2.0.0-alpha.69',
+            ],
+            'observed_behavior' => $observed,
+            'expected_behavior' => $expected,
+            'next_acceptance_criterion' => $nextAcceptance,
+        ];
+    }
+
+    private function assertFocusedPrincipalFinding(string $scenarioId, mixed $finding): void
+    {
+        $this->assertIsArray($finding);
+        $this->assertSame($scenarioId, $finding['scenario_id'] ?? null);
+        $this->assertNotEmpty($finding['owning_surface'] ?? null);
+        $this->assertIsArray($finding['artifact_versions'] ?? null);
+        $this->assertNotEmpty($finding['artifact_versions']);
+        $this->assertNotEmpty($finding['observed_behavior'] ?? null);
+        $this->assertNotEmpty($finding['expected_behavior'] ?? null);
+        $this->assertNotEmpty($finding['next_acceptance_criterion'] ?? null);
+    }
+
     private function linkSystemCommand(string $binDir, string $command): void
     {
         foreach (['/usr/bin', '/bin', '/usr/local/bin'] as $prefix) {
@@ -354,5 +1100,188 @@ class PrincipalAttributionContractTest extends TestCase
         }
 
         @rmdir($path);
+    }
+
+    /**
+     * @param array<string, mixed> $overrides
+     *
+     * @return array<string, mixed>
+     */
+    private function principalAttributionResult(array $overrides = []): array
+    {
+        return [
+            'schema' => PrincipalAttributionContract::RESULT_SCHEMA,
+            'outcome' => 'pass',
+            'runner_blocked' => false,
+            'started_at' => '2026-06-01T00:00:00Z',
+            'finished_at' => '2026-06-01T00:01:00Z',
+            'generated_at' => '2026-06-01T00:01:00Z',
+            'published_artifact_versions' => $this->artifactVersions(),
+            'resolved_artifact_versions' => $this->artifactVersions(),
+            'artifact_sources' => [
+                'server' => 'docker-image',
+                'cli' => 'release-asset',
+                'workflow-php' => 'composer',
+                'sdk-python' => 'pypi',
+                'waterline' => 'npm',
+            ],
+            'topology' => ['auth_driver' => 'token'],
+            'actor_matrix' => ['alice' => ['credentials' => ['alice-token-v1', 'alice-token-v2']], 'bob' => ['credentials' => ['bob-token']]],
+            'history_dumps' => ['main' => ['events' => []]],
+            'spoofing_attempts' => ['payload_values' => ['mallory'], 'headers' => ['X-Forwarded-User']],
+            'operator_visibility' => ['cli_history_json_principal_visible' => true],
+            'anonymous_observations' => ['status' => 'pass', 'anonymous_principal' => ['type' => 'server', 'id' => 'anonymous']],
+            'scenario_results' => $this->passingScenarioResults(),
+            'findings' => [],
+            ...$overrides,
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function artifactVersions(): array
+    {
+        return [
+            'server' => '0.2.228',
+            'cli' => '0.1.75',
+            'workflow' => '2.0.0-alpha.187',
+            'workflow-php' => '2.0.0-alpha.187',
+            'sdk-python' => '0.4.84',
+            'waterline' => '2.0.0-alpha.69',
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function artifactSources(): array
+    {
+        return [
+            'server' => 'docker-image',
+            'cli' => 'release-asset',
+            'workflow-php' => 'composer',
+            'sdk-python' => 'pypi',
+            'waterline' => 'npm',
+        ];
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private function passingScenarioResults(): array
+    {
+        $scenarios = [];
+        foreach (PrincipalAttributionContract::manifest()['required_scenarios'] as $scenarioId) {
+            $scenarios[$scenarioId] = $this->scenario(
+                $scenarioId,
+                'pass',
+                $this->scenarioEvidence($scenarioId),
+            );
+        }
+
+        return $scenarios;
+    }
+
+    /**
+     * @param array<string, mixed> $fields
+     *
+     * @return array<string, mixed>
+     */
+    private function scenario(string $scenarioId, string $status, array $fields = []): array
+    {
+        return [
+            'scenario_id' => $scenarioId,
+            'status' => $status,
+            ...$fields,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function scenarioEvidence(string $scenarioId): array
+    {
+        $alice = ['type' => 'auth:token', 'id' => 'alice'];
+        $bob = ['type' => 'auth:token', 'id' => 'bob'];
+        $worker = ['type' => 'auth:token', 'id' => 'worker:principal-attribution'];
+        $anonymous = ['type' => 'server', 'id' => 'anonymous'];
+
+        return match ($scenarioId) {
+            'published_artifact_install_only' => [
+                'resolved_artifact_versions' => $this->artifactVersions(),
+                'artifact_sources' => $this->artifactSources(),
+                'local_product_source_checkouts_used' => false,
+            ],
+            'named_token_actor_matrix' => [
+                'actors' => ['alice', 'bob'],
+                'credentials' => ['alice' => ['alice-token-v1', 'alice-token-v2'], 'bob' => ['bob-token']],
+                'rotation_observations' => ['alice_v1_start' => 'alice', 'alice_v2_cancel' => 'alice'],
+            ],
+            'start_signal_cancel_spoofing' => [
+                'history_events' => ['WorkflowStarted', 'SignalReceived', 'WorkflowCancelled'],
+                'recorded_principals' => ['WorkflowStarted' => $alice, 'SignalReceived' => $bob, 'WorkflowCancelled' => $alice],
+                'spoofing_attempts' => ['payload_fields' => ['principal' => 'mallory'], 'headers' => ['X-Forwarded-User']],
+            ],
+            'query_attribution' => [
+                'query_result' => ['status' => 'ready'],
+                'recorded_principal' => $bob,
+                'history_or_query_task_surface' => ['query_task' => ['principal' => $bob]],
+            ],
+            'completion_failure_attribution' => [
+                'completion_event_principal' => $worker,
+                'failure_event_principal' => $worker,
+                'worker_principal' => $worker,
+                'expected_worker_principal' => $worker,
+                'documented_system_principals' => [],
+            ],
+            'server_originated_events' => [
+                'event_types' => [],
+                'principal_values' => [],
+                'classification' => 'explicit_null_for_events_without_originating_control_plane_command',
+            ],
+            'anonymous_attribution' => [
+                'anonymous_principal' => $anonymous,
+                'documented_value' => $anonymous,
+                'history_events' => ['WorkflowStarted', 'SignalReceived', 'WorkflowCancelled'],
+            ],
+            'python_sdk_visibility' => [
+                'client_operation' => ['status' => 'pass'],
+                'recorded_principal' => $bob,
+                'shape_matches_http' => true,
+            ],
+            'php_client_visibility' => [
+                'client_operation' => ['status' => 'pass'],
+                'recorded_principal' => $alice,
+                'shape_matches_http' => true,
+            ],
+            'cli_operator_visibility' => [
+                'command' => 'dw workflow:history pa-main run --output=json',
+                'output_sample' => '{"events":[{"principal":{"id":"alice","type":"auth:token"}}]}',
+                'principal_visible' => true,
+            ],
+            'waterline_operator_visibility' => [
+                'surface' => 'selected-run-history',
+                'output_sample' => '{"principal":{"id":"alice","type":"auth:token"}}',
+                'principal_visible' => true,
+            ],
+            default => [],
+        };
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function focusedFinding(string $scenarioId, string $surface): array
+    {
+        return [
+            'id' => "{$scenarioId}-{$surface}",
+            'scenario_id' => $scenarioId,
+            'owning_surface' => $surface,
+            'artifact_versions' => $this->artifactVersions(),
+            'observed_behavior' => "{$scenarioId} did not pass against published artifacts.",
+            'expected_behavior' => "{$scenarioId} records server-derived principal attribution.",
+            'next_acceptance_criterion' => "record passing {$scenarioId} evidence against published artifacts",
+        ];
     }
 }

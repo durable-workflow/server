@@ -157,6 +157,7 @@ final class PrincipalAttributionContract
                 'unsupported_public_surface_outcome' => 'non_passing_with_root_cause_finding',
                 'runner_blocked_outcome' => 'non_passing_runner_blocked',
             ],
+            'result_gate' => PrincipalAttributionResultGate::spec(),
             'host_runner_contract' => [
                 'status' => 'required_for_passing_principal_attribution_conformance',
                 'runner_repository' => 'server',

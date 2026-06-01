@@ -12,6 +12,7 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NamespaceRuntimeResultGate;
 use App\Support\PrincipalAttributionContract;
+use App\Support\PrincipalAttributionResultGate;
 use App\Support\PythonSdkParityContract;
 use App\Support\SagaRuntimeContract;
 use App\Support\SagaRuntimeResultGate;
@@ -687,6 +688,14 @@ class ClusterInfoTest extends TestCase
         $this->assertSame(
             'required_for_passing_principal_attribution_conformance',
             $contract['host_runner_contract']['status'],
+        );
+        $this->assertSame(
+            PrincipalAttributionResultGate::SCHEMA,
+            $contract['result_gate']['schema'],
+        );
+        $this->assertContains(
+            'each_non_pass_scenario_has_focused_linked_findings',
+            $contract['result_gate']['pass_requires'],
         );
     }
 

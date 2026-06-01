@@ -207,6 +207,53 @@ emit_principal_blocked_placeholder_fields() {
   esac
 }
 
+principal_blocked_finding_message() {
+  local scenario_id="$1"
+  local reason="$2"
+
+  if [[ "$scenario_id" == "published_artifact_install_only" ]]; then
+    printf '%s' "$reason"
+  else
+    printf 'scenario did not execute because the principal-attribution conformance runner was blocked: %s' "$reason"
+  fi
+}
+
+principal_blocked_finding_versions() {
+  local artifact_versions_json="$1"
+
+  if [[ "$artifact_versions_json" == "{}" ]]; then
+    printf '{"cli":"unresolved","sdk-python":"unresolved","server":"unresolved","waterline":"unresolved","workflow":"unresolved","workflow-php":"unresolved"}'
+  else
+    printf '%s' "$artifact_versions_json"
+  fi
+}
+
+emit_principal_blocked_finding() {
+  local scenario_id="$1"
+  local observed="$2"
+  local artifact_versions_json="$3"
+  local finding_id="runner-blocked-${scenario_id//_/-}"
+  local finding_versions_json
+  finding_versions_json="$(principal_blocked_finding_versions "$artifact_versions_json")"
+
+  printf '{\n'
+  printf '        "id": '
+  json_string "$finding_id"
+  printf ',\n        "severity": "P0"'
+  printf ',\n        "surface": "conformance-runner"'
+  printf ',\n        "scenario_id": '
+  json_string "$scenario_id"
+  printf ',\n        "owning_surface": "conformance_harness"'
+  printf ',\n        "artifact_versions": %s' "$finding_versions_json"
+  printf ',\n        "observed_behavior": '
+  json_string "$observed"
+  printf ',\n        "expected_behavior": '
+  json_string "the principal-attribution $scenario_id scenario executes against published artifacts and records its required evidence"
+  printf ',\n        "next_acceptance_criterion": '
+  json_string "restore the host runner prerequisite and rerun this principal-attribution scenario with runner_blocked=false evidence"
+  printf '\n      }'
+}
+
 emit_principal_blocked_scenario_results() {
   local reason="$1"
   local artifact_versions_json="$2"
@@ -224,7 +271,7 @@ emit_principal_blocked_scenario_results() {
     if [[ "$scenario_id" == "published_artifact_install_only" ]]; then
       finding="$reason"
     else
-      finding="scenario did not execute because the principal-attribution conformance runner was blocked: $reason"
+      finding="$(principal_blocked_finding_message "$scenario_id" "$reason")"
     fi
 
     printf '    {\n'
@@ -232,9 +279,31 @@ emit_principal_blocked_scenario_results() {
     json_string "$scenario_id"
     printf ',\n      "status": "runner_blocked"'
     emit_principal_blocked_placeholder_fields "$scenario_id" "$artifact_versions_json" "$artifact_sources_json"
+    printf ',\n      "linked_findings": ['
+    emit_principal_blocked_finding "$scenario_id" "$finding" "$artifact_versions_json"
+    printf ']'
     printf ',\n      "findings": ['
-    json_string "$finding"
+    emit_principal_blocked_finding "$scenario_id" "$finding" "$artifact_versions_json"
     printf ']\n    }'
+  done
+}
+
+emit_principal_blocked_findings() {
+  local reason="$1"
+  local artifact_versions_json="$2"
+  local first=1
+  local scenario_id
+  local finding
+
+  for scenario_id in "${principal_required_scenario_ids[@]}"; do
+    if [[ "$first" -eq 0 ]]; then
+      printf ',\n'
+    fi
+    first=0
+
+    finding="$(principal_blocked_finding_message "$scenario_id" "$reason")"
+    printf '    '
+    emit_principal_blocked_finding "$scenario_id" "$finding" "$artifact_versions_json"
   done
 }
 
@@ -299,18 +368,9 @@ JSON
     cat <<JSON
   ],
   "findings": [
-    {
-      "id": "runner-prerequisite-missing",
-      "severity": "P0",
-      "surface": "conformance-runner",
-      "summary": $(json_string "$reason"),
-      "scenario_id": "published_artifact_install_only",
-      "owning_surface": "conformance_harness",
-      "artifact_versions": $artifact_versions_json,
-      "observed_behavior": $(json_string "$reason"),
-      "expected_behavior": "the principal-attribution runner installs and executes against the complete published artifact set",
-      "next_acceptance_criterion": "run this principal-attribution scenario against published artifacts and record runner_blocked=false evidence"
-    }
+JSON
+    emit_principal_blocked_findings "$reason" "$artifact_versions_json"
+    cat <<JSON
   ]
 }
 JSON
@@ -324,7 +384,9 @@ JSON
   "runnerBlocked": true,
   "artifactVersions": $artifact_versions_json,
   "findings": [
-    $(json_string "$reason")
+JSON
+    emit_principal_blocked_findings "$reason" "$artifact_versions_json"
+    cat <<JSON
   ],
   "resultPath": $(json_string "$result_dir/principal-attribution-result.json")
 }

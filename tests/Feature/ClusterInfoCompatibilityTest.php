@@ -9,6 +9,8 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
 use App\Support\CoordinationHealthContract;
 use App\Support\NamespaceRuntimeContract;
+use App\Support\PrincipalAttributionContract;
+use App\Support\PrincipalAttributionResultGate;
 use App\Support\SagaRuntimeContract;
 use App\Support\SearchAttributeRuntimeContract;
 use App\Support\ServerTopology;
@@ -241,6 +243,26 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'result_gate',
                     'finding_policy',
                 ],
+                'principal_attribution_contract' => [
+                    'schema',
+                    'version',
+                    'result_schema',
+                    'result_version',
+                    'fixture_category',
+                    'platform_conformance_suite_authority',
+                    'scenario_manifest',
+                    'principal_shape',
+                    'worker_terminal_event_policy',
+                    'artifact_policy',
+                    'scenario_statuses',
+                    'required_scenarios',
+                    'scenario_requirements',
+                    'spoofing_guards',
+                    'coverage_gate',
+                    'result_gate',
+                    'host_runner_contract',
+                    'finding_policy',
+                ],
                 'skew_refusal_matrix_contract' => [
                     'schema',
                     'version',
@@ -381,6 +403,16 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath(
                 'saga_runtime_contract.platform_conformance_suite_authority',
                 PlatformConformanceSuite::SCHEMA,
+            )
+            ->assertJsonPath('principal_attribution_contract.schema', PrincipalAttributionContract::SCHEMA)
+            ->assertJsonPath('principal_attribution_contract.version', PrincipalAttributionContract::VERSION)
+            ->assertJsonPath(
+                'principal_attribution_contract.platform_conformance_suite_authority',
+                PlatformConformanceSuite::SCHEMA,
+            )
+            ->assertJsonPath(
+                'principal_attribution_contract.result_gate.schema',
+                PrincipalAttributionResultGate::SCHEMA,
             )
             ->assertJsonPath('skew_refusal_matrix_contract.schema', SkewRefusalMatrixContract::SCHEMA)
             ->assertJsonPath('skew_refusal_matrix_contract.version', SkewRefusalMatrixContract::VERSION)
