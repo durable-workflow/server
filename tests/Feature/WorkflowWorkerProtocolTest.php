@@ -1955,7 +1955,7 @@ class WorkflowWorkerProtocolTest extends TestCase
         $task->refresh();
         self::assertSame(TaskStatus::Ready, $task->status);
         self::assertNull($task->lease_owner);
-        self::assertNull($task->compatibility);
+        self::assertSame('build-v1', $task->compatibility);
 
         $this->withHeaders($this->workerHeaders())
             ->postJson('/api/worker/workflow-tasks/poll', [

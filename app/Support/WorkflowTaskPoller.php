@@ -548,6 +548,7 @@ final class WorkflowTaskPoller
             }
 
             $effectiveCompatibility = $this->effectiveReadyTaskCompatibility($namespace, $readyTask);
+            $this->backfillReadyTaskCompatibility($namespace, $readyTask, $effectiveCompatibility);
 
             if (! $this->matchesCompatibility($buildId, $effectiveCompatibility)) {
                 \Log::debug('[WorkflowTaskPoller] Skipping task: build_id mismatch', [
@@ -761,6 +762,36 @@ final class WorkflowTaskPoller
             ->value('compatibility');
 
         return $this->nonEmptyString($runCompatibility);
+    }
+
+    /**
+     * @param  array<string, mixed>  $readyTask
+     */
+    private function backfillReadyTaskCompatibility(string $namespace, array &$readyTask, ?string $compatibility): void
+    {
+        if ($compatibility === null || $this->nonEmptyString($readyTask['compatibility'] ?? null) !== null) {
+            return;
+        }
+
+        $taskId = $this->nonEmptyString($readyTask['task_id'] ?? null);
+
+        if ($taskId === null) {
+            return;
+        }
+
+        $updated = WorkflowTask::query()
+            ->whereKey($taskId)
+            ->where('namespace', $namespace)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where(function ($query): void {
+                $query->whereNull('compatibility')
+                    ->orWhere('compatibility', '');
+            })
+            ->update(['compatibility' => $compatibility]);
+
+        if ($updated > 0) {
+            $readyTask['compatibility'] = $compatibility;
+        }
     }
 
     /**
