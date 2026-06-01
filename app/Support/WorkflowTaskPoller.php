@@ -528,11 +528,14 @@ final class WorkflowTaskPoller
                 continue;
             }
 
-            if (! $this->matchesCompatibility($buildId, $readyTask['compatibility'] ?? null)) {
+            $effectiveCompatibility = $this->effectiveReadyTaskCompatibility($namespace, $readyTask);
+
+            if (! $this->matchesCompatibility($buildId, $effectiveCompatibility)) {
                 \Log::debug('[WorkflowTaskPoller] Skipping task: build_id mismatch', [
                     'taskId' => $readyTask['task_id'] ?? null,
                     'workerBuildId' => $buildId,
                     'taskCompatibility' => $readyTask['compatibility'] ?? null,
+                    'effectiveCompatibility' => $effectiveCompatibility,
                 ]);
 
                 continue;
@@ -709,6 +712,36 @@ final class WorkflowTaskPoller
         }
 
         return $buildId !== null && $compatibility === $buildId;
+    }
+
+    /**
+     * Resolve the same compatibility marker that claimStatus() will enforce,
+     * but before the worker enters the claim path. This prevents an
+     * incompatible poller from touching a legacy or repaired task row whose
+     * task-level compatibility is blank while the run itself remains pinned.
+     *
+     * @param  array<string, mixed>  $readyTask
+     */
+    private function effectiveReadyTaskCompatibility(string $namespace, array $readyTask): ?string
+    {
+        $taskCompatibility = $this->nonEmptyString($readyTask['compatibility'] ?? null);
+
+        if ($taskCompatibility !== null) {
+            return $taskCompatibility;
+        }
+
+        $runId = $this->nonEmptyString($readyTask['workflow_run_id'] ?? null);
+
+        if ($runId === null) {
+            return null;
+        }
+
+        $runCompatibility = WorkflowRun::query()
+            ->whereKey($runId)
+            ->where('namespace', $namespace)
+            ->value('compatibility');
+
+        return $this->nonEmptyString($runCompatibility);
     }
 
     /**

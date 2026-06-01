@@ -1910,6 +1910,65 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('task.lease_owner', 'php-worker-build-a');
     }
 
+    public function test_it_uses_run_pin_when_ready_task_compatibility_is_missing(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->registerWorker('php-worker-v1', 'external-workflows', buildId: 'build-v1');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-stale-task-compatibility',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Margaret'],
+            ]);
+
+        $start->assertCreated();
+
+        $workflowId = (string) $start->json('workflow_id');
+        $runId = (string) $start->json('run_id');
+
+        $run = WorkflowRun::query()->findOrFail($runId);
+        self::assertSame('build-v1', $run->compatibility);
+
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', 'workflow')
+            ->firstOrFail();
+
+        $task->forceFill(['compatibility' => null])->save();
+
+        $this->registerWorker('php-worker-v2', 'external-workflows', buildId: 'build-v2');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-v2',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task', null);
+
+        $task->refresh();
+        self::assertSame(TaskStatus::Ready, $task->status);
+        self::assertNull($task->lease_owner);
+        self::assertNull($task->compatibility);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-v1',
+                'task_queue' => 'external-workflows',
+            ])
+            ->assertOk()
+            ->assertJsonPath('task.workflow_id', $workflowId)
+            ->assertJsonPath('task.run_id', $runId)
+            ->assertJsonPath('task.compatibility', 'build-v1')
+            ->assertJsonPath('task.lease_owner', 'php-worker-v1');
+    }
+
     public function test_it_rejects_workflow_task_poll_when_build_id_mismatches_registration(): void
     {
         Queue::fake();
