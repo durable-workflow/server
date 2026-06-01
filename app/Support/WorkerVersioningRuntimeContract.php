@@ -293,6 +293,8 @@ final class WorkerVersioningRuntimeContract
                     'compatible_replay_and_cache_eviction_have_zero_incompatible_delivery',
                     'new_start_promotion_reported',
                     'no_compatible_worker_behavior_reported',
+                    'no_compatible_worker_has_zero_incompatible_delivery',
+                    'no_compatible_worker_signal_is_explicit',
                     'cli_python_php_and_waterline_surfaces_reported',
                     'cross_language_php_python_cells_reported',
                     'cross_language_php_python_delivery_counts_are_zero',

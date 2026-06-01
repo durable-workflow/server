@@ -71,6 +71,8 @@ final class WorkerVersioningRuntimeResultGate
                 'each_pass_scenario_has_observed_outputs',
                 'each_pass_scenario_has_scenario_specific_evidence',
                 'compatible_replay_counts_prove_zero_incompatible_delivery',
+                'no_compatible_worker_has_zero_incompatible_delivery',
+                'no_compatible_worker_signal_is_explicit',
                 'cross_language_php_python_counts_prove_zero_incompatible_delivery',
                 'each_non_pass_scenario_has_linked_findings',
                 'run_timestamps_outcome_and_finding_links_are_recorded',
@@ -980,6 +982,56 @@ final class WorkerVersioningRuntimeResultGate
             }
         }
 
+        $noCompatible = self::passingScenarioEvidence($scenarioResults, 'no_compatible_worker_behavior');
+        if ($noCompatible !== null) {
+            self::requireZeroCount(
+                $failures,
+                $noCompatible,
+                'no_compatible_worker_behavior',
+                'incompatible_worker_task_count',
+            );
+
+            $operatorSignal = self::stringField($noCompatible, [
+                'operator_visible_signal',
+                'operatorVisibleSignal',
+            ]);
+            if (! self::isExplicitNoCompatibleSignal($operatorSignal)) {
+                $failures[] = [
+                    'code' => 'no_compatible_worker_signal_not_explicit',
+                    'scenario_id' => 'no_compatible_worker_behavior',
+                    'field' => 'operator_visible_signal',
+                    'expected' => [
+                        'no_compatible_worker',
+                        'compatibility_blocked',
+                        'compatibility_unsupported',
+                    ],
+                    'actual' => $operatorSignal,
+                ];
+            }
+
+            $pendingOrTypedError = self::stringField($noCompatible, [
+                'pending_or_typed_error',
+                'pendingOrTypedError',
+            ]);
+            if (
+                $pendingOrTypedError !== 'pending'
+                && ! self::isExplicitNoCompatibleSignal($pendingOrTypedError)
+            ) {
+                $failures[] = [
+                    'code' => 'no_compatible_worker_pending_or_typed_error_not_explicit',
+                    'scenario_id' => 'no_compatible_worker_behavior',
+                    'field' => 'pending_or_typed_error',
+                    'expected' => [
+                        'pending',
+                        'no_compatible_worker',
+                        'compatibility_blocked',
+                        'compatibility_unsupported',
+                    ],
+                    'actual' => $pendingOrTypedError,
+                ];
+            }
+        }
+
         return $failures;
     }
 
@@ -1124,6 +1176,23 @@ final class WorkerVersioningRuntimeResultGate
             'expected' => true,
             'actual' => $evidence[$field] ?? $evidence[self::camelize($field)] ?? null,
         ];
+    }
+
+    private static function isExplicitNoCompatibleSignal(string $signal): bool
+    {
+        $normalized = strtolower(str_replace('-', '_', trim($signal)));
+
+        if ($normalized === '') {
+            return false;
+        }
+
+        foreach (['no_compatible_worker', 'compatibility_blocked', 'compatibility_unsupported'] as $token) {
+            if (str_contains($normalized, $token)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -547,6 +547,14 @@ class ClusterInfoTest extends TestCase
             'pin_replay_promotion_no_compatible_and_history_sections_are_reported',
             $contract['result_gate']['pass_requires'],
         );
+        $this->assertContains(
+            'no_compatible_worker_has_zero_incompatible_delivery',
+            $contract['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'no_compatible_worker_signal_is_explicit',
+            $contract['result_gate']['pass_requires'],
+        );
     }
 
     public function test_it_publishes_the_saga_runtime_conformance_contract(): void

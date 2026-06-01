@@ -2,8 +2,10 @@
 
 namespace App\Support;
 
+use App\Models\WorkerRegistration;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Schema;
 use InvalidArgumentException;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
@@ -14,10 +16,13 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\HistoryPayloadCompression;
+use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\TaskFairnessKey;
 use Workflow\V2\Support\TaskFairnessScheduler;
 use Workflow\V2\Support\TaskFairnessState;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 final class WorkflowTaskPoller
 {
@@ -330,7 +335,11 @@ final class WorkflowTaskPoller
                 );
                 $nextProbeAt = $resolvedResult['next_probe_at'] ?? null;
 
-                if (($resolvedResult['poll_status'] ?? null) === 'query_task_pending') {
+                if (in_array(
+                    $resolvedResult['poll_status'] ?? null,
+                    ['query_task_pending', 'compatibility_blocked', 'no_compatible_worker'],
+                    true,
+                )) {
                     return $resolvedResult;
                 }
 
@@ -347,10 +356,14 @@ final class WorkflowTaskPoller
             reserveWorkerWaitSlot: true,
         );
 
-        if (($pollResult['poll_status'] ?? null) === 'query_task_pending') {
+        if (in_array(
+            $pollResult['poll_status'] ?? null,
+            ['query_task_pending', 'compatibility_blocked', 'no_compatible_worker'],
+            true,
+        )) {
             return [
                 'task' => null,
-                'poll_status' => 'query_task_pending',
+                'poll_status' => (string) $pollResult['poll_status'],
             ];
         }
 
@@ -447,7 +460,13 @@ final class WorkflowTaskPoller
 
         return [
             'task' => null,
-            'poll_status' => $this->emptyPollStatus($namespace, $taskQueue, TaskQueueAdmission::WORKFLOW_TASKS),
+            'poll_status' => $this->emptyPollStatus(
+                $namespace,
+                $taskQueue,
+                TaskQueueAdmission::WORKFLOW_TASKS,
+                $buildId,
+                $supportedWorkflowTypes,
+            ),
             'next_probe_at' => $this->nextVisibleReadyAt($namespace, $taskQueue, $buildId),
         ];
     }
@@ -1377,12 +1396,156 @@ final class WorkflowTaskPoller
         return is_array($task) ? 'leased' : 'empty';
     }
 
-    private function emptyPollStatus(string $namespace, string $taskQueue, string $taskKind): string
-    {
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     */
+    private function emptyPollStatus(
+        string $namespace,
+        string $taskQueue,
+        string $taskKind,
+        ?string $buildId = null,
+        array $supportedWorkflowTypes = [],
+    ): string {
         $status = $this->admission->budget($namespace, $taskQueue, $taskKind)['status'] ?? null;
 
-        return in_array($status, ['throttled', 'unavailable'], true)
-            ? $status
-            : 'empty';
+        if (in_array($status, ['throttled', 'unavailable'], true)) {
+            return $status;
+        }
+
+        $compatibilityBlockedStatus = $this->compatibilityBlockedPollStatus(
+            $namespace,
+            $taskQueue,
+            $buildId,
+            $supportedWorkflowTypes,
+        );
+
+        if ($compatibilityBlockedStatus !== null) {
+            return $compatibilityBlockedStatus;
+        }
+
+        return 'empty';
+    }
+
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     */
+    private function compatibilityBlockedPollStatus(
+        string $namespace,
+        string $taskQueue,
+        ?string $buildId,
+        array $supportedWorkflowTypes,
+    ): ?string {
+        $limit = max(10, max(1, (int) config('server.polling.max_tasks_per_poll', 1)) * 10);
+        $availabilityCutoff = now()
+            ->addSeconds(DefaultWorkflowTaskBridge::AVAILABILITY_CEILING_SECONDS);
+        $tasks = NamespaceWorkflowScope::taskQuery($namespace)
+            ->where('workflow_tasks.task_type', TaskType::Workflow->value)
+            ->where('workflow_tasks.status', TaskStatus::Ready->value)
+            ->where('workflow_tasks.queue', $taskQueue)
+            ->where(function ($query) use ($availabilityCutoff): void {
+                $query->whereNull('workflow_tasks.available_at')
+                    ->orWhere('workflow_tasks.available_at', '<=', $availabilityCutoff);
+            })
+            ->orderBy('workflow_tasks.available_at')
+            ->orderBy('workflow_tasks.created_at')
+            ->orderBy('workflow_tasks.id')
+            ->limit($limit)
+            ->get();
+
+        foreach ($tasks as $task) {
+            $run = WorkflowRun::query()
+                ->whereKey($task->workflow_run_id)
+                ->where('namespace', $namespace)
+                ->first(['id', 'workflow_type', 'compatibility']);
+
+            if (! $run instanceof WorkflowRun) {
+                continue;
+            }
+
+            if (! $this->matchesWorkflowType($supportedWorkflowTypes, $run->workflow_type)) {
+                continue;
+            }
+
+            $compatibility = $this->nonEmptyString($task->compatibility)
+                ?? $this->nonEmptyString($run->compatibility);
+
+            if (! $this->matchesCompatibility($buildId, $compatibility)) {
+                if (
+                    $compatibility !== null
+                    && ! $this->hasCompatibleWorkerAvailable(
+                        $namespace,
+                        $compatibility,
+                        $this->nonEmptyString($task->connection),
+                        $this->nonEmptyString($task->queue) ?? $taskQueue,
+                    )
+                ) {
+                    return 'no_compatible_worker';
+                }
+
+                return 'compatibility_blocked';
+            }
+        }
+
+        return null;
+    }
+
+    private function hasCompatibleWorkerAvailable(
+        string $namespace,
+        string $compatibility,
+        ?string $connection,
+        ?string $taskQueue,
+    ): bool {
+        $workers = WorkerCompatibilityFleet::detailsForNamespace(
+            $namespace,
+            $compatibility,
+            $connection,
+            $taskQueue,
+        );
+
+        foreach ($workers as $worker) {
+            if (($worker['supports_required'] ?? false) === true) {
+                return true;
+            }
+        }
+
+        return $this->hasCompatibleWorkerRegistration($namespace, $compatibility, $taskQueue);
+    }
+
+    private function hasCompatibleWorkerRegistration(
+        string $namespace,
+        string $compatibility,
+        ?string $taskQueue,
+    ): bool {
+        if (! Schema::hasTable('workflow_worker_registrations')) {
+            return false;
+        }
+
+        $staleAfter = StandaloneWorkerVisibility::staleAfterSeconds(
+            is_numeric(config('server.workers.stale_after_seconds'))
+                ? (int) config('server.workers.stale_after_seconds')
+                : null,
+            is_numeric(config('server.polling.timeout'))
+                ? (int) config('server.polling.timeout')
+                : null,
+        );
+        $cutoff = now()->subSeconds($staleAfter);
+
+        $query = WorkerRegistration::query()
+            ->where('namespace', $namespace)
+            ->whereIn('build_id', [$compatibility, '*'])
+            ->where(function ($builder): void {
+                $builder->whereNull('status')
+                    ->orWhere('status', 'active');
+            })
+            ->where(function ($builder) use ($cutoff): void {
+                $builder->whereNull('last_heartbeat_at')
+                    ->orWhere('last_heartbeat_at', '>=', $cutoff);
+            });
+
+        if ($taskQueue !== null && $taskQueue !== '') {
+            $query->where('task_queue', $taskQueue);
+        }
+
+        return $query->exists();
     }
 }

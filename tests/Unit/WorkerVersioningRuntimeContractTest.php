@@ -95,6 +95,22 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertContains(
+            'no_compatible_worker_has_zero_incompatible_delivery',
+            $manifest['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertContains(
+            'no_compatible_worker_signal_is_explicit',
+            $manifest['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertContains(
+            'no_compatible_worker_has_zero_incompatible_delivery',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'no_compatible_worker_signal_is_explicit',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
             'cross_language_php_python_delivery_counts_are_zero',
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
@@ -256,6 +272,43 @@ class WorkerVersioningRuntimeContractTest extends TestCase
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertNotEmpty($failures);
+    }
+
+    public function test_result_gate_rejects_no_compatible_worker_when_incompatible_delivery_is_nonzero(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['scenario_results']['no_compatible_worker_behavior']['observed_outputs'][
+            'incompatible_worker_task_count'
+        ] = 1;
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'incompatible_delivery_count_nonzero'
+                && ($failure['scenario_id'] ?? null) === 'no_compatible_worker_behavior'
+                && ($failure['field'] ?? null) === 'incompatible_worker_task_count',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($failures);
+    }
+
+    public function test_result_gate_rejects_no_compatible_worker_without_explicit_signal(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['scenario_results']['no_compatible_worker_behavior']['observed_outputs'][
+            'operator_visible_signal'
+        ] = 'empty_poll';
+        $result['scenario_results']['no_compatible_worker_behavior']['observed_outputs'][
+            'pending_or_typed_error'
+        ] = 'silent_stall';
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('no_compatible_worker_signal_not_explicit', $failureCodes);
+        $this->assertContains('no_compatible_worker_pending_or_typed_error_not_explicit', $failureCodes);
     }
 
     public function test_result_gate_rejects_cache_eviction_when_replay_worker_does_not_match_pin(): void

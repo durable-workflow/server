@@ -353,7 +353,7 @@
       ],
       "pass_criteria": [
         "the v2 worker receives zero tasks for the v1-pinned run",
-        "operators see an explicit pending/no-compatible-worker signal",
+        "operators see an explicit pending/no-compatible-worker signal, and incompatible worker polls return a typed compatibility-blocked status rather than a generic empty queue",
         "the run does not silently hang without any public diagnostic"
       ]
     },

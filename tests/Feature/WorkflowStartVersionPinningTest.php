@@ -12,8 +12,10 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 /**
  * Verifies that a workflow started against worker build v1 stays
@@ -35,12 +37,20 @@ class WorkflowStartVersionPinningTest extends TestCase
     {
         parent::setUp();
 
+        WorkerCompatibilityFleet::clear();
         $this->createNamespace('default');
         $this->configureWorkflowTypes([
             'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
         ]);
 
         Queue::fake();
+    }
+
+    protected function tearDown(): void
+    {
+        WorkerCompatibilityFleet::clear();
+
+        parent::tearDown();
     }
 
     public function test_pins_new_run_to_promoted_build_id_when_one_exists(): void
@@ -237,6 +247,125 @@ class WorkflowStartVersionPinningTest extends TestCase
             ->assertOk();
 
         self::assertSame('v1.0.0', $show->json('compatibility'));
+    }
+
+    public function test_incompatible_worker_poll_surfaces_compatibility_blocked_without_claiming_pinned_task(): void
+    {
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'blocked-worker-v1',
+                'task_queue' => 'blocked-q',
+                'runtime' => 'php',
+                'sdk_version' => '1.0.0',
+                'build_id' => 'v1.0.0',
+                'supported_workflow_types' => ['tests.external-greeting-workflow'],
+            ])
+            ->assertCreated();
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-compatible-poll-blocked',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'blocked-q',
+            ])
+            ->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'blocked-worker-v2',
+                'task_queue' => 'blocked-q',
+                'runtime' => 'php',
+                'sdk_version' => '1.0.0',
+                'build_id' => 'v2.0.0',
+                'supported_workflow_types' => ['tests.external-greeting-workflow'],
+            ])
+            ->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'blocked-worker-v2',
+                'task_queue' => 'blocked-q',
+                'build_id' => 'v2.0.0',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'compatibility_blocked');
+
+        $task = WorkflowTask::query()->where('workflow_run_id', $runId)->firstOrFail();
+        self::assertSame(TaskStatus::Ready, $task->status);
+        self::assertNull($task->lease_owner);
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-compatible-poll-blocked')
+            ->assertOk()
+            ->assertJsonPath('compatibility', 'v1.0.0')
+            ->assertJsonPath('compatibility_status', 'compatible')
+            ->assertJsonPath('compatibility_supported_in_fleet', true);
+    }
+
+    public function test_no_compatible_worker_poll_surfaces_explicit_status_without_claiming_pinned_task(): void
+    {
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'blocked-worker-v1',
+                'task_queue' => 'no-compatible-q',
+                'runtime' => 'php',
+                'sdk_version' => '1.0.0',
+                'build_id' => 'v1.0.0',
+                'supported_workflow_types' => ['tests.external-greeting-workflow'],
+            ])
+            ->assertCreated();
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-no-compatible-poll',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'no-compatible-q',
+            ])
+            ->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+        WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'blocked-worker-v1')
+            ->delete();
+        WorkerCompatibilityFleet::clear();
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'blocked-worker-v2',
+                'task_queue' => 'no-compatible-q',
+                'runtime' => 'php',
+                'sdk_version' => '1.0.0',
+                'build_id' => 'v2.0.0',
+                'supported_workflow_types' => ['tests.external-greeting-workflow'],
+            ])
+            ->assertCreated();
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'blocked-worker-v2',
+                'task_queue' => 'no-compatible-q',
+                'build_id' => 'v2.0.0',
+            ]);
+
+        $poll->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'no_compatible_worker');
+
+        $task = WorkflowTask::query()->where('workflow_run_id', $runId)->firstOrFail();
+        self::assertSame(TaskStatus::Ready, $task->status);
+        self::assertNull($task->lease_owner);
+
+        $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-no-compatible-poll')
+            ->assertOk()
+            ->assertJsonPath('compatibility', 'v1.0.0')
+            ->assertJsonPath('compatibility_status', 'no_compatible_worker')
+            ->assertJsonPath('compatibility_supported_in_fleet', false);
     }
 
     private function seedWorker(string $workerId, string $taskQueue, string $buildId): void
