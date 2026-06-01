@@ -236,6 +236,16 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'operation_capture_ids_resolve_to_attached_request_response_captures',
             $manifest['result_gate']['pass_requires'],
         );
+        $this->assertContains(
+            'next_step',
+            $manifest['operation_groups']['workflow_control_plane']['evidence'],
+            'wire evidence must carry the skew-contract next step alongside version and compatibility-window context',
+        );
+        $this->assertContains(
+            'next_step',
+            $manifest['operation_groups']['cluster_info_probe']['evidence'],
+            'cluster-info skew evidence must carry the same next-step context as mutating rows',
+        );
     }
 
     public function test_manifest_publishes_host_runner_contract_for_full_skew_matrix(): void
@@ -640,6 +650,26 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'Workflow package availability alone is not live worker coordination.',
             $runner,
             'the skew runner must not treat a Composer-installed workflow package as proof that query/update probes can be served',
+        );
+        $this->assertStringContainsString(
+            "surfaceName !== 'sdk-python'",
+            $runner,
+            'compatible CLI query/update probes must still reach the CLI and record structured server interop evidence when no live worker is coordinated',
+        );
+        $this->assertStringContainsString(
+            'isCompatibleCliControlPlaneInterop',
+            $runner,
+            'compatible CLI control-plane domain responses must classify as inside-window interop rather than silent_failure',
+        );
+        $this->assertStringContainsString(
+            'structured_control_plane_domain_response',
+            $runner,
+            'compatible CLI rows must label structured control-plane domain responses as interop evidence',
+        );
+        $this->assertStringContainsString(
+            'next_step: nextStep',
+            $runner,
+            'skew operation evidence must record next-step text alongside the version and compatibility window fields',
         );
         $this->assertStringContainsString(
             'requires a workflow task id obtained from a successful fixture poll before completing or failing an inside-window task',
@@ -1650,6 +1680,10 @@ PHP,
     ): array {
         $request ??= SkewRefusalMatrixContract::manifest()['operation_groups'][$operationGroup]['requests'][0];
         [$method, $path] = explode(' ', $request, 2);
+        $compatibilityWindow = '>=0.2,<1.0';
+        $nextStep = $pairingClass === 'compatible'
+            ? 'No compatibility remediation is required for this inside-window pair. If the '.$surface.' command returns a domain error, use the captured response reason as the next operational step.'
+            : 'Upgrade the older side, pin the client to the advertised range, or connect to a server that supports the requested protocol.';
 
         $row = match ($operationGroup) {
             'cluster_info_probe' => [
@@ -1659,6 +1693,8 @@ PHP,
                 'client_or_observer_version' => '0.1.67',
                 'server_version' => '0.2.191',
                 'protocol_manifest_versions' => ['control_plane' => '2'],
+                'compatibility_window' => $compatibilityWindow,
+                'next_step' => $nextStep,
             ],
             'waterline_render' => [
                 'request' => $request,
@@ -1667,6 +1703,8 @@ PHP,
                 'screenshot_or_dom_snapshot' => '<main data-compatibility-banner="visible"></main>',
                 'server_version' => '0.2.191',
                 'waterline_version' => '2.0.0-alpha.64',
+                'compatibility_window' => $compatibilityWindow,
+                'next_step' => $nextStep,
             ],
             default => [
                 'request_method' => $method,
@@ -1678,7 +1716,8 @@ PHP,
                 'response_body' => ['outcome' => 'accepted'],
                 'client_or_worker_version' => $surface === 'sdk-python' ? '0.4.78' : '0.1.67',
                 'server_version' => '0.2.191',
-                'compatibility_window' => '>=0.2,<1.0',
+                'compatibility_window' => $compatibilityWindow,
+                'next_step' => $nextStep,
             ],
         };
 

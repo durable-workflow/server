@@ -463,6 +463,7 @@ async function probeOperation({
     state,
   );
   const surfaceVersion = context.artifactVersions[surface.artifact];
+  const nextStep = compatibilityNextStep(surfaceName, pairingClass);
 
   const availability = invocationAvailability(surfaceName);
   if (!availability.available) {
@@ -591,6 +592,7 @@ async function probeOperation({
     client_or_worker_version: surfaceVersion,
     server_version: context.observedServerVersion,
     compatibility_window: pairing.compatibilityWindow,
+    next_step: nextStep,
     request: wireRequest,
     response: wireResponse,
     artifact_invocation: invocation.artifact_invocation,
@@ -611,6 +613,7 @@ async function probeOperation({
       server_version: context.observedServerVersion,
       protocol_manifest_versions: context.protocolManifestVersions,
       compatibility_window: pairing.compatibilityWindow,
+      next_step: nextStep,
       request_response_capture_id: captureId,
       artifact_invocation: invocation.artifact_invocation,
     };
@@ -630,6 +633,7 @@ async function probeOperation({
       waterline_version: surfaceVersion,
       status,
       compatibility_window: pairing.compatibilityWindow,
+      next_step: nextStep,
       request_response_capture_id: captureId,
       artifact_invocation: invocation.artifact_invocation,
     };
@@ -651,6 +655,7 @@ async function probeOperation({
       client_or_worker_version: surfaceVersion,
       server_version: context.observedServerVersion,
       compatibility_window: pairing.compatibilityWindow,
+      next_step: nextStep,
       status,
       request_response_capture_id: captureId,
       artifact_invocation: invocation.artifact_invocation,
@@ -674,6 +679,11 @@ async function probeOperation({
   if (status === 'loud_refuse') {
     evidence.refusal_requirements_met = refusalRequirements[surfaceName];
     evidence.refusal_context = loudRefusalContext(surfaceName, surfaceVersion, context, pairing, response);
+  }
+
+  if (isCompatibleCliControlPlaneInterop({ surfaceName, pairingClass, operationGroup, response })) {
+    evidence.interop_classification = 'structured_control_plane_domain_response';
+    capture.interop_classification = evidence.interop_classification;
   }
 
   if (protocolGap) {
@@ -715,6 +725,7 @@ function notCoveredProbe({
 }) {
   const surfaceVersion = context.artifactVersions[surface.artifact];
   const pairing = pairingClasses[pairingClass];
+  const nextStep = compatibilityNextStep(surfaceName, pairingClass);
   const captureId = [
     surfaceName,
     pairingClass,
@@ -741,6 +752,7 @@ function notCoveredProbe({
     client_or_worker_version: surfaceVersion,
     server_version: context.observedServerVersion,
     compatibility_window: pairing.compatibilityWindow,
+    next_step: nextStep,
     request: {
       method,
       path: requestPath,
@@ -773,6 +785,7 @@ function notCoveredProbe({
       server_version: context.observedServerVersion,
       protocol_manifest_versions: context.protocolManifestVersions,
       compatibility_window: pairing.compatibilityWindow,
+      next_step: nextStep,
       request_response_capture_id: captureId,
       coverage_gap_reason: reason,
       artifact_invocation: artifactInvocation ?? undefined,
@@ -795,6 +808,7 @@ function notCoveredProbe({
       waterline_version: surfaceVersion,
       status,
       compatibility_window: pairing.compatibilityWindow,
+      next_step: nextStep,
       request_response_capture_id: captureId,
       coverage_gap_reason: reason,
       artifact_invocation: artifactInvocation ?? undefined,
@@ -814,6 +828,7 @@ function notCoveredProbe({
       client_or_worker_version: surfaceVersion,
       server_version: context.observedServerVersion,
       compatibility_window: pairing.compatibilityWindow,
+      next_step: nextStep,
       status,
       request_response_capture_id: captureId,
       coverage_gap_reason: reason,
@@ -1003,7 +1018,7 @@ function workflowWorkerDependencyGap({
   }
 
   if (
-    (surfaceName !== 'cli' && surfaceName !== 'sdk-python')
+    surfaceName !== 'sdk-python'
     || operationGroup !== 'workflow_control_plane'
     || !workflowWorkerDependentRequests.has(requestTemplate)
   ) {
@@ -2933,6 +2948,15 @@ function classifyEvidenceStatus({ surfaceName, pairingClass, operationGroup, res
     return 'loud_refuse';
   }
 
+  if (isCompatibleCliControlPlaneInterop({
+    surfaceName,
+    pairingClass,
+    operationGroup,
+    response,
+  })) {
+    return 'pass';
+  }
+
   if (response.status >= 400 || response.status === 0) {
     return 'silent_failure';
   }
@@ -2950,6 +2974,37 @@ function classifyEvidenceStatus({ surfaceName, pairingClass, operationGroup, res
   }
 
   return 'silent_success';
+}
+
+function isCompatibleCliControlPlaneInterop({
+  surfaceName,
+  pairingClass,
+  operationGroup,
+  response,
+}) {
+  if (
+    surfaceName !== 'cli'
+    || pairingClass !== 'compatible'
+    || operationGroup !== 'workflow_control_plane'
+    || response.status < 400
+    || response.status >= 500
+  ) {
+    return false;
+  }
+
+  const contract = response?.body?.control_plane;
+  if (!contract || typeof contract !== 'object') {
+    return false;
+  }
+
+  const operation = stringValue(contract.operation);
+  const schema = stringValue(contract.schema);
+  const reason = stringValue(response.body?.reason ?? contract.reason);
+
+  return operation !== ''
+    && schema !== ''
+    && reason !== ''
+    && schema.startsWith('durable-workflow.v2.control-plane-response');
 }
 
 function summarizePairing(surfaceName, pairingClass, rows, context) {
@@ -3200,9 +3255,20 @@ function loudRefusalContext(surfaceName, surfaceVersion, context, pairing, respo
     server_version: context.observedServerVersion,
     compatibility_window: pairing.compatibilityWindow,
     protocol_or_manifest: surfaceName === 'workflow-worker' ? 'worker_protocol' : 'control_plane',
-    next_step: 'Upgrade the older side, pin the client to the advertised range, or connect to a server that supports the requested protocol.',
+    next_step: compatibilityNextStep(surfaceName, 'outside_window'),
     response_reason: response?.body?.reason ?? response?.reason ?? null,
   };
+}
+
+function compatibilityNextStep(surfaceName, pairingClass) {
+  if (pairingClass === 'compatible') {
+    return [
+      'No compatibility remediation is required for this inside-window pair.',
+      `If the ${surfaceName} command returns a domain error, use the captured response reason as the next operational step.`,
+    ].join(' ');
+  }
+
+  return 'Upgrade the older side, pin the client to the advertised range, or connect to a server that supports the requested protocol.';
 }
 
 function isProtocolRefusal(response) {
