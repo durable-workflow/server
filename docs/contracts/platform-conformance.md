@@ -181,12 +181,14 @@ category emits a warning and does not block.
   `durable-workflow.v2.search-attribute-runtime.contract`. It names the
   required published-artifact install policy, PHP/Python worker matrix,
   CLI query and error surface, Waterline operator visibility, cross-language
-  codec round trips, equality/range/bool and OR/NOT grammar, keyword-list
-  membership, type-safety probes, undefined-key refusal, indexing latency
-  distribution, load profile, namespace isolation, query-injection
-  hardening, run-record fields, the coverage gate that keeps smoke-only
-  search-attribute evidence non-passing, and a result-gate evaluator that
-  rejects incomplete, placeholder, or finding-free non-pass scenario records.
+  codec round trips with encoded-payload or wire-value context,
+  equality/range/bool and OR/NOT grammar, keyword-list membership,
+  type-safety probes, undefined-key refusal, indexing latency distribution,
+  load profile,
+  namespace isolation, query-injection hardening, run-record fields, the
+  coverage gate that keeps smoke-only search-attribute evidence non-passing,
+  and a result-gate evaluator that rejects incomplete, placeholder, or
+  finding-free non-pass scenario records.
 - Schedules runtime contract: `GET /api/cluster/info` re-exports
   `schedules_runtime_contract`, schema
   `durable-workflow.v2.schedules-runtime.contract`. It names the required

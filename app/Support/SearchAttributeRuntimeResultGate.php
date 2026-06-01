@@ -10,7 +10,7 @@ final class SearchAttributeRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result-gate';
 
-    public const VERSION = 2;
+    public const VERSION = 3;
 
     /**
      * @return array<string, mixed>
@@ -52,6 +52,7 @@ final class SearchAttributeRuntimeResultGate
                 'required_php_and_python_workers_are_reported',
                 'runtime_and_cross_language_cells_are_reported',
                 'cli_waterline_codec_load_grammar_and_injection_sections_are_reported',
+                'codec_round_trips_include_encoded_payload_or_wire_value_context',
                 'query_verdict_expected_and_actual_counts_match',
                 'query_injection_required_rejection_probes_are_reported',
                 'each_pass_scenario_has_observed_outputs',
@@ -1122,11 +1123,11 @@ final class SearchAttributeRuntimeResultGate
             ?? $outputs;
         $failures = [];
 
-        if (! self::hasNonEmptyField($entry, ['encoded_payload', 'encodedPayload', 'codec_payload', 'codecPayload'])) {
+        if (! self::hasCodecPayloadContext($entry)) {
             $failures[] = [
                 'code' => 'missing_codec_round_trip_field',
                 'scenario_id' => $scenarioId,
-                'field' => 'encoded_payload',
+                'field' => 'encoded_payload_or_wire_value_context',
             ];
         }
 
@@ -1138,12 +1139,22 @@ final class SearchAttributeRuntimeResultGate
                 'field' => 'decoded_attributes',
             ];
         } else {
-            foreach (self::schemaKeyNames($contract) as $attribute) {
+            foreach (self::schemaKeyTypes($contract) as $attribute => $type) {
                 if (! array_key_exists($attribute, $decoded)) {
                     $failures[] = [
                         'code' => 'missing_codec_decoded_attribute',
                         'scenario_id' => $scenarioId,
                         'attribute' => $attribute,
+                    ];
+                    continue;
+                }
+
+                if (! self::decodedAttributeMatchesType($decoded[$attribute], $type)) {
+                    $failures[] = [
+                        'code' => 'codec_decoded_attribute_type_mismatch',
+                        'scenario_id' => $scenarioId,
+                        'attribute' => $attribute,
+                        'expected_type' => $type,
                     ];
                 }
             }
@@ -1204,6 +1215,27 @@ final class SearchAttributeRuntimeResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<mixed> $entry
+     */
+    private static function hasCodecPayloadContext(array $entry): bool
+    {
+        return self::hasNonEmptyField($entry, [
+            'encoded_payload',
+            'encodedPayload',
+            'codec_payload',
+            'codecPayload',
+            'wire_value_context',
+            'wireValueContext',
+            'wire_values',
+            'wireValues',
+            'wire_value',
+            'wireValue',
+            'wire_context',
+            'wireContext',
+        ]);
     }
 
     /**
@@ -1614,20 +1646,74 @@ final class SearchAttributeRuntimeResultGate
     /**
      * @param array<string, mixed> $contract
      *
-     * @return list<string>
+     * @return array<string, string>
      */
-    private static function schemaKeyNames(array $contract): array
+    private static function schemaKeyTypes(array $contract): array
     {
         $schemaKeys = self::arrayValue($contract['topology'] ?? [], 'schema_keys') ?? [];
-        $names = [];
-        foreach ($schemaKeys as $key => $value) {
-            $name = is_string($key) ? $key : self::stringValue($value);
-            if ($name !== '') {
-                $names[] = $name;
+        $types = [];
+        foreach ($schemaKeys as $key => $definition) {
+            $name = is_string($key) ? $key : '';
+            $type = '';
+
+            if (is_array($definition)) {
+                $name = $name !== '' ? $name : self::firstStringField($definition, ['name', 'key']);
+                $type = self::firstStringField($definition, ['type', 'value_type', 'valueType']);
+            } elseif (is_string($key)) {
+                $type = self::stringValue($definition);
+            } else {
+                $name = self::stringValue($definition);
+            }
+
+            $type = self::normalizeSearchAttributeType($type);
+            if ($name !== '' && $type !== '') {
+                $types[$name] = $type;
             }
         }
 
-        return $names;
+        return $types;
+    }
+
+    private static function normalizeSearchAttributeType(string $type): string
+    {
+        $normalized = strtolower(str_replace('-', '_', trim($type)));
+
+        return match ($normalized) {
+            'integer' => 'int',
+            'boolean' => 'bool',
+            'float' => 'double',
+            'keywordlist', 'keyword_list' => 'keyword_list',
+            default => $normalized,
+        };
+    }
+
+    private static function decodedAttributeMatchesType(mixed $value, string $type): bool
+    {
+        return match ($type) {
+            'string', 'keyword', 'datetime' => is_string($value) && $value !== '',
+            'int' => is_int($value),
+            'double' => is_float($value),
+            'bool' => is_bool($value),
+            'keyword_list' => self::isStringList($value),
+            default => true,
+        };
+    }
+
+    private static function isStringList(mixed $value): bool
+    {
+        if (! is_array($value)) {
+            return false;
+        }
+
+        $expectedKey = 0;
+        foreach ($value as $key => $item) {
+            if ($key !== $expectedKey || ! is_string($item) || $item === '') {
+                return false;
+            }
+            $expectedKey++;
+        }
+
+        return $expectedKey > 0;
     }
 
     /**

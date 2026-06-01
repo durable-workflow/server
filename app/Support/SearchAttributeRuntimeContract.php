@@ -16,7 +16,7 @@ final class SearchAttributeRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.contract';
 
-    public const VERSION = 3;
+    public const VERSION = 4;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result';
 
@@ -76,6 +76,7 @@ final class SearchAttributeRuntimeContract
                     'finding_links',
                     'topology',
                     'query_verdicts',
+                    'codec_round_trips',
                     'latency_distribution',
                 ],
             ],
@@ -214,6 +215,46 @@ final class SearchAttributeRuntimeContract
                     'required_query' => 'tags = "urgent"',
                     'list_ordering_must_not_affect_match' => true,
                 ],
+                'python_to_php_codec_round_trip' => [
+                    'writer' => 'sdk-python',
+                    'required_readers' => [
+                        'workflow-php-sdk',
+                        'cli',
+                    ],
+                    'required_value_types' => [
+                        'string',
+                        'int',
+                        'double',
+                        'bool',
+                        'datetime',
+                        'keyword',
+                        'keyword_list',
+                    ],
+                    'payload_context_fields' => [
+                        'encoded_payload',
+                        'wire_value_context',
+                    ],
+                ],
+                'php_to_python_codec_round_trip' => [
+                    'writer' => 'workflow-php',
+                    'required_readers' => [
+                        'sdk-python',
+                        'cli',
+                    ],
+                    'required_value_types' => [
+                        'string',
+                        'int',
+                        'double',
+                        'bool',
+                        'datetime',
+                        'keyword',
+                        'keyword_list',
+                    ],
+                    'payload_context_fields' => [
+                        'encoded_payload',
+                        'wire_value_context',
+                    ],
+                ],
                 'indexing_latency_distribution' => [
                     'sample_count_minimum' => 20,
                     'required_distribution_fields' => [
@@ -257,6 +298,7 @@ final class SearchAttributeRuntimeContract
                     'cli_surface_reported',
                     'waterline_operator_visibility_reported',
                     'codec_round_trips_reported',
+                    'codec_round_trips_include_encoded_payload_or_wire_value_context',
                     'load_latency_reported',
                     'or_not_grammar_reported',
                     'query_injection_hardening_reported',

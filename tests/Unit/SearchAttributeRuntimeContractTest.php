@@ -14,7 +14,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $manifest = SearchAttributeRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.contract', $manifest['schema']);
-        $this->assertSame(3, SearchAttributeRuntimeContract::VERSION);
+        $this->assertSame(4, SearchAttributeRuntimeContract::VERSION);
         $this->assertSame(SearchAttributeRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.result', $manifest['result_schema']);
         $this->assertSame('search_attribute_runtime_contract', $manifest['fixture_category']);
@@ -60,6 +60,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'finding_links',
             'topology',
             'query_verdicts',
+            'codec_round_trips',
             'latency_distribution',
         ] as $field) {
             $this->assertContains($field, $manifest['artifact_policy']['required_run_record_fields']);
@@ -77,6 +78,14 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $this->assertContains('sdk-python', $matrix['client_paths']);
         $this->assertContains('waterline-workflow-list-filter', $matrix['observer_paths']);
         $this->assertContains('keyword_list', $matrix['type_cells']);
+        $this->assertSame(
+            ['encoded_payload', 'wire_value_context'],
+            $manifest['scenario_requirements']['python_to_php_codec_round_trip']['payload_context_fields'],
+        );
+        $this->assertSame(
+            ['string', 'int', 'double', 'bool', 'datetime', 'keyword', 'keyword_list'],
+            $manifest['scenario_requirements']['php_to_python_codec_round_trip']['required_value_types'],
+        );
 
         $this->assertContains(
             [
@@ -126,6 +135,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'cli_surface_reported',
             'waterline_operator_visibility_reported',
             'codec_round_trips_reported',
+            'codec_round_trips_include_encoded_payload_or_wire_value_context',
             'load_latency_reported',
             'or_not_grammar_reported',
             'query_injection_hardening_reported',
@@ -140,7 +150,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $resultGate = SearchAttributeRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SearchAttributeRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(2, SearchAttributeRuntimeResultGate::VERSION);
+        $this->assertSame(3, SearchAttributeRuntimeResultGate::VERSION);
         $this->assertSame(SearchAttributeRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SearchAttributeRuntimeContract::RESULT_SCHEMA,
@@ -153,6 +163,10 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $this->assertContains('runtime_and_cross_language_cells_are_reported', $resultGate['pass_requires']);
         $this->assertContains(
             'cli_waterline_codec_load_grammar_and_injection_sections_are_reported',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'codec_round_trips_include_encoded_payload_or_wire_value_context',
             $resultGate['pass_requires'],
         );
         $this->assertContains('query_verdict_expected_and_actual_counts_match', $resultGate['pass_requires']);
@@ -272,6 +286,60 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $this->assertContains('missing_codec_round_trip_field', $failureCodes);
         $this->assertContains('missing_type_safety_error_evidence', $failureCodes);
         $this->assertContains('missing_namespace_isolation_field', $failureCodes);
+    }
+
+    public function test_result_gate_accepts_wire_value_context_for_codec_round_trips(): void
+    {
+        $result = $this->completeSearchAttributeResult();
+
+        unset($result['codec_round_trips']['python_to_php']['encoded_payload']);
+        unset($result['codec_round_trips']['php_to_python']['encoded_payload']);
+
+        $result['codec_round_trips']['python_to_php']['wire_value_context'] = [
+            'writer' => 'sdk-python',
+            'storage_surface' => 'workflow_search_attributes',
+            'wire_values' => [
+                'customer_id' => ['value_string' => 'cust-7'],
+                'order_total_cents' => ['value_int' => 9250],
+                'discount_ratio' => ['value_double' => 0.125],
+                'priority_tier' => ['value_keyword' => 'gold'],
+                'is_vip' => ['value_bool' => true],
+                'created_at' => ['value_datetime' => '2026-05-20T12:00:00Z'],
+                'tags' => ['value_keyword_list' => ['urgent', 'renewal']],
+            ],
+        ];
+        $result['codec_round_trips']['php_to_python']['wire_value_context'] = [
+            'writer' => 'workflow-php',
+            'storage_surface' => 'workflow_search_attributes',
+            'wire_values' => [
+                'customer_id' => ['value_string' => 'cust-7'],
+                'order_total_cents' => ['value_int' => 9250],
+                'discount_ratio' => ['value_double' => 0.125],
+                'priority_tier' => ['value_keyword' => 'gold'],
+                'is_vip' => ['value_bool' => true],
+                'created_at' => ['value_datetime' => '2026-05-20T12:00:00Z'],
+                'tags' => ['value_keyword_list' => ['urgent', 'renewal']],
+            ],
+        ];
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertEmpty($evaluation['gate_failures']);
+    }
+
+    public function test_result_gate_rejects_codec_round_trip_type_drift(): void
+    {
+        $result = $this->completeSearchAttributeResult();
+        $result['codec_round_trips']['python_to_php']['decoded_attributes']['order_total_cents'] = '9250';
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'codec_decoded_attribute_type_mismatch',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
     }
 
     public function test_result_gate_rejects_query_count_mismatches(): void
