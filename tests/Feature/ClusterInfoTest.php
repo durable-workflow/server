@@ -11,6 +11,7 @@ use App\Support\CoordinationHealthContract;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NamespaceRuntimeResultGate;
 use App\Support\PrincipalAttributionContract;
+use App\Support\PythonSdkParityContract;
 use App\Support\SagaRuntimeContract;
 use App\Support\SagaRuntimeResultGate;
 use App\Support\SearchAttributeRuntimeContract;
@@ -637,6 +638,52 @@ class ClusterInfoTest extends TestCase
         $this->assertSame(
             'required_for_passing_principal_attribution_conformance',
             $contract['host_runner_contract']['status'],
+        );
+    }
+
+    public function test_it_publishes_the_python_sdk_parity_conformance_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('python_sdk_parity_contract.schema', PythonSdkParityContract::SCHEMA)
+            ->assertJsonPath('python_sdk_parity_contract.version', PythonSdkParityContract::VERSION)
+            ->assertJsonPath(
+                'python_sdk_parity_contract.fixture_category',
+                'python_sdk_published_artifact_parity',
+            )
+            ->assertJsonPath(
+                'capabilities.python_sdk_parity_contract',
+                true,
+            )
+            ->assertJsonPath(
+                'python_sdk_parity_contract.coverage_gate.smoke_subset_outcome',
+                'non_passing',
+            )
+            ->assertJsonPath(
+                'python_sdk_parity_contract.host_runner_contract.runner_path',
+                'scripts/conformance/python-published-artifacts.sh',
+            );
+
+        $contract = $response->json('python_sdk_parity_contract');
+        $this->assertIsArray($contract);
+        $this->assertContains('official_cli_install_start_result_path', $contract['required_scenarios']);
+        $this->assertContains('cold_first_user_setup', $contract['required_scenarios']);
+        $this->assertContains('protocol_trace_capture', $contract['required_scenarios']);
+        $this->assertContains('php_assumption_audit', $contract['required_scenarios']);
+        $this->assertContains('capability_table_complete', $contract['required_scenarios']);
+        $this->assertContains('cli_reads_workflow_result', $contract['required_capabilities']);
+        $this->assertContains('protocol_traces_recorded', $contract['required_capabilities']);
+        $this->assertSame(
+            'durable_workflow.python_conformance',
+            $contract['python_result_gate_authority']['module'],
+        );
+        $this->assertContains(
+            'official-cli-install-start-result',
+            $contract['host_runner_contract']['required_execution_scopes'],
+        );
+        $this->assertContains(
+            'complete-python-capability-table',
+            $contract['host_runner_contract']['required_execution_scopes'],
         );
     }
 

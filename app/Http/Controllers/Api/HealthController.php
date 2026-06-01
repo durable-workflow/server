@@ -15,6 +15,7 @@ use App\Support\FilesystemDiskAvailability;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NexusContract;
 use App\Support\PrincipalAttributionContract;
+use App\Support\PythonSdkParityContract;
 use App\Support\ReplayVerificationContract;
 use App\Support\SagaRuntimeContract;
 use App\Support\SearchAttributeRuntimeContract;
@@ -131,6 +132,7 @@ class HealthController
             'child_workflow_runtime_contract' => true,
             'saga_runtime_contract' => true,
             'principal_attribution_contract' => true,
+            'python_sdk_parity_contract' => true,
             'skew_refusal_matrix_contract' => true,
             'worker_versioning_runtime_contract' => true,
             'embedded_v2_import' => $embeddedV2ImportAvailable,
@@ -181,6 +183,7 @@ class HealthController
             'child_workflow_runtime_contract' => ChildWorkflowRuntimeContract::manifest(),
             'saga_runtime_contract' => SagaRuntimeContract::manifest(),
             'principal_attribution_contract' => PrincipalAttributionContract::manifest(),
+            'python_sdk_parity_contract' => PythonSdkParityContract::manifest(),
             'skew_refusal_matrix_contract' => SkewRefusalMatrixContract::manifest(),
             'worker_versioning_runtime_contract' => WorkerVersioningRuntimeContract::manifest(),
             'namespace_runtime_contract' => NamespaceRuntimeContract::manifest(),

@@ -34,6 +34,7 @@ categories and runtime contracts:
 | `child_workflow_runtime_contract` (server side) | `GET /api/cluster/info`'s `child_workflow_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/child-workflow-runtime-scenarios.json`, plus the child scheduling, completion, failure, cancellation, replay, fan-out, and namespace behavior recorded by the worker protocol and history surfaces | stable |
 | `saga_runtime_contract` (server side) | `GET /api/cluster/info`'s `saga_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/saga-runtime-scenarios.json`, and `scripts/conformance/sagas-published-artifacts.sh`, which is the host-runner handoff for published-artifact saga compensation evidence | stable |
 | `principal_attribution_contract` (server side) | `GET /api/cluster/info`'s `principal_attribution_contract` manifest, the public scenario manifest at `static/platform-conformance/principal-attribution-scenarios.json`, and `scripts/conformance/principal-attribution-published-artifacts.sh`, which is the host-runner handoff for source-free principal attribution evidence | stable |
+| `python_sdk_published_artifact_parity` (host-runner handoff) | `GET /api/cluster/info`'s `python_sdk_parity_contract` manifest and `scripts/conformance/python-published-artifacts.sh`, which is the source-free host-runner handoff for the official CLI install/start/result path, cold first-user setup, Python worker restart evidence, protocol traces, no-PHP audit, and the complete Python capability table accepted by `durable_workflow.python_conformance` | stable |
 | `skew_refusal_matrix_contract` (server side) | `GET /api/cluster/info`'s `skew_refusal_matrix_contract` manifest, the public scenario manifest at `static/platform-conformance/skew-refusal-matrix-scenarios.json`, and `scripts/conformance/skew-published-artifacts.sh`, which is the host-runner handoff for the CLI/Python/PHP worker/Waterline skew matrix, worker registration skew classifications, Waterline render classifications, and request/response evidence requirements | stable |
 | `worker_versioning_runtime_contract` (server side) | `GET /api/cluster/info`'s `worker_versioning_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/worker-versioning-runtime-scenarios.json`, worker registration/build-id rollout APIs, workflow start pinning, compatible polling, history/visibility pin surfaces, and CLI/Waterline operator visibility | stable |
 | `namespace_runtime_contract` (server side) | the public scenario manifest at `static/platform-conformance/namespace-runtime-scenarios.json`, plus namespace, workflow, worker, schedule, search-attribute, Nexus, and operator routes documented in the protocol catalog | stable |
@@ -72,6 +73,20 @@ the server-derived actor for workflow start, signal, query, cancellation,
 completion, failure, anonymous, and server-originated history surfaces, plus
 adversarial payload/header spoofing attempts. Any missing public surface is
 non-passing unless it links a focused root-cause finding.
+
+The server repo also ships a source-free Python SDK parity runner at
+`scripts/conformance/python-published-artifacts.sh`. Host conformance
+runners can discover that handoff from `GET /api/cluster/info` under
+`python_sdk_parity_contract.host_runner_contract` and invoke it against the
+current published server image, official CLI installer, PyPI
+`durable-workflow` package, and matching workflow/Waterline artifacts. The
+runner writes host evidence, composes it with the installed SDK's
+`durable_workflow.python_conformance` contract, and evaluates the resulting
+`durable-workflow.v2.python-sdk-parity.result` document. Smoke-only Python
+worker evidence remains non-passing because the SDK result gate requires the
+official CLI start/result path, cold first-user setup, control and worker
+protocol traces, a no-PHP-assumption audit, and the complete capability
+table before rollup can count the Python parity result as passing.
 
 Migration upgrade coverage is deliberately outside this server claim while
 the public platform conformance suite omits a migration category. A future
