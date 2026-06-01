@@ -115,11 +115,12 @@ category emits a warning and does not block.
   required published-artifact install policy with concrete pinned
   artifact versions, PHP/Python runtime matrix, CLI and SDK client
   paths, replay timing scenarios, terminal-run behavior,
-  malformed-payload expectations, Waterline observer comparison, the
-  public runtime scenario-manifest pointer, run-record fields, the
-  coverage gate that keeps a smoke-only subset non-passing, and a
-  result-gate evaluator that rejects incomplete, placeholder, or
-  finding-free non-pass scenario records. A run record that reports
+  missing-workflow and malformed-payload error diagnostics, Waterline
+  comparison against server, CLI, and SDK observations, the public runtime
+  scenario-manifest pointer, run-record fields, the coverage gate that
+  keeps a smoke-only subset non-passing, and a result-gate evaluator that
+  rejects incomplete, placeholder, or finding-free non-pass scenario
+  records. A run record that reports
   placeholder or unresolved artifact versions such as `latest`,
   `current`, `head`, `unresolved`, `placeholder`, `<latest>`,
   `${VERSION}`, or `{{ version }}` is non-passing even when those tokens

@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 5;
+    public const VERSION = 6;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -202,11 +202,15 @@ final class SignalQueryRuntimeContract
                         'completed_run_id',
                         'signal_error',
                         'query_result_or_error',
+                        'public_query_surfaces',
+                        'run_status_after_operations',
                     ],
                 ],
                 'unknown_signal_and_query_errors' => [
                     'required_errors' => [
                         'unknown_signal',
+                        'missing_workflow_signal',
+                        'missing_workflow_query',
                         'query_not_found',
                         'rejected_unknown_query',
                     ],
@@ -217,6 +221,11 @@ final class SignalQueryRuntimeContract
                         'invalid_signal_arguments',
                         'invalid_query_arguments',
                     ],
+                    'evidence' => [
+                        'invalid_signal_arguments_context',
+                        'invalid_query_arguments_context',
+                        'post_error_valid_query_result',
+                    ],
                     'history_integrity' => 'no_handler_invocation_or_state_corruption',
                 ],
                 'waterline_operator_visibility' => [
@@ -225,6 +234,9 @@ final class SignalQueryRuntimeContract
                         'observer_state.signals',
                         'observer_state.queries',
                         'observer_state.paths.selected_run_query_template',
+                        'comparison.server_observation',
+                        'comparison.cli_observation',
+                        'comparison.sdk_observation',
                     ],
                     'allowed_live_query_detail_limitation' => 'query_results_not_materialized_in_selected_run_detail',
                 ],
