@@ -119,6 +119,10 @@ class PrincipalAttributionContractTest extends TestCase
             $manifest['worker_terminal_event_policy'],
             $scenarioManifest['worker_terminal_event_policy'],
         );
+        $this->assertSame(
+            $manifest['spoofing_guards'],
+            $scenarioManifest['spoofing_guards'],
+        );
     }
 
     public function test_published_artifact_runner_fails_closed_for_required_evidence(): void
@@ -136,6 +140,12 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('recorded_principal=recorded_query_principal', $script);
         $this->assertStringContainsString('["command_context", "context", "principal"]', $script);
         $this->assertStringNotContainsString('recorded_principal=None', $script);
+        $this->assertStringContainsString('DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS: "true"', $script);
+        $this->assertStringContainsString('ADVERSARIAL_BODY_FIELDS', $script);
+        $this->assertStringContainsString('ADVERSARIAL_HEADERS', $script);
+        $this->assertStringContainsString('"X-Workflow-Caller-Type": "spoofed-gateway"', $script);
+        $this->assertStringContainsString('"X-Workflow-Auth-Method": "gateway_token"', $script);
+        $this->assertStringContainsString('"X-Remote-User": "mallory"', $script);
         $this->assertStringContainsString('ANONYMOUS_SERVER_URL="$anonymous_server_base_url"', $script);
         $this->assertStringContainsString('anonymous_auth_driver": "none"', $script);
         $this->assertStringContainsString('run_python_sdk_client_operation', $script);
@@ -144,6 +154,8 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('php_operation = run_php_client_operation(php_client_id)', $script);
         $this->assertStringNotContainsString('Python SDK client operation was not exercised by this runner revision', $script);
         $this->assertStringNotContainsString('PHP client operation was not exercised by this runner revision', $script);
+        $this->assertStringContainsString('linked_findings=[waterline_finding]', $script);
+        $this->assertStringContainsString('"waterline": {"status": "unsupported"', $script);
 
         $this->assertStringContainsString('"--output=json"', $script);
         $this->assertStringContainsString('--output=json', $script);

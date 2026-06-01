@@ -676,6 +676,14 @@ class ClusterInfoTest extends TestCase
             'X-Workflow-Principal-Id',
             $contract['spoofing_guards']['request_headers'],
         );
+        $this->assertContains(
+            'X-Workflow-Caller-Type',
+            $contract['spoofing_guards']['request_headers'],
+        );
+        $this->assertContains(
+            'X-Workflow-Auth-Method',
+            $contract['spoofing_guards']['request_headers'],
+        );
         $this->assertSame(
             'required_for_passing_principal_attribution_conformance',
             $contract['host_runner_contract']['status'],

@@ -37,6 +37,23 @@
     "documented_system_principals": [],
     "pass_condition": "each worker-caused terminal event principal matches the authenticated worker principal unless a system principal is listed here"
   },
+  "spoofing_guards": {
+    "request_body_fields": ["principal", "principal_id", "principal_type", "actor", "user"],
+    "request_headers": [
+      "X-Workflow-Principal-Id",
+      "X-Workflow-Principal-Type",
+      "X-Workflow-Principal-Label",
+      "X-Workflow-Caller-Type",
+      "X-Workflow-Caller-Label",
+      "X-Workflow-Auth-Status",
+      "X-Workflow-Auth-Method",
+      "X-Forwarded-User",
+      "X-Forwarded-Email",
+      "X-Remote-User",
+      "Authorization-Override"
+    ],
+    "expected_behavior": "recorded principal is derived only from authenticated server Principal"
+  },
   "scenarios": [
     {
       "id": "published_artifact_install_only",

@@ -882,6 +882,7 @@ x-server-environment: &server-environment
   DW_AUTH_DRIVER: token
   DW_AUTH_BACKWARD_COMPATIBLE: "false"
   DW_PRINCIPAL_TOKENS: '${principal_tokens_json}'
+  DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS: "true"
   DW_WORKER_POLL_TIMEOUT: "1"
   DW_WORKER_POLL_INTERVAL_MS: "100"
   DW_QUERY_TASK_TIMEOUT: "3"
@@ -891,6 +892,7 @@ x-server-environment: &server-environment
 
 x-anonymous-server-environment: &anonymous-server-environment
   DW_AUTH_DRIVER: none
+  DW_TRUST_FORWARDED_ATTRIBUTION_HEADERS: "true"
   DW_WORKER_POLL_TIMEOUT: "1"
   DW_WORKER_POLL_INTERVAL_MS: "100"
   DW_QUERY_TASK_TIMEOUT: "3"
@@ -1024,6 +1026,26 @@ FAIL_TASK_QUEUE = f"{TASK_QUEUE_BASE}-fail"
 MAIN_WORKER_ID = "principal-attribution-main-worker"
 COMPLETE_WORKER_ID = "principal-attribution-complete-worker"
 FAIL_WORKER_ID = "principal-attribution-fail-worker"
+ADVERSARIAL_BODY_FIELDS = {
+    "principal": "mallory",
+    "principal_id": "mallory",
+    "principal_type": "attacker",
+    "actor": "mallory",
+    "user": "mallory",
+}
+ADVERSARIAL_HEADERS = {
+    "X-Workflow-Principal-Id": "mallory",
+    "X-Workflow-Principal-Type": "attacker",
+    "X-Workflow-Principal-Label": "Mallory",
+    "X-Workflow-Caller-Type": "spoofed-gateway",
+    "X-Workflow-Caller-Label": "Mallory Gateway",
+    "X-Workflow-Auth-Status": "trusted_elsewhere",
+    "X-Workflow-Auth-Method": "gateway_token",
+    "X-Forwarded-User": "mallory",
+    "X-Forwarded-Email": "mallory@example.invalid",
+    "X-Remote-User": "mallory",
+    "Authorization-Override": "Bearer mallory",
+}
 
 
 def now() -> str:
@@ -1154,12 +1176,8 @@ def query_with_worker(workflow_id: str, worker_id: str, task_queue: str) -> dict
                 "POST",
                 f"/workflows/{workflow_id}/query/current",
                 token=TOKENS["bob"],
-                body={"input": [{"from": "bob"}], "principal": "mallory", "principal_id": "mallory"},
-                headers={
-                    "X-Workflow-Principal-Id": "mallory",
-                    "X-Workflow-Principal-Type": "attacker",
-                    "X-Forwarded-User": "mallory",
-                },
+                body={"input": [{"from": "bob"}], **ADVERSARIAL_BODY_FIELDS},
+                headers=ADVERSARIAL_HEADERS,
                 timeout=8,
                 allowed={200, 202, 409, 503},
             )
@@ -1503,18 +1521,13 @@ def main() -> int:
     register_worker(FAIL_WORKER_ID, FAIL_TASK_QUEUE)
 
     main_id = f"pa-main-{int(time.time())}"
-    start = start_workflow(main_id, "alice_v1", extra={"principal": "mallory"})
+    start = start_workflow(main_id, "alice_v1", extra=ADVERSARIAL_BODY_FIELDS, headers=ADVERSARIAL_HEADERS)
     main_run = str(start["run_id"])
     signal_workflow(
         main_id,
         "bob",
-        extra={"principal": "mallory", "principal_id": "mallory"},
-        headers={
-            "X-Workflow-Principal-Id": "mallory",
-            "X-Workflow-Principal-Type": "attacker",
-            "X-Forwarded-User": "mallory",
-            "Authorization-Override": "Bearer mallory",
-        },
+        extra=ADVERSARIAL_BODY_FIELDS,
+        headers=ADVERSARIAL_HEADERS,
     )
     query_observation = query_with_worker(main_id, MAIN_WORKER_ID, MAIN_TASK_QUEUE)
     cancel_workflow(main_id, "alice_v2")
@@ -1555,12 +1568,9 @@ def main() -> int:
             "workflow_type": WORKFLOW_TYPE,
             "task_queue": MAIN_TASK_QUEUE,
             "input": [{"workflow_id": anonymous_id}],
-            "principal": "mallory",
+            **ADVERSARIAL_BODY_FIELDS,
         },
-        headers={
-            "X-Workflow-Principal-Id": "mallory",
-            "X-Forwarded-User": "mallory",
-        },
+        headers=ADVERSARIAL_HEADERS,
     )
     anonymous_run = str(anonymous_start["run_id"])
     request(
@@ -1568,8 +1578,8 @@ def main() -> int:
         f"/workflows/{anonymous_id}/signal/nudge",
         token=None,
         api=ANONYMOUS_API,
-        body={"input": [{"signal": "anonymous"}], "principal": "mallory"},
-        headers={"X-Workflow-Principal-Id": "mallory", "X-Forwarded-User": "mallory"},
+        body={"input": [{"signal": "anonymous"}], **ADVERSARIAL_BODY_FIELDS},
+        headers=ADVERSARIAL_HEADERS,
         allowed={200, 202},
     )
     request(
@@ -1653,7 +1663,7 @@ def main() -> int:
     if spoof_successes:
         main_failures.append("spoofed principal mallory appeared in history")
         findings.append(finding("start_signal_cancel_spoofing", "server", "spoofed principal appeared in history", "server-derived principal overwrites caller supplied identity", "fix principal derivation before accepting caller attribution", "P0"))
-    scenario_results.append(scenario("pass" if not main_failures else "fail", "start_signal_cancel_spoofing", history_events=list(main_principals), recorded_principals=main_principals, spoofing_attempts={"payload_principal": "mallory", "headers": ["X-Workflow-Principal-Id", "X-Forwarded-User", "Authorization-Override"]}, findings=main_failures))
+    scenario_results.append(scenario("pass" if not main_failures else "fail", "start_signal_cancel_spoofing", history_events=list(main_principals), recorded_principals=main_principals, spoofing_attempts={"payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS)}, findings=main_failures))
 
     query_recorded = query_observation.get("query_response", {})
     recorded_query_principal = principal_from_query_observation(query_observation)
@@ -1664,7 +1674,7 @@ def main() -> int:
         query_principal_failures.append(f"query errors: {query_observation.get('errors')}")
     if principal_id(recorded_query_principal) != "bob":
         query_principal_failures.append(f"query principal expected bob, got {recorded_query_principal!r}")
-    scenario_results.append(scenario("pass" if not query_principal_failures else "fail", "query_attribution", query_result=query_recorded, recorded_principal=recorded_query_principal, history_or_query_task_surface=query_observation, spoofing_attempts={"payload_principal": "mallory", "headers": ["X-Workflow-Principal-Id", "X-Forwarded-User"]}, findings=query_principal_failures))
+    scenario_results.append(scenario("pass" if not query_principal_failures else "fail", "query_attribution", query_result=query_recorded, recorded_principal=recorded_query_principal, history_or_query_task_surface=query_observation, spoofing_attempts={"payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS)}, findings=query_principal_failures))
     if query_principal_failures:
         findings.append(finding("query_attribution", "server", f"query attribution could not be confirmed: {query_principal_failures}", "query operations expose the caller principal in a documented server-controlled audit surface", "add query principal evidence to history or query task audit output"))
 
@@ -1744,8 +1754,9 @@ def main() -> int:
     if not cli_json_ok:
         findings.append(finding("cli_operator_visibility", "cli", "CLI history output did not expose event principal", "CLI operator output shows the event principal clearly", "surface event principal in workflow:history output"))
 
-    scenario_results.append(scenario("not_covered", "waterline_operator_visibility", surface=None, output_sample=None, principal_visible=None))
-    findings.append(finding("waterline_operator_visibility", "waterline", "Waterline operator surface was not exercised by this runner revision", "Waterline selected-run history exposes event principal", "extend the host topology to boot Waterline against the published server and capture selected-run history"))
+    waterline_finding = finding("waterline_operator_visibility", "waterline", "Waterline operator surface was not exercised by this runner revision", "Waterline selected-run history exposes event principal", "extend the host topology to boot Waterline against the published server and capture selected-run history")
+    scenario_results.append(scenario("unsupported", "waterline_operator_visibility", surface=None, output_sample=None, principal_visible=None, linked_findings=[waterline_finding], findings=[waterline_finding]))
+    findings.append(waterline_finding)
 
     outcome = "pass" if all(item["status"] == "pass" for item in scenario_results) else "fail"
     finished = now()
@@ -1766,8 +1777,8 @@ def main() -> int:
         "topology": {"server_url": SERVER_URL, "anonymous_server_url": ANONYMOUS_SERVER_URL, "task_queues": {"main": MAIN_TASK_QUEUE, "completion": COMPLETE_TASK_QUEUE, "failure": FAIL_TASK_QUEUE}, "auth_driver": "token", "anonymous_auth_driver": "none", "principal_tokens": ["alice", "bob", "worker"]},
         "actor_matrix": {"alice": {"credentials": ["alice-token-v1", "alice-token-v2"]}, "bob": {"credentials": ["bob-token"]}},
         "history_dumps": history_dumps,
-        "spoofing_attempts": {"payload_values": ["mallory"], "headers": ["X-Workflow-Principal-Id", "X-Forwarded-User", "Authorization-Override"]},
-        "operator_visibility": {"cli_history_json_principal_visible": cli_json_ok, "waterline": "not_covered"},
+        "spoofing_attempts": {"payload_values": ["mallory"], "payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS)},
+        "operator_visibility": {"cli_history_json_principal_visible": cli_json_ok, "waterline": {"status": "unsupported", "linked_findings": [waterline_finding]}},
         "anonymous_observations": {"status": "pass" if not anonymous_failures else "fail", "anonymous_principal": anonymous_principals.get("WorkflowStarted"), "documented_value": expected_anonymous_principal, "history_events": list(anonymous_principals)},
         "scenario_results": scenario_results,
         "findings": findings,
