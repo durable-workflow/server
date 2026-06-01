@@ -671,6 +671,18 @@ class ClusterInfoTest extends TestCase
             $contract['host_runner_contract']['required_execution_scopes'],
         );
         $this->assertSame(
+            'workflow:v2:namespace-conformance',
+            $contract['host_runner_contract']['runtime_shards']['workflow-php']['preferred_command'],
+        );
+        $this->assertSame(
+            [
+                'namespace_create_update_describe_and_list',
+                'sdk_namespace_selection_parity',
+                'php_worker_task_queue_namespace_isolation',
+            ],
+            $contract['host_runner_contract']['runtime_shards']['workflow-php']['must_cover_scenarios'],
+        );
+        $this->assertSame(
             'waterline:namespace-conformance',
             $contract['host_runner_contract']['runtime_shards']['waterline']['artisan_command'],
         );

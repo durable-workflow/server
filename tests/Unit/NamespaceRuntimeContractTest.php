@@ -129,6 +129,38 @@ class NamespaceRuntimeContractTest extends TestCase
             $manifest['host_runner_contract']['required_execution_scopes'],
         );
         $this->assertSame(
+            'workflow:v2:namespace-conformance',
+            $manifest['host_runner_contract']['runtime_shards']['workflow-php']['preferred_command'],
+        );
+        $this->assertSame(
+            'durable-workflow/workflow',
+            $manifest['host_runner_contract']['runtime_shards']['workflow-php']['artifact'],
+        );
+        $this->assertSame(
+            [
+                'namespace_create_update_describe_and_list',
+                'sdk_namespace_selection_parity',
+                'php_worker_task_queue_namespace_isolation',
+            ],
+            $manifest['host_runner_contract']['runtime_shards']['workflow-php']['must_cover_scenarios'],
+        );
+        $this->assertSame(
+            [
+                'explicit_namespace_selection',
+                'documented_default_namespace',
+                'cross_namespace_not_found',
+            ],
+            $manifest['host_runner_contract']['runtime_shards']['workflow-php']['must_cover_client_behavior'],
+        );
+        $this->assertSame(
+            [
+                'same_queue_tenant_a_delivery',
+                'same_queue_tenant_b_delivery',
+                'cross_namespace_delivery_absent',
+            ],
+            $manifest['host_runner_contract']['runtime_shards']['workflow-php']['must_cover_worker_behavior'],
+        );
+        $this->assertSame(
             'waterline:namespace-conformance',
             $manifest['host_runner_contract']['runtime_shards']['waterline']['artisan_command'],
         );

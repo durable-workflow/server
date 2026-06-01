@@ -335,6 +335,29 @@ final class NamespaceRuntimeContract
                     'reserved-name-adversarial-shard',
                 ],
                 'runtime_shards' => [
+                    'workflow-php' => [
+                        'scope' => 'workflow-php-namespace-shard',
+                        'artifact' => 'durable-workflow/workflow',
+                        'preferred_command' => 'workflow:v2:namespace-conformance',
+                        'artisan_command' => 'workflow:v2:namespace-conformance',
+                        'must_cover_scenarios' => [
+                            'namespace_create_update_describe_and_list',
+                            'sdk_namespace_selection_parity',
+                            'php_worker_task_queue_namespace_isolation',
+                        ],
+                        'must_cover_client_behavior' => [
+                            'explicit_namespace_selection',
+                            'documented_default_namespace',
+                            'cross_namespace_not_found',
+                        ],
+                        'must_cover_worker_behavior' => [
+                            'same_queue_tenant_a_delivery',
+                            'same_queue_tenant_b_delivery',
+                            'cross_namespace_delivery_absent',
+                        ],
+                        'fallback_status_when_command_missing' => 'unsupported',
+                        'fallback_finding_type' => 'unsupported_public_surface',
+                    ],
                     'waterline' => [
                         'scope' => 'waterline-operator-namespace-shard',
                         'artifact' => 'durable-workflow/waterline',
