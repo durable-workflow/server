@@ -88,6 +88,12 @@ class HealthController
 
     public function clusterInfo(Request $request): JsonResponse
     {
+        if (ControlPlaneProtocol::requestVersion($request) !== null) {
+            if ($response = ControlPlaneProtocol::rejectUnsupported($request)) {
+                return $response;
+            }
+        }
+
         $namespace = (string) ($request->attributes->get('namespace') ?: config('server.default_namespace'));
         $embeddedV2Importer = 'Workflow\\V2\\Support\\EmbeddedV2HistoryImport';
         $embeddedV2ImportContract = 'Workflow\\V2\\Support\\EmbeddedV2ImportContract';

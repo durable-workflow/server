@@ -49,9 +49,10 @@ Route::get('/ready', [HealthController::class, 'ready']);
 // ControlPlaneVersionResolver sits between RequireRole and NamespaceResolver
 // on every version-gated control-plane endpoint, so a missing/unsupported
 // X-Durable-Workflow-Control-Plane-Version returns 400 even when the named
-// namespace does not exist (TD-S050). /api/cluster/info is deliberately
-// omitted — it is the version-advertising endpoint and must remain callable
-// without the header.
+// namespace does not exist (TD-S050). /api/cluster/info handles its discovery
+// exemption in the controller: it remains callable without the header, but an
+// explicitly unsupported header is refused as skew evidence before returning
+// the discovery manifest.
 //
 // RequireTopologyRoles sits after protocol validation and before
 // NamespaceResolver on hosted routes so wrong-node requests fail closed with a

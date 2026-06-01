@@ -1240,6 +1240,7 @@ async function prepareWorkerTaskFixture({
   }
 
   const taskId = workflowTaskIdFromBody(pollResponse.body);
+  const workflowTaskAttempt = workflowTaskAttemptFromBody(pollResponse.body) ?? 1;
   if (pollResponse.status >= 400 || pollResponse.status === 0 || !taskId) {
     return {
       status: 'not_covered',
@@ -1251,6 +1252,7 @@ async function prepareWorkerTaskFixture({
   }
 
   fixture.taskId = taskId;
+  fixture.workflowTaskAttempt = workflowTaskAttempt;
   context.operationFixtures[fixtureKey] = fixture;
   Object.assign(state, fixture);
 
@@ -1471,6 +1473,31 @@ function workflowTaskIdFromBody(body) {
   );
 }
 
+function workflowTaskAttemptFromBody(body) {
+  return firstIntegerValue(
+    body?.task?.workflow_task_attempt,
+    body?.task?.workflowTaskAttempt,
+    body?.task?.attempt,
+    body?.task?.attempt_number,
+    body?.workflow_task_attempt,
+    body?.workflowTaskAttempt,
+    body?.workflow_task?.workflow_task_attempt,
+    body?.workflowTask?.workflowTaskAttempt,
+    body?.workflow_task?.attempt,
+    body?.workflowTask?.attempt,
+    body?.result?.task?.workflow_task_attempt,
+    body?.result?.task?.workflowTaskAttempt,
+    body?.result?.task?.attempt,
+    body?.result?.task?.attempt_number,
+    body?.result?.workflow_task_attempt,
+    body?.result?.workflowTaskAttempt,
+    body?.result?.workflow_task?.workflow_task_attempt,
+    body?.result?.workflowTask?.workflowTaskAttempt,
+    body?.result?.workflow_task?.attempt,
+    body?.result?.workflowTask?.attempt,
+  );
+}
+
 function liveWorkflowWorkerState() {
   const rawReady = envValue('DW_SKEW_LIVE_WORKFLOW_WORKER_READY').toLowerCase();
   const ready = ['1', 'true', 'yes'].includes(rawReady);
@@ -1629,6 +1656,7 @@ async function invokePythonSdkOperation({
     schedule_id: state.scheduleId,
     worker_id: state.workerId,
     task_id: taskIdForPublishedWorkerProbe(state, pairingClass),
+    workflow_task_attempt: state.workflowTaskAttempt ?? 1,
   };
 
   return runArtifactWithProxy({
@@ -1672,6 +1700,7 @@ async function invokeWorkflowWorkerOperation({
     worker_id: state.workerId,
     task_queue: 'skew-conformance',
     task_id: taskIdForPublishedWorkerProbe(state, pairingClass),
+    workflow_task_attempt: state.workflowTaskAttempt ?? 1,
   };
   const docker = phpDockerInvocation(availability, script, payload);
 
@@ -1801,6 +1830,7 @@ async def run(payload: dict[str, Any]) -> dict[str, Any]:
     schedule_id = payload["schedule_id"]
     worker_id = payload["worker_id"]
     task_id = payload["task_id"]
+    workflow_task_attempt = int(payload.get("workflow_task_attempt") or 1)
     try:
         if op == "GET /api/cluster/info":
             result = await client.get_cluster_info()
@@ -1873,14 +1903,14 @@ async def run(payload: dict[str, Any]) -> dict[str, Any]:
             result = await client.complete_workflow_task(
                 task_id=task_id,
                 lease_owner=worker_id,
-                workflow_task_attempt=1,
+                workflow_task_attempt=workflow_task_attempt,
                 commands=[{"type": "complete_workflow", "result": None}],
             )
         elif op == "POST /api/worker/workflow-tasks/{task}/fail":
             result = await client.fail_workflow_task(
                 task_id=task_id,
                 lease_owner=worker_id,
-                workflow_task_attempt=1,
+                workflow_task_attempt=workflow_task_attempt,
                 message="skew conformance boundary probe",
                 failure_type="SkewConformanceFailure",
             )
@@ -2005,6 +2035,7 @@ $workerProtocolVersion = (string) ($payload['worker_protocol_version'] ?? \Workf
 $workerId = (string) ($payload['worker_id'] ?? 'worker-skew-conformance');
 $taskQueue = (string) ($payload['task_queue'] ?? 'skew-conformance');
 $taskId = (string) ($payload['task_id'] ?? '');
+$workflowTaskAttempt = (int) ($payload['workflow_task_attempt'] ?? 1);
 $http = new \Illuminate\Http\Client\Factory();
 
 if ($operation === 'GET /api/cluster/info') {
@@ -2060,7 +2091,7 @@ if ($operation === 'GET /api/cluster/info') {
                 'result' => null,
             ]],
             $workerId,
-            1,
+            $workflowTaskAttempt,
         )),
         'POST /api/worker/workflow-tasks/{task}/fail' => skew_call(static fn (): ?array => $client->failWorkflowTask(
             $taskId,
@@ -2068,7 +2099,7 @@ if ($operation === 'GET /api/cluster/info') {
             'SkewConformanceFailure',
             null,
             $workerId,
-            1,
+            $workflowTaskAttempt,
         )),
         default => skew_call(static fn (): ?array => $client->registerWorker($workerId, $taskQueue)),
     };
@@ -2212,7 +2243,7 @@ async function runArtifactWithProxy({
   const artifactResponse = artifactOutputResponse(surfaceName, operationGroup, stdoutJson);
   const artifactOutputAuthoritative = surfaceName === 'waterline'
     && operationGroup === 'waterline_render';
-  const artifactRefusal = exactCapture === null && pairingClass !== 'compatible'
+  const artifactRefusal = pairingClass !== 'compatible'
     ? artifactCompatibilityRefusalResponse({
       surfaceName,
       pairingClass,
@@ -2222,11 +2253,16 @@ async function runArtifactWithProxy({
       stdoutJson,
     })
     : null;
-  const guardCapture = artifactRefusal
+  const guardCapture = artifactRefusal && exactCapture === null
     ? selectCompatibilityGuardCapture(proxyResult.captures, pairing, operationGroup)
     : null;
   const matchedCapture = exactCapture ?? guardCapture;
   const guardCaptureUsed = exactCapture === null && guardCapture !== null;
+  const artifactRefusalUsed = artifactRefusal !== null
+    && (
+      guardCaptureUsed
+      || (operationGroup === 'cluster_info_probe' && exactCapture !== null)
+    );
   const fallbackReason = matchedCapture === null
     ? proxyResult.captures.length > 0
       ? 'advertised_operation_not_observed'
@@ -2243,7 +2279,7 @@ async function runArtifactWithProxy({
     : 'The matched recording-proxy capture did not include response evidence.';
   const response = matchedCapture === null
     ? null
-    : guardCaptureUsed
+    : artifactRefusalUsed
       ? artifactRefusal
       : artifactOutputAuthoritative
       ? artifactResponse
@@ -2267,8 +2303,10 @@ async function runArtifactWithProxy({
 
   const responseSource = matchedCapture === null
     ? 'no_matched_proxy_capture'
-    : guardCaptureUsed
-      ? 'artifact_refusal_guarded_by_proxy_capture'
+    : artifactRefusalUsed
+      ? guardCaptureUsed
+        ? 'artifact_refusal_guarded_by_proxy_capture'
+        : 'artifact_refusal_after_advertised_operation'
       : artifactResponse !== null && artifactOutputAuthoritative
       ? 'artifact_stdout'
       : artifactOutputAuthoritative
@@ -2740,6 +2778,17 @@ function firstStringValue(...values) {
   }
 
   return '';
+}
+
+function firstIntegerValue(...values) {
+  for (const value of values) {
+    const candidate = integerValue(value);
+    if (candidate !== null) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 function firstArrayObjectStringValue(values, fields) {

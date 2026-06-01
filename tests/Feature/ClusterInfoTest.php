@@ -8,6 +8,7 @@ use App\Models\WorkflowNamespace;
 use App\Support\ChildWorkflowRuntimeContract;
 use App\Support\ChildWorkflowRuntimeResultGate;
 use App\Support\CoordinationHealthContract;
+use App\Support\ControlPlaneProtocol;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NamespaceRuntimeResultGate;
 use App\Support\PrincipalAttributionContract;
@@ -39,6 +40,18 @@ class ClusterInfoTest extends TestCase
 
     /** @var list<string> */
     private array $externalExecutorConfigFixturePaths = [];
+
+    public function test_cluster_info_refuses_explicit_unsupported_control_plane_version(): void
+    {
+        $this->getJson('/api/cluster/info', [
+            ControlPlaneProtocol::HEADER => '999',
+        ])
+            ->assertStatus(400)
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('reason', 'unsupported_control_plane_version')
+            ->assertJsonPath('supported_version', ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('requested_version', '999');
+    }
 
     protected function tearDown(): void
     {

@@ -672,6 +672,21 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'inside-window worker lifecycle probes must prepare real queued workflow tasks before polling, completing, or failing tasks',
         );
         $this->assertStringContainsString(
+            'workflowTaskAttemptFromBody(pollResponse.body) ?? 1',
+            $runner,
+            'worker fixture polling must preserve the leased workflow task attempt for completion and failure evidence',
+        );
+        $this->assertStringContainsString(
+            'fixture.workflowTaskAttempt = workflowTaskAttempt',
+            $runner,
+            'published-artifact complete/fail probes must use the attempt returned by the fixture poll',
+        );
+        $this->assertStringContainsString(
+            'workflow_task_attempt: state.workflowTaskAttempt ?? 1',
+            $runner,
+            'generated worker probe payloads must carry the leased workflow task attempt',
+        );
+        $this->assertStringContainsString(
             "supported_workflow_types: ['skew_conformance_workflow']",
             $runner,
             'worker task fixtures must register workflow-capable workers so poll evidence can lease tasks',
@@ -691,10 +706,27 @@ final class SkewRefusalMatrixContractTest extends TestCase
             $runner,
             'inside-window Python complete probes must send a server-valid workflow completion command',
         );
+        $this->assertStringContainsString(
+            'workflow_task_attempt=workflow_task_attempt',
+            $runner,
+            'inside-window Python complete/fail probes must use the leased task attempt instead of a hardcoded attempt',
+        );
+        $this->assertStringNotContainsString(
+            'workflow_task_attempt=1',
+            $runner,
+            'inside-window Python complete/fail probes must not hardcode the workflow task attempt',
+        );
         $this->assertStringNotContainsString(
             'commands=[]',
             $runner,
             'inside-window Python complete probes must not send an empty command list',
+        );
+        $this->assertStringContainsString(
+            <<<'PHP'
+$workflowTaskAttempt = (int) ($payload['workflow_task_attempt'] ?? 1);
+PHP,
+            $runner,
+            'inside-window PHP worker probes must decode the leased workflow task attempt',
         );
         $this->assertStringContainsString(
             <<<'PHP'
@@ -707,6 +739,14 @@ $client->completeWorkflowTask(
 PHP,
             $runner,
             'inside-window PHP worker complete probes must send a server-valid workflow completion command',
+        );
+        $this->assertStringContainsString(
+            <<<'PHP'
+            $workflowTaskAttempt,
+        )),
+PHP,
+            $runner,
+            'inside-window PHP worker complete/fail probes must pass the leased workflow task attempt',
         );
         $this->assertStringNotContainsString(
             <<<'PHP'
@@ -1020,6 +1060,21 @@ PHP,
             'artifact_compatibility_refusal',
             $runner,
             'client-side compatibility refusals must be typed so refusal evidence names the skew context',
+        );
+        $this->assertStringContainsString(
+            "const artifactRefusal = pairingClass !== 'compatible'",
+            $runner,
+            'artifact-side compatibility refusals must be detected even when cluster-info was the advertised operation',
+        );
+        $this->assertStringContainsString(
+            "operationGroup === 'cluster_info_probe' && exactCapture !== null",
+            $runner,
+            'cluster-info probes that contact the server and then refuse compatibility must be loud refusal evidence, not silent success',
+        );
+        $this->assertStringContainsString(
+            'artifact_refusal_after_advertised_operation',
+            $runner,
+            'artifact refusals after an advertised cluster-info call must be distinguishable from server response success',
         );
         $this->assertStringContainsString(
             'selectCompatibilityGuardCapture',
