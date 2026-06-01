@@ -221,6 +221,10 @@ gate. A standalone runtime shard is evidence but not a full passing run
 by itself, and harnesses must probe runtime-published surfaces from the
 resolved package under test instead of assuming a command exists in every
 published Composer artifact.
+The host runner records the install and probe evidence for server, CLI,
+Python SDK, PHP workflow runtime, and Waterline in
+`published-artifact-install.json`; the install-only scenario cannot pass
+from runtime shard metadata alone.
 
 The `host_runner_contract` block is the machine-readable harness contract
 for that merge step. A replay host runner must emit one

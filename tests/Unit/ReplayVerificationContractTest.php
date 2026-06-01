@@ -388,12 +388,38 @@ class ReplayVerificationContractTest extends TestCase
         $hostRunner = $manifest['replay_conformance']['host_runner_contract'];
 
         $this->assertSame('required_for_passing_replay_conformance', $hostRunner['status']);
+        $this->assertSame('server', $hostRunner['runner_repository']);
+        $this->assertSame(
+            'scripts/conformance/replay-published-artifacts.sh',
+            $hostRunner['runner_path'],
+        );
+        $this->assertSame(
+            'scripts/conformance/replay-published-artifacts.sh --result-dir <result-dir>',
+            $hostRunner['runner_command'],
+        );
         $this->assertSame(
             ReplayVerificationContract::REPLAY_CONFORMANCE_RESULT_SCHEMA,
             $hostRunner['result_schema'],
         );
+        foreach ([
+            'pins.json',
+            'run-metadata.json',
+            'published-artifact-install.json',
+            'python-replay-shard.json',
+            'php-replay-shard.json',
+            'replay-conformance-result.json',
+            'replay-conformance-record.json',
+        ] as $file) {
+            $this->assertContains($file, $hostRunner['result_files']);
+        }
+        $this->assertTrue($hostRunner['must_execute_against_published_artifacts']);
+        $this->assertTrue($hostRunner['must_record_runner_blocked_false_for_product_evidence']);
         $this->assertTrue($hostRunner['must_probe_runtime_published_surfaces']);
         $this->assertTrue($hostRunner['must_emit_result_for_every_required_scenario']);
+        $this->assertSame(
+            ['workflow-php-runtime-shard', 'sdk-python-runtime-shard'],
+            $hostRunner['must_compose_runtime_shards'],
+        );
         $this->assertSame('non_passing', $hostRunner['smoke_summary_only_outcome']);
         $this->assertSame('not_covered', $hostRunner['unexecuted_required_scenario_status']);
 
@@ -427,6 +453,24 @@ class ReplayVerificationContractTest extends TestCase
         foreach (['completed_history_replay', 'worker_restart_replay', 'adversarial_replay', 'in_flight_timing'] as $section) {
             $this->assertContains($section, $hostRunner['merge_policy']['requires_sections']);
         }
+        foreach ([
+            'published-artifact-install',
+            'workflow-php-runtime-shard',
+            'sdk-python-runtime-shard',
+            'code-divergence-refusal',
+            'server-history-mutation-refusal',
+            'in-flight-signal-restart-timing',
+        ] as $scope) {
+            $this->assertContains($scope, $hostRunner['required_execution_scopes']);
+        }
+        $this->assertSame(
+            'conformance_runner_coverage_gap',
+            $hostRunner['routing_policy']['missing_required_scenario']['finding_type'],
+        );
+        $this->assertSame(
+            'runner_gap',
+            $hostRunner['routing_policy']['host_environment_failure']['finding_type'],
+        );
     }
 
     public function test_replay_conformance_publishes_an_enforceable_result_gate(): void
