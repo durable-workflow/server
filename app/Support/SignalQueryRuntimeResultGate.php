@@ -796,6 +796,8 @@ final class SignalQueryRuntimeResultGate
             if ($scenarioId === 'ordered_signal_delivery') {
                 $expectedTotal = $requirement['expected_total_for_1_through_10'] ?? null;
                 $queriedTotal = self::evidenceValue($result, $scenarioResult, $scenarioId, 'queried_total');
+                $expectedHistoryOrder = self::arrayValue($requirement, 'expected_history_signal_order');
+                $historyOrder = self::evidenceValue($result, $scenarioResult, $scenarioId, 'history_signal_order');
 
                 if (is_numeric($expectedTotal) && is_numeric($queriedTotal)
                     && (int) $queriedTotal !== (int) $expectedTotal) {
@@ -804,6 +806,15 @@ final class SignalQueryRuntimeResultGate
                         'scenario_id' => $scenarioId,
                         'expected_total' => (int) $expectedTotal,
                         'actual_total' => (int) $queriedTotal,
+                    ];
+                }
+
+                if ($expectedHistoryOrder !== null && $historyOrder !== null && $historyOrder !== $expectedHistoryOrder) {
+                    $failures[] = [
+                        'code' => 'unexpected_ordered_signal_history_order',
+                        'scenario_id' => $scenarioId,
+                        'expected_order' => $expectedHistoryOrder,
+                        'actual_order' => $historyOrder,
                     ];
                 }
             }

@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 6;
+    public const VERSION = 8;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -169,6 +169,7 @@ final class SignalQueryRuntimeContract
                         'history_signal_order',
                     ],
                     'expected_total_for_1_through_10' => 55,
+                    'expected_history_signal_order' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                 ],
                 'dedup_contract_observation' => [
                     'evidence' => [
@@ -260,6 +261,158 @@ final class SignalQueryRuntimeContract
                 'smoke_subset_outcome' => 'non_passing',
                 'unsupported_public_surface_outcome' => 'non_passing_with_root_cause_finding',
                 'runner_blocked_outcome' => 'non_passing_runner_blocked',
+            ],
+            'host_runner_contract' => [
+                'status' => 'required_for_passing_signal_query_conformance',
+                'runner_repository' => 'server',
+                'runner_path' => 'scripts/conformance/signals-queries-published-artifacts.sh',
+                'runner_command' => 'scripts/conformance/signals-queries-published-artifacts.sh --result-dir <result-dir>',
+                'result_schema' => self::RESULT_SCHEMA,
+                'result_files' => [
+                    'pins.json',
+                    'run-metadata.json',
+                    'signals-queries-result.json',
+                    'signals-queries-record.json',
+                    'signals-queries-findings.json',
+                ],
+                'must_execute_against_published_artifacts' => true,
+                'must_record_runner_blocked_false_for_product_evidence' => true,
+                'must_emit_focused_findings_for_uncovered_cells' => true,
+                'required_host_commands' => [
+                    'bash',
+                    'python3',
+                ],
+                'required_execution_scopes' => [
+                    'published_artifact_install',
+                    'python_worker_cli_and_sdk_smoke',
+                    'php_worker_mirror',
+                    'cross_language_client_matrix',
+                    'ordered_signal_delivery',
+                    'dedup_contract_observation',
+                    'replay_timing',
+                    'completed_run_handling',
+                    'unknown_handler_errors',
+                    'malformed_payload_errors',
+                    'waterline_observer_comparison',
+                ],
+                'evidence_shards' => [
+                    'published_artifact_install' => [
+                        'must_cover_scenarios' => [
+                            'published_artifact_install_only',
+                        ],
+                        'current_evidence_fields' => [
+                            'published_artifact_versions',
+                            'external_smoke_evidence',
+                        ],
+                        'finding_type_when_missing' => 'signal_query_published_artifact_install_uncovered',
+                        'owning_surface' => 'conformance_harness',
+                    ],
+                    'python_worker_cli_and_sdk_smoke' => [
+                        'must_cover_scenarios' => [
+                            'python_worker_cli_and_sdk_baseline',
+                        ],
+                        'current_evidence_fields' => [
+                            'python_worker_query_task_routing',
+                            'cli_signal_and_query',
+                            'sdk_python_signal_and_query',
+                            'immediate_repeat_query_consistency',
+                        ],
+                        'finding_type_when_missing' => 'signal_query_python_smoke_uncovered',
+                        'owning_surface' => 'sdk-python, cli, server',
+                    ],
+                    'ordered_signal_delivery' => [
+                        'must_cover_scenarios' => [
+                            'ordered_signal_delivery',
+                        ],
+                        'current_evidence_fields' => [
+                            'rapid_increment_inputs',
+                            'ten_signal_ordered_delivery_total',
+                            'history_signal_order',
+                        ],
+                        'finding_type_when_missing' => 'signal_query_ordered_delivery_uncovered',
+                        'owning_surface' => 'server',
+                    ],
+                    'dedup_contract_observation' => [
+                        'must_cover_scenarios' => [
+                            'dedup_contract_observation',
+                        ],
+                        'required_evidence_fields' => [
+                            'client_side_key_support',
+                            'documented_contract',
+                            'handler_observation_count',
+                        ],
+                        'finding_type_when_missing' => 'signal_query_dedup_contract_uncovered',
+                        'owning_surface' => 'server, sdk-python, workflow, cli, docs',
+                    ],
+                    'php_worker_mirror' => [
+                        'must_cover_scenarios' => [
+                            'php_worker_cli_and_sdk_baseline',
+                        ],
+                        'finding_type_when_missing' => 'signal_query_php_worker_mirror_uncovered',
+                        'owning_surface' => 'workflow',
+                    ],
+                    'cross_language_client_matrix' => [
+                        'must_cover_scenarios' => [
+                            'python_worker_php_facing_and_cli_clients',
+                            'php_worker_python_and_cli_clients',
+                        ],
+                        'finding_type_when_missing' => 'signal_query_cross_language_client_matrix_uncovered',
+                        'owning_surface' => 'workflow, sdk-python, cli',
+                    ],
+                    'replay_timing' => [
+                        'must_cover_scenarios' => [
+                            'signal_during_replay',
+                            'query_during_replay',
+                        ],
+                        'finding_type_when_missing' => 'signal_query_replay_timing_uncovered',
+                        'owning_surface' => 'workflow, sdk-python',
+                    ],
+                    'completed_run_handling' => [
+                        'must_cover_scenarios' => [
+                            'completed_run_signal_and_query',
+                        ],
+                        'finding_type_when_missing' => 'signal_query_completed_run_handling_uncovered',
+                        'owning_surface' => 'server, workflow, sdk-python, cli',
+                    ],
+                    'unknown_handler_errors' => [
+                        'must_cover_scenarios' => [
+                            'unknown_signal_and_query_errors',
+                        ],
+                        'finding_type_when_missing' => 'signal_query_unknown_handler_errors_uncovered',
+                        'owning_surface' => 'server, workflow, sdk-python, cli',
+                    ],
+                    'malformed_payload_errors' => [
+                        'must_cover_scenarios' => [
+                            'malformed_signal_and_query_payloads',
+                        ],
+                        'finding_type_when_missing' => 'signal_query_adversarial_error_shapes_uncovered',
+                        'owning_surface' => 'server, workflow, sdk-python, cli',
+                    ],
+                    'waterline_observer_comparison' => [
+                        'must_cover_scenarios' => [
+                            'waterline_operator_visibility',
+                        ],
+                        'finding_type_when_missing' => 'signal_query_waterline_observer_comparison_uncovered',
+                        'owning_surface' => 'waterline',
+                    ],
+                ],
+                'routing_policy' => [
+                    'missing_required_scenario' => [
+                        'result_status' => 'not_covered',
+                        'finding_type' => 'conformance_runner_coverage_gap',
+                        'owner' => 'conformance_harness',
+                    ],
+                    'product_behavior_failure' => [
+                        'result_status' => 'fail',
+                        'finding_type' => 'product_contract_failure',
+                        'owner' => 'owning_surface_from_finding_policy',
+                    ],
+                    'unsupported_public_surface' => [
+                        'result_status' => 'unsupported',
+                        'finding_type' => 'unsupported_public_surface',
+                        'owner' => 'owning_surface_from_evidence_shard',
+                    ],
+                ],
             ],
             'result_gate' => SignalQueryRuntimeResultGate::spec(),
             'finding_policy' => [

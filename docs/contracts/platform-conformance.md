@@ -28,7 +28,7 @@ categories and runtime contracts:
 | Category | Source path | Status |
 | --- | --- | --- |
 | `worker_task_lifecycle` (server side) | `tests/Fixtures/` plus the per-route examples in `docs/contracts/external-task-input.md` and `docs/contracts/external-task-result.md` | stable |
-| `signal_query_runtime_contract` (server side) | `GET /api/cluster/info`'s `signal_query_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/signal-query-runtime-scenarios.json`, plus the signal/query control-plane routes documented in the protocol catalog | stable |
+| `signal_query_runtime_contract` (server side) | `GET /api/cluster/info`'s `signal_query_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/signal-query-runtime-scenarios.json`, `scripts/conformance/signals-queries-published-artifacts.sh`, plus the signal/query control-plane routes documented in the protocol catalog | stable |
 | `search_attribute_runtime_contract` (server side) | `GET /api/cluster/info`'s `search_attribute_runtime_contract` manifest, the search-attribute control-plane routes, workflow start metadata, workflow-task upsert command, workflow list query parser, and operator visibility surfaces | stable |
 | `schedules_runtime_contract` (server side) | `GET /api/cluster/info`'s `schedules_runtime_contract` manifest, the schedule control-plane routes, scheduler tick entrypoint, schedule history, CLI/SDK/PHP client surfaces, and cross-language dispatch behavior | stable |
 | `child_workflow_runtime_contract` (server side) | `GET /api/cluster/info`'s `child_workflow_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/child-workflow-runtime-scenarios.json`, plus the child scheduling, completion, failure, cancellation, replay, fan-out, and namespace behavior recorded by the worker protocol and history surfaces | stable |
@@ -44,6 +44,23 @@ Several categories the server is graded against also span client,
 runtime, observer, and documentation behavior in the `cli`, `sdk-python`,
 `workflow`, and `durable-workflow.github.io` repositories. The harness
 loads those companion fixtures alongside the server-owned manifests.
+
+The server repo also ships a source-free signals/queries runner at
+`scripts/conformance/signals-queries-published-artifacts.sh`. Host
+conformance runners can discover that handoff from `GET /api/cluster/info`
+under `signal_query_runtime_contract.host_runner_contract` and invoke it
+against the current published server image, CLI release, Python SDK, PHP
+workflow runtime, and Waterline package versions. The runner records the
+Python/CLI smoke evidence only when an external smoke evidence file carries
+the exact advertised fields for CLI signal/query, SDK signal/query, repeat
+query consistency, and ordered ten-signal delivery. All unexecuted parity
+cells remain non-passing `not_covered` scenario results with focused findings
+for the ordered-delivery proof, dedup contract observation, PHP worker mirror,
+cross-language client matrix, replay timing, completed-run handling,
+unknown-handler errors, malformed-payload errors, and Waterline observer
+comparison. Product behavior failures route to the owning surface through the
+manifest's `finding_policy`; coverage gaps route to the conformance harness
+instead of being counted as product passes.
 
 The server repo also ships a source-free saga runner at
 `scripts/conformance/sagas-published-artifacts.sh`. Host conformance

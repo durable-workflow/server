@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(6, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(8, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -255,6 +255,168 @@ class SignalQueryRuntimeContractTest extends TestCase
         );
         $this->assertNotContains('published_artifact_versions_are_recorded', $resultGate['pass_requires']);
         $this->assertSame('non_passing', $resultGate['smoke_subset_outcome']);
+    }
+
+    public function test_manifest_publishes_host_runner_contract_for_split_out_evidence(): void
+    {
+        $hostRunner = SignalQueryRuntimeContract::manifest()['host_runner_contract'];
+
+        $this->assertSame(
+            'required_for_passing_signal_query_conformance',
+            $hostRunner['status'],
+        );
+        $this->assertSame(
+            'scripts/conformance/signals-queries-published-artifacts.sh',
+            $hostRunner['runner_path'],
+        );
+        $this->assertSame(
+            'scripts/conformance/signals-queries-published-artifacts.sh --result-dir <result-dir>',
+            $hostRunner['runner_command'],
+        );
+        $this->assertTrue($hostRunner['must_execute_against_published_artifacts']);
+        $this->assertTrue($hostRunner['must_record_runner_blocked_false_for_product_evidence']);
+        $this->assertTrue($hostRunner['must_emit_focused_findings_for_uncovered_cells']);
+        $this->assertSame(['bash', 'python3'], $hostRunner['required_host_commands']);
+
+        foreach ($hostRunner['required_execution_scopes'] as $scope) {
+            $this->assertContains($scope, $hostRunner['required_execution_scopes']);
+            $this->assertArrayHasKey($scope, $hostRunner['evidence_shards']);
+            $this->assertArrayHasKey('finding_type_when_missing', $hostRunner['evidence_shards'][$scope]);
+        }
+
+        $this->assertNotContains('ordered_delivery_and_dedup', $hostRunner['required_execution_scopes']);
+        $this->assertContains('ordered_signal_delivery', $hostRunner['required_execution_scopes']);
+        $this->assertContains('dedup_contract_observation', $hostRunner['required_execution_scopes']);
+        $this->assertNotContains('adversarial_error_shapes', $hostRunner['required_execution_scopes']);
+        $this->assertContains('unknown_handler_errors', $hostRunner['required_execution_scopes']);
+        $this->assertContains('malformed_payload_errors', $hostRunner['required_execution_scopes']);
+
+        $this->assertSame(
+            ['dedup_contract_observation'],
+            $hostRunner['evidence_shards']['dedup_contract_observation']['must_cover_scenarios'],
+        );
+        $this->assertSame(
+            'signal_query_dedup_contract_uncovered',
+            $hostRunner['evidence_shards']['dedup_contract_observation']['finding_type_when_missing'],
+        );
+        $this->assertSame(
+            'signal_query_unknown_handler_errors_uncovered',
+            $hostRunner['evidence_shards']['unknown_handler_errors']['finding_type_when_missing'],
+        );
+        $this->assertSame(
+            [
+                'python_worker_query_task_routing',
+                'cli_signal_and_query',
+                'sdk_python_signal_and_query',
+                'immediate_repeat_query_consistency',
+            ],
+            $hostRunner['evidence_shards']['python_worker_cli_and_sdk_smoke']['current_evidence_fields'],
+        );
+        $this->assertSame(
+            [
+                'rapid_increment_inputs',
+                'ten_signal_ordered_delivery_total',
+                'history_signal_order',
+            ],
+            $hostRunner['evidence_shards']['ordered_signal_delivery']['current_evidence_fields'],
+        );
+
+        $this->assertSame(
+            'conformance_runner_coverage_gap',
+            $hostRunner['routing_policy']['missing_required_scenario']['finding_type'],
+        );
+        $this->assertContains(
+            'signals-queries-result.json',
+            $hostRunner['result_files'],
+        );
+        $this->assertContains(
+            'signals-queries-findings.json',
+            $hostRunner['result_files'],
+        );
+    }
+
+    public function test_host_runner_script_names_every_remaining_parity_split_out(): void
+    {
+        $source = (string) file_get_contents(
+            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+        );
+
+        foreach ([
+            'signal_query_published_artifact_install_uncovered',
+            'signal_query_python_smoke_uncovered',
+            'signal_query_ordered_delivery_uncovered',
+            'signal_query_dedup_contract_uncovered',
+            'signal_query_php_worker_mirror_uncovered',
+            'signal_query_cross_language_client_matrix_uncovered',
+            'signal_query_replay_timing_uncovered',
+            'signal_query_completed_run_handling_uncovered',
+            'signal_query_unknown_handler_errors_uncovered',
+            'signal_query_adversarial_error_shapes_uncovered',
+            'signal_query_waterline_observer_comparison_uncovered',
+            'runner_blocked": False',
+            'signals-queries-result.json',
+            'signals-queries-findings.json',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $source);
+        }
+    }
+
+    public function test_host_runner_requires_exact_smoke_fields_before_marking_smoke_scenarios_pass(): void
+    {
+        $result = $this->runSignalQueryHostRunner([
+            'sdk-python' => true,
+            'python_worker_query_task_routing' => true,
+            'cli_signal_and_query' => false,
+            'sdk_python_signal_and_query' => true,
+            'immediate_repeat_query_consistency' => false,
+            'ten_signal_ordered_delivery_total' => 55,
+        ]);
+
+        $this->assertSame('pass', $result['scenario_results']['published_artifact_install_only']['status']);
+        $this->assertSame('not_covered', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
+        $this->assertSame('not_covered', $result['scenario_results']['ordered_signal_delivery']['status']);
+        $this->assertContains('signal_query_python_smoke_uncovered', array_column($result['findings'], 'type'));
+        $this->assertContains('signal_query_ordered_delivery_uncovered', array_column($result['findings'], 'type'));
+    }
+
+    public function test_host_runner_requires_exact_history_signal_order_before_marking_ordered_delivery_pass(): void
+    {
+        $result = $this->runSignalQueryHostRunner([
+            'python_worker_query_task_routing' => true,
+            'cli_signal_and_query' => true,
+            'sdk_python_signal_and_query' => true,
+            'immediate_repeat_query_consistency' => true,
+            'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            'ten_signal_ordered_delivery_total' => 55,
+            'history_signal_order' => [1, 2, 3, 5, 4, 6, 7, 8, 9, 10],
+        ]);
+
+        $this->assertSame('pass', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
+        $this->assertSame('not_covered', $result['scenario_results']['ordered_signal_delivery']['status']);
+        $this->assertContains('signal_query_ordered_delivery_uncovered', array_column($result['findings'], 'type'));
+    }
+
+    public function test_host_runner_marks_only_complete_smoke_fields_as_covered(): void
+    {
+        $result = $this->runSignalQueryHostRunner([
+            'python_worker_query_task_routing' => true,
+            'cli_signal_and_query' => true,
+            'sdk_python_signal_and_query' => true,
+            'immediate_repeat_query_consistency' => true,
+            'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            'ten_signal_ordered_delivery_total' => 55,
+            'history_signal_order' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        ]);
+
+        $this->assertSame('pass', $result['scenario_results']['published_artifact_install_only']['status']);
+        $this->assertSame('pass', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
+        $this->assertSame('pass', $result['scenario_results']['ordered_signal_delivery']['status']);
+        $this->assertSame('not_covered', $result['scenario_results']['dedup_contract_observation']['status']);
+        $this->assertSame(
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            $result['scenario_results']['ordered_signal_delivery']['observed_outputs']['history_signal_order'],
+        );
+        $this->assertContains('signal_query_dedup_contract_uncovered', array_column($result['findings'], 'type'));
     }
 
     public function test_result_gate_rejects_python_smoke_subset_even_when_the_smoke_passes(): void
@@ -740,6 +902,22 @@ class SignalQueryRuntimeContractTest extends TestCase
         );
     }
 
+    public function test_result_gate_rejects_wrong_ordered_delivery_history_order(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['ordered_signal_delivery']['observed_outputs']['history_signal_order'] = [
+            1, 2, 3, 5, 4, 6, 7, 8, 9, 10,
+        ];
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'unexpected_ordered_signal_history_order',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
     public function test_result_gate_accepts_a_complete_passing_matrix(): void
     {
         $evaluation = SignalQueryRuntimeResultGate::evaluate($this->completeSignalQueryResult());
@@ -770,6 +948,75 @@ class SignalQueryRuntimeContractTest extends TestCase
         }
 
         return $fields;
+    }
+
+    /**
+     * @param array<string, mixed> $smokeEvidence
+     *
+     * @return array<string, mixed>
+     */
+    private function runSignalQueryHostRunner(array $smokeEvidence): array
+    {
+        $root = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir() . '/dw-signals-queries-test-' . bin2hex(random_bytes(6));
+        mkdir($resultDir);
+
+        try {
+            $smokePath = $resultDir . '/smoke.json';
+            file_put_contents($smokePath, json_encode($smokeEvidence, JSON_THROW_ON_ERROR));
+
+            $command = implode(' ', [
+                'DW_SERVER_VERSION=0.2.224',
+                'DW_CLI_VERSION=0.1.74',
+                'DW_PYTHON_SDK_VERSION=0.4.84',
+                'DW_WORKFLOW_PHP_VERSION=2.0.0-alpha.187',
+                'DW_WATERLINE_VERSION=2.0.0-alpha.69',
+                'DW_SIGNALS_QUERIES_SMOKE_EVIDENCE=' . escapeshellarg($smokePath),
+                escapeshellarg($root . '/scripts/conformance/signals-queries-published-artifacts.sh'),
+                '--result-dir',
+                escapeshellarg($resultDir),
+            ]);
+
+            $output = [];
+            $exitCode = 0;
+            exec($command . ' 2>&1', $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+
+            $resultPath = $resultDir . '/signals-queries-result.json';
+            $this->assertFileExists($resultPath);
+
+            return json_decode((string) file_get_contents($resultPath), true, 512, JSON_THROW_ON_ERROR);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    private function removeDirectory(string $directory): void
+    {
+        if (! is_dir($directory)) {
+            return;
+        }
+
+        $items = scandir($directory);
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $path = $directory . DIRECTORY_SEPARATOR . $item;
+            if (is_dir($path) && ! is_link($path)) {
+                $this->removeDirectory($path);
+            } else {
+                unlink($path);
+            }
+        }
+
+        rmdir($directory);
     }
 
     /**
