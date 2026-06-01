@@ -71,6 +71,7 @@ final class WorkerVersioningRuntimeResultGate
                 'each_pass_scenario_has_observed_outputs',
                 'each_pass_scenario_has_scenario_specific_evidence',
                 'compatible_replay_counts_prove_zero_incompatible_delivery',
+                'cross_language_php_python_counts_prove_zero_incompatible_delivery',
                 'each_non_pass_scenario_has_linked_findings',
                 'run_timestamps_outcome_and_finding_links_are_recorded',
                 'overall_outcome_matches_gate_status',
@@ -864,6 +865,7 @@ final class WorkerVersioningRuntimeResultGate
         }
 
         array_push($failures, ...self::routingInvariantFailures($scenarioResults));
+        array_push($failures, ...self::crossLanguageInvariantFailures($scenarioResults));
 
         return $failures;
     }
@@ -995,6 +997,38 @@ final class WorkerVersioningRuntimeResultGate
         $observedOutputs = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs']) ?? [];
 
         return array_replace($scenarioResult, $observedOutputs);
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $scenarioResults
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function crossLanguageInvariantFailures(array $scenarioResults): array
+    {
+        $evidence = self::passingScenarioEvidence($scenarioResults, 'cross_language_php_python_pinning');
+
+        if ($evidence === null) {
+            return [];
+        }
+
+        $failures = [];
+
+        self::requireZeroCount(
+            $failures,
+            $evidence,
+            'cross_language_php_python_pinning',
+            'php_v1_to_python_v2_incompatible_delivery_count',
+        );
+
+        self::requireZeroCount(
+            $failures,
+            $evidence,
+            'cross_language_php_python_pinning',
+            'python_v1_to_php_v2_incompatible_delivery_count',
+        );
+
+        return $failures;
     }
 
     /**

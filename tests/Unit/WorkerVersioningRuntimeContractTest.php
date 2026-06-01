@@ -94,6 +94,10 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'compatible_replay_and_cache_eviction_have_zero_incompatible_delivery',
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
+        $this->assertContains(
+            'cross_language_php_python_delivery_counts_are_zero',
+            $manifest['coverage_gate']['passing_outcome_requires'],
+        );
     }
 
     public function test_scenario_manifest_source_path_is_published_and_matches_contract(): void
@@ -266,6 +270,74 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             $evaluation['gate_failures'],
             static fn (array $failure): bool => ($failure['code'] ?? null) === 'replay_worker_build_id_mismatch'
                 && ($failure['scenario_id'] ?? null) === 'replay_across_cache_eviction',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($failures);
+    }
+
+    public function test_result_gate_rejects_cross_language_pinning_without_directional_counts(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        unset(
+            $result['scenario_results']['cross_language_php_python_pinning']['observed_outputs'][
+                'php_v1_to_python_v2_incompatible_delivery_count'
+            ],
+            $result['scenario_results']['cross_language_php_python_pinning']['observed_outputs'][
+                'python_v1_to_php_v2_incompatible_delivery_count'
+            ]
+        );
+        $result['scenario_results']['cross_language_php_python_pinning']['observed_outputs']['cross_language_delivery'] = [
+            'incompatible_delivery_count' => 0,
+        ];
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_scenario_required_field'
+                && ($failure['scenario_id'] ?? null) === 'cross_language_php_python_pinning'
+                && in_array($failure['field'] ?? null, [
+                    'php_v1_to_python_v2_incompatible_delivery_count',
+                    'python_v1_to_php_v2_incompatible_delivery_count',
+                ], true),
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertCount(2, $failures);
+    }
+
+    public function test_result_gate_rejects_cross_language_when_php_v1_reaches_python_v2(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['scenario_results']['cross_language_php_python_pinning']['observed_outputs'][
+            'php_v1_to_python_v2_incompatible_delivery_count'
+        ] = 1;
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'incompatible_delivery_count_nonzero'
+                && ($failure['scenario_id'] ?? null) === 'cross_language_php_python_pinning'
+                && ($failure['field'] ?? null) === 'php_v1_to_python_v2_incompatible_delivery_count',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($failures);
+    }
+
+    public function test_result_gate_rejects_cross_language_when_python_v1_reaches_php_v2(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['scenario_results']['cross_language_php_python_pinning']['observed_outputs'][
+            'python_v1_to_php_v2_incompatible_delivery_count'
+        ] = 1;
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'incompatible_delivery_count_nonzero'
+                && ($failure['scenario_id'] ?? null) === 'cross_language_php_python_pinning'
+                && ($failure['field'] ?? null) === 'python_v1_to_php_v2_incompatible_delivery_count',
         ));
 
         $this->assertSame('non_passing', $evaluation['status']);
@@ -528,7 +600,24 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         $scenarioResults['cross_language_php_python_pinning']['observed_outputs'] += [
             'php_worker_build_id' => 'php-v1',
             'python_worker_build_id' => 'python-v2',
-            'cross_language_delivery' => ['incompatible_delivery_count' => 0],
+            'php_v1_to_python_v2_incompatible_delivery_count' => 0,
+            'python_v1_to_php_v2_incompatible_delivery_count' => 0,
+            'cross_language_delivery' => [
+                'cells' => [
+                    [
+                        'scenario' => 'php_v1_not_delivered_to_python_v2',
+                        'started_by' => 'workflow-php-v1',
+                        'incompatible_worker' => 'sdk-python-v2',
+                        'incompatible_delivery_count' => 0,
+                    ],
+                    [
+                        'scenario' => 'python_v1_not_delivered_to_php_v2',
+                        'started_by' => 'sdk-python-v1',
+                        'incompatible_worker' => 'workflow-php-v2',
+                        'incompatible_delivery_count' => 0,
+                    ],
+                ],
+            ],
         ];
         $scenarioResults['adversarial_no_version_bump']['observed_outputs'] += [
             'observed_behavior' => 'accepted_with_same_build_id',

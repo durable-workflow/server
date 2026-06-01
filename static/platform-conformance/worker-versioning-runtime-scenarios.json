@@ -159,6 +159,8 @@
       "required_fields": [
         "php_worker_build_id",
         "python_worker_build_id",
+        "php_v1_to_python_v2_incompatible_delivery_count",
+        "python_v1_to_php_v2_incompatible_delivery_count",
         "cross_language_delivery"
       ]
     },
@@ -389,6 +391,8 @@
       "pass_criteria": [
         "PHP-started v1 history is not delivered to Python v2",
         "Python-started v1 history is not delivered to PHP v2",
+        "the PHP v1 to Python v2 incompatible delivery count is recorded as zero",
+        "the Python v1 to PHP v2 incompatible delivery count is recorded as zero",
         "both runtimes agree on build-id compatibility semantics"
       ]
     },

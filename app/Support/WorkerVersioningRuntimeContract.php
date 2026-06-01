@@ -264,9 +264,11 @@ final class WorkerVersioningRuntimeContract
                     'required_fields' => [
                         'php_worker_build_id',
                         'python_worker_build_id',
+                        'php_v1_to_python_v2_incompatible_delivery_count',
+                        'python_v1_to_php_v2_incompatible_delivery_count',
                         'cross_language_delivery',
                     ],
-                    'expected_behavior' => 'PHP and Python workers honor the same build-id pinning contract on a shared queue',
+                    'expected_behavior' => 'PHP and Python workers honor the same build-id pinning contract on a shared queue and both directional incompatible-delivery counts are zero',
                 ],
                 'adversarial_no_version_bump' => [
                     'required_fields' => [
@@ -293,6 +295,7 @@ final class WorkerVersioningRuntimeContract
                     'no_compatible_worker_behavior_reported',
                     'cli_python_php_and_waterline_surfaces_reported',
                     'cross_language_php_python_cells_reported',
+                    'cross_language_php_python_delivery_counts_are_zero',
                     'adversarial_no_version_bump_reported',
                     'artifact_versions_match_latest_published_set',
                     'run_timestamps_outcome_and_finding_links_are_recorded',
