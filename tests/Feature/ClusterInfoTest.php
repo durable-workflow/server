@@ -735,6 +735,14 @@ class ClusterInfoTest extends TestCase
         $this->assertContains('shared', $contract['required_matrix']['namespaces']);
         $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
         $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
+        $this->assertSame(
+            'static/platform-conformance/namespace-runtime-scenarios.json',
+            $contract['scenario_manifest']['source_path'],
+        );
+        $this->assertSame(
+            PlatformConformanceSuite::VERSION,
+            $contract['scenario_manifest']['suite_version'],
+        );
         $this->assertContains('namespace_lifecycle_cleanup_and_recreate', $contract['required_scenarios']);
         $this->assertContains('nexus_explicit_cross_namespace_invocation', $contract['required_scenarios']);
         $this->assertContains('waterline_operator_namespace_visibility', $contract['required_scenarios']);

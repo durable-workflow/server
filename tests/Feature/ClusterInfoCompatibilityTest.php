@@ -285,6 +285,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'result_version',
                     'fixture_category',
                     'platform_conformance_suite_authority',
+                    'scenario_manifest',
                     'artifact_policy',
                     'scenario_statuses',
                     'topology',
@@ -292,6 +293,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'required_scenarios',
                     'scenario_requirements',
                     'coverage_gate',
+                    'host_runner_contract',
                     'result_gate',
                     'finding_policy',
                 ],
@@ -397,6 +399,14 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath(
                 'namespace_runtime_contract.platform_conformance_suite_authority',
                 PlatformConformanceSuite::SCHEMA,
+            )
+            ->assertJsonPath(
+                'namespace_runtime_contract.scenario_manifest.source_path',
+                'static/platform-conformance/namespace-runtime-scenarios.json',
+            )
+            ->assertJsonPath(
+                'namespace_runtime_contract.scenario_manifest.suite_version',
+                PlatformConformanceSuite::VERSION,
             )
             ->assertJsonPath('sdk_neutrality_contract.schema', SdkNeutralityContract::SCHEMA)
             ->assertJsonPath('sdk_neutrality_contract.version', SdkNeutralityContract::VERSION)

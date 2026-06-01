@@ -21,6 +21,18 @@ class NamespaceRuntimeContractTest extends TestCase
             PlatformConformanceSuite::SCHEMA,
             $manifest['platform_conformance_suite_authority'],
         );
+        $this->assertSame(
+            PlatformConformanceSuite::SCHEMA,
+            $manifest['scenario_manifest']['suite_schema'],
+        );
+        $this->assertSame(
+            PlatformConformanceSuite::VERSION,
+            $manifest['scenario_manifest']['suite_version'],
+        );
+        $this->assertSame(
+            'static/platform-conformance/namespace-runtime-scenarios.json',
+            $manifest['scenario_manifest']['source_path'],
+        );
 
         foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
@@ -74,6 +86,50 @@ class NamespaceRuntimeContractTest extends TestCase
             'reserved_namespace_name_refusal',
             'result_record_and_product_finding_routing',
         ], $manifest['required_scenarios']);
+    }
+
+    public function test_scenario_manifest_source_path_is_published_and_matches_contract(): void
+    {
+        $manifest = NamespaceRuntimeContract::manifest();
+        $scenarioManifestPath = dirname(__DIR__, 2) . '/' . $manifest['scenario_manifest']['source_path'];
+
+        $this->assertFileExists(
+            $scenarioManifestPath,
+            'cluster info must not advertise a namespace scenario manifest source path that is missing from the release tree',
+        );
+
+        $scenarioManifest = json_decode(
+            (string) file_get_contents($scenarioManifestPath),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+
+        $this->assertSame($manifest['scenario_manifest']['schema'], $scenarioManifest['schema']);
+        $this->assertSame($manifest['scenario_manifest']['category'], $scenarioManifest['category']);
+        $this->assertSame($manifest['scenario_manifest']['suite_schema'], $scenarioManifest['suite_schema']);
+        $this->assertSame($manifest['scenario_manifest']['suite_version'], $scenarioManifest['suite_version']);
+        $this->assertSame(PlatformConformanceSuite::VERSION, $scenarioManifest['suite_version']);
+        $this->assertSame($manifest['result_schema'], $scenarioManifest['result_schema']);
+        $this->assertSame($manifest['result_version'], $scenarioManifest['result_version']);
+        $this->assertSame($manifest['scenario_statuses'], $scenarioManifest['result_statuses']);
+        $this->assertSame($manifest['required_scenarios'], array_column($scenarioManifest['scenarios'], 'id'));
+        $this->assertSame(
+            $manifest['host_runner_contract']['runner_path'],
+            $scenarioManifest['host_runner_contract']['runner_path'],
+        );
+        $this->assertSame(
+            $manifest['host_runner_contract']['runner_command'],
+            $scenarioManifest['host_runner_contract']['runner_command'],
+        );
+
+        foreach ($manifest['scenario_requirements'] as $scenarioId => $requirements) {
+            $this->assertSame(
+                $requirements['evidence'],
+                $scenarioManifest['scenario_requirements'][$scenarioId]['required_fields'],
+                sprintf('public namespace scenario manifest required fields drifted for %s', $scenarioId),
+            );
+        }
     }
 
     public function test_manifest_keeps_smoke_only_coverage_non_passing(): void

@@ -1,0 +1,304 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 1,
+  "category": "namespace_runtime_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 15,
+  "description": "Public scenario manifest for Temporal-parity namespace conformance. Harnesses use these scenario ids and required fields when evaluating published Durable Workflow artifacts.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_schema": "durable-workflow.v2.namespace-runtime.result",
+  "result_version": 1,
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_resolved_versions": true,
+    "implementation_tests_are_not_sources": true
+  },
+  "common_result_evidence": [
+    "suite_version",
+    "scenario_id",
+    "status",
+    "generated_at",
+    "published_artifact_versions",
+    "namespace_topology",
+    "runtime_matrix",
+    "observed_outputs",
+    "linked_findings"
+  ],
+  "scenario_requirements": {
+    "published_artifact_install_only": {
+      "required_fields": [
+        "server_image",
+        "cli_release",
+        "workflow_php_package",
+        "sdk_python_package",
+        "waterline_artifact"
+      ]
+    },
+    "namespace_create_update_describe_and_list": {
+      "required_fields": [
+        "created_namespaces",
+        "updated_namespace",
+        "described_namespaces",
+        "listed_namespaces"
+      ]
+    },
+    "workflow_cross_namespace_visibility_isolation": {
+      "required_fields": [
+        "tenant_a_workflow",
+        "tenant_b_workflow",
+        "tenant_a_list_excludes_tenant_b",
+        "tenant_b_describe_tenant_a_denied"
+      ]
+    },
+    "workflow_cross_namespace_mutation_isolation": {
+      "required_fields": [
+        "same_namespace_signal_succeeds",
+        "same_namespace_cancel_succeeds",
+        "cross_namespace_signal_denied",
+        "cross_namespace_cancel_denied"
+      ]
+    },
+    "php_worker_task_queue_namespace_isolation": {
+      "required_fields": [
+        "tenant_a_worker_registration",
+        "tenant_b_worker_registration",
+        "tenant_a_delivery",
+        "tenant_b_delivery",
+        "cross_delivery_absent",
+        "workflow_php_shard_execution"
+      ]
+    },
+    "cli_namespace_context_and_default_scope": {
+      "required_fields": [
+        "explicit_namespace_json",
+        "explicit_namespace_human_output",
+        "default_scope_behavior"
+      ]
+    },
+    "sdk_namespace_selection_parity": {
+      "required_fields": [
+        "python_client_namespace",
+        "php_client_namespace",
+        "default_namespace_behavior",
+        "cross_namespace_lookup_denied"
+      ]
+    },
+    "search_attribute_schema_and_value_query_isolation": {
+      "required_fields": [
+        "schema_isolation",
+        "value_query_isolation",
+        "tenant_a_value",
+        "tenant_b_observed_result"
+      ]
+    },
+    "schedule_namespace_isolation": {
+      "required_fields": [
+        "tenant_a_schedule",
+        "tenant_b_schedule",
+        "tenant_a_list_excludes_tenant_b",
+        "cross_namespace_schedule_mutation_denied"
+      ]
+    },
+    "namespace_lifecycle_cleanup_and_recreate": {
+      "required_fields": [
+        "deleted_namespace",
+        "workflow_cleanup",
+        "schedule_cleanup",
+        "search_attribute_cleanup",
+        "worker_registration_cleanup",
+        "recreate_state_empty",
+        "external_payload_contexts_checked"
+      ]
+    },
+    "waterline_operator_namespace_visibility": {
+      "required_fields": [
+        "tenant_a_scoped_views",
+        "tenant_b_scoped_views",
+        "detail_namespace_identity",
+        "unscoped_view_authority",
+        "api_captures",
+        "operator_surface_matrix"
+      ]
+    },
+    "nexus_explicit_cross_namespace_invocation": {
+      "required_fields": [
+        "service_endpoint_namespace",
+        "caller_namespaces",
+        "target_namespace",
+        "successful_results",
+        "direct_access_without_nexus_blocked"
+      ]
+    },
+    "reserved_namespace_name_refusal": {
+      "required_fields": [
+        "refused_names",
+        "typed_errors",
+        "valid_control_name_accepted",
+        "stored_namespace_names"
+      ]
+    },
+    "result_record_and_product_finding_routing": {
+      "required_fields": [
+        "artifact_versions_recorded",
+        "timestamps_recorded",
+        "outcome_recorded",
+        "finding_links_recorded",
+        "product_finding_routes_checked"
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": "published_artifact_install_only",
+      "title": "Published artifact install only",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ]
+    },
+    {
+      "id": "namespace_create_update_describe_and_list",
+      "title": "Namespace create, update, describe, and list",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk"
+      ]
+    },
+    {
+      "id": "workflow_cross_namespace_visibility_isolation",
+      "title": "Workflow cross-namespace visibility isolation",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ]
+    },
+    {
+      "id": "workflow_cross_namespace_mutation_isolation",
+      "title": "Workflow cross-namespace mutation isolation",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "cli_json_client"
+      ]
+    },
+    {
+      "id": "php_worker_task_queue_namespace_isolation",
+      "title": "PHP worker task-queue namespace isolation",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ]
+    },
+    {
+      "id": "cli_namespace_context_and_default_scope",
+      "title": "CLI namespace context and default scope",
+      "claim_targets": [
+        "cli_json_client",
+        "standalone_server"
+      ]
+    },
+    {
+      "id": "sdk_namespace_selection_parity",
+      "title": "SDK namespace selection parity",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ]
+    },
+    {
+      "id": "search_attribute_schema_and_value_query_isolation",
+      "title": "Search-attribute schema and value query isolation",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk"
+      ]
+    },
+    {
+      "id": "schedule_namespace_isolation",
+      "title": "Schedule namespace isolation",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client"
+      ]
+    },
+    {
+      "id": "namespace_lifecycle_cleanup_and_recreate",
+      "title": "Namespace lifecycle cleanup and recreate",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk"
+      ]
+    },
+    {
+      "id": "waterline_operator_namespace_visibility",
+      "title": "Waterline operator namespace visibility",
+      "claim_targets": [
+        "waterline_contract_surface"
+      ]
+    },
+    {
+      "id": "nexus_explicit_cross_namespace_invocation",
+      "title": "Explicit Nexus cross-namespace invocation",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ]
+    },
+    {
+      "id": "reserved_namespace_name_refusal",
+      "title": "Reserved namespace name refusal",
+      "claim_targets": [
+        "standalone_server",
+        "cli_json_client",
+        "official_sdk"
+      ]
+    },
+    {
+      "id": "result_record_and_product_finding_routing",
+      "title": "Result record and product finding routing",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ]
+    }
+  ],
+  "host_runner_contract": {
+    "status": "required_for_passing_namespace_conformance",
+    "runner_repository": "server",
+    "runner_path": "scripts/conformance/namespaces-published-artifacts.sh",
+    "runner_command": "scripts/conformance/namespaces-published-artifacts.sh --result-dir <result-dir>",
+    "result_schema": "durable-workflow.v2.namespace-runtime.result",
+    "must_execute_against_published_artifacts": true,
+    "must_emit_result_for_every_required_scenario": true,
+    "smoke_summary_only_outcome": "non_passing",
+    "unexecuted_required_scenario_status": "not_covered",
+    "coverage_gap_finding_type": "conformance_runner_coverage_gap",
+    "coverage_gap_owner": "conformance_harness",
+    "result_files": [
+      "pins.json",
+      "run-metadata.json",
+      "artifact-install-evidence.json",
+      "namespaces-result.json",
+      "namespaces-record.json"
+    ]
+  }
+}
