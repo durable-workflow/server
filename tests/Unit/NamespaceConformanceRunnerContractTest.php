@@ -1,0 +1,358 @@
+<?php
+
+namespace Tests\Unit;
+
+use App\Support\NamespaceRuntimeContract;
+use App\Support\NamespaceRuntimeResultGate;
+use PHPUnit\Framework\TestCase;
+
+class NamespaceConformanceRunnerContractTest extends TestCase
+{
+    public function test_runner_handoff_names_full_namespace_surface(): void
+    {
+        $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            'Usage: namespaces-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--keep-run-root[=1|true]]',
+            $source,
+        );
+        $this->assertStringContainsString('durable-workflow.v2.namespace-runtime.result', $source);
+        $this->assertStringContainsString('workflow:v2:namespace-conformance', $source);
+        $this->assertStringContainsString('waterline:namespace-conformance', $source);
+        $this->assertStringContainsString('DW_NAMESPACES_WORKFLOW_PHP_RESULT  Required JSON report', $source);
+        $this->assertStringContainsString('load_required_shard', $source);
+        $this->assertStringContainsString('workflow_php_shard_execution', $source);
+        $this->assertStringContainsString('required {scope} report was not supplied', $source);
+        $this->assertStringContainsString('validate_shard_report', $source);
+        $this->assertStringContainsString('artifact_version_mismatches', $source);
+        $this->assertStringContainsString('WORKFLOW_PHP_REQUIRED_SCENARIOS = [', $source);
+        $this->assertStringContainsString('"namespace_create_update_describe_and_list",', $source);
+        $this->assertStringContainsString('"sdk_namespace_selection_parity",', $source);
+        $this->assertStringContainsString('"php_worker_task_queue_namespace_isolation",', $source);
+
+        foreach ([
+            'published_artifact_install_only',
+            'namespace_create_update_describe_and_list',
+            'workflow_cross_namespace_visibility_isolation',
+            'workflow_cross_namespace_mutation_isolation',
+            'php_worker_task_queue_namespace_isolation',
+            'cli_namespace_context_and_default_scope',
+            'sdk_namespace_selection_parity',
+            'search_attribute_schema_and_value_query_isolation',
+            'schedule_namespace_isolation',
+            'namespace_lifecycle_cleanup_and_recreate',
+            'waterline_operator_namespace_visibility',
+            'nexus_explicit_cross_namespace_invocation',
+            'reserved_namespace_name_refusal',
+            'result_record_and_product_finding_routing',
+        ] as $scenario) {
+            $this->assertStringContainsString($scenario, $source);
+        }
+
+        foreach ([
+            'namespace_lifecycle_cleanup',
+            'nexus_cross_namespace',
+            'cli_namespace_behavior',
+            'sdk_namespace_selection',
+            'php_worker_behavior',
+            'waterline_operator_visibility',
+            'search_attribute_value_query_isolation',
+        ] as $section) {
+            $this->assertStringContainsString($section, $source);
+        }
+    }
+
+    public function test_runner_validates_attached_shard_scope_and_artifact_versions_before_import(): void
+    {
+        $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            'REQUIRED_SHARD_ARTIFACTS = ["server", "cli", "workflow-php", "sdk-python", "waterline"]',
+            $source,
+        );
+        $this->assertStringContainsString('def validate_shard_report(', $source);
+        $this->assertStringContainsString('coverage_scope != scope', $source);
+        $this->assertStringContainsString('shard_artifact_versions(payload)', $source);
+        $this->assertStringContainsString(
+            'report artifact_versions did not match resolved pins',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'run {command} with the artifact-version values from pins.json',
+            $source,
+        );
+        $this->assertStringContainsString(
+            'waterline-operator-namespace-shard',
+            $source,
+            'Waterline shard reports must be scope-validated before their scenario row is imported.',
+        );
+        $this->assertStringContainsString(
+            '"workflow:v2:namespace-conformance",',
+            $source,
+        );
+        $this->assertStringContainsString(
+            '"waterline:namespace-conformance",',
+            $source,
+        );
+    }
+
+    public function test_runner_requires_all_workflow_php_namespace_shard_rows_before_passing_php_backed_cells(): void
+    {
+        $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
+
+        $this->assertStringContainsString('def load_workflow_php_shard(', $source);
+        $this->assertStringContainsString('for scenario_id in WORKFLOW_PHP_REQUIRED_SCENARIOS:', $source);
+        $this->assertStringContainsString('workflow_php_items.get("namespace_create_update_describe_and_list")', $source);
+        $this->assertStringContainsString('workflow_php_items.get("sdk_namespace_selection_parity")', $source);
+        $this->assertStringContainsString('workflow_php_items.get("php_worker_task_queue_namespace_isolation")', $source);
+        $this->assertStringContainsString('"workflow_php_namespace_crud": scenario_observed_outputs(crud_php_item)', $source);
+        $this->assertStringContainsString('"php_client_namespace": sdk_php_outputs.get("php_client_namespace")', $source);
+        $this->assertStringContainsString('"covered_scenarios": sorted(items.keys())', $source);
+        $this->assertStringNotContainsString('"php_client_namespace": "workflow:v2:namespace-conformance"', $source);
+    }
+
+    public function test_runner_exercises_cross_namespace_schedule_mutation_not_only_describe(): void
+    {
+        $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
+
+        $this->assertStringContainsString('sched_b_pause_a = request(', $source);
+        $this->assertStringContainsString('"POST"', $source);
+        $this->assertStringContainsString('f"/schedules/{sched_a_id}/pause"', $source);
+        $this->assertStringContainsString('"cross_namespace_schedule_mutation_denied": sched_b_pause_a', $source);
+        $this->assertStringContainsString('"cross_namespace_schedule_describe_denied": sched_b_describe_a', $source);
+        $this->assertStringNotContainsString('"cross_namespace_schedule_mutation_denied": sched_b_describe_a', $source);
+    }
+
+    public function test_runner_records_non_source_published_artifact_policy(): void
+    {
+        $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
+
+        $this->assertStringContainsString('local_product_source_checkouts_used', $source);
+        $this->assertStringContainsString('runnerBlocked', $source);
+        $this->assertStringContainsString('artifactVersions', $source);
+        $this->assertStringContainsString('durableworkflow/server', $source);
+        $this->assertStringContainsString('durable-workflow/cli', $source);
+        $this->assertStringContainsString('durable-workflow==', $source);
+        $this->assertStringContainsString('durable-workflow/workflow', $source);
+        $this->assertStringContainsString('durable-workflow/waterline', $source);
+        $this->assertStringContainsString('"status": workflow_php_execution["status"]', $source);
+        $this->assertStringContainsString('"namespace_shard_execution": workflow_php_execution', $source);
+    }
+
+    public function test_runner_completed_non_pass_output_uses_contract_outcome_token(): void
+    {
+        $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            'outcome = "pass" if all(item["status"] == "pass" for item in ordered_results) else "non_passing"',
+            $source,
+            'completed namespace runs with missing shards or unsupported surfaces must emit a result-gate outcome token',
+        );
+        $this->assertStringNotContainsString(
+            'outcome = "pass" if all(item["status"] == "pass" for item in ordered_results) else "fail"',
+            $source,
+            'fail is not an advertised namespace coverage_gate outcome',
+        );
+    }
+
+    public function test_completed_non_pass_runner_output_is_gate_conformant(): void
+    {
+        $scenarioResults = [];
+        foreach (NamespaceRuntimeContract::manifest()['required_scenarios'] as $scenarioId) {
+            $scenarioResults[$scenarioId] = [
+                'scenario_id' => $scenarioId,
+                'status' => 'pass',
+                'observed_outputs' => ['scenario' => $scenarioId],
+            ];
+        }
+
+        $scenarioResults['waterline_operator_namespace_visibility'] = [
+            'scenario_id' => 'waterline_operator_namespace_visibility',
+            'status' => 'unsupported',
+            'observed_outputs' => [
+                'shard_command' => 'waterline:namespace-conformance',
+            ],
+            'linked_findings' => [
+                [
+                    'scenario_id' => 'waterline_operator_namespace_visibility',
+                    'owning_surface' => 'waterline',
+                    'observed_behavior' => 'Waterline namespace shard was not supplied to this runner invocation',
+                    'expected_behavior' => 'Waterline namespace shard runs against the published artifact tuple',
+                    'next_acceptance_criterion' => 'run the published Waterline namespace shard and attach its report',
+                    'priority' => 'P1',
+                ],
+            ],
+        ];
+
+        $result = [
+            'schema' => NamespaceRuntimeContract::RESULT_SCHEMA,
+            'schema_version' => NamespaceRuntimeContract::RESULT_VERSION,
+            'category' => 'namespace_runtime_contract',
+            'outcome' => 'non_passing',
+            'runner_blocked' => false,
+            'started_at' => '2026-06-01T09:00:00Z',
+            'finished_at' => '2026-06-01T09:05:00Z',
+            'generated_at' => '2026-06-01T09:05:00Z',
+            'artifact_versions' => [
+                'server' => '0.2.208',
+                'cli' => '0.1.71',
+                'workflow' => '2.0.0-alpha.187',
+                'workflow-php' => '2.0.0-alpha.187',
+                'sdk-python' => '0.4.83',
+                'waterline' => '2.0.0-alpha.69',
+            ],
+            'namespace_topology' => [
+                'namespaces' => ['tenant-a', 'tenant-b', 'shared'],
+            ],
+            'runtime_matrix' => [
+                'runtimes' => ['workflow-php', 'sdk-python'],
+                'client_paths' => ['cli', 'sdk-python', 'workflow-php-sdk'],
+                'observer_paths' => ['waterline-list', 'waterline-detail', 'waterline-operator-api'],
+            ],
+            'scenario_results' => $scenarioResults,
+            'findings' => $scenarioResults['waterline_operator_namespace_visibility']['linked_findings'],
+            'finding_links' => [
+                'waterline_operator_namespace_visibility' =>
+                    $scenarioResults['waterline_operator_namespace_visibility']['linked_findings'],
+            ],
+        ];
+
+        $evaluation = NamespaceRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotContains('invalid_declared_outcome', $failureCodes);
+        $this->assertNotContains('declared_outcome_status_mismatch', $failureCodes);
+    }
+
+    public function test_runner_blocked_output_uses_gate_conformant_declared_outcome(): void
+    {
+        if (! is_file('/bin/bash')) {
+            $this->markTestSkipped('bash is required to exercise the namespace runner handoff.');
+        }
+
+        $python = trim((string) shell_exec('command -v python3 2>/dev/null'));
+        if ($python === '') {
+            $this->markTestSkipped('python3 is required to exercise blocked namespace runner output.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $scriptPath = $repoRoot.'/scripts/conformance/namespaces-published-artifacts.sh';
+        $tempRoot = sys_get_temp_dir().'/dw-namespaces-blocked-'.bin2hex(random_bytes(6));
+        $binDir = $tempRoot.'/bin';
+        $resultDir = $tempRoot.'/result';
+        $runRoot = $tempRoot.'/run';
+
+        try {
+            mkdir($binDir, 0777, true);
+            mkdir($resultDir, 0777, true);
+
+            foreach (['date', 'dirname', 'mkdir'] as $command) {
+                $this->linkSystemCommand($binDir, $command);
+            }
+            symlink($python, $binDir.'/python3');
+
+            $process = proc_open(
+                ['/bin/bash', $scriptPath, '--result-dir', $resultDir],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => $binDir,
+                    'DW_NAMESPACES_RUN_ROOT' => $runRoot,
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(
+                1,
+                $exitCode,
+                ($stdout === false ? '' : $stdout).($stderr === false ? '' : $stderr),
+            );
+
+            $this->assertFileExists($resultDir.'/namespaces-result.json');
+            $this->assertFileExists($resultDir.'/namespaces-record.json');
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/namespaces-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                (string) file_get_contents($resultDir.'/namespaces-record.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing_runner_blocked', $result['outcome']);
+            $this->assertTrue($result['runner_blocked']);
+            $this->assertSame('non_passing_runner_blocked', $record['outcome']);
+            $this->assertTrue($record['runnerBlocked']);
+
+            $evaluation = NamespaceRuntimeResultGate::evaluate($result);
+            $this->assertNotContains('invalid_declared_outcome', array_column($evaluation['gate_failures'], 'code'));
+        } finally {
+            $this->removeTree($tempRoot);
+        }
+    }
+
+    private function read(string $path): string
+    {
+        $absolute = dirname(__DIR__, 2).'/'.$path;
+        $this->assertFileExists($absolute);
+
+        return (string) file_get_contents($absolute);
+    }
+
+    private function linkSystemCommand(string $binDir, string $command): void
+    {
+        $target = trim((string) shell_exec('command -v '.escapeshellarg($command).' 2>/dev/null'));
+        if ($target !== '' && ! is_file($target)) {
+            $target = '';
+        }
+        foreach (['/usr/bin/'.$command, '/bin/'.$command] as $candidate) {
+            if ($target === '' && is_file($candidate)) {
+                $target = $candidate;
+            }
+        }
+        $this->assertNotSame('', $target, "{$command} must be available to exercise the runner");
+
+        symlink($target, $binDir.'/'.$command);
+    }
+
+    private function removeTree(string $path): void
+    {
+        if (! is_dir($path)) {
+            return;
+        }
+
+        $items = scandir($path);
+        $this->assertNotFalse($items);
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $child = $path.'/'.$item;
+            if (is_dir($child) && ! is_link($child)) {
+                $this->removeTree($child);
+            } else {
+                @unlink($child);
+            }
+        }
+
+        @rmdir($path);
+    }
+}

@@ -37,7 +37,7 @@ categories and runtime contracts:
 | `python_sdk_published_artifact_parity` (host-runner handoff) | `GET /api/cluster/info`'s `python_sdk_parity_contract` manifest and `scripts/conformance/python-published-artifacts.sh`, which is the source-free host-runner handoff for the official CLI install/start/result path, cold first-user setup, Python worker restart evidence, protocol traces, no-PHP audit, and the complete Python capability table accepted by `durable_workflow.python_conformance` | stable |
 | `skew_refusal_matrix_contract` (server side) | `GET /api/cluster/info`'s `skew_refusal_matrix_contract` manifest, the public scenario manifest at `static/platform-conformance/skew-refusal-matrix-scenarios.json`, and `scripts/conformance/skew-published-artifacts.sh`, which is the host-runner handoff for the CLI/Python/PHP worker/Waterline skew matrix, worker registration skew classifications, Waterline render classifications, and request/response evidence requirements | stable |
 | `worker_versioning_runtime_contract` (server side) | `GET /api/cluster/info`'s `worker_versioning_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/worker-versioning-runtime-scenarios.json`, worker registration/build-id rollout APIs, workflow start pinning, compatible polling, history/visibility pin surfaces, and CLI/Waterline operator visibility | stable |
-| `namespace_runtime_contract` (server side) | the public scenario manifest at `static/platform-conformance/namespace-runtime-scenarios.json`, plus namespace, workflow, worker, schedule, search-attribute, Nexus, and operator routes documented in the protocol catalog | stable |
+| `namespace_runtime_contract` (server side) | the public scenario manifest at `static/platform-conformance/namespace-runtime-scenarios.json`, `GET /api/cluster/info`'s `namespace_runtime_contract` manifest, `scripts/conformance/namespaces-published-artifacts.sh`, plus namespace, workflow, worker, schedule, search-attribute, Nexus, and operator routes documented in the protocol catalog | stable |
 | `failure_repair_actionability` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, plus the artifact objects published from `GET /api/cluster/info`'s `worker_protocol.external_task_result_contract.fixtures` | stable |
 
 Several categories the server is graded against also span client,
@@ -73,6 +73,24 @@ the server-derived actor for workflow start, signal, query, cancellation,
 completion, failure, anonymous, and server-originated history surfaces, plus
 adversarial payload/header spoofing attempts. Any missing public surface is
 non-passing unless it links a focused root-cause finding.
+
+The server repo also ships a source-free namespace runner at
+`scripts/conformance/namespaces-published-artifacts.sh`. Host conformance
+runners can discover that handoff from `GET /api/cluster/info` under
+`namespace_runtime_contract.host_runner_contract` and invoke it against the
+current published server image, CLI release, Python SDK, PHP workflow runtime,
+and Waterline package versions. The runner exercises namespace creation,
+workflow read/mutation isolation, same-queue worker matching, search-attribute
+schema and value isolation, schedule isolation, namespace deletion cleanup and
+recreate, explicit Nexus crossing, CLI default-scope behavior, SDK namespace
+selection, and adversarial namespace-name refusal. The published Workflow PHP
+namespace shard is required for a passing result and must be attached through
+`DW_NAMESPACES_WORKFLOW_PHP_RESULT`; the aggregated evidence records the shard
+report as executed before the PHP worker task-queue cell can pass. A published
+Waterline shard can be attached through its namespace-conformance report. When
+a required or expected shard is absent, the result remains non-passing and
+carries a focused surface finding instead of silently treating the cell as
+covered.
 
 The server repo also ships a source-free Python SDK parity runner at
 `scripts/conformance/python-published-artifacts.sh`. Host conformance

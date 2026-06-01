@@ -236,6 +236,7 @@ final class NamespaceRuntimeContract
                         'tenant_a_delivery',
                         'tenant_b_delivery',
                         'cross_delivery_absent',
+                        'workflow_php_shard_execution',
                     ],
                 ],
                 'waterline_operator_namespace_visibility' => [
@@ -294,6 +295,7 @@ final class NamespaceRuntimeContract
                     'cli_namespace_behavior_reported',
                     'sdk_namespace_selection_reported',
                     'php_worker_behavior_reported',
+                    'workflow_php_namespace_shard_execution_recorded',
                     'schedule_namespace_isolation_reported',
                     'waterline_operator_visibility_reported',
                     'waterline_operator_surface_verdicts_reported',
@@ -316,7 +318,17 @@ final class NamespaceRuntimeContract
             ],
             'host_runner_contract' => [
                 'status' => 'required_for_passing_namespace_conformance',
+                'runner_repository' => 'server',
+                'runner_path' => 'scripts/conformance/namespaces-published-artifacts.sh',
+                'runner_command' => 'scripts/conformance/namespaces-published-artifacts.sh --result-dir <result-dir>',
                 'result_schema' => self::RESULT_SCHEMA,
+                'result_files' => [
+                    'pins.json',
+                    'run-metadata.json',
+                    'artifact-install-evidence.json',
+                    'namespaces-result.json',
+                    'namespaces-record.json',
+                ],
                 'must_execute_against_published_artifacts' => true,
                 'must_record_runner_blocked_false_for_product_evidence' => true,
                 'must_emit_result_for_every_required_scenario' => true,
@@ -355,7 +367,14 @@ final class NamespaceRuntimeContract
                             'same_queue_tenant_b_delivery',
                             'cross_namespace_delivery_absent',
                         ],
+                        'must_cover_surfaces' => [
+                            'workflow-php-sdk_namespace_selection',
+                            'workflow-php-worker_registration',
+                            'same_queue_worker_delivery_isolation',
+                            'cross_namespace_workflow_lookup_denied',
+                        ],
                         'fallback_status_when_command_missing' => 'unsupported',
+                        'fallback_status_when_surface_missing' => 'not_covered',
                         'fallback_finding_type' => 'unsupported_public_surface',
                     ],
                     'waterline' => [

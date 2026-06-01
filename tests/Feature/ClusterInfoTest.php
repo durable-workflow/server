@@ -718,8 +718,20 @@ class ClusterInfoTest extends TestCase
             $contract['host_runner_contract']['required_execution_scopes'],
         );
         $this->assertSame(
+            'scripts/conformance/namespaces-published-artifacts.sh',
+            $contract['host_runner_contract']['runner_path'],
+        );
+        $this->assertSame(
+            'scripts/conformance/namespaces-published-artifacts.sh --result-dir <result-dir>',
+            $contract['host_runner_contract']['runner_command'],
+        );
+        $this->assertSame(
             'workflow:v2:namespace-conformance',
             $contract['host_runner_contract']['runtime_shards']['workflow-php']['preferred_command'],
+        );
+        $this->assertSame(
+            'workflow:v2:namespace-conformance',
+            $contract['host_runner_contract']['runtime_shards']['workflow-php']['artisan_command'],
         );
         $this->assertSame(
             [
@@ -732,6 +744,10 @@ class ClusterInfoTest extends TestCase
         $this->assertSame(
             'waterline:namespace-conformance',
             $contract['host_runner_contract']['runtime_shards']['waterline']['artisan_command'],
+        );
+        $this->assertContains(
+            'workflow_php_namespace_shard_execution_recorded',
+            $contract['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertContains(
             'search_attribute_value_query_isolation_reported',
