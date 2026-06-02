@@ -84,6 +84,15 @@ const FORBIDDEN_SOURCE_TOKENS = [
   'rolling_server_image_tag',
   'unverified_artifact_source',
 ];
+const ARTIFACT_OWNERS = {
+  'server-v1': 'server',
+  'server-v2': 'server',
+  cli: 'cli',
+  'workflow-php-v1': 'workflow',
+  'workflow-php-v2': 'workflow',
+  'sdk-python': 'sdk-python',
+  waterline: 'waterline',
+};
 
 const scenarioManifest = readJsonIfExists(scenarioManifestPath) ?? {};
 const requiredArtifacts = arrayOfStrings(scenarioManifest?.artifact_policy?.required_artifacts);
@@ -157,7 +166,12 @@ async function main() {
     return;
   }
 
-  const scenarioResults = buildScenarioResults(evidence, resolvedArtifactVersions);
+  const artifactPrerequisiteFailures = artifactPrerequisiteFailuresFor(
+    publishedArtifactVersions,
+    resolvedArtifactVersions,
+    artifactSources,
+  );
+  const scenarioResults = buildScenarioResults(evidence, resolvedArtifactVersions, artifactPrerequisiteFailures);
   const findingLinks = mergeFindingLinks(evidence, scenarioResults);
   const findings = mergeFindings(evidence, findingLinks);
   const localProductSourceCheckoutsUsed = localProductSourceCheckoutsUsedIn(evidence, scenarioResults);
@@ -174,6 +188,7 @@ async function main() {
     published_artifact_versions: publishedArtifactVersions,
     resolved_artifact_versions: resolvedArtifactVersions,
     artifact_sources: artifactSources,
+    artifact_prerequisite_failures: artifactPrerequisiteFailures,
     local_product_source_checkouts_used: localProductSourceCheckoutsUsed,
     scenario_results: scenarioResults,
     findings,
@@ -213,14 +228,31 @@ async function main() {
   writeResult(result);
 }
 
-function buildScenarioResults(evidence, artifactVersions) {
+function buildScenarioResults(evidence, artifactVersions, artifactPrerequisiteFailures = []) {
   const supplied = scenarioResultsById(evidence);
   const results = {};
 
   for (const scenarioId of effectiveRequiredScenarios()) {
     const suppliedScenario = supplied[scenarioId];
     if (suppliedScenario) {
-      results[scenarioId] = normalizeScenarioResult(scenarioId, suppliedScenario, artifactVersions);
+      results[scenarioId] = scenarioResultWithArtifactPrerequisiteFailures(
+        scenarioId,
+        normalizeScenarioResult(scenarioId, suppliedScenario, artifactVersions),
+        artifactVersions,
+        artifactPrerequisiteFailures,
+      );
+      continue;
+    }
+
+    if (artifactPrerequisiteFailures.length > 0) {
+      results[scenarioId] = scenarioResultWithArtifactPrerequisiteFailures(scenarioId, {
+        scenario_id: scenarioId,
+        status: 'fail',
+        observed_outputs: {
+          required_fields: requiredFieldsFor(scenarioId),
+          local_product_source_checkouts_used: false,
+        },
+      }, artifactVersions, artifactPrerequisiteFailures);
       continue;
     }
 
@@ -243,11 +275,124 @@ function buildScenarioResults(evidence, artifactVersions) {
 
   for (const [scenarioId, suppliedScenario] of Object.entries(supplied)) {
     if (!Object.hasOwn(results, scenarioId)) {
-      results[scenarioId] = normalizeScenarioResult(scenarioId, suppliedScenario, artifactVersions);
+      results[scenarioId] = scenarioResultWithArtifactPrerequisiteFailures(
+        scenarioId,
+        normalizeScenarioResult(scenarioId, suppliedScenario, artifactVersions),
+        artifactVersions,
+        artifactPrerequisiteFailures,
+      );
     }
   }
 
   return results;
+}
+
+function scenarioResultWithArtifactPrerequisiteFailures(
+  scenarioId,
+  scenario,
+  artifactVersions,
+  artifactPrerequisiteFailures,
+) {
+  if (artifactPrerequisiteFailures.length === 0) {
+    return scenario;
+  }
+
+  const findings = artifactPrerequisiteFindings(scenarioId, artifactVersions, artifactPrerequisiteFailures);
+  const existingFindings = linkedFindingsForScenario(scenario);
+
+  return {
+    ...scenario,
+    scenario_id: scenarioId,
+    status: 'fail',
+    observed_outputs: {
+      ...objectValue(scenario.observed_outputs),
+      artifact_prerequisite_failed: true,
+      artifact_prerequisite_failures: artifactPrerequisiteFailures,
+    },
+    linked_findings: [
+      ...existingFindings,
+      ...findings,
+    ],
+  };
+}
+
+function artifactPrerequisiteFailuresFor(publishedArtifactVersions, resolvedArtifactVersions, artifactSources) {
+  const failures = [];
+
+  for (const artifact of effectiveRequiredArtifacts()) {
+    const publishedVersion = stringValue(artifactMapEntry(objectValue(publishedArtifactVersions), artifact));
+    const resolvedVersion = stringValue(artifactMapEntry(objectValue(resolvedArtifactVersions), artifact));
+    const source = stringValue(artifactMapEntry(objectValue(artifactSources), artifact));
+
+    if (publishedVersion === '') {
+      failures.push({
+        artifact,
+        field: 'published_artifact_versions',
+        code: 'missing_published_artifact_version',
+      });
+    } else if (isPlaceholderArtifactVersion(publishedVersion)) {
+      failures.push({
+        artifact,
+        field: 'published_artifact_versions',
+        code: 'placeholder_published_artifact_version',
+        value: publishedVersion,
+      });
+    }
+
+    if (resolvedVersion === '') {
+      failures.push({
+        artifact,
+        field: 'resolved_artifact_versions',
+        code: 'missing_resolved_artifact_version',
+      });
+    } else if (isPlaceholderArtifactVersion(resolvedVersion)) {
+      failures.push({
+        artifact,
+        field: 'resolved_artifact_versions',
+        code: 'placeholder_resolved_artifact_version',
+        value: resolvedVersion,
+      });
+    }
+
+    if (source === '') {
+      failures.push({
+        artifact,
+        field: 'artifact_sources',
+        code: 'missing_published_artifact_source',
+      });
+    } else if (containsForbiddenSourceToken(source)) {
+      failures.push({
+        artifact,
+        field: 'artifact_sources',
+        code: 'forbidden_published_artifact_source',
+        value: source,
+      });
+    }
+  }
+
+  return failures;
+}
+
+function artifactPrerequisiteFindings(scenarioId, artifactVersions, artifactPrerequisiteFailures) {
+  return artifactPrerequisiteFailures.map((failure) => {
+    const artifact = stringValue(failure.artifact);
+    const owningSurface = ARTIFACT_OWNERS[artifact] ?? 'conformance_harness';
+    const field = stringValue(failure.field);
+    const code = stringValue(failure.code);
+    const value = stringValue(failure.value);
+    const valueDetail = value === '' ? '' : `; observed ${field}=${value}`;
+
+    return {
+      scenario_id: scenarioId,
+      owning_surface: owningSurface,
+      finding_type: 'missing_or_invalid_published_migration_artifact',
+      artifact,
+      artifact_versions: artifactVersions,
+      observed_behavior: `Required migration artifact ${artifact} has ${code} in ${field}${valueDetail}.`,
+      expected_behavior: 'Migration conformance starts from exact published v1 and v2 artifacts with a recorded install source for every required channel.',
+      next_acceptance_criterion: `publish or record a concrete ${artifact} artifact version and install source, then rerun the ${scenarioId} migration cell`,
+    };
+  });
 }
 
 function normalizeScenarioResult(scenarioId, scenario, artifactVersions) {
@@ -658,6 +803,26 @@ function hasLinkedFinding(scenario) {
     }
     return stringValue(value) !== '';
   });
+}
+
+function linkedFindingsForScenario(scenario) {
+  const links = [];
+  for (const source of [
+    scenario.linked_findings,
+    scenario.linkedFindings,
+    scenario.finding_links,
+    scenario.findingLinks,
+    scenario.findings,
+  ]) {
+    if (Array.isArray(source)) {
+      links.push(...source);
+    } else if (source && typeof source === 'object') {
+      links.push(source);
+    } else if (stringValue(source) !== '') {
+      links.push(stringValue(source));
+    }
+  }
+  return links;
 }
 
 function hasField(container, field) {

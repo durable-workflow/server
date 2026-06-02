@@ -276,7 +276,11 @@ category emits a warning and does not block.
   Its result gate records the storage-connection smoke as useful context
   but keeps that smoke-only result non-passing until every required upgrade
   scenario has evidence or a linked root-cause finding, and until every
-  required install channel records its published artifact source. Its
+  required install channel records its published artifact source. Missing or
+  placeholder v1/v2 install prerequisites are recorded as scenario `fail`
+  results with `missing_or_invalid_published_migration_artifact` findings
+  routed to the owning artifact surface instead of being collapsed into a
+  generic uncovered-cell result. Its
   `host_runner_contract` names
   `scripts/conformance/migration-published-artifacts.sh` as the executable
   handoff; the runner writes `migration-conformance-result.json` and

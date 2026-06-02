@@ -238,6 +238,7 @@ final class MigrationRuntimeContract
                     'run_timestamps_outcome_and_findings_are_recorded',
                     'declared_outcome_matches_evaluated_status',
                     'artifact_source_recorded_for_each_install_channel',
+                    'artifact_prerequisite_failures_are_linked_when_artifacts_are_missing',
                     'local_product_source_checkouts_used_explicitly_false',
                     'runner_blocked_false_for_product_evidence',
                     'findings_linked_for_non_pass_scenarios',
@@ -323,6 +324,11 @@ final class MigrationRuntimeContract
                     ],
                 ],
                 'routing_policy' => [
+                    'artifact_prerequisite_failure' => [
+                        'scenario_status' => 'fail',
+                        'finding_type' => 'missing_or_invalid_published_migration_artifact',
+                        'owner' => 'artifact_surface_owner',
+                    ],
                     'missing_required_scenario' => [
                         'scenario_status' => 'not_covered',
                         'finding_type' => 'conformance_runner_coverage_gap',
@@ -345,6 +351,7 @@ final class MigrationRuntimeContract
             ],
             'result_gate' => MigrationRuntimeResultGate::spec(),
             'finding_policy' => [
+                'missing_or_invalid_published_migration_artifact' => 'link_root_cause_finding_against_artifact_surface_owner',
                 'missing_or_wrong_migration_guide_step' => 'link_root_cause_finding_against_docs',
                 'data_loss_or_replay_break' => 'link_root_cause_finding_against_workflow_or_server',
                 'schedule_drift' => 'link_root_cause_finding_against_server_or_workflow',

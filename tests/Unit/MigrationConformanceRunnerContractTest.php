@@ -70,6 +70,176 @@ class MigrationConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_runner_routes_missing_published_artifact_prerequisites_as_failures(): void
+    {
+        $node = $this->read('scripts/conformance/migration-published-artifacts.mjs');
+
+        foreach ([
+            'artifactPrerequisiteFailuresFor',
+            'missing_or_invalid_published_migration_artifact',
+            'missing_published_artifact_version',
+            'forbidden_published_artifact_source',
+            'artifact_prerequisite_failed',
+        ] as $token) {
+            $this->assertStringContainsString($token, $node);
+        }
+
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner artifact prerequisite gate.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $tempRoot = sys_get_temp_dir().'/dw-migration-prerequisites-'.bin2hex(random_bytes(6));
+        $resultDir = $tempRoot.'/result';
+
+        try {
+            mkdir($resultDir, 0777, true);
+
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/migration-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_MIGRATION_REPO_ROOT' => $repoRoot,
+                    'DW_MIGRATION_RESULT_DIR' => $resultDir,
+                    'DW_SERVER_VERSION' => '0.2.239',
+                    'DW_SERVER_ARTIFACT_SOURCE' => 'published_docker_image',
+                    'DW_CLI_VERSION' => '0.1.75',
+                    'DW_CLI_ARTIFACT_SOURCE' => 'official_install_script',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.189',
+                    'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'composer_release',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.84',
+                    'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi_release',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.77',
+                    'DW_WATERLINE_ARTIFACT_SOURCE' => 'published_waterline_release',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, ($stdout === false ? '' : $stdout).($stderr === false ? '' : $stderr));
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/migration-conformance-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertSame(
+                'fail',
+                $result['scenario_results']['published_artifact_install_only']['status'],
+            );
+            $this->assertSame(
+                true,
+                $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_prerequisite_failed'],
+            );
+            $this->assertContains(
+                'server-v1',
+                array_column($result['artifact_prerequisite_failures'], 'artifact'),
+            );
+            $this->assertContains(
+                'workflow-php-v1',
+                array_column($result['artifact_prerequisite_failures'], 'artifact'),
+            );
+
+            $findingTypes = array_column(
+                $result['scenario_results']['published_artifact_install_only']['linked_findings'],
+                'finding_type',
+            );
+            $this->assertContains('missing_or_invalid_published_migration_artifact', $findingTypes);
+        } finally {
+            $this->removeTree($tempRoot);
+        }
+    }
+
+    public function test_runner_routes_artifact_prerequisites_into_supplied_scenario_results(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner artifact prerequisite gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        unset(
+            $evidence['published_artifact_versions']['server-v1'],
+            $evidence['resolved_artifact_versions']['server-v1'],
+        );
+        $evidence['published_artifact_versions']['workflow-php-v2'] = '2.0.0-alpha.<latest>';
+        $evidence['resolved_artifact_versions']['workflow-php-v1'] = '1.x';
+
+        $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-supplied-prerequisites-');
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertContains(
+            [
+                'artifact' => 'server-v1',
+                'field' => 'published_artifact_versions',
+                'code' => 'missing_published_artifact_version',
+            ],
+            $result['artifact_prerequisite_failures'],
+        );
+        $this->assertContains(
+            [
+                'artifact' => 'server-v1',
+                'field' => 'resolved_artifact_versions',
+                'code' => 'missing_resolved_artifact_version',
+            ],
+            $result['artifact_prerequisite_failures'],
+        );
+        $this->assertContains(
+            [
+                'artifact' => 'workflow-php-v2',
+                'field' => 'published_artifact_versions',
+                'code' => 'placeholder_published_artifact_version',
+                'value' => '2.0.0-alpha.<latest>',
+            ],
+            $result['artifact_prerequisite_failures'],
+        );
+        $this->assertContains(
+            [
+                'artifact' => 'workflow-php-v1',
+                'field' => 'resolved_artifact_versions',
+                'code' => 'placeholder_resolved_artifact_version',
+                'value' => '1.x',
+            ],
+            $result['artifact_prerequisite_failures'],
+        );
+        $this->assertSame(
+            'fail',
+            $result['scenario_results']['published_artifact_install_only']['status'],
+            'supplied passing scenarios must fail when required artifact versions are missing or placeholders',
+        );
+        $this->assertSame(
+            true,
+            $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_prerequisite_failed'],
+        );
+        $this->assertSame(
+            'fail',
+            $result['scenario_results']['documented_migration_steps_execute']['status'],
+            'artifact prerequisites apply to every supplied required scenario, not only missing scenario cells',
+        );
+
+        $findingTypes = array_column(
+            $result['scenario_results']['published_artifact_install_only']['linked_findings'],
+            'finding_type',
+        );
+        $this->assertContains('missing_or_invalid_published_migration_artifact', $findingTypes);
+        $this->assertNotContains('pass', array_column($result['scenario_results'], 'status'));
+    }
+
     public function test_runner_rejects_contract_placeholder_artifact_versions_before_passing(): void
     {
         $node = $this->read('scripts/conformance/migration-published-artifacts.mjs');

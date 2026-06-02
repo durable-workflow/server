@@ -76,6 +76,7 @@
     "published_artifact_versions",
     "resolved_artifact_versions",
     "artifact_sources",
+    "artifact_prerequisite_failures",
     "local_product_source_checkouts_used",
     "implementation_identity",
     "findings",
@@ -603,6 +604,7 @@
       "run_timestamps_outcome_and_findings_are_recorded",
       "declared_outcome_matches_evaluated_status",
       "artifact_source_recorded_for_each_install_channel",
+      "artifact_prerequisite_failures_are_linked_when_artifacts_are_missing",
       "local_product_source_checkouts_used_explicitly_false",
       "runner_blocked_false_for_product_evidence",
       "findings_linked_for_non_pass_scenarios"

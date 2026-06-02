@@ -88,6 +88,7 @@ final class MigrationRuntimeResultGate
                 'resolved_artifact_versions_are_recorded_and_pinned',
                 'v1_and_v2_artifact_versions_are_distinguished',
                 'artifact_source_recorded_for_each_install_channel',
+                'artifact_prerequisite_failures_are_linked_when_artifacts_are_missing',
                 'no_local_product_source_artifacts_are_reported',
                 'runner_blocked_false_for_product_evidence',
             ],

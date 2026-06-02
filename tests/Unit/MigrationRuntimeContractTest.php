@@ -113,6 +113,18 @@ class MigrationRuntimeContractTest extends TestCase
             ],
             $hostRunner['routing_policy']['missing_required_scenario'],
         );
+        $this->assertSame(
+            [
+                'scenario_status' => 'fail',
+                'finding_type' => 'missing_or_invalid_published_migration_artifact',
+                'owner' => 'artifact_surface_owner',
+            ],
+            $hostRunner['routing_policy']['artifact_prerequisite_failure'],
+        );
+        $this->assertSame(
+            'link_root_cause_finding_against_artifact_surface_owner',
+            $manifest['finding_policy']['missing_or_invalid_published_migration_artifact'],
+        );
 
         $resultGate = $manifest['result_gate'];
         $this->assertSame(MigrationRuntimeResultGate::SCHEMA, $resultGate['schema']);
@@ -134,6 +146,10 @@ class MigrationRuntimeContractTest extends TestCase
         );
         $this->assertContains(
             'artifact_source_recorded_for_each_install_channel',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'artifact_prerequisite_failures_are_linked_when_artifacts_are_missing',
             $resultGate['pass_requires'],
         );
         $this->assertSame(
@@ -187,6 +203,7 @@ class MigrationRuntimeContractTest extends TestCase
         );
         $this->assertTrue($scenarioManifest['artifact_policy']['requires_artifact_sources_for_each_required_artifact']);
         $this->assertContains('artifact_sources', $scenarioManifest['common_result_evidence']);
+        $this->assertContains('artifact_prerequisite_failures', $scenarioManifest['common_result_evidence']);
         $this->assertContains('storage_connection_smoke', $scenarioManifest['common_result_evidence']);
         $this->assertSame(
             $manifest['artifact_policy']['placeholder_version_examples'],
@@ -195,6 +212,10 @@ class MigrationRuntimeContractTest extends TestCase
         );
         $this->assertContains(
             'storage_connection_smoke_is_recorded_but_not_counted_as_complete',
+            $scenarioManifest['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertContains(
+            'artifact_prerequisite_failures_are_linked_when_artifacts_are_missing',
             $scenarioManifest['coverage_gate']['passing_outcome_requires'],
         );
     }
