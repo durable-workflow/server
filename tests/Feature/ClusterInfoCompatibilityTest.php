@@ -8,6 +8,7 @@ use App\Support\ChildWorkflowRuntimeContract;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
 use App\Support\CoordinationHealthContract;
+use App\Support\MigrationRuntimeContract;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\PrincipalAttributionContract;
 use App\Support\PrincipalAttributionResultGate;
@@ -66,6 +67,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'bridge_adapter_outcome_contract',
                     'skew_refusal_matrix_contract',
                     'worker_versioning_runtime_contract',
+                    'migration_runtime_contract',
                     'payload_codecs',
                     'response_compression',
                 ],
@@ -300,6 +302,26 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'result_gate',
                     'finding_policy',
                 ],
+                'migration_runtime_contract' => [
+                    'schema',
+                    'version',
+                    'result_schema',
+                    'result_version',
+                    'fixture_category',
+                    'platform_conformance_suite_authority',
+                    'scenario_manifest',
+                    'artifact_policy',
+                    'scenario_statuses',
+                    'topology',
+                    'required_matrix',
+                    'required_scenarios',
+                    'scenario_requirements',
+                    'advisory_evidence',
+                    'coverage_gate',
+                    'host_runner_contract',
+                    'result_gate',
+                    'finding_policy',
+                ],
                 'namespace_runtime_contract' => [
                     'schema',
                     'version',
@@ -424,6 +446,12 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('worker_versioning_runtime_contract.version', WorkerVersioningRuntimeContract::VERSION)
             ->assertJsonPath(
                 'worker_versioning_runtime_contract.platform_conformance_suite_authority',
+                PlatformConformanceSuite::SCHEMA,
+            )
+            ->assertJsonPath('migration_runtime_contract.schema', MigrationRuntimeContract::SCHEMA)
+            ->assertJsonPath('migration_runtime_contract.version', MigrationRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'migration_runtime_contract.platform_conformance_suite_authority',
                 PlatformConformanceSuite::SCHEMA,
             )
             ->assertJsonPath('namespace_runtime_contract.schema', NamespaceRuntimeContract::SCHEMA)

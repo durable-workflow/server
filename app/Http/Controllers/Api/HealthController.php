@@ -12,6 +12,7 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
 use App\Support\CoordinationHealthContract;
 use App\Support\FilesystemDiskAvailability;
+use App\Support\MigrationRuntimeContract;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NexusContract;
 use App\Support\PrincipalAttributionContract;
@@ -141,6 +142,7 @@ class HealthController
             'python_sdk_parity_contract' => true,
             'skew_refusal_matrix_contract' => true,
             'worker_versioning_runtime_contract' => true,
+            'migration_runtime_contract' => true,
             'embedded_v2_import' => $embeddedV2ImportAvailable,
             'payload_codecs' => CodecRegistry::universal(),
             'response_compression' => (bool) config('server.compression.enabled', true)
@@ -192,6 +194,7 @@ class HealthController
             'python_sdk_parity_contract' => PythonSdkParityContract::manifest(),
             'skew_refusal_matrix_contract' => SkewRefusalMatrixContract::manifest(),
             'worker_versioning_runtime_contract' => WorkerVersioningRuntimeContract::manifest(),
+            'migration_runtime_contract' => MigrationRuntimeContract::manifest(),
             'namespace_runtime_contract' => NamespaceRuntimeContract::manifest(),
             'auth_composition_contract' => AuthCompositionContract::manifest(),
             'control_plane' => ControlPlaneProtocol::info(),

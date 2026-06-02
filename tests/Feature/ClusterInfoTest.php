@@ -9,6 +9,8 @@ use App\Support\ChildWorkflowRuntimeContract;
 use App\Support\ChildWorkflowRuntimeResultGate;
 use App\Support\CoordinationHealthContract;
 use App\Support\ControlPlaneProtocol;
+use App\Support\MigrationRuntimeContract;
+use App\Support\MigrationRuntimeResultGate;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NamespaceRuntimeResultGate;
 use App\Support\PrincipalAttributionContract;
@@ -584,6 +586,79 @@ class ClusterInfoTest extends TestCase
         $this->assertContains(
             'no_compatible_worker_signal_is_explicit',
             $contract['result_gate']['pass_requires'],
+        );
+    }
+
+    public function test_it_publishes_the_migration_runtime_conformance_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('capabilities.migration_runtime_contract', true)
+            ->assertJsonPath('migration_runtime_contract.schema', MigrationRuntimeContract::SCHEMA)
+            ->assertJsonPath('migration_runtime_contract.version', MigrationRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'migration_runtime_contract.fixture_category',
+                'migration_runtime_contract',
+            )
+            ->assertJsonPath(
+                'migration_runtime_contract.coverage_gate.storage_connection_smoke_only_outcome',
+                'non_passing',
+            )
+            ->assertJsonPath(
+                'migration_runtime_contract.scenario_manifest.suite_version',
+                PlatformConformanceSuite::VERSION,
+            );
+
+        $contract = $response->json('migration_runtime_contract');
+        $this->assertIsArray($contract);
+        foreach (['server-v1', 'server-v2', 'cli', 'workflow-php-v1', 'workflow-php-v2', 'sdk-python', 'waterline'] as $artifact) {
+            $this->assertArrayHasKey($artifact, $contract['artifact_policy']['install_channels']);
+        }
+        $this->assertContains('server-v1', $contract['required_matrix']['source_release_set']);
+        $this->assertContains('workflow-php-v1', $contract['required_matrix']['source_release_set']);
+        $this->assertContains('server-v2', $contract['required_matrix']['target_release_set']);
+        $this->assertContains('workflow-php-v2', $contract['required_matrix']['target_release_set']);
+        $this->assertContains('sdk-python', $contract['required_matrix']['target_release_set']);
+        $this->assertContains('completed_history', $contract['required_matrix']['state_kinds']);
+        $this->assertContains('in_flight_workflow', $contract['required_matrix']['state_kinds']);
+        $this->assertContains('retrying_activity', $contract['required_matrix']['state_kinds']);
+        $this->assertContains('schedule', $contract['required_matrix']['state_kinds']);
+        $this->assertContains('worker_registration', $contract['required_matrix']['state_kinds']);
+        $this->assertContains('latest_supported_v1_state_setup', $contract['required_scenarios']);
+        $this->assertContains('documented_migration_steps_execute', $contract['required_scenarios']);
+        $this->assertContains('completed_history_preservation_and_replay', $contract['required_scenarios']);
+        $this->assertContains('in_flight_workflow_progress_preserved', $contract['required_scenarios']);
+        $this->assertContains('mid_activity_retry_preserved', $contract['required_scenarios']);
+        $this->assertContains('schedule_cross_upgrade_cadence_preserved', $contract['required_scenarios']);
+        $this->assertContains('worker_registration_projection_preserved', $contract['required_scenarios']);
+        $this->assertContains('waterline_operator_visibility_preserved', $contract['required_scenarios']);
+        $this->assertContains('cli_access_to_preupgrade_state', $contract['required_scenarios']);
+        $this->assertContains('new_v2_workflow_start_after_upgrade', $contract['required_scenarios']);
+        $this->assertContains('rollback_contract_verified', $contract['required_scenarios']);
+        $this->assertContains('version_skew_refusal', $contract['required_scenarios']);
+        $this->assertSame(
+            'required_context_not_passing_by_itself',
+            $contract['advisory_evidence']['storage_connection_smoke']['status'],
+        );
+        $this->assertSame(
+            'required_for_passing_migration_conformance',
+            $contract['host_runner_contract']['status'],
+        );
+        $this->assertContains(
+            'public-guide-upgrade',
+            $contract['host_runner_contract']['required_execution_scopes'],
+        );
+        $this->assertSame(
+            'conformance_runner_coverage_gap',
+            $contract['host_runner_contract']['routing_policy']['missing_required_scenario']['finding_type'],
+        );
+        $this->assertSame(
+            MigrationRuntimeResultGate::SCHEMA,
+            $contract['result_gate']['schema'],
+        );
+        $this->assertContains(
+            'storage_connection_smoke_is_recorded_but_not_counted_as_complete',
+            $contract['coverage_gate']['passing_outcome_requires'],
         );
     }
 
