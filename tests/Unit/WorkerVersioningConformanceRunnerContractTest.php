@@ -163,12 +163,6 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
 
     public function test_no_compatible_execution_only_shard_does_not_inherit_probe_outputs(): void
     {
-        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
-        if ($nodeBinary === '') {
-            $this->markTestSkipped('node is required to exercise the worker-versioning runner shard gate.');
-        }
-
-        $repoRoot = dirname(__DIR__, 2);
         $evidence = [
             'local_product_source_checkouts_used' => false,
             'supplied_shard_local_product_source_checkouts_used' => false,
@@ -199,6 +193,132 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
                 ],
             ],
         ];
+        $result = $this->evaluateNoCompatiblePublishedWorkerEvidence($evidence);
+
+        $this->assertTrue($result['worker_executed']);
+        $this->assertFalse($result['passes']);
+        $this->assertNull($result['incompatible_worker_task_count']);
+        $this->assertSame('', $result['operator_visible_signal']);
+        $this->assertArrayNotHasKey('incompatible_worker_task_count', $result['outputs']);
+        $this->assertArrayNotHasKey('operator_visible_signal', $result['outputs']);
+    }
+
+    public function test_no_compatible_published_shard_accepts_camel_case_outputs(): void
+    {
+        $result = $this->evaluateNoCompatiblePublishedWorkerEvidence([
+            'localProductSourceCheckoutsUsed' => false,
+            'suppliedShardLocalProductSourceCheckoutsUsed' => false,
+            'source_path' => 'published-worker-execution-evidence.json',
+            'scenarioResults' => [
+                [
+                    'id' => 'no_compatible_worker_behavior',
+                    'status' => 'pass',
+                    'observedOutputs' => [
+                        'localProductSourceCheckoutsUsed' => false,
+                        'incompatibleWorkerTaskCount' => 0,
+                        'operatorVisibleSignal' => 'no_compatible_worker',
+                        'pendingOrTypedError' => 'pending',
+                        'publishedArtifactWorkerExecution' => [
+                            'localProductSourceCheckoutsUsed' => false,
+                            'artifacts' => [
+                                [
+                                    'artifact' => 'sdk-python',
+                                    'version' => '0.4.84',
+                                    'source' => 'pypi_release',
+                                    'status' => 'pass',
+                                    'localProductSourceCheckoutsUsed' => false,
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->assertTrue($result['worker_executed']);
+        $this->assertTrue($result['passes']);
+        $this->assertSame(0, $result['incompatible_worker_task_count']);
+        $this->assertSame('no_compatible_worker', $result['operator_visible_signal']);
+        $this->assertSame('pending', $result['pending_or_typed_error']);
+        $this->assertSame(0, $result['outputs']['incompatible_worker_task_count']);
+        $this->assertSame('no_compatible_worker', $result['outputs']['operator_visible_signal']);
+        $this->assertSame('pending', $result['outputs']['pending_or_typed_error']);
+    }
+
+    public function test_no_compatible_null_task_count_is_not_zero_evidence(): void
+    {
+        $result = $this->evaluateNoCompatiblePublishedWorkerEvidence([
+            'local_product_source_checkouts_used' => false,
+            'supplied_shard_local_product_source_checkouts_used' => false,
+            'source_path' => 'published-worker-execution-evidence.json',
+            'scenario_results' => [
+                'no_compatible_worker_behavior' => [
+                    'status' => 'pass',
+                    'observed_outputs' => [
+                        'local_product_source_checkouts_used' => false,
+                        'incompatible_worker_task_count' => null,
+                        'operator_visible_signal' => 'no_compatible_worker',
+                        'pending_or_typed_error' => 'pending',
+                        'published_artifact_worker_execution' => [
+                            'local_product_source_checkouts_used' => false,
+                            'artifacts' => [
+                                [
+                                    'artifact' => 'sdk-python',
+                                    'version' => '0.4.84',
+                                    'source' => 'pypi_release',
+                                    'status' => 'pass',
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->assertTrue($result['worker_executed']);
+        $this->assertFalse($result['passes']);
+        $this->assertNull($result['incompatible_worker_task_count']);
+        $this->assertNull($result['outputs']['incompatible_worker_task_count']);
+    }
+
+    public function test_runner_writes_gate_consumable_result_and_record_files(): void
+    {
+        $node = $this->read('scripts/conformance/worker-versioning-published-artifacts.mjs');
+
+        foreach ([
+            'worker-versioning-result.json',
+            'worker-versioning-record.json',
+            'worker-versioning-http-captures.json',
+            'durable-workflow.v2.worker-versioning-runtime.result',
+            'runner_blocked: false',
+            'artifact_versions: artifactVersions',
+            'scenario_results: scenarioResults',
+        ] as $token) {
+            $this->assertStringContainsString($token, $node);
+        }
+    }
+
+    private function read(string $path): string
+    {
+        $fullPath = dirname(__DIR__, 2).DIRECTORY_SEPARATOR.$path;
+
+        $this->assertFileExists($fullPath);
+
+        return (string) file_get_contents($fullPath);
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     * @return array<string, mixed>
+     */
+    private function evaluateNoCompatiblePublishedWorkerEvidence(array $evidence): array
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the worker-versioning runner shard gate.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
         $script = <<<'JS'
 import { pathToFileURL } from 'node:url';
 
@@ -236,39 +356,7 @@ JS;
         $exitCode = proc_close($process);
 
         $this->assertSame(0, $exitCode, $stderr);
-        $result = json_decode((string) $stdout, true, 512, JSON_THROW_ON_ERROR);
 
-        $this->assertTrue($result['worker_executed']);
-        $this->assertFalse($result['passes']);
-        $this->assertNull($result['incompatible_worker_task_count']);
-        $this->assertSame('', $result['operator_visible_signal']);
-        $this->assertArrayNotHasKey('incompatible_worker_task_count', $result['outputs']);
-        $this->assertArrayNotHasKey('operator_visible_signal', $result['outputs']);
-    }
-
-    public function test_runner_writes_gate_consumable_result_and_record_files(): void
-    {
-        $node = $this->read('scripts/conformance/worker-versioning-published-artifacts.mjs');
-
-        foreach ([
-            'worker-versioning-result.json',
-            'worker-versioning-record.json',
-            'worker-versioning-http-captures.json',
-            'durable-workflow.v2.worker-versioning-runtime.result',
-            'runner_blocked: false',
-            'artifact_versions: artifactVersions',
-            'scenario_results: scenarioResults',
-        ] as $token) {
-            $this->assertStringContainsString($token, $node);
-        }
-    }
-
-    private function read(string $path): string
-    {
-        $fullPath = dirname(__DIR__, 2).DIRECTORY_SEPARATOR.$path;
-
-        $this->assertFileExists($fullPath);
-
-        return (string) file_get_contents($fullPath);
+        return json_decode((string) $stdout, true, 512, JSON_THROW_ON_ERROR);
     }
 }

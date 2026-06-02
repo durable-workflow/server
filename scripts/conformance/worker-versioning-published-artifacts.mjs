@@ -1297,7 +1297,7 @@ function publishedWorkerExecutionEvidence(artifactVersions, artifactSources) {
 }
 
 function publishedWorkerScenarioOutputs(evidence, scenarioId) {
-  const scenario = evidence?.scenario_results?.[scenarioId];
+  const scenario = scenarioResultsById(evidence)[scenarioId];
   if (!scenario || typeof scenario !== 'object' || Array.isArray(scenario)) {
     return {};
   }
@@ -1316,7 +1316,8 @@ function publishedWorkerScenarioOutputs(evidence, scenarioId) {
     local_product_source_checkouts_used: truthyEvidenceFlag(evidence.local_product_source_checkouts_used)
       || truthyEvidenceFlag(observedOutputs.local_product_source_checkouts_used)
       || truthyEvidenceFlag(observedOutputs.localProductSourceCheckoutsUsed),
-    supplied_shard_local_product_source_checkouts_used: evidence.supplied_shard_local_product_source_checkouts_used,
+    supplied_shard_local_product_source_checkouts_used: evidence.supplied_shard_local_product_source_checkouts_used
+      ?? evidence.suppliedShardLocalProductSourceCheckoutsUsed,
     published_worker_evidence_status: normalizedArtifactStatus(scenario.status),
     published_worker_evidence_source: evidence.source_path ?? null,
   };
@@ -1327,17 +1328,39 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
     publishedWorkerEvidence,
     'no_compatible_worker_behavior',
   );
-  const incompatibleWorkerTaskCount = numberValue(outputs.incompatible_worker_task_count);
-  const operatorVisibleSignal = stringValue(outputs.operator_visible_signal);
-  const pendingOrTypedError = stringValue(outputs.pending_or_typed_error);
+  const rawIncompatibleWorkerTaskCount = firstDefined(
+    outputs.incompatible_worker_task_count,
+    outputs.incompatibleWorkerTaskCount,
+  );
+  const rawOperatorVisibleSignal = firstDefined(
+    outputs.operator_visible_signal,
+    outputs.operatorVisibleSignal,
+  );
+  const rawPendingOrTypedError = firstDefined(
+    outputs.pending_or_typed_error,
+    outputs.pendingOrTypedError,
+  );
+  const incompatibleWorkerTaskCount = numberValue(rawIncompatibleWorkerTaskCount);
+  const operatorVisibleSignal = stringValue(rawOperatorVisibleSignal);
+  const pendingOrTypedError = stringValue(rawPendingOrTypedError);
   const workerExecuted = publishedWorkerScenarioPasses(
     outputs,
     ['sdk-python', 'workflow-php'],
     false,
   );
+  const normalizedOutputs = { ...outputs };
+  if (rawIncompatibleWorkerTaskCount !== undefined) {
+    normalizedOutputs.incompatible_worker_task_count = incompatibleWorkerTaskCount;
+  }
+  if (rawOperatorVisibleSignal !== undefined) {
+    normalizedOutputs.operator_visible_signal = operatorVisibleSignal;
+  }
+  if (rawPendingOrTypedError !== undefined) {
+    normalizedOutputs.pending_or_typed_error = pendingOrTypedError;
+  }
 
   return {
-    outputs,
+    outputs: normalizedOutputs,
     worker_executed: workerExecuted,
     incompatible_worker_task_count: incompatibleWorkerTaskCount,
     operator_visible_signal: operatorVisibleSignal,
@@ -1481,6 +1504,16 @@ function firstObjectValue(...values) {
   }
 
   return {};
+}
+
+function firstDefined(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null) {
+      return value;
+    }
+  }
+
+  return undefined;
 }
 
 function explicitFalse(value) {
@@ -1661,6 +1694,10 @@ function stringValue(value) {
 }
 
 function numberValue(value) {
+  if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) {
+    return null;
+  }
+
   return Number.isFinite(Number(value)) ? Number(value) : null;
 }
 
