@@ -401,19 +401,34 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "handler_observation_count",
     ],
     "signal_during_replay": [
+        "signal_api_sample",
+        "signal_status_code",
         "worker_restart_at",
         "signal_sent_at",
         "replay_completed_at",
         "signal_applied_at",
     ],
     "query_during_replay": [
+        "query_api_sample",
+        "query_status_code",
         "worker_restart_at",
         "query_sent_at",
+        "replay_completed_at",
+        "query_handler_invoked_at",
+        "query_completed_at",
         "query_answer",
         "expected_answer",
     ],
     "completed_run_signal_and_query": [
         "completed_run_id",
+        "completed_at",
+        "signal_api_sample",
+        "signal_error.status_code",
+        "signal_error.reason",
+        "signal_error.rejection_reason",
+        "query_api_sample",
+        "query_result_or_error.status_code",
+        "query_result_or_error.outcome",
         "signal_error",
         "query_result_or_error",
         "public_query_surfaces",
@@ -500,6 +515,46 @@ def evidence_lookup(value: Any, key: str) -> Any:
     return evidence_value(value, key)
 
 
+def integer_value(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    return None
+
+
+def status_code_in_range(observed: dict[str, Any], key: str, minimum: int, maximum: int) -> bool:
+    status = integer_value(evidence_lookup(observed, key))
+    return status is not None and minimum <= status <= maximum
+
+
+def timestamp_seconds(value: Any) -> float | None:
+    if not isinstance(value, str) or value.strip() == "":
+        return None
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    try:
+        return datetime.fromisoformat(normalized).timestamp()
+    except ValueError:
+        return None
+
+
+def timestamps_in_order(observed: dict[str, Any], orders: list[tuple[str, str, str]]) -> bool:
+    for left_key, operator, right_key in orders:
+        left = timestamp_seconds(evidence_lookup(observed, left_key))
+        right = timestamp_seconds(evidence_lookup(observed, right_key))
+        if left is None or right is None:
+            return False
+        if operator == "<" and not left < right:
+            return False
+        if operator == "<=" and not left <= right:
+            return False
+    return True
+
+
 def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
     if scenario == "published_artifact_install_only" and not artifact_versions_pinned():
         return False
@@ -515,6 +570,58 @@ def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
             rapid_inputs == list(range(1, 11))
             and queried_total == 55
             and history_signal_order == list(range(1, 11))
+        )
+
+    if scenario == "signal_during_replay":
+        return (
+            all(
+                required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
+                for evidence_key in SCENARIO_REQUIRED_EVIDENCE[scenario]
+            )
+            and status_code_in_range(observed, "signal_status_code", 200, 299)
+            and timestamps_in_order(
+                observed,
+                [
+                    ("worker_restart_at", "<=", "signal_sent_at"),
+                    ("signal_sent_at", "<", "replay_completed_at"),
+                    ("replay_completed_at", "<=", "signal_applied_at"),
+                ],
+            )
+        )
+
+    if scenario == "query_during_replay":
+        return (
+            all(
+                required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
+                for evidence_key in SCENARIO_REQUIRED_EVIDENCE[scenario]
+            )
+            and status_code_in_range(observed, "query_status_code", 200, 299)
+            and evidence_lookup(observed, "query_answer") == evidence_lookup(observed, "expected_answer")
+            and timestamps_in_order(
+                observed,
+                [
+                    ("worker_restart_at", "<=", "query_sent_at"),
+                    ("query_sent_at", "<", "replay_completed_at"),
+                    ("replay_completed_at", "<=", "query_handler_invoked_at"),
+                    ("query_handler_invoked_at", "<=", "query_completed_at"),
+                ],
+            )
+        )
+
+    if scenario == "completed_run_signal_and_query":
+        query_status = integer_value(evidence_lookup(observed, "query_result_or_error.status_code"))
+        query_reason = evidence_lookup(observed, "query_result_or_error.reason")
+        return (
+            all(
+                required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
+                for evidence_key in SCENARIO_REQUIRED_EVIDENCE[scenario]
+            )
+            and status_code_in_range(observed, "signal_error.status_code", 400, 499)
+            and evidence_lookup(observed, "signal_error.reason") == "run_not_active"
+            and evidence_lookup(observed, "signal_error.rejection_reason") == "run_not_active"
+            and query_status is not None
+            and 200 <= query_status <= 499
+            and (query_status < 400 or required_evidence_satisfied("query_result_or_error.reason", query_reason))
         )
 
     return all(

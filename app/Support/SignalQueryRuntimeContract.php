@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 9;
+    public const VERSION = 10;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -219,19 +219,37 @@ final class SignalQueryRuntimeContract
                 'signal_during_replay' => [
                     'required_behavior' => 'signal_applies_after_replay_consistent_point',
                     'evidence' => [
+                        'signal_api_sample',
+                        'signal_status_code',
                         'worker_restart_at',
                         'signal_sent_at',
                         'replay_completed_at',
                         'signal_applied_at',
                     ],
+                    'timestamp_order' => [
+                        'worker_restart_at <= signal_sent_at',
+                        'signal_sent_at < replay_completed_at',
+                        'replay_completed_at <= signal_applied_at',
+                    ],
                 ],
                 'query_during_replay' => [
                     'required_behavior' => 'query_waits_for_replay_consistency',
                     'evidence' => [
+                        'query_api_sample',
+                        'query_status_code',
                         'worker_restart_at',
                         'query_sent_at',
+                        'replay_completed_at',
+                        'query_handler_invoked_at',
+                        'query_completed_at',
                         'query_answer',
                         'expected_answer',
+                    ],
+                    'timestamp_order' => [
+                        'worker_restart_at <= query_sent_at',
+                        'query_sent_at < replay_completed_at',
+                        'replay_completed_at <= query_handler_invoked_at',
+                        'query_handler_invoked_at <= query_completed_at',
                     ],
                 ],
                 'completed_run_signal_and_query' => [
@@ -239,6 +257,14 @@ final class SignalQueryRuntimeContract
                     'query_behavior' => 'documented_completed_run_query_behavior',
                     'evidence' => [
                         'completed_run_id',
+                        'completed_at',
+                        'signal_api_sample',
+                        'signal_error.status_code',
+                        'signal_error.reason',
+                        'signal_error.rejection_reason',
+                        'query_api_sample',
+                        'query_result_or_error.status_code',
+                        'query_result_or_error.outcome',
                         'signal_error',
                         'query_result_or_error',
                         'public_query_surfaces',
@@ -416,11 +442,17 @@ final class SignalQueryRuntimeContract
                             'query_during_replay',
                         ],
                         'required_evidence_fields' => [
+                            'signal_api_sample',
+                            'signal_status_code',
                             'worker_restart_at',
                             'signal_sent_at',
                             'replay_completed_at',
                             'signal_applied_at',
+                            'query_api_sample',
+                            'query_status_code',
                             'query_sent_at',
+                            'query_handler_invoked_at',
+                            'query_completed_at',
                             'query_answer',
                             'expected_answer',
                         ],
@@ -433,6 +465,14 @@ final class SignalQueryRuntimeContract
                         ],
                         'required_evidence_fields' => [
                             'completed_run_id',
+                            'completed_at',
+                            'signal_api_sample',
+                            'signal_error.status_code',
+                            'signal_error.reason',
+                            'signal_error.rejection_reason',
+                            'query_api_sample',
+                            'query_result_or_error.status_code',
+                            'query_result_or_error.outcome',
                             'signal_error',
                             'query_result_or_error',
                             'public_query_surfaces',

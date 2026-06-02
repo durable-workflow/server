@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(9, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(10, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -153,9 +153,23 @@ class SignalQueryRuntimeContractTest extends TestCase
             'signal_applies_after_replay_consistent_point',
             $requirements['signal_during_replay']['required_behavior'],
         );
+        foreach (['signal_api_sample', 'signal_status_code', 'signal_applied_at'] as $field) {
+            $this->assertContains($field, $requirements['signal_during_replay']['evidence']);
+        }
+        $this->assertContains(
+            'signal_sent_at < replay_completed_at',
+            $requirements['signal_during_replay']['timestamp_order'],
+        );
         $this->assertSame(
             'query_waits_for_replay_consistency',
             $requirements['query_during_replay']['required_behavior'],
+        );
+        foreach (['query_api_sample', 'query_status_code', 'query_handler_invoked_at'] as $field) {
+            $this->assertContains($field, $requirements['query_during_replay']['evidence']);
+        }
+        $this->assertContains(
+            'replay_completed_at <= query_handler_invoked_at',
+            $requirements['query_during_replay']['timestamp_order'],
         );
         $this->assertContains(
             'invalid_signal_arguments',
@@ -189,6 +203,18 @@ class SignalQueryRuntimeContractTest extends TestCase
             'public_query_surfaces',
             $requirements['completed_run_signal_and_query']['evidence'],
         );
+        foreach ([
+            'completed_at',
+            'signal_api_sample',
+            'signal_error.status_code',
+            'signal_error.reason',
+            'signal_error.rejection_reason',
+            'query_api_sample',
+            'query_result_or_error.status_code',
+            'query_result_or_error.outcome',
+        ] as $field) {
+            $this->assertContains($field, $requirements['completed_run_signal_and_query']['evidence']);
+        }
         $this->assertContains(
             'run_status_after_operations',
             $requirements['completed_run_signal_and_query']['evidence'],
@@ -219,7 +245,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(10, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(11, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -245,6 +271,8 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertContains('every_required_scenario_has_one_result', $resultGate['pass_requires']);
         $this->assertContains('same_language_and_cross_language_cells_are_reported', $resultGate['pass_requires']);
         $this->assertContains('each_pass_scenario_includes_required_evidence', $resultGate['pass_requires']);
+        $this->assertContains('replay_timing_timestamps_are_ordered', $resultGate['pass_requires']);
+        $this->assertContains('terminal_run_status_codes_and_reasons_are_typed', $resultGate['pass_requires']);
         $this->assertContains('each_non_pass_scenario_has_linked_findings', $resultGate['pass_requires']);
         $this->assertContains('omitted_required_scenarios_link_findings', $resultGate['pass_requires']);
         $this->assertContains('run_timestamps_outcome_and_finding_links_are_recorded', $resultGate['pass_requires']);
@@ -342,6 +370,42 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'wire_envelope_compatibility',
             ],
             $hostRunner['evidence_shards']['cross_language_client_matrix']['required_evidence_fields'],
+        );
+        $this->assertSame(
+            [
+                'signal_api_sample',
+                'signal_status_code',
+                'worker_restart_at',
+                'signal_sent_at',
+                'replay_completed_at',
+                'signal_applied_at',
+                'query_api_sample',
+                'query_status_code',
+                'query_sent_at',
+                'query_handler_invoked_at',
+                'query_completed_at',
+                'query_answer',
+                'expected_answer',
+            ],
+            $hostRunner['evidence_shards']['replay_timing']['required_evidence_fields'],
+        );
+        $this->assertSame(
+            [
+                'completed_run_id',
+                'completed_at',
+                'signal_api_sample',
+                'signal_error.status_code',
+                'signal_error.reason',
+                'signal_error.rejection_reason',
+                'query_api_sample',
+                'query_result_or_error.status_code',
+                'query_result_or_error.outcome',
+                'signal_error',
+                'query_result_or_error',
+                'public_query_surfaces',
+                'run_status_after_operations',
+            ],
+            $hostRunner['evidence_shards']['completed_run_handling']['required_evidence_fields'],
         );
         $this->assertSame(
             [
@@ -466,6 +530,22 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertSame([], $evaluation['gate_failures']);
     }
 
+    public function test_host_runner_imports_fractional_second_replay_timing_evidence_as_passing_conformance(): void
+    {
+        $result = $this->runSignalQueryHostRunner(
+            $this->withFractionalSecondReplayTiming($this->completeSignalQueryResultForCurrentHostRunner()),
+        );
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertSame(
+            '2026-05-20T00:00:01.900000Z',
+            $result['scenario_results']['query_during_replay']['observed_outputs']['query_completed_at'],
+        );
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $evaluation['gate_failures']);
+    }
+
     public function test_host_runner_rejects_imported_matrix_evidence_with_mismatched_artifact_versions(): void
     {
         $result = $this->runSignalQueryHostRunner($this->completeSignalQueryResult());
@@ -534,6 +614,18 @@ class SignalQueryRuntimeContractTest extends TestCase
 
         $this->assertSame('not_covered', $result['scenario_results']['php_worker_cli_and_sdk_baseline']['status']);
         $this->assertContains('signal_query_php_worker_mirror_uncovered', array_column($result['findings'], 'type'));
+    }
+
+    public function test_host_runner_rejects_imported_query_replay_evidence_before_consistent_state(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        $evidence['scenario_results']['query_during_replay']['observed_outputs']['query_handler_invoked_at'] =
+            '2026-05-20T00:00:01Z';
+
+        $result = $this->runSignalQueryHostRunner($evidence);
+
+        $this->assertSame('not_covered', $result['scenario_results']['query_during_replay']['status']);
+        $this->assertContains('signal_query_replay_timing_uncovered', array_column($result['findings'], 'type'));
     }
 
     public function test_result_gate_rejects_python_smoke_subset_even_when_the_smoke_passes(): void
@@ -1062,6 +1154,77 @@ class SignalQueryRuntimeContractTest extends TestCase
         );
     }
 
+    public function test_result_gate_rejects_signal_applied_before_replay_completed(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['signal_during_replay']['observed_outputs']['signal_applied_at'] =
+            '2026-05-20T00:00:01Z';
+        $result['replay_timing']['signal_during_replay']['signal_applied_at'] =
+            '2026-05-20T00:00:01Z';
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'invalid_signal_replay_timing_order',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_query_handler_invoked_before_replay_completed(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['query_during_replay']['observed_outputs']['query_handler_invoked_at'] =
+            '2026-05-20T00:00:01Z';
+        $result['replay_timing']['query_during_replay']['query_handler_invoked_at'] =
+            '2026-05-20T00:00:01Z';
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'invalid_query_replay_timing_order',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_accepts_fractional_second_replay_timing_order(): void
+    {
+        $evaluation = SignalQueryRuntimeResultGate::evaluate(
+            $this->withFractionalSecondReplayTiming($this->completeSignalQueryResult()),
+        );
+
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_result_gate_rejects_completed_run_signal_without_typed_terminal_reason(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['completed_run_signal_and_query']['observed_outputs']['signal_error'] = [
+            'status_code' => 202,
+            'reason' => 'accepted',
+            'rejection_reason' => 'accepted',
+        ];
+        $result['terminal_run_behavior']['completed_run_signal_and_query']['signal_error'] = [
+            'status_code' => 202,
+            'reason' => 'accepted',
+            'rejection_reason' => 'accepted',
+        ];
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'unexpected_status_code',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+        $this->assertContains(
+            'unexpected_terminal_signal_reason',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
     public function test_result_gate_accepts_a_complete_passing_matrix(): void
     {
         $evaluation = SignalQueryRuntimeResultGate::evaluate($this->completeSignalQueryResult());
@@ -1265,6 +1428,39 @@ class SignalQueryRuntimeContractTest extends TestCase
     }
 
     /**
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, mixed>
+     */
+    private function withFractionalSecondReplayTiming(array $result): array
+    {
+        $updates = [
+            'signal_during_replay' => [
+                'worker_restart_at' => '2026-05-20T00:00:01.100000Z',
+                'signal_sent_at' => '2026-05-20T00:00:01.200000Z',
+                'replay_completed_at' => '2026-05-20T00:00:01.700000Z',
+                'signal_applied_at' => '2026-05-20T00:00:01.800000Z',
+            ],
+            'query_during_replay' => [
+                'worker_restart_at' => '2026-05-20T00:00:01.100000Z',
+                'query_sent_at' => '2026-05-20T00:00:01.250000Z',
+                'replay_completed_at' => '2026-05-20T00:00:01.700000Z',
+                'query_handler_invoked_at' => '2026-05-20T00:00:01.750000Z',
+                'query_completed_at' => '2026-05-20T00:00:01.900000Z',
+            ],
+        ];
+
+        foreach ($updates as $scenarioId => $values) {
+            foreach ($values as $key => $value) {
+                $result['scenario_results'][$scenarioId]['observed_outputs'][$key] = $value;
+                $result['replay_timing'][$scenarioId][$key] = $value;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function completeSignalQueryResultForCurrentHostRunner(): array
@@ -1348,21 +1544,55 @@ class SignalQueryRuntimeContractTest extends TestCase
             'handler_observation_count' => 2,
         ];
         $scenarioResults['signal_during_replay']['observed_outputs'] = [
+            'signal_api_sample' => [
+                'method' => 'POST',
+                'path' => '/api/workflows/wf-replay-timing/signal/increment',
+                'body' => ['input' => [3]],
+            ],
+            'signal_status_code' => 202,
             'worker_restart_at' => '2026-05-20T00:00:00Z',
             'signal_sent_at' => '2026-05-20T00:00:01Z',
             'replay_completed_at' => '2026-05-20T00:00:02Z',
             'signal_applied_at' => '2026-05-20T00:00:03Z',
         ];
         $scenarioResults['query_during_replay']['observed_outputs'] = [
+            'query_api_sample' => [
+                'method' => 'POST',
+                'path' => '/api/workflows/wf-replay-timing/query/current',
+                'body' => ['input' => []],
+            ],
+            'query_status_code' => 200,
             'worker_restart_at' => '2026-05-20T00:00:00Z',
             'query_sent_at' => '2026-05-20T00:00:01Z',
+            'replay_completed_at' => '2026-05-20T00:00:02Z',
+            'query_handler_invoked_at' => '2026-05-20T00:00:03Z',
+            'query_completed_at' => '2026-05-20T00:00:04Z',
             'query_answer' => 8,
             'expected_answer' => 8,
         ];
         $scenarioResults['completed_run_signal_and_query']['observed_outputs'] = [
             'completed_run_id' => 'run-completed-1',
-            'signal_error' => ['reason' => 'run_not_active'],
-            'query_result_or_error' => ['current' => 8],
+            'completed_at' => '2026-05-20T00:01:00Z',
+            'signal_api_sample' => [
+                'method' => 'POST',
+                'path' => '/api/workflows/wf-completed/signal/increment',
+                'body' => ['input' => [1]],
+            ],
+            'signal_error' => [
+                'status_code' => 409,
+                'reason' => 'run_not_active',
+                'rejection_reason' => 'run_not_active',
+            ],
+            'query_api_sample' => [
+                'method' => 'POST',
+                'path' => '/api/workflows/wf-completed/query/current',
+                'body' => ['input' => []],
+            ],
+            'query_result_or_error' => [
+                'status_code' => 200,
+                'outcome' => 'completed_query_replayed_final_state',
+                'current' => 8,
+            ],
             'public_query_surfaces' => ['cli', 'sdk-python', 'workflow-php-sdk'],
             'run_status_after_operations' => 'completed',
         ];

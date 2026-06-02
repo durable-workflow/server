@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 10;
+    public const VERSION = 11;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -98,6 +98,8 @@ final class SignalQueryRuntimeResultGate
                 'replay_terminal_adversarial_and_waterline_sections_are_reported',
                 'each_pass_scenario_has_observed_outputs',
                 'each_pass_scenario_includes_required_evidence',
+                'replay_timing_timestamps_are_ordered',
+                'terminal_run_status_codes_and_reasons_are_typed',
                 'each_non_pass_scenario_has_linked_findings',
                 'omitted_required_scenarios_link_findings',
                 'run_timestamps_outcome_and_finding_links_are_recorded',
@@ -1096,6 +1098,189 @@ final class SignalQueryRuntimeResultGate
                     ];
                 }
             }
+
+            if ($scenarioId === 'signal_during_replay') {
+                array_push(
+                    $failures,
+                    ...self::timestampOrderFailures($result, $scenarioResult, $scenarioId, [
+                        ['worker_restart_at', '<=', 'signal_sent_at'],
+                        ['signal_sent_at', '<', 'replay_completed_at'],
+                        ['replay_completed_at', '<=', 'signal_applied_at'],
+                    ], 'invalid_signal_replay_timing_order'),
+                );
+                array_push(
+                    $failures,
+                    ...self::statusCodeFailures($result, $scenarioResult, $scenarioId, [
+                        'signal_status_code' => [200, 299],
+                    ]),
+                );
+            }
+
+            if ($scenarioId === 'query_during_replay') {
+                array_push(
+                    $failures,
+                    ...self::timestampOrderFailures($result, $scenarioResult, $scenarioId, [
+                        ['worker_restart_at', '<=', 'query_sent_at'],
+                        ['query_sent_at', '<', 'replay_completed_at'],
+                        ['replay_completed_at', '<=', 'query_handler_invoked_at'],
+                        ['query_handler_invoked_at', '<=', 'query_completed_at'],
+                    ], 'invalid_query_replay_timing_order'),
+                );
+                array_push(
+                    $failures,
+                    ...self::statusCodeFailures($result, $scenarioResult, $scenarioId, [
+                        'query_status_code' => [200, 299],
+                    ]),
+                );
+            }
+
+            if ($scenarioId === 'completed_run_signal_and_query') {
+                array_push(
+                    $failures,
+                    ...self::statusCodeFailures($result, $scenarioResult, $scenarioId, [
+                        'signal_error.status_code' => [400, 499],
+                        'query_result_or_error.status_code' => [200, 499],
+                    ]),
+                    ...self::terminalRunReasonFailures($result, $scenarioResult, $scenarioId),
+                );
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     * @param list<array{0: string, 1: string, 2: string}> $orders
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function timestampOrderFailures(
+        array $result,
+        array $scenarioResult,
+        string $scenarioId,
+        array $orders,
+        string $code,
+    ): array {
+        $failures = [];
+
+        foreach ($orders as [$leftKey, $operator, $rightKey]) {
+            $left = self::timestampMicroseconds(
+                self::evidenceValue($result, $scenarioResult, $scenarioId, $leftKey),
+            );
+            $right = self::timestampMicroseconds(
+                self::evidenceValue($result, $scenarioResult, $scenarioId, $rightKey),
+            );
+
+            if ($left === null || $right === null) {
+                $failures[] = [
+                    'code' => 'invalid_replay_timing_timestamp',
+                    'scenario_id' => $scenarioId,
+                    'left_key' => $leftKey,
+                    'right_key' => $rightKey,
+                ];
+                continue;
+            }
+
+            $passes = $operator === '<'
+                ? $left < $right
+                : $left <= $right;
+
+            if ($passes) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => $code,
+                'scenario_id' => $scenarioId,
+                'left_key' => $leftKey,
+                'operator' => $operator,
+                'right_key' => $rightKey,
+                'left_value' => self::evidenceValue($result, $scenarioResult, $scenarioId, $leftKey),
+                'right_value' => self::evidenceValue($result, $scenarioResult, $scenarioId, $rightKey),
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     * @param array<string, array{0: int, 1: int}> $ranges
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function statusCodeFailures(
+        array $result,
+        array $scenarioResult,
+        string $scenarioId,
+        array $ranges,
+    ): array {
+        $failures = [];
+
+        foreach ($ranges as $evidenceKey => [$minimum, $maximum]) {
+            $value = self::evidenceValue($result, $scenarioResult, $scenarioId, $evidenceKey);
+            $status = self::integerValue($value);
+
+            if ($status !== null && $status >= $minimum && $status <= $maximum) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'unexpected_status_code',
+                'scenario_id' => $scenarioId,
+                'evidence_key' => $evidenceKey,
+                'expected_minimum' => $minimum,
+                'expected_maximum' => $maximum,
+                'actual_status_code' => $value,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function terminalRunReasonFailures(
+        array $result,
+        array $scenarioResult,
+        string $scenarioId,
+    ): array {
+        $failures = [];
+        $signalReason = self::stringValue(self::evidenceValue($result, $scenarioResult, $scenarioId, 'signal_error.reason'));
+        $signalRejectionReason = self::stringValue(
+            self::evidenceValue($result, $scenarioResult, $scenarioId, 'signal_error.rejection_reason'),
+        );
+
+        if ($signalReason !== 'run_not_active' || $signalRejectionReason !== 'run_not_active') {
+            $failures[] = [
+                'code' => 'unexpected_terminal_signal_reason',
+                'scenario_id' => $scenarioId,
+                'expected_reason' => 'run_not_active',
+                'actual_reason' => $signalReason,
+                'actual_rejection_reason' => $signalRejectionReason,
+            ];
+        }
+
+        $queryStatus = self::integerValue(
+            self::evidenceValue($result, $scenarioResult, $scenarioId, 'query_result_or_error.status_code'),
+        );
+        $queryReason = self::stringValue(
+            self::evidenceValue($result, $scenarioResult, $scenarioId, 'query_result_or_error.reason'),
+        );
+
+        if ($queryStatus !== null && $queryStatus >= 400 && $queryReason === '') {
+            $failures[] = [
+                'code' => 'missing_terminal_query_reason',
+                'scenario_id' => $scenarioId,
+                'status_code' => $queryStatus,
+            ];
         }
 
         return $failures;
@@ -1445,6 +1630,39 @@ final class SignalQueryRuntimeResultGate
     private static function stringValue(mixed $value): string
     {
         return is_scalar($value) ? (string) $value : '';
+    }
+
+    private static function integerValue(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        if (is_string($value) && preg_match('/^-?\d+$/', trim($value)) === 1) {
+            return (int) trim($value);
+        }
+
+        return null;
+    }
+
+    private static function timestampMicroseconds(mixed $value): ?int
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+        if ($value === '') {
+            return null;
+        }
+
+        try {
+            $timestamp = new \DateTimeImmutable($value);
+        } catch (\Exception) {
+            return null;
+        }
+
+        return ((int) $timestamp->format('U') * 1_000_000) + (int) $timestamp->format('u');
     }
 
     /**
