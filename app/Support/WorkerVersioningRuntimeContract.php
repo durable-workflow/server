@@ -324,6 +324,10 @@ final class WorkerVersioningRuntimeContract
                     'worker-versioning-record.json',
                     'worker-versioning-http-captures.json',
                 ],
+                'evidence_inputs' => [
+                    'DW_WV_ARTIFACT_INSTALL_EVIDENCE' => 'Optional JSON report proving required artifacts were installed and smoke-executed from published channels.',
+                    'DW_WV_PUBLISHED_WORKER_EVIDENCE' => 'Optional JSON report from the host worker-versioning topology after published worker artifacts executed replay, cache-eviction, or cross-language cells.',
+                ],
                 'evidence_shards' => [
                     'published_artifact_versions',
                     'published_artifact_install_evidence',

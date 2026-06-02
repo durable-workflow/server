@@ -32,6 +32,9 @@ Environment overrides:
   DW_WV_ARTIFACT_INSTALL_EVIDENCE
                               Optional JSON report proving CLI, Python SDK, PHP workflow,
                               and Waterline installs from published artifact channels.
+  DW_WV_PUBLISHED_WORKER_EVIDENCE
+                              Optional JSON report from a host topology that executed
+                              replay/cache/cross-language cells with published workers.
 USAGE
 }
 

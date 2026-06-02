@@ -570,6 +570,11 @@ final class WorkerVersioningRuntimeResultGate
         return false;
     }
 
+    private static function isConcreteArtifactVersion(string $version): bool
+    {
+        return preg_match('/^[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?$/', trim($version)) === 1;
+    }
+
     /**
      * @param array<string, mixed> $result
      * @param array<string, mixed> $contract
@@ -1266,6 +1271,19 @@ final class WorkerVersioningRuntimeResultGate
             }
 
             foreach ($requiredTrueFields as $field) {
+                if ($field === 'published_artifact_worker_execution') {
+                    array_push(
+                        $failures,
+                        ...self::publishedWorkerExecutionFieldFailures(
+                            $scenarioId,
+                            $evidence,
+                            $scenarioId === 'cross_language_php_python_pinning',
+                        ),
+                    );
+
+                    continue;
+                }
+
                 $aliases = [$field, self::camelize($field)];
                 if (self::fieldExists($evidence, $aliases) && self::truthyField($evidence, $aliases)) {
                     continue;
@@ -1284,6 +1302,234 @@ final class WorkerVersioningRuntimeResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function publishedWorkerExecutionFieldFailures(
+        string $scenarioId,
+        array $evidence,
+        bool $requiresBothPhpAndPython,
+    ): array {
+        $failures = [];
+
+        if (! self::hasExplicitFalseField($evidence, [
+            'local_product_source_checkouts_used',
+            'localProductSourceCheckoutsUsed',
+        ])) {
+            $failures[] = [
+                'code' => 'local_product_source_checkouts_used_must_be_false',
+                'scenario_id' => $scenarioId,
+                'field' => 'local_product_source_checkouts_used',
+                'value' => $evidence['local_product_source_checkouts_used']
+                    ?? $evidence['localProductSourceCheckoutsUsed']
+                    ?? null,
+            ];
+        }
+
+        $execution = self::fieldValue($evidence, [
+            'published_artifact_worker_execution',
+            'publishedArtifactWorkerExecution',
+        ]);
+
+        if (! is_array($execution)) {
+            return [[
+                'code' => 'published_artifact_worker_execution_missing',
+                'scenario_id' => $scenarioId,
+                'field' => 'published_artifact_worker_execution',
+                'expected' => 'object_with_artifacts',
+                'actual' => $execution,
+            ]];
+        }
+
+        if (! self::hasExplicitFalseField($execution, [
+            'local_product_source_checkouts_used',
+            'localProductSourceCheckoutsUsed',
+        ])) {
+            $failures[] = [
+                'code' => 'local_product_source_checkouts_used_must_be_false',
+                'scenario_id' => $scenarioId,
+                'field' => 'published_artifact_worker_execution.local_product_source_checkouts_used',
+                'value' => $execution['local_product_source_checkouts_used']
+                    ?? $execution['localProductSourceCheckoutsUsed']
+                    ?? null,
+            ];
+        }
+
+        $entries = self::publishedWorkerExecutionEntries($execution);
+        if ($entries === []) {
+            $failures[] = [
+                'code' => 'published_artifact_worker_execution_missing_artifacts',
+                'scenario_id' => $scenarioId,
+                'field' => 'published_artifact_worker_execution.artifacts',
+            ];
+
+            return $failures;
+        }
+
+        $forbiddenSources = [
+            'local_product_source_checkout',
+            'workspace_repo_as_artifact_under_test',
+            'local_checkout_artifact',
+            'local_checkout',
+            'local_source_checkout',
+            'workspace_repo',
+            'not_exercised',
+        ];
+        $validArtifacts = [];
+
+        foreach ($entries as $index => $entry) {
+            $artifact = self::canonicalWorkerArtifact(self::stringField($entry, ['artifact', 'name', 'id']));
+            if (! in_array($artifact, ['sdk-python', 'workflow-php'], true)) {
+                $failures[] = [
+                    'code' => 'unsupported_published_worker_execution_artifact',
+                    'scenario_id' => $scenarioId,
+                    'field' => sprintf('published_artifact_worker_execution.artifacts.%d.artifact', $index),
+                    'artifact' => self::stringField($entry, ['artifact', 'name', 'id']),
+                ];
+
+                continue;
+            }
+
+            $status = strtolower(self::stringField($entry, ['status', 'result', 'outcome']));
+            if ($status !== 'pass') {
+                $failures[] = [
+                    'code' => 'published_artifact_worker_execution_not_pass',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => $artifact,
+                    'status' => $status,
+                    'field' => sprintf('published_artifact_worker_execution.artifacts.%d.status', $index),
+                ];
+            }
+
+            $source = self::stringField($entry, ['source', 'install_source', 'installSource', 'artifact_source', 'artifactSource']);
+            if ($source === '') {
+                $failures[] = [
+                    'code' => 'missing_published_artifact_worker_execution_source',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => $artifact,
+                    'field' => sprintf('published_artifact_worker_execution.artifacts.%d.source', $index),
+                ];
+            } elseif (self::isForbiddenArtifactSource($source, $forbiddenSources)) {
+                $failures[] = [
+                    'code' => 'forbidden_published_artifact_worker_execution_source',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => $artifact,
+                    'source' => $source,
+                    'field' => sprintf('published_artifact_worker_execution.artifacts.%d.source', $index),
+                ];
+            }
+
+            $version = self::stringField($entry, ['version', 'artifact_version', 'artifactVersion']);
+            if ($version === '') {
+                $failures[] = [
+                    'code' => 'missing_published_artifact_worker_execution_version',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => $artifact,
+                    'field' => sprintf('published_artifact_worker_execution.artifacts.%d.version', $index),
+                ];
+            } elseif (! self::isConcreteArtifactVersion($version)) {
+                $failures[] = [
+                    'code' => 'invalid_published_artifact_worker_execution_version',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => $artifact,
+                    'version' => $version,
+                    'field' => sprintf('published_artifact_worker_execution.artifacts.%d.version', $index),
+                ];
+            } elseif (self::isPlaceholderVersion($version)) {
+                $failures[] = [
+                    'code' => 'placeholder_published_artifact_worker_execution_version',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => $artifact,
+                    'version' => $version,
+                    'field' => sprintf('published_artifact_worker_execution.artifacts.%d.version', $index),
+                ];
+            }
+
+            if (self::truthyField($entry, [
+                'local_product_source_checkouts_used',
+                'localProductSourceCheckoutsUsed',
+            ])) {
+                $failures[] = [
+                    'code' => 'local_product_source_checkouts_used_must_be_false',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => $artifact,
+                    'field' => sprintf('published_artifact_worker_execution.artifacts.%d.local_product_source_checkouts_used', $index),
+                    'value' => $entry['local_product_source_checkouts_used']
+                        ?? $entry['localProductSourceCheckoutsUsed']
+                        ?? null,
+                ];
+            }
+
+            if (
+                $status === 'pass'
+                && $source !== ''
+                && ! self::isForbiddenArtifactSource($source, $forbiddenSources)
+                && $version !== ''
+                && self::isConcreteArtifactVersion($version)
+                && ! self::isPlaceholderVersion($version)
+                && ! self::truthyField($entry, [
+                    'local_product_source_checkouts_used',
+                    'localProductSourceCheckoutsUsed',
+                ])
+            ) {
+                $validArtifacts[$artifact] = true;
+            }
+        }
+
+        $requiredArtifacts = $requiresBothPhpAndPython
+            ? ['workflow-php', 'sdk-python']
+            : ['workflow-php', 'sdk-python'];
+        $missingArtifacts = $requiresBothPhpAndPython
+            ? array_values(array_filter(
+                $requiredArtifacts,
+                static fn (string $artifact): bool => ! isset($validArtifacts[$artifact]),
+            ))
+            : (array_intersect(array_keys($validArtifacts), $requiredArtifacts) === [] ? ['workflow-php-or-sdk-python'] : []);
+
+        foreach ($missingArtifacts as $artifact) {
+            $failures[] = [
+                'code' => 'missing_required_published_worker_execution_artifact',
+                'scenario_id' => $scenarioId,
+                'artifact' => $artifact,
+                'field' => 'published_artifact_worker_execution.artifacts',
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $execution
+     * @return list<array<string, mixed>>
+     */
+    private static function publishedWorkerExecutionEntries(array $execution): array
+    {
+        $entries = self::arrayField($execution, ['artifacts', 'workers', 'executions']);
+        if ($entries !== null) {
+            return array_values(array_filter(
+                $entries,
+                static fn (mixed $entry): bool => is_array($entry),
+            ));
+        }
+
+        if (self::fieldExists($execution, ['artifact', 'name', 'source'])) {
+            return [$execution];
+        }
+
+        return [];
+    }
+
+    private static function canonicalWorkerArtifact(string $artifact): string
+    {
+        return match (self::normalizeRuntimeSurface($artifact)) {
+            'sdkpython' => 'sdk-python',
+            'workflowphp' => 'workflow-php',
+            default => strtolower(str_replace('_', '-', trim($artifact))),
+        };
     }
 
     /**
@@ -1617,6 +1863,21 @@ final class WorkerVersioningRuntimeResultGate
         }
 
         return false;
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     * @param list<string> $fields
+     */
+    private static function fieldValue(array $value, array $fields): mixed
+    {
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $value)) {
+                return $value[$field];
+            }
+        }
+
+        return null;
     }
 
     /**

@@ -97,6 +97,14 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'worker-versioning-result.json',
             $manifest['host_runner_contract']['result_files'],
         );
+        $this->assertArrayHasKey(
+            'DW_WV_PUBLISHED_WORKER_EVIDENCE',
+            $manifest['host_runner_contract']['evidence_inputs'],
+        );
+        $this->assertArrayHasKey(
+            'DW_WV_ARTIFACT_INSTALL_EVIDENCE',
+            $manifest['host_runner_contract']['evidence_inputs'],
+        );
         $this->assertContains(
             'compatible_replay_delivery_counts',
             $manifest['host_runner_contract']['evidence_shards'],
@@ -199,6 +207,10 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         $this->assertSame(
             $manifest['host_runner_contract']['result_files'],
             $scenarioManifest['host_runner_contract']['result_files'],
+        );
+        $this->assertSame(
+            $manifest['host_runner_contract']['evidence_inputs'],
+            $scenarioManifest['host_runner_contract']['evidence_inputs'],
         );
 
         foreach ($manifest['scenario_requirements'] as $scenarioId => $requirements) {
@@ -761,6 +773,86 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         $this->assertNotEmpty($failures);
     }
 
+    public function test_result_gate_rejects_boolean_published_worker_execution_claim(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['scenario_results']['replay_only_by_compatible_workers']['observed_outputs'][
+            'published_artifact_worker_execution'
+        ] = true;
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'published_artifact_worker_execution_missing'
+                && ($failure['scenario_id'] ?? null) === 'replay_only_by_compatible_workers',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($failures);
+    }
+
+    public function test_result_gate_rejects_forbidden_published_worker_execution_source(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['scenario_results']['replay_only_by_compatible_workers']['observed_outputs'][
+            'published_artifact_worker_execution'
+        ]['artifacts'][0]['source'] = 'not_exercised';
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'forbidden_published_artifact_worker_execution_source'
+                && ($failure['scenario_id'] ?? null) === 'replay_only_by_compatible_workers'
+                && ($failure['artifact'] ?? null) === 'sdk-python',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($failures);
+    }
+
+    public function test_result_gate_rejects_published_worker_execution_local_checkout_flag(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['scenario_results']['replay_across_cache_eviction']['observed_outputs'][
+            'published_artifact_worker_execution'
+        ]['local_product_source_checkouts_used'] = 'true';
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'local_product_source_checkouts_used_must_be_false'
+                && ($failure['scenario_id'] ?? null) === 'replay_across_cache_eviction'
+                && ($failure['field'] ?? null) === 'published_artifact_worker_execution.local_product_source_checkouts_used',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($failures);
+    }
+
+    public function test_result_gate_rejects_published_worker_scenario_local_checkout_flag(): void
+    {
+        foreach ([
+            'replay_only_by_compatible_workers',
+            'replay_across_cache_eviction',
+            'cross_language_php_python_pinning',
+        ] as $scenarioId) {
+            $result = $this->completeWorkerVersioningResult();
+            $result['scenario_results'][$scenarioId]['observed_outputs']['local_product_source_checkouts_used'] =
+                'true';
+
+            $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+            $failures = array_values(array_filter(
+                $evaluation['gate_failures'],
+                static fn (array $failure): bool => ($failure['code'] ?? null) === 'local_product_source_checkouts_used_must_be_false'
+                    && ($failure['scenario_id'] ?? null) === $scenarioId
+                    && ($failure['field'] ?? null) === 'local_product_source_checkouts_used',
+            ));
+
+            $this->assertSame('non_passing', $evaluation['status'], $scenarioId);
+            $this->assertNotEmpty($failures, $scenarioId);
+        }
+    }
+
     public function test_result_gate_rejects_placeholder_artifact_versions(): void
     {
         $result = $this->completeWorkerVersioningResult();
@@ -804,6 +896,37 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'sdk-python' => 'published_pypi',
             'workflow-php' => 'published_composer',
             'waterline' => 'published_artifact',
+        ];
+        $pythonPublishedWorkerExecution = [
+            'local_product_source_checkouts_used' => false,
+            'artifacts' => [
+                [
+                    'artifact' => 'sdk-python',
+                    'version' => '0.4.74',
+                    'source' => 'published_pypi',
+                    'status' => 'pass',
+                    'command' => 'pip install durable-workflow==0.4.74',
+                ],
+            ],
+        ];
+        $crossLanguagePublishedWorkerExecution = [
+            'local_product_source_checkouts_used' => false,
+            'artifacts' => [
+                [
+                    'artifact' => 'workflow-php',
+                    'version' => '2.0.0-alpha.176',
+                    'source' => 'published_composer',
+                    'status' => 'pass',
+                    'command' => 'composer require durable-workflow/workflow:2.0.0-alpha.176',
+                ],
+                [
+                    'artifact' => 'sdk-python',
+                    'version' => '0.4.74',
+                    'source' => 'published_pypi',
+                    'status' => 'pass',
+                    'command' => 'pip install durable-workflow==0.4.74',
+                ],
+            ],
         ];
 
         $scenarioResults['published_artifact_install_only']['observed_outputs'] += [
@@ -859,7 +982,8 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'v1_worker_task_count' => 3,
             'v2_worker_task_count_for_v1_run' => 0,
             'workflow_result' => ['activity_a', 'activity_b'],
-            'published_artifact_worker_execution' => true,
+            'local_product_source_checkouts_used' => false,
+            'published_artifact_worker_execution' => $pythonPublishedWorkerExecution,
             'divergent_workflow_execution_observed' => true,
         ];
         $scenarioResults['new_starts_to_promoted_version']['observed_outputs'] += [
@@ -871,7 +995,8 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'cache_eviction_observed' => true,
             'replay_worker_build_id' => 'v1',
             'incompatible_delivery_count' => 0,
-            'published_artifact_worker_execution' => true,
+            'local_product_source_checkouts_used' => false,
+            'published_artifact_worker_execution' => $pythonPublishedWorkerExecution,
             'divergent_workflow_execution_observed' => true,
         ];
         $scenarioResults['no_compatible_worker_behavior']['observed_outputs'] += [
@@ -890,7 +1015,8 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'python_worker_build_id' => 'python-v2',
             'php_v1_to_python_v2_incompatible_delivery_count' => 0,
             'python_v1_to_php_v2_incompatible_delivery_count' => 0,
-            'published_artifact_worker_execution' => true,
+            'local_product_source_checkouts_used' => false,
+            'published_artifact_worker_execution' => $crossLanguagePublishedWorkerExecution,
             'cross_language_delivery' => [
                 'cells' => [
                     [

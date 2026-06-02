@@ -19,6 +19,8 @@ const artifactManifestPath = process.env.DW_WV_ARTIFACTS_JSON
   ?? path.join(resultDir, 'published-artifacts.json');
 const artifactInstallEvidencePath = process.env.DW_WV_ARTIFACT_INSTALL_EVIDENCE
   ?? path.join(resultDir, 'artifact-install-evidence.json');
+const publishedWorkerEvidencePath = process.env.DW_WV_PUBLISHED_WORKER_EVIDENCE
+  ?? path.join(resultDir, 'published-worker-execution-evidence.json');
 const REQUIRED_INSTALL_ARTIFACTS = ['server', 'cli', 'sdk-python', 'workflow-php', 'waterline'];
 const FORBIDDEN_INSTALL_SOURCE_TOKENS = [
   'not_exercised',
@@ -77,6 +79,7 @@ async function main() {
   let artifactSources = artifactSourcesFromEnv();
   const installEvidence = artifactInstallEvidence(artifactVersions, artifactSources);
   artifactSources = mergeArtifactSources(artifactSources, installEvidence);
+  const publishedWorkerEvidence = publishedWorkerExecutionEvidence(artifactVersions, artifactSources);
   writePublishedArtifacts(artifactVersions, artifactSources, installEvidence);
 
   const versionFailures = artifactVersionFailures(artifactVersions);
@@ -539,7 +542,35 @@ async function main() {
     published_artifact_worker_execution: false,
     divergent_workflow_execution_observed: false,
   };
-  if (v1TaskCount > 0 && v2TaskCountForV1Run === 0) {
+  const publishedReplayOutputs = mergeScenarioOutputs(
+    compatibleReplayOutputs,
+    publishedWorkerScenarioOutputs(publishedWorkerEvidence, 'replay_only_by_compatible_workers'),
+  );
+  const publishedReplayV1TaskCount = numberValue(publishedReplayOutputs.v1_worker_task_count);
+  const publishedReplayV2TaskCount = numberValue(publishedReplayOutputs.v2_worker_task_count_for_v1_run);
+  const publishedReplayWorkerExecuted = publishedWorkerScenarioPasses(
+    publishedReplayOutputs,
+    ['sdk-python', 'workflow-php'],
+    false,
+  );
+  const publishedReplayPasses = publishedReplayWorkerExecuted
+    && truthyEvidenceFlag(publishedReplayOutputs.divergent_workflow_execution_observed)
+    && publishedReplayV1TaskCount > 0
+    && publishedReplayV2TaskCount === 0;
+  if (publishedReplayPasses) {
+    addPass('replay_only_by_compatible_workers', publishedReplayOutputs);
+  } else if (publishedReplayWorkerExecuted) {
+    addFail('replay_only_by_compatible_workers', publishedReplayOutputs, {
+      scenario_id: 'replay_only_by_compatible_workers',
+      owning_surface: 'server',
+      artifact_versions: artifactVersions,
+      observed_behavior: 'Published worker replay evidence did not prove positive v1-compatible delivery with zero v2 delivery for the same v1-pinned divergent run.',
+      expected_behavior: 'A published PHP or Python v1 workflow with divergent v2 code is replayed only by a v1-compatible worker while v2 workers poll the same task queue.',
+      next_acceptance_criterion: 'rerun the published worker-versioning topology and record v1_worker_task_count above zero, v2_worker_task_count_for_v1_run equal to zero, divergent_workflow_execution_observed=true, and published_artifact_worker_execution from a published worker artifact',
+      v1_worker_task_count: publishedReplayV1TaskCount,
+      v2_worker_task_count_for_v1_run: publishedReplayV2TaskCount,
+    });
+  } else if (v1TaskCount > 0 && v2TaskCountForV1Run === 0) {
     addNotCovered('replay_only_by_compatible_workers', compatibleReplayOutputs, {
       scenario_id: 'replay_only_by_compatible_workers',
       owning_surface: 'conformance_harness',
@@ -576,10 +607,42 @@ async function main() {
     divergent_workflow_execution_observed: false,
   };
   const expectedReplayBuildId = stringValue(v1RunShow.compatibility) || buildV1;
-  const cacheEvictionPasses = cacheEvictionObserved
-    && cacheEvictionIncompatibleCount === 0
-    && replayWorkerBuildId === expectedReplayBuildId;
+  const publishedCacheEvictionOutputs = mergeScenarioOutputs(
+    cacheEvictionOutputs,
+    publishedWorkerScenarioOutputs(publishedWorkerEvidence, 'replay_across_cache_eviction'),
+  );
+  const publishedCacheEvictionIncompatibleCount = numberValue(
+    publishedCacheEvictionOutputs.incompatible_delivery_count,
+  );
+  const publishedReplayWorkerBuildId = stringValue(publishedCacheEvictionOutputs.replay_worker_build_id);
+  const publishedCacheEvictionWorkerExecuted = publishedWorkerScenarioPasses(
+    publishedCacheEvictionOutputs,
+    ['sdk-python', 'workflow-php'],
+    false,
+  );
+  const cacheEvictionPasses = publishedCacheEvictionWorkerExecuted
+    && truthyEvidenceFlag(publishedCacheEvictionOutputs.divergent_workflow_execution_observed)
+    && truthyEvidenceFlag(publishedCacheEvictionOutputs.cache_eviction_observed)
+    && publishedCacheEvictionIncompatibleCount === 0
+    && publishedReplayWorkerBuildId === expectedReplayBuildId;
   if (cacheEvictionPasses) {
+    addPass('replay_across_cache_eviction', publishedCacheEvictionOutputs);
+  } else if (publishedCacheEvictionWorkerExecuted) {
+    addFail('replay_across_cache_eviction', publishedCacheEvictionOutputs, {
+      scenario_id: 'replay_across_cache_eviction',
+      owning_surface: 'server',
+      artifact_versions: artifactVersions,
+      observed_behavior: 'Published worker cache-eviction evidence did not prove replay on the pinned compatible build with zero incompatible delivery.',
+      expected_behavior: 'After published-worker restart or cache eviction, v1-pinned history is replayed only by the v1-compatible build while v2 workers receive zero tasks for that run.',
+      next_acceptance_criterion: 'rerun with a published worker process restart or cache eviction and record cache_eviction_observed=true, replay_worker_build_id equal to the pinned run build id, incompatible_delivery_count equal to zero, and published_artifact_worker_execution from a published worker artifact',
+      expected_replay_worker_build_id: expectedReplayBuildId,
+      replay_worker_build_id: publishedReplayWorkerBuildId,
+      incompatible_delivery_count: publishedCacheEvictionIncompatibleCount,
+      cache_eviction_observed: publishedCacheEvictionOutputs.cache_eviction_observed,
+    });
+  } else if (cacheEvictionObserved
+    && cacheEvictionIncompatibleCount === 0
+    && replayWorkerBuildId === expectedReplayBuildId) {
     addNotCovered('replay_across_cache_eviction', cacheEvictionOutputs, {
       scenario_id: 'replay_across_cache_eviction',
       owning_surface: 'conformance_harness',
@@ -681,11 +744,51 @@ async function main() {
     server_protocol_probe_only: true,
     published_artifact_worker_execution: false,
   };
-  const crossLanguagePasses = phpToPythonIncompatibleCount === 0
+  const publishedCrossLanguageOutputs = mergeScenarioOutputs(
+    crossLanguageOutputs,
+    publishedWorkerScenarioOutputs(publishedWorkerEvidence, 'cross_language_php_python_pinning'),
+  );
+  const publishedPhpToPythonIncompatibleCount = numberValue(
+    publishedCrossLanguageOutputs.php_v1_to_python_v2_incompatible_delivery_count,
+  );
+  const publishedPythonToPhpIncompatibleCount = numberValue(
+    publishedCrossLanguageOutputs.python_v1_to_php_v2_incompatible_delivery_count,
+  );
+  const publishedPhpCompatibleCount = numberValue(
+    publishedCrossLanguageOutputs.php_v1_compatible_delivery_count,
+  );
+  const publishedPythonCompatibleCount = numberValue(
+    publishedCrossLanguageOutputs.python_v1_compatible_delivery_count,
+  );
+  const publishedCrossLanguageWorkerExecuted = publishedWorkerScenarioPasses(
+    publishedCrossLanguageOutputs,
+    ['sdk-python', 'workflow-php'],
+    true,
+  );
+  const crossLanguagePasses = publishedCrossLanguageWorkerExecuted
+    && publishedPhpToPythonIncompatibleCount === 0
+    && publishedPythonToPhpIncompatibleCount === 0
+    && publishedPhpCompatibleCount > 0
+    && publishedPythonCompatibleCount > 0;
+  if (crossLanguagePasses) {
+    addPass('cross_language_php_python_pinning', publishedCrossLanguageOutputs);
+  } else if (publishedCrossLanguageWorkerExecuted) {
+    addFail('cross_language_php_python_pinning', publishedCrossLanguageOutputs, {
+      scenario_id: 'cross_language_php_python_pinning',
+      owning_surface: 'server',
+      artifact_versions: artifactVersions,
+      observed_behavior: 'Published PHP/Python worker evidence did not prove zero incompatible cross-language delivery with positive compatible delivery in both directions.',
+      expected_behavior: 'PHP v1-pinned runs are never delivered to Python v2, Python v1-pinned runs are never delivered to PHP v2, and both directions are exercised by actual published worker artifacts.',
+      next_acceptance_criterion: 'rerun the cross-language cells with installed workflow-php and sdk-python artifacts and record both incompatible delivery counts as zero with positive compatible delivery counts',
+      php_v1_to_python_v2_incompatible_delivery_count: publishedPhpToPythonIncompatibleCount,
+      python_v1_to_php_v2_incompatible_delivery_count: publishedPythonToPhpIncompatibleCount,
+      php_v1_compatible_delivery_count: publishedPhpCompatibleCount,
+      python_v1_compatible_delivery_count: publishedPythonCompatibleCount,
+    });
+  } else if (phpToPythonIncompatibleCount === 0
     && pythonToPhpIncompatibleCount === 0
     && phpV1CompatibleCount > 0
-    && pythonV1CompatibleCount > 0;
-  if (crossLanguagePasses) {
+    && pythonV1CompatibleCount > 0) {
     addNotCovered('cross_language_php_python_pinning', crossLanguageOutputs, {
       scenario_id: 'cross_language_php_python_pinning',
       owning_surface: 'conformance_harness',
@@ -733,6 +836,7 @@ async function main() {
     runner_blocked: false,
     artifact_versions: artifactVersions,
     artifact_sources: artifactSources,
+    published_worker_execution_evidence: publishedWorkerEvidence,
     scenario_results: scenarioResults,
     findings,
     finding_links: findingLinks,
@@ -1106,6 +1210,208 @@ function mergeArtifactSources(artifactSources, installEvidence) {
   }
 
   return merged;
+}
+
+function publishedWorkerExecutionEvidence(artifactVersions, artifactSources) {
+  const supplied = readJsonIfExists(publishedWorkerEvidencePath);
+  if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied)) {
+    return {
+      schema: 'durable-workflow.v2.worker-versioning-runtime.published-worker-execution-evidence',
+      local_product_source_checkouts_used: false,
+      generated_at: timestamp(),
+      scenario_results: {},
+      note: 'No host published-worker execution shard was supplied.',
+    };
+  }
+
+  return {
+    schema: stringValue(supplied.schema)
+      || 'durable-workflow.v2.worker-versioning-runtime.published-worker-execution-evidence',
+    local_product_source_checkouts_used: truthyEvidenceFlag(supplied.local_product_source_checkouts_used)
+      || truthyEvidenceFlag(supplied.localProductSourceCheckoutsUsed),
+    generated_at: stringValue(supplied.generated_at) || stringValue(supplied.generatedAt) || timestamp(),
+    artifact_versions: {
+      ...artifactVersions,
+      ...objectValue(supplied.artifact_versions),
+      ...objectValue(supplied.artifactVersions),
+    },
+    artifact_sources: {
+      ...artifactSources,
+      ...objectValue(supplied.artifact_sources),
+      ...objectValue(supplied.artifactSources),
+    },
+    scenario_results: scenarioResultsById(supplied),
+    findings: Array.isArray(supplied.findings) ? supplied.findings : [],
+    source_path: fs.existsSync(publishedWorkerEvidencePath) ? publishedWorkerEvidencePath : null,
+  };
+}
+
+function publishedWorkerScenarioOutputs(evidence, scenarioId) {
+  const scenario = evidence?.scenario_results?.[scenarioId];
+  if (!scenario || typeof scenario !== 'object' || Array.isArray(scenario)) {
+    return {};
+  }
+
+  const observedOutputs = firstObjectValue(
+    scenario.observed_outputs,
+    scenario.observedOutputs,
+    scenario.evidence,
+  );
+  if (Object.keys(observedOutputs).length === 0) {
+    return {};
+  }
+
+  return {
+    ...observedOutputs,
+    local_product_source_checkouts_used: truthyEvidenceFlag(evidence.local_product_source_checkouts_used)
+      || truthyEvidenceFlag(observedOutputs.local_product_source_checkouts_used)
+      || truthyEvidenceFlag(observedOutputs.localProductSourceCheckoutsUsed),
+    published_worker_evidence_status: normalizedArtifactStatus(scenario.status),
+    published_worker_evidence_source: evidence.source_path ?? null,
+  };
+}
+
+function mergeScenarioOutputs(base, supplied) {
+  if (!supplied || Object.keys(supplied).length === 0) {
+    return base;
+  }
+
+  return {
+    ...base,
+    ...supplied,
+  };
+}
+
+function publishedWorkerScenarioPasses(outputs, requiredArtifacts, requireAllArtifacts) {
+  if (!explicitFalse(outputs?.local_product_source_checkouts_used)
+    && !explicitFalse(outputs?.localProductSourceCheckoutsUsed)) {
+    return false;
+  }
+
+  const execution = outputs?.published_artifact_worker_execution
+    ?? outputs?.publishedArtifactWorkerExecution;
+  if (!execution || typeof execution !== 'object' || Array.isArray(execution)) {
+    return false;
+  }
+
+  if (!explicitFalse(execution.local_product_source_checkouts_used)
+    && !explicitFalse(execution.localProductSourceCheckoutsUsed)) {
+    return false;
+  }
+
+  const entries = publishedWorkerExecutionEntries(execution);
+  if (entries.length === 0) {
+    return false;
+  }
+
+  const validArtifacts = new Set();
+  for (const entry of entries) {
+    const artifact = canonicalArtifactName(stringValue(entry.artifact) || stringValue(entry.name));
+    if (!requiredArtifacts.includes(artifact)) {
+      continue;
+    }
+    if (normalizedArtifactStatus(entry.status) !== 'pass') {
+      continue;
+    }
+    if (artifactSourceIsForbidden(stringValue(entry.source))) {
+      continue;
+    }
+    if (!isExactSemverVersion(stringValue(entry.version)) || isPlaceholderVersion(entry.version)) {
+      continue;
+    }
+    if (truthyEvidenceFlag(entry.local_product_source_checkouts_used)
+      || truthyEvidenceFlag(entry.localProductSourceCheckoutsUsed)) {
+      continue;
+    }
+
+    validArtifacts.add(artifact);
+  }
+
+  if (requireAllArtifacts) {
+    return requiredArtifacts.every((artifact) => validArtifacts.has(artifact));
+  }
+
+  return validArtifacts.size > 0;
+}
+
+function publishedWorkerExecutionEntries(execution) {
+  const entries = Array.isArray(execution.artifacts)
+    ? execution.artifacts
+    : (
+        Array.isArray(execution.workers)
+          ? execution.workers
+          : (Array.isArray(execution.executions) ? execution.executions : [])
+      );
+
+  if (entries.length > 0) {
+    return entries.filter((entry) => entry && typeof entry === 'object' && !Array.isArray(entry));
+  }
+
+  if (execution.artifact || execution.name || execution.source) {
+    return [execution];
+  }
+
+  return [];
+}
+
+function scenarioResultsById(evidence) {
+  const raw = evidence?.scenario_results ?? evidence?.scenarioResults ?? {};
+  const results = {};
+
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        continue;
+      }
+      const scenarioId = stringValue(item.scenario_id) || stringValue(item.scenarioId) || stringValue(item.id);
+      if (scenarioId) {
+        results[scenarioId] = item;
+      }
+    }
+
+    return results;
+  }
+
+  if (raw && typeof raw === 'object') {
+    for (const [scenarioId, item] of Object.entries(raw)) {
+      if (item && typeof item === 'object' && !Array.isArray(item)) {
+        results[scenarioId] = { scenario_id: scenarioId, ...item };
+      }
+    }
+  }
+
+  return results;
+}
+
+function objectValue(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function firstObjectValue(...values) {
+  for (const value of values) {
+    const object = objectValue(value);
+    if (Object.keys(object).length > 0) {
+      return object;
+    }
+  }
+
+  return {};
+}
+
+function explicitFalse(value) {
+  return value === false || stringValue(value).toLowerCase() === 'false' || stringValue(value) === '0';
+}
+
+function canonicalArtifactName(value) {
+  const normalized = value.toLowerCase().replace(/_/g, '-');
+  if (['python', 'python-sdk', 'durable-workflow'].includes(normalized)) {
+    return 'sdk-python';
+  }
+  if (['workflow', 'php', 'workflow-php', 'php-worker'].includes(normalized)) {
+    return 'workflow-php';
+  }
+
+  return normalized;
 }
 
 function normalizedArtifactStatus(value) {

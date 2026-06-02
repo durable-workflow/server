@@ -35,9 +35,9 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         }
 
         $this->assertStringContainsString(
-            'const crossLanguagePasses = phpToPythonIncompatibleCount === 0',
+            'const crossLanguagePasses = publishedWorkerScenarioPasses',
             $node,
-            'the PHP/Python cell must still calculate directional incompatible counts',
+            'the PHP/Python cell must require published worker execution evidence before passing',
         );
         $this->assertStringContainsString(
             'server_protocol_probe_only',
@@ -54,6 +54,11 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             $node,
             'the runner must not pass cross-language pinning without published PHP and Python worker execution',
         );
+        $this->assertStringContainsString(
+            'Optional JSON report from a host topology that executed',
+            $shell,
+            'the shell handoff must document the published worker evidence input',
+        );
     }
 
     public function test_published_artifact_install_cell_requires_install_evidence(): void
@@ -69,6 +74,11 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'FORBIDDEN_INSTALL_SOURCE_TOKENS',
             'truthyEvidenceFlag',
             'artifactSourceIsForbidden(source)',
+            'publishedWorkerScenarioPasses',
+            'publishedWorkerExecutionEntries',
+            'DW_WV_PUBLISHED_WORKER_EVIDENCE',
+            'local_product_source_checkouts_used: truthyEvidenceFlag(evidence.local_product_source_checkouts_used)',
+            'explicitFalse(outputs?.local_product_source_checkouts_used)',
         ] as $token) {
             $this->assertStringContainsString($token, $node);
         }
@@ -106,9 +116,9 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'server-protocol counts alone must not pass the divergent replay cells',
         );
         $this->assertStringContainsString(
-            'const cacheEvictionPasses = cacheEvictionObserved',
+            'const cacheEvictionPasses = publishedWorkerScenarioPasses',
             $node,
-            'the cache-eviction cell must require observed replay and zero incompatible delivery',
+            'the cache-eviction cell must require published worker execution and zero incompatible delivery',
         );
         $this->assertStringContainsString(
             "/api/workers/\${encodeURIComponent(v1WorkerId)}",
