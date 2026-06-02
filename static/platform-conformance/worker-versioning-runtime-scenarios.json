@@ -144,7 +144,9 @@
       "required_fields": [
         "operator_visible_signal",
         "pending_or_typed_error",
-        "incompatible_worker_task_count"
+        "incompatible_worker_task_count",
+        "published_artifact_worker_execution",
+        "local_product_source_checkouts_used"
       ]
     },
     "operator_visibility_surfaces": {
@@ -193,7 +195,7 @@
     ],
     "evidence_inputs": {
       "DW_WV_ARTIFACT_INSTALL_EVIDENCE": "Optional JSON report proving required artifacts were installed and smoke-executed from published channels.",
-      "DW_WV_PUBLISHED_WORKER_EVIDENCE": "Optional JSON report from the host worker-versioning topology after published worker artifacts executed replay, cache-eviction, or cross-language cells."
+      "DW_WV_PUBLISHED_WORKER_EVIDENCE": "Optional JSON report from the host worker-versioning topology after published worker artifacts executed replay, cache-eviction, no-compatible-worker, or cross-language cells."
     },
     "evidence_shards": [
       "published_artifact_versions",
@@ -201,6 +203,7 @@
       "worker_registration_and_rollout_surfaces",
       "compatible_replay_delivery_counts",
       "cache_eviction_delivery_counts",
+      "no_compatible_worker_diagnostics",
       "published_artifact_worker_execution",
       "cross_language_php_python_delivery_counts",
       "history_and_visibility_pin_capture"

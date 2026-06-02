@@ -262,7 +262,8 @@ category emits a warning and does not block.
   `scripts/conformance/worker-versioning-published-artifacts.sh` as the
   executable handoff and requires the runner to record v1 and v2 workflow-task
   delivery counts for the same v1-pinned run, including the cache-eviction or
-  worker-restart replay cell and both PHP/Python cross-language pinning
+  worker-restart replay cell, the no-compatible-worker diagnostic cell after
+  stopping the compatible cohort, and both PHP/Python cross-language pinning
   directions; any incompatible delivery count above zero is blocking product
   evidence.
 - Migration runtime contract: `GET /api/cluster/info` re-exports

@@ -248,8 +248,10 @@ final class WorkerVersioningRuntimeContract
                         'operator_visible_signal',
                         'pending_or_typed_error',
                         'incompatible_worker_task_count',
+                        'published_artifact_worker_execution',
+                        'local_product_source_checkouts_used',
                     ],
-                    'expected_behavior' => 'a pinned run without compatible workers is explicit to operators and is not picked up by an incompatible worker',
+                    'expected_behavior' => 'a pinned run without compatible workers is explicit to operators, is not picked up by an incompatible worker, and is proven by published worker artifact execution without local product checkout use',
                 ],
                 'operator_visibility_surfaces' => [
                     'required_fields' => [
@@ -303,7 +305,7 @@ final class WorkerVersioningRuntimeContract
                     'adversarial_no_version_bump_reported',
                     'artifact_versions_match_latest_published_set',
                     'published_artifact_install_evidence_reported',
-                    'published_artifact_worker_execution_reported_for_replay_and_cross_language_cells',
+                    'published_artifact_worker_execution_reported_for_replay_no_compatible_and_cross_language_cells',
                     'run_timestamps_outcome_and_finding_links_are_recorded',
                     'declared_outcome_matches_evaluated_status',
                     'no_local_product_source_artifacts',
@@ -328,7 +330,7 @@ final class WorkerVersioningRuntimeContract
                 ],
                 'evidence_inputs' => [
                     'DW_WV_ARTIFACT_INSTALL_EVIDENCE' => 'Optional JSON report proving required artifacts were installed and smoke-executed from published channels.',
-                    'DW_WV_PUBLISHED_WORKER_EVIDENCE' => 'Optional JSON report from the host worker-versioning topology after published worker artifacts executed replay, cache-eviction, or cross-language cells.',
+                    'DW_WV_PUBLISHED_WORKER_EVIDENCE' => 'Optional JSON report from the host worker-versioning topology after published worker artifacts executed replay, cache-eviction, no-compatible-worker, or cross-language cells.',
                 ],
                 'evidence_shards' => [
                     'published_artifact_versions',
@@ -336,6 +338,7 @@ final class WorkerVersioningRuntimeContract
                     'worker_registration_and_rollout_surfaces',
                     'compatible_replay_delivery_counts',
                     'cache_eviction_delivery_counts',
+                    'no_compatible_worker_diagnostics',
                     'published_artifact_worker_execution',
                     'cross_language_php_python_delivery_counts',
                     'history_and_visibility_pin_capture',

@@ -564,6 +564,10 @@ class ClusterInfoTest extends TestCase
             $contract['host_runner_contract']['evidence_shards'],
         );
         $this->assertContains(
+            'no_compatible_worker_diagnostics',
+            $contract['host_runner_contract']['evidence_shards'],
+        );
+        $this->assertContains(
             'cross_language_php_python_delivery_counts',
             $contract['host_runner_contract']['evidence_shards'],
         );

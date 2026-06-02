@@ -2,13 +2,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
 const RESULT_SCHEMA = 'durable-workflow.v2.worker-versioning-runtime.result';
 const RECORD_SCHEMA = 'durable-workflow.v2.worker-versioning-runtime.record';
 const CAPTURE_SCHEMA = 'durable-workflow.v2.worker-versioning-runtime.http-captures';
 
+const modulePath = fileURLToPath(import.meta.url);
 const repoRoot = process.env.DW_WV_REPO_ROOT
-  ?? path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
+  ?? path.resolve(path.dirname(modulePath), '../..');
 const resultDir = process.env.DW_WV_RESULT_DIR
   ?? process.env.DW_WV_RUN_ROOT
   ?? process.cwd();
@@ -54,12 +56,14 @@ const requiredScenarios = Array.isArray(scenarioManifest.scenarios)
 
 const captures = [];
 
-main().catch((error) => {
-  const now = timestamp();
-  const reason = error instanceof Error ? error.message : String(error);
-  writeResult(blockedResult(reason, now, now, artifactVersionsFromEnv()));
-  process.exitCode = 0;
-});
+if (isMainModule()) {
+  main().catch((error) => {
+    const now = timestamp();
+    const reason = error instanceof Error ? error.message : String(error);
+    writeResult(blockedResult(reason, now, now, artifactVersionsFromEnv()));
+    process.exitCode = 0;
+  });
+}
 
 async function main() {
   fs.mkdirSync(resultDir, { recursive: true });
@@ -674,12 +678,47 @@ async function main() {
     operator_visible_signal_explicit: isExplicitNoCompatibleSignal(noCompatibleSignal),
     pending_or_typed_error: noCompatiblePendingOrTypedError,
     incompatible_worker_task_count: noCompatibleIncompatibleCount,
+    worker_execution_mode: SERVER_PROTOCOL_PROBE,
+    published_artifact_worker_execution: false,
     deregister_response: v1Delete,
     workflow_visibility: noCompatibleShow,
   };
-  const noCompatibleSignalExplicit = isExplicitNoCompatibleSignal(noCompatibleSignal);
-  if (noCompatibleIncompatibleCount === 0 && noCompatibleSignalExplicit) {
-    addPass('no_compatible_worker_behavior', noCompatibleOutputs);
+  const noCompatiblePublishedEvidence = noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidence);
+  const publishedNoCompatibleOutputs = noCompatiblePublishedEvidence.outputs;
+  const publishedNoCompatibleIncompatibleCount =
+    noCompatiblePublishedEvidence.incompatible_worker_task_count;
+  const publishedNoCompatibleSignal = noCompatiblePublishedEvidence.operator_visible_signal;
+  const publishedNoCompatiblePendingOrTypedError =
+    noCompatiblePublishedEvidence.pending_or_typed_error;
+  const publishedNoCompatibleWorkerExecuted = noCompatiblePublishedEvidence.worker_executed;
+  const publishedNoCompatiblePasses = noCompatiblePublishedEvidence.passes;
+  if (publishedNoCompatiblePasses) {
+    addPass('no_compatible_worker_behavior', publishedNoCompatibleOutputs);
+  } else if (publishedNoCompatibleWorkerExecuted) {
+    addFail('no_compatible_worker_behavior', publishedNoCompatibleOutputs, {
+      scenario_id: 'no_compatible_worker_behavior',
+      owning_surface: 'server',
+      artifact_versions: artifactVersions,
+      observed_behavior: publishedNoCompatibleIncompatibleCount > 0
+        ? 'A v1-pinned run without a registered v1-compatible worker was delivered to an incompatible published worker.'
+        : 'A v1-pinned run without a registered v1-compatible worker did not expose an explicit public no-compatible-worker diagnostic in published-worker evidence.',
+      expected_behavior: 'Pinned runs with no compatible worker remain pending or surface a typed no-compatible-worker signal and are never delivered to v2 workers.',
+      next_acceptance_criterion: 'rerun the published-artifact worker-versioning topology and record incompatible_worker_task_count equal to zero plus an explicit no-compatible-worker or compatibility-blocked public signal after stopping the compatible worker cohort',
+      incompatible_worker_task_count: publishedNoCompatibleIncompatibleCount,
+      operator_visible_signal: publishedNoCompatibleSignal,
+      pending_or_typed_error: publishedNoCompatiblePendingOrTypedError,
+    });
+  } else if (noCompatibleIncompatibleCount === 0 && isExplicitNoCompatibleSignal(noCompatibleSignal)) {
+    addNotCovered('no_compatible_worker_behavior', noCompatibleOutputs, {
+      scenario_id: 'no_compatible_worker_behavior',
+      owning_surface: 'conformance_harness',
+      artifact_versions: artifactVersions,
+      observed_behavior: 'The server HTTP protocol probe recorded zero incompatible delivery and an explicit no-compatible-worker diagnostic, but no published worker artifact topology stopped the compatible cohort and left an incompatible cohort polling.',
+      expected_behavior: 'A published-artifact worker-versioning run stops the compatible cohort, leaves an incompatible cohort polling, and records zero incompatible task claims plus an explicit no-compatible-worker or compatibility-blocked public signal.',
+      next_acceptance_criterion: 'supply published worker evidence for no_compatible_worker_behavior with published_artifact_worker_execution, incompatible_worker_task_count=0, operator_visible_signal set to no_compatible_worker or compatibility_blocked, and local_product_source_checkouts_used=false',
+      incompatible_worker_task_count: noCompatibleIncompatibleCount,
+      operator_visible_signal: noCompatibleSignal,
+    });
   } else {
     addFail('no_compatible_worker_behavior', noCompatibleOutputs, {
       scenario_id: 'no_compatible_worker_behavior',
@@ -868,9 +907,13 @@ async function main() {
       cache_eviction_incompatible_delivery_count: cacheEvictionIncompatibleCount,
     },
     no_compatible_worker: {
-      operator_visible_signal: noCompatibleSignal,
-      pending_or_typed_error: noCompatiblePendingOrTypedError,
-      incompatible_worker_task_count: noCompatibleIncompatibleCount,
+      operator_visible_signal: scenarioResults.no_compatible_worker_behavior.observed_outputs.operator_visible_signal,
+      pending_or_typed_error: scenarioResults.no_compatible_worker_behavior.observed_outputs.pending_or_typed_error,
+      incompatible_worker_task_count: scenarioResults.no_compatible_worker_behavior.observed_outputs.incompatible_worker_task_count,
+      published_artifact_worker_execution: scenarioResults
+        .no_compatible_worker_behavior
+        .observed_outputs
+        .published_artifact_worker_execution,
     },
     cross_language_matrix: scenarioResults.cross_language_php_python_pinning.observed_outputs.cross_language_delivery,
     adversarial_outcomes: scenarioResults.adversarial_no_version_bump.observed_outputs,
@@ -1279,6 +1322,36 @@ function publishedWorkerScenarioOutputs(evidence, scenarioId) {
   };
 }
 
+export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidence) {
+  const outputs = publishedWorkerScenarioOutputs(
+    publishedWorkerEvidence,
+    'no_compatible_worker_behavior',
+  );
+  const incompatibleWorkerTaskCount = numberValue(outputs.incompatible_worker_task_count);
+  const operatorVisibleSignal = stringValue(outputs.operator_visible_signal);
+  const pendingOrTypedError = stringValue(outputs.pending_or_typed_error);
+  const workerExecuted = publishedWorkerScenarioPasses(
+    outputs,
+    ['sdk-python', 'workflow-php'],
+    false,
+  );
+
+  return {
+    outputs,
+    worker_executed: workerExecuted,
+    incompatible_worker_task_count: incompatibleWorkerTaskCount,
+    operator_visible_signal: operatorVisibleSignal,
+    pending_or_typed_error: pendingOrTypedError,
+    passes: workerExecuted
+      && incompatibleWorkerTaskCount === 0
+      && isExplicitNoCompatibleSignal(operatorVisibleSignal)
+      && (
+        pendingOrTypedError === 'pending'
+        || isExplicitNoCompatibleSignal(pendingOrTypedError)
+      ),
+  };
+}
+
 function mergeScenarioOutputs(base, supplied) {
   if (!supplied || Object.keys(supplied).length === 0) {
     return base;
@@ -1593,6 +1666,10 @@ function numberValue(value) {
 
 function isExplicitNoCompatibleSignal(value) {
   return ['no_compatible_worker', 'compatibility_blocked', 'compatibility_unsupported'].includes(stringValue(value));
+}
+
+function isMainModule() {
+  return Boolean(process.argv[1]) && path.resolve(process.argv[1]) === modulePath;
 }
 
 function sleep(milliseconds) {

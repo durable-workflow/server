@@ -134,17 +134,116 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'the no-compatible cell must remove the compatible worker before polling with v2',
         );
         $this->assertStringContainsString(
-            'noCompatibleIncompatibleCount === 0',
+            'const publishedNoCompatiblePasses = publishedNoCompatibleWorkerExecuted',
             $node,
-            'the no-compatible cell may pass only when the incompatible worker receives zero tasks',
+            'the no-compatible cell may pass only when published worker evidence exercised the stopped-compatible-cohort topology',
         );
         $this->assertStringContainsString(
-            'noCompatibleIncompatibleCount === 0 && noCompatibleSignalExplicit',
+            'publishedNoCompatibleIncompatibleCount === 0',
+            $node,
+            'the published no-compatible cell may pass only when the incompatible worker receives zero tasks',
+        );
+        $this->assertStringContainsString(
+            'isExplicitNoCompatibleSignal(publishedNoCompatibleSignal)',
             $node,
             'the no-compatible cell may pass only when zero incompatible delivery is paired with an explicit diagnostic',
         );
+        $this->assertStringContainsString(
+            "addNotCovered('no_compatible_worker_behavior'",
+            $node,
+            'server protocol evidence alone must stay non-passing until a published worker topology exercises the cell',
+        );
+        $this->assertStringContainsString(
+            'no_compatible_worker_diagnostics',
+            $this->read('static/platform-conformance/worker-versioning-runtime-scenarios.json'),
+        );
         $this->assertStringNotContainsString('pending_or_health_surface', $node);
         $this->assertStringContainsString("addFail('replay_across_cache_eviction'", $node);
+    }
+
+    public function test_no_compatible_execution_only_shard_does_not_inherit_probe_outputs(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the worker-versioning runner shard gate.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $evidence = [
+            'local_product_source_checkouts_used' => false,
+            'supplied_shard_local_product_source_checkouts_used' => false,
+            'source_path' => 'published-worker-execution-evidence.json',
+            'scenario_results' => [
+                'no_compatible_worker_behavior' => [
+                    'status' => 'pass',
+                    'observed_outputs' => [
+                        'local_product_source_checkouts_used' => false,
+                        'published_artifact_worker_execution' => [
+                            'local_product_source_checkouts_used' => false,
+                            'artifacts' => [
+                                [
+                                    'artifact' => 'sdk-python',
+                                    'version' => '0.4.84',
+                                    'source' => 'pypi_release',
+                                    'status' => 'pass',
+                                ],
+                                [
+                                    'artifact' => 'workflow-php',
+                                    'version' => '2.0.0-alpha.189',
+                                    'source' => 'composer_release',
+                                    'status' => 'pass',
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ];
+        $script = <<<'JS'
+import { pathToFileURL } from 'node:url';
+
+const moduleUrl = pathToFileURL(process.argv[2]).href;
+const evidence = JSON.parse(process.argv[3]);
+const { noCompatiblePublishedWorkerEvidenceResult } = await import(moduleUrl);
+
+console.log(JSON.stringify(noCompatiblePublishedWorkerEvidenceResult(evidence)));
+JS;
+
+        $process = proc_open(
+            [
+                $nodeBinary,
+                '--input-type=module',
+                '-e',
+                $script,
+                'import-runner-helper',
+                $repoRoot.'/scripts/conformance/worker-versioning-published-artifacts.mjs',
+                json_encode($evidence, JSON_THROW_ON_ERROR),
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            $repoRoot,
+            ['PATH' => getenv('PATH') ?: '/usr/bin:/bin'],
+        );
+
+        $this->assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stderr);
+        $result = json_decode((string) $stdout, true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertTrue($result['worker_executed']);
+        $this->assertFalse($result['passes']);
+        $this->assertNull($result['incompatible_worker_task_count']);
+        $this->assertSame('', $result['operator_visible_signal']);
+        $this->assertArrayNotHasKey('incompatible_worker_task_count', $result['outputs']);
+        $this->assertArrayNotHasKey('operator_visible_signal', $result['outputs']);
     }
 
     public function test_runner_writes_gate_consumable_result_and_record_files(): void

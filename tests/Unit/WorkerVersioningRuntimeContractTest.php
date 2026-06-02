@@ -89,6 +89,14 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'local_product_source_checkouts_used',
             $manifest['scenario_requirements']['cross_language_php_python_pinning']['required_fields'],
         );
+        $this->assertContains(
+            'published_artifact_worker_execution',
+            $manifest['scenario_requirements']['no_compatible_worker_behavior']['required_fields'],
+        );
+        $this->assertContains(
+            'local_product_source_checkouts_used',
+            $manifest['scenario_requirements']['no_compatible_worker_behavior']['required_fields'],
+        );
         $this->assertSame(
             'conformance_runner_coverage_gap',
             $manifest['host_runner_contract']['routing_policy']['missing_required_scenario']['finding_type'],
@@ -130,6 +138,10 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             $manifest['host_runner_contract']['evidence_shards'],
         );
         $this->assertContains(
+            'no_compatible_worker_diagnostics',
+            $manifest['host_runner_contract']['evidence_shards'],
+        );
+        $this->assertContains(
             'cross_language_php_python_delivery_counts',
             $manifest['host_runner_contract']['evidence_shards'],
         );
@@ -159,6 +171,10 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             $manifest['result_gate']['pass_requires'],
         );
         $this->assertContains(
+            'published_artifact_worker_execution_reported_for_replay_no_compatible_and_cross_language_cells',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
             'cross_language_php_python_delivery_counts_are_zero',
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
@@ -167,7 +183,7 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertContains(
-            'published_artifact_worker_execution_reported_for_replay_and_cross_language_cells',
+            'published_artifact_worker_execution_reported_for_replay_no_compatible_and_cross_language_cells',
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
     }
@@ -781,6 +797,22 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         $this->assertNotEmpty($failures);
     }
 
+    public function test_result_gate_rejects_no_compatible_pass_without_published_worker_execution(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        unset($result['scenario_results']['no_compatible_worker_behavior']['observed_outputs']['published_artifact_worker_execution']);
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'published_artifact_worker_execution_missing'
+                && ($failure['scenario_id'] ?? null) === 'no_compatible_worker_behavior',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($failures);
+    }
+
     public function test_result_gate_rejects_boolean_published_worker_execution_claim(): void
     {
         $result = $this->completeWorkerVersioningResult();
@@ -842,6 +874,7 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         foreach ([
             'replay_only_by_compatible_workers',
             'replay_across_cache_eviction',
+            'no_compatible_worker_behavior',
             'cross_language_php_python_pinning',
         ] as $scenarioId) {
             $result = $this->completeWorkerVersioningResult();
@@ -1046,6 +1079,8 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'operator_visible_signal' => 'no_compatible_worker',
             'pending_or_typed_error' => 'pending',
             'incompatible_worker_task_count' => 0,
+            'local_product_source_checkouts_used' => false,
+            'published_artifact_worker_execution' => $pythonPublishedWorkerExecution,
         ];
         $scenarioResults['operator_visibility_surfaces']['observed_outputs'] += [
             'worker_list' => ['v1', 'v2'],
