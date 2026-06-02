@@ -245,6 +245,73 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertSame('pending', $result['outputs']['pending_or_typed_error']);
     }
 
+    public function test_no_compatible_published_shard_accepts_top_level_no_compatible_section(): void
+    {
+        $result = $this->evaluateNoCompatiblePublishedWorkerEvidence([
+            'suppliedShardLocalProductSourceCheckoutsUsed' => false,
+            'source_path' => 'published-worker-execution-evidence.json',
+            'publishedArtifactWorkerExecution' => [
+                'localProductSourceCheckoutsUsed' => false,
+                'artifacts' => [
+                    [
+                        'id' => 'sdk-python',
+                        'artifactVersion' => '0.4.84',
+                        'artifactSource' => 'pypi_release',
+                        'result' => 'pass',
+                        'localProductSourceCheckoutsUsed' => false,
+                    ],
+                ],
+            ],
+            'noCompatibleWorker' => [
+                'incompatibleWorkerTaskCount' => 0,
+                'operatorVisibleSignal' => 'no_compatible_worker',
+                'pendingOrTypedError' => 'pending',
+            ],
+        ]);
+
+        $this->assertTrue($result['worker_executed']);
+        $this->assertTrue($result['passes']);
+        $this->assertSame(0, $result['incompatible_worker_task_count']);
+        $this->assertSame('no_compatible_worker', $result['operator_visible_signal']);
+        $this->assertSame('pending', $result['pending_or_typed_error']);
+        $this->assertSame(0, $result['outputs']['incompatible_worker_task_count']);
+        $this->assertSame('no_compatible_worker', $result['outputs']['operator_visible_signal']);
+    }
+
+    public function test_runner_normalization_preserves_top_level_no_compatible_shard(): void
+    {
+        $evaluation = $this->evaluateNoCompatiblePublishedWorkerEvidenceThroughRunnerNormalization([
+            'publishedArtifactWorkerExecution' => [
+                'localProductSourceCheckoutsUsed' => false,
+                'artifacts' => [
+                    [
+                        'id' => 'sdk-python',
+                        'artifactVersion' => '0.4.84',
+                        'artifactSource' => 'pypi_release',
+                        'result' => 'pass',
+                        'localProductSourceCheckoutsUsed' => false,
+                    ],
+                ],
+            ],
+            'noCompatibleWorker' => [
+                'incompatibleWorkerTaskCount' => 0,
+                'operatorVisibleSignal' => 'no_compatible_worker',
+                'pendingOrTypedError' => 'pending',
+            ],
+        ]);
+        $normalized = $evaluation['normalized'];
+        $result = $evaluation['result'];
+
+        $this->assertArrayHasKey('no_compatible_worker_behavior', $normalized['scenario_results']);
+        $this->assertArrayHasKey('published_artifact_worker_execution', $normalized);
+        $this->assertFalse($normalized['supplied_shard_local_product_source_checkouts_used']);
+        $this->assertTrue($result['worker_executed']);
+        $this->assertTrue($result['passes']);
+        $this->assertSame(0, $result['incompatible_worker_task_count']);
+        $this->assertSame('no_compatible_worker', $result['operator_visible_signal']);
+        $this->assertSame('pending', $result['pending_or_typed_error']);
+    }
+
     public function test_no_compatible_null_task_count_is_not_zero_evidence(): void
     {
         $result = $this->evaluateNoCompatiblePublishedWorkerEvidence([
@@ -293,6 +360,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'runner_blocked: false',
             'artifact_versions: artifactVersions',
             'scenario_results: scenarioResults',
+            'publishedWorkerShardProvesNoLocalSource',
+            'topLevelPublishedWorkerScenarios',
         ] as $token) {
             $this->assertStringContainsString($token, $node);
         }
@@ -305,6 +374,78 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertFileExists($fullPath);
 
         return (string) file_get_contents($fullPath);
+    }
+
+    /**
+     * @param array<string, mixed> $shard
+     * @return array{normalized: array<string, mixed>, result: array<string, mixed>}
+     */
+    private function evaluateNoCompatiblePublishedWorkerEvidenceThroughRunnerNormalization(array $shard): array
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $shardPath = tempnam($repoRoot.'/storage/framework', 'published-worker-evidence-');
+        $this->assertIsString($shardPath);
+        $this->assertNotFalse(file_put_contents($shardPath, json_encode($shard, JSON_THROW_ON_ERROR)));
+
+        try {
+            $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+            if ($nodeBinary === '') {
+                $this->markTestSkipped('node is required to exercise the worker-versioning runner shard gate.');
+            }
+
+            $script = <<<'JS'
+import { pathToFileURL } from 'node:url';
+
+const moduleUrl = pathToFileURL(process.argv[2]).href;
+const {
+  noCompatiblePublishedWorkerEvidenceResult,
+  publishedWorkerExecutionEvidence,
+} = await import(moduleUrl);
+const normalized = publishedWorkerExecutionEvidence(
+  { 'sdk-python': '0.4.84', 'workflow-php': '2.0.0-alpha.189' },
+  { 'sdk-python': 'pypi_release', 'workflow-php': 'composer_release' },
+);
+
+console.log(JSON.stringify({
+  normalized,
+  result: noCompatiblePublishedWorkerEvidenceResult(normalized),
+}));
+JS;
+
+            $process = proc_open(
+                [
+                    $nodeBinary,
+                    '--input-type=module',
+                    '-e',
+                    $script,
+                    'import-runner-helper',
+                    $repoRoot.'/scripts/conformance/worker-versioning-published-artifacts.mjs',
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_WV_PUBLISHED_WORKER_EVIDENCE' => $shardPath,
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr);
+
+            return json_decode((string) $stdout, true, 512, JSON_THROW_ON_ERROR);
+        } finally {
+            @unlink($shardPath);
+        }
     }
 
     /**

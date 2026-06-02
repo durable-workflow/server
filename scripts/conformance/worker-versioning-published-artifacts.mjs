@@ -1260,7 +1260,7 @@ function mergeArtifactSources(artifactSources, installEvidence) {
   return merged;
 }
 
-function publishedWorkerExecutionEvidence(artifactVersions, artifactSources) {
+export function publishedWorkerExecutionEvidence(artifactVersions, artifactSources) {
   const supplied = readJsonIfExists(publishedWorkerEvidencePath);
   if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied)) {
     return {
@@ -1272,13 +1272,21 @@ function publishedWorkerExecutionEvidence(artifactVersions, artifactSources) {
     };
   }
 
+  const shardLocalSourceExplicitFalse = explicitFalse(supplied.local_product_source_checkouts_used)
+    || explicitFalse(supplied.localProductSourceCheckoutsUsed)
+    || publishedWorkerShardProvesNoLocalSource(supplied);
+  const scenarioResults = publishedWorkerScenarioResults(supplied);
+  const publishedWorkerExecution = firstObjectValue(
+    supplied.published_artifact_worker_execution,
+    supplied.publishedArtifactWorkerExecution,
+  );
+
   return {
     schema: stringValue(supplied.schema)
       || 'durable-workflow.v2.worker-versioning-runtime.published-worker-execution-evidence',
     local_product_source_checkouts_used: truthyEvidenceFlag(supplied.local_product_source_checkouts_used)
       || truthyEvidenceFlag(supplied.localProductSourceCheckoutsUsed),
-    supplied_shard_local_product_source_checkouts_used: !explicitFalse(supplied.local_product_source_checkouts_used)
-      && !explicitFalse(supplied.localProductSourceCheckoutsUsed),
+    supplied_shard_local_product_source_checkouts_used: !shardLocalSourceExplicitFalse,
     generated_at: stringValue(supplied.generated_at) || stringValue(supplied.generatedAt) || timestamp(),
     artifact_versions: {
       ...artifactVersions,
@@ -1290,14 +1298,18 @@ function publishedWorkerExecutionEvidence(artifactVersions, artifactSources) {
       ...objectValue(supplied.artifact_sources),
       ...objectValue(supplied.artifactSources),
     },
-    scenario_results: scenarioResultsById(supplied),
+    scenario_results: scenarioResults,
+    ...(Object.keys(publishedWorkerExecution).length > 0
+      ? { published_artifact_worker_execution: publishedWorkerExecution }
+      : {}),
     findings: Array.isArray(supplied.findings) ? supplied.findings : [],
     source_path: fs.existsSync(publishedWorkerEvidencePath) ? publishedWorkerEvidencePath : null,
   };
 }
 
 function publishedWorkerScenarioOutputs(evidence, scenarioId) {
-  const scenario = scenarioResultsById(evidence)[scenarioId];
+  const scenario = scenarioResultsById(evidence)[scenarioId]
+    ?? topLevelPublishedWorkerScenario(evidence, scenarioId);
   if (!scenario || typeof scenario !== 'object' || Array.isArray(scenario)) {
     return {};
   }
@@ -1306,13 +1318,25 @@ function publishedWorkerScenarioOutputs(evidence, scenarioId) {
     scenario.observed_outputs,
     scenario.observedOutputs,
     scenario.evidence,
+    scenario.outputs,
+    scenario,
   );
   if (Object.keys(observedOutputs).length === 0) {
     return {};
   }
 
+  const publishedWorkerExecution = firstObjectValue(
+    observedOutputs.published_artifact_worker_execution,
+    observedOutputs.publishedArtifactWorkerExecution,
+    evidence.published_artifact_worker_execution,
+    evidence.publishedArtifactWorkerExecution,
+  );
+
   return {
     ...observedOutputs,
+    ...(Object.keys(publishedWorkerExecution).length > 0
+      ? { published_artifact_worker_execution: publishedWorkerExecution }
+      : {}),
     local_product_source_checkouts_used: truthyEvidenceFlag(evidence.local_product_source_checkouts_used)
       || truthyEvidenceFlag(observedOutputs.local_product_source_checkouts_used)
       || truthyEvidenceFlag(observedOutputs.localProductSourceCheckoutsUsed),
@@ -1414,17 +1438,20 @@ function publishedWorkerScenarioPasses(outputs, requiredArtifacts, requireAllArt
 
   const validArtifacts = new Set();
   for (const entry of entries) {
-    const artifact = canonicalArtifactName(stringValue(entry.artifact) || stringValue(entry.name));
+    const artifact = canonicalArtifactName(
+      stringValue(entry.artifact) || stringValue(entry.name) || stringValue(entry.id),
+    );
     if (!requiredArtifacts.includes(artifact)) {
       continue;
     }
-    if (normalizedArtifactStatus(entry.status) !== 'pass') {
+    if (normalizedArtifactStatus(entry.status ?? entry.result ?? entry.outcome) !== 'pass') {
       continue;
     }
-    if (artifactSourceIsForbidden(stringValue(entry.source))) {
+    if (artifactSourceIsForbidden(artifactSourceForWorkerExecutionEntry(entry))) {
       continue;
     }
-    if (!isExactSemverVersion(stringValue(entry.version)) || isPlaceholderVersion(entry.version)) {
+    const version = artifactVersionForWorkerExecutionEntry(entry);
+    if (!isExactSemverVersion(version) || isPlaceholderVersion(version)) {
       continue;
     }
     if (truthyEvidenceFlag(entry.local_product_source_checkouts_used)
@@ -1440,6 +1467,72 @@ function publishedWorkerScenarioPasses(outputs, requiredArtifacts, requireAllArt
   }
 
   return validArtifacts.size > 0;
+}
+
+function publishedWorkerShardProvesNoLocalSource(supplied) {
+  const scenarios = publishedWorkerScenarioResults(supplied);
+  let sawExecution = false;
+
+  for (const scenarioId of Object.keys(scenarios)) {
+    const outputs = publishedWorkerScenarioOutputs(
+      {
+        ...supplied,
+        scenario_results: scenarios,
+        supplied_shard_local_product_source_checkouts_used: false,
+      },
+      scenarioId,
+    );
+
+    if (outputs?.supplied_shard_local_product_source_checkouts_used !== false) {
+      return false;
+    }
+
+    if (!explicitFalse(outputs.local_product_source_checkouts_used)
+      && !explicitFalse(outputs.localProductSourceCheckoutsUsed)) {
+      return false;
+    }
+
+    const execution = outputs.published_artifact_worker_execution
+      ?? outputs.publishedArtifactWorkerExecution;
+    if (!execution || typeof execution !== 'object' || Array.isArray(execution)) {
+      continue;
+    }
+
+    if (!explicitFalse(execution.local_product_source_checkouts_used)
+      && !explicitFalse(execution.localProductSourceCheckoutsUsed)) {
+      return false;
+    }
+
+    const entries = publishedWorkerExecutionEntries(execution);
+    if (entries.length === 0) {
+      return false;
+    }
+    sawExecution = true;
+
+    for (const entry of entries) {
+      if (truthyEvidenceFlag(entry.local_product_source_checkouts_used)
+        || truthyEvidenceFlag(entry.localProductSourceCheckoutsUsed)
+        || artifactSourceIsForbidden(artifactSourceForWorkerExecutionEntry(entry))) {
+        return false;
+      }
+    }
+  }
+
+  return sawExecution;
+}
+
+function artifactSourceForWorkerExecutionEntry(entry) {
+  return stringValue(entry.source)
+    || stringValue(entry.install_source)
+    || stringValue(entry.installSource)
+    || stringValue(entry.artifact_source)
+    || stringValue(entry.artifactSource);
+}
+
+function artifactVersionForWorkerExecutionEntry(entry) {
+  return stringValue(entry.version)
+    || stringValue(entry.artifact_version)
+    || stringValue(entry.artifactVersion);
 }
 
 function publishedWorkerExecutionEntries(execution) {
@@ -1489,6 +1582,69 @@ function scenarioResultsById(evidence) {
   }
 
   return results;
+}
+
+function publishedWorkerScenarioResults(evidence) {
+  return {
+    ...topLevelPublishedWorkerScenarios(evidence),
+    ...scenarioResultsById(evidence),
+  };
+}
+
+function topLevelPublishedWorkerScenario(evidence, scenarioId) {
+  return topLevelPublishedWorkerScenarios(evidence)[scenarioId];
+}
+
+function topLevelPublishedWorkerScenarios(evidence) {
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) {
+    return {};
+  }
+
+  const aliases = {
+    no_compatible_worker_behavior: [
+      'no_compatible_worker_behavior',
+      'noCompatibleWorkerBehavior',
+      'no_compatible_worker',
+      'noCompatibleWorker',
+    ],
+    replay_only_by_compatible_workers: [
+      'replay_only_by_compatible_workers',
+      'replayOnlyByCompatibleWorkers',
+      'compatible_replay',
+      'compatibleReplay',
+    ],
+    replay_across_cache_eviction: [
+      'replay_across_cache_eviction',
+      'replayAcrossCacheEviction',
+      'cache_eviction',
+      'cacheEviction',
+    ],
+    cross_language_php_python_pinning: [
+      'cross_language_php_python_pinning',
+      'crossLanguagePhpPythonPinning',
+      'cross_language_matrix',
+      'crossLanguageMatrix',
+    ],
+  };
+  const scenarios = {};
+
+  for (const [scenarioId, fieldAliases] of Object.entries(aliases)) {
+    for (const field of fieldAliases) {
+      const value = evidence[field];
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        continue;
+      }
+
+      scenarios[scenarioId] = {
+        scenario_id: scenarioId,
+        status: value.status ?? value.result ?? value.outcome ?? 'pass',
+        observed_outputs: value.observed_outputs ?? value.observedOutputs ?? value,
+      };
+      break;
+    }
+  }
+
+  return scenarios;
 }
 
 function objectValue(value) {
