@@ -7,6 +7,8 @@ use App\Models\WorkflowNamespace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
+use Workflow\V2\Support\StandaloneWorkerVisibility;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class WorkerManagementTest extends TestCase
 {
@@ -345,6 +347,37 @@ class WorkerManagementTest extends TestCase
             ->where('worker_id', 'worker-b')
             ->where('namespace', 'default')
             ->exists());
+    }
+
+    public function test_deregister_forgets_worker_compatibility_snapshot(): void
+    {
+        if (! method_exists(WorkerCompatibilityFleet::class, 'forgetWorkerForNamespace')) {
+            $this->markTestSkipped('workflow package does not expose targeted compatibility forgetting yet.');
+        }
+
+        $this->beforeApplicationDestroyed(static function (): void {
+            WorkerCompatibilityFleet::clear();
+        });
+        WorkerCompatibilityFleet::clear();
+
+        $this->createWorker('worker-a', 'queue', 'php');
+        $this->createWorker('worker-b', 'queue', 'php');
+        StandaloneWorkerVisibility::recordCompatibility('default', 'worker-a', 'queue', 'build-v1');
+        StandaloneWorkerVisibility::recordCompatibility('default', 'worker-b', 'queue', 'build-v2');
+
+        self::assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-v1', null, 'queue'));
+        self::assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-v2', null, 'queue'));
+
+        $this->deleteJson('/api/workers/worker-a', [], $this->apiHeaders())
+            ->assertOk()
+            ->assertJsonPath('outcome', 'deregistered');
+
+        self::assertSame([], WorkerCompatibilityFleet::detailsForNamespace('default', 'build-v1', null, 'queue'));
+        self::assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-v2', null, 'queue'));
+
+        StandaloneWorkerVisibility::recordCompatibility('default', 'worker-a', 'queue', 'build-v1');
+
+        self::assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-v1', null, 'queue'));
     }
 
     public function test_deregister_returns_404_for_unknown_worker(): void

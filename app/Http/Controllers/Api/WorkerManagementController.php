@@ -8,6 +8,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class WorkerManagementController
 {
@@ -137,12 +138,23 @@ class WorkerManagementController
         }
 
         $worker->delete();
-        $this->deleteCompatibilityHeartbeats($namespace, $workerId);
+        $this->forgetCompatibilityWorker($namespace, $workerId);
 
         return ControlPlaneProtocol::json([
             'worker_id' => $workerId,
             'outcome' => 'deregistered',
         ]);
+    }
+
+    private function forgetCompatibilityWorker(string $namespace, string $workerId): void
+    {
+        if (method_exists(WorkerCompatibilityFleet::class, 'forgetWorkerForNamespace')) {
+            WorkerCompatibilityFleet::forgetWorkerForNamespace($namespace, $workerId);
+
+            return;
+        }
+
+        $this->deleteCompatibilityHeartbeats($namespace, $workerId);
     }
 
     private function deleteCompatibilityHeartbeats(string $namespace, string $workerId): void
