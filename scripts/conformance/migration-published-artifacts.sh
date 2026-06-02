@@ -21,6 +21,7 @@ Environment overrides:
   DW_MIGRATION_RESULT_DIR            Result directory. Defaults to run root.
   DW_MIGRATION_KEEP_RUN_ROOT=1       Keep scratch directory after success.
   DW_MIGRATION_EVIDENCE_JSON         Full-result or scenario-shard JSON from the host migration runner.
+  DW_MIGRATION_EVIDENCE_DIR          Directory of sorted JSON evidence shards from the host migration runner.
   DW_MIGRATION_STORAGE_SMOKE_JSON    Advisory storage-connection smoke JSON.
   DW_SERVER_V1_VERSION               Exact latest supported v1 server artifact version.
   DW_SERVER_V1_ARTIFACT_SOURCE       Published source for the v1 server artifact.

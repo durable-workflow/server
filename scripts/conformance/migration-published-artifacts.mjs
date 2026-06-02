@@ -16,6 +16,8 @@ const scenarioManifestPath = process.env.DW_MIGRATION_SCENARIO_MANIFEST
   ?? path.join(repoRoot, 'static/platform-conformance/migration-runtime-scenarios.json');
 const evidencePath = process.env.DW_MIGRATION_EVIDENCE_JSON
   ?? path.join(resultDir, 'migration-evidence.json');
+const evidenceDirPath = process.env.DW_MIGRATION_EVIDENCE_DIR
+  ?? path.join(resultDir, 'migration-evidence.d');
 const storageSmokePath = process.env.DW_MIGRATION_STORAGE_SMOKE_JSON
   ?? path.join(resultDir, 'storage-connection-smoke.json');
 
@@ -119,7 +121,7 @@ main().catch((error) => {
 async function main() {
   fs.mkdirSync(resultDir, { recursive: true });
 
-  const evidence = readJsonIfExists(evidencePath) ?? {};
+  const evidence = readMigrationEvidence();
   const blockedReason = stringValue(process.env.DW_MIGRATION_BLOCKED_REASON)
     || stringValue(evidence.blocked_reason)
     || stringValue(evidence.runner_blocked_reason);
@@ -772,6 +774,132 @@ function scenarioResultsById(evidence) {
   return results;
 }
 
+function readMigrationEvidence() {
+  const inputs = [];
+  const fileEvidence = readJsonIfExists(evidencePath);
+  if (fileEvidence) {
+    inputs.push(fileEvidence);
+  }
+
+  for (const shardPath of evidenceShardPaths(evidenceDirPath)) {
+    const shard = readJsonIfExists(shardPath);
+    if (shard) {
+      inputs.push(shard);
+    }
+  }
+
+  return mergeEvidenceObjects(...inputs);
+}
+
+function evidenceShardPaths(dirPath) {
+  if (!dirPath || !fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
+    return [];
+  }
+
+  return fs.readdirSync(dirPath)
+    .filter((fileName) => fileName.endsWith('.json'))
+    .sort()
+    .map((fileName) => path.join(dirPath, fileName));
+}
+
+function mergeEvidenceObjects(...entries) {
+  const merged = {};
+
+  for (const entry of entries) {
+    const evidence = normalizeEvidenceShard(entry);
+    mergeEvidenceInto(merged, evidence);
+  }
+
+  return merged;
+}
+
+function normalizeEvidenceShard(value) {
+  const object = objectValue(value);
+  const scenarioId = stringValue(object.scenario_id) || stringValue(object.id);
+
+  if (scenarioId === '' || object.scenario_results || object.scenarioResults) {
+    return object;
+  }
+
+  const scenario = { ...object };
+  delete scenario.id;
+
+  return {
+    scenario_results: {
+      [scenarioId]: scenario,
+    },
+  };
+}
+
+function mergeEvidenceInto(target, source) {
+  for (const [key, value] of Object.entries(objectValue(source))) {
+    if (['scenario_results', 'scenarioResults'].includes(key)) {
+      target.scenario_results = mergeScenarioResults(target.scenario_results, value);
+      continue;
+    }
+
+    if (['finding_links', 'findingLinks', 'linked_findings', 'linkedFindings'].includes(key)) {
+      target.finding_links = mergeFindingLinkObjects(target.finding_links, value);
+      continue;
+    }
+
+    if (key === 'findings' && Array.isArray(value)) {
+      target.findings = [
+        ...(Array.isArray(target.findings) ? target.findings : []),
+        ...value,
+      ];
+      continue;
+    }
+
+    target[key] = mergeEvidenceValue(target[key], value);
+  }
+}
+
+function mergeScenarioResults(left, right) {
+  const merged = scenarioResultsById({ scenario_results: left });
+  const incoming = scenarioResultsById({ scenario_results: right });
+
+  for (const [scenarioId, scenario] of Object.entries(incoming)) {
+    merged[scenarioId] = mergeEvidenceValue(merged[scenarioId], scenario);
+  }
+
+  return merged;
+}
+
+function mergeFindingLinkObjects(left, right) {
+  const merged = { ...objectValue(left) };
+  for (const [scenarioId, links] of Object.entries(objectValue(right))) {
+    merged[scenarioId] = [
+      ...arrayValue(merged[scenarioId]),
+      ...arrayValue(links),
+    ];
+  }
+  return merged;
+}
+
+function mergeEvidenceValue(left, right) {
+  if (right === undefined || right === null) {
+    return left;
+  }
+
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return [
+      ...arrayValue(left),
+      ...arrayValue(right),
+    ];
+  }
+
+  if (left && typeof left === 'object' && right && typeof right === 'object') {
+    const merged = { ...objectValue(left) };
+    for (const [key, value] of Object.entries(objectValue(right))) {
+      merged[key] = mergeEvidenceValue(merged[key], value);
+    }
+    return merged;
+  }
+
+  return right;
+}
+
 function artifactVersionsFromEnv() {
   const workflowV2 = stringValue(process.env.DW_WORKFLOW_PHP_V2_VERSION)
     || stringValue(process.env.DW_WORKFLOW_PHP_VERSION)
@@ -943,6 +1071,16 @@ function arrayOfStrings(value) {
   return Array.isArray(value)
     ? value.map((entry) => stringValue(entry)).filter(Boolean)
     : [];
+}
+
+function arrayValue(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (value === undefined || value === null) {
+    return [];
+  }
+  return [value];
 }
 
 function objectOfStringLists(value) {

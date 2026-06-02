@@ -22,6 +22,7 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'the shell handoff must execute the checked-in Node composer',
         );
         $this->assertStringContainsString('DW_MIGRATION_EVIDENCE_JSON', $shell);
+        $this->assertStringContainsString('DW_MIGRATION_EVIDENCE_DIR', $shell);
         $this->assertStringContainsString('DW_MIGRATION_STORAGE_SMOKE_JSON', $shell);
 
         foreach ([
@@ -34,6 +35,9 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'resolved_artifact_versions',
             'artifact_sources',
             'storage_connection_smoke',
+            'readMigrationEvidence',
+            'evidenceShardPaths',
+            'mergeScenarioResults',
         ] as $token) {
             $this->assertStringContainsString($token, $node);
         }
@@ -441,6 +445,91 @@ class MigrationConformanceRunnerContractTest extends TestCase
             $result['finding_links'],
             'normalized env and file-backed inputs must satisfy run-record fields before pass evaluation',
         );
+    }
+
+    public function test_runner_merges_host_evidence_shards_before_passing(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner evidence shard merge.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $tempRoot = sys_get_temp_dir().'/dw-migration-shards-'.bin2hex(random_bytes(6));
+        $resultDir = $tempRoot.'/result';
+        $evidenceDir = $tempRoot.'/migration-evidence.d';
+        $evidencePath = $tempRoot.'/migration-evidence.json';
+        $evidence = $this->completeRunnerEvidence();
+        $scenarioResults = $evidence['scenario_results'];
+        $singleScenario = $scenarioResults['latest_supported_v1_state_setup'];
+        $singleScenario['scenario_id'] = 'latest_supported_v1_state_setup';
+        unset($scenarioResults['latest_supported_v1_state_setup']);
+
+        $baseEvidence = $evidence;
+        unset($baseEvidence['scenario_results'], $baseEvidence['history_dumps']);
+
+        try {
+            mkdir($resultDir, 0777, true);
+            mkdir($evidenceDir, 0777, true);
+            file_put_contents(
+                $evidencePath,
+                json_encode($baseEvidence, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+            );
+            file_put_contents(
+                $evidenceDir.'/010-scenarios.json',
+                json_encode(['scenario_results' => $scenarioResults], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+            );
+            file_put_contents(
+                $evidenceDir.'/020-latest-supported-v1-state.json',
+                json_encode($singleScenario, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+            );
+            file_put_contents(
+                $evidenceDir.'/030-run-record.json',
+                json_encode(['history_dumps' => $evidence['history_dumps']], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+            );
+
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/migration-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_MIGRATION_REPO_ROOT' => $repoRoot,
+                    'DW_MIGRATION_RESULT_DIR' => $resultDir,
+                    'DW_MIGRATION_EVIDENCE_JSON' => $evidencePath,
+                    'DW_MIGRATION_EVIDENCE_DIR' => $evidenceDir,
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, ($stdout === false ? '' : $stdout).($stderr === false ? '' : $stderr));
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/migration-conformance-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('pass', $result['outcome']);
+            $this->assertSame(
+                'pass',
+                $result['scenario_results']['latest_supported_v1_state_setup']['status'],
+            );
+            $this->assertSame($evidence['history_dumps'], $result['history_dumps']);
+        } finally {
+            $this->removeTree($tempRoot);
+        }
     }
 
     public function test_runner_normalizes_contract_release_artifact_aliases_before_passing(): void

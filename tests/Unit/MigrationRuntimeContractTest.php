@@ -163,6 +163,7 @@ class MigrationRuntimeContractTest extends TestCase
         $this->assertContains('migration-conformance-result.json', $hostRunner['expected_output_files']);
         $this->assertContains('migration-conformance-record.json', $hostRunner['expected_output_files']);
         $this->assertArrayHasKey('DW_MIGRATION_EVIDENCE_JSON', $hostRunner['evidence_inputs']);
+        $this->assertArrayHasKey('DW_MIGRATION_EVIDENCE_DIR', $hostRunner['evidence_inputs']);
         $this->assertContains('artifact_sources', $manifest['artifact_policy']['required_run_record_fields']);
         $this->assertContains('not_exercised', $manifest['artifact_policy']['forbidden_sources']);
     }

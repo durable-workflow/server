@@ -271,6 +271,7 @@ final class MigrationRuntimeContract
                 ],
                 'evidence_inputs' => [
                     'DW_MIGRATION_EVIDENCE_JSON' => 'Optional full-result or scenario-shard JSON captured by the host runner after executing the public migration guide against published artifacts.',
+                    'DW_MIGRATION_EVIDENCE_DIR' => 'Optional directory of JSON evidence shards; files are merged in lexical order so the host runner can collect required migration scopes independently.',
                     'DW_MIGRATION_STORAGE_SMOKE_JSON' => 'Optional storage-connection smoke JSON to attach as advisory context.',
                 ],
                 'required_execution_scopes' => [
