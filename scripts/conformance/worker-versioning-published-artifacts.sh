@@ -35,8 +35,9 @@ Environment overrides:
   DW_WV_PUBLISHED_WORKER_EVIDENCE
                               Optional JSON report from a host topology that executed
                               replay/cache/cross-language cells with published workers.
-                              When unset, this runner attempts to generate a PHP/Python
-                              cross-language shard from published PyPI and Packagist artifacts.
+                              When unset, this runner attempts to generate a Python
+                              replay/cache shard and a PHP/Python cross-language shard
+                              from published PyPI and Packagist artifacts.
   DW_WV_SKIP_PUBLISHED_WORKER_SHARD=1
                               Skip automatic published PHP/Python worker shard generation.
 USAGE

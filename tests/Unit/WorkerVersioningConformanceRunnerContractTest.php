@@ -125,12 +125,16 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
     public function test_published_artifact_runner_gates_replay_cells_on_zero_incompatible_delivery(): void
     {
         $node = $this->read('scripts/conformance/worker-versioning-published-artifacts.mjs');
+        $publishedWorkers = $this->read('scripts/conformance/worker-versioning-published-workers.mjs');
 
         foreach ([
             'v1_worker_task_count',
             'v2_worker_task_count_for_v1_run',
             'cache_eviction_observed',
             'replay_worker_build_id',
+            'expected_replay_worker_build_id',
+            'v1_pinned_run_id',
+            'pinned_run_build_id',
             'incompatible_delivery_count',
             'incompatible_worker_task_count',
             'pending_or_typed_error',
@@ -150,9 +154,29 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'server-protocol counts alone must not pass the divergent replay cells',
         );
         $this->assertStringContainsString(
+            "publishedReplayRunId !== ''",
+            $node,
+            'published replay counts must name the v1-pinned run they measured',
+        );
+        $this->assertStringContainsString(
             'const cacheEvictionPasses = publishedWorkerScenarioPasses',
             $node,
             'the cache-eviction cell must require published worker execution and zero incompatible delivery',
+        );
+        $this->assertStringContainsString(
+            "publishedCacheRunId !== ''",
+            $node,
+            'cache-eviction evidence must name the v1-pinned run it replayed',
+        );
+        $this->assertStringContainsString(
+            'publishedReplayWorkerBuildId === publishedExpectedReplayBuildId',
+            $node,
+            'published cache evidence must compare replay against the shard pinned-build field, not a separate HTTP probe build id',
+        );
+        $this->assertStringContainsString(
+            "normalizedArtifactStatus(outputs.published_worker_evidence_status) !== 'pass'",
+            $node,
+            'a non-passing published-worker shard row cannot be promoted to passing evidence by compatible-looking counts',
         );
         $this->assertStringContainsString(
             "/api/workers/\${encodeURIComponent(v1WorkerId)}",
@@ -185,6 +209,21 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         );
         $this->assertStringNotContainsString('pending_or_health_surface', $node);
         $this->assertStringContainsString("addFail('replay_across_cache_eviction'", $node);
+
+        foreach ([
+            'runPythonReplayShard',
+            'sequence-python-replay-v2-divergent',
+            'published_python_worker_protocol_client',
+            'fail_workflow_task',
+            'v1_pinned_run_id: runId',
+            'pinned_run_build_id: pinnedRunBuildId',
+            'worker_task_counts_by_run',
+            'expected_replay_worker_build_id: pinnedRunBuildId',
+            "scenario_id: REPLAY_SCENARIO",
+            "scenario_id: CACHE_EVICTION_SCENARIO",
+        ] as $token) {
+            $this->assertStringContainsString($token, $publishedWorkers);
+        }
     }
 
     public function test_no_compatible_execution_only_shard_does_not_inherit_probe_outputs(): void

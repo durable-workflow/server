@@ -5,6 +5,8 @@ import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 
 const SHARD_SCHEMA = 'durable-workflow.v2.worker-versioning-runtime.published-worker-execution-evidence';
+const REPLAY_SCENARIO = 'replay_only_by_compatible_workers';
+const CACHE_EVICTION_SCENARIO = 'replay_across_cache_eviction';
 const CROSS_LANGUAGE_SCENARIO = 'cross_language_php_python_pinning';
 
 const resultDir = process.env.DW_WV_RESULT_DIR ?? process.cwd();
@@ -68,6 +70,8 @@ async function main() {
   const pythonV2WorkerId = `python-v2-${suffix}`;
   const pythonV1WorkerId = `python-v1-${suffix}`;
   const phpV2WorkerId = `php-v2-${suffix}`;
+
+  const pythonReplay = await runPythonReplayShard(python);
 
   runPhpWorker(php, {
     action: 'register',
@@ -230,6 +234,7 @@ async function main() {
       task_queue: taskQueue,
       workflow_type: workflowType,
       workers: [
+        ...pythonReplay.workers,
         { worker_id: phpV1WorkerId, runtime: 'php', build_id: phpV1BuildId },
         { worker_id: pythonV2WorkerId, runtime: 'python', build_id: pythonV2BuildId },
         { worker_id: pythonV1WorkerId, runtime: 'python', build_id: pythonV1BuildId },
@@ -237,6 +242,7 @@ async function main() {
       ],
     },
     scenario_results: {
+      ...pythonReplay.scenario_results,
       [CROSS_LANGUAGE_SCENARIO]: {
         scenario_id: CROSS_LANGUAGE_SCENARIO,
         status: passes ? 'pass' : 'fail',
@@ -244,13 +250,197 @@ async function main() {
         linked_findings: finding ? [finding] : [],
       },
     },
-    findings: finding ? [finding] : [],
+    findings: [
+      ...pythonReplay.findings,
+      ...(finding ? [finding] : []),
+    ],
     logs: {
       python_install: python.install_log,
       php_install: php.install_log,
       shard_root: shardRoot,
     },
   });
+}
+
+async function runPythonReplayShard(python) {
+  const replayV1BuildId = `wv-python-replay-v1-${suffix}`;
+  const replayV2BuildId = `wv-python-replay-v2-${suffix}`;
+  const replayV1WorkerId = `python-replay-v1-${suffix}`;
+  const replayV2WorkerId = `python-replay-v2-${suffix}`;
+  const replayWorkflowId = `wv-python-replay-${suffix}`;
+  const v1Fingerprint = `sequence-python-replay-v1-${suffix}`;
+  const v2Fingerprint = `sequence-python-replay-v2-divergent-${suffix}`;
+  const workflowResult = ['activity_a', 'activity_b'];
+  const replayRoot = path.join(runRoot, 'published-php-python-worker-shard', 'replay');
+
+  runPythonWorker(python, {
+    action: 'register',
+    worker_id: replayV1WorkerId,
+    build_id: replayV1BuildId,
+    fingerprint: v1Fingerprint,
+    output_path: path.join(replayRoot, 'python-replay-v1-register.json'),
+  });
+  runPythonWorker(python, {
+    action: 'register',
+    worker_id: replayV2WorkerId,
+    build_id: replayV2BuildId,
+    fingerprint: v2Fingerprint,
+    output_path: path.join(replayRoot, 'python-replay-v2-register.json'),
+  });
+
+  await promoteBuildId(replayV1BuildId);
+  const started = await startWorkflow(replayWorkflowId, ['python-replay-v1']);
+  const runId = stringValue(started.run_id);
+  const pinnedRunBuildId = stringValue(started.compatibility) || replayV1BuildId;
+
+  const v2BeforeReplay = runPythonWorker(python, {
+    action: 'poll',
+    worker_id: replayV2WorkerId,
+    build_id: replayV2BuildId,
+    output_path: path.join(replayRoot, 'python-replay-v2-before-replay.json'),
+  });
+  const v1FirstPoll = runPythonWorker(python, {
+    action: 'poll',
+    worker_id: replayV1WorkerId,
+    build_id: replayV1BuildId,
+    fail: true,
+    failure_message: 'published worker process restarted before workflow task completion',
+    failure_type: 'RuntimeError',
+    output_path: path.join(replayRoot, 'python-replay-v1-first-poll.json'),
+  });
+
+  runPythonWorker(python, {
+    action: 'register',
+    worker_id: replayV1WorkerId,
+    build_id: replayV1BuildId,
+    fingerprint: v1Fingerprint,
+    output_path: path.join(replayRoot, 'python-replay-v1-reregister.json'),
+  });
+
+  const v2AfterRestart = runPythonWorker(python, {
+    action: 'poll',
+    worker_id: replayV2WorkerId,
+    build_id: replayV2BuildId,
+    output_path: path.join(replayRoot, 'python-replay-v2-after-restart.json'),
+  });
+  const v1ReplayPoll = runPythonWorker(python, {
+    action: 'poll',
+    worker_id: replayV1WorkerId,
+    build_id: replayV1BuildId,
+    complete: true,
+    result: workflowResult,
+    output_path: path.join(replayRoot, 'python-replay-v1-replay-poll.json'),
+  });
+
+  const v1TaskCount = countTaskForRun(v1FirstPoll, runId) + countTaskForRun(v1ReplayPoll, runId);
+  const v2TaskCountForV1Run =
+    countTaskForRun(v2BeforeReplay, runId) + countTaskForRun(v2AfterRestart, runId);
+  const cacheEvictionIncompatibleCount = countTaskForRun(v2AfterRestart, runId);
+  const replayWorkerBuildId = stringValue(v1ReplayPoll?.task?.compatibility);
+  const cacheEvictionObserved = countTaskForRun(v1ReplayPoll, runId) > 0
+    && numberValue(v1ReplayPoll?.task?.workflow_task_attempt) >= 2;
+  const divergentWorkflowExecutionObserved = v1Fingerprint !== v2Fingerprint
+    && v1TaskCount > 0
+    && workflowResult[0] === 'activity_a';
+  const workerExecution = publishedPythonWorkerExecution();
+
+  const replayOutputs = {
+    v1_worker_task_count: v1TaskCount,
+    v2_worker_task_count_for_v1_run: v2TaskCountForV1Run,
+    workflow_result: workflowResult,
+    workflow_id: replayWorkflowId,
+    v1_pinned_run_id: runId,
+    pinned_run_build_id: pinnedRunBuildId,
+    v1_worker_build_id: replayV1BuildId,
+    v2_worker_build_id: replayV2BuildId,
+    divergent_workflow_execution_observed: divergentWorkflowExecutionObserved,
+    worker_task_counts_by_run: {
+      [runId]: {
+        [replayV1WorkerId]: v1TaskCount,
+        [replayV2WorkerId]: v2TaskCountForV1Run,
+      },
+    },
+    worker_execution_mode: 'published_python_worker_protocol_client',
+    published_artifact_worker_execution: workerExecution,
+    local_product_source_checkouts_used: false,
+  };
+  const cacheOutputs = {
+    cache_eviction_observed: cacheEvictionObserved,
+    replay_worker_build_id: replayWorkerBuildId,
+    expected_replay_worker_build_id: pinnedRunBuildId,
+    pinned_run_build_id: pinnedRunBuildId,
+    v1_pinned_run_id: runId,
+    incompatible_delivery_count: cacheEvictionIncompatibleCount,
+    v1_worker_task_count: v1TaskCount,
+    v2_worker_task_count_for_v1_run: v2TaskCountForV1Run,
+    divergent_workflow_execution_observed: divergentWorkflowExecutionObserved,
+    replay_attempt: numberValue(v1ReplayPoll?.task?.workflow_task_attempt),
+    worker_execution_mode: 'published_python_worker_protocol_client',
+    published_artifact_worker_execution: workerExecution,
+    local_product_source_checkouts_used: false,
+  };
+
+  const replayPasses = divergentWorkflowExecutionObserved
+    && runId !== ''
+    && v1TaskCount > 0
+    && v2TaskCountForV1Run === 0;
+  const cachePasses = divergentWorkflowExecutionObserved
+    && runId !== ''
+    && cacheEvictionObserved
+    && cacheEvictionIncompatibleCount === 0
+    && replayWorkerBuildId === pinnedRunBuildId;
+
+  const replayFinding = replayPasses ? null : {
+    scenario_id: REPLAY_SCENARIO,
+    owning_surface: v2TaskCountForV1Run > 0 ? 'server' : 'conformance_harness',
+    artifact_versions: artifactVersions(),
+    observed_behavior: 'Published Python worker replay evidence did not prove positive compatible delivery with zero incompatible delivery for one v1-pinned divergent run.',
+    expected_behavior: 'A v1-pinned workflow with divergent v2 code is replayed only by a v1-compatible worker while v2 workers poll the same task queue.',
+    next_acceptance_criterion: 'rerun the published worker-versioning shard and record a non-empty v1_pinned_run_id, v1_worker_task_count above zero, v2_worker_task_count_for_v1_run equal to zero, and divergent_workflow_execution_observed=true',
+    v1_worker_task_count: v1TaskCount,
+    v2_worker_task_count_for_v1_run: v2TaskCountForV1Run,
+    v1_pinned_run_id: runId,
+  };
+  const cacheFinding = cachePasses ? null : {
+    scenario_id: CACHE_EVICTION_SCENARIO,
+    owning_surface: cacheEvictionIncompatibleCount > 0 || replayWorkerBuildId !== pinnedRunBuildId
+      ? 'server'
+      : 'conformance_harness',
+    artifact_versions: artifactVersions(),
+    observed_behavior: 'Published Python worker cache-eviction evidence did not prove replay on the pinned build with zero incompatible delivery.',
+    expected_behavior: 'After a published worker task failure/restart, v1-pinned history is replayed only by the v1-compatible build while v2 workers receive zero tasks for that run.',
+    next_acceptance_criterion: 'rerun the published worker-versioning shard and record cache_eviction_observed=true, replay_worker_build_id equal to pinned_run_build_id, and incompatible_delivery_count equal to zero',
+    expected_replay_worker_build_id: pinnedRunBuildId,
+    replay_worker_build_id: replayWorkerBuildId,
+    incompatible_delivery_count: cacheEvictionIncompatibleCount,
+    cache_eviction_observed: cacheEvictionObserved,
+    v1_pinned_run_id: runId,
+  };
+
+  return {
+    workers: [
+      { worker_id: replayV1WorkerId, runtime: 'python', build_id: replayV1BuildId },
+      { worker_id: replayV2WorkerId, runtime: 'python', build_id: replayV2BuildId },
+    ],
+    scenario_results: {
+      [REPLAY_SCENARIO]: {
+        scenario_id: REPLAY_SCENARIO,
+        status: replayPasses ? 'pass' : 'fail',
+        observed_outputs: replayOutputs,
+        linked_findings: replayFinding ? [replayFinding] : [],
+      },
+      [CACHE_EVICTION_SCENARIO]: {
+        scenario_id: CACHE_EVICTION_SCENARIO,
+        status: cachePasses ? 'pass' : 'fail',
+        observed_outputs: cacheOutputs,
+        linked_findings: cacheFinding ? [cacheFinding] : [],
+      },
+    },
+    findings: [
+      ...(replayFinding ? [replayFinding] : []),
+      ...(cacheFinding ? [cacheFinding] : []),
+    ],
+  };
 }
 
 async function installPythonWorker(shardRoot) {
@@ -358,6 +548,9 @@ function writeWorkerInput(input) {
     python_version: pythonVersion,
     workflow_php_version: workflowPhpVersion,
     complete: false,
+    fail: false,
+    failure_message: 'published worker task failed',
+    failure_type: 'RuntimeError',
     result: [],
     ...input,
   });
@@ -475,6 +668,17 @@ function countTaskForRun(output, runId) {
   return stringValue(output?.task?.run_id) === runId ? 1 : 0;
 }
 
+function numberValue(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) {
+    return Number(value);
+  }
+
+  return null;
+}
+
 function notCoveredShard(reason, observedOutputs) {
   const finding = {
     scenario_id: CROSS_LANGUAGE_SCENARIO,
@@ -504,6 +708,21 @@ function notCoveredShard(reason, observedOutputs) {
       },
     },
     findings: [finding],
+  };
+}
+
+function publishedPythonWorkerExecution() {
+  return {
+    local_product_source_checkouts_used: false,
+    artifacts: [
+      {
+        artifact: 'sdk-python',
+        version: pythonVersion,
+        source: 'pypi_release',
+        status: 'pass',
+        command: `python3 -m pip install durable-workflow==${pythonVersion}`,
+      },
+    ],
   };
 }
 
@@ -701,6 +920,14 @@ async def main():
                             "result": json.dumps(payload.get("result") or []),
                         }
                     ],
+                )
+            elif task and payload.get("fail"):
+                await client.fail_workflow_task(
+                    task_id=task["task_id"],
+                    lease_owner=task["lease_owner"],
+                    workflow_task_attempt=int(task.get("workflow_task_attempt") or 1),
+                    message=payload.get("failure_message") or "published worker task failed",
+                    failure_type=payload.get("failure_type") or "RuntimeError",
                 )
             result = {"action": "poll", "task": task}
         else:

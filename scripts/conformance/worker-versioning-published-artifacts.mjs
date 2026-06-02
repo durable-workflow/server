@@ -552,12 +552,15 @@ async function main() {
   );
   const publishedReplayV1TaskCount = numberValue(publishedReplayOutputs.v1_worker_task_count);
   const publishedReplayV2TaskCount = numberValue(publishedReplayOutputs.v2_worker_task_count_for_v1_run);
+  const publishedReplayRunId = stringValue(publishedReplayOutputs.v1_pinned_run_id)
+    || stringValue(publishedReplayOutputs.run_id);
   const publishedReplayWorkerExecuted = publishedWorkerScenarioPasses(
     publishedReplayOutputs,
     ['sdk-python', 'workflow-php'],
     false,
   );
   const publishedReplayPasses = publishedReplayWorkerExecuted
+    && publishedReplayRunId !== ''
     && truthyEvidenceFlag(publishedReplayOutputs.divergent_workflow_execution_observed)
     && publishedReplayV1TaskCount > 0
     && publishedReplayV2TaskCount === 0;
@@ -573,6 +576,7 @@ async function main() {
       next_acceptance_criterion: 'rerun the published worker-versioning topology and record v1_worker_task_count above zero, v2_worker_task_count_for_v1_run equal to zero, divergent_workflow_execution_observed=true, and published_artifact_worker_execution from a published worker artifact',
       v1_worker_task_count: publishedReplayV1TaskCount,
       v2_worker_task_count_for_v1_run: publishedReplayV2TaskCount,
+      v1_pinned_run_id: publishedReplayRunId,
     });
   } else if (v1TaskCount > 0 && v2TaskCountForV1Run === 0) {
     addNotCovered('replay_only_by_compatible_workers', compatibleReplayOutputs, {
@@ -619,16 +623,23 @@ async function main() {
     publishedCacheEvictionOutputs.incompatible_delivery_count,
   );
   const publishedReplayWorkerBuildId = stringValue(publishedCacheEvictionOutputs.replay_worker_build_id);
+  const publishedExpectedReplayBuildId =
+    stringValue(publishedCacheEvictionOutputs.expected_replay_worker_build_id)
+    || stringValue(publishedCacheEvictionOutputs.pinned_run_build_id)
+    || expectedReplayBuildId;
+  const publishedCacheRunId = stringValue(publishedCacheEvictionOutputs.v1_pinned_run_id)
+    || stringValue(publishedCacheEvictionOutputs.run_id);
   const publishedCacheEvictionWorkerExecuted = publishedWorkerScenarioPasses(
     publishedCacheEvictionOutputs,
     ['sdk-python', 'workflow-php'],
     false,
   );
   const cacheEvictionPasses = publishedCacheEvictionWorkerExecuted
+    && publishedCacheRunId !== ''
     && truthyEvidenceFlag(publishedCacheEvictionOutputs.divergent_workflow_execution_observed)
     && truthyEvidenceFlag(publishedCacheEvictionOutputs.cache_eviction_observed)
     && publishedCacheEvictionIncompatibleCount === 0
-    && publishedReplayWorkerBuildId === expectedReplayBuildId;
+    && publishedReplayWorkerBuildId === publishedExpectedReplayBuildId;
   if (cacheEvictionPasses) {
     addPass('replay_across_cache_eviction', publishedCacheEvictionOutputs);
   } else if (publishedCacheEvictionWorkerExecuted) {
@@ -639,10 +650,11 @@ async function main() {
       observed_behavior: 'Published worker cache-eviction evidence did not prove replay on the pinned compatible build with zero incompatible delivery.',
       expected_behavior: 'After published-worker restart or cache eviction, v1-pinned history is replayed only by the v1-compatible build while v2 workers receive zero tasks for that run.',
       next_acceptance_criterion: 'rerun with a published worker process restart or cache eviction and record cache_eviction_observed=true, replay_worker_build_id equal to the pinned run build id, incompatible_delivery_count equal to zero, and published_artifact_worker_execution from a published worker artifact',
-      expected_replay_worker_build_id: expectedReplayBuildId,
+      expected_replay_worker_build_id: publishedExpectedReplayBuildId,
       replay_worker_build_id: publishedReplayWorkerBuildId,
       incompatible_delivery_count: publishedCacheEvictionIncompatibleCount,
       cache_eviction_observed: publishedCacheEvictionOutputs.cache_eviction_observed,
+      v1_pinned_run_id: publishedCacheRunId,
     });
   } else if (cacheEvictionObserved
     && cacheEvictionIncompatibleCount === 0
@@ -1457,6 +1469,11 @@ function mergeScenarioOutputs(base, supplied) {
 }
 
 function publishedWorkerScenarioPasses(outputs, requiredArtifacts, requireAllArtifacts) {
+  if (outputs?.published_worker_evidence_status !== undefined
+    && normalizedArtifactStatus(outputs.published_worker_evidence_status) !== 'pass') {
+    return false;
+  }
+
   if (outputs?.supplied_shard_local_product_source_checkouts_used !== false) {
     return false;
   }
