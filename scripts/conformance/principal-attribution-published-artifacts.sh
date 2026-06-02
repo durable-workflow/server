@@ -1724,8 +1724,18 @@ def main() -> int:
     spoof_successes = [value for value in main_principals.values() if isinstance(value, dict) and value.get("id") == "mallory"]
     if spoof_successes:
         main_failures.append("spoofed principal mallory appeared in history")
-        findings.append(finding("start_signal_cancel_spoofing", "server", "spoofed principal appeared in history", "server-derived principal overwrites caller supplied identity", "fix principal derivation before accepting caller attribution", "P0"))
-    scenario_results.append(scenario("pass" if not main_failures else "fail", "start_signal_cancel_spoofing", history_events=list(main_principals), recorded_principals=main_principals, spoofing_attempts={"payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS)}, findings=main_failures))
+    main_linked_findings: list[dict[str, Any]] = []
+    if main_failures:
+        main_linked_findings.append(finding(
+            "start_signal_cancel_spoofing",
+            "server",
+            f"start/signal/cancel attribution failures: {main_failures}",
+            "server-derived principals record alice for start, bob for signal, alice for cancel, and never accept caller-supplied spoofing fields",
+            "fix server-side command principal derivation before marking start/signal/cancel spoofing coverage pass",
+            "P0" if spoof_successes else "P1",
+        ))
+        findings.extend(main_linked_findings)
+    scenario_results.append(scenario("pass" if not main_failures else "fail", "start_signal_cancel_spoofing", history_events=list(main_principals), recorded_principals=main_principals, spoofing_attempts={"payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS)}, linked_findings=main_linked_findings, findings=main_failures))
 
     query_recorded = query_observation.get("query_response", {})
     recorded_query_principal = principal_from_query_observation(query_observation)
@@ -1851,7 +1861,7 @@ def main() -> int:
         "outcome": outcome,
         "runnerBlocked": False,
         "artifactVersions": versions,
-        "findings": [item["observed_behavior"] for item in findings],
+        "findings": findings,
         "resultPath": str(RESULT_DIR / "principal-attribution-result.json"),
     }, indent=2, sort_keys=True) + "\n")
     return 0 if outcome == "pass" else 1

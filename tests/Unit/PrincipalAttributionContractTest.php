@@ -449,6 +449,9 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('"X-Workflow-Caller-Type": "spoofed-gateway"', $script);
         $this->assertStringContainsString('"X-Workflow-Auth-Method": "gateway_token"', $script);
         $this->assertStringContainsString('"X-Remote-User": "mallory"', $script);
+        $this->assertStringContainsString('main_linked_findings: list[dict[str, Any]] = []', $script);
+        $this->assertStringContainsString('linked_findings=main_linked_findings', $script);
+        $this->assertStringContainsString('start/signal/cancel attribution failures', $script);
         $this->assertStringContainsString('ANONYMOUS_SERVER_URL="$anonymous_server_base_url"', $script);
         $this->assertStringContainsString('anonymous_auth_driver": "none"', $script);
         $this->assertStringContainsString('run_python_sdk_client_operation', $script);
@@ -481,6 +484,8 @@ class PrincipalAttributionContractTest extends TestCase
             'completion_failure_status = "pass" if isinstance(completion_event_principal, dict) and isinstance(failure_event_principal, dict) else "fail"',
             $script,
         );
+        $this->assertStringContainsString('"findings": findings,', $script);
+        $this->assertStringNotContainsString('"findings": [item["observed_behavior"] for item in findings]', $script);
     }
 
     public function test_published_artifact_runner_reports_current_suite_version_from_scenario_manifest(): void
