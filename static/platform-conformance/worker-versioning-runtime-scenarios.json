@@ -161,7 +161,9 @@
         "python_worker_build_id",
         "php_v1_to_python_v2_incompatible_delivery_count",
         "python_v1_to_php_v2_incompatible_delivery_count",
-        "cross_language_delivery"
+        "cross_language_delivery",
+        "published_artifact_worker_execution",
+        "local_product_source_checkouts_used"
       ]
     },
     "adversarial_no_version_bump": {
@@ -420,6 +422,8 @@
         "Python-started v1 history is not delivered to PHP v2",
         "the PHP v1 to Python v2 incompatible delivery count is recorded as zero",
         "the Python v1 to PHP v2 incompatible delivery count is recorded as zero",
+        "published workflow-php and sdk-python worker artifacts are identified with install source and version",
+        "the PHP/Python worker evidence records that no local product source checkout was used",
         "both runtimes agree on build-id compatibility semantics"
       ]
     },

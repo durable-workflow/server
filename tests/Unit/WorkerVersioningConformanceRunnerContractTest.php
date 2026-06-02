@@ -55,6 +55,11 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'the runner must not pass cross-language pinning without published PHP and Python worker execution',
         );
         $this->assertStringContainsString(
+            'local_product_source_checkouts_used: false',
+            $node,
+            'the cross-language fallback must explicitly report that synthetic server probes did not use a local product checkout',
+        );
+        $this->assertStringContainsString(
             'Optional JSON report from a host topology that executed',
             $shell,
             'the shell handoff must document the published worker evidence input',

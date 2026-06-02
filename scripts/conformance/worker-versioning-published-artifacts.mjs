@@ -743,6 +743,7 @@ async function main() {
     worker_execution_mode: SERVER_PROTOCOL_PROBE,
     server_protocol_probe_only: true,
     published_artifact_worker_execution: false,
+    local_product_source_checkouts_used: false,
   };
   const publishedCrossLanguageOutputs = mergeScenarioOutputs(
     crossLanguageOutputs,

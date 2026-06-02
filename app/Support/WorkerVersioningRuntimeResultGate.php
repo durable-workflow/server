@@ -1215,7 +1215,6 @@ final class WorkerVersioningRuntimeResultGate
 
     /**
      * @param array<string, array<string, mixed>> $scenarioResults
-     * @param array<string, mixed> $result
      *
      * @return array<int, array<string, mixed>>
      */

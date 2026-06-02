@@ -267,8 +267,10 @@ final class WorkerVersioningRuntimeContract
                         'php_v1_to_python_v2_incompatible_delivery_count',
                         'python_v1_to_php_v2_incompatible_delivery_count',
                         'cross_language_delivery',
+                        'published_artifact_worker_execution',
+                        'local_product_source_checkouts_used',
                     ],
-                    'expected_behavior' => 'PHP and Python workers honor the same build-id pinning contract on a shared queue and both directional incompatible-delivery counts are zero',
+                    'expected_behavior' => 'PHP and Python workers honor the same build-id pinning contract on a shared queue, both directional incompatible-delivery counts are zero, and the evidence identifies published PHP and Python worker artifacts with no local product checkout use',
                 ],
                 'adversarial_no_version_bump' => [
                     'required_fields' => [

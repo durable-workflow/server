@@ -81,6 +81,14 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         $this->assertContains('cross_language_php_python_pinning', $manifest['required_scenarios']);
         $this->assertContains('adversarial_no_version_bump', $manifest['required_scenarios']);
         $this->assertContains('history_api_version_pin', $manifest['required_scenarios']);
+        $this->assertContains(
+            'published_artifact_worker_execution',
+            $manifest['scenario_requirements']['cross_language_php_python_pinning']['required_fields'],
+        );
+        $this->assertContains(
+            'local_product_source_checkouts_used',
+            $manifest['scenario_requirements']['cross_language_php_python_pinning']['required_fields'],
+        );
         $this->assertSame(
             'conformance_runner_coverage_gap',
             $manifest['host_runner_contract']['routing_policy']['missing_required_scenario']['finding_type'],
