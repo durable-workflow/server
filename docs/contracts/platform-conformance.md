@@ -105,10 +105,12 @@ selection, and adversarial namespace-name refusal. The published Workflow PHP
 namespace shard is required for a passing result and must be attached through
 `DW_NAMESPACES_WORKFLOW_PHP_RESULT`; the aggregated evidence records the shard
 report as executed before the PHP worker task-queue cell can pass. A published
-Waterline shard can be attached through its namespace-conformance report. When
-a required or expected shard is absent, the result remains non-passing and
-carries a focused surface finding instead of silently treating the cell as
-covered.
+Waterline shard is run automatically from a disposable Laravel app unless
+`DW_NAMESPACES_WATERLINE_RESULT` points at a pre-generated
+`waterline:namespace-conformance` report for the same artifact tuple. When a
+required or expected shard is absent or cannot be executed, the result remains
+non-passing and carries a focused surface finding instead of silently treating
+the cell as covered.
 
 The server repo also ships a source-free Python SDK parity runner at
 `scripts/conformance/python-published-artifacts.sh`. Host conformance
