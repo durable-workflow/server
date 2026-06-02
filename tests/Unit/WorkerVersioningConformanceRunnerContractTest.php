@@ -108,6 +108,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'incompatible_delivery_count',
             'incompatible_worker_task_count',
             'pending_or_typed_error',
+            'operator_visible_signal_explicit',
         ] as $field) {
             $this->assertStringContainsString($field, $node);
         }
@@ -136,6 +137,11 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'noCompatibleIncompatibleCount === 0',
             $node,
             'the no-compatible cell may pass only when the incompatible worker receives zero tasks',
+        );
+        $this->assertStringContainsString(
+            'noCompatibleIncompatibleCount === 0 && noCompatibleSignalExplicit',
+            $node,
+            'the no-compatible cell may pass only when zero incompatible delivery is paired with an explicit diagnostic',
         );
         $this->assertStringNotContainsString('pending_or_health_surface', $node);
         $this->assertStringContainsString("addFail('replay_across_cache_eviction'", $node);

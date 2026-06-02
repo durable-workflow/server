@@ -671,21 +671,25 @@ async function main() {
   }
   const noCompatibleOutputs = {
     operator_visible_signal: noCompatibleSignal,
+    operator_visible_signal_explicit: isExplicitNoCompatibleSignal(noCompatibleSignal),
     pending_or_typed_error: noCompatiblePendingOrTypedError,
     incompatible_worker_task_count: noCompatibleIncompatibleCount,
     deregister_response: v1Delete,
     workflow_visibility: noCompatibleShow,
   };
-  if (noCompatibleIncompatibleCount === 0) {
+  const noCompatibleSignalExplicit = isExplicitNoCompatibleSignal(noCompatibleSignal);
+  if (noCompatibleIncompatibleCount === 0 && noCompatibleSignalExplicit) {
     addPass('no_compatible_worker_behavior', noCompatibleOutputs);
   } else {
     addFail('no_compatible_worker_behavior', noCompatibleOutputs, {
       scenario_id: 'no_compatible_worker_behavior',
       owning_surface: 'server',
       artifact_versions: artifactVersions,
-      observed_behavior: 'A v1-pinned run without a registered v1-compatible worker was delivered to an incompatible worker.',
+      observed_behavior: noCompatibleIncompatibleCount > 0
+        ? 'A v1-pinned run without a registered v1-compatible worker was delivered to an incompatible worker.'
+        : 'A v1-pinned run without a registered v1-compatible worker was left unclaimed without an explicit no-compatible-worker diagnostic.',
       expected_behavior: 'Pinned runs with no compatible worker remain pending or surface a typed no-compatible-worker signal and are never delivered to v2 workers.',
-      next_acceptance_criterion: 'rerun the published-artifact worker-versioning probe and record incompatible_worker_task_count equal to zero after deregistering the compatible worker',
+      next_acceptance_criterion: 'rerun the published-artifact worker-versioning probe and record incompatible_worker_task_count equal to zero plus an explicit no-compatible-worker or compatibility-blocked public signal after deregistering the compatible worker',
       incompatible_worker_task_count: noCompatibleIncompatibleCount,
       operator_visible_signal: noCompatibleSignal,
     });
