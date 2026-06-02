@@ -172,8 +172,6 @@ async function main() {
     artifactSources,
   );
   const scenarioResults = buildScenarioResults(evidence, resolvedArtifactVersions, artifactPrerequisiteFailures);
-  const findingLinks = mergeFindingLinks(evidence, scenarioResults);
-  const findings = mergeFindings(evidence, findingLinks);
   const localProductSourceCheckoutsUsed = localProductSourceCheckoutsUsedIn(evidence, scenarioResults);
   const result = {
     schema: RESULT_SCHEMA,
@@ -191,8 +189,8 @@ async function main() {
     artifact_prerequisite_failures: artifactPrerequisiteFailures,
     local_product_source_checkouts_used: localProductSourceCheckoutsUsed,
     scenario_results: scenarioResults,
-    findings,
-    finding_links: findingLinks,
+    findings: [],
+    finding_links: {},
     migration_plan: nonEmptyObject(evidence.migration_plan)
       ?? notCoveredObservation('migration_plan', 'No public migration-guide execution plan was supplied.'),
     preupgrade_state_snapshot: nonEmptyObject(evidence.preupgrade_state_snapshot)
@@ -224,6 +222,9 @@ async function main() {
     },
   };
 
+  const missingRunRecordFindings = missingRunRecordFindingsFor(result, resolvedArtifactVersions);
+  result.finding_links = mergeFindingLinks(evidence, scenarioResults, missingRunRecordFindings);
+  result.findings = mergeFindings(evidence, result.finding_links, missingRunRecordFindings);
   result.outcome = resultPasses(result) ? 'pass' : 'non_passing';
   writeResult(result);
 }
@@ -401,13 +402,32 @@ function normalizeScenarioResult(scenarioId, scenario, artifactVersions) {
     ?? nonEmptyObject(scenario.evidence)
     ?? {};
   const status = normalizedStatus(scenario.status);
+  const missingRequiredFields = status === 'pass'
+    ? missingRequiredFieldsForScenario(scenarioId, scenario, observedOutputs)
+    : [];
   const normalized = {
     ...scenario,
     scenario_id: scenarioId,
-    status,
+    status: missingRequiredFields.length === 0 ? status : 'not_covered',
     observed_outputs: observedOutputs,
   };
   delete normalized.observedOutputs;
+
+  if (status === 'pass' && missingRequiredFields.length > 0) {
+    normalized.observed_outputs = {
+      ...observedOutputs,
+      missing_required_fields: missingRequiredFields,
+    };
+    normalized.linked_findings = [
+      ...linkedFindingsForScenario(normalized),
+      coverageGapFinding(scenarioId, artifactVersions, {
+        observed_behavior: `Scenario ${scenarioId} reported pass but omitted required evidence fields: ${missingRequiredFields.join(', ')}.`,
+        expected_behavior: 'Passing migration scenarios include non-placeholder observed outputs for every field required by the public migration scenario manifest.',
+        next_acceptance_criterion: `attach non-placeholder observations for ${missingRequiredFields.join(', ')} before recording ${scenarioId} as passing`,
+      }),
+    ];
+    return normalized;
+  }
 
   if (status !== 'pass' && !hasLinkedFinding(normalized)) {
     normalized.linked_findings = [
@@ -420,6 +440,18 @@ function normalizeScenarioResult(scenarioId, scenario, artifactVersions) {
   }
 
   return normalized;
+}
+
+function missingRequiredFieldsForScenario(scenarioId, scenario, observedOutputs) {
+  const missing = [];
+
+  for (const field of requiredFieldsFor(scenarioId)) {
+    if (!hasField(scenario, field) && !hasField(observedOutputs, field)) {
+      missing.push(field);
+    }
+  }
+
+  return missing;
 }
 
 function normalizeStorageSmoke(evidence) {
@@ -604,7 +636,26 @@ function isPlaceholderArtifactVersion(version) {
     || /(^|[^a-z0-9])v?\d+(?:\.\d+)*\.x([^a-z0-9]|$)/i.test(normalized);
 }
 
-function mergeFindingLinks(evidence, scenarioResults) {
+function missingRunRecordFindingsFor(result, artifactVersions) {
+  const findings = [];
+
+  for (const field of REQUIRED_TOP_LEVEL_FIELDS) {
+    if (!isEmptyEvidence(fieldValue(result, field))) {
+      continue;
+    }
+
+    findings.push(coverageGapFinding('run_record', artifactVersions, {
+      observed_behavior: `No non-placeholder migration run record evidence was supplied for ${field}.`,
+      expected_behavior: 'Passing migration conformance records every top-level migration plan, before/after state, operator observation, rollback/skew observation, and storage smoke section required by the public scenario manifest.',
+      next_acceptance_criterion: `attach non-placeholder ${field} evidence before recording migration conformance as passing`,
+      missing_run_record_field: field,
+    }));
+  }
+
+  return findings;
+}
+
+function mergeFindingLinks(evidence, scenarioResults, runRecordFindings = []) {
   const merged = {};
   const suppliedLinks = objectValue(evidence.finding_links ?? evidence.findingLinks ?? evidence.linked_findings ?? evidence.linkedFindings);
 
@@ -632,12 +683,19 @@ function mergeFindingLinks(evidence, scenarioResults) {
     }
   }
 
+  if (runRecordFindings.length > 0) {
+    merged.run_record = [
+      ...(Array.isArray(merged.run_record) ? merged.run_record : []),
+      ...runRecordFindings,
+    ];
+  }
+
   return merged;
 }
 
-function mergeFindings(evidence, findingLinks) {
+function mergeFindings(evidence, findingLinks, runRecordFindings = []) {
   const supplied = Array.isArray(evidence.findings) ? evidence.findings : [];
-  const merged = [...supplied];
+  const merged = [...supplied, ...runRecordFindings];
   const seen = new Set(merged.map((finding) => JSON.stringify(finding)));
 
   for (const links of Object.values(findingLinks)) {
@@ -851,9 +909,25 @@ function isEmptyEvidence(value) {
     return value.length === 0;
   }
   if (typeof value === 'object') {
+    const status = stringValue(value.status).toLowerCase();
+    if (['not_covered', 'runner_blocked'].includes(status) || truthy(value.coverage_gap)) {
+      return true;
+    }
+
     return Object.keys(value).length === 0;
   }
   return false;
+}
+
+function fieldValue(container, field) {
+  const object = objectValue(container);
+  for (const alias of fieldAliases(field)) {
+    if (Object.hasOwn(object, alias)) {
+      return object[alias];
+    }
+  }
+
+  return undefined;
 }
 
 function nonEmptyObject(value) {

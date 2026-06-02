@@ -842,9 +842,18 @@ final class MigrationRuntimeResultGate
 
     private static function isEmptyEvidence(mixed $value): bool
     {
-        return $value === null
-            || $value === []
-            || (is_string($value) && trim($value) === '');
+        if ($value === null || $value === [] || (is_string($value) && trim($value) === '')) {
+            return true;
+        }
+
+        if (! is_array($value)) {
+            return false;
+        }
+
+        $status = strtolower(self::stringValue($value['status'] ?? null));
+
+        return in_array($status, ['not_covered', 'runner_blocked'], true)
+            || self::boolValue($value['coverage_gap'] ?? false);
     }
 
     /**

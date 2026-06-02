@@ -332,6 +332,117 @@ class MigrationConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_downgrades_supplied_pass_scenario_with_missing_required_fields(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner scenario evidence gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        unset($evidence['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_workflows']);
+        $evidence['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_schedules'] = [
+            'status' => 'not_covered',
+            'observed_behavior' => 'placeholder coverage row',
+        ];
+
+        $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-missing-scenario-fields-');
+        $scenario = $result['scenario_results']['latest_supported_v1_state_setup'];
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame('not_covered', $scenario['status']);
+        $this->assertContains('seeded_workflows', $scenario['observed_outputs']['missing_required_fields']);
+        $this->assertContains('seeded_schedules', $scenario['observed_outputs']['missing_required_fields']);
+        $this->assertContains(
+            'conformance_runner_coverage_gap',
+            array_column($scenario['linked_findings'], 'finding_type'),
+        );
+        $this->assertArrayHasKey('latest_supported_v1_state_setup', $result['finding_links']);
+    }
+
+    public function test_runner_records_run_record_findings_for_missing_top_level_sections(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner run-record evidence gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        unset($evidence['migration_plan']);
+        $evidence['rollback_observations'] = [
+            'status' => 'not_covered',
+            'observed_behavior' => 'rollback was not exercised',
+        ];
+
+        $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-missing-run-record-');
+        $runRecordFindings = $result['finding_links']['run_record'] ?? [];
+        $missingFields = array_column($runRecordFindings, 'missing_run_record_field');
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame('not_covered', $result['migration_plan']['status']);
+        $this->assertContains('migration_plan', $missingFields);
+        $this->assertContains('rollback_observations', $missingFields);
+        $this->assertContains(
+            'conformance_runner_coverage_gap',
+            array_column($runRecordFindings, 'finding_type'),
+        );
+    }
+
+    public function test_runner_uses_normalized_env_and_file_backed_run_record_fields_before_passing(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner normalized run-record gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        unset(
+            $evidence['published_artifact_versions'],
+            $evidence['resolved_artifact_versions'],
+            $evidence['artifact_sources'],
+            $evidence['storage_connection_smoke'],
+        );
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            $evidence,
+            'dw-migration-normalized-run-record-',
+            [
+                'DW_SERVER_V1_VERSION' => $artifactVersions['server-v1'],
+                'DW_SERVER_V2_VERSION' => $artifactVersions['server-v2'],
+                'DW_SERVER_V1_ARTIFACT_SOURCE' => $artifactSources['server-v1'],
+                'DW_SERVER_V2_ARTIFACT_SOURCE' => $artifactSources['server-v2'],
+                'DW_CLI_VERSION' => $artifactVersions['cli'],
+                'DW_CLI_ARTIFACT_SOURCE' => $artifactSources['cli'],
+                'DW_WORKFLOW_PHP_V1_VERSION' => $artifactVersions['workflow-php-v1'],
+                'DW_WORKFLOW_PHP_V2_VERSION' => $artifactVersions['workflow-php-v2'],
+                'DW_WORKFLOW_PHP_V1_ARTIFACT_SOURCE' => $artifactSources['workflow-php-v1'],
+                'DW_WORKFLOW_PHP_V2_ARTIFACT_SOURCE' => $artifactSources['workflow-php-v2'],
+                'DW_PYTHON_SDK_VERSION' => $artifactVersions['sdk-python'],
+                'DW_PYTHON_SDK_ARTIFACT_SOURCE' => $artifactSources['sdk-python'],
+                'DW_WATERLINE_VERSION' => $artifactVersions['waterline'],
+                'DW_WATERLINE_ARTIFACT_SOURCE' => $artifactSources['waterline'],
+            ],
+            [
+                'passed' => true,
+                'source' => 'DW_MIGRATION_STORAGE_SMOKE_JSON',
+            ],
+        );
+
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertSame($artifactVersions, $result['published_artifact_versions']);
+        $this->assertSame($artifactVersions, $result['resolved_artifact_versions']);
+        $this->assertSame($artifactSources, $result['artifact_sources']);
+        $this->assertSame('DW_MIGRATION_STORAGE_SMOKE_JSON', $result['storage_connection_smoke']['source']);
+        $this->assertArrayNotHasKey(
+            'run_record',
+            $result['finding_links'],
+            'normalized env and file-backed inputs must satisfy run-record fields before pass evaluation',
+        );
+    }
+
     public function test_runner_normalizes_contract_release_artifact_aliases_before_passing(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -508,8 +619,13 @@ class MigrationConformanceRunnerContractTest extends TestCase
      *
      * @return array<string, mixed>
      */
-    private function runRunnerEvidence(string $nodeBinary, array $evidence, string $tempPrefix): array
-    {
+    private function runRunnerEvidence(
+        string $nodeBinary,
+        array $evidence,
+        string $tempPrefix,
+        array $environment = [],
+        ?array $storageSmoke = null,
+    ): array {
         $repoRoot = dirname(__DIR__, 2);
         $tempRoot = sys_get_temp_dir().'/'.$tempPrefix.bin2hex(random_bytes(6));
         $resultDir = $tempRoot.'/result';
@@ -521,6 +637,15 @@ class MigrationConformanceRunnerContractTest extends TestCase
                 $evidencePath,
                 json_encode($evidence, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
             );
+
+            if ($storageSmoke !== null) {
+                $storageSmokePath = $tempRoot.'/storage-smoke.json';
+                file_put_contents(
+                    $storageSmokePath,
+                    json_encode($storageSmoke, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+                );
+                $environment['DW_MIGRATION_STORAGE_SMOKE_JSON'] = $storageSmokePath;
+            }
 
             $process = proc_open(
                 [$nodeBinary, $repoRoot.'/scripts/conformance/migration-published-artifacts.mjs'],
@@ -535,7 +660,7 @@ class MigrationConformanceRunnerContractTest extends TestCase
                     'DW_MIGRATION_REPO_ROOT' => $repoRoot,
                     'DW_MIGRATION_RESULT_DIR' => $resultDir,
                     'DW_MIGRATION_EVIDENCE_JSON' => $evidencePath,
-                ],
+                ] + $environment,
             );
 
             $this->assertIsResource($process);

@@ -308,6 +308,34 @@ class MigrationRuntimeContractTest extends TestCase
         }
     }
 
+    public function test_result_gate_rejects_not_covered_placeholder_required_evidence(): void
+    {
+        $result = $this->completeMigrationResult();
+        $result['migration_plan'] = [
+            'status' => 'not_covered',
+            'observed_behavior' => 'migration guide execution was not supplied',
+        ];
+        $result['rollback_observations'] = [
+            'coverage_gap' => true,
+            'observed_behavior' => 'rollback was not exercised',
+        ];
+        $result['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_workflows'] = [
+            'status' => 'not_covered',
+            'observed_behavior' => 'workflow seeding was not supplied',
+        ];
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'seeded_workflows',
+            $this->missingScenarioRequiredFields($evaluation, 'latest_supported_v1_state_setup'),
+        );
+        foreach (['migration_plan', 'rollback_observations'] as $field) {
+            $this->assertContains($field, $this->missingRunRecordFields($evaluation));
+        }
+    }
+
     public function test_result_gate_accepts_false_and_zero_scenario_required_field_values(): void
     {
         $result = $this->completeMigrationResult();
