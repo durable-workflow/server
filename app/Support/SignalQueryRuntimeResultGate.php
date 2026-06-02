@@ -10,7 +10,36 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 6;
+    public const VERSION = 10;
+
+    private const EVIDENCE_SECTION_SCENARIOS = [
+        'replay_timing' => [
+            'signal_during_replay',
+            'query_during_replay',
+        ],
+        'terminal_run_behavior' => [
+            'completed_run_signal_and_query',
+        ],
+        'adversarial_errors' => [
+            'unknown_signal_and_query_errors',
+            'malformed_signal_and_query_payloads',
+        ],
+        'waterline_observer_comparison' => [
+            'waterline_operator_visibility',
+        ],
+    ];
+
+    private const TRUTHY_REQUIRED_EVIDENCE = [
+        'python_worker_query_task_routing',
+        'cli_signal_and_query',
+        'sdk_python_signal_and_query',
+        'immediate_repeat_query_consistency',
+        'php_worker_query_task_routing',
+        'workflow_php_signal_and_query',
+        'php_client_signal_and_query',
+        'cross_language_query_consistency',
+        'wire_envelope_compatibility',
+    ];
 
     /**
      * @return array<string, mixed>
@@ -74,6 +103,7 @@ final class SignalQueryRuntimeResultGate
                 'run_timestamps_outcome_and_finding_links_are_recorded',
                 'overall_outcome_matches_gate_status',
                 'published_artifact_versions_are_recorded_and_pinned',
+                'scenario_artifact_versions_match_run_tuple',
                 'no_local_product_source_artifacts_are_reported',
             ],
             'smoke_subset_outcome' => 'non_passing',
@@ -174,7 +204,10 @@ final class SignalQueryRuntimeResultGate
         $artifactFailures = self::artifactVersionFailures($result, $contract);
         array_push($failures, ...$artifactFailures);
 
-        $sourceFailures = self::sourcePolicyFailures($result, $contract);
+        $scenarioArtifactFailures = self::scenarioArtifactVersionFailures($result, $scenarioResults, $contract);
+        array_push($failures, ...$scenarioArtifactFailures);
+
+        $sourceFailures = self::sourcePolicyFailures($result, $contract, $scenarioResults);
         array_push($failures, ...$sourceFailures);
 
         $matrixFailures = self::matrixFailures($result, $contract);
@@ -528,6 +561,146 @@ final class SignalQueryRuntimeResultGate
 
     /**
      * @param array<string, mixed> $result
+     * @param array<string, array<string, mixed>> $scenarioResults
+     * @param array<string, mixed> $contract
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function scenarioArtifactVersionFailures(
+        array $result,
+        array $scenarioResults,
+        array $contract,
+    ): array {
+        $runVersions = self::artifactVersions($result);
+        if ($runVersions === []) {
+            return [];
+        }
+
+        $installChannels = self::arrayValue($contract['artifact_policy'] ?? [], 'install_channels') ?? [];
+        $failures = [];
+        foreach (self::sectionPolicyContainers($result) as $container) {
+            foreach (self::artifactVersionSets($container['value'], $container['path'], false) as $versionSet) {
+                foreach (array_keys($installChannels) as $artifact) {
+                    $expected = self::artifactVersionValue($runVersions, (string) $artifact);
+                    $actual = self::artifactVersionValue($versionSet['versions'], (string) $artifact);
+                    if ($expected === '' || $actual === '' || $actual === $expected) {
+                        continue;
+                    }
+
+                    $failures[] = [
+                        'code' => 'scenario_artifact_version_mismatch',
+                        'artifact' => $artifact,
+                        'expected_version' => $expected,
+                        'actual_version' => $actual,
+                        'field' => $versionSet['field'],
+                        'path' => $versionSet['path'],
+                    ];
+                }
+            }
+        }
+
+        foreach ($scenarioResults as $scenarioId => $scenarioResult) {
+            if (self::stringValue($scenarioResult['status'] ?? null) !== 'pass') {
+                continue;
+            }
+
+            foreach (self::scenarioArtifactVersionContainers($result, $scenarioResult, $scenarioId) as $versionSet) {
+                $versions = $versionSet['versions'];
+                foreach (array_keys($installChannels) as $artifact) {
+                    $expected = self::artifactVersionValue($runVersions, (string) $artifact);
+                    $actual = self::artifactVersionValue($versions, (string) $artifact);
+                    if ($expected === '' || $actual === '' || $actual === $expected) {
+                        continue;
+                    }
+
+                    $failures[] = [
+                        'code' => 'scenario_artifact_version_mismatch',
+                        'scenario_id' => $scenarioId,
+                        'artifact' => $artifact,
+                        'expected_version' => $expected,
+                        'actual_version' => $actual,
+                        'field' => $versionSet['field'],
+                        'path' => $versionSet['path'],
+                    ];
+                }
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array{versions: array<mixed>, field: string, path: string}>
+     */
+    private static function scenarioArtifactVersionContainers(
+        array $result,
+        array $scenarioResult,
+        string $scenarioId,
+    ): array {
+        $versionSets = [];
+        foreach (self::scenarioPolicyContainers($result, $scenarioResult, $scenarioId) as $container) {
+            array_push(
+                $versionSets,
+                ...self::artifactVersionSets(
+                    $container['value'],
+                    $container['path'],
+                    $container['recursive'],
+                ),
+            );
+        }
+
+        return $versionSets;
+    }
+
+    /**
+     * @param array<mixed> $container
+     *
+     * @return array<int, array{versions: array<mixed>, field: string, path: string}>
+     */
+    private static function artifactVersionSets(array $container, string $path, bool $recursive): array
+    {
+        $versionSets = [];
+        foreach ([
+            'artifact_versions',
+            'artifactVersions',
+            'published_artifact_versions',
+            'publishedArtifactVersions',
+        ] as $field) {
+            $versions = self::arrayValue($container, $field);
+            if (! is_array($versions)) {
+                continue;
+            }
+
+            $versionSets[] = [
+                'versions' => $versions,
+                'field' => $field,
+                'path' => self::pathFor($path, $field),
+            ];
+        }
+
+        if (! $recursive) {
+            return $versionSets;
+        }
+
+        foreach ($container as $field => $value) {
+            if (! is_array($value)) {
+                continue;
+            }
+
+            array_push(
+                $versionSets,
+                ...self::artifactVersionSets($value, self::pathFor($path, $field), true),
+            );
+        }
+
+        return $versionSets;
+    }
+
+    /**
+     * @param array<string, mixed> $result
      *
      * @return array<mixed>
      */
@@ -581,29 +754,137 @@ final class SignalQueryRuntimeResultGate
      * @param array<string, mixed> $result
      * @param array<string, mixed> $contract
      *
+     * @param array<string, array<string, mixed>> $scenarioResults
+     *
      * @return array<int, array<string, mixed>>
      */
-    private static function sourcePolicyFailures(array $result, array $contract): array
+    private static function sourcePolicyFailures(array $result, array $contract, array $scenarioResults): array
     {
         $artifactPolicy = self::arrayValue($contract, 'artifact_policy') ?? [];
         $forbiddenSources = self::stringList($artifactPolicy['forbidden_sources'] ?? []);
-        $reportedSources = self::arrayValue($result, 'artifact_sources')
-            ?? self::arrayValue($result, 'artifactSources')
-            ?? [];
+        $reportedSourceSets = [];
+        foreach (['artifact_sources', 'artifactSources'] as $field) {
+            $reportedSources = self::arrayValue($result, $field);
+            if ($reportedSources === null) {
+                continue;
+            }
+
+            $reportedSourceSets[] = [
+                'sources' => $reportedSources,
+                'field' => $field,
+                'path' => self::pathFor('$', $field),
+                'scenario_id' => null,
+            ];
+        }
+
+        foreach (self::sectionPolicyContainers($result) as $container) {
+            foreach (self::artifactSourceSets($container['value'], $container['path'], false) as $sourceSet) {
+                $sourceSet['scenario_id'] = null;
+                $reportedSourceSets[] = $sourceSet;
+            }
+        }
+
+        foreach ($scenarioResults as $scenarioId => $scenarioResult) {
+            foreach (self::scenarioPolicyContainers($result, $scenarioResult, $scenarioId) as $container) {
+                foreach (self::artifactSourceSets(
+                    $container['value'],
+                    $container['path'],
+                    $container['recursive'],
+                ) as $sourceSet) {
+                    $sourceSet['scenario_id'] = $scenarioId;
+                    $reportedSourceSets[] = $sourceSet;
+                }
+            }
+        }
 
         $failures = [];
-        foreach ($reportedSources as $artifact => $source) {
-            $source = self::stringValue($source);
-            if (in_array($source, $forbiddenSources, true)) {
-                $failures[] = [
+
+        foreach ($reportedSourceSets as $sourceSet) {
+            foreach ($sourceSet['sources'] as $artifact => $source) {
+                $source = self::stringValue($source);
+                if (! self::isForbiddenArtifactSource($source, $forbiddenSources)) {
+                    continue;
+                }
+
+                $failure = [
                     'code' => 'forbidden_artifact_source',
-                    'artifact' => $artifact,
+                    'artifact' => is_string($artifact) ? $artifact : null,
                     'source' => $source,
+                    'field' => $sourceSet['field'],
+                    'path' => $sourceSet['path'],
                 ];
+                if ($sourceSet['scenario_id'] !== null) {
+                    $failure['scenario_id'] = $sourceSet['scenario_id'];
+                }
+
+                $failures[] = $failure;
             }
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<mixed> $container
+     *
+     * @return array<int, array{sources: array<mixed>, field: string, path: string}>
+     */
+    private static function artifactSourceSets(array $container, string $path, bool $recursive): array
+    {
+        $sourceSets = [];
+        foreach (['artifact_sources', 'artifactSources'] as $field) {
+            $sources = self::arrayValue($container, $field);
+            if (! is_array($sources)) {
+                continue;
+            }
+
+            $sourceSets[] = [
+                'sources' => $sources,
+                'field' => $field,
+                'path' => self::pathFor($path, $field),
+            ];
+        }
+
+        if (! $recursive) {
+            return $sourceSets;
+        }
+
+        foreach ($container as $field => $value) {
+            if (! is_array($value)) {
+                continue;
+            }
+
+            array_push(
+                $sourceSets,
+                ...self::artifactSourceSets($value, self::pathFor($path, $field), true),
+            );
+        }
+
+        return $sourceSets;
+    }
+
+    /**
+     * @param list<string> $forbiddenSources
+     */
+    private static function isForbiddenArtifactSource(string $source, array $forbiddenSources): bool
+    {
+        $source = strtolower(trim($source));
+        if ($source === '') {
+            return false;
+        }
+
+        foreach ($forbiddenSources as $forbiddenSource) {
+            $forbiddenSource = strtolower(trim($forbiddenSource));
+            if ($forbiddenSource === '') {
+                continue;
+            }
+
+            if ($source === $forbiddenSource || str_contains($source, $forbiddenSource)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -713,25 +994,8 @@ final class SignalQueryRuntimeResultGate
      */
     private static function requiredSectionFailures(array $result, array $scenarioResults): array
     {
-        $sections = [
-            'replay_timing' => [
-                'signal_during_replay',
-                'query_during_replay',
-            ],
-            'terminal_run_behavior' => [
-                'completed_run_signal_and_query',
-            ],
-            'adversarial_errors' => [
-                'unknown_signal_and_query_errors',
-                'malformed_signal_and_query_payloads',
-            ],
-            'waterline_observer_comparison' => [
-                'waterline_operator_visibility',
-            ],
-        ];
-
         $failures = [];
-        foreach ($sections as $section => $scenarios) {
+        foreach (self::EVIDENCE_SECTION_SCENARIOS as $section => $scenarios) {
             if (self::arrayValue($result, $section) !== null) {
                 continue;
             }
@@ -885,7 +1149,27 @@ final class SignalQueryRuntimeResultGate
         string $scenarioId,
         string $evidenceKey,
     ): bool {
-        return self::evidenceValue($result, $scenarioResult, $scenarioId, $evidenceKey) !== null;
+        return self::requiredEvidencePresent(
+            $evidenceKey,
+            self::evidenceValue($result, $scenarioResult, $scenarioId, $evidenceKey),
+        );
+    }
+
+    private static function requiredEvidencePresent(string $evidenceKey, mixed $value): bool
+    {
+        if (in_array($evidenceKey, self::TRUTHY_REQUIRED_EVIDENCE, true)) {
+            if ($value === true) {
+                return true;
+            }
+
+            return is_string($value) && in_array(
+                strtolower(trim($value)),
+                ['true', 'pass', 'passed', 'ok', 'yes'],
+                true,
+            );
+        }
+
+        return self::evidencePresent($value);
     }
 
     /**
@@ -928,12 +1212,7 @@ final class SignalQueryRuntimeResultGate
             }
         }
 
-        foreach ([
-            'replay_timing',
-            'terminal_run_behavior',
-            'adversarial_errors',
-            'waterline_observer_comparison',
-        ] as $field) {
+        foreach (array_keys(self::EVIDENCE_SECTION_SCENARIOS) as $field) {
             $section = self::arrayValue($result, $field);
             if ($section === null) {
                 continue;
@@ -943,6 +1222,74 @@ final class SignalQueryRuntimeResultGate
         }
 
         return $containers;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     *
+     * @return array<int, array{value: array<mixed>, path: string}>
+     */
+    private static function sectionPolicyContainers(array $result): array
+    {
+        $containers = [];
+        foreach (array_keys(self::EVIDENCE_SECTION_SCENARIOS) as $section) {
+            $value = self::arrayValue($result, $section);
+            if (is_array($value)) {
+                $containers[] = [
+                    'value' => $value,
+                    'path' => self::pathFor('$', $section),
+                ];
+            }
+        }
+
+        return $containers;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array{value: array<mixed>, path: string, recursive: bool}>
+     */
+    private static function scenarioPolicyContainers(array $result, array $scenarioResult, string $scenarioId): array
+    {
+        $containers = [[
+            'value' => $scenarioResult,
+            'path' => self::pathFor('$.scenario_results', $scenarioId),
+            'recursive' => true,
+        ]];
+
+        foreach (self::sectionFieldsForScenario($scenarioId) as $sectionField) {
+            $section = self::arrayValue($result, $sectionField);
+            if (! is_array($section)) {
+                continue;
+            }
+
+            foreach (self::scenarioSectionContainers($section, $scenarioId) as $container) {
+                $containers[] = [
+                    'value' => $container,
+                    'path' => self::pathFor(self::pathFor('$', $sectionField), $scenarioId),
+                    'recursive' => true,
+                ];
+            }
+        }
+
+        return $containers;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function sectionFieldsForScenario(string $scenarioId): array
+    {
+        $fields = [];
+        foreach (self::EVIDENCE_SECTION_SCENARIOS as $section => $scenarios) {
+            if (in_array($scenarioId, $scenarios, true)) {
+                $fields[] = $section;
+            }
+        }
+
+        return $fields;
     }
 
     /**
@@ -1030,6 +1377,19 @@ final class SignalQueryRuntimeResultGate
         }
 
         return true;
+    }
+
+    private static function pathFor(string $base, int|string $field): string
+    {
+        if (is_int($field)) {
+            return $base . '[' . $field . ']';
+        }
+
+        if ($field === '') {
+            return $base;
+        }
+
+        return $base . '.' . $field;
     }
 
     /**

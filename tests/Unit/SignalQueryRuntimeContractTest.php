@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(8, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(9, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -219,7 +219,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(6, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(10, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -251,6 +251,10 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertContains('overall_outcome_matches_gate_status', $resultGate['pass_requires']);
         $this->assertContains(
             'published_artifact_versions_are_recorded_and_pinned',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'scenario_artifact_versions_match_run_tuple',
             $resultGate['pass_requires'],
         );
         $this->assertNotContains('published_artifact_versions_are_recorded', $resultGate['pass_requires']);
@@ -319,6 +323,37 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'history_signal_order',
             ],
             $hostRunner['evidence_shards']['ordered_signal_delivery']['current_evidence_fields'],
+        );
+        $this->assertSame(
+            [
+                'php_worker_query_task_routing',
+                'cli_signal_and_query',
+                'workflow_php_signal_and_query',
+                'immediate_repeat_query_consistency',
+            ],
+            $hostRunner['evidence_shards']['php_worker_mirror']['required_evidence_fields'],
+        );
+        $this->assertSame(
+            [
+                'php_client_signal_and_query',
+                'sdk_python_signal_and_query',
+                'cli_signal_and_query',
+                'cross_language_query_consistency',
+                'wire_envelope_compatibility',
+            ],
+            $hostRunner['evidence_shards']['cross_language_client_matrix']['required_evidence_fields'],
+        );
+        $this->assertSame(
+            [
+                'observer_state.selected_run',
+                'observer_state.signals',
+                'observer_state.queries',
+                'observer_state.paths.selected_run_query_template',
+                'comparison.server_observation',
+                'comparison.cli_observation',
+                'comparison.sdk_observation',
+            ],
+            $hostRunner['evidence_shards']['waterline_observer_comparison']['required_evidence_fields'],
         );
 
         $this->assertSame(
@@ -417,6 +452,88 @@ class SignalQueryRuntimeContractTest extends TestCase
             $result['scenario_results']['ordered_signal_delivery']['observed_outputs']['history_signal_order'],
         );
         $this->assertContains('signal_query_dedup_contract_uncovered', array_column($result['findings'], 'type'));
+    }
+
+    public function test_host_runner_imports_complete_matrix_evidence_as_passing_conformance(): void
+    {
+        $result = $this->runSignalQueryHostRunner($this->completeSignalQueryResultForCurrentHostRunner());
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertSame([], $result['findings']);
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_host_runner_rejects_imported_matrix_evidence_with_mismatched_artifact_versions(): void
+    {
+        $result = $this->runSignalQueryHostRunner($this->completeSignalQueryResult());
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame('not_covered', $result['scenario_results']['published_artifact_install_only']['status']);
+        $this->assertSame('not_covered', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
+        $this->assertSame('not_covered', $result['scenario_results']['ordered_signal_delivery']['status']);
+        $this->assertContains('signal_query_published_artifact_install_uncovered', array_column($result['findings'], 'type'));
+        $this->assertSame('non_passing', $evaluation['status']);
+    }
+
+    public function test_host_runner_does_not_pass_imported_matrix_cell_with_missing_required_evidence(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        unset($evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['workflow_php_signal_and_query']);
+
+        $result = $this->runSignalQueryHostRunner($evidence);
+
+        $this->assertSame('not_covered', $result['scenario_results']['php_worker_cli_and_sdk_baseline']['status']);
+        $this->assertContains('signal_query_php_worker_mirror_uncovered', array_column($result['findings'], 'type'));
+        $this->assertSame('non_passing', $result['outcome']);
+    }
+
+    public function test_host_runner_does_not_satisfy_python_baseline_with_sibling_matrix_evidence(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        unset($evidence['scenario_results']['python_worker_cli_and_sdk_baseline']['observed_outputs']['cli_signal_and_query']);
+
+        $this->assertTrue(
+            $evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['cli_signal_and_query'],
+        );
+        $this->assertTrue(
+            $evidence['scenario_results']['python_worker_php_facing_and_cli_clients']['observed_outputs']['cli_signal_and_query'],
+        );
+
+        $result = $this->runSignalQueryHostRunner($evidence);
+
+        $this->assertSame('not_covered', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
+        $this->assertContains('signal_query_python_smoke_uncovered', array_column($result['findings'], 'type'));
+        $this->assertSame('non_passing', $result['outcome']);
+    }
+
+    public function test_host_runner_rejects_imported_install_evidence_with_forbidden_scenario_sources(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        $evidence['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['server'] =
+            'local_product_source_checkout';
+
+        $result = $this->runSignalQueryHostRunner($evidence);
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('not_covered', $result['scenario_results']['published_artifact_install_only']['status']);
+        $this->assertContains('signal_query_published_artifact_install_uncovered', array_column($result['findings'], 'type'));
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame('non_passing', $evaluation['status']);
+    }
+
+    public function test_host_runner_does_not_pass_imported_matrix_cell_with_false_boolean_evidence(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        $evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['workflow_php_signal_and_query'] = false;
+
+        $result = $this->runSignalQueryHostRunner($evidence);
+
+        $this->assertSame('not_covered', $result['scenario_results']['php_worker_cli_and_sdk_baseline']['status']);
+        $this->assertContains('signal_query_php_worker_mirror_uncovered', array_column($result['findings'], 'type'));
     }
 
     public function test_result_gate_rejects_python_smoke_subset_even_when_the_smoke_passes(): void
@@ -743,6 +860,7 @@ class SignalQueryRuntimeContractTest extends TestCase
     public function test_result_gate_requires_declared_evidence_for_pass_scenarios(): void
     {
         $result = $this->completeSignalQueryResult();
+        unset($result['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['workflow_php_signal_and_query']);
         unset($result['scenario_results']['query_during_replay']['observed_outputs']['expected_answer']);
         unset($result['replay_timing']['query_during_replay']['expected_answer']);
 
@@ -762,10 +880,36 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertContains(
             [
                 'code' => 'missing_required_pass_evidence',
+                'scenario_id' => 'php_worker_cli_and_sdk_baseline',
+                'evidence_key' => 'workflow_php_signal_and_query',
+            ],
+            $missingEvidence,
+        );
+        $this->assertContains(
+            [
+                'code' => 'missing_required_pass_evidence',
                 'scenario_id' => 'query_during_replay',
                 'evidence_key' => 'expected_answer',
             ],
             $missingEvidence,
+        );
+    }
+
+    public function test_result_gate_rejects_false_boolean_evidence_for_pass_matrix_scenarios(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['workflow_php_signal_and_query'] = false;
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            [
+                'code' => 'missing_required_pass_evidence',
+                'scenario_id' => 'php_worker_cli_and_sdk_baseline',
+                'evidence_key' => 'workflow_php_signal_and_query',
+            ],
+            $evaluation['gate_failures'],
         );
     }
 
@@ -928,6 +1072,92 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertSame([], $evaluation['gate_failures']);
     }
 
+    public function test_result_gate_rejects_pass_when_scenario_artifact_versions_do_not_match_run_tuple(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['artifactVersions'] = $this->currentHostRunnerArtifactVersions();
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'scenario_artifact_version_mismatch',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_section_artifact_versions_that_do_not_match_run_tuple(): void
+    {
+        $result = $this->completeSignalQueryResultForCurrentHostRunner();
+        $result['replay_timing']['artifactVersions'] = [
+            'server' => '0.2.140',
+            'cli' => '0.1.74',
+            'sdk-python' => '0.4.84',
+            'workflow' => '2.0.0-alpha.187',
+            'waterline' => '2.0.0-alpha.69',
+        ];
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $sectionTupleFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'scenario_artifact_version_mismatch'
+                && ($failure['field'] ?? null) === 'artifactVersions'
+                && ($failure['path'] ?? null) === '$.replay_timing.artifactVersions'
+                && ($failure['artifact'] ?? null) === 'server',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($sectionTupleFailures);
+    }
+
+    public function test_result_gate_rejects_forbidden_sources_reported_in_scenario_outputs(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['server'] =
+            'local_product_source_checkout';
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $forbiddenSourceFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'forbidden_artifact_source'
+                && ($failure['scenario_id'] ?? null) === 'published_artifact_install_only'
+                && ($failure['field'] ?? null) === 'artifact_sources'
+                && ($failure['artifact'] ?? null) === 'server',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($forbiddenSourceFailures);
+    }
+
+    public function test_result_gate_rejects_forbidden_sources_reported_in_section_evidence(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['adversarial_errors']['artifact_sources']['server'] = 'workspace_repo_as_artifact_under_test';
+        $result['waterline_observer_comparison']['waterline_operator_visibility']['artifact_sources']['waterline'] =
+            'local_product_source_checkout';
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $sectionSourceFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'forbidden_artifact_source'
+                && ($failure['field'] ?? null) === 'artifact_sources'
+                && ($failure['path'] ?? null) === '$.adversarial_errors.artifact_sources'
+                && ($failure['artifact'] ?? null) === 'server',
+        ));
+        $scenarioSectionSourceFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'forbidden_artifact_source'
+                && ($failure['scenario_id'] ?? null) === 'waterline_operator_visibility'
+                && ($failure['field'] ?? null) === 'artifact_sources'
+                && ($failure['path'] ?? null) === '$.waterline_observer_comparison.waterline_operator_visibility.artifact_sources'
+                && ($failure['artifact'] ?? null) === 'waterline',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($sectionSourceFailures);
+        $this->assertNotEmpty($scenarioSectionSourceFailures);
+    }
+
     /**
      * @param array<string, mixed> $evaluation
      *
@@ -1020,6 +1250,37 @@ class SignalQueryRuntimeContractTest extends TestCase
     }
 
     /**
+     * @return array<string, string>
+     */
+    private function currentHostRunnerArtifactVersions(): array
+    {
+        return [
+            'server' => '0.2.224',
+            'cli' => '0.1.74',
+            'sdk-python' => '0.4.84',
+            'workflow' => '2.0.0-alpha.187',
+            'workflow-php' => '2.0.0-alpha.187',
+            'waterline' => '2.0.0-alpha.69',
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function completeSignalQueryResultForCurrentHostRunner(): array
+    {
+        $result = $this->completeSignalQueryResult();
+        $versions = $this->currentHostRunnerArtifactVersions();
+
+        $result['artifactVersions'] = $versions;
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs'][
+            'published_artifact_versions'
+        ] = $versions;
+
+        return $result;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function completeSignalQueryResult(): array
@@ -1035,6 +1296,47 @@ class SignalQueryRuntimeContractTest extends TestCase
             ];
         }
 
+        $scenarioResults['published_artifact_install_only']['observed_outputs'] = [
+            'published_artifact_versions' => [
+                'server' => '0.2.140',
+                'cli' => '0.1.45',
+                'sdk-python' => '0.4.58',
+                'workflow' => '2.0.0-alpha.161',
+                'workflow-php' => '2.0.0-alpha.161',
+                'waterline' => '2.0.0-alpha.54',
+            ],
+            'artifact_sources' => [
+                'server' => 'published_docker_image',
+                'cli' => 'published_cli_release',
+                'sdk-python' => 'published_pypi_package',
+                'workflow-php' => 'published_composer_package',
+                'waterline' => 'published_waterline_artifact',
+            ],
+        ];
+        $scenarioResults['python_worker_cli_and_sdk_baseline']['observed_outputs'] = [
+            'python_worker_query_task_routing' => true,
+            'cli_signal_and_query' => true,
+            'sdk_python_signal_and_query' => true,
+            'immediate_repeat_query_consistency' => true,
+        ];
+        $scenarioResults['php_worker_cli_and_sdk_baseline']['observed_outputs'] = [
+            'php_worker_query_task_routing' => true,
+            'cli_signal_and_query' => true,
+            'workflow_php_signal_and_query' => true,
+            'immediate_repeat_query_consistency' => true,
+        ];
+        $scenarioResults['python_worker_php_facing_and_cli_clients']['observed_outputs'] = [
+            'php_client_signal_and_query' => true,
+            'cli_signal_and_query' => true,
+            'cross_language_query_consistency' => true,
+            'wire_envelope_compatibility' => true,
+        ];
+        $scenarioResults['php_worker_python_and_cli_clients']['observed_outputs'] = [
+            'sdk_python_signal_and_query' => true,
+            'cli_signal_and_query' => true,
+            'cross_language_query_consistency' => true,
+            'wire_envelope_compatibility' => true,
+        ];
         $scenarioResults['ordered_signal_delivery']['observed_outputs'] = [
             'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             'queried_total' => 55,

@@ -21,7 +21,8 @@ Environment overrides:
   DW_WORKFLOW_PHP_VERSION                   Published PHP workflow version under test.
   DW_WATERLINE_VERSION                      Published Waterline version under test.
   DW_SIGNALS_QUERIES_RESULT_DIR             Result directory when --result-dir is omitted.
-  DW_SIGNALS_QUERIES_SMOKE_EVIDENCE         Optional JSON evidence from a real smoke run.
+  DW_SIGNALS_QUERIES_EVIDENCE               Optional JSON evidence from a real matrix run.
+  DW_SIGNALS_QUERIES_SMOKE_EVIDENCE         Deprecated alias for DW_SIGNALS_QUERIES_EVIDENCE.
 USAGE
 }
 
@@ -73,6 +74,7 @@ DW_CLI_VERSION="${DW_CLI_VERSION:-unresolved}" \
 DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-unresolved}" \
 DW_WORKFLOW_PHP_VERSION="${DW_WORKFLOW_PHP_VERSION:-unresolved}" \
 DW_WATERLINE_VERSION="${DW_WATERLINE_VERSION:-unresolved}" \
+DW_SIGNALS_QUERIES_EVIDENCE="${DW_SIGNALS_QUERIES_EVIDENCE:-${DW_SIGNALS_QUERIES_SMOKE_EVIDENCE:-}}" \
 DW_SIGNALS_QUERIES_SMOKE_EVIDENCE="${DW_SIGNALS_QUERIES_SMOKE_EVIDENCE:-}" \
 python3 - <<'PY'
 from __future__ import annotations
@@ -94,6 +96,11 @@ def write_json(path: Path, value: Any) -> None:
 
 
 MISSING = object()
+FORBIDDEN_ARTIFACT_SOURCES = (
+    "local_product_source_checkout",
+    "workspace_repo_as_artifact_under_test",
+)
+ARTIFACT_SOURCE_FIELDS = ("artifact_sources", "artifactSources")
 
 
 def evidence_value(value: Any, key: str) -> Any:
@@ -112,19 +119,99 @@ def evidence_value(value: Any, key: str) -> Any:
     return MISSING
 
 
-def smoke_field(key: str) -> Any:
+def is_forbidden_artifact_source(source: Any) -> bool:
+    if not isinstance(source, str):
+        return False
+
+    normalized = source.strip().lower()
+    if normalized == "":
+        return False
+
+    return any(
+        normalized == forbidden or forbidden in normalized
+        for forbidden in FORBIDDEN_ARTIFACT_SOURCES
+    )
+
+
+def artifact_source_policy_violations(value: Any, path: str = "$") -> list[dict[str, str]]:
+    violations: list[dict[str, str]] = []
+
+    if isinstance(value, dict):
+        for field in ARTIFACT_SOURCE_FIELDS:
+            sources = value.get(field)
+            if not isinstance(sources, dict):
+                continue
+
+            for artifact, source in sources.items():
+                if not is_forbidden_artifact_source(source):
+                    continue
+
+                violations.append(
+                    {
+                        "path": f"{path}.{field}",
+                        "field": field,
+                        "artifact": str(artifact),
+                        "source": str(source),
+                    }
+                )
+
+        for key, child in value.items():
+            if isinstance(child, (dict, list)):
+                violations.extend(artifact_source_policy_violations(child, f"{path}.{key}"))
+
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            if isinstance(child, (dict, list)):
+                violations.extend(artifact_source_policy_violations(child, f"{path}[{index}]"))
+
+    return violations
+
+
+def evidence_source_policy_violations(*values: Any) -> list[dict[str, str]]:
+    violations: list[dict[str, str]] = []
+    for value in values:
+        violations.extend(artifact_source_policy_violations(value))
+    return violations
+
+
+def flat_smoke_field(key: str) -> Any:
     if smoke_evidence is None:
         return MISSING
-    return evidence_value(smoke_evidence, key)
+    if not isinstance(smoke_evidence, dict):
+        return MISSING
+    return smoke_evidence.get(key, MISSING)
 
 
-def smoke_field_present(key: str) -> bool:
-    value = smoke_field(key)
+def smoke_field(key: str, scenario: str | None = None) -> Any:
+    value = flat_smoke_field(key)
+    if value is not MISSING:
+        return value
+
+    if scenario is None:
+        return MISSING
+
+    candidate = scenario_evidence_candidate(scenario)
+    if candidate is None:
+        return MISSING
+
+    observed = scenario_observed_outputs(candidate)
+    found = evidence_lookup(observed, key)
+    if found is not MISSING:
+        return found
+
+    if key == "ten_signal_ordered_delivery_total":
+        return evidence_lookup(observed, "queried_total")
+
+    return MISSING
+
+
+def smoke_field_present(key: str, scenario: str | None = None) -> bool:
+    value = smoke_field(key, scenario)
     return value is not MISSING and value not in (None, "", [], {})
 
 
-def smoke_field_true(key: str) -> bool:
-    value = smoke_field(key)
+def smoke_field_true(key: str, scenario: str | None = None) -> bool:
+    value = smoke_field(key, scenario)
     if value is True:
         return True
     if isinstance(value, str):
@@ -150,9 +237,109 @@ def artifact_versions_pinned() -> bool:
     return all(not is_placeholder_version(str(artifact_versions.get(artifact, ""))) for artifact in required)
 
 
+ARTIFACT_VERSION_ALIASES: dict[str, list[str]] = {
+    "workflow-php": ["workflow-php", "workflow_php", "workflow"],
+    "sdk-python": ["sdk-python", "sdk_python", "python"],
+    "waterline": ["waterline", "waterline-ui", "waterline_ui"],
+}
+
+ARTIFACT_VERSION_FIELDS = (
+    "artifact_versions",
+    "artifactVersions",
+    "published_artifact_versions",
+    "publishedArtifactVersions",
+)
+
+
+def artifact_version_value(versions: dict[str, Any], artifact: str) -> str:
+    for key in ARTIFACT_VERSION_ALIASES.get(artifact, [artifact]):
+        value = versions.get(key)
+        if value is None:
+            continue
+        normalized = str(value).strip()
+        if normalized:
+            return normalized
+    return ""
+
+
+def declared_artifact_versions(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+
+    for field in ARTIFACT_VERSION_FIELDS:
+        versions = value.get(field)
+        if isinstance(versions, dict):
+            return versions
+
+    return {}
+
+
+def declared_artifact_version_maps(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        maps: list[dict[str, Any]] = []
+        for child in value:
+            maps.extend(declared_artifact_version_maps(child))
+        return maps
+
+    if not isinstance(value, dict):
+        return []
+
+    maps = []
+    versions = declared_artifact_versions(value)
+    if versions:
+        maps.append(versions)
+
+    for child in value.values():
+        maps.extend(declared_artifact_version_maps(child))
+
+    return maps
+
+
+def artifact_version_mismatches(versions: dict[str, Any]) -> dict[str, dict[str, str]]:
+    mismatched: dict[str, dict[str, str]] = {}
+    for artifact in ("server", "cli", "sdk-python", "workflow-php", "waterline"):
+        expected = artifact_version_value(artifact_versions, artifact)
+        actual = artifact_version_value(versions, artifact)
+        if expected and actual and expected != actual:
+            mismatched[artifact] = {"expected": expected, "actual": actual}
+    return mismatched
+
+
+def smoke_artifact_version_mismatches() -> dict[str, dict[str, str]]:
+    mismatched: dict[str, dict[str, str]] = {}
+    for versions in declared_artifact_version_maps(smoke_evidence):
+        for artifact, mismatch in artifact_version_mismatches(versions).items():
+            mismatched.setdefault(artifact, mismatch)
+    return mismatched
+
+
+def smoke_evidence_matches_current_tuple() -> bool:
+    return smoke_artifact_version_mismatches() == {}
+
+
+def candidate_artifact_versions(candidate: dict[str, Any], observed: dict[str, Any]) -> dict[str, Any]:
+    for value in (candidate, observed):
+        versions = declared_artifact_versions(value)
+        if versions:
+            return versions
+
+    return {}
+
+
+def candidate_matches_current_tuple(candidate: dict[str, Any], observed: dict[str, Any]) -> bool:
+    if not smoke_evidence_matches_current_tuple():
+        return False
+
+    if evidence_source_policy_violations(candidate, observed):
+        return False
+
+    versions = candidate_artifact_versions(candidate, observed)
+    return not versions or artifact_version_mismatches(versions) == {}
+
+
 def exact_python_smoke_present() -> bool:
     return all(
-        smoke_field_true(field)
+        smoke_field_true(field, "python_worker_cli_and_sdk_baseline")
         for field in (
             "python_worker_query_task_routing",
             "cli_signal_and_query",
@@ -163,13 +350,312 @@ def exact_python_smoke_present() -> bool:
 
 
 def exact_ordered_delivery_smoke_present() -> bool:
-    rapid_inputs = smoke_field("rapid_increment_inputs")
-    history_signal_order = smoke_field("history_signal_order")
+    rapid_inputs = smoke_field("rapid_increment_inputs", "ordered_signal_delivery")
+    history_signal_order = smoke_field("history_signal_order", "ordered_signal_delivery")
     return (
         rapid_inputs == list(range(1, 11))
-        and smoke_field("ten_signal_ordered_delivery_total") == 55
+        and smoke_field("ten_signal_ordered_delivery_total", "ordered_signal_delivery") == 55
         and history_signal_order == list(range(1, 11))
     )
+
+
+ALLOWED_SCENARIO_STATUSES = {"pass", "fail", "unsupported", "not_covered", "runner_blocked"}
+
+SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
+    "published_artifact_install_only": [
+        "published_artifact_versions",
+        "artifact_sources",
+    ],
+    "python_worker_cli_and_sdk_baseline": [
+        "python_worker_query_task_routing",
+        "cli_signal_and_query",
+        "sdk_python_signal_and_query",
+        "immediate_repeat_query_consistency",
+    ],
+    "php_worker_cli_and_sdk_baseline": [
+        "php_worker_query_task_routing",
+        "cli_signal_and_query",
+        "workflow_php_signal_and_query",
+        "immediate_repeat_query_consistency",
+    ],
+    "python_worker_php_facing_and_cli_clients": [
+        "php_client_signal_and_query",
+        "cli_signal_and_query",
+        "cross_language_query_consistency",
+        "wire_envelope_compatibility",
+    ],
+    "php_worker_python_and_cli_clients": [
+        "sdk_python_signal_and_query",
+        "cli_signal_and_query",
+        "cross_language_query_consistency",
+        "wire_envelope_compatibility",
+    ],
+    "ordered_signal_delivery": [
+        "rapid_increment_inputs",
+        "queried_total",
+        "history_signal_order",
+    ],
+    "dedup_contract_observation": [
+        "client_side_key_support",
+        "documented_contract",
+        "handler_observation_count",
+    ],
+    "signal_during_replay": [
+        "worker_restart_at",
+        "signal_sent_at",
+        "replay_completed_at",
+        "signal_applied_at",
+    ],
+    "query_during_replay": [
+        "worker_restart_at",
+        "query_sent_at",
+        "query_answer",
+        "expected_answer",
+    ],
+    "completed_run_signal_and_query": [
+        "completed_run_id",
+        "signal_error",
+        "query_result_or_error",
+        "public_query_surfaces",
+        "run_status_after_operations",
+    ],
+    "unknown_signal_and_query_errors": [
+        "unknown_signal",
+        "missing_workflow_signal",
+        "missing_workflow_query",
+        "query_not_found",
+        "rejected_unknown_query",
+    ],
+    "malformed_signal_and_query_payloads": [
+        "invalid_signal_arguments",
+        "invalid_query_arguments",
+        "invalid_signal_arguments_context",
+        "invalid_query_arguments_context",
+        "post_error_valid_query_result",
+    ],
+    "waterline_operator_visibility": [
+        "observer_state.selected_run",
+        "observer_state.signals",
+        "observer_state.queries",
+        "observer_state.paths.selected_run_query_template",
+        "comparison.server_observation",
+        "comparison.cli_observation",
+        "comparison.sdk_observation",
+    ],
+}
+
+TRUTHY_REQUIRED_EVIDENCE = {
+    "python_worker_query_task_routing",
+    "cli_signal_and_query",
+    "sdk_python_signal_and_query",
+    "immediate_repeat_query_consistency",
+    "php_worker_query_task_routing",
+    "workflow_php_signal_and_query",
+    "php_client_signal_and_query",
+    "cross_language_query_consistency",
+    "wire_envelope_compatibility",
+}
+
+
+def path_value(value: Any, path: list[str]) -> Any:
+    current = value
+    for segment in path:
+        if not isinstance(current, dict) or segment not in current:
+            return MISSING
+        current = current[segment]
+    return current
+
+
+def evidence_present(value: Any) -> bool:
+    if value is MISSING or value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip() != ""
+    if isinstance(value, (list, dict)):
+        return bool(value)
+    return True
+
+
+def evidence_true(value: Any) -> bool:
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "pass", "passed", "ok", "yes"}
+    return False
+
+
+def required_evidence_satisfied(evidence_key: str, value: Any) -> bool:
+    if evidence_key in TRUTHY_REQUIRED_EVIDENCE:
+        return evidence_true(value)
+
+    return evidence_present(value)
+
+
+def evidence_lookup(value: Any, key: str) -> Any:
+    if "." in key and isinstance(value, dict):
+        found = path_value(value, key.split("."))
+        if found is not MISSING:
+            return found
+
+    return evidence_value(value, key)
+
+
+def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
+    if scenario == "published_artifact_install_only" and not artifact_versions_pinned():
+        return False
+
+    if scenario == "ordered_signal_delivery":
+        rapid_inputs = evidence_lookup(observed, "rapid_increment_inputs")
+        queried_total = evidence_lookup(observed, "queried_total")
+        if queried_total is MISSING:
+            queried_total = evidence_lookup(observed, "ten_signal_ordered_delivery_total")
+        history_signal_order = evidence_lookup(observed, "history_signal_order")
+
+        return (
+            rapid_inputs == list(range(1, 11))
+            and queried_total == 55
+            and history_signal_order == list(range(1, 11))
+        )
+
+    return all(
+        required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
+        for evidence_key in SCENARIO_REQUIRED_EVIDENCE.get(scenario, [])
+    )
+
+
+def scenario_result_items(raw: Any) -> list[dict[str, Any]]:
+    if isinstance(raw, dict):
+        items = []
+        for scenario_id, value in raw.items():
+            if not isinstance(value, dict):
+                continue
+            item = dict(value)
+            item.setdefault("scenario_id", scenario_id)
+            items.append(item)
+        return items
+
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, dict)]
+
+    return []
+
+
+def scenario_evidence_candidate(scenario: str) -> dict[str, Any] | None:
+    if not isinstance(smoke_evidence, dict):
+        return None
+
+    for field in ("scenario_results", "scenarioResults"):
+        for item in scenario_result_items(smoke_evidence.get(field)):
+            candidate_scenario = item.get("scenario_id") or item.get("scenario") or item.get("id")
+            if candidate_scenario == scenario:
+                return item
+
+    direct = smoke_evidence.get(scenario)
+    if isinstance(direct, dict):
+        return direct
+
+    for section in (
+        "replay_timing",
+        "terminal_run_behavior",
+        "adversarial_errors",
+        "waterline_observer_comparison",
+    ):
+        section_value = smoke_evidence.get(section)
+        if not isinstance(section_value, dict):
+            continue
+
+        keyed = section_value.get(scenario)
+        if isinstance(keyed, dict):
+            return keyed
+
+        for item in scenario_result_items(section_value):
+            candidate_scenario = item.get("scenario_id") or item.get("scenario") or item.get("id")
+            if candidate_scenario == scenario:
+                return item
+
+    return None
+
+
+def scenario_status(candidate: dict[str, Any]) -> str:
+    for field in ("status", "outcome", "verdict"):
+        status = candidate.get(field)
+        if isinstance(status, str) and status in ALLOWED_SCENARIO_STATUSES:
+            return status
+
+    return ""
+
+
+def scenario_observed_outputs(candidate: dict[str, Any]) -> dict[str, Any]:
+    for field in ("observed_outputs", "observedOutputs", "evidence", "outputs"):
+        value = candidate.get(field)
+        if isinstance(value, dict):
+            return dict(value)
+
+    metadata_fields = {
+        "scenario_id",
+        "scenario",
+        "id",
+        "status",
+        "outcome",
+        "verdict",
+        "linked_findings",
+        "linkedFindings",
+        "finding_links",
+        "findingLinks",
+    }
+    return {
+        key: value
+        for key, value in candidate.items()
+        if key not in metadata_fields
+    }
+
+
+def scenario_linked_findings(candidate: dict[str, Any]) -> list[Any]:
+    for field in ("linked_findings", "linkedFindings", "finding_links", "findingLinks"):
+        value = candidate.get(field)
+        if isinstance(value, list) and value:
+            return value
+    return []
+
+
+def imported_scenario_result(scenario: str) -> dict[str, Any] | None:
+    candidate = scenario_evidence_candidate(scenario)
+    if candidate is None:
+        return None
+
+    observed = scenario_observed_outputs(candidate)
+    if smoke_descriptor is not None:
+        observed.setdefault("external_smoke_evidence", smoke_descriptor)
+
+    if not candidate_matches_current_tuple(candidate, observed):
+        return None
+
+    status = scenario_status(candidate)
+    if status == "" and has_required_evidence(scenario, observed):
+        status = "pass"
+
+    if status == "pass":
+        if not has_required_evidence(scenario, observed):
+            return None
+        return {
+            "scenario_id": scenario,
+            "status": "pass",
+            "observed_outputs": observed,
+        }
+
+    if status in ALLOWED_SCENARIO_STATUSES:
+        result: dict[str, Any] = {
+            "scenario_id": scenario,
+            "status": status,
+        }
+        if observed:
+            result["observed_outputs"] = observed
+        linked_findings = scenario_linked_findings(candidate)
+        if linked_findings:
+            result["linked_findings"] = linked_findings
+        return result
+
+    return None
 
 
 result_dir = Path(os.environ["RESULT_DIR"])
@@ -184,7 +670,10 @@ artifact_versions = {
     "waterline": os.environ["DW_WATERLINE_VERSION"],
 }
 
-smoke_path = os.environ.get("DW_SIGNALS_QUERIES_SMOKE_EVIDENCE", "")
+smoke_path = os.environ.get("DW_SIGNALS_QUERIES_EVIDENCE", "") or os.environ.get(
+    "DW_SIGNALS_QUERIES_SMOKE_EVIDENCE",
+    "",
+)
 smoke_evidence: Any = None
 smoke_descriptor: dict[str, Any] | None = None
 if smoke_path:
@@ -349,9 +838,17 @@ scenario_routes = {
 }
 
 smoke_attached = smoke_evidence is not None
-install_evidence_pass = smoke_attached and artifact_versions_pinned()
-python_smoke_pass = smoke_attached and exact_python_smoke_present()
-ordered_delivery_pass = smoke_attached and exact_ordered_delivery_smoke_present()
+smoke_tuple_matches = smoke_evidence_matches_current_tuple()
+smoke_tuple_mismatches = smoke_artifact_version_mismatches()
+smoke_source_policy_violations = evidence_source_policy_violations(smoke_evidence)
+smoke_source_policy_ok = smoke_source_policy_violations == []
+if smoke_descriptor is not None and smoke_tuple_mismatches:
+    smoke_descriptor["artifact_version_mismatches"] = smoke_tuple_mismatches
+if smoke_descriptor is not None and smoke_source_policy_violations:
+    smoke_descriptor["artifact_source_policy_violations"] = smoke_source_policy_violations
+install_evidence_pass = smoke_attached and smoke_tuple_matches and smoke_source_policy_ok and artifact_versions_pinned()
+python_smoke_pass = smoke_attached and smoke_tuple_matches and smoke_source_policy_ok and exact_python_smoke_present()
+ordered_delivery_pass = smoke_attached and smoke_tuple_matches and smoke_source_policy_ok and exact_ordered_delivery_smoke_present()
 scenario_results: dict[str, dict[str, Any]] = {}
 findings: list[dict[str, Any]] = []
 finding_links: dict[str, list[str]] = {}
@@ -359,56 +856,91 @@ finding_links: dict[str, list[str]] = {}
 for scenario in required_scenarios:
     observed: dict[str, Any] = {}
     status = "not_covered"
+    imported_result = imported_scenario_result(scenario)
 
-    if install_evidence_pass and scenario == "published_artifact_install_only":
+    if imported_result is not None:
+        result = imported_result
+        status = str(result["status"])
+    elif install_evidence_pass and scenario == "published_artifact_install_only":
         status = "pass"
         observed = {
             "published_artifact_versions": artifact_versions,
+            "artifact_sources": {
+                "server": "published_docker_image",
+                "cli": "published_cli_release",
+                "sdk-python": "published_pypi_package",
+                "workflow-php": "published_composer_package",
+                "waterline": "published_waterline_artifact",
+            },
             "external_smoke_evidence": smoke_descriptor,
+        }
+        result = {
+            "scenario_id": scenario,
+            "status": status,
+            "observed_outputs": observed,
         }
     elif python_smoke_pass and scenario == "python_worker_cli_and_sdk_baseline":
         status = "pass"
         observed = {
-            "python_worker_query_task_routing": smoke_field("python_worker_query_task_routing"),
-            "cli_signal_and_query": smoke_field("cli_signal_and_query"),
-            "sdk_python_signal_and_query": smoke_field("sdk_python_signal_and_query"),
-            "immediate_repeat_query_consistency": smoke_field("immediate_repeat_query_consistency"),
+            "python_worker_query_task_routing": smoke_field(
+                "python_worker_query_task_routing",
+                scenario,
+            ),
+            "cli_signal_and_query": smoke_field("cli_signal_and_query", scenario),
+            "sdk_python_signal_and_query": smoke_field("sdk_python_signal_and_query", scenario),
+            "immediate_repeat_query_consistency": smoke_field(
+                "immediate_repeat_query_consistency",
+                scenario,
+            ),
             "external_smoke_evidence": smoke_descriptor,
+        }
+        result = {
+            "scenario_id": scenario,
+            "status": status,
+            "observed_outputs": observed,
         }
     elif ordered_delivery_pass and scenario == "ordered_signal_delivery":
         status = "pass"
         observed = {
-            "rapid_increment_inputs": smoke_field("rapid_increment_inputs"),
-            "queried_total": smoke_field("ten_signal_ordered_delivery_total"),
-            "history_signal_order": smoke_field("history_signal_order"),
+            "rapid_increment_inputs": smoke_field("rapid_increment_inputs", scenario),
+            "queried_total": smoke_field("ten_signal_ordered_delivery_total", scenario),
+            "history_signal_order": smoke_field("history_signal_order", scenario),
             "external_smoke_evidence": smoke_descriptor,
         }
-
-    result = {
-        "scenario_id": scenario,
-        "status": status,
-    }
-    if observed:
-        result["observed_outputs"] = observed
+        result = {
+            "scenario_id": scenario,
+            "status": status,
+            "observed_outputs": observed,
+        }
+    else:
+        result = {
+            "scenario_id": scenario,
+            "status": status,
+        }
 
     if status != "pass":
-        route = scenario_routes[scenario]
-        finding_id = route["type"]
-        finding = {
-            "id": finding_id,
-            "type": route["type"],
-            "scenario_id": scenario,
-            "owner": route["owner"],
-            "title": route["title"],
-            "current_evidence": {
-                "published_artifact_smoke_present": smoke_attached,
-                "smoke_evidence": smoke_descriptor,
-            },
-            "acceptance": route["acceptance"],
-        }
-        result["linked_findings"] = [finding_id]
-        findings.append(finding)
-        finding_links[scenario] = [finding_id]
+        linked_findings = result.get("linked_findings")
+        if isinstance(linked_findings, list) and linked_findings:
+            finding_links[scenario] = linked_findings
+            findings.extend([item for item in linked_findings if isinstance(item, dict)])
+        else:
+            route = scenario_routes[scenario]
+            finding_id = route["type"]
+            finding = {
+                "id": finding_id,
+                "type": route["type"],
+                "scenario_id": scenario,
+                "owner": route["owner"],
+                "title": route["title"],
+                "current_evidence": {
+                    "published_artifact_evidence_present": smoke_attached,
+                    "evidence": smoke_descriptor,
+                },
+                "acceptance": route["acceptance"],
+            }
+            result["linked_findings"] = [finding_id]
+            findings.append(finding)
+            finding_links[scenario] = [finding_id]
 
     scenario_results[scenario] = result
 

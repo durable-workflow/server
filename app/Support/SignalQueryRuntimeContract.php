@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 8;
+    public const VERSION = 9;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -162,6 +162,44 @@ final class SignalQueryRuntimeContract
                 'waterline_operator_visibility',
             ],
             'scenario_requirements' => [
+                'published_artifact_install_only' => [
+                    'evidence' => [
+                        'published_artifact_versions',
+                        'artifact_sources',
+                    ],
+                ],
+                'python_worker_cli_and_sdk_baseline' => [
+                    'evidence' => [
+                        'python_worker_query_task_routing',
+                        'cli_signal_and_query',
+                        'sdk_python_signal_and_query',
+                        'immediate_repeat_query_consistency',
+                    ],
+                ],
+                'php_worker_cli_and_sdk_baseline' => [
+                    'evidence' => [
+                        'php_worker_query_task_routing',
+                        'cli_signal_and_query',
+                        'workflow_php_signal_and_query',
+                        'immediate_repeat_query_consistency',
+                    ],
+                ],
+                'python_worker_php_facing_and_cli_clients' => [
+                    'evidence' => [
+                        'php_client_signal_and_query',
+                        'cli_signal_and_query',
+                        'cross_language_query_consistency',
+                        'wire_envelope_compatibility',
+                    ],
+                ],
+                'php_worker_python_and_cli_clients' => [
+                    'evidence' => [
+                        'sdk_python_signal_and_query',
+                        'cli_signal_and_query',
+                        'cross_language_query_consistency',
+                        'wire_envelope_compatibility',
+                    ],
+                ],
                 'ordered_signal_delivery' => [
                     'evidence' => [
                         'rapid_increment_inputs',
@@ -348,6 +386,12 @@ final class SignalQueryRuntimeContract
                         'must_cover_scenarios' => [
                             'php_worker_cli_and_sdk_baseline',
                         ],
+                        'required_evidence_fields' => [
+                            'php_worker_query_task_routing',
+                            'cli_signal_and_query',
+                            'workflow_php_signal_and_query',
+                            'immediate_repeat_query_consistency',
+                        ],
                         'finding_type_when_missing' => 'signal_query_php_worker_mirror_uncovered',
                         'owning_surface' => 'workflow',
                     ],
@@ -355,6 +399,13 @@ final class SignalQueryRuntimeContract
                         'must_cover_scenarios' => [
                             'python_worker_php_facing_and_cli_clients',
                             'php_worker_python_and_cli_clients',
+                        ],
+                        'required_evidence_fields' => [
+                            'php_client_signal_and_query',
+                            'sdk_python_signal_and_query',
+                            'cli_signal_and_query',
+                            'cross_language_query_consistency',
+                            'wire_envelope_compatibility',
                         ],
                         'finding_type_when_missing' => 'signal_query_cross_language_client_matrix_uncovered',
                         'owning_surface' => 'workflow, sdk-python, cli',
@@ -364,12 +415,28 @@ final class SignalQueryRuntimeContract
                             'signal_during_replay',
                             'query_during_replay',
                         ],
+                        'required_evidence_fields' => [
+                            'worker_restart_at',
+                            'signal_sent_at',
+                            'replay_completed_at',
+                            'signal_applied_at',
+                            'query_sent_at',
+                            'query_answer',
+                            'expected_answer',
+                        ],
                         'finding_type_when_missing' => 'signal_query_replay_timing_uncovered',
                         'owning_surface' => 'workflow, sdk-python',
                     ],
                     'completed_run_handling' => [
                         'must_cover_scenarios' => [
                             'completed_run_signal_and_query',
+                        ],
+                        'required_evidence_fields' => [
+                            'completed_run_id',
+                            'signal_error',
+                            'query_result_or_error',
+                            'public_query_surfaces',
+                            'run_status_after_operations',
                         ],
                         'finding_type_when_missing' => 'signal_query_completed_run_handling_uncovered',
                         'owning_surface' => 'server, workflow, sdk-python, cli',
@@ -378,6 +445,13 @@ final class SignalQueryRuntimeContract
                         'must_cover_scenarios' => [
                             'unknown_signal_and_query_errors',
                         ],
+                        'required_evidence_fields' => [
+                            'unknown_signal',
+                            'missing_workflow_signal',
+                            'missing_workflow_query',
+                            'query_not_found',
+                            'rejected_unknown_query',
+                        ],
                         'finding_type_when_missing' => 'signal_query_unknown_handler_errors_uncovered',
                         'owning_surface' => 'server, workflow, sdk-python, cli',
                     ],
@@ -385,12 +459,28 @@ final class SignalQueryRuntimeContract
                         'must_cover_scenarios' => [
                             'malformed_signal_and_query_payloads',
                         ],
+                        'required_evidence_fields' => [
+                            'invalid_signal_arguments',
+                            'invalid_query_arguments',
+                            'invalid_signal_arguments_context',
+                            'invalid_query_arguments_context',
+                            'post_error_valid_query_result',
+                        ],
                         'finding_type_when_missing' => 'signal_query_adversarial_error_shapes_uncovered',
                         'owning_surface' => 'server, workflow, sdk-python, cli',
                     ],
                     'waterline_observer_comparison' => [
                         'must_cover_scenarios' => [
                             'waterline_operator_visibility',
+                        ],
+                        'required_evidence_fields' => [
+                            'observer_state.selected_run',
+                            'observer_state.signals',
+                            'observer_state.queries',
+                            'observer_state.paths.selected_run_query_template',
+                            'comparison.server_observation',
+                            'comparison.cli_observation',
+                            'comparison.sdk_observation',
                         ],
                         'finding_type_when_missing' => 'signal_query_waterline_observer_comparison_uncovered',
                         'owning_surface' => 'waterline',
