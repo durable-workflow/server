@@ -22,6 +22,18 @@
     "requires_resolved_versions": true,
     "requires_downloadable_release_assets": true,
     "rejects_placeholder_versions": true,
+    "placeholder_version_examples": [
+      "latest",
+      "current",
+      "head",
+      "unresolved",
+      "placeholder",
+      "<latest>",
+      "1.x",
+      "2.0.0-alpha.<latest>",
+      "${VERSION}",
+      "{{ version }}"
+    ],
     "implementation_tests_are_not_sources": true,
     "requires_artifact_sources_for_each_required_artifact": true,
     "requires_local_product_source_checkouts_used_false": true,
@@ -29,7 +41,9 @@
       "local_product_source_checkout",
       "workspace_repo_as_artifact_under_test",
       "release_tag_without_required_assets",
-      "rolling_server_image_tag"
+      "rolling_server_image_tag",
+      "not_exercised",
+      "unverified_artifact_source"
     ],
     "required_artifacts": [
       "server-v1",

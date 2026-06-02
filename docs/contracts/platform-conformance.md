@@ -276,7 +276,14 @@ category emits a warning and does not block.
   Its result gate records the storage-connection smoke as useful context
   but keeps that smoke-only result non-passing until every required upgrade
   scenario has evidence or a linked root-cause finding, and until every
-  required install channel records its published artifact source.
+  required install channel records its published artifact source. Its
+  `host_runner_contract` names
+  `scripts/conformance/migration-published-artifacts.sh` as the executable
+  handoff; the runner writes `migration-conformance-result.json` and
+  `migration-conformance-record.json`, accepts host-supplied full-migration
+  evidence through `DW_MIGRATION_EVIDENCE_JSON`, and records unexecuted
+  required cells as `not_covered` with `conformance_runner_coverage_gap`
+  findings instead of treating storage-connection smoke as passing evidence.
 - Namespace runtime contract: the public suite's
   `namespace_runtime_contract` category is the load-bearing namespace
   parity gate. It requires published-artifact evidence for namespace
@@ -287,6 +294,8 @@ category emits a warning and does not block.
   search-attribute schema and value query isolation. A namespace smoke
   that omits those cells is nonconforming.
 - Public docs page: <https://durable-workflow.github.io/docs/2.0/compatibility>
+- Migration runtime scenarios:
+  <https://durable-workflow.github.io/platform-conformance/migration-runtime-scenarios.json>
 - Normative protocol spec catalog:
   <https://durable-workflow.github.io/docs/2.0/platform-protocol-specs>.
   The catalog links the server-owned OpenAPI documents for the control-plane

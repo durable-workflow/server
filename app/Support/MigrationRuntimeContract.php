@@ -77,10 +77,13 @@ final class MigrationRuntimeContract
                     'workspace_repo_as_artifact_under_test',
                     'release_tag_without_required_assets',
                     'rolling_server_image_tag',
+                    'not_exercised',
+                    'unverified_artifact_source',
                 ],
                 'required_run_record_fields' => [
                     'published_artifact_versions',
                     'resolved_artifact_versions',
+                    'artifact_sources',
                     'started_at',
                     'finished_at',
                     'generated_at',
@@ -258,6 +261,17 @@ final class MigrationRuntimeContract
                 'unexecuted_required_scenario_status' => 'not_covered',
                 'coverage_gap_finding_type' => 'conformance_runner_coverage_gap',
                 'coverage_gap_owner' => 'conformance_harness',
+                'runner_path' => 'scripts/conformance/migration-published-artifacts.sh',
+                'runner_command' => 'scripts/conformance/migration-published-artifacts.sh --result-dir <result-dir>',
+                'expected_output_files' => [
+                    'migration-published-artifacts.json',
+                    'migration-conformance-result.json',
+                    'migration-conformance-record.json',
+                ],
+                'evidence_inputs' => [
+                    'DW_MIGRATION_EVIDENCE_JSON' => 'Optional full-result or scenario-shard JSON captured by the host runner after executing the public migration guide against published artifacts.',
+                    'DW_MIGRATION_STORAGE_SMOKE_JSON' => 'Optional storage-connection smoke JSON to attach as advisory context.',
+                ],
                 'required_execution_scopes' => [
                     'published-artifact-install',
                     'latest-supported-v1-state',

@@ -60,6 +60,8 @@ final class MigrationRuntimeResultGate
                     'unresolved',
                     'placeholder',
                     '<latest>',
+                    '1.x',
+                    '2.0.0-alpha.<latest>',
                     '${VERSION}',
                     '{{ version }}',
                 ],
@@ -293,8 +295,8 @@ final class MigrationRuntimeResultGate
 
         foreach (self::stringList($requirements) as $field) {
             if (
-                ! self::hasAnyKey($scenarioResult, self::fieldAliases($field))
-                && ! self::hasAnyKey($observedOutputs, self::fieldAliases($field))
+                ! self::hasAnyEvidenceValue($scenarioResult, self::fieldAliases($field))
+                && ! self::hasAnyEvidenceValue($observedOutputs, self::fieldAliases($field))
             ) {
                 $missing[] = $field;
             }
@@ -454,12 +456,18 @@ final class MigrationRuntimeResultGate
     private static function artifactVersionFor(array $versions, string $artifact, array $aliases): string
     {
         if (isset($versions[$artifact]) && (is_string($versions[$artifact]) || is_numeric($versions[$artifact]))) {
-            return (string) $versions[$artifact];
+            $version = self::stringValue($versions[$artifact]);
+            if ($version !== '') {
+                return $version;
+            }
         }
 
         foreach (self::stringList($aliases[$artifact] ?? []) as $alias) {
             if (isset($versions[$alias]) && (is_string($versions[$alias]) || is_numeric($versions[$alias]))) {
-                return (string) $versions[$alias];
+                $version = self::stringValue($versions[$alias]);
+                if ($version !== '') {
+                    return $version;
+                }
             }
         }
 
@@ -477,27 +485,31 @@ final class MigrationRuntimeResultGate
     {
         $failures = [];
         $forbiddenSources = self::stringList($contract['artifact_policy']['forbidden_sources'] ?? []);
-        $installOnly = $scenarioResults['published_artifact_install_only'] ?? [];
-        $installOutputs = self::arrayField($installOnly, ['observed_outputs', 'observedOutputs']) ?? [];
         $sourceSets = self::reportedArtifactSourceSets($result, $scenarioResults);
         $installSources = [];
+        $localSourceFlags = self::localProductSourceFlagReports($result, $scenarioResults);
 
-        $localSourceFlag = $result['local_product_source_checkouts_used']
-            ?? $result['localProductSourceCheckoutsUsed']
-            ?? $installOnly['local_product_source_checkouts_used']
-            ?? $installOnly['localProductSourceCheckoutsUsed']
-            ?? $installOutputs['local_product_source_checkouts_used']
-            ?? $installOutputs['localProductSourceCheckoutsUsed']
-            ?? null;
-
-        if ($localSourceFlag === null) {
+        if ($localSourceFlags === []) {
             $failures[] = [
                 'code' => 'missing_local_product_source_policy',
             ];
-        } elseif (self::boolValue($localSourceFlag)) {
-            $failures[] = [
+        }
+
+        foreach ($localSourceFlags as $flag) {
+            if (! self::boolValue($flag['value'])) {
+                continue;
+            }
+
+            $failure = [
                 'code' => 'local_product_source_artifacts_reported',
+                'field' => $flag['field'],
+                'value' => $flag['value'],
             ];
+            if ($flag['scenario_id'] !== null) {
+                $failure['scenario_id'] = $flag['scenario_id'];
+            }
+
+            $failures[] = $failure;
         }
 
         if ($sourceSets === []) {
@@ -556,6 +568,52 @@ final class MigrationRuntimeResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, array<string, mixed>> $scenarioResults
+     *
+     * @return list<array{field: string, scenario_id: string|null, value: mixed}>
+     */
+    private static function localProductSourceFlagReports(array $result, array $scenarioResults): array
+    {
+        $reports = [];
+
+        self::appendLocalProductSourceFlagReports($reports, $result, null, '');
+
+        foreach ($scenarioResults as $scenarioId => $scenarioResult) {
+            self::appendLocalProductSourceFlagReports($reports, $scenarioResult, $scenarioId, '');
+            $outputs = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs']);
+            if ($outputs !== null) {
+                self::appendLocalProductSourceFlagReports($reports, $outputs, $scenarioId, 'observed_outputs.');
+            }
+        }
+
+        return $reports;
+    }
+
+    /**
+     * @param list<array{field: string, scenario_id: string|null, value: mixed}> $reports
+     * @param array<string, mixed> $container
+     */
+    private static function appendLocalProductSourceFlagReports(
+        array &$reports,
+        array $container,
+        ?string $scenarioId,
+        string $fieldPrefix,
+    ): void {
+        foreach (['local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed'] as $field) {
+            if (! array_key_exists($field, $container)) {
+                continue;
+            }
+
+            $reports[] = [
+                'field' => $fieldPrefix . $field,
+                'scenario_id' => $scenarioId,
+                'value' => $container[$field],
+            ];
+        }
     }
 
     /**
@@ -783,7 +841,9 @@ final class MigrationRuntimeResultGate
 
     private static function isEmptyEvidence(mixed $value): bool
     {
-        return $value === null || $value === [] || $value === '';
+        return $value === null
+            || $value === []
+            || (is_string($value) && trim($value) === '');
     }
 
     /**
@@ -856,7 +916,7 @@ final class MigrationRuntimeResultGate
      */
     private static function stringValue(mixed $value): string
     {
-        return is_string($value) || is_numeric($value) ? (string) $value : '';
+        return is_string($value) || is_numeric($value) ? trim((string) $value) : '';
     }
 
     /**
@@ -889,10 +949,10 @@ final class MigrationRuntimeResultGate
      * @param array<string, mixed> $array
      * @param list<string> $keys
      */
-    private static function hasAnyKey(array $array, array $keys): bool
+    private static function hasAnyEvidenceValue(array $array, array $keys): bool
     {
         foreach ($keys as $key) {
-            if (array_key_exists($key, $array)) {
+            if (array_key_exists($key, $array) && ! self::isEmptyEvidence($array[$key])) {
                 return true;
             }
         }

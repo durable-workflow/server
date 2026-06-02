@@ -136,6 +136,19 @@ class MigrationRuntimeContractTest extends TestCase
             'artifact_source_recorded_for_each_install_channel',
             $resultGate['pass_requires'],
         );
+        $this->assertSame(
+            'scripts/conformance/migration-published-artifacts.sh',
+            $hostRunner['runner_path'],
+        );
+        $this->assertSame(
+            'scripts/conformance/migration-published-artifacts.sh --result-dir <result-dir>',
+            $hostRunner['runner_command'],
+        );
+        $this->assertContains('migration-conformance-result.json', $hostRunner['expected_output_files']);
+        $this->assertContains('migration-conformance-record.json', $hostRunner['expected_output_files']);
+        $this->assertArrayHasKey('DW_MIGRATION_EVIDENCE_JSON', $hostRunner['evidence_inputs']);
+        $this->assertContains('artifact_sources', $manifest['artifact_policy']['required_run_record_fields']);
+        $this->assertContains('not_exercised', $manifest['artifact_policy']['forbidden_sources']);
     }
 
     public function test_scenario_manifest_source_path_is_published_and_matches_contract(): void
@@ -175,6 +188,11 @@ class MigrationRuntimeContractTest extends TestCase
         $this->assertTrue($scenarioManifest['artifact_policy']['requires_artifact_sources_for_each_required_artifact']);
         $this->assertContains('artifact_sources', $scenarioManifest['common_result_evidence']);
         $this->assertContains('storage_connection_smoke', $scenarioManifest['common_result_evidence']);
+        $this->assertSame(
+            $manifest['artifact_policy']['placeholder_version_examples'],
+            $scenarioManifest['artifact_policy']['placeholder_version_examples'],
+            'public migration scenario manifest must advertise the same rejected placeholder versions as cluster info',
+        );
         $this->assertContains(
             'storage_connection_smoke_is_recorded_but_not_counted_as_complete',
             $scenarioManifest['coverage_gate']['passing_outcome_requires'],
@@ -242,12 +260,53 @@ class MigrationRuntimeContractTest extends TestCase
         $this->assertSame([], $evaluation['gate_failures']);
     }
 
+    public function test_result_gate_rejects_empty_scenario_required_field_values(): void
+    {
+        $result = $this->completeMigrationResult();
+        $result['scenario_results']['latest_supported_v1_state_setup'] = [
+            'status' => 'pass',
+            'observed_outputs' => [
+                'source_release_versions' => null,
+                'seeded_workflows' => '',
+                'seeded_schedules' => '   ',
+                'seeded_worker_registrations' => [],
+            ],
+        ];
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+        $missingFields = $this->missingScenarioRequiredFields($evaluation, 'latest_supported_v1_state_setup');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        foreach ([
+            'source_release_versions',
+            'seeded_workflows',
+            'seeded_schedules',
+            'seeded_worker_registrations',
+        ] as $field) {
+            $this->assertContains($field, $missingFields);
+        }
+    }
+
+    public function test_result_gate_accepts_false_and_zero_scenario_required_field_values(): void
+    {
+        $result = $this->completeMigrationResult();
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['local_product_source_checkouts_used'] = false;
+        $result['scenario_results']['schedule_cross_upgrade_cadence_preserved']['observed_outputs']['missed_or_duplicate_ticks'] = 0;
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $this->missingScenarioRequiredFields($evaluation, 'published_artifact_install_only'));
+        $this->assertSame([], $this->missingScenarioRequiredFields($evaluation, 'schedule_cross_upgrade_cadence_preserved'));
+    }
+
     public function test_result_gate_requires_advertised_run_record_fields_before_passing(): void
     {
         $result = $this->completeMigrationResult();
         unset(
             $result['runner_blocked'],
             $result['resolved_artifact_versions'],
+            $result['artifact_sources'],
             $result['migration_plan'],
             $result['preupgrade_state_snapshot'],
             $result['postupgrade_state_snapshot'],
@@ -265,6 +324,7 @@ class MigrationRuntimeContractTest extends TestCase
         foreach ([
             'runner_blocked',
             'resolved_artifact_versions',
+            'artifact_sources',
             'migration_plan',
             'preupgrade_state_snapshot',
             'postupgrade_state_snapshot',
@@ -274,6 +334,22 @@ class MigrationRuntimeContractTest extends TestCase
             'version_skew_observations',
             'storage_connection_smoke',
         ] as $field) {
+            $this->assertContains($field, $missingFields);
+        }
+    }
+
+    public function test_result_gate_rejects_whitespace_only_scalar_run_record_fields(): void
+    {
+        $result = $this->completeMigrationResult();
+        $result['started_at'] = " \t ";
+        $result['finished_at'] = "\n ";
+        $result['generated_at'] = '   ';
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+        $missingFields = $this->missingRunRecordFields($evaluation);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        foreach (['started_at', 'finished_at', 'generated_at'] as $field) {
             $this->assertContains($field, $missingFields);
         }
     }
@@ -292,6 +368,7 @@ class MigrationRuntimeContractTest extends TestCase
     public function test_result_gate_validates_published_and_resolved_artifact_pin_sets(): void
     {
         $result = $this->completeMigrationResult();
+        $result['published_artifact_versions']['workflow-php-v1'] = '1.x';
         $result['published_artifact_versions']['workflow-php-v2'] = '2.0.0-alpha.<latest>';
         unset($result['resolved_artifact_versions']['waterline']);
 
@@ -318,8 +395,66 @@ class MigrationRuntimeContractTest extends TestCase
             $artifactFailures,
             static fn (array $failure): bool => ($failure['code'] ?? null) === 'placeholder_artifact_version'
                 && ($failure['field'] ?? null) === 'published_artifact_versions'
+                && ($failure['artifact'] ?? null) === 'workflow-php-v1',
+        ));
+        $this->assertNotEmpty(array_filter(
+            $artifactFailures,
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'placeholder_artifact_version'
+                && ($failure['field'] ?? null) === 'published_artifact_versions'
                 && ($failure['artifact'] ?? null) === 'workflow-php-v2',
         ));
+    }
+
+    public function test_result_gate_rejects_whitespace_only_artifact_versions(): void
+    {
+        $result = $this->completeMigrationResult();
+        $result['artifact_versions'] = $this->artifactVersions();
+        $result['artifact_versions']['cli'] = " \t ";
+        $result['published_artifact_versions']['workflow-php-v1'] = "\n ";
+        $result['resolved_artifact_versions']['workflow-php-v2'] = '   ';
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+        $artifactFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_artifact_version',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        foreach ([
+            ['field' => 'artifact_versions', 'artifact' => 'cli'],
+            ['field' => 'published_artifact_versions', 'artifact' => 'workflow-php-v1'],
+            ['field' => 'resolved_artifact_versions', 'artifact' => 'workflow-php-v2'],
+        ] as $expected) {
+            $this->assertNotEmpty(array_filter(
+                $artifactFailures,
+                static fn (array $failure): bool => ($failure['field'] ?? null) === $expected['field']
+                    && ($failure['artifact'] ?? null) === $expected['artifact'],
+            ));
+        }
+    }
+
+    public function test_result_gate_accepts_contract_artifact_version_aliases(): void
+    {
+        $result = $this->completeMigrationResult();
+
+        $result['published_artifact_versions']['workflow-v1'] = $result['published_artifact_versions']['workflow-php-v1'];
+        $result['published_artifact_versions']['workflow'] = $result['published_artifact_versions']['workflow-php-v2'];
+        unset(
+            $result['published_artifact_versions']['workflow-php-v1'],
+            $result['published_artifact_versions']['workflow-php-v2'],
+        );
+
+        $result['resolved_artifact_versions']['workflow-v1'] = $result['resolved_artifact_versions']['workflow-php-v1'];
+        $result['resolved_artifact_versions']['workflow-php'] = $result['resolved_artifact_versions']['workflow-php-v2'];
+        unset(
+            $result['resolved_artifact_versions']['workflow-php-v1'],
+            $result['resolved_artifact_versions']['workflow-php-v2'],
+        );
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $evaluation['gate_failures']);
     }
 
     public function test_result_gate_requires_artifact_source_for_each_install_channel(): void
@@ -345,6 +480,56 @@ class MigrationRuntimeContractTest extends TestCase
             ],
             $sourceFailures,
         );
+    }
+
+    public function test_result_gate_rejects_placeholder_artifact_sources(): void
+    {
+        $result = $this->completeMigrationResult();
+        $result['artifact_sources']['cli'] = 'not_exercised';
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['cli'] = 'not_exercised';
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'forbidden_artifact_source'
+                && ($failure['artifact'] ?? null) === 'cli',
+        ));
+    }
+
+    public function test_result_gate_rejects_scenario_level_local_product_source_checkout_usage(): void
+    {
+        $result = $this->completeMigrationResult();
+        $result['local_product_source_checkouts_used'] = false;
+        $result['scenario_results']['published_artifact_install_only']['local_product_source_checkouts_used'] = true;
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'local_product_source_artifacts_reported'
+                && ($failure['scenario_id'] ?? null) === 'published_artifact_install_only'
+                && ($failure['field'] ?? null) === 'local_product_source_checkouts_used',
+        ));
+    }
+
+    public function test_result_gate_rejects_observed_output_local_product_source_checkout_usage(): void
+    {
+        $result = $this->completeMigrationResult();
+        $result['local_product_source_checkouts_used'] = false;
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['local_product_source_checkouts_used'] = true;
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'local_product_source_artifacts_reported'
+                && ($failure['scenario_id'] ?? null) === 'published_artifact_install_only'
+                && ($failure['field'] ?? null) === 'observed_outputs.local_product_source_checkouts_used',
+        ));
     }
 
     /**
@@ -444,5 +629,26 @@ class MigrationRuntimeContractTest extends TestCase
                 : '',
             $evaluation['gate_failures'],
         )));
+    }
+
+    /**
+     * @param array<string, mixed> $evaluation
+     *
+     * @return list<string>
+     */
+    private function missingScenarioRequiredFields(array $evaluation, string $scenarioId): array
+    {
+        $fields = [];
+
+        foreach ($evaluation['gate_failures'] as $failure) {
+            if (
+                ($failure['code'] ?? null) === 'missing_scenario_required_field'
+                && ($failure['scenario_id'] ?? null) === $scenarioId
+            ) {
+                $fields[] = (string) ($failure['field'] ?? '');
+            }
+        }
+
+        return array_values(array_filter($fields));
     }
 }
