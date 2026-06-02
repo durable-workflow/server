@@ -32,10 +32,18 @@ class NexusOperationsHistoryTest extends TestCase
         $response->assertOk()
             ->assertJsonPath('capabilities.nexus', true)
             ->assertJsonPath('nexus_contract.schema', 'durable-workflow.v2.nexus.contract')
-            ->assertJsonPath('nexus_contract.version', 1)
+            ->assertJsonPath('nexus_contract.version', 2)
             ->assertJsonPath('nexus_contract.parity_target.name', 'Nexus')
             ->assertJsonPath('nexus_contract.cluster_info_key', 'nexus_contract')
             ->assertJsonPath('nexus_contract.capability_flag', 'nexus')
+            ->assertJsonPath(
+                'nexus_contract.host_runner_contract.runner_path',
+                'scripts/conformance/nexus-published-artifacts.sh',
+            )
+            ->assertJsonPath(
+                'nexus_contract.host_runner_contract.must_record_runner_blocked_false_for_product_evidence',
+                true,
+            )
             ->assertJsonPath(
                 'nexus_contract.underlying_execution_contract',
                 'durable-workflow.v2.service-execution.contract',

@@ -12,10 +12,11 @@ class NexusContractTest extends TestCase
         $manifest = NexusContract::manifest();
 
         $this->assertSame('durable-workflow.v2.nexus.contract', $manifest['schema']);
-        $this->assertSame(1, $manifest['version']);
+        $this->assertSame(2, $manifest['version']);
         $this->assertSame('docs/contracts/nexus.md', $manifest['authority_document']);
         $this->assertSame('nexus_contract', $manifest['cluster_info_key']);
         $this->assertSame('nexus', $manifest['capability_flag']);
+        $this->assertSame('durable-workflow.v2.nexus-runtime.result', $manifest['result_schema']);
     }
 
     public function test_manifest_names_the_temporal_parity_target_and_underlying_contract(): void
@@ -181,5 +182,1188 @@ class NexusContractTest extends TestCase
 
         $this->assertArrayHasKey('general_service_mesh', $manifest['out_of_scope']);
         $this->assertArrayHasKey('arbitrary_external_http', $manifest['out_of_scope']);
+    }
+
+    public function test_manifest_publishes_host_runner_contract_for_nexus_coverage(): void
+    {
+        $manifest = NexusContract::manifest();
+
+        $this->assertContains('workflow-php', $manifest['required_matrix']['caller_runtimes']);
+        $this->assertContains('sdk-python', $manifest['required_matrix']['service_runtimes']);
+        $this->assertContains('tenant_a_calls_shared_service', $manifest['required_scenarios']);
+        $this->assertContains('worker_restart_replay_does_not_reissue_call', $manifest['required_scenarios']);
+        $this->assertContains('endpoint_permission_denied_without_information_leak', $manifest['required_scenarios']);
+        $this->assertSame(
+            $manifest['required_scenarios'],
+            array_keys($manifest['scenario_evidence_requirements']),
+            'every required Nexus scenario must declare pass evidence requirements',
+        );
+        $this->assertContains(
+            'retry_attempts',
+            $manifest['scenario_evidence_requirements']['transient_failure_retries_with_policy'],
+        );
+        $this->assertContains(
+            'caller_history_attempts',
+            $manifest['scenario_evidence_requirements']['caller_history_attempt_visibility'],
+        );
+        $this->assertContains(
+            'authorization_refusal_disclosed_endpoint_existence',
+            $manifest['scenario_evidence_requirements']['endpoint_permission_denied_without_information_leak'],
+        );
+        $this->assertContains(
+            'artifact_source_verification',
+            $manifest['scenario_evidence_requirements']['published_artifact_install_only'],
+        );
+        $this->assertContains(
+            'runner_blocked_false_for_product_evidence',
+            $manifest['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertSame(
+            ['server', 'cli', 'workflow', 'sdk-python', 'waterline'],
+            $manifest['artifact_policy']['required_artifacts'],
+        );
+        $this->assertContains(
+            'local_product_source_checkouts_used',
+            $manifest['artifact_policy']['required_run_record_fields'],
+        );
+        $this->assertContains(
+            'artifact_sources',
+            $manifest['artifact_policy']['required_run_record_fields'],
+        );
+        $this->assertContains(
+            'artifact_source_verification',
+            $manifest['artifact_policy']['required_run_record_fields'],
+        );
+        $this->assertSame(
+            'https://github.com/durable-workflow/cli/releases/download/<exact tag>/<release asset>',
+            $manifest['artifact_policy']['source_channel_policy']['cli'],
+        );
+        $this->assertSame(
+            'packagist://durable-workflow/waterline@<exact version>',
+            $manifest['artifact_policy']['source_channel_policy']['waterline'],
+        );
+        $this->assertContains(
+            'artifact_sources_recorded_for_every_required_artifact',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'artifact_source_verification_proves_each_source_resolves',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'install_artifact_tuple_matches_top_level_resolved_tuple',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'source_free_published_artifact_evidence_is_explicit',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'no_artifact_policy_failures',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'local_product_source_checkouts_used_false',
+            $manifest['result_gate']['pass_requires'],
+        );
+
+        $hostRunner = $manifest['host_runner_contract'];
+        $this->assertSame('required_for_passing_nexus_conformance', $hostRunner['status']);
+        $this->assertSame('scripts/conformance/nexus-published-artifacts.sh', $hostRunner['runner_path']);
+        $this->assertContains('nexus-conformance-record.json', $hostRunner['result_files']);
+        $this->assertTrue($hostRunner['must_execute_against_published_artifacts']);
+        $this->assertTrue($hostRunner['must_record_runner_blocked_false_for_product_evidence']);
+        $this->assertContains('php-python-runtime-matrix', $hostRunner['required_execution_scopes']);
+        $this->assertContains(
+            'worker_restart_replay_does_not_reissue_call',
+            $hostRunner['runtime_shards']['workflow-php']['must_cover_scenarios'],
+        );
+        $this->assertSame(
+            'conformance_runner_coverage_gap',
+            $hostRunner['routing_policy']['missing_required_scenario']['finding_type'],
+        );
+    }
+
+    public function test_host_runner_script_is_present_and_records_non_blocked_coverage_evidence(): void
+    {
+        $manifest = NexusContract::manifest();
+        $script = dirname(__DIR__, 2).'/'.$manifest['host_runner_contract']['runner_path'];
+
+        $this->assertFileExists($script);
+        $contents = (string) file_get_contents($script);
+        $this->assertStringContainsString('DW_NEXUS_EVIDENCE_JSON', $contents);
+        $this->assertStringContainsString('runner_blocked: runnerBlocked', $contents);
+        $this->assertStringContainsString('runnerBlocked,', $contents);
+        $this->assertStringContainsString('conformance_runner_coverage_gap', $contents);
+    }
+
+    public function test_host_runner_allows_pass_when_all_artifacts_are_pinned_and_source_free(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $result = $this->runNexusEvidence($this->completeRunnerEvidence(), 'dw-nexus-pass-');
+
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertFalse($result['local_product_source_checkouts_used']);
+        $this->assertSame([], $result['artifact_policy_failures']);
+        $this->assertSame('pass', $result['scenario_results'][0]['status']);
+    }
+
+    public function test_host_runner_preserves_runner_blocked_evidence_as_non_passing(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner blocked gate.');
+        }
+
+        foreach ([
+            ['runner_blocked', 'blocked_reason'],
+            ['runnerBlocked', 'runnerBlockedReason'],
+            [null, 'blocked_reason'],
+        ] as [$flagField, $reasonField]) {
+            $evidence = $this->completeRunnerEvidence();
+            $evidence['outcome'] = 'pass';
+            if ($flagField !== null) {
+                $evidence[$flagField] = true;
+            }
+            $evidence[$reasonField] = 'Nexus host execution did not reach published artifact behavior.';
+
+            $result = $this->runNexusEvidence($evidence, 'dw-nexus-runner-blocked-');
+            $scenario = $this->scenarioResult($result, 'published_artifact_install_only');
+
+            $this->assertSame('non_passing_runner_blocked', $result['outcome']);
+            $this->assertTrue($result['runner_blocked']);
+            $this->assertSame($evidence[$reasonField], $result['blocked_reason']);
+            $this->assertSame('runner_blocked', $scenario['status']);
+            $this->assertSame($evidence[$reasonField], $scenario['observed_outputs']['blocked_reason']);
+            $this->assertContains('runner_gap', array_column($scenario['linked_findings'], 'finding_type'));
+        }
+    }
+
+    public function test_host_runner_rejects_placeholder_artifacts_and_local_source_before_passing(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['artifact_versions']['server'] = 'current';
+        $evidence['artifact_versions']['workflow'] = 'head';
+        $evidence['artifact_sources']['server'] = 'local_product_source_checkout';
+        $evidence['local_product_source_checkouts_used'] = true;
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-gate-');
+
+        $this->assertSame(
+            'fail',
+            $result['outcome'],
+            'supplied pass scenarios must not allow Nexus to pass with placeholder artifacts or local product source usage',
+        );
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertTrue($result['local_product_source_checkouts_used']);
+        $this->assertContains(
+            [
+                'artifact' => 'server',
+                'field' => 'artifact_versions',
+                'code' => 'placeholder_published_artifact_version',
+                'value' => 'current',
+            ],
+            $result['artifact_policy_failures'],
+        );
+        $this->assertContains(
+            [
+                'artifact' => 'workflow',
+                'field' => 'artifact_versions',
+                'code' => 'placeholder_published_artifact_version',
+                'value' => 'head',
+            ],
+            $result['artifact_policy_failures'],
+        );
+        $this->assertSame('fail', $result['scenario_results'][0]['status']);
+        $this->assertTrue($result['scenario_results'][0]['observed_outputs']['result_gate_failed']);
+
+        $findingTypes = array_column($result['scenario_results'][0]['linked_findings'], 'finding_type');
+        $this->assertContains('missing_or_invalid_published_nexus_artifact', $findingTypes);
+        $this->assertContains('local_product_source_checkout_used', $findingTypes);
+    }
+
+    public function test_host_runner_rejects_local_checkout_paths_as_artifact_sources(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['artifact_sources']['server'] = '~/repos/server';
+        $evidence['artifact_sources']['cli'] = '${HOME}/repos/cli';
+        $evidence['artifact_sources']['workflow'] = 'file:///workspace/repos/workflow';
+        $evidence['artifact_sources']['sdk-python'] = './repos/sdk-python';
+        $evidence['artifact_sources']['waterline'] = '/workspace/repos/waterline';
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-local-path-sources-');
+
+        $this->assertSame(
+            'fail',
+            $result['outcome'],
+            'supplied pass scenarios must not allow Nexus to pass with local checkout paths as artifact sources',
+        );
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertFalse($result['local_product_source_checkouts_used']);
+        $this->assertContains(
+            [
+                'artifact' => 'server',
+                'field' => 'artifact_sources',
+                'code' => 'forbidden_published_artifact_source',
+                'value' => '~/repos/server',
+            ],
+            $result['artifact_policy_failures'],
+        );
+        $this->assertContains(
+            [
+                'artifact' => 'cli',
+                'field' => 'artifact_sources',
+                'code' => 'forbidden_published_artifact_source',
+                'value' => '${HOME}/repos/cli',
+            ],
+            $result['artifact_policy_failures'],
+        );
+        $this->assertContains(
+            [
+                'artifact' => 'workflow',
+                'field' => 'artifact_sources',
+                'code' => 'forbidden_published_artifact_source',
+                'value' => 'file:///workspace/repos/workflow',
+            ],
+            $result['artifact_policy_failures'],
+        );
+        $this->assertContains(
+            [
+                'artifact' => 'sdk-python',
+                'field' => 'artifact_sources',
+                'code' => 'forbidden_published_artifact_source',
+                'value' => './repos/sdk-python',
+            ],
+            $result['artifact_policy_failures'],
+        );
+        $this->assertContains(
+            [
+                'artifact' => 'waterline',
+                'field' => 'artifact_sources',
+                'code' => 'forbidden_published_artifact_source',
+                'value' => '/workspace/repos/waterline',
+            ],
+            $result['artifact_policy_failures'],
+        );
+        $this->assertSame('fail', $result['scenario_results'][0]['status']);
+        $this->assertTrue($result['scenario_results'][0]['observed_outputs']['result_gate_failed']);
+        $this->assertContains(
+            'missing_or_invalid_published_nexus_artifact',
+            array_column($result['scenario_results'][0]['linked_findings'], 'finding_type'),
+        );
+    }
+
+    public function test_host_runner_rejects_rolling_artifact_source_refs_before_passing(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        foreach ([
+            'durableworkflow/server:latest',
+            'durableworkflow/server:current',
+            'durableworkflow/server:head',
+            'https://github.com/durable-workflow/server/releases/latest/download/server.tar.gz',
+        ] as $source) {
+            $evidence = $this->completeRunnerEvidence();
+            $evidence['artifact_sources']['server'] = $source;
+
+            $result = $this->runNexusEvidence($evidence, 'dw-nexus-rolling-source-');
+
+            $this->assertSame(
+                'fail',
+                $result['outcome'],
+                sprintf('Nexus must not pass with rolling artifact source %s.', $source),
+            );
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertFalse($result['local_product_source_checkouts_used']);
+            $this->assertTrue($this->hasArtifactPolicyFailure(
+                $result,
+                'server',
+                'artifact_sources',
+                'forbidden_published_artifact_source',
+                $source,
+            ));
+            $this->assertSame('fail', $result['scenario_results'][0]['status']);
+            $this->assertTrue($result['scenario_results'][0]['observed_outputs']['result_gate_failed']);
+        }
+    }
+
+    public function test_host_runner_rejects_unpublished_artifact_source_channels_before_passing(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $badCliSource = 'https://github.com/durable-workflow/cli/releases/download/'
+            .'v0.1.75'
+            .'/dw-linux-amd'
+            .'64';
+        $badWaterlineSource = 'npm://'
+            .'@durable-workflow/'
+            .'waterline'
+            .'@2.0.0-alpha.77';
+
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['artifact_sources']['cli'] = $badCliSource;
+        $evidence['artifact_sources']['waterline'] = $badWaterlineSource;
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-unpublished-source-channel-');
+
+        $this->assertSame(
+            'fail',
+            $result['outcome'],
+            'Nexus must not pass with artifact source channels that do not resolve to the published tuple artifacts.',
+        );
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertTrue($this->hasArtifactPolicyFailure(
+            $result,
+            'cli',
+            'artifact_sources',
+            'invalid_published_artifact_source',
+            $badCliSource,
+        ));
+        $this->assertTrue($this->hasArtifactPolicyFailure(
+            $result,
+            'waterline',
+            'artifact_sources',
+            'invalid_published_artifact_source',
+            $badWaterlineSource,
+        ));
+        $this->assertSame('fail', $result['scenario_results'][0]['status']);
+        $this->assertTrue($result['scenario_results'][0]['observed_outputs']['result_gate_failed']);
+    }
+
+    public function test_host_runner_rejects_cli_release_assets_that_are_not_public_downloads(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $missingCliAsset = 'https://github.com/durable-workflow/cli/releases/download/'
+            .'0.1.75'
+            .'/SHA256SUMS.sig';
+
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['artifact_sources']['cli'] = $missingCliAsset;
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-missing-cli-asset-');
+
+        $this->assertSame(
+            'fail',
+            $result['outcome'],
+            'Nexus must not pass when CLI evidence points at a release URL that is not a downloadable public asset.',
+        );
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertTrue($this->hasArtifactPolicyFailure(
+            $result,
+            'cli',
+            'artifact_sources',
+            'invalid_published_artifact_source',
+            $missingCliAsset,
+        ));
+        $this->assertSame('fail', $result['scenario_results'][0]['status']);
+        $this->assertTrue($result['scenario_results'][0]['observed_outputs']['result_gate_failed']);
+    }
+
+    public function test_host_runner_rejects_syntactically_valid_sources_without_resolution_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $fakeVersions = [
+            'server' => '99.99.99',
+            'cli' => '99.99.99',
+            'workflow' => '99.99.99',
+            'sdk-python' => '99.99.99',
+            'waterline' => '99.99.99',
+        ];
+        $fakeSources = [
+            'server' => 'docker://durableworkflow/server:99.99.99',
+            'cli' => 'https://github.com/durable-workflow/cli/releases/download/99.99.99/dw-linux-x86_64',
+            'workflow' => 'packagist://durable-workflow/workflow@99.99.99',
+            'sdk-python' => 'pypi://durable-workflow==99.99.99',
+            'waterline' => 'packagist://durable-workflow/waterline@99.99.99',
+        ];
+
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['artifact_versions'] = $fakeVersions;
+        $evidence['published_artifact_versions'] = $fakeVersions;
+        $evidence['resolved_artifact_versions'] = $fakeVersions;
+        $evidence['artifact_sources'] = $fakeSources;
+        unset($evidence['artifact_source_verification']);
+
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? null) === 'published_artifact_install_only') {
+                $scenario['observed_outputs']['artifact_versions'] = $fakeVersions;
+                $scenario['observed_outputs']['artifact_sources'] = $fakeSources;
+                unset($scenario['observed_outputs']['artifact_source_verification']);
+            }
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-missing-resolution-proof-');
+
+        $this->assertSame(
+            'fail',
+            $result['outcome'],
+            'Nexus must not pass with source strings that look valid but have no host proof of a downloadable artifact.',
+        );
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertTrue($this->hasArtifactPolicyFailure(
+            $result,
+            'server',
+            'artifact_source_verification',
+            'missing_published_artifact_resolution_evidence',
+        ));
+        $this->assertTrue($this->hasArtifactPolicyFailure(
+            $result,
+            'cli',
+            'artifact_source_verification',
+            'missing_published_artifact_resolution_evidence',
+        ));
+        $this->assertSame('fail', $result['scenario_results'][0]['status']);
+        $this->assertTrue($result['scenario_results'][0]['observed_outputs']['result_gate_failed']);
+    }
+
+    public function test_host_runner_rejects_mismatched_source_resolution_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['artifact_source_verification']['cli']['source'] =
+            'https://github.com/durable-workflow/cli/releases/download/0.1.75/install.sh';
+
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? null) === 'published_artifact_install_only') {
+                $scenario['observed_outputs']['artifact_source_verification']['cli']['source'] =
+                    'https://github.com/durable-workflow/cli/releases/download/0.1.75/install.sh';
+            }
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-mismatched-resolution-proof-');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertTrue($this->hasArtifactPolicyFailure(
+            $result,
+            'cli',
+            'artifact_source_verification',
+            'published_artifact_resolution_source_mismatch',
+            'https://github.com/durable-workflow/cli/releases/download/0.1.75/install.sh',
+        ));
+    }
+
+    public function test_host_runner_validates_install_scenario_artifact_maps_before_passing(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if ($scenario['scenario_id'] === 'published_artifact_install_only') {
+                $scenario['observed_outputs']['artifact_versions']['workflow'] = 'banana';
+                $scenario['observed_outputs']['artifact_sources']['server'] = 'file:///workspace/repos/server';
+            }
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-install-map-policy-');
+        $installScenario = $this->scenarioResult($result, 'published_artifact_install_only');
+
+        $this->assertSame(
+            'fail',
+            $result['outcome'],
+            'valid top-level artifact maps must not hide invalid install-scenario artifact evidence',
+        );
+        $this->assertSame('docker://durableworkflow/server:0.2.247', $result['artifact_sources']['server']);
+        $this->assertSame('2.0.0-alpha.190', $result['artifact_versions']['workflow']);
+        $this->assertSame('fail', $installScenario['status']);
+        $this->assertTrue($installScenario['observed_outputs']['result_gate_failed']);
+        $this->assertTrue($this->hasArtifactPolicyFailure(
+            $result,
+            'server',
+            'artifact_sources',
+            'forbidden_published_artifact_source',
+            'file:///workspace/repos/server',
+            '$.scenario_results.published_artifact_install_only.observed_outputs.artifact_sources',
+        ));
+        $this->assertTrue($this->hasArtifactPolicyFailure(
+            $result,
+            'workflow',
+            'artifact_versions',
+            'invalid_published_artifact_version',
+            'banana',
+            '$.scenario_results.published_artifact_install_only.observed_outputs.artifact_versions',
+        ));
+    }
+
+    public function test_host_runner_rejects_install_scenario_artifact_tuple_mismatch(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if ($scenario['scenario_id'] === 'published_artifact_install_only') {
+                $scenario['observed_outputs']['artifact_versions']['server'] = '0.2.246';
+                $scenario['observed_outputs']['artifact_sources']['server'] = 'docker://durableworkflow/server:0.2.246';
+                $scenario['observed_outputs']['artifact_source_verification']['server'] = [
+                    'version' => '0.2.246',
+                    'source' => 'docker://durableworkflow/server:0.2.246',
+                    'downloadable' => true,
+                    'verified_at' => '2026-06-02T12:00:00Z',
+                ];
+            }
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-install-tuple-mismatch-');
+        $installScenario = $this->scenarioResult($result, 'published_artifact_install_only');
+
+        $this->assertSame(
+            'fail',
+            $result['outcome'],
+            'install-only evidence must not pass with a valid but different published artifact tuple',
+        );
+        $this->assertSame('fail', $installScenario['status']);
+        $this->assertTrue($installScenario['observed_outputs']['result_gate_failed']);
+        $this->assertTrue($this->hasArtifactPolicyFailure(
+            $result,
+            'server',
+            'artifact_versions',
+            'install_artifact_version_mismatch',
+            '0.2.246',
+            '$.scenario_results.published_artifact_install_only.observed_outputs.artifact_versions',
+        ));
+        $this->assertTrue($this->hasArtifactPolicyFailure(
+            $result,
+            'server',
+            'artifact_sources',
+            'install_artifact_source_mismatch',
+            'docker://durableworkflow/server:0.2.246',
+            '$.scenario_results.published_artifact_install_only.observed_outputs.artifact_sources',
+        ));
+        $this->assertTrue($this->hasArtifactPolicyFailure(
+            $result,
+            'server',
+            'artifact_source_verification',
+            'install_artifact_source_verification_version_mismatch',
+            '0.2.246',
+            '$.scenario_results.published_artifact_install_only.observed_outputs.artifact_source_verification',
+        ));
+        $this->assertTrue($this->hasArtifactPolicyFailure(
+            $result,
+            'server',
+            'artifact_source_verification',
+            'install_artifact_source_verification_source_mismatch',
+            'docker://durableworkflow/server:0.2.246',
+            '$.scenario_results.published_artifact_install_only.observed_outputs.artifact_source_verification',
+        ));
+    }
+
+    public function test_host_runner_preserves_missing_install_scenario_as_coverage_gap(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        foreach (['missing', 'pass_empty_outputs', 'non_pass_empty_outputs'] as $case) {
+            $evidence = $this->completeRunnerEvidence();
+            if ($case === 'missing') {
+                $evidence['scenario_results'] = array_values(array_filter(
+                    $evidence['scenario_results'],
+                    static fn (array $scenario): bool => ($scenario['scenario_id'] ?? null) !== 'published_artifact_install_only',
+                ));
+            } else {
+                foreach ($evidence['scenario_results'] as &$scenario) {
+                    if (($scenario['scenario_id'] ?? null) === 'published_artifact_install_only') {
+                        $scenario['status'] = $case === 'pass_empty_outputs' ? 'pass' : 'not_covered';
+                        $scenario['observed_outputs'] = [];
+                        $scenario['linked_findings'] = [];
+                    }
+                }
+                unset($scenario);
+            }
+
+            $result = $this->runNexusEvidence($evidence, 'dw-nexus-missing-install-'.$case.'-');
+            $installScenario = $this->scenarioResult($result, 'published_artifact_install_only');
+            $tenantScenario = $this->scenarioResult($result, 'tenant_a_calls_shared_service');
+
+            $this->assertSame('fail', $result['outcome']);
+            $this->assertSame([], $result['artifact_policy_failures']);
+            $this->assertSame('not_covered', $installScenario['status']);
+            $this->assertContains(
+                'conformance_runner_coverage_gap',
+                array_column($installScenario['linked_findings'], 'finding_type'),
+            );
+            $this->assertSame(
+                'pass',
+                $tenantScenario['status'],
+                'missing install evidence must not rewrite unrelated Nexus cells to fail',
+            );
+        }
+    }
+
+    public function test_host_runner_records_unreadable_evidence_path_as_typed_coverage_gap(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $result = $this->runNexusWithEvidencePath(
+            sys_get_temp_dir().'/dw-nexus-missing-evidence-'.bin2hex(random_bytes(6)).'.json',
+            'dw-nexus-unreadable-evidence-',
+        );
+        $installScenario = $this->scenarioResult($result, 'published_artifact_install_only');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertContains(
+            'conformance_runner_coverage_gap',
+            array_column($result['findings'], 'finding_type'),
+        );
+        $this->assertContains(
+            'conformance_runner_coverage_gap',
+            array_column($installScenario['linked_findings'], 'finding_type'),
+        );
+    }
+
+    public function test_host_runner_rejects_non_version_artifact_pins_before_passing(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['artifact_versions']['server'] = 'not-a-version';
+        $evidence['artifact_versions']['workflow'] = 'banana';
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-invalid-version-');
+
+        $this->assertSame(
+            'fail',
+            $result['outcome'],
+            'supplied pass scenarios must not allow Nexus to pass with arbitrary non-version artifact pins',
+        );
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertContains(
+            [
+                'artifact' => 'server',
+                'field' => 'artifact_versions',
+                'code' => 'invalid_published_artifact_version',
+                'value' => 'not-a-version',
+            ],
+            $result['artifact_policy_failures'],
+        );
+        $this->assertContains(
+            [
+                'artifact' => 'workflow',
+                'field' => 'artifact_versions',
+                'code' => 'invalid_published_artifact_version',
+                'value' => 'banana',
+            ],
+            $result['artifact_policy_failures'],
+        );
+        $this->assertSame('fail', $result['scenario_results'][0]['status']);
+        $this->assertTrue($result['scenario_results'][0]['observed_outputs']['result_gate_failed']);
+        $this->assertContains(
+            'missing_or_invalid_published_nexus_artifact',
+            array_column($result['scenario_results'][0]['linked_findings'], 'finding_type'),
+        );
+    }
+
+    public function test_host_runner_rejects_pass_when_source_free_evidence_is_omitted(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        unset($evidence['artifact_sources'], $evidence['local_product_source_checkouts_used']);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-missing-source-evidence-');
+
+        $this->assertSame(
+            'fail',
+            $result['outcome'],
+            'supplied pass scenarios must not allow Nexus to pass without explicit published artifact source evidence',
+        );
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertFalse($result['local_product_source_checkouts_used']);
+        $this->assertContains(
+            [
+                'artifact' => 'server',
+                'field' => 'artifact_sources',
+                'code' => 'missing_published_artifact_source',
+            ],
+            $result['artifact_policy_failures'],
+        );
+        $this->assertContains(
+            [
+                'artifact' => 'product-artifacts',
+                'field' => 'local_product_source_checkouts_used',
+                'code' => 'missing_explicit_source_free_evidence',
+            ],
+            $result['artifact_policy_failures'],
+        );
+
+        $findingTypes = array_column($result['scenario_results'][0]['linked_findings'], 'finding_type');
+        $this->assertContains('missing_or_invalid_published_nexus_artifact', $findingTypes);
+        $this->assertContains('missing_explicit_source_free_published_artifact_evidence', $findingTypes);
+    }
+
+    public function test_host_runner_rejects_pass_with_thin_scenario_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            $scenario['observed_outputs'] = [
+                'service_call_id' => 'svc-'.$scenario['scenario_id'],
+            ];
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-thin-evidence-');
+
+        $this->assertSame(
+            'fail',
+            $result['outcome'],
+            'Nexus pass scenarios must not pass with generic non-empty observed_outputs',
+        );
+        $this->assertSame('not_covered', $result['scenario_results'][0]['status']);
+        $this->assertSame(
+            'missing_scenario_specific_evidence',
+            $result['scenario_results'][0]['observed_outputs']['scenario_evidence_failures'][0]['code'],
+        );
+        $this->assertContains(
+            'conformance_runner_coverage_gap',
+            array_column($result['scenario_results'][0]['linked_findings'], 'finding_type'),
+        );
+    }
+
+    public function test_host_runner_rejects_pass_when_retry_attempt_visibility_is_false(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if ($scenario['scenario_id'] === 'transient_failure_retries_with_policy') {
+                $scenario['observed_outputs']['history_attempt_visibility_includes_retry_attempts'] = false;
+            }
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-retry-visibility-');
+        $scenario = $this->scenarioResult($result, 'transient_failure_retries_with_policy');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertContains(
+            'retry_attempt_visibility_gap',
+            array_column($scenario['linked_findings'], 'finding_type'),
+        );
+    }
+
+    public function test_host_runner_rejects_pass_when_authorization_refusal_leaks_endpoint_existence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if ($scenario['scenario_id'] === 'endpoint_permission_denied_without_information_leak') {
+                $scenario['observed_outputs']['authorization_refusal_disclosed_endpoint_existence'] = true;
+            }
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-auth-leak-');
+        $scenario = $this->scenarioResult($result, 'endpoint_permission_denied_without_information_leak');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertContains(
+            'permission_denied_information_leak',
+            array_column($scenario['linked_findings'], 'finding_type'),
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     *
+     * @return array<string, mixed>
+     */
+    private function runNexusEvidence(array $evidence, string $tempPrefix): array
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $tempRoot = sys_get_temp_dir().'/'.$tempPrefix.bin2hex(random_bytes(6));
+        $resultDir = $tempRoot.'/result';
+        $evidencePath = $tempRoot.'/nexus-evidence.json';
+
+        try {
+            mkdir($resultDir, 0777, true);
+            file_put_contents(
+                $evidencePath,
+                json_encode($evidence, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+            );
+
+            $process = proc_open(
+                [$repoRoot.'/scripts/conformance/nexus-published-artifacts.sh', '--result-dir', $resultDir],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_NEXUS_EVIDENCE_JSON' => $evidencePath,
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, ($stdout === false ? '' : $stdout).($stderr === false ? '' : $stderr));
+
+            $resultPath = $resultDir.'/nexus-conformance-result.json';
+            $this->assertFileExists($resultPath);
+
+            return json_decode((string) file_get_contents($resultPath), true, 512, JSON_THROW_ON_ERROR);
+        } finally {
+            $this->removeTree($tempRoot);
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function runNexusWithEvidencePath(string $evidencePath, string $tempPrefix): array
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $tempRoot = sys_get_temp_dir().'/'.$tempPrefix.bin2hex(random_bytes(6));
+        $resultDir = $tempRoot.'/result';
+
+        try {
+            mkdir($resultDir, 0777, true);
+
+            $process = proc_open(
+                [$repoRoot.'/scripts/conformance/nexus-published-artifacts.sh', '--result-dir', $resultDir],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_NEXUS_EVIDENCE_JSON' => $evidencePath,
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, ($stdout === false ? '' : $stdout).($stderr === false ? '' : $stderr));
+
+            $resultPath = $resultDir.'/nexus-conformance-result.json';
+            $this->assertFileExists($resultPath);
+
+            return json_decode((string) file_get_contents($resultPath), true, 512, JSON_THROW_ON_ERROR);
+        } finally {
+            $this->removeTree($tempRoot);
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function completeRunnerEvidence(): array
+    {
+        $artifactVersions = [
+            'server' => '0.2.247',
+            'cli' => '0.1.75',
+            'workflow' => '2.0.0-alpha.190',
+            'sdk-python' => '0.4.84',
+            'waterline' => '2.0.0-alpha.77',
+        ];
+        $artifactSources = [
+            'server' => 'docker://durableworkflow/server:0.2.247',
+            'cli' => 'https://github.com/durable-workflow/cli/releases/download/0.1.75/dw-linux-x86_64',
+            'workflow' => 'packagist://durable-workflow/workflow@2.0.0-alpha.190',
+            'sdk-python' => 'pypi://durable-workflow==0.4.84',
+            'waterline' => 'packagist://durable-workflow/waterline@2.0.0-alpha.77',
+        ];
+        $artifactSourceVerification = $this->artifactSourceVerification($artifactVersions, $artifactSources);
+        $scenarioResults = [];
+
+        foreach (NexusContract::manifest()['required_scenarios'] as $scenarioId) {
+            $scenarioResults[] = [
+                'scenario_id' => $scenarioId,
+                'status' => 'pass',
+                'observed_outputs' => $this->completeScenarioOutputs(
+                    $scenarioId,
+                    $artifactVersions,
+                    $artifactSources,
+                    $artifactSourceVerification,
+                ),
+            ];
+        }
+
+        return [
+            'outcome' => 'pass',
+            'started_at' => '2026-06-02T12:00:00Z',
+            'finished_at' => '2026-06-02T12:02:00Z',
+            'artifact_versions' => $artifactVersions,
+            'published_artifact_versions' => $artifactVersions,
+            'resolved_artifact_versions' => $artifactVersions,
+            'artifact_sources' => $artifactSources,
+            'artifact_source_verification' => $artifactSourceVerification,
+            'local_product_source_checkouts_used' => false,
+            'findings' => [],
+            'scenario_results' => $scenarioResults,
+        ];
+    }
+
+    /**
+     * @param array<string, string> $artifactVersions
+     * @param array<string, string> $artifactSources
+     *
+     * @return array<string, mixed>
+     */
+    private function completeScenarioOutputs(
+        string $scenarioId,
+        array $artifactVersions,
+        array $artifactSources,
+        array $artifactSourceVerification,
+    ): array
+    {
+        $base = [
+            'service_call_id' => 'svc-'.$scenarioId,
+        ];
+
+        return match ($scenarioId) {
+            'published_artifact_install_only' => [
+                'artifact_versions' => $artifactVersions,
+                'artifact_sources' => $artifactSources,
+                'artifact_source_verification' => $artifactSourceVerification,
+                'local_product_source_checkouts_used' => false,
+                'install_channels_verified' => true,
+            ],
+            'tenant_a_calls_shared_service' => $base + [
+                'caller_namespace' => 'tenant-a',
+                'target_namespace' => 'shared',
+                'workflow_result' => 'hello, tenant-a',
+                'caller_history_recorded' => true,
+            ],
+            'tenant_b_calls_shared_service' => $base + [
+                'caller_namespace' => 'tenant-b',
+                'target_namespace' => 'shared',
+                'workflow_result' => 'hello, tenant-b',
+                'caller_history_recorded' => true,
+            ],
+            'transient_failure_retries_with_policy' => $base + [
+                'retry_policy' => ['maximum_attempts' => 3],
+                'retry_attempts' => [
+                    ['attempt' => 1, 'outcome' => 'handler_failed'],
+                    ['attempt' => 2, 'outcome' => 'handler_failed'],
+                    ['attempt' => 3, 'outcome' => 'completed'],
+                ],
+                'history_attempt_visibility_includes_retry_attempts' => true,
+                'completed_after_retry' => true,
+            ],
+            'permanent_failure_preserves_typed_error' => $base + [
+                'service_error_type' => 'SharedGreeterUnavailable',
+                'caller_observed_error_type' => 'SharedGreeterUnavailable',
+                'typed_error_preserved' => true,
+            ],
+            'worker_restart_replay_does_not_reissue_call' => $base + [
+                'worker_restart_observed' => true,
+                'history_replay_recovered_call' => true,
+                'duplicate_call_issue_count' => 0,
+            ],
+            'caller_cancellation_propagates_to_service' => $base + [
+                'caller_cancelled_at' => '2026-06-02T12:01:00Z',
+                'target_cancelled_at' => '2026-06-02T12:01:03Z',
+                'typed_cancellation_observed' => true,
+            ],
+            'php_caller_python_service' => $base + [
+                'caller_runtime' => 'workflow-php',
+                'service_runtime' => 'sdk-python',
+                'payload_round_trip' => true,
+                'typed_error_round_trip' => true,
+            ],
+            'python_caller_php_service' => $base + [
+                'caller_runtime' => 'sdk-python',
+                'service_runtime' => 'workflow-php',
+                'payload_round_trip' => true,
+                'typed_error_round_trip' => true,
+            ],
+            'endpoint_permission_denied_without_information_leak' => [
+                'caller_namespace' => 'denied',
+                'refusal_status' => 'rejected_forbidden',
+                'authorization_refusal_disclosed_endpoint_existence' => false,
+                'handler_dispatch_count' => 0,
+            ],
+            'malformed_payload_refused_before_dispatch' => [
+                'refusal_status' => 'rejected_bad_payload',
+                'typed_error' => 'MalformedNexusPayload',
+                'handler_dispatch_count' => 0,
+                'service_invoked' => false,
+            ],
+            'nonexistent_endpoint_typed_not_found' => [
+                'refusal_status' => 'rejected_not_found',
+                'typed_error' => 'NexusEndpointNotFound',
+                'handler_dispatch_count' => 0,
+            ],
+            'caller_history_attempt_visibility' => $base + [
+                'caller_history_attempts' => [
+                    ['attempt' => 1, 'outcome' => 'handler_failed'],
+                    ['attempt' => 2, 'outcome' => 'handler_failed'],
+                    ['attempt' => 3, 'outcome' => 'completed'],
+                ],
+                'history_attempt_visibility_includes_retry_attempts' => true,
+                'service_call_detail_attempts' => [
+                    ['attempt' => 1, 'outcome' => 'handler_failed'],
+                    ['attempt' => 2, 'outcome' => 'handler_failed'],
+                    ['attempt' => 3, 'outcome' => 'completed'],
+                ],
+            ],
+            'result_record_and_product_finding_routing' => [
+                'result_record_emitted' => true,
+                'finding_links_emitted' => true,
+                'waterline_operator_visibility' => true,
+            ],
+            default => $base,
+        };
+    }
+
+    /**
+     * @param array<string, string> $artifactVersions
+     * @param array<string, string> $artifactSources
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    private function artifactSourceVerification(array $artifactVersions, array $artifactSources): array
+    {
+        $verification = [];
+
+        foreach ($artifactSources as $artifact => $source) {
+            $verification[$artifact] = [
+                'version' => $artifactVersions[$artifact],
+                'source' => $source,
+                'downloadable' => true,
+                'verified_at' => '2026-06-02T12:00:00Z',
+            ];
+        }
+
+        return $verification;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     *
+     * @return array<string, mixed>
+     */
+    private function scenarioResult(array $result, string $scenarioId): array
+    {
+        foreach ($result['scenario_results'] as $scenario) {
+            if (($scenario['scenario_id'] ?? null) === $scenarioId) {
+                return $scenario;
+            }
+        }
+
+        $this->fail(sprintf('missing scenario result for %s', $scenarioId));
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     */
+    private function hasArtifactPolicyFailure(
+        array $result,
+        string $artifact,
+        string $field,
+        string $code,
+        ?string $value = null,
+        ?string $path = null,
+    ): bool {
+        foreach ($result['artifact_policy_failures'] as $failure) {
+            if (($failure['artifact'] ?? null) === $artifact
+                && ($failure['field'] ?? null) === $field
+                && ($failure['code'] ?? null) === $code
+                && ($value === null || ($failure['value'] ?? null) === $value)
+                && ($path === null || ($failure['path'] ?? null) === $path)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function removeTree(string $path): void
+    {
+        if (! is_dir($path)) {
+            return;
+        }
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($path, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST,
+        );
+
+        foreach ($iterator as $file) {
+            $file->isDir() ? rmdir($file->getPathname()) : unlink($file->getPathname());
+        }
+
+        rmdir($path);
     }
 }

@@ -2,6 +2,8 @@
 
 namespace App\Support;
 
+use Workflow\V2\Support\PlatformConformanceSuite;
+
 /**
  * Platform-level contract describing how a workflow in one namespace makes a
  * durable, retried, observable call into another namespace.
@@ -32,7 +34,11 @@ final class NexusContract
 {
     public const SCHEMA = 'durable-workflow.v2.nexus.contract';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
+
+    public const RESULT_SCHEMA = 'durable-workflow.v2.nexus-runtime.result';
+
+    public const RESULT_VERSION = 1;
 
     public const AUTHORITY_DOCUMENT = 'docs/contracts/nexus.md';
 
@@ -55,6 +61,9 @@ final class NexusContract
             'underlying_execution_contract' => self::UNDERLYING_EXECUTION_CONTRACT,
             'cluster_info_key' => 'nexus_contract',
             'capability_flag' => 'nexus',
+            'platform_conformance_suite_authority' => PlatformConformanceSuite::SCHEMA,
+            'result_schema' => self::RESULT_SCHEMA,
+            'result_version' => self::RESULT_VERSION,
             'addressing' => [
                 'endpoint_field' => 'endpoint_name',
                 'service_field' => 'service_name',
@@ -167,6 +176,373 @@ final class NexusContract
             'out_of_scope' => [
                 'general_service_mesh' => 'Nexus is durable cross-namespace calls within a durable-workflow cluster; it is not a generalized service mesh, sidecar fabric, or cross-cluster routing layer.',
                 'arbitrary_external_http' => 'Nexus does not invoke arbitrary external HTTP endpoints; outbound HTTP belongs in the existing invocable-carrier surface.',
+            ],
+            'artifact_policy' => [
+                'version_source' => 'latest_published_artifacts_at_run_time',
+                'required_artifacts' => [
+                    'server',
+                    'cli',
+                    'workflow',
+                    'sdk-python',
+                    'waterline',
+                ],
+                'release_artifact_aliases' => [
+                    'workflow' => ['workflow-php'],
+                    'sdk-python' => ['python-sdk'],
+                ],
+                'install_channels' => [
+                    'server' => 'docker image durableworkflow/server:<exact tag or digest>',
+                    'cli' => 'official dw GitHub release asset under durable-workflow/cli/releases/download/<exact tag>/',
+                    'workflow' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<exact>',
+                    'sdk-python' => 'PyPI package durable-workflow==<exact>',
+                    'waterline' => 'Composer package durable-workflow/waterline:2.0.0-alpha.<exact>',
+                ],
+                'source_channel_policy' => [
+                    'server' => 'docker://durableworkflow/server:<exact tag> or durableworkflow/server@sha256:<digest>',
+                    'cli' => 'https://github.com/durable-workflow/cli/releases/download/<exact tag>/<release asset>',
+                    'workflow' => 'packagist://durable-workflow/workflow@<exact version>',
+                    'sdk-python' => 'pypi://durable-workflow==<exact version>',
+                    'waterline' => 'packagist://durable-workflow/waterline@<exact version>',
+                ],
+                'forbidden_sources' => [
+                    'local_product_source_checkout',
+                    'workspace_repo_as_artifact_under_test',
+                    'local_checkout_artifact',
+                    'local_checkout',
+                    'local_source_checkout',
+                    'workspace_repo',
+                    'rolling_server_image_tag',
+                    'unverified_artifact_source',
+                ],
+                'placeholder_version_examples' => [
+                    'latest',
+                    'current',
+                    'head',
+                    'unresolved',
+                    'placeholder',
+                    '<latest>',
+                    '1.x',
+                    '${VERSION}',
+                    '{{ version }}',
+                ],
+                'required_run_record_fields' => [
+                    'artifact_versions',
+                    'published_artifact_versions',
+                    'resolved_artifact_versions',
+                    'artifact_sources',
+                    'artifact_source_verification',
+                    'artifact_policy_failures',
+                    'local_product_source_checkouts_used',
+                    'started_at',
+                    'finished_at',
+                    'generated_at',
+                    'outcome',
+                    'scenario_results',
+                    'findings',
+                    'finding_links',
+                ],
+            ],
+            'scenario_statuses' => [
+                'pass',
+                'fail',
+                'unsupported',
+                'not_covered',
+                'runner_blocked',
+            ],
+            'required_matrix' => [
+                'namespaces' => [
+                    'tenant-a',
+                    'tenant-b',
+                    'shared',
+                    'denied',
+                ],
+                'caller_runtimes' => [
+                    'workflow-php',
+                    'sdk-python',
+                ],
+                'service_runtimes' => [
+                    'workflow-php',
+                    'sdk-python',
+                ],
+                'required_operator_surfaces' => [
+                    'caller_history',
+                    'service_call_detail',
+                    'waterline_operator_visibility',
+                ],
+            ],
+            'required_scenarios' => [
+                'published_artifact_install_only',
+                'tenant_a_calls_shared_service',
+                'tenant_b_calls_shared_service',
+                'transient_failure_retries_with_policy',
+                'permanent_failure_preserves_typed_error',
+                'worker_restart_replay_does_not_reissue_call',
+                'caller_cancellation_propagates_to_service',
+                'php_caller_python_service',
+                'python_caller_php_service',
+                'endpoint_permission_denied_without_information_leak',
+                'malformed_payload_refused_before_dispatch',
+                'nonexistent_endpoint_typed_not_found',
+                'caller_history_attempt_visibility',
+                'result_record_and_product_finding_routing',
+            ],
+            'scenario_evidence_requirements' => [
+                'published_artifact_install_only' => [
+                    'artifact_versions',
+                    'artifact_sources',
+                    'artifact_source_verification',
+                    'local_product_source_checkouts_used',
+                    'install_channels_verified',
+                ],
+                'tenant_a_calls_shared_service' => [
+                    'caller_namespace',
+                    'target_namespace',
+                    'service_call_id',
+                    'workflow_result',
+                    'caller_history_recorded',
+                ],
+                'tenant_b_calls_shared_service' => [
+                    'caller_namespace',
+                    'target_namespace',
+                    'service_call_id',
+                    'workflow_result',
+                    'caller_history_recorded',
+                ],
+                'transient_failure_retries_with_policy' => [
+                    'service_call_id',
+                    'retry_policy',
+                    'retry_attempts',
+                    'history_attempt_visibility_includes_retry_attempts',
+                    'completed_after_retry',
+                ],
+                'permanent_failure_preserves_typed_error' => [
+                    'service_call_id',
+                    'service_error_type',
+                    'caller_observed_error_type',
+                    'typed_error_preserved',
+                ],
+                'worker_restart_replay_does_not_reissue_call' => [
+                    'service_call_id',
+                    'worker_restart_observed',
+                    'history_replay_recovered_call',
+                    'duplicate_call_issue_count',
+                ],
+                'caller_cancellation_propagates_to_service' => [
+                    'service_call_id',
+                    'caller_cancelled_at',
+                    'target_cancelled_at',
+                    'typed_cancellation_observed',
+                ],
+                'php_caller_python_service' => [
+                    'caller_runtime',
+                    'service_runtime',
+                    'service_call_id',
+                    'payload_round_trip',
+                    'typed_error_round_trip',
+                ],
+                'python_caller_php_service' => [
+                    'caller_runtime',
+                    'service_runtime',
+                    'service_call_id',
+                    'payload_round_trip',
+                    'typed_error_round_trip',
+                ],
+                'endpoint_permission_denied_without_information_leak' => [
+                    'caller_namespace',
+                    'refusal_status',
+                    'authorization_refusal_disclosed_endpoint_existence',
+                    'handler_dispatch_count',
+                ],
+                'malformed_payload_refused_before_dispatch' => [
+                    'refusal_status',
+                    'typed_error',
+                    'handler_dispatch_count',
+                    'service_invoked',
+                ],
+                'nonexistent_endpoint_typed_not_found' => [
+                    'refusal_status',
+                    'typed_error',
+                    'handler_dispatch_count',
+                ],
+                'caller_history_attempt_visibility' => [
+                    'service_call_id',
+                    'caller_history_attempts',
+                    'history_attempt_visibility_includes_retry_attempts',
+                    'service_call_detail_attempts',
+                ],
+                'result_record_and_product_finding_routing' => [
+                    'result_record_emitted',
+                    'finding_links_emitted',
+                    'waterline_operator_visibility',
+                ],
+            ],
+            'coverage_gate' => [
+                'passing_outcome_requires' => [
+                    'runner_blocked_false_for_product_evidence',
+                    'published_artifact_versions_are_recorded_and_pinned',
+                    'every_required_scenario_has_one_result',
+                    'every_required_scenario_passes',
+                    'each_pass_scenario_has_scenario_specific_evidence',
+                    'each_non_pass_scenario_has_focused_linked_findings',
+                    'no_local_product_source_checkout_used_as_artifact',
+                ],
+                'runner_blocked_outcome' => 'non_passing_runner_blocked',
+                'coverage_gap_outcome' => 'non_passing_not_covered',
+            ],
+            'host_runner_contract' => [
+                'status' => 'required_for_passing_nexus_conformance',
+                'runner_path' => 'scripts/conformance/nexus-published-artifacts.sh',
+                'runner_command' => 'scripts/conformance/nexus-published-artifacts.sh --result-dir <result-dir>',
+                'result_files' => [
+                    'pins.json',
+                    'nexus-conformance-result.json',
+                    'nexus-conformance-record.json',
+                ],
+                'must_execute_against_published_artifacts' => true,
+                'must_record_runner_blocked_false_for_product_evidence' => true,
+                'must_emit_result_for_every_required_scenario' => true,
+                'required_execution_scopes' => [
+                    'published-artifact-install',
+                    'cross-namespace-happy-paths',
+                    'retry-replay-and-cancellation',
+                    'php-python-runtime-matrix',
+                    'authorization-and-adversarial-refusals',
+                    'history-and-result-record-routing',
+                ],
+                'evidence_inputs' => [
+                    'DW_NEXUS_EVIDENCE_JSON' => 'Optional full host evidence document with scenario_results for the required Nexus scenarios. Missing scenarios are emitted as not_covered with focused conformance-harness findings.',
+                    'DW_SERVER_VERSION' => 'Exact published server artifact version.',
+                    'DW_CLI_VERSION' => 'Exact published CLI artifact version.',
+                    'DW_WORKFLOW_PHP_VERSION' => 'Exact published Workflow PHP artifact version.',
+                    'DW_PYTHON_SDK_VERSION' => 'Exact published Python SDK artifact version.',
+                    'DW_WATERLINE_VERSION' => 'Exact published Waterline artifact version.',
+                ],
+                'runtime_shards' => [
+                    'workflow-php' => [
+                        'artifact' => 'durable-workflow/workflow',
+                        'must_cover_scenarios' => [
+                            'php_caller_python_service',
+                            'caller_cancellation_propagates_to_service',
+                            'worker_restart_replay_does_not_reissue_call',
+                        ],
+                    ],
+                    'sdk-python' => [
+                        'artifact' => 'durable-workflow',
+                        'must_cover_scenarios' => [
+                            'python_caller_php_service',
+                            'permanent_failure_preserves_typed_error',
+                        ],
+                    ],
+                    'server' => [
+                        'artifact' => 'durableworkflow/server',
+                        'must_cover_scenarios' => [
+                            'tenant_a_calls_shared_service',
+                            'tenant_b_calls_shared_service',
+                            'transient_failure_retries_with_policy',
+                            'endpoint_permission_denied_without_information_leak',
+                            'malformed_payload_refused_before_dispatch',
+                            'nonexistent_endpoint_typed_not_found',
+                            'caller_history_attempt_visibility',
+                        ],
+                    ],
+                    'waterline' => [
+                        'artifact' => 'durable-workflow/waterline',
+                        'must_cover_scenarios' => [
+                            'caller_history_attempt_visibility',
+                            'result_record_and_product_finding_routing',
+                        ],
+                    ],
+                ],
+                'routing_policy' => [
+                    'missing_required_scenario' => [
+                        'scenario_status' => 'not_covered',
+                        'finding_type' => 'conformance_runner_coverage_gap',
+                        'owner' => 'conformance_harness',
+                    ],
+                    'host_environment_failure' => [
+                        'scenario_status' => 'runner_blocked',
+                        'finding_type' => 'runner_gap',
+                        'owner' => 'conformance_harness',
+                    ],
+                    'unsupported_public_surface' => [
+                        'scenario_status' => 'unsupported',
+                        'finding_source' => 'nexus_contract.finding_policy',
+                    ],
+                    'product_behavior_failure' => [
+                        'scenario_status' => 'fail',
+                        'finding_source' => 'nexus_contract.finding_policy',
+                    ],
+                ],
+            ],
+            'result_gate' => [
+                'schema' => self::RESULT_SCHEMA . '.gate',
+                'version' => self::RESULT_VERSION,
+                'pass_requires' => [
+                    'runner_blocked_false_for_product_evidence',
+                    'published_artifact_versions_are_recorded_and_pinned',
+                    'all_required_artifact_versions_are_concrete',
+                    'artifact_sources_recorded_for_every_required_artifact',
+                    'artifact_source_verification_proves_each_source_resolves',
+                    'install_artifact_tuple_matches_top_level_resolved_tuple',
+                    'no_artifact_policy_failures',
+                    'every_required_scenario_has_one_result',
+                    'every_required_scenario_passes',
+                    'each_pass_scenario_has_scenario_specific_evidence',
+                    'each_non_pass_scenario_has_focused_linked_findings',
+                    'local_product_source_checkouts_used_false',
+                    'source_free_published_artifact_evidence_is_explicit',
+                    'history_attempt_visibility_includes_retry_attempts',
+                    'authorization_refusal_does_not_disclose_endpoint_existence',
+                ],
+                'artifact_version_policy' => [
+                    'rejects_placeholder_versions' => true,
+                    'requires_required_artifacts' => [
+                        'server',
+                        'cli',
+                        'workflow',
+                        'sdk-python',
+                        'waterline',
+                    ],
+                    'placeholder_tokens' => [
+                        'latest',
+                        'current',
+                        'head',
+                        'unresolved',
+                        'placeholder',
+                        '<latest>',
+                        '1.x',
+                        '${VERSION}',
+                        '{{ version }}',
+                    ],
+                    'local_product_source_checkouts_used_must_be_false' => true,
+                    'requires_artifact_sources_for_required_artifacts' => true,
+                    'requires_downloadable_artifact_source_verification' => true,
+                    'requires_explicit_source_free_evidence' => true,
+                ],
+            ],
+            'finding_policy' => [
+                'root_cause_owners' => [
+                    'retry_does_not_happen' => 'server',
+                    'retry_attempt_visibility_gap' => 'server',
+                    'worker_restart_reissues_call' => 'server_or_sdk',
+                    'typed_error_shape_loss' => 'codec_or_worker_protocol',
+                    'cancellation_does_not_propagate' => 'server',
+                    'permission_denied_information_leak' => 'server',
+                    'cross_language_call_failure' => 'server_or_sdk',
+                    'operator_visibility_gap' => 'waterline_or_server',
+                    'published_artifact_handoff_gap' => 'owning_release_surface',
+                    'missing_or_invalid_published_nexus_artifact' => 'owning_release_surface',
+                    'local_product_source_checkout_used' => 'conformance_harness',
+                    'conformance_runner_coverage_gap' => 'conformance_harness',
+                ],
+                'required_for_non_pass' => [
+                    'scenario_id',
+                    'owning_surface',
+                    'artifact_versions',
+                    'observed_behavior',
+                    'expected_behavior',
+                    'next_acceptance_criterion',
+                ],
             ],
         ];
     }

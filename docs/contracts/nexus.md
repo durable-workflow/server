@@ -16,7 +16,8 @@ The authoritative machine-readable contract is published from
 `GET /api/cluster/info` at `nexus_contract`:
 
 - `schema: durable-workflow.v2.nexus.contract`
-- `version: 1`
+- `version: 2`
+- `result_schema: durable-workflow.v2.nexus-runtime.result`
 - `parity_target` — the parity name and the per-pair-integration
   guarantee Nexus replaces.
 - `underlying_execution_contract` — the schema string of the contract
@@ -38,6 +39,30 @@ The authoritative machine-readable contract is published from
   per-caller registration.
 - `caller_history_surface` — the per-workflow caller-indexed view of
   outbound Nexus calls.
+- `artifact_policy`, `required_matrix`, `required_scenarios`,
+  `scenario_evidence_requirements`, and `coverage_gate` — the
+  published-artifact conformance cells and pass evidence a host runner
+  must exercise before Nexus can count as passing product evidence.
+- `host_runner_contract` — the source-free handoff at
+  `scripts/conformance/nexus-published-artifacts.sh`. If a host reaches
+  this handoff but leaves required cells uncovered, the handoff records
+  focused `not_covered` findings with `runnerBlocked=false` rather than
+  another runner-blocked ledger row.
+- `result_gate` and `finding_policy` — the pass requirements and
+  root-cause routing for failures, unsupported cells, and coverage gaps.
+  The gate rejects `pass` when any required artifact version is missing,
+  rolling, or placeholder-like (`latest`, `current`, `head`, `1.x`, and
+  similar), when any required artifact source is missing, source-like, or on
+  the wrong published channel for the artifact (`durableworkflow/server` image,
+  `durable-workflow/cli` release asset, Packagist Workflow/Waterline package,
+  or PyPI `durable-workflow` package), when `artifact_source_verification`
+  does not prove that each exact source resolved to a downloadable public
+  asset, package, or image manifest,
+  when pass scenarios omit their advertised scenario-specific evidence,
+  when retry-attempt visibility or authorization non-disclosure evidence
+  contradicts the Nexus contract, when the source-free evidence field is
+  omitted, or when the evidence reports local product source checkouts as
+  artifacts under test.
 - `sdk_implementation_notes` — the rules SDKs must follow when wiring
   Nexus calls and Nexus services into workflow code.
 - `out_of_scope` — the surfaces explicitly outside the Nexus contract.

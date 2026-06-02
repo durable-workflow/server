@@ -39,6 +39,7 @@ categories and runtime contracts:
 | `worker_versioning_runtime_contract` (server side) | `GET /api/cluster/info`'s `worker_versioning_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/worker-versioning-runtime-scenarios.json`, `scripts/conformance/worker-versioning-published-artifacts.sh`, worker registration/build-id rollout APIs, workflow start pinning, compatible polling, history/visibility pin surfaces, and CLI/Waterline operator visibility | stable |
 | `migration_runtime_contract` (server side) | `GET /api/cluster/info`'s `migration_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/migration-runtime-scenarios.json`, and the host-runner handoff requirements for full published-artifact v1-to-v2 upgrade evidence | stable |
 | `namespace_runtime_contract` (server side) | the public scenario manifest at `static/platform-conformance/namespace-runtime-scenarios.json`, `GET /api/cluster/info`'s `namespace_runtime_contract` manifest, `scripts/conformance/namespaces-published-artifacts.sh`, plus namespace, workflow, worker, schedule, search-attribute, Nexus, and operator routes documented in the protocol catalog | stable |
+| `nexus_runtime_contract` (server side handoff) | `GET /api/cluster/info`'s `nexus_contract.host_runner_contract`, `docs/contracts/nexus.md`, and `scripts/conformance/nexus-published-artifacts.sh`, which is the host-runner handoff for published-artifact Nexus retry, replay, cancellation, cross-language, authorization, and history evidence | stable |
 | `failure_repair_actionability` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, plus the artifact objects published from `GET /api/cluster/info`'s `worker_protocol.external_task_result_contract.fixtures` | stable |
 
 Several categories the server is graded against also span client,
@@ -111,6 +112,29 @@ Waterline shard is run automatically from a disposable Laravel app unless
 required or expected shard is absent or cannot be executed, the result remains
 non-passing and carries a focused surface finding instead of silently treating
 the cell as covered.
+
+The server repo also ships a source-free Nexus runner at
+`scripts/conformance/nexus-published-artifacts.sh`. Host conformance
+runners can discover that handoff from `GET /api/cluster/info` under
+`nexus_contract.host_runner_contract` and invoke it against the current
+published server image, GitHub CLI release asset, PyPI Python SDK,
+Packagist PHP workflow runtime, and Packagist Waterline package versions.
+The runner composes host evidence for
+cross-namespace calls from `tenant-a` and `tenant-b` into `shared`,
+activity-style retry, typed failure propagation, replay without duplicate
+issuance after caller-worker restart, cancellation propagation,
+PHP-to-Python and Python-to-PHP service calls, permission-denied
+non-disclosure, malformed payload refusal, non-existent endpoint refusal,
+and caller-history attempt visibility. If the host reaches the handoff but
+has not covered a required cell, the result records that cell as
+`not_covered` with a focused conformance-runner finding and
+`runnerBlocked=false` instead of emitting another runner-blocked ledger row.
+The handoff cannot emit `pass` unless every required artifact version is
+concrete and pinned and the evidence shows no local product source checkout
+usage through the published channel for each artifact. It also requires
+per-artifact host resolution evidence showing that each exact source under
+test was downloadable from the public release channel before the scenario can
+count as passing published-artifact evidence.
 
 The server repo also ships a source-free Python SDK parity runner at
 `scripts/conformance/python-published-artifacts.sh`. Host conformance
@@ -303,6 +327,17 @@ category emits a warning and does not block.
   visibility, explicit Nexus crossing, reserved-name refusal, and
   search-attribute schema and value query isolation. A namespace smoke
   that omits those cells is nonconforming.
+- Nexus contract: `GET /api/cluster/info` re-exports `nexus_contract`,
+  schema `durable-workflow.v2.nexus.contract`. It names the durable
+  endpoint/service/operation addressing model, namespace ACL enforcement,
+  retry and crash-recovery semantics, caller-history route, required Nexus
+  scenarios, and the `host_runner_contract` that points at
+  `scripts/conformance/nexus-published-artifacts.sh`. The handoff requires
+  published artifacts only and records uncovered cells as focused coverage
+  findings with `runnerBlocked=false` once the host reaches the handoff; a
+  pass also requires concrete pinned artifact versions, complete published
+  artifact sources, explicit source-free evidence, and no local product
+  source checkout usage.
 - Public docs page: <https://durable-workflow.github.io/docs/2.0/compatibility>
 - Migration runtime scenarios:
   <https://durable-workflow.github.io/platform-conformance/migration-runtime-scenarios.json>
