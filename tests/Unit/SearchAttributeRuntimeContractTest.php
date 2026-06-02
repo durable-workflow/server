@@ -14,7 +14,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $manifest = SearchAttributeRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.contract', $manifest['schema']);
-        $this->assertSame(5, SearchAttributeRuntimeContract::VERSION);
+        $this->assertSame(6, SearchAttributeRuntimeContract::VERSION);
         $this->assertSame(SearchAttributeRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.result', $manifest['result_schema']);
         $this->assertSame('search_attribute_runtime_contract', $manifest['fixture_category']);
@@ -83,6 +83,10 @@ class SearchAttributeRuntimeContractTest extends TestCase
             $manifest['scenario_requirements']['python_to_php_codec_round_trip']['payload_context_fields'],
         );
         $this->assertSame(
+            ['written_attributes', 'decoded_attributes', 'reader_verifications'],
+            $manifest['scenario_requirements']['python_to_php_codec_round_trip']['required_evidence_fields'],
+        );
+        $this->assertSame(
             ['string', 'int', 'double', 'bool', 'datetime', 'keyword', 'keyword_list'],
             $manifest['scenario_requirements']['php_to_python_codec_round_trip']['required_value_types'],
         );
@@ -136,6 +140,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'waterline_operator_visibility_reported',
             'codec_round_trips_reported',
             'codec_round_trips_include_encoded_payload_or_wire_value_context',
+            'codec_round_trips_compare_written_or_wire_values_to_decoded_attributes',
             'load_latency_reported',
             'or_not_grammar_reported',
             'query_injection_hardening_reported',
@@ -150,7 +155,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $resultGate = SearchAttributeRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SearchAttributeRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(4, SearchAttributeRuntimeResultGate::VERSION);
+        $this->assertSame(5, SearchAttributeRuntimeResultGate::VERSION);
         $this->assertSame(SearchAttributeRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SearchAttributeRuntimeContract::RESULT_SCHEMA,
@@ -167,6 +172,10 @@ class SearchAttributeRuntimeContractTest extends TestCase
         );
         $this->assertContains(
             'codec_round_trips_include_encoded_payload_or_wire_value_context',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'codec_round_trips_compare_written_or_wire_values_to_decoded_attributes',
             $resultGate['pass_requires'],
         );
         $this->assertContains('query_verdict_expected_and_actual_counts_match', $resultGate['pass_requires']);
@@ -323,14 +332,16 @@ class SearchAttributeRuntimeContractTest extends TestCase
 
         unset($result['codec_round_trips']['python_to_php']['encoded_payload']);
         unset($result['codec_round_trips']['php_to_python']['encoded_payload']);
+        unset($result['codec_round_trips']['python_to_php']['written_attributes']);
+        unset($result['codec_round_trips']['php_to_python']['written_attributes']);
 
         $result['codec_round_trips']['python_to_php']['wire_value_context'] = [
             'writer' => 'sdk-python',
             'storage_surface' => 'workflow_search_attributes',
             'wire_values' => [
                 'customer_id' => ['value_string' => 'cust-7'],
-                'order_total_cents' => ['value_int' => 9250],
-                'discount_ratio' => ['value_double' => 0.125],
+                'order_total_cents' => ['value_int' => 7500],
+                'discount_ratio' => ['value_double' => 0.15],
                 'priority_tier' => ['value_keyword' => 'gold'],
                 'is_vip' => ['value_bool' => true],
                 'created_at' => ['value_datetime' => '2026-05-20T12:00:00Z'],
@@ -342,8 +353,8 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'storage_surface' => 'workflow_search_attributes',
             'wire_values' => [
                 'customer_id' => ['value_string' => 'cust-7'],
-                'order_total_cents' => ['value_int' => 9250],
-                'discount_ratio' => ['value_double' => 0.125],
+                'order_total_cents' => ['value_int' => 7500],
+                'discount_ratio' => ['value_double' => 0.15],
                 'priority_tier' => ['value_keyword' => 'gold'],
                 'is_vip' => ['value_bool' => true],
                 'created_at' => ['value_datetime' => '2026-05-20T12:00:00Z'],
@@ -355,6 +366,20 @@ class SearchAttributeRuntimeContractTest extends TestCase
 
         $this->assertSame('pass', $evaluation['status']);
         $this->assertEmpty($evaluation['gate_failures']);
+    }
+
+    public function test_result_gate_rejects_codec_round_trip_value_drift(): void
+    {
+        $result = $this->completeSearchAttributeResult();
+        $result['codec_round_trips']['php_to_python']['decoded_attributes']['tags'] = ['renewal', 'urgent'];
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'codec_decoded_attribute_value_mismatch',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
     }
 
     public function test_result_gate_rejects_codec_round_trip_type_drift(): void
@@ -659,6 +684,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         ];
         $scenarioResults['python_to_php_codec_round_trip']['observed_outputs']['python_to_php'] = [
             'encoded_payload' => 'base64:python-payload',
+            'written_attributes' => $decodedAttributes,
             'decoded_attributes' => $decodedAttributes,
             'reader_verifications' => [
                 'workflow-php-sdk' => true,
@@ -667,6 +693,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         ];
         $scenarioResults['php_to_python_codec_round_trip']['observed_outputs']['php_to_python'] = [
             'encoded_payload' => 'base64:php-payload',
+            'written_attributes' => $decodedAttributes,
             'decoded_attributes' => $decodedAttributes,
             'reader_verifications' => [
                 'sdk-python' => true,
@@ -777,6 +804,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'codec_round_trips' => [
                 'python_to_php' => [
                     'encoded_payload' => 'base64:python-payload',
+                    'written_attributes' => $decodedAttributes,
                     'decoded_attributes' => $decodedAttributes,
                     'reader_verifications' => [
                         'workflow-php-sdk' => true,
@@ -785,6 +813,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
                 ],
                 'php_to_python' => [
                     'encoded_payload' => 'base64:php-payload',
+                    'written_attributes' => $decodedAttributes,
                     'decoded_attributes' => $decodedAttributes,
                     'reader_verifications' => [
                         'sdk-python' => true,

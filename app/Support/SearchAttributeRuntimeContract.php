@@ -16,7 +16,7 @@ final class SearchAttributeRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.contract';
 
-    public const VERSION = 5;
+    public const VERSION = 6;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result';
 
@@ -234,6 +234,11 @@ final class SearchAttributeRuntimeContract
                         'encoded_payload',
                         'wire_value_context',
                     ],
+                    'required_evidence_fields' => [
+                        'written_attributes',
+                        'decoded_attributes',
+                        'reader_verifications',
+                    ],
                 ],
                 'php_to_python_codec_round_trip' => [
                     'writer' => 'workflow-php',
@@ -253,6 +258,11 @@ final class SearchAttributeRuntimeContract
                     'payload_context_fields' => [
                         'encoded_payload',
                         'wire_value_context',
+                    ],
+                    'required_evidence_fields' => [
+                        'written_attributes',
+                        'decoded_attributes',
+                        'reader_verifications',
                     ],
                 ],
                 'indexing_latency_distribution' => [
@@ -348,6 +358,7 @@ final class SearchAttributeRuntimeContract
                     'waterline_operator_visibility_reported',
                     'codec_round_trips_reported',
                     'codec_round_trips_include_encoded_payload_or_wire_value_context',
+                    'codec_round_trips_compare_written_or_wire_values_to_decoded_attributes',
                     'load_latency_reported',
                     'or_not_grammar_reported',
                     'query_injection_hardening_reported',

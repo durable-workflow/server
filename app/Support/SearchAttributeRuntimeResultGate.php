@@ -10,7 +10,7 @@ final class SearchAttributeRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result-gate';
 
-    public const VERSION = 4;
+    public const VERSION = 5;
 
     /**
      * @return array<string, mixed>
@@ -53,6 +53,7 @@ final class SearchAttributeRuntimeResultGate
                 'runtime_and_cross_language_cells_are_reported',
                 'cli_waterline_codec_load_grammar_and_injection_sections_are_reported',
                 'codec_round_trips_include_encoded_payload_or_wire_value_context',
+                'codec_round_trips_compare_written_or_wire_values_to_decoded_attributes',
                 'query_verdict_expected_and_actual_counts_match',
                 'query_injection_required_rejection_probes_are_reported',
                 'each_pass_scenario_has_observed_outputs',
@@ -1425,6 +1426,7 @@ final class SearchAttributeRuntimeResultGate
         }
 
         $decoded = self::arrayField($entry, ['decoded_attributes', 'decodedAttributes', 'attributes']);
+        $expected = self::codecExpectedAttributes($entry);
         if ($decoded === null || $decoded === []) {
             $failures[] = [
                 'code' => 'missing_codec_round_trip_field',
@@ -1448,6 +1450,27 @@ final class SearchAttributeRuntimeResultGate
                         'scenario_id' => $scenarioId,
                         'attribute' => $attribute,
                         'expected_type' => $type,
+                    ];
+                }
+
+                if (! array_key_exists($attribute, $expected)) {
+                    $failures[] = [
+                        'code' => 'missing_codec_expected_attribute',
+                        'scenario_id' => $scenarioId,
+                        'attribute' => $attribute,
+                    ];
+
+                    continue;
+                }
+
+                if (! self::codecAttributeValuesMatch($decoded[$attribute], $expected[$attribute], $type)) {
+                    $failures[] = [
+                        'code' => 'codec_decoded_attribute_value_mismatch',
+                        'scenario_id' => $scenarioId,
+                        'attribute' => $attribute,
+                        'expected_type' => $type,
+                        'expected_value' => $expected[$attribute],
+                        'actual_value' => $decoded[$attribute],
                     ];
                 }
             }
@@ -1529,6 +1552,133 @@ final class SearchAttributeRuntimeResultGate
             'wire_context',
             'wireContext',
         ]);
+    }
+
+    /**
+     * @param array<mixed> $entry
+     *
+     * @return array<string, mixed>
+     */
+    private static function codecExpectedAttributes(array $entry): array
+    {
+        $attributes = self::arrayField($entry, [
+            'written_attributes',
+            'writtenAttributes',
+            'expected_attributes',
+            'expectedAttributes',
+            'source_attributes',
+            'sourceAttributes',
+            'writer_attributes',
+            'writerAttributes',
+            'input_attributes',
+            'inputAttributes',
+        ]);
+
+        if ($attributes !== null && $attributes !== []) {
+            return $attributes;
+        }
+
+        $wireContext = self::arrayField($entry, [
+            'wire_value_context',
+            'wireValueContext',
+            'wire_context',
+            'wireContext',
+        ]) ?? [];
+
+        $wireValues = self::arrayField($wireContext, ['wire_values', 'wireValues', 'attributes'])
+            ?? self::arrayField($entry, ['wire_values', 'wireValues']);
+
+        return $wireValues === null ? [] : self::codecAttributesFromWireValues($wireValues);
+    }
+
+    /**
+     * @param array<mixed> $wireValues
+     *
+     * @return array<string, mixed>
+     */
+    private static function codecAttributesFromWireValues(array $wireValues): array
+    {
+        $attributes = [];
+
+        foreach ($wireValues as $attribute => $wireValue) {
+            if (! is_string($attribute) || $attribute === '') {
+                continue;
+            }
+
+            if (! is_array($wireValue)) {
+                $attributes[$attribute] = $wireValue;
+
+                continue;
+            }
+
+            foreach ([
+                'value_string',
+                'value_keyword',
+                'value_int',
+                'value_double',
+                'value_float',
+                'value_bool',
+                'value_datetime',
+                'value_keyword_list',
+            ] as $field) {
+                if (array_key_exists($field, $wireValue)) {
+                    $attributes[$attribute] = $wireValue[$field];
+
+                    break;
+                }
+            }
+        }
+
+        return $attributes;
+    }
+
+    private static function codecAttributeValuesMatch(mixed $actual, mixed $expected, string $type): bool
+    {
+        return match ($type) {
+            'string', 'keyword' => is_string($actual) && is_string($expected) && $actual === $expected,
+            'int' => is_int($actual) && is_int($expected) && $actual === $expected,
+            'double' => is_float($actual)
+                && (is_float($expected) || is_int($expected))
+                && abs($actual - (float) $expected) < 0.000000001,
+            'bool' => is_bool($actual) && is_bool($expected) && $actual === $expected,
+            'datetime' => self::codecDateTimesMatch($actual, $expected),
+            'keyword_list' => self::codecKeywordListsMatch($actual, $expected),
+            default => true,
+        };
+    }
+
+    private static function codecDateTimesMatch(mixed $actual, mixed $expected): bool
+    {
+        if (! is_string($actual) || ! is_string($expected) || $actual === '' || $expected === '') {
+            return false;
+        }
+
+        $actualTime = self::parseCodecDateTime($actual);
+        $expectedTime = self::parseCodecDateTime($expected);
+
+        if ($actualTime === null || $expectedTime === null) {
+            return false;
+        }
+
+        $utc = new \DateTimeZone('UTC');
+
+        return $actualTime->setTimezone($utc)->format('U.u') === $expectedTime->setTimezone($utc)->format('U.u');
+    }
+
+    private static function parseCodecDateTime(string $value): ?\DateTimeImmutable
+    {
+        try {
+            return new \DateTimeImmutable($value);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private static function codecKeywordListsMatch(mixed $actual, mixed $expected): bool
+    {
+        return self::isStringList($actual)
+            && self::isStringList($expected)
+            && array_values($actual) === array_values($expected);
     }
 
     /**
