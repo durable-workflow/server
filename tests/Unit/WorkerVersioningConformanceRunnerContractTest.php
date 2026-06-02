@@ -66,6 +66,11 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'the shell handoff must document the published worker evidence input',
         );
         $this->assertStringContainsString(
+            'replay/cache/no-compatible/cross-language/adversarial',
+            $shell,
+            'the shell handoff must document every published-worker evidence cell required by the gate',
+        );
+        $this->assertStringContainsString(
             'worker-versioning-published-workers.mjs',
             $shell,
             'the shell handoff must attempt the published PHP/Python worker shard before aggregating results',
@@ -202,6 +207,21 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             "addPass('no_compatible_worker_behavior', noCompatibleOutputs)",
             $node,
             'server protocol evidence against a published server artifact can prove the focused no-compatible cell',
+        );
+        $this->assertStringContainsString(
+            "publishedWorkerScenarioOutputs(publishedWorkerEvidence, 'adversarial_no_version_bump')",
+            $node,
+            'adversarial no-version-bump can pass only from a published worker evidence shard',
+        );
+        $this->assertStringContainsString(
+            "addNotCovered('adversarial_no_version_bump'",
+            $node,
+            'the server protocol probe must leave adversarial no-version-bump non-passing without published worker execution',
+        );
+        $this->assertStringContainsString(
+            'adversarialNoVersionBump',
+            $node,
+            'top-level host shard aliases must include adversarial no-version-bump evidence',
         );
         $this->assertStringContainsString(
             'no_compatible_worker_diagnostics',

@@ -278,8 +278,10 @@ final class WorkerVersioningRuntimeContract
                     'required_fields' => [
                         'observed_behavior',
                         'operator_audit_signal',
+                        'published_artifact_worker_execution',
+                        'local_product_source_checkouts_used',
                     ],
-                    'expected_behavior' => 'shipping divergent workflow code under the same build id is captured as an auditable behavior or linked product gap',
+                    'expected_behavior' => 'shipping divergent workflow code under the same build id is exercised by a published worker artifact and captured as an auditable behavior or linked product gap without local product checkout use',
                 ],
                 'history_api_version_pin' => [
                     'required_fields' => [
@@ -305,7 +307,7 @@ final class WorkerVersioningRuntimeContract
                     'adversarial_no_version_bump_reported',
                     'artifact_versions_match_latest_published_set',
                     'published_artifact_install_evidence_reported',
-                    'published_artifact_worker_execution_reported_for_replay_and_cross_language_cells',
+                    'published_artifact_worker_execution_reported_for_replay_adversarial_and_cross_language_cells',
                     'no_compatible_worker_public_protocol_probe_or_worker_execution_reported',
                     'run_timestamps_outcome_and_finding_links_are_recorded',
                     'declared_outcome_matches_evaluated_status',
@@ -331,7 +333,7 @@ final class WorkerVersioningRuntimeContract
                 ],
                 'evidence_inputs' => [
                     'DW_WV_ARTIFACT_INSTALL_EVIDENCE' => 'Optional JSON report proving required artifacts were installed and smoke-executed from published channels.',
-                    'DW_WV_PUBLISHED_WORKER_EVIDENCE' => 'Optional JSON report from the host worker-versioning topology after published worker artifacts executed replay, cache-eviction, no-compatible-worker, or cross-language cells. When unset, the runner attempts to generate a PHP/Python cross-language shard from published PyPI and Packagist artifacts.',
+                    'DW_WV_PUBLISHED_WORKER_EVIDENCE' => 'Optional JSON report from the host worker-versioning topology after published worker artifacts executed replay, cache-eviction, no-compatible-worker, cross-language, or adversarial no-version-bump cells. When unset, the runner attempts to generate a Python replay/cache shard and a PHP/Python cross-language shard from published PyPI and Packagist artifacts.',
                     'DW_WV_SKIP_PUBLISHED_WORKER_SHARD' => 'Set to 1 to skip automatic published PHP/Python worker shard generation when an external host topology is responsible for the shard.',
                 ],
                 'evidence_shards' => [

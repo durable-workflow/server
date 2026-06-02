@@ -97,6 +97,14 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'local_product_source_checkouts_used',
             $manifest['scenario_requirements']['no_compatible_worker_behavior']['required_fields'],
         );
+        $this->assertContains(
+            'published_artifact_worker_execution',
+            $manifest['scenario_requirements']['adversarial_no_version_bump']['required_fields'],
+        );
+        $this->assertContains(
+            'local_product_source_checkouts_used',
+            $manifest['scenario_requirements']['adversarial_no_version_bump']['required_fields'],
+        );
         $this->assertSame(
             'conformance_runner_coverage_gap',
             $manifest['host_runner_contract']['routing_policy']['missing_required_scenario']['finding_type'],
@@ -116,6 +124,10 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         $this->assertArrayHasKey(
             'DW_WV_PUBLISHED_WORKER_EVIDENCE',
             $manifest['host_runner_contract']['evidence_inputs'],
+        );
+        $this->assertStringContainsString(
+            'adversarial no-version-bump cells',
+            $manifest['host_runner_contract']['evidence_inputs']['DW_WV_PUBLISHED_WORKER_EVIDENCE'],
         );
         $this->assertArrayHasKey(
             'DW_WV_ARTIFACT_INSTALL_EVIDENCE',
@@ -179,7 +191,7 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             $manifest['result_gate']['pass_requires'],
         );
         $this->assertContains(
-            'published_artifact_worker_execution_reported_for_replay_and_cross_language_cells',
+            'published_artifact_worker_execution_reported_for_replay_adversarial_and_cross_language_cells',
             $manifest['result_gate']['pass_requires'],
         );
         $this->assertContains(
@@ -195,7 +207,7 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertContains(
-            'published_artifact_worker_execution_reported_for_replay_and_cross_language_cells',
+            'published_artifact_worker_execution_reported_for_replay_adversarial_and_cross_language_cells',
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertContains(
@@ -832,6 +844,24 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         $this->assertNotEmpty($failures);
     }
 
+    public function test_result_gate_rejects_adversarial_pass_without_published_worker_execution(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        unset($result['scenario_results']['adversarial_no_version_bump']['observed_outputs'][
+            'published_artifact_worker_execution'
+        ]);
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'published_artifact_worker_execution_missing'
+                && ($failure['scenario_id'] ?? null) === 'adversarial_no_version_bump',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($failures);
+    }
+
     public function test_result_gate_accepts_no_compatible_public_protocol_probe_without_published_worker_execution(): void
     {
         $result = $this->completeWorkerVersioningResult();
@@ -1183,6 +1213,8 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         $scenarioResults['adversarial_no_version_bump']['observed_outputs'] += [
             'observed_behavior' => 'accepted_with_same_build_id',
             'operator_audit_signal' => 'linked_gap_or_warning_present',
+            'local_product_source_checkouts_used' => false,
+            'published_artifact_worker_execution' => $pythonPublishedWorkerExecution,
         ];
         $scenarioResults['history_api_version_pin']['observed_outputs'] += [
             'history_field' => 'compatibility',

@@ -79,7 +79,7 @@ final class WorkerVersioningRuntimeResultGate
                 'overall_outcome_matches_gate_status',
                 'published_artifact_versions_are_recorded_and_pinned',
                 'published_artifact_install_evidence_reported',
-                'published_artifact_worker_execution_reported_for_replay_and_cross_language_cells',
+                'published_artifact_worker_execution_reported_for_replay_adversarial_and_cross_language_cells',
                 'no_compatible_worker_public_protocol_probe_or_worker_execution_reported',
                 'no_local_product_source_artifacts_are_reported',
             ],
@@ -1286,6 +1286,9 @@ final class WorkerVersioningRuntimeResultGate
                 'divergent_workflow_execution_observed',
             ],
             'cross_language_php_python_pinning' => [
+                'published_artifact_worker_execution',
+            ],
+            'adversarial_no_version_bump' => [
                 'published_artifact_worker_execution',
             ],
         ];

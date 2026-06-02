@@ -870,10 +870,47 @@ async function main() {
       python_v1_compatible_delivery_count: pythonV1CompatibleCount,
     });
   }
-  addPass('adversarial_no_version_bump', {
+  const adversarialOutputs = {
     observed_behavior: adversarial.__http_status === 409 ? 'register_rejected_changed_workflow_definition' : 'accepted_with_same_build_id',
     operator_audit_signal: adversarial.__http_status === 409 ? stringValue(adversarial.reason) || 'workflow_definition_changed' : 'worker_definition_fingerprint_conflict_visible',
-  });
+    worker_execution_mode: SERVER_PROTOCOL_PROBE,
+    published_artifact_worker_execution: false,
+    local_product_source_checkouts_used: false,
+  };
+  const publishedAdversarialOutputs = mergeScenarioOutputs(
+    adversarialOutputs,
+    publishedWorkerScenarioOutputs(publishedWorkerEvidence, 'adversarial_no_version_bump'),
+  );
+  const publishedAdversarialWorkerExecuted = publishedWorkerScenarioPasses(
+    publishedAdversarialOutputs,
+    ['sdk-python', 'workflow-php'],
+    false,
+  );
+  const adversarialBehavior = stringValue(publishedAdversarialOutputs.observed_behavior)
+    || stringValue(publishedAdversarialOutputs.observedBehavior);
+  const adversarialAuditSignal = stringValue(publishedAdversarialOutputs.operator_audit_signal)
+    || stringValue(publishedAdversarialOutputs.operatorAuditSignal);
+  if (publishedAdversarialWorkerExecuted && adversarialBehavior !== '' && adversarialAuditSignal !== '') {
+    addPass('adversarial_no_version_bump', publishedAdversarialOutputs);
+  } else if (publishedAdversarialWorkerExecuted) {
+    addFail('adversarial_no_version_bump', publishedAdversarialOutputs, {
+      scenario_id: 'adversarial_no_version_bump',
+      owning_surface: 'server',
+      artifact_versions: artifactVersions,
+      observed_behavior: 'Published worker adversarial no-version-bump evidence did not record both the behavior and an operator audit signal.',
+      expected_behavior: 'A published worker artifact ships divergent workflow code under an existing build id and records whether the server accepts, rejects, warns, or exposes an audit signal.',
+      next_acceptance_criterion: 'rerun the adversarial no-version-bump cell with published worker artifact execution and record observed_behavior plus operator_audit_signal',
+    });
+  } else {
+    addNotCovered('adversarial_no_version_bump', adversarialOutputs, {
+      scenario_id: 'adversarial_no_version_bump',
+      owning_surface: 'conformance_harness',
+      artifact_versions: artifactVersions,
+      observed_behavior: 'The server HTTP protocol probe captured the registration response for divergent code under the same build id, but no published worker artifact executed the adversarial no-version-bump cell.',
+      expected_behavior: 'A published worker artifact ships divergent workflow code under an existing build id and records whether the server accepts, rejects, warns, or exposes an audit signal.',
+      next_acceptance_criterion: 'execute the adversarial no-version-bump cell with a published workflow-php or sdk-python worker artifact before marking this scenario pass',
+    });
+  }
   addPass('history_api_version_pin', {
     history_field: historyHasCompatibility(history) ? 'history.events.*.compatibility' : 'workflow_runs.compatibility',
     compatibility_value: stringValue(v1RunShow.compatibility),
@@ -1751,6 +1788,12 @@ function topLevelPublishedWorkerScenarios(evidence) {
       'crossLanguagePhpPythonPinning',
       'cross_language_matrix',
       'crossLanguageMatrix',
+    ],
+    adversarial_no_version_bump: [
+      'adversarial_no_version_bump',
+      'adversarialNoVersionBump',
+      'adversarial_no_bump',
+      'adversarialNoBump',
     ],
   };
   const scenarios = {};

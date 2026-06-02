@@ -292,12 +292,12 @@ category emits a warning and does not block.
   executable handoff and requires the runner to record v1 and v2 workflow-task
   delivery counts for the same v1-pinned run, including the cache-eviction or
   worker-restart replay cell, the no-compatible-worker diagnostic cell after
-  stopping the compatible cohort, and both PHP/Python cross-language pinning
-  directions; any incompatible delivery count above zero is blocking product
-  evidence. When no external published-worker evidence shard is supplied, the
-  handoff attempts to install the published PyPI Python SDK and Packagist PHP
-  workflow runtime and generate the PHP/Python cross-language delivery-count
-  shard itself.
+  stopping the compatible cohort, both PHP/Python cross-language pinning
+  directions, and the adversarial no-version-bump cell; any incompatible
+  delivery count above zero is blocking product evidence. When no external
+  published-worker evidence shard is supplied, the handoff attempts to install
+  the published PyPI Python SDK and Packagist PHP workflow runtime and generate
+  Python replay/cache plus PHP/Python cross-language shards itself.
 - Migration runtime contract: `GET /api/cluster/info` re-exports
   `migration_runtime_contract`, schema
   `durable-workflow.v2.migration-runtime.contract`. It names the
