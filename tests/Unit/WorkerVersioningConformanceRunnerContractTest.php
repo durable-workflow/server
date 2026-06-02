@@ -12,6 +12,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
     {
         $shell = $this->read('scripts/conformance/worker-versioning-published-artifacts.sh');
         $node = $this->read('scripts/conformance/worker-versioning-published-artifacts.mjs');
+        $publishedWorkers = $this->read('scripts/conformance/worker-versioning-published-workers.mjs');
 
         $this->assertStringContainsString(
             'Usage: worker-versioning-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--keep-run-root[=1|true]]',
@@ -64,6 +65,31 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             $shell,
             'the shell handoff must document the published worker evidence input',
         );
+        $this->assertStringContainsString(
+            'worker-versioning-published-workers.mjs',
+            $shell,
+            'the shell handoff must attempt the published PHP/Python worker shard before aggregating results',
+        );
+        $this->assertStringContainsString(
+            'DW_WV_SKIP_PUBLISHED_WORKER_SHARD',
+            $shell,
+            'the host runner must be able to skip automatic shard generation when it supplies a richer topology',
+        );
+        foreach ([
+            'durable-workflow==${pythonVersion}',
+            'durable-workflow/workflow:${workflowPhpVersion}',
+            'pypi_release',
+            'packagist_release',
+            'published_php_python_worker_protocol_clients',
+            'php_v1_not_delivered_to_python_v2',
+            'python_v1_not_delivered_to_php_v2',
+            'published_artifact_worker_execution',
+            'local_product_source_checkouts_used: false',
+            'mergeExistingShard',
+            "stringValue(existingCrossLanguage.status) === 'pass'",
+        ] as $token) {
+            $this->assertStringContainsString($token, $publishedWorkers);
+        }
     }
 
     public function test_published_artifact_install_cell_requires_install_evidence(): void

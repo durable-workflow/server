@@ -35,6 +35,10 @@ Environment overrides:
   DW_WV_PUBLISHED_WORKER_EVIDENCE
                               Optional JSON report from a host topology that executed
                               replay/cache/cross-language cells with published workers.
+                              When unset, this runner attempts to generate a PHP/Python
+                              cross-language shard from published PyPI and Packagist artifacts.
+  DW_WV_SKIP_PUBLISHED_WORKER_SHARD=1
+                              Skip automatic published PHP/Python worker shard generation.
 USAGE
 }
 
@@ -255,5 +259,13 @@ export DW_WV_SERVER_ARTIFACT_SOURCE="$server_artifact_source"
 export DW_WV_RESULT_DIR="$result_dir"
 export DW_WV_RUN_ROOT="$run_root"
 export DW_WV_REPO_ROOT="$repo_root"
+
+if [[ -z "${DW_WV_PUBLISHED_WORKER_EVIDENCE:-}" ]]; then
+  export DW_WV_PUBLISHED_WORKER_EVIDENCE="$result_dir/published-worker-execution-evidence.json"
+fi
+
+if [[ "${DW_WV_SKIP_PUBLISHED_WORKER_SHARD:-0}" != "1" ]]; then
+  node "$script_dir/worker-versioning-published-workers.mjs"
+fi
 
 node "$script_dir/worker-versioning-published-artifacts.mjs"

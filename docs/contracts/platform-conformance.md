@@ -294,7 +294,10 @@ category emits a warning and does not block.
   worker-restart replay cell, the no-compatible-worker diagnostic cell after
   stopping the compatible cohort, and both PHP/Python cross-language pinning
   directions; any incompatible delivery count above zero is blocking product
-  evidence.
+  evidence. When no external published-worker evidence shard is supplied, the
+  handoff attempts to install the published PyPI Python SDK and Packagist PHP
+  workflow runtime and generate the PHP/Python cross-language delivery-count
+  shard itself.
 - Migration runtime contract: `GET /api/cluster/info` re-exports
   `migration_runtime_contract`, schema
   `durable-workflow.v2.migration-runtime.contract`. It names the

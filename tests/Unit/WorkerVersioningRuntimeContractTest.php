@@ -121,6 +121,10 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'DW_WV_ARTIFACT_INSTALL_EVIDENCE',
             $manifest['host_runner_contract']['evidence_inputs'],
         );
+        $this->assertArrayHasKey(
+            'DW_WV_SKIP_PUBLISHED_WORKER_SHARD',
+            $manifest['host_runner_contract']['evidence_inputs'],
+        );
         $this->assertContains(
             'compatible_replay_delivery_counts',
             $manifest['host_runner_contract']['evidence_shards'],
@@ -131,6 +135,10 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         );
         $this->assertContains(
             'published_artifact_worker_execution',
+            $manifest['host_runner_contract']['evidence_shards'],
+        );
+        $this->assertContains(
+            'published_php_python_worker_protocol_client_shard',
             $manifest['host_runner_contract']['evidence_shards'],
         );
         $this->assertContains(
