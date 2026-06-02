@@ -141,7 +141,7 @@ class WorkerController
         $maxWorkerSessions = $validated['max_concurrent_worker_sessions'] ?? 10;
         $taskSlots = is_array($validated['task_slots'] ?? null) ? $validated['task_slots'] : [];
         $processMetrics = $this->normalizeProcessMetrics($validated['process_metrics'] ?? null);
-        $workerProcessReplaced = $this->workerProcessReplaced($existing, $processMetrics);
+        $releaseLeasesForRegistration = $this->shouldReleaseLeasesForWorkerRegistration($existing, $processMetrics);
 
         $registration = WorkerRegistration::updateOrCreate(
             [
@@ -179,7 +179,7 @@ class WorkerController
             ]
         );
 
-        if ($workerProcessReplaced) {
+        if ($releaseLeasesForRegistration) {
             $this->releaseLeasedWorkflowTasksForReplacedWorker($namespace, $workerId);
             $this->releaseLeasedActivityTasksForReplacedWorker($namespace, $workerId);
         }
@@ -475,7 +475,7 @@ class WorkerController
     /**
      * @param  array<string, mixed>|null  $incomingProcessMetrics
      */
-    private function workerProcessReplaced(
+    private function shouldReleaseLeasesForWorkerRegistration(
         ?WorkerRegistration $existing,
         ?array $incomingProcessMetrics,
     ): bool {
@@ -486,7 +486,12 @@ class WorkerController
         $incomingIdentity = $this->workerProcessIdentity($incomingProcessMetrics);
 
         if ($incomingIdentity === []) {
-            return false;
+            // Registration is the worker process lifecycle boundary. Older or
+            // hand-rolled workers may not publish process metrics, but a fresh
+            // registration with the same worker_id still has to reclaim work
+            // left leased by the previous process instead of waiting for the
+            // full lease timeout.
+            return true;
         }
 
         $existingIdentity = $this->workerProcessIdentity($existing->process_metrics);
