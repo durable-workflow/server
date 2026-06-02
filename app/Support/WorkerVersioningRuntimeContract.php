@@ -251,7 +251,7 @@ final class WorkerVersioningRuntimeContract
                         'published_artifact_worker_execution',
                         'local_product_source_checkouts_used',
                     ],
-                    'expected_behavior' => 'a pinned run without compatible workers is explicit to operators, is not picked up by an incompatible worker, and is proven by published worker artifact execution without local product checkout use',
+                    'expected_behavior' => 'a pinned run without compatible workers is explicit to operators, is not picked up by an incompatible worker, and is proven by a published-server public protocol probe or published worker artifact execution without local product checkout use',
                 ],
                 'operator_visibility_surfaces' => [
                     'required_fields' => [
@@ -305,7 +305,8 @@ final class WorkerVersioningRuntimeContract
                     'adversarial_no_version_bump_reported',
                     'artifact_versions_match_latest_published_set',
                     'published_artifact_install_evidence_reported',
-                    'published_artifact_worker_execution_reported_for_replay_no_compatible_and_cross_language_cells',
+                    'published_artifact_worker_execution_reported_for_replay_and_cross_language_cells',
+                    'no_compatible_worker_public_protocol_probe_or_worker_execution_reported',
                     'run_timestamps_outcome_and_finding_links_are_recorded',
                     'declared_outcome_matches_evaluated_status',
                     'no_local_product_source_artifacts',

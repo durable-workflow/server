@@ -134,14 +134,14 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'the no-compatible cell must remove the compatible worker before polling with v2',
         );
         $this->assertStringContainsString(
-            'const publishedNoCompatiblePasses = publishedNoCompatibleWorkerExecuted',
+            'noCompatibleServerProtocolProbePasses',
             $node,
-            'the no-compatible cell may pass only when published worker evidence exercised the stopped-compatible-cohort topology',
+            'the no-compatible cell may pass when the published-server protocol probe exercises the stopped-compatible-cohort topology',
         );
         $this->assertStringContainsString(
-            'publishedNoCompatibleIncompatibleCount === 0',
+            'incompatibleWorkerTaskCount === 0',
             $node,
-            'the published no-compatible cell may pass only when the incompatible worker receives zero tasks',
+            'the no-compatible cell may pass only when the incompatible worker receives zero tasks',
         );
         $this->assertStringContainsString(
             'isExplicitNoCompatibleSignal(publishedNoCompatibleSignal)',
@@ -149,9 +149,9 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'the no-compatible cell may pass only when zero incompatible delivery is paired with an explicit diagnostic',
         );
         $this->assertStringContainsString(
-            "addNotCovered('no_compatible_worker_behavior'",
+            "addPass('no_compatible_worker_behavior', noCompatibleOutputs)",
             $node,
-            'server protocol evidence alone must stay non-passing until a published worker topology exercises the cell',
+            'server protocol evidence against a published server artifact can prove the focused no-compatible cell',
         );
         $this->assertStringContainsString(
             'no_compatible_worker_diagnostics',

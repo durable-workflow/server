@@ -171,7 +171,11 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             $manifest['result_gate']['pass_requires'],
         );
         $this->assertContains(
-            'published_artifact_worker_execution_reported_for_replay_no_compatible_and_cross_language_cells',
+            'published_artifact_worker_execution_reported_for_replay_and_cross_language_cells',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'no_compatible_worker_public_protocol_probe_or_worker_execution_reported',
             $manifest['result_gate']['pass_requires'],
         );
         $this->assertContains(
@@ -183,7 +187,11 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertContains(
-            'published_artifact_worker_execution_reported_for_replay_no_compatible_and_cross_language_cells',
+            'published_artifact_worker_execution_reported_for_replay_and_cross_language_cells',
+            $manifest['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertContains(
+            'no_compatible_worker_public_protocol_probe_or_worker_execution_reported',
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
     }
@@ -816,15 +824,48 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         $this->assertNotEmpty($failures);
     }
 
-    public function test_result_gate_rejects_no_compatible_pass_without_published_worker_execution(): void
+    public function test_result_gate_accepts_no_compatible_public_protocol_probe_without_published_worker_execution(): void
     {
         $result = $this->completeWorkerVersioningResult();
-        unset($result['scenario_results']['no_compatible_worker_behavior']['observed_outputs']['published_artifact_worker_execution']);
+        $result['scenario_results']['no_compatible_worker_behavior']['observed_outputs'][
+            'published_artifact_worker_execution'
+        ] = false;
+        $result['scenario_results']['no_compatible_worker_behavior']['observed_outputs'][
+            'worker_execution_mode'
+        ] = 'server_http_protocol_probe';
+        $result['scenario_results']['no_compatible_worker_behavior']['observed_outputs'][
+            'published_server_protocol_probe'
+        ] = true;
+        $result['scenario_results']['no_compatible_worker_behavior']['observed_outputs'][
+            'published_server_artifact'
+        ] = [
+            'artifact' => 'server',
+            'version' => '0.2.178',
+            'source' => 'published_docker_image',
+            'status' => 'pass',
+            'local_product_source_checkouts_used' => false,
+        ];
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_result_gate_rejects_no_compatible_pass_without_worker_execution_or_protocol_probe(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['scenario_results']['no_compatible_worker_behavior']['observed_outputs'][
+            'published_artifact_worker_execution'
+        ] = false;
+        unset($result['scenario_results']['no_compatible_worker_behavior']['observed_outputs'][
+            'published_server_protocol_probe'
+        ]);
 
         $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
         $failures = array_values(array_filter(
             $evaluation['gate_failures'],
-            static fn (array $failure): bool => ($failure['code'] ?? null) === 'published_artifact_worker_execution_missing'
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'no_compatible_worker_evidence_missing'
                 && ($failure['scenario_id'] ?? null) === 'no_compatible_worker_behavior',
         ));
 

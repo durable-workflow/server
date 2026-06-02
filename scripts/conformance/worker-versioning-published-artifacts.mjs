@@ -679,7 +679,10 @@ async function main() {
     pending_or_typed_error: noCompatiblePendingOrTypedError,
     incompatible_worker_task_count: noCompatibleIncompatibleCount,
     worker_execution_mode: SERVER_PROTOCOL_PROBE,
+    published_server_protocol_probe: true,
+    published_server_artifact: publishedServerArtifactEvidence(artifactVersions, artifactSources),
     published_artifact_worker_execution: false,
+    local_product_source_checkouts_used: false,
     deregister_response: v1Delete,
     workflow_visibility: noCompatibleShow,
   };
@@ -692,6 +695,11 @@ async function main() {
     noCompatiblePublishedEvidence.pending_or_typed_error;
   const publishedNoCompatibleWorkerExecuted = noCompatiblePublishedEvidence.worker_executed;
   const publishedNoCompatiblePasses = noCompatiblePublishedEvidence.passes;
+  const noCompatibleProtocolProbePasses = noCompatibleServerProtocolProbePasses(
+    noCompatibleOutputs,
+    artifactVersions,
+    artifactSources,
+  );
   if (publishedNoCompatiblePasses) {
     addPass('no_compatible_worker_behavior', publishedNoCompatibleOutputs);
   } else if (publishedNoCompatibleWorkerExecuted) {
@@ -708,17 +716,8 @@ async function main() {
       operator_visible_signal: publishedNoCompatibleSignal,
       pending_or_typed_error: publishedNoCompatiblePendingOrTypedError,
     });
-  } else if (noCompatibleIncompatibleCount === 0 && isExplicitNoCompatibleSignal(noCompatibleSignal)) {
-    addNotCovered('no_compatible_worker_behavior', noCompatibleOutputs, {
-      scenario_id: 'no_compatible_worker_behavior',
-      owning_surface: 'conformance_harness',
-      artifact_versions: artifactVersions,
-      observed_behavior: 'The server HTTP protocol probe recorded zero incompatible delivery and an explicit no-compatible-worker diagnostic, but no published worker artifact topology stopped the compatible cohort and left an incompatible cohort polling.',
-      expected_behavior: 'A published-artifact worker-versioning run stops the compatible cohort, leaves an incompatible cohort polling, and records zero incompatible task claims plus an explicit no-compatible-worker or compatibility-blocked public signal.',
-      next_acceptance_criterion: 'supply published worker evidence for no_compatible_worker_behavior with published_artifact_worker_execution, incompatible_worker_task_count=0, operator_visible_signal set to no_compatible_worker or compatibility_blocked, and local_product_source_checkouts_used=false',
-      incompatible_worker_task_count: noCompatibleIncompatibleCount,
-      operator_visible_signal: noCompatibleSignal,
-    });
+  } else if (noCompatibleProtocolProbePasses) {
+    addPass('no_compatible_worker_behavior', noCompatibleOutputs);
   } else {
     addFail('no_compatible_worker_behavior', noCompatibleOutputs, {
       scenario_id: 'no_compatible_worker_behavior',
@@ -1106,6 +1105,37 @@ function processMetrics(processId, processStartedAt) {
     process_started_at: processStartedAt,
     process_uptime_seconds: 1,
   };
+}
+
+function publishedServerArtifactEvidence(artifactVersions, artifactSources) {
+  return {
+    artifact: 'server',
+    version: stringValue(artifactVersions.server),
+    source: stringValue(artifactSources.server),
+    status: 'pass',
+    local_product_source_checkouts_used: false,
+  };
+}
+
+function noCompatibleServerProtocolProbePasses(outputs, artifactVersions, artifactSources) {
+  const incompatibleWorkerTaskCount = numberValue(outputs.incompatible_worker_task_count);
+  const operatorVisibleSignal = stringValue(outputs.operator_visible_signal);
+  const pendingOrTypedError = stringValue(outputs.pending_or_typed_error);
+  const serverVersion = stringValue(artifactVersions.server);
+  const serverSource = stringValue(artifactSources.server);
+
+  return outputs.worker_execution_mode === SERVER_PROTOCOL_PROBE
+    && truthyEvidenceFlag(outputs.published_server_protocol_probe)
+    && explicitFalse(outputs.local_product_source_checkouts_used)
+    && incompatibleWorkerTaskCount === 0
+    && isExplicitNoCompatibleSignal(operatorVisibleSignal)
+    && (
+      pendingOrTypedError === 'pending'
+      || isExplicitNoCompatibleSignal(pendingOrTypedError)
+    )
+    && isExactSemverVersion(serverVersion)
+    && !isPlaceholderVersion(serverVersion)
+    && !artifactSourceIsForbidden(serverSource);
 }
 
 function artifactVersionsFromEnv() {

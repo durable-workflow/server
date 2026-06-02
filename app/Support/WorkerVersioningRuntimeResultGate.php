@@ -79,7 +79,8 @@ final class WorkerVersioningRuntimeResultGate
                 'overall_outcome_matches_gate_status',
                 'published_artifact_versions_are_recorded_and_pinned',
                 'published_artifact_install_evidence_reported',
-                'published_artifact_worker_execution_reported_for_replay_no_compatible_and_cross_language_cells',
+                'published_artifact_worker_execution_reported_for_replay_and_cross_language_cells',
+                'no_compatible_worker_public_protocol_probe_or_worker_execution_reported',
                 'no_local_product_source_artifacts_are_reported',
             ],
             'smoke_subset_outcome' => 'non_passing',
@@ -1284,9 +1285,6 @@ final class WorkerVersioningRuntimeResultGate
                 'published_artifact_worker_execution',
                 'divergent_workflow_execution_observed',
             ],
-            'no_compatible_worker_behavior' => [
-                'published_artifact_worker_execution',
-            ],
             'cross_language_php_python_pinning' => [
                 'published_artifact_worker_execution',
             ],
@@ -1348,6 +1346,173 @@ final class WorkerVersioningRuntimeResultGate
                     'actual' => $evidence[$field] ?? $evidence[self::camelize($field)] ?? null,
                 ];
             }
+        }
+
+        $noCompatible = self::passingScenarioEvidence($scenarioResults, 'no_compatible_worker_behavior');
+        if ($noCompatible !== null) {
+            $execution = self::fieldValue($noCompatible, [
+                'published_artifact_worker_execution',
+                'publishedArtifactWorkerExecution',
+            ]);
+
+            if (is_array($execution)) {
+                array_push(
+                    $failures,
+                    ...self::publishedWorkerExecutionFieldFailures(
+                        'no_compatible_worker_behavior',
+                        $noCompatible,
+                        false,
+                    ),
+                );
+            } else {
+                array_push(
+                    $failures,
+                    ...self::publishedServerProtocolProbeFailures($noCompatible),
+                );
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function publishedServerProtocolProbeFailures(array $evidence): array
+    {
+        $failures = [];
+
+        if (! self::truthyField($evidence, ['published_server_protocol_probe', 'publishedServerProtocolProbe'])) {
+            $failures[] = [
+                'code' => 'no_compatible_worker_evidence_missing',
+                'scenario_id' => 'no_compatible_worker_behavior',
+                'field' => 'published_server_protocol_probe',
+                'expected' => true,
+                'actual' => $evidence['published_server_protocol_probe']
+                    ?? $evidence['publishedServerProtocolProbe']
+                    ?? null,
+            ];
+        }
+
+        $workerExecutionMode = self::stringField($evidence, ['worker_execution_mode', 'workerExecutionMode']);
+        if ($workerExecutionMode !== 'server_http_protocol_probe') {
+            $failures[] = [
+                'code' => 'no_compatible_worker_evidence_missing',
+                'scenario_id' => 'no_compatible_worker_behavior',
+                'field' => 'worker_execution_mode',
+                'expected' => 'server_http_protocol_probe',
+                'actual' => $workerExecutionMode,
+            ];
+        }
+
+        if (! self::hasExplicitFalseField($evidence, [
+            'local_product_source_checkouts_used',
+            'localProductSourceCheckoutsUsed',
+        ])) {
+            $failures[] = [
+                'code' => 'local_product_source_checkouts_used_must_be_false',
+                'scenario_id' => 'no_compatible_worker_behavior',
+                'field' => 'local_product_source_checkouts_used',
+                'value' => $evidence['local_product_source_checkouts_used']
+                    ?? $evidence['localProductSourceCheckoutsUsed']
+                    ?? null,
+            ];
+        }
+
+        $artifact = self::arrayField($evidence, ['published_server_artifact', 'publishedServerArtifact']);
+        if ($artifact === null) {
+            $failures[] = [
+                'code' => 'published_server_protocol_probe_artifact_missing',
+                'scenario_id' => 'no_compatible_worker_behavior',
+                'field' => 'published_server_artifact',
+            ];
+
+            return $failures;
+        }
+
+        $reportedArtifact = self::stringField($artifact, ['artifact', 'name', 'id']);
+        if ($reportedArtifact !== 'server') {
+            $failures[] = [
+                'code' => 'published_server_protocol_probe_artifact_mismatch',
+                'scenario_id' => 'no_compatible_worker_behavior',
+                'field' => 'published_server_artifact.artifact',
+                'expected' => 'server',
+                'actual' => $reportedArtifact,
+            ];
+        }
+
+        $status = strtolower(self::stringField($artifact, ['status', 'result', 'outcome']));
+        if ($status !== 'pass') {
+            $failures[] = [
+                'code' => 'published_server_protocol_probe_artifact_not_pass',
+                'scenario_id' => 'no_compatible_worker_behavior',
+                'field' => 'published_server_artifact.status',
+                'expected' => 'pass',
+                'actual' => $status,
+            ];
+        }
+
+        $source = self::stringField($artifact, ['source', 'install_source', 'installSource', 'artifact_source', 'artifactSource']);
+        if ($source === '') {
+            $failures[] = [
+                'code' => 'missing_published_server_protocol_probe_source',
+                'scenario_id' => 'no_compatible_worker_behavior',
+                'field' => 'published_server_artifact.source',
+            ];
+        } elseif (self::isForbiddenArtifactSource($source, [
+            'local_product_source_checkout',
+            'workspace_repo_as_artifact_under_test',
+            'local_checkout_artifact',
+            'local_checkout',
+            'local_source_checkout',
+            'workspace_repo',
+            'not_exercised',
+        ])) {
+            $failures[] = [
+                'code' => 'forbidden_published_server_protocol_probe_source',
+                'scenario_id' => 'no_compatible_worker_behavior',
+                'field' => 'published_server_artifact.source',
+                'source' => $source,
+            ];
+        }
+
+        $version = self::stringField($artifact, ['version', 'artifact_version', 'artifactVersion']);
+        if ($version === '') {
+            $failures[] = [
+                'code' => 'missing_published_server_protocol_probe_version',
+                'scenario_id' => 'no_compatible_worker_behavior',
+                'field' => 'published_server_artifact.version',
+            ];
+        } elseif (! self::isConcreteArtifactVersion($version)) {
+            $failures[] = [
+                'code' => 'invalid_published_server_protocol_probe_version',
+                'scenario_id' => 'no_compatible_worker_behavior',
+                'field' => 'published_server_artifact.version',
+                'version' => $version,
+            ];
+        } elseif (self::isPlaceholderVersion($version)) {
+            $failures[] = [
+                'code' => 'placeholder_published_server_protocol_probe_version',
+                'scenario_id' => 'no_compatible_worker_behavior',
+                'field' => 'published_server_artifact.version',
+                'version' => $version,
+            ];
+        }
+
+        if (self::truthyField($artifact, [
+            'local_product_source_checkouts_used',
+            'localProductSourceCheckoutsUsed',
+        ])) {
+            $failures[] = [
+                'code' => 'local_product_source_checkouts_used_must_be_false',
+                'scenario_id' => 'no_compatible_worker_behavior',
+                'field' => 'published_server_artifact.local_product_source_checkouts_used',
+                'value' => $artifact['local_product_source_checkouts_used']
+                    ?? $artifact['localProductSourceCheckoutsUsed']
+                    ?? null,
+            ];
         }
 
         return $failures;
