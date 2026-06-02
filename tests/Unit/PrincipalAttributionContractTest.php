@@ -460,13 +460,37 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('php_operation = run_php_client_operation(php_client_id)', $script);
         $this->assertStringNotContainsString('Python SDK client operation was not exercised by this runner revision', $script);
         $this->assertStringNotContainsString('PHP client operation was not exercised by this runner revision', $script);
-        $this->assertStringContainsString('linked_findings=[waterline_finding]', $script);
-        $this->assertStringContainsString('"waterline": {"status": "unsupported"', $script);
+        $this->assertStringContainsString('waterline:principal-attribution-conformance', $script);
+        $this->assertStringContainsString('WATERLINE_PRINCIPAL_RESULT="$waterline_result_path"', $script);
+        $this->assertStringContainsString('load_waterline_principal_shard', $script);
+        $this->assertStringContainsString('waterline_status = waterline_item.get("status") if isinstance(waterline_item, dict) else "unsupported"', $script);
+        $this->assertStringContainsString('waterline_output_sample_missing = True', $script);
+        $this->assertStringContainsString('if isinstance(waterline_item, dict) and "output_sample" in waterline_item:', $script);
+        $this->assertStringContainsString('raw_output_sample.strip() == ""', $script);
+        $this->assertStringContainsString('waterline_claimed_pass = waterline_status == "pass"', $script);
+        $this->assertStringContainsString('waterline_missing_required_pass_evidence = False', $script);
+        $this->assertStringContainsString('waterline_claimed_pass and waterline_principal_visible is not True', $script);
+        $this->assertStringContainsString('waterline_claimed_pass and waterline_output_sample_missing', $script);
+        $this->assertStringContainsString('if waterline_missing_required_pass_evidence:', $script);
+        $this->assertStringContainsString('scenario_results.append(scenario(', $script);
+        $this->assertStringContainsString('"waterline": {"status": waterline_status', $script);
+        $this->assertStringNotContainsString('Waterline operator surface was not exercised by this runner revision', $script);
+        $this->assertStringNotContainsString('waterline_output_sample = json.dumps(waterline_payload', $script);
+        $this->assertStringNotContainsString('waterline_principal_visible = True', $script);
 
-        $this->assertStringContainsString('"--output=json"', $script);
+        $this->assertSame(
+            1,
+            preg_match(
+                '/\[\s*str\(DW_BIN\),\s*"workflow:history",(?P<command>.*?)\],\s*check=False,/s',
+                $script,
+                $cliHistoryCommandMatch,
+            ),
+            'principal-attribution runner must invoke dw workflow:history through the CLI command array',
+        );
+        $cliHistoryCommand = $cliHistoryCommandMatch['command'];
+        $this->assertStringContainsString('"--output=json"', $cliHistoryCommand);
         $this->assertStringContainsString('--output=json', $script);
-        $this->assertStringNotContainsString('"--json"', $script);
-        $this->assertStringNotContainsString(' --json', $script);
+        $this->assertStringNotContainsString('"--json"', $cliHistoryCommand);
 
         $this->assertStringContainsString('expected_worker_principal = {"id": "worker:principal-attribution", "type": "auth:token"}', $script);
         $this->assertStringContainsString('documented_system_principals: list[dict[str, str]] = []', $script);
@@ -486,6 +510,42 @@ class PrincipalAttributionContractTest extends TestCase
         );
         $this->assertStringContainsString('"findings": findings,', $script);
         $this->assertStringNotContainsString('"findings": [item["observed_behavior"] for item in findings]', $script);
+    }
+
+    public function test_result_gate_requires_true_waterline_principal_visibility_for_pass(): void
+    {
+        foreach ([false, null] as $principalVisible) {
+            $result = $this->completePrincipalAttributionResult();
+            if ($principalVisible === null) {
+                unset($result['scenario_results']['waterline_operator_visibility']['principal_visible']);
+            } else {
+                $result['scenario_results']['waterline_operator_visibility']['principal_visible'] = $principalVisible;
+            }
+
+            $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertContains(
+                'waterline_principal_visibility_not_true',
+                array_column($evaluation['gate_failures'], 'code'),
+            );
+        }
+    }
+
+    public function test_result_gate_requires_non_empty_waterline_operator_output_sample_for_pass(): void
+    {
+        foreach (['', '   ', []] as $outputSample) {
+            $result = $this->completePrincipalAttributionResult();
+            $result['scenario_results']['waterline_operator_visibility']['output_sample'] = $outputSample;
+
+            $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertContains(
+                'missing_waterline_operator_output_sample',
+                array_column($evaluation['gate_failures'], 'code'),
+            );
+        }
     }
 
     public function test_published_artifact_runner_reports_current_suite_version_from_scenario_manifest(): void

@@ -131,6 +131,8 @@ final class PrincipalAttributionResultGate
                     ];
                 }
 
+                array_push($failures, ...self::passingScenarioEvidenceValueFailures($scenarioResult, $scenarioId));
+
                 continue;
             }
 
@@ -259,9 +261,55 @@ final class PrincipalAttributionResultGate
      */
     private static function hasScenarioField(array $scenarioResult, string $field): bool
     {
-        $value = $scenarioResult[$field] ?? $scenarioResult[self::camelize($field)] ?? null;
+        $value = self::scenarioFieldValue($scenarioResult, $field);
 
         return $value !== null && $value !== '';
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function passingScenarioEvidenceValueFailures(array $scenarioResult, string $scenarioId): array
+    {
+        if ($scenarioId !== 'waterline_operator_visibility') {
+            return [];
+        }
+
+        $failures = [];
+        if (self::scenarioFieldValue($scenarioResult, 'principal_visible') !== true) {
+            $failures[] = [
+                'code' => 'waterline_principal_visibility_not_true',
+                'scenario_id' => $scenarioId,
+                'field' => 'principal_visible',
+            ];
+        }
+
+        if (self::isEmptyEvidenceValue(self::scenarioFieldValue($scenarioResult, 'output_sample'))) {
+            $failures[] = [
+                'code' => 'missing_waterline_operator_output_sample',
+                'scenario_id' => $scenarioId,
+                'field' => 'output_sample',
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     */
+    private static function scenarioFieldValue(array $scenarioResult, string $field): mixed
+    {
+        return $scenarioResult[$field] ?? $scenarioResult[self::camelize($field)] ?? null;
+    }
+
+    private static function isEmptyEvidenceValue(mixed $value): bool
+    {
+        return $value === null
+            || $value === []
+            || (is_string($value) && trim($value) === '');
     }
 
     /**

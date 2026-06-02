@@ -652,6 +652,8 @@ cp "$result_dir/pins.json" "$run_root/pins.json"
 server_image="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server_image"])' "$run_root/pins.json")"
 cli_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cli"])' "$run_root/pins.json")"
 cli_installer_url="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cli_installer_url"])' "$run_root/pins.json")"
+workflow_php_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workflow-php"])' "$run_root/pins.json")"
+waterline_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["waterline"])' "$run_root/pins.json")"
 
 if [[ "${DW_PRINCIPAL_ATTRIBUTION_SKIP_DOCKER_PULL:-0}" != "1" ]]; then
   docker pull "$server_image"
@@ -789,6 +791,47 @@ def composer_env(root: Path) -> dict[str, str]:
     return env
 
 
+def run_in_composer_container(root: Path, workdir: Path, command: list[str], *, timeout: int = 360) -> tuple[int, str]:
+    docker = shutil.which("docker")
+    if docker is None:
+        return 127, "docker is required when composer/php are not installed on the host"
+
+    relative_workdir = workdir.relative_to(root)
+    docker_command = [
+        docker,
+        "run",
+        "--rm",
+        "-v",
+        f"{root}:/work",
+        "-w",
+        "/work/" + str(relative_workdir),
+        "-e",
+        "COMPOSER_HOME=/work/composer-home",
+        "-e",
+        "COMPOSER_CACHE_DIR=/work/composer-cache",
+        "composer:2",
+        *command,
+    ]
+
+    return run(docker_command, timeout=timeout)
+
+
+def run_composer_or_container(root: Path, workdir: Path, command: list[str], *, timeout: int = 360) -> tuple[int, str]:
+    composer = shutil.which("composer")
+    if composer is not None:
+        return run([composer, *command], cwd=workdir, timeout=timeout, env=composer_env(root))
+
+    return run_in_composer_container(root, workdir, ["composer", *command], timeout=timeout)
+
+
+def run_php_or_container(root: Path, workdir: Path, code: str, *, timeout: int = 60) -> tuple[int, str]:
+    php = shutil.which("php")
+    if php is not None:
+        return run([php, "-r", code], cwd=workdir, timeout=timeout, env=composer_env(root))
+
+    return run_in_composer_container(root, workdir, ["php", "-r", code], timeout=timeout)
+
+
 def smoke_composer_package(
     root: Path,
     artifact: str,
@@ -797,10 +840,6 @@ def smoke_composer_package(
     source: str,
     import_assertion: str,
 ) -> dict[str, Any]:
-    composer = shutil.which("composer")
-    if composer is None:
-        return item(artifact, version, source, "runner_blocked", detail="composer is required to install Packagist artifacts")
-
     workdir = root / artifact
     workdir.mkdir(parents=True, exist_ok=True)
     (workdir / "composer.json").write_text(
@@ -819,7 +858,6 @@ def smoke_composer_package(
     )
 
     install_command = [
-        composer,
         "require",
         "--no-interaction",
         "--no-progress",
@@ -827,19 +865,17 @@ def smoke_composer_package(
         "--no-scripts",
         f"{package}:{version}",
     ]
-    env = composer_env(root)
-    Path(env["COMPOSER_HOME"]).mkdir(parents=True, exist_ok=True)
-    Path(env["COMPOSER_CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
-    code, output = run(install_command, cwd=workdir, timeout=360, env=env)
+    composer_home = root / "composer-home"
+    composer_cache = root / "composer-cache"
+    composer_home.mkdir(parents=True, exist_ok=True)
+    composer_cache.mkdir(parents=True, exist_ok=True)
+    code, output = run_composer_or_container(root, workdir, install_command, timeout=360)
     if code != 0:
         return item(artifact, version, source, "fail", install_command, f"Packagist package install failed for {package}", output)
 
-    php = shutil.which("php")
-    if php is None:
-        return item(artifact, version, source, "runner_blocked", detail="php is required to import installed Packagist artifacts")
-
-    import_command = [php, "-r", f"require 'vendor/autoload.php'; {import_assertion}"]
-    code, output = run(import_command, cwd=workdir, timeout=60)
+    import_code = f"require 'vendor/autoload.php'; {import_assertion}"
+    import_command = ["php", "-r", import_code]
+    code, output = run_php_or_container(root, workdir, import_code, timeout=60)
 
     return pass_or_fail(artifact, version, source, import_command, code, output, f"Packagist package {package} imported after install")
 
@@ -1044,6 +1080,221 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 
+waterline_result_path="$result_dir/waterline-principal-attribution-result.json"
+waterline_app="$run_root/waterline-principal-app"
+waterline_artifact_args=(
+  --artifact-version "server=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["server"])' "$run_root/pins.json")"
+  --artifact-version "cli=$cli_version"
+  --artifact-version "workflow=$workflow_php_version"
+  --artifact-version "sdk-python=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sdk-python"])' "$run_root/pins.json")"
+  --artifact-version "waterline=$waterline_version"
+  --artifact-source "server=docker_image"
+  --artifact-source "cli=published_install_script"
+  --artifact-source "workflow=published_composer_package"
+  --artifact-source "sdk-python=published_pypi_package"
+  --artifact-source "waterline=published_package"
+)
+
+write_waterline_setup_failure() {
+  local reason="$1"
+
+  python3 - "$run_root/pins.json" "$waterline_result_path" "$started_at" "$principal_suite_version" "$reason" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+pins = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+out_path = Path(sys.argv[2])
+started_at = sys.argv[3]
+suite_version = int(sys.argv[4])
+reason = sys.argv[5]
+finished = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+versions = {
+    "server": pins["server"],
+    "cli": pins["cli"],
+    "workflow": pins["workflow"],
+    "workflow-php": pins["workflow-php"],
+    "sdk-python": pins["sdk-python"],
+    "waterline": pins["waterline"],
+}
+sources = {
+    "server": "docker_image",
+    "cli": "published_install_script",
+    "workflow": "published_composer_package",
+    "workflow-php": "published_composer_package",
+    "sdk-python": "published_pypi_package",
+    "waterline": "published_package",
+}
+finding = {
+    "id": "waterline-principal-waterline_operator_visibility",
+    "scenario_id": "waterline_operator_visibility",
+    "owning_surface": "waterline",
+    "artifact_versions": versions,
+    "observed_behavior": f"Waterline principal-attribution shard could not run in the published-artifact harness: {reason}",
+    "expected_behavior": "waterline:principal-attribution-conformance runs from the published Waterline package and emits selected-run principal visibility evidence",
+    "next_acceptance_criterion": "publish a Waterline artifact with the principal-attribution shard and rerun principal-attribution conformance",
+    "priority": "P1",
+}
+scenario_results = [
+    {
+        "scenario_id": "published_artifact_install_only",
+        "status": "pass",
+        "observed_outputs": {
+            "artifact_versions": versions,
+            "artifact_sources": sources,
+        },
+        "linked_findings": [],
+    },
+    {
+        "scenario_id": "waterline_operator_visibility",
+        "status": "fail",
+        "surface": "selected-run detail API commands and timeline",
+        "output_sample": None,
+        "principal_visible": False,
+        "observed_outputs": {
+            "shard_command": "waterline:principal-attribution-conformance",
+            "setup_failure": reason,
+            "logs": [
+                "waterline-create-project.log",
+                "waterline-composer-install.log",
+                "waterline-key-generate.log",
+                "waterline-migrate.log",
+                "waterline-principal-attribution.log",
+            ],
+        },
+        "linked_findings": [finding],
+        "findings": [finding],
+    },
+]
+report = {
+    "schema": "durable-workflow.v2.principal-attribution.waterline-operator-shard",
+    "schema_version": 1,
+    "suite_version": suite_version,
+    "coverage_scope": "waterline-principal-attribution-operator-shard",
+    "outcome": "fail",
+    "started_at": started_at,
+    "finished_at": finished,
+    "generated_at": finished,
+    "artifact_versions": versions,
+    "artifact_sources": sources,
+    "runtime_matrix": {
+        "claimed_targets": ["waterline_operator_visibility"],
+        "covered_scenarios": [
+            "published_artifact_install_only",
+            "waterline_operator_visibility",
+        ],
+        "observer_paths": [
+            "waterline-selected-run-detail",
+            "waterline-selected-run-timeline",
+            "waterline-command-intake",
+        ],
+    },
+    "scenario_results": scenario_results,
+    "waterline_principal_visibility": {
+        "shard_command": "waterline:principal-attribution-conformance",
+        "setup_failure": reason,
+    },
+    "api_captures": {},
+    "findings": [finding],
+    "finding_links": {"waterline_operator_visibility": [finding["id"]]},
+}
+out_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
+mkdir -p "$waterline_app"
+set +e
+docker run --rm -v "$waterline_app:/app" -w /app composer:2 \
+  composer create-project laravel/laravel . --no-interaction --no-progress \
+  > "$result_dir/waterline-create-project.log" 2>&1
+waterline_create_status=$?
+set -e
+
+waterline_require_status=1
+waterline_key_status=1
+waterline_migrate_status=1
+waterline_command_status=1
+if [[ "$waterline_create_status" -eq 0 ]]; then
+  mkdir -p "$waterline_app/database"
+  : > "$waterline_app/database/database.sqlite"
+
+  set +e
+  docker run --rm -v "$waterline_app:/app" -w /app composer:2 \
+    composer require --no-interaction --no-progress \
+      "durable-workflow/workflow:${workflow_php_version}" \
+      "durable-workflow/waterline:${waterline_version}" \
+    > "$result_dir/waterline-composer-install.log" 2>&1
+  waterline_require_status=$?
+  set -e
+fi
+
+if [[ "$waterline_require_status" -eq 0 ]]; then
+  set +e
+  docker run --rm \
+    -v "$waterline_app:/app" \
+    -w /app \
+    -e DB_CONNECTION=sqlite \
+    -e DB_DATABASE=/app/database/database.sqlite \
+    -e WATERLINE_ENGINE_SOURCE=v2 \
+    -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
+    composer:2 php artisan key:generate --force \
+    > "$result_dir/waterline-key-generate.log" 2>&1
+  waterline_key_status=$?
+  set -e
+fi
+
+if [[ "$waterline_key_status" -eq 0 ]]; then
+  set +e
+  docker run --rm \
+    -v "$waterline_app:/app" \
+    -w /app \
+    -e DB_CONNECTION=sqlite \
+    -e DB_DATABASE=/app/database/database.sqlite \
+    -e WATERLINE_ENGINE_SOURCE=v2 \
+    -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
+    composer:2 php artisan migrate --force \
+    > "$result_dir/waterline-migrate.log" 2>&1
+  waterline_migrate_status=$?
+  set -e
+fi
+
+if [[ "$waterline_migrate_status" -eq 0 ]]; then
+  set +e
+  docker run --rm \
+    -v "$waterline_app:/app" \
+    -v "$result_dir:/result" \
+    -w /app \
+    -e DB_CONNECTION=sqlite \
+    -e DB_DATABASE=/app/database/database.sqlite \
+    -e WATERLINE_ENGINE_SOURCE=v2 \
+    -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
+    composer:2 php artisan waterline:principal-attribution-conformance \
+      --run-id "published-principal-${RUN_ID:-waterline}" \
+      "${waterline_artifact_args[@]}" \
+      --output /result/waterline-principal-attribution-result.json \
+      --json \
+    > "$result_dir/waterline-principal-attribution.log" 2>&1
+  waterline_command_status=$?
+  set -e
+fi
+
+if [[ ! -s "$waterline_result_path" ]]; then
+  if [[ "$waterline_create_status" -ne 0 ]]; then
+    write_waterline_setup_failure "Laravel app creation failed; see waterline-create-project.log"
+  elif [[ "$waterline_require_status" -ne 0 ]]; then
+    write_waterline_setup_failure "Composer install failed for durable-workflow/waterline:${waterline_version}; see waterline-composer-install.log"
+  elif [[ "$waterline_key_status" -ne 0 ]]; then
+    write_waterline_setup_failure "Laravel key generation failed before Waterline shard execution; see waterline-key-generate.log"
+  elif [[ "$waterline_migrate_status" -ne 0 ]]; then
+    write_waterline_setup_failure "Laravel migration failed before Waterline shard execution; see waterline-migrate.log"
+  else
+    write_waterline_setup_failure "waterline:principal-attribution-conformance exited with status ${waterline_command_status} without writing a report; see waterline-principal-attribution.log"
+  fi
+fi
+
 cat > "$run_root/orchestrate.py" <<'PY'
 from __future__ import annotations
 
@@ -1069,6 +1320,7 @@ RESULT_DIR = Path(os.environ["RESULT_DIR"])
 DW_BIN = Path(os.environ["DW_BIN"])
 PYTHON_BIN = Path(os.environ["PYTHON_BIN"])
 WORKFLOW_PHP_AUTOLOAD = Path(os.environ["WORKFLOW_PHP_AUTOLOAD"])
+WATERLINE_PRINCIPAL_RESULT = Path(os.environ["WATERLINE_PRINCIPAL_RESULT"]) if os.environ.get("WATERLINE_PRINCIPAL_RESULT") else None
 PHP_BIN = os.environ.get("PHP_BIN", "php")
 STARTED_AT = os.environ["STARTED_AT"]
 SUITE_VERSION = json.loads(os.environ["PRINCIPAL_ATTRIBUTION_SUITE_VERSION"])
@@ -1570,6 +1822,90 @@ def finding(scenario_id: str, surface: str, observed: str, expected: str, next_a
     }
 
 
+def scenario_result_by_id(payload: dict[str, Any], scenario_id: str) -> dict[str, Any] | None:
+    raw = payload.get("scenario_results")
+    if isinstance(raw, dict):
+        item = raw.get(scenario_id)
+        return item if isinstance(item, dict) else None
+
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict) and item.get("scenario_id") == scenario_id:
+                return item
+
+    return None
+
+
+def focused_findings_from_waterline_shard(item: dict[str, Any] | None, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+
+    for source in (
+        item.get("linked_findings") if isinstance(item, dict) else None,
+        item.get("findings") if isinstance(item, dict) else None,
+        payload.get("findings"),
+    ):
+        if not isinstance(source, list):
+            continue
+
+        for candidate in source:
+            if isinstance(candidate, dict):
+                findings.append(candidate)
+
+    return findings
+
+
+def load_waterline_principal_shard() -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    if WATERLINE_PRINCIPAL_RESULT is None:
+        return None, None, finding(
+            "waterline_operator_visibility",
+            "waterline",
+            "Waterline principal-attribution shard path was not configured for this published-artifact run",
+            "the published Waterline package emits waterline:principal-attribution-conformance evidence for selected-run principal visibility",
+            "wire the server host runner to pass the Waterline principal-attribution shard report path",
+        )
+
+    if not WATERLINE_PRINCIPAL_RESULT.exists() or WATERLINE_PRINCIPAL_RESULT.stat().st_size == 0:
+        return None, None, finding(
+            "waterline_operator_visibility",
+            "waterline",
+            "Waterline principal-attribution shard did not produce a report in this published-artifact run",
+            "waterline:principal-attribution-conformance runs from the published Waterline package and emits selected-run principal visibility evidence",
+            "publish a Waterline artifact with the principal-attribution shard and rerun principal-attribution conformance",
+        )
+
+    try:
+        payload = json.loads(WATERLINE_PRINCIPAL_RESULT.read_text())
+    except Exception as exc:  # noqa: BLE001 - conformance result captures product failures
+        return None, None, finding(
+            "waterline_operator_visibility",
+            "waterline",
+            f"Waterline principal-attribution shard report could not be parsed: {exc}",
+            "waterline:principal-attribution-conformance writes a JSON report with scenario_results",
+            "fix the Waterline shard report serialization and rerun principal-attribution conformance",
+        )
+
+    if not isinstance(payload, dict):
+        return None, None, finding(
+            "waterline_operator_visibility",
+            "waterline",
+            "Waterline principal-attribution shard report was not a JSON object",
+            "waterline:principal-attribution-conformance writes a JSON object with scenario_results",
+            "fix the Waterline shard report shape and rerun principal-attribution conformance",
+        )
+
+    item = scenario_result_by_id(payload, "waterline_operator_visibility")
+    if item is None:
+        return payload, None, finding(
+            "waterline_operator_visibility",
+            "waterline",
+            "Waterline principal-attribution shard omitted waterline_operator_visibility",
+            "waterline:principal-attribution-conformance reports the waterline_operator_visibility scenario",
+            "fix the Waterline shard scenario list and rerun principal-attribution conformance",
+        )
+
+    return payload, item, None
+
+
 def main() -> int:
     pins = json.loads((RESULT_DIR / "pins.json").read_text())
     artifact_install_evidence = json.loads((RESULT_DIR / "artifact-install-evidence.json").read_text())
@@ -1826,9 +2162,94 @@ def main() -> int:
     if not cli_json_ok:
         findings.append(finding("cli_operator_visibility", "cli", "CLI history output did not expose event principal", "CLI operator output shows the event principal clearly", "surface event principal in workflow:history output"))
 
-    waterline_finding = finding("waterline_operator_visibility", "waterline", "Waterline operator surface was not exercised by this runner revision", "Waterline selected-run history exposes event principal", "extend the host topology to boot Waterline against the published server and capture selected-run history")
-    scenario_results.append(scenario("unsupported", "waterline_operator_visibility", surface=None, output_sample=None, principal_visible=None, linked_findings=[waterline_finding], findings=[waterline_finding]))
-    findings.append(waterline_finding)
+    waterline_payload, waterline_item, waterline_load_finding = load_waterline_principal_shard()
+    waterline_visibility = (
+        waterline_payload.get("waterline_principal_visibility", {})
+        if isinstance(waterline_payload, dict) and isinstance(waterline_payload.get("waterline_principal_visibility"), dict)
+        else {}
+    )
+    waterline_linked_findings = focused_findings_from_waterline_shard(waterline_item, waterline_payload or {})
+    if waterline_load_finding is not None:
+        waterline_linked_findings.append(waterline_load_finding)
+
+    waterline_status = waterline_item.get("status") if isinstance(waterline_item, dict) else "unsupported"
+    if waterline_status not in {"pass", "fail", "unsupported", "not_covered", "runner_blocked"}:
+        waterline_status = "fail"
+        waterline_linked_findings.append(finding(
+            "waterline_operator_visibility",
+            "waterline",
+            f"Waterline principal-attribution shard returned invalid scenario status {waterline_item.get('status')!r}",
+            "waterline:principal-attribution-conformance uses a published principal-attribution scenario status",
+            "fix the Waterline shard status token and rerun principal-attribution conformance",
+        ))
+
+    waterline_output_sample = None
+    waterline_output_sample_missing = True
+    if isinstance(waterline_item, dict) and "output_sample" in waterline_item:
+        raw_output_sample = waterline_item.get("output_sample")
+        if isinstance(raw_output_sample, str):
+            waterline_output_sample = raw_output_sample[:4000]
+            waterline_output_sample_missing = raw_output_sample.strip() == ""
+        elif isinstance(raw_output_sample, (dict, list)) and raw_output_sample:
+            waterline_output_sample = json.dumps(raw_output_sample, sort_keys=True)[:4000]
+            waterline_output_sample_missing = False
+
+    waterline_surface = None
+    if isinstance(waterline_item, dict):
+        waterline_surface = waterline_item.get("surface")
+    if not isinstance(waterline_surface, str) or waterline_surface == "":
+        waterline_surface = "selected-run detail API commands and timeline"
+
+    waterline_principal_visible = None
+    if isinstance(waterline_item, dict) and isinstance(waterline_item.get("principal_visible"), bool):
+        waterline_principal_visible = waterline_item["principal_visible"]
+
+    waterline_claimed_pass = waterline_status == "pass"
+    waterline_missing_required_pass_evidence = False
+    if waterline_claimed_pass and waterline_principal_visible is not True:
+        waterline_missing_required_pass_evidence = True
+        waterline_linked_findings.append(finding(
+            "waterline_operator_visibility",
+            "waterline",
+            "Waterline principal-attribution shard claimed pass without principal_visible=true",
+            "passing Waterline principal-attribution evidence explicitly reports principal_visible=true",
+            "fix the Waterline shard visibility verdict before marking the cell pass",
+        ))
+
+    if waterline_claimed_pass and waterline_output_sample_missing:
+        waterline_missing_required_pass_evidence = True
+        waterline_linked_findings.append(finding(
+            "waterline_operator_visibility",
+            "waterline",
+            "Waterline principal-attribution shard claimed pass without an operator output sample",
+            "passing Waterline principal-attribution evidence includes a selected-run operator output sample",
+            "include selected-run command/timeline principal output in the shard report before marking the cell pass",
+        ))
+
+    if waterline_missing_required_pass_evidence:
+        waterline_status = "fail"
+
+    if waterline_status != "pass" and waterline_linked_findings == []:
+        waterline_linked_findings.append(finding(
+            "waterline_operator_visibility",
+            "waterline",
+            "Waterline principal-attribution shard did not pass and did not provide a focused finding",
+            "non-passing Waterline principal-attribution evidence links a focused Waterline finding",
+            "include a focused Waterline finding in the shard report before marking the cell routed",
+        ))
+
+    scenario_results.append(scenario(
+        waterline_status,
+        "waterline_operator_visibility",
+        surface=waterline_surface,
+        output_sample=waterline_output_sample,
+        principal_visible=waterline_principal_visible,
+        shard_result_path=str(WATERLINE_PRINCIPAL_RESULT) if WATERLINE_PRINCIPAL_RESULT is not None else None,
+        observed_outputs=waterline_visibility if waterline_visibility else waterline_payload,
+        linked_findings=waterline_linked_findings,
+        findings=waterline_linked_findings,
+    ))
+    findings.extend(waterline_linked_findings)
 
     outcome = "pass" if all(item["status"] == "pass" for item in scenario_results) else "fail"
     finished = now()
@@ -1850,7 +2271,7 @@ def main() -> int:
         "actor_matrix": {"alice": {"credentials": ["alice-token-v1", "alice-token-v2"]}, "bob": {"credentials": ["bob-token"]}},
         "history_dumps": history_dumps,
         "spoofing_attempts": {"payload_values": ["mallory"], "payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS)},
-        "operator_visibility": {"cli_history_json_principal_visible": cli_json_ok, "waterline": {"status": "unsupported", "linked_findings": [waterline_finding]}},
+        "operator_visibility": {"cli_history_json_principal_visible": cli_json_ok, "waterline": {"status": waterline_status, "principal_visible": waterline_principal_visible, "linked_findings": waterline_linked_findings, "result_path": str(WATERLINE_PRINCIPAL_RESULT) if WATERLINE_PRINCIPAL_RESULT is not None else None}},
         "anonymous_observations": {"status": "pass" if not anonymous_failures else "fail", "anonymous_principal": anonymous_principals.get("WorkflowStarted"), "documented_value": expected_anonymous_principal, "history_events": list(anonymous_principals)},
         "scenario_results": scenario_results,
         "findings": findings,
@@ -1877,6 +2298,7 @@ RESULT_DIR="$result_dir" \
 DW_BIN="$run_root/cli/bin/dw" \
 PYTHON_BIN="$run_root/artifacts/python-sdk/bin/python" \
 WORKFLOW_PHP_AUTOLOAD="$run_root/artifacts/workflow-php/vendor/autoload.php" \
+WATERLINE_PRINCIPAL_RESULT="$waterline_result_path" \
 STARTED_AT="$started_at" \
 PRINCIPAL_ATTRIBUTION_SUITE_VERSION="$principal_suite_version" \
 python3 "$run_root/orchestrate.py" | tee "$result_dir/orchestrate.log"
