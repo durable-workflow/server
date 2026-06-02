@@ -14,7 +14,7 @@ class SchedulesRuntimeContractTest extends TestCase
         $manifest = SchedulesRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.schedules-runtime.contract', $manifest['schema']);
-        $this->assertSame(2, SchedulesRuntimeContract::VERSION);
+        $this->assertSame(3, SchedulesRuntimeContract::VERSION);
         $this->assertSame(SchedulesRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.schedules-runtime.result', $manifest['result_schema']);
         $this->assertSame('schedules_runtime_contract', $manifest['fixture_category']);
@@ -127,6 +127,29 @@ class SchedulesRuntimeContractTest extends TestCase
             $this->assertContains($scope, $hostRunner['required_execution_scopes']);
             $this->assertContains($scope, $hostRunner['merge_policy']['input_scopes']);
         }
+
+        $this->assertArrayHasKey('coverage_gap_findings', $hostRunner);
+        $coverageGapFindings = $hostRunner['coverage_gap_findings'];
+        foreach ($manifest['required_scenarios'] as $scenarioId) {
+            $this->assertArrayHasKey(
+                $scenarioId,
+                $coverageGapFindings,
+                sprintf('required scenario [%s] must have focused coverage-gap routing', $scenarioId),
+            );
+            $this->assertContains(
+                $coverageGapFindings[$scenarioId]['owner'],
+                ['conformance_harness', 'cli', 'sdk-python', 'workflow-php', 'server'],
+            );
+            $this->assertNotEmpty($coverageGapFindings[$scenarioId]['id']);
+            $this->assertNotEmpty($coverageGapFindings[$scenarioId]['scope']);
+            $this->assertNotEmpty($coverageGapFindings[$scenarioId]['current_evidence']);
+            $this->assertNotEmpty($coverageGapFindings[$scenarioId]['expected_behavior']);
+            $this->assertNotEmpty($coverageGapFindings[$scenarioId]['acceptance']);
+        }
+        $this->assertSame('schedules-cron-cadence-coverage', $coverageGapFindings['cron_cadence']['id']);
+        $this->assertSame('cli', $coverageGapFindings['cli_schedule_surface']['owner']);
+        $this->assertSame('workflow-php', $coverageGapFindings['php_schedule_surface']['owner']);
+        $this->assertSame('server', $coverageGapFindings['invalid_cron_refusal']['owner']);
 
         $this->assertSame(
             ['SchedulesConformancePhpWorkflow'],
