@@ -1132,7 +1132,7 @@ function artifactSourcesFromEnv() {
   };
 }
 
-function artifactInstallEvidence(artifactVersions, artifactSources) {
+export function artifactInstallEvidence(artifactVersions, artifactSources) {
   const supplied = readJsonIfExists(artifactInstallEvidencePath);
   if (supplied && typeof supplied === 'object' && !Array.isArray(supplied)) {
     return normalizeArtifactInstallEvidence(supplied, artifactVersions, artifactSources);
@@ -1170,29 +1170,34 @@ function normalizeArtifactInstallEvidence(evidence, artifactVersions, artifactSo
   const byArtifact = new Map(artifacts
     .filter((item) => item && typeof item === 'object' && !Array.isArray(item))
     .map((item) => [stringValue(item.artifact) || stringValue(item.name), item]));
+  const normalizedArtifacts = REQUIRED_INSTALL_ARTIFACTS.map((artifact) => {
+    const item = byArtifact.get(artifact) ?? {};
+
+    return {
+      artifact,
+      version: stringValue(item.version) || artifactVersionFor(artifactVersions, artifact),
+      source: artifactSourceForInstallEntry(item) || stringValue(artifactSources[artifact]) || 'not_exercised',
+      status: normalizedArtifactStatus(item.status ?? item.result ?? item.outcome),
+      local_product_source_checkouts_used: truthyEvidenceFlag(item.local_product_source_checkouts_used)
+        || truthyEvidenceFlag(item.localProductSourceCheckoutsUsed),
+      detail: stringValue(item.detail) || stringValue(item.observed_behavior) || '',
+      command: item.command ?? null,
+      output_sample: item.output_sample ?? item.outputSample ?? '',
+    };
+  });
 
   return {
     schema: stringValue(evidence.schema)
       || 'durable-workflow.v2.worker-versioning-runtime.artifact-install-evidence',
     local_product_source_checkouts_used: truthyEvidenceFlag(evidence.local_product_source_checkouts_used)
-      || truthyEvidenceFlag(evidence.localProductSourceCheckoutsUsed),
+      || truthyEvidenceFlag(evidence.localProductSourceCheckoutsUsed)
+      || normalizedArtifacts.some((item) => truthyEvidenceFlag(item.local_product_source_checkouts_used)),
     generated_at: stringValue(evidence.generated_at) || timestamp(),
-    artifacts: REQUIRED_INSTALL_ARTIFACTS.map((artifact) => {
-      const item = byArtifact.get(artifact) ?? {};
-      return {
-        artifact,
-        version: stringValue(item.version) || artifactVersionFor(artifactVersions, artifact),
-        source: stringValue(item.source) || stringValue(artifactSources[artifact]) || 'not_exercised',
-        status: normalizedArtifactStatus(item.status),
-        detail: stringValue(item.detail) || stringValue(item.observed_behavior) || '',
-        command: item.command ?? null,
-        output_sample: item.output_sample ?? item.outputSample ?? '',
-      };
-    }),
+    artifacts: normalizedArtifacts,
   };
 }
 
-function artifactInstallEvidencePasses(evidence) {
+export function artifactInstallEvidencePasses(evidence) {
   if (!evidence || truthyEvidenceFlag(evidence.local_product_source_checkouts_used)) {
     return false;
   }
@@ -1202,22 +1207,28 @@ function artifactInstallEvidencePasses(evidence) {
     const entry = entries.get(artifact);
 
     return normalizedArtifactStatus(entry?.status) === 'pass'
-      && !artifactSourceIsForbidden(stringValue(entry?.source));
+      && !artifactSourceIsForbidden(artifactSourceForInstallEntry(entry ?? {}))
+      && !truthyEvidenceFlag(entry?.local_product_source_checkouts_used)
+      && !truthyEvidenceFlag(entry?.localProductSourceCheckoutsUsed);
   });
 }
 
-function artifactInstallEvidenceGaps(evidence) {
+export function artifactInstallEvidenceGaps(evidence) {
   const entries = artifactInstallEntryByName(evidence);
   const gaps = [];
   for (const artifact of REQUIRED_INSTALL_ARTIFACTS) {
     const entry = entries.get(artifact);
     const status = normalizedArtifactStatus(entry?.status);
-    const source = stringValue(entry?.source);
+    const source = artifactSourceForInstallEntry(entry ?? {});
     if (status !== 'pass') {
       gaps.push(`${artifact}.status=${status || 'missing'}`);
     }
     if (artifactSourceIsForbidden(source)) {
       gaps.push(`${artifact}.source=${source || 'missing'}`);
+    }
+    if (truthyEvidenceFlag(entry?.local_product_source_checkouts_used)
+      || truthyEvidenceFlag(entry?.localProductSourceCheckoutsUsed)) {
+      gaps.push(`${artifact}.local_product_source_checkouts_used=true`);
     }
   }
 
@@ -1242,12 +1253,12 @@ function artifactInstallEntryByName(evidence) {
   return entries;
 }
 
-function mergeArtifactSources(artifactSources, installEvidence) {
+export function mergeArtifactSources(artifactSources, installEvidence) {
   const merged = { ...artifactSources };
   for (const item of installEvidence?.artifacts ?? []) {
     const artifact = stringValue(item.artifact) || stringValue(item.name);
-    const source = stringValue(item.source);
-    if (!artifact || artifactSourceIsForbidden(source)) {
+    const source = artifactSourceForInstallEntry(item);
+    if (!artifact || !source) {
       continue;
     }
 
@@ -1272,9 +1283,13 @@ export function publishedWorkerExecutionEvidence(artifactVersions, artifactSourc
     };
   }
 
-  const shardLocalSourceExplicitFalse = explicitFalse(supplied.local_product_source_checkouts_used)
-    || explicitFalse(supplied.localProductSourceCheckoutsUsed)
-    || publishedWorkerShardProvesNoLocalSource(supplied);
+  const shardHasLocalSourceSignal = publishedWorkerShardHasLocalSourceSignal(supplied);
+  const shardLocalSourceExplicitFalse = !shardHasLocalSourceSignal
+    && (
+      explicitFalse(supplied.local_product_source_checkouts_used)
+      || explicitFalse(supplied.localProductSourceCheckoutsUsed)
+      || publishedWorkerShardProvesNoLocalSource(supplied)
+    );
   const scenarioResults = publishedWorkerScenarioResults(supplied);
   const publishedWorkerExecution = firstObjectValue(
     supplied.published_artifact_worker_execution,
@@ -1284,7 +1299,8 @@ export function publishedWorkerExecutionEvidence(artifactVersions, artifactSourc
   return {
     schema: stringValue(supplied.schema)
       || 'durable-workflow.v2.worker-versioning-runtime.published-worker-execution-evidence',
-    local_product_source_checkouts_used: truthyEvidenceFlag(supplied.local_product_source_checkouts_used)
+    local_product_source_checkouts_used: shardHasLocalSourceSignal
+      || truthyEvidenceFlag(supplied.local_product_source_checkouts_used)
       || truthyEvidenceFlag(supplied.localProductSourceCheckoutsUsed),
     supplied_shard_local_product_source_checkouts_used: !shardLocalSourceExplicitFalse,
     generated_at: stringValue(supplied.generated_at) || stringValue(supplied.generatedAt) || timestamp(),
@@ -1519,6 +1535,70 @@ function publishedWorkerShardProvesNoLocalSource(supplied) {
   }
 
   return sawExecution;
+}
+
+function publishedWorkerShardHasLocalSourceSignal(supplied) {
+  if (truthyEvidenceFlag(supplied.local_product_source_checkouts_used)
+    || truthyEvidenceFlag(supplied.localProductSourceCheckoutsUsed)) {
+    return true;
+  }
+
+  const topLevelExecution = firstObjectValue(
+    supplied.published_artifact_worker_execution,
+    supplied.publishedArtifactWorkerExecution,
+  );
+  if (publishedWorkerExecutionHasLocalSourceSignal(topLevelExecution)) {
+    return true;
+  }
+
+  const scenarios = publishedWorkerScenarioResults(supplied);
+  for (const scenario of Object.values(scenarios)) {
+    const outputs = firstObjectValue(
+      scenario?.observed_outputs,
+      scenario?.observedOutputs,
+      scenario?.evidence,
+      scenario?.outputs,
+      scenario,
+    );
+    const execution = firstObjectValue(
+      outputs.published_artifact_worker_execution,
+      outputs.publishedArtifactWorkerExecution,
+      supplied.published_artifact_worker_execution,
+      supplied.publishedArtifactWorkerExecution,
+    );
+
+    if (truthyEvidenceFlag(outputs.local_product_source_checkouts_used)
+      || truthyEvidenceFlag(outputs.localProductSourceCheckoutsUsed)
+      || publishedWorkerExecutionHasLocalSourceSignal(execution)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function publishedWorkerExecutionHasLocalSourceSignal(execution) {
+  if (!execution || typeof execution !== 'object' || Array.isArray(execution)) {
+    return false;
+  }
+
+  if (truthyEvidenceFlag(execution.local_product_source_checkouts_used)
+    || truthyEvidenceFlag(execution.localProductSourceCheckoutsUsed)) {
+    return true;
+  }
+
+  return publishedWorkerExecutionEntries(execution).some((entry) => (
+    truthyEvidenceFlag(entry.local_product_source_checkouts_used)
+    || truthyEvidenceFlag(entry.localProductSourceCheckoutsUsed)
+  ));
+}
+
+function artifactSourceForInstallEntry(entry) {
+  return stringValue(entry.source)
+    || stringValue(entry.install_source)
+    || stringValue(entry.installSource)
+    || stringValue(entry.artifact_source)
+    || stringValue(entry.artifactSource);
 }
 
 function artifactSourceForWorkerExecutionEntry(entry) {

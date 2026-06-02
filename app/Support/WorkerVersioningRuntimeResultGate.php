@@ -1023,6 +1023,21 @@ final class WorkerVersioningRuntimeResultGate
                     'field' => 'artifact_install_evidence.artifacts.source',
                 ];
             }
+
+            if (self::truthyField($entry, [
+                'local_product_source_checkouts_used',
+                'localProductSourceCheckoutsUsed',
+            ])) {
+                $failures[] = [
+                    'code' => 'local_product_source_checkouts_used_must_be_false',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                    'field' => 'artifact_install_evidence.artifacts.local_product_source_checkouts_used',
+                    'value' => $entry['local_product_source_checkouts_used']
+                        ?? $entry['localProductSourceCheckoutsUsed']
+                        ?? null,
+                ];
+            }
         }
 
         return $failures;

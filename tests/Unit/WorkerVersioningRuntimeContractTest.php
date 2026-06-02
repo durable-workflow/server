@@ -716,6 +716,25 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         $this->assertNotEmpty($localCheckoutFailures);
     }
 
+    public function test_result_gate_rejects_artifact_install_entry_local_product_source_checkout_use_flag(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_install_evidence']['artifacts'][1]['local_product_source_checkouts_used'] =
+            'true';
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $localCheckoutFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'local_product_source_checkouts_used_must_be_false'
+                && ($failure['scenario_id'] ?? null) === 'published_artifact_install_only'
+                && ($failure['artifact'] ?? null) === 'cli'
+                && ($failure['field'] ?? null) === 'artifact_install_evidence.artifacts.local_product_source_checkouts_used',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($localCheckoutFailures);
+    }
+
     public function test_result_gate_requires_published_artifact_install_evidence(): void
     {
         $result = $this->completeWorkerVersioningResult();

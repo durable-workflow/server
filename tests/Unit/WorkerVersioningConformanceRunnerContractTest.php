@@ -312,6 +312,92 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertSame('pending', $result['pending_or_typed_error']);
     }
 
+    public function test_install_evidence_local_checkout_flags_are_preserved_and_non_passing(): void
+    {
+        $evaluation = $this->evaluateArtifactInstallEvidenceThroughRunnerNormalization([
+            'local_product_source_checkouts_used' => false,
+            'artifacts' => [
+                [
+                    'artifact' => 'server',
+                    'version' => '0.2.250',
+                    'source' => 'docker',
+                    'status' => 'pass',
+                    'local_product_source_checkouts_used' => false,
+                ],
+                [
+                    'artifact' => 'cli',
+                    'version' => '0.1.75',
+                    'source' => 'official_install_script',
+                    'status' => 'pass',
+                    'local_product_source_checkouts_used' => false,
+                ],
+                [
+                    'artifact' => 'sdk-python',
+                    'version' => '0.4.84',
+                    'source' => 'pypi_release',
+                    'status' => 'pass',
+                    'local_product_source_checkouts_used' => false,
+                ],
+                [
+                    'artifact' => 'workflow-php',
+                    'version' => '2.0.0-alpha.191',
+                    'source' => 'composer_release',
+                    'status' => 'pass',
+                    'local_product_source_checkouts_used' => false,
+                ],
+                [
+                    'artifact' => 'waterline',
+                    'version' => '2.0.0-alpha.77',
+                    'source' => 'local_product_source_checkout',
+                    'status' => 'pass',
+                    'local_product_source_checkouts_used' => 'true',
+                ],
+            ],
+        ]);
+
+        $this->assertFalse($evaluation['passes']);
+        $this->assertTrue($evaluation['evidence']['local_product_source_checkouts_used']);
+        $this->assertSame(
+            'local_product_source_checkout',
+            $evaluation['merged_sources']['waterline'],
+            'forbidden install sources must remain visible in the row instead of being replaced by a fallback source',
+        );
+        $this->assertContains('waterline.source=local_product_source_checkout', $evaluation['gaps']);
+        $this->assertContains('waterline.local_product_source_checkouts_used=true', $evaluation['gaps']);
+    }
+
+    public function test_published_worker_normalization_preserves_nested_local_checkout_flags(): void
+    {
+        $evaluation = $this->evaluateNoCompatiblePublishedWorkerEvidenceThroughRunnerNormalization([
+            'local_product_source_checkouts_used' => false,
+            'published_artifact_worker_execution' => [
+                'local_product_source_checkouts_used' => false,
+                'artifacts' => [
+                    [
+                        'artifact' => 'sdk-python',
+                        'version' => '0.4.84',
+                        'source' => 'pypi_release',
+                        'status' => 'pass',
+                        'local_product_source_checkouts_used' => 'true',
+                    ],
+                ],
+            ],
+            'no_compatible_worker' => [
+                'incompatible_worker_task_count' => 0,
+                'operator_visible_signal' => 'no_compatible_worker',
+                'pending_or_typed_error' => 'pending',
+            ],
+        ]);
+
+        $normalized = $evaluation['normalized'];
+        $result = $evaluation['result'];
+
+        $this->assertTrue($normalized['local_product_source_checkouts_used']);
+        $this->assertTrue($normalized['supplied_shard_local_product_source_checkouts_used']);
+        $this->assertFalse($result['worker_executed']);
+        $this->assertFalse($result['passes']);
+    }
+
     public function test_no_compatible_null_task_count_is_not_zero_evidence(): void
     {
         $result = $this->evaluateNoCompatiblePublishedWorkerEvidence([
@@ -374,6 +460,95 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertFileExists($fullPath);
 
         return (string) file_get_contents($fullPath);
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     * @return array<string, mixed>
+     */
+    private function evaluateArtifactInstallEvidenceThroughRunnerNormalization(array $evidence): array
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $evidencePath = tempnam($repoRoot.'/storage/framework', 'artifact-install-evidence-');
+        $this->assertIsString($evidencePath);
+        $this->assertNotFalse(file_put_contents($evidencePath, json_encode($evidence, JSON_THROW_ON_ERROR)));
+
+        try {
+            $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+            if ($nodeBinary === '') {
+                $this->markTestSkipped('node is required to exercise the worker-versioning install evidence gate.');
+            }
+
+            $script = <<<'JS'
+import { pathToFileURL } from 'node:url';
+
+const moduleUrl = pathToFileURL(process.argv[2]).href;
+const {
+  artifactInstallEvidence,
+  artifactInstallEvidenceGaps,
+  artifactInstallEvidencePasses,
+  mergeArtifactSources,
+} = await import(moduleUrl);
+const artifactVersions = {
+  server: '0.2.250',
+  cli: '0.1.75',
+  'sdk-python': '0.4.84',
+  workflow: '2.0.0-alpha.191',
+  'workflow-php': '2.0.0-alpha.191',
+  waterline: '2.0.0-alpha.77',
+};
+const artifactSources = {
+  server: 'docker',
+  cli: 'official_install_script',
+  'sdk-python': 'pypi_release',
+  workflow: 'composer_release',
+  'workflow-php': 'composer_release',
+  waterline: 'published_waterline_release',
+};
+const evidence = artifactInstallEvidence(artifactVersions, artifactSources);
+
+console.log(JSON.stringify({
+  evidence,
+  passes: artifactInstallEvidencePasses(evidence),
+  gaps: artifactInstallEvidenceGaps(evidence),
+  merged_sources: mergeArtifactSources(artifactSources, evidence),
+}));
+JS;
+
+            $process = proc_open(
+                [
+                    $nodeBinary,
+                    '--input-type=module',
+                    '-e',
+                    $script,
+                    'import-runner-helper',
+                    $repoRoot.'/scripts/conformance/worker-versioning-published-artifacts.mjs',
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_WV_ARTIFACT_INSTALL_EVIDENCE' => $evidencePath,
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr);
+
+            return json_decode((string) $stdout, true, 512, JSON_THROW_ON_ERROR);
+        } finally {
+            @unlink($evidencePath);
+        }
     }
 
     /**
