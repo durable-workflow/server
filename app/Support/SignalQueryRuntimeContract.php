@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 10;
+    public const VERSION = 11;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -295,10 +295,20 @@ final class SignalQueryRuntimeContract
                 ],
                 'waterline_operator_visibility' => [
                     'required_surfaces' => [
+                        'artifact_versions',
+                        'artifact_sources',
+                        'captured_at',
                         'observer_state.selected_run',
                         'observer_state.signals',
                         'observer_state.queries',
                         'observer_state.paths.selected_run_query_template',
+                        'api_paths.selected_run_detail',
+                        'api_paths.selected_run_query_action',
+                        'dashboard_json_envelopes.selected_run_detail',
+                        'api_captures.selected_run_detail',
+                        'api_captures.selected_run_query_action',
+                        'comparison.run_status_matches_public_clients',
+                        'comparison.counter_state_matches_public_clients',
                         'comparison.server_observation',
                         'comparison.cli_observation',
                         'comparison.sdk_observation',
@@ -514,10 +524,20 @@ final class SignalQueryRuntimeContract
                             'waterline_operator_visibility',
                         ],
                         'required_evidence_fields' => [
+                            'artifact_versions',
+                            'artifact_sources',
+                            'captured_at',
                             'observer_state.selected_run',
                             'observer_state.signals',
                             'observer_state.queries',
                             'observer_state.paths.selected_run_query_template',
+                            'api_paths.selected_run_detail',
+                            'api_paths.selected_run_query_action',
+                            'dashboard_json_envelopes.selected_run_detail',
+                            'api_captures.selected_run_detail',
+                            'api_captures.selected_run_query_action',
+                            'comparison.run_status_matches_public_clients',
+                            'comparison.counter_state_matches_public_clients',
                             'comparison.server_observation',
                             'comparison.cli_observation',
                             'comparison.sdk_observation',

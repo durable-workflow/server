@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(10, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(11, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -220,6 +220,13 @@ class SignalQueryRuntimeContractTest extends TestCase
             $requirements['completed_run_signal_and_query']['evidence'],
         );
         foreach ([
+            'artifact_versions',
+            'artifact_sources',
+            'captured_at',
+            'api_captures.selected_run_detail',
+            'api_captures.selected_run_query_action',
+            'comparison.run_status_matches_public_clients',
+            'comparison.counter_state_matches_public_clients',
             'comparison.server_observation',
             'comparison.cli_observation',
             'comparison.sdk_observation',
@@ -245,7 +252,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(11, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(12, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -409,10 +416,20 @@ class SignalQueryRuntimeContractTest extends TestCase
         );
         $this->assertSame(
             [
+                'artifact_versions',
+                'artifact_sources',
+                'captured_at',
                 'observer_state.selected_run',
                 'observer_state.signals',
                 'observer_state.queries',
                 'observer_state.paths.selected_run_query_template',
+                'api_paths.selected_run_detail',
+                'api_paths.selected_run_query_action',
+                'dashboard_json_envelopes.selected_run_detail',
+                'api_captures.selected_run_detail',
+                'api_captures.selected_run_query_action',
+                'comparison.run_status_matches_public_clients',
+                'comparison.counter_state_matches_public_clients',
                 'comparison.server_observation',
                 'comparison.cli_observation',
                 'comparison.sdk_observation',
@@ -1066,6 +1083,18 @@ class SignalQueryRuntimeContractTest extends TestCase
             $result['waterline_observer_comparison']['waterline_operator_visibility']
                 ['comparison']['sdk_observation']
         );
+        unset(
+            $result['scenario_results']['waterline_operator_visibility']['observed_outputs']
+                ['api_captures']['selected_run_query_action']
+        );
+        unset(
+            $result['waterline_observer_comparison']['waterline_operator_visibility']
+                ['api_captures']['selected_run_query_action']
+        );
+        $result['scenario_results']['waterline_operator_visibility']['observed_outputs']
+            ['comparison']['counter_state_matches_public_clients'] = false;
+        $result['waterline_observer_comparison']['waterline_operator_visibility']
+            ['comparison']['counter_state_matches_public_clients'] = false;
 
         $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
         $missingEvidence = array_values(array_filter(
@@ -1119,6 +1148,22 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'code' => 'missing_required_pass_evidence',
                 'scenario_id' => 'waterline_operator_visibility',
                 'evidence_key' => 'comparison.sdk_observation',
+            ],
+            $missingEvidence,
+        );
+        $this->assertContains(
+            [
+                'code' => 'missing_required_pass_evidence',
+                'scenario_id' => 'waterline_operator_visibility',
+                'evidence_key' => 'api_captures.selected_run_query_action',
+            ],
+            $missingEvidence,
+        );
+        $this->assertContains(
+            [
+                'code' => 'missing_required_pass_evidence',
+                'scenario_id' => 'waterline_operator_visibility',
+                'evidence_key' => 'comparison.counter_state_matches_public_clients',
             ],
             $missingEvidence,
         );
@@ -1619,6 +1664,21 @@ class SignalQueryRuntimeContractTest extends TestCase
             'post_error_valid_query_result' => 8,
         ];
         $scenarioResults['waterline_operator_visibility']['observed_outputs'] = [
+            'artifact_versions' => [
+                'server' => '0.2.140',
+                'cli' => '0.1.45',
+                'sdk-python' => '0.4.58',
+                'workflow-php' => '2.0.0-alpha.161',
+                'waterline' => '2.0.0-alpha.54',
+            ],
+            'artifact_sources' => [
+                'server' => 'docker_image',
+                'cli' => 'official_install_script',
+                'sdk-python' => 'pypi_package',
+                'workflow-php' => 'packagist_package',
+                'waterline' => 'packagist_package',
+            ],
+            'captured_at' => '2026-05-20T00:04:00Z',
             'observer_state' => [
                 'selected_run' => ['run_id' => 'run-1'],
                 'signals' => ['count' => 1],
@@ -1627,7 +1687,33 @@ class SignalQueryRuntimeContractTest extends TestCase
                     'selected_run_query_template' => '/waterline/api/instances/wf-1/runs/run-1/queries/{query}',
                 ],
             ],
+            'api_paths' => [
+                'selected_run_detail' => '/waterline/api/instances/wf-1/runs/run-1',
+                'selected_run_query_action' => '/waterline/api/instances/wf-1/runs/run-1/queries/current',
+            ],
+            'dashboard_json_envelopes' => [
+                'selected_run_detail' => [
+                    'method' => 'GET',
+                    'path' => '/waterline/api/instances/wf-1/runs/run-1',
+                    'status' => 200,
+                ],
+            ],
+            'api_captures' => [
+                'selected_run_detail' => [
+                    'method' => 'GET',
+                    'path' => '/waterline/api/instances/wf-1/runs/run-1',
+                    'status' => 200,
+                ],
+                'selected_run_query_action' => [
+                    'method' => 'POST',
+                    'path' => '/waterline/api/instances/wf-1/runs/run-1/queries/current',
+                    'status' => 200,
+                    'request_json' => ['arguments' => []],
+                ],
+            ],
             'comparison' => [
+                'run_status_matches_public_clients' => true,
+                'counter_state_matches_public_clients' => true,
                 'server_observation' => ['run_id' => 'run-1', 'counter' => 8],
                 'cli_observation' => ['run_id' => 'run-1', 'counter' => 8],
                 'sdk_observation' => ['run_id' => 'run-1', 'counter' => 8],

@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 11;
+    public const VERSION = 12;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -39,6 +39,8 @@ final class SignalQueryRuntimeResultGate
         'php_client_signal_and_query',
         'cross_language_query_consistency',
         'wire_envelope_compatibility',
+        'comparison.run_status_matches_public_clients',
+        'comparison.counter_state_matches_public_clients',
     ];
 
     /**

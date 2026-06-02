@@ -449,10 +449,20 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "post_error_valid_query_result",
     ],
     "waterline_operator_visibility": [
+        "artifact_versions",
+        "artifact_sources",
+        "captured_at",
         "observer_state.selected_run",
         "observer_state.signals",
         "observer_state.queries",
         "observer_state.paths.selected_run_query_template",
+        "api_paths.selected_run_detail",
+        "api_paths.selected_run_query_action",
+        "dashboard_json_envelopes.selected_run_detail",
+        "api_captures.selected_run_detail",
+        "api_captures.selected_run_query_action",
+        "comparison.run_status_matches_public_clients",
+        "comparison.counter_state_matches_public_clients",
         "comparison.server_observation",
         "comparison.cli_observation",
         "comparison.sdk_observation",
@@ -469,6 +479,8 @@ TRUTHY_REQUIRED_EVIDENCE = {
     "php_client_signal_and_query",
     "cross_language_query_consistency",
     "wire_envelope_compatibility",
+    "comparison.run_status_matches_public_clients",
+    "comparison.counter_state_matches_public_clients",
 }
 
 
