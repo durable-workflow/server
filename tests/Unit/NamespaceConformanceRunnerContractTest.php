@@ -62,6 +62,30 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         ] as $section) {
             $this->assertStringContainsString($section, $source);
         }
+
+        foreach ([
+            'parse_cli_json',
+            'cli_namespace_resource_json_is',
+            'cli_namespace_list_contains_resource',
+            '"namespace:create"',
+            '"namespace:describe"',
+            '"namespace:update"',
+            '"namespace:list"',
+            '"namespace:delete"',
+            '"workflow:list"',
+            '"schedule:list"',
+            '"search-attribute:list"',
+            '"namespace_crud":',
+            '"workflow_list": cli_probe(cli_workflow_explicit_json)',
+            '"schedule_list": cli_probe(cli_schedule_explicit_json)',
+            '"search_attribute_list": {',
+            '"tenant_a": cli_probe(cli_search_attribute_tenant_a_json)',
+            '"tenant_b": cli_probe(cli_search_attribute_tenant_b_json)',
+            '"expected_namespace": "default"',
+            '"tenant_resources_checked":',
+        ] as $cliEvidenceNeedle) {
+            $this->assertStringContainsString($cliEvidenceNeedle, $source);
+        }
     }
 
     public function test_runner_validates_attached_shard_scope_and_artifact_versions_before_import(): void

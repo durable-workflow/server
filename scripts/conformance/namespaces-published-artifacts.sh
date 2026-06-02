@@ -1059,6 +1059,87 @@ def schedules_in_list(payload: dict[str, Any]) -> list[str]:
     return [str(item.get("schedule_id")) for item in payload.get("schedules", []) if isinstance(item, dict)]
 
 
+def parse_cli_json(probe: dict[str, Any]) -> dict[str, Any] | None:
+    if int(probe.get("exit_code") or 0) != 0:
+        return None
+
+    output = str(probe.get("output") or "").strip()
+    if output == "":
+        return None
+
+    candidates = [output]
+    candidates.extend(
+        line.strip()
+        for line in reversed(output.splitlines())
+        if line.strip().startswith("{")
+    )
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
+    return None
+
+
+def cli_probe(probe: dict[str, Any]) -> dict[str, Any]:
+    return probe | {"json": parse_cli_json(probe)}
+
+
+def cli_json_namespace_is(probe: dict[str, Any], expected_namespace: str) -> bool:
+    payload = parse_cli_json(probe)
+    return payload is not None and str(payload.get("namespace") or "") == expected_namespace
+
+
+def cli_json_items_are_namespaced(probe: dict[str, Any], items_key: str, expected_namespace: str) -> bool:
+    payload = parse_cli_json(probe)
+    if payload is None:
+        return False
+
+    items = payload.get(items_key)
+    if not isinstance(items, list):
+        return False
+
+    return all(
+        not isinstance(item, dict) or str(item.get("namespace") or "") == expected_namespace
+        for item in items
+    )
+
+
+def cli_namespace_resource_json_is(probe: dict[str, Any], expected_namespace: str) -> bool:
+    payload = parse_cli_json(probe)
+    if payload is None:
+        return False
+
+    return (
+        str(payload.get("namespace") or "") == expected_namespace
+        and str(payload.get("name") or expected_namespace) == expected_namespace
+    )
+
+
+def cli_namespace_list_contains_resource(probe: dict[str, Any], expected_namespace: str) -> bool:
+    payload = parse_cli_json(probe)
+    if payload is None:
+        return False
+
+    namespaces = payload.get("namespaces")
+    if not isinstance(namespaces, list):
+        return False
+
+    for item in namespaces:
+        if not isinstance(item, dict):
+            continue
+        if (
+            str(item.get("name") or "") == expected_namespace
+            and str(item.get("namespace") or "") == expected_namespace
+        ):
+            return True
+
+    return False
+
+
 def artifact_version_value(versions: dict[str, Any], artifact: str) -> str:
     for key in ARTIFACT_VERSION_ALIASES.get(artifact, [artifact]):
         if key in versions:
@@ -1615,23 +1696,93 @@ def main() -> int:
 
     cli_env = os.environ.copy()
     cli_env.update({"DURABLE_WORKFLOW_SERVER_URL": SERVER_URL, "DURABLE_WORKFLOW_AUTH_TOKEN": TOKENS["admin"], "DURABLE_WORKFLOW_NAMESPACE": "default"})
-    cli_explicit_json = run([DW_BIN, "workflow:list", "--namespace=tenant-b", "--json"], env=cli_env)
-    cli_explicit_human = run([DW_BIN, "workflow:list", "--namespace=tenant-b"], env=cli_env)
-    cli_default = run([DW_BIN, "workflow:list", "--json"], env=cli_env)
+    cli_namespace_name = f"cli-proof-{RUN_ID}"
+    cli_namespace_create_json = run([DW_BIN, "namespace:create", cli_namespace_name, "--description=CLI namespace conformance probe", "--retention=11", "--json"], env=cli_env)
+    cli_namespace_describe_json = run([DW_BIN, "namespace:describe", cli_namespace_name, "--json"], env=cli_env)
+    cli_namespace_describe_human = run([DW_BIN, "namespace:describe", cli_namespace_name], env=cli_env)
+    cli_namespace_update_json = run([DW_BIN, "namespace:update", cli_namespace_name, "--description=CLI namespace conformance probe updated", "--retention=12", "--json"], env=cli_env)
+    cli_namespace_list_json = run([DW_BIN, "namespace:list", "--json"], env=cli_env)
+    cli_namespace_list_human = run([DW_BIN, "namespace:list"], env=cli_env)
+    cli_workflow_explicit_json = run([DW_BIN, "workflow:list", "--namespace=tenant-b", "--json"], env=cli_env)
+    cli_workflow_explicit_human = run([DW_BIN, "workflow:list", "--namespace=tenant-b"], env=cli_env)
+    cli_schedule_explicit_json = run([DW_BIN, "schedule:list", "--namespace=tenant-b", "--json"], env=cli_env)
+    cli_schedule_explicit_human = run([DW_BIN, "schedule:list", "--namespace=tenant-b"], env=cli_env)
+    cli_search_attribute_tenant_a_json = run([DW_BIN, "search-attribute:list", "--namespace=tenant-a", "--json"], env=cli_env)
+    cli_search_attribute_tenant_a_human = run([DW_BIN, "search-attribute:list", "--namespace=tenant-a"], env=cli_env)
+    cli_search_attribute_tenant_b_json = run([DW_BIN, "search-attribute:list", "--namespace=tenant-b", "--json"], env=cli_env)
+    cli_search_attribute_tenant_b_human = run([DW_BIN, "search-attribute:list", "--namespace=tenant-b"], env=cli_env)
+    cli_default_workflows = run([DW_BIN, "workflow:list", "--json"], env=cli_env)
+    cli_default_schedules = run([DW_BIN, "schedule:list", "--json"], env=cli_env)
+    cli_default_search_attributes = run([DW_BIN, "search-attribute:list", "--json"], env=cli_env)
+    cli_namespace_delete_json = run([DW_BIN, "namespace:delete", cli_namespace_name, "--json"], env=cli_env)
     cli_failures = []
-    if cli_explicit_json["exit_code"] != 0 or '"namespace"' not in cli_explicit_json["output"] or "tenant-b" not in cli_explicit_json["output"]:
+    if not cli_namespace_resource_json_is(cli_namespace_create_json, cli_namespace_name):
+        cli_failures.append("CLI namespace:create --json did not expose the created namespace context")
+    if not cli_namespace_resource_json_is(cli_namespace_describe_json, cli_namespace_name):
+        cli_failures.append("CLI namespace:describe --json did not expose the described namespace context")
+    if cli_namespace_describe_human["exit_code"] != 0 or f"Namespace: {cli_namespace_name}" not in cli_namespace_describe_human["output"]:
+        cli_failures.append("CLI namespace:describe human output did not render the target namespace")
+    if not cli_namespace_resource_json_is(cli_namespace_update_json, cli_namespace_name):
+        cli_failures.append("CLI namespace:update --json did not expose the updated namespace context")
+    if not cli_namespace_list_contains_resource(cli_namespace_list_json, cli_namespace_name):
+        cli_failures.append("CLI namespace:list --json did not expose namespace context for listed resources")
+    if cli_namespace_list_human["exit_code"] != 0 or "Namespace" not in cli_namespace_list_human["output"] or cli_namespace_name not in cli_namespace_list_human["output"]:
+        cli_failures.append("CLI namespace:list human output did not make listed namespace names explicit")
+    if not cli_namespace_resource_json_is(cli_namespace_delete_json, cli_namespace_name):
+        cli_failures.append("CLI namespace:delete --json did not expose the deleted namespace context")
+
+    if not cli_json_namespace_is(cli_workflow_explicit_json, NAMESPACES["b"]) or not cli_json_items_are_namespaced(cli_workflow_explicit_json, "workflows", NAMESPACES["b"]):
         cli_failures.append("explicit CLI JSON workflow:list did not expose tenant-b namespace context")
-    if cli_explicit_human["exit_code"] != 0 or "Namespace: tenant-b" not in cli_explicit_human["output"]:
+    if wf_b not in cli_workflow_explicit_json["output"] or wf_a in cli_workflow_explicit_json["output"] or "tenant-a-value" in cli_workflow_explicit_json["output"]:
+        cli_failures.append("explicit CLI JSON workflow:list did not stay scoped to tenant-b workflows")
+    if cli_workflow_explicit_human["exit_code"] != 0 or "Namespace: tenant-b" not in cli_workflow_explicit_human["output"]:
         cli_failures.append("explicit CLI human workflow:list did not render tenant-b namespace context")
-    if "tenant-a-value" in cli_default["output"] or wf_a in cli_default["output"] or wf_b in cli_default["output"]:
+
+    if not cli_json_namespace_is(cli_schedule_explicit_json, NAMESPACES["b"]) or not cli_json_items_are_namespaced(cli_schedule_explicit_json, "schedules", NAMESPACES["b"]):
+        cli_failures.append("explicit CLI JSON schedule:list did not expose tenant-b namespace context")
+    if sched_b_id not in cli_schedule_explicit_json["output"] or sched_a_id in cli_schedule_explicit_json["output"]:
+        cli_failures.append("explicit CLI JSON schedule:list did not stay scoped to tenant-b schedules")
+    if cli_schedule_explicit_human["exit_code"] != 0 or "Namespace: tenant-b" not in cli_schedule_explicit_human["output"]:
+        cli_failures.append("explicit CLI human schedule:list did not render tenant-b namespace context")
+
+    cli_search_attribute_tenant_a = parse_cli_json(cli_search_attribute_tenant_a_json)
+    cli_search_attribute_tenant_b = parse_cli_json(cli_search_attribute_tenant_b_json)
+    tenant_a_custom_attributes = cli_search_attribute_tenant_a.get("custom_attributes") if isinstance(cli_search_attribute_tenant_a, dict) else None
+    tenant_b_custom_attributes = cli_search_attribute_tenant_b.get("custom_attributes") if isinstance(cli_search_attribute_tenant_b, dict) else None
+    if not cli_json_namespace_is(cli_search_attribute_tenant_a_json, NAMESPACES["a"]):
+        cli_failures.append("explicit CLI JSON search-attribute:list did not expose tenant-a namespace context")
+    if not isinstance(tenant_a_custom_attributes, dict) or "customer_id" not in tenant_a_custom_attributes:
+        cli_failures.append("explicit CLI JSON search-attribute:list did not show tenant-a custom attributes from tenant-a")
+    if cli_search_attribute_tenant_a_human["exit_code"] != 0 or "Namespace: tenant-a" not in cli_search_attribute_tenant_a_human["output"] or "customer_id" not in cli_search_attribute_tenant_a_human["output"]:
+        cli_failures.append("explicit CLI human search-attribute:list did not render tenant-a namespace context and custom attributes")
+    if not cli_json_namespace_is(cli_search_attribute_tenant_b_json, NAMESPACES["b"]):
+        cli_failures.append("explicit CLI JSON search-attribute:list did not expose tenant-b namespace context")
+    if isinstance(tenant_b_custom_attributes, dict) and "customer_id" in tenant_b_custom_attributes:
+        cli_failures.append("explicit CLI JSON search-attribute:list exposed tenant-a custom attributes from tenant-b")
+    if cli_search_attribute_tenant_b_human["exit_code"] != 0 or "Namespace: tenant-b" not in cli_search_attribute_tenant_b_human["output"]:
+        cli_failures.append("explicit CLI human search-attribute:list did not render tenant-b namespace context")
+
+    default_search_attribute_json = parse_cli_json(cli_default_search_attributes)
+    default_custom_attributes = default_search_attribute_json.get("custom_attributes") if isinstance(default_search_attribute_json, dict) else None
+    if not cli_json_namespace_is(cli_default_workflows, "default"):
+        cli_failures.append("CLI workflow:list without --namespace did not report the default namespace")
+    if "tenant-a-value" in cli_default_workflows["output"] or wf_a in cli_default_workflows["output"] or wf_b in cli_default_workflows["output"]:
         cli_failures.append("CLI workflow:list without --namespace exposed tenant workflow state instead of default scope")
+    if not cli_json_namespace_is(cli_default_schedules, "default"):
+        cli_failures.append("CLI schedule:list without --namespace did not report the default namespace")
+    if sched_a_id in cli_default_schedules["output"] or sched_b_id in cli_default_schedules["output"]:
+        cli_failures.append("CLI schedule:list without --namespace exposed tenant schedule state instead of default scope")
+    if not cli_json_namespace_is(cli_default_search_attributes, "default"):
+        cli_failures.append("CLI search-attribute:list without --namespace did not report the default namespace")
+    if isinstance(default_custom_attributes, dict) and "customer_id" in default_custom_attributes:
+        cli_failures.append("CLI search-attribute:list without --namespace exposed tenant custom attributes instead of default scope")
     cli_findings = [
         finding(
             "cli_namespace_context_and_default_scope",
             "cli",
             "; ".join(cli_failures),
-            "CLI commands show selected namespace and default to only the configured default namespace",
-            "repair CLI namespace resolution/output so explicit and omitted namespace behavior is unambiguous",
+            "CLI namespace CRUD and namespace-scoped list commands show selected namespace and default to only the configured default namespace",
+            "repair CLI namespace resolution/output so namespace CRUD, workflow:list, schedule:list, and search-attribute:list behavior is unambiguous",
             "P1",
         )
     ] if cli_failures else []
@@ -1639,9 +1790,42 @@ def main() -> int:
         "cli_namespace_context_and_default_scope",
         status_from_failures(cli_failures),
         {
-            "explicit_namespace_json": cli_explicit_json,
-            "explicit_namespace_human_output": cli_explicit_human,
-            "default_scope_behavior": cli_default,
+            "explicit_namespace_json": {
+                "namespace_crud": {
+                    "create": cli_probe(cli_namespace_create_json),
+                    "describe": cli_probe(cli_namespace_describe_json),
+                    "update": cli_probe(cli_namespace_update_json),
+                    "list": cli_probe(cli_namespace_list_json),
+                    "delete": cli_probe(cli_namespace_delete_json),
+                },
+                "workflow_list": cli_probe(cli_workflow_explicit_json),
+                "schedule_list": cli_probe(cli_schedule_explicit_json),
+                "search_attribute_list": {
+                    "tenant_a": cli_probe(cli_search_attribute_tenant_a_json),
+                    "tenant_b": cli_probe(cli_search_attribute_tenant_b_json),
+                },
+            },
+            "explicit_namespace_human_output": {
+                "namespace_describe": cli_namespace_describe_human,
+                "namespace_list": cli_namespace_list_human,
+                "workflow_list": cli_workflow_explicit_human,
+                "schedule_list": cli_schedule_explicit_human,
+                "search_attribute_list": {
+                    "tenant_a": cli_search_attribute_tenant_a_human,
+                    "tenant_b": cli_search_attribute_tenant_b_human,
+                },
+            },
+            "default_scope_behavior": {
+                "workflow_list": cli_probe(cli_default_workflows),
+                "schedule_list": cli_probe(cli_default_schedules),
+                "search_attribute_list": cli_probe(cli_default_search_attributes),
+                "expected_namespace": "default",
+                "tenant_resources_checked": {
+                    "workflow_ids": [wf_a, wf_b],
+                    "schedule_ids": [sched_a_id, sched_b_id],
+                    "search_attribute": "customer_id",
+                },
+            },
         },
         cli_findings,
     ))
