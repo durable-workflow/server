@@ -10,7 +10,7 @@ final class SearchAttributeRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result-gate';
 
-    public const VERSION = 3;
+    public const VERSION = 4;
 
     /**
      * @return array<string, mixed>
@@ -817,6 +817,7 @@ final class SearchAttributeRuntimeResultGate
                 $failures,
                 ...self::cliSurfaceEvidenceFailures(
                     self::scenarioEvidence($result, $scenarioResults['cli_query_and_error_surface'], 'cli_surface'),
+                    $contract,
                 ),
             );
         }
@@ -1070,30 +1071,322 @@ final class SearchAttributeRuntimeResultGate
      *
      * @return array<int, array<string, mixed>>
      */
-    private static function cliSurfaceEvidenceFailures(array $section): array
+    private static function cliSurfaceEvidenceFailures(array $section, array $contract): array
+    {
+        $failures = [];
+
+        $requirements = self::arrayValue($contract['scenario_requirements'] ?? [], 'cli_query_and_error_surface') ?? [];
+        $queries = self::arrayField(
+            $section,
+            ['workflow_list_queries', 'workflowListQueries', 'queries', 'workflow_list_query', 'workflowListQuery'],
+        ) ?? [];
+        foreach (self::arrayValue($requirements, 'required_queries') ?? [] as $queryClass => $query) {
+            $entry = self::cliEntryForKey($queries, (string) $queryClass, (string) $query);
+            if ($entry === null) {
+                $failures[] = [
+                    'code' => 'missing_cli_query_evidence',
+                    'scenario_id' => 'cli_query_and_error_surface',
+                    'query_class' => (string) $queryClass,
+                    'query' => (string) $query,
+                ];
+                continue;
+            }
+
+            array_push(
+                $failures,
+                ...self::cliTranscriptFailures($entry, (string) $queryClass, 'query'),
+                ...self::cliQueryCountFailures($entry, (string) $queryClass),
+            );
+        }
+
+        $definitionCommands = self::arrayField(
+            $section,
+            ['search_attribute_commands', 'searchAttributeCommands', 'definition_commands', 'definitionCommands'],
+        ) ?? [];
+        foreach (self::stringList($requirements['required_definition_commands'] ?? []) as $operation) {
+            $entry = self::cliEntryForKey($definitionCommands, $operation);
+            if ($entry === null) {
+                $legacyEntry = self::firstFieldValue(
+                    $section,
+                    ['search_attribute_'.$operation, 'searchAttribute'.ucfirst($operation)],
+                );
+                $entry = is_array($legacyEntry) ? $legacyEntry : null;
+            }
+
+            if ($entry === null) {
+                $failures[] = [
+                    'code' => 'missing_cli_definition_command_evidence',
+                    'scenario_id' => 'cli_query_and_error_surface',
+                    'operation' => $operation,
+                ];
+                continue;
+            }
+
+            array_push($failures, ...self::cliTranscriptFailures($entry, $operation, 'definition_command'));
+        }
+
+        $diagnostics = self::arrayField($section, ['diagnostics', 'typed_errors', 'typedErrors', 'errors']) ?? [];
+        foreach (self::arrayValue($requirements, 'required_diagnostics') ?? [] as $diagnostic => $probe) {
+            $entry = self::cliEntryForKey($diagnostics, (string) $diagnostic, (string) $probe);
+            if ($entry === null) {
+                $legacyEntry = self::firstFieldValue($section, [$diagnostic, self::camelize((string) $diagnostic)]);
+                $entry = is_array($legacyEntry) && self::cliEntryMatchesProbe($legacyEntry, (string) $probe)
+                    ? $legacyEntry
+                    : null;
+            }
+
+            if ($entry === null) {
+                $failures[] = [
+                    'code' => 'missing_cli_diagnostic_evidence',
+                    'scenario_id' => 'cli_query_and_error_surface',
+                    'diagnostic' => (string) $diagnostic,
+                    'probe' => (string) $probe,
+                ];
+                continue;
+            }
+
+            array_push(
+                $failures,
+                ...self::cliTranscriptFailures($entry, (string) $diagnostic, 'diagnostic'),
+                ...self::cliDiagnosticFailures($entry, (string) $diagnostic),
+            );
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<mixed> $entries
+     */
+    private static function cliEntryForKey(array $entries, string $key, ?string $probe = null): ?array
+    {
+        foreach ([$key, self::camelize($key)] as $entryKey) {
+            $entry = self::arrayValue($entries, $entryKey);
+            if ($entry !== null && $entry !== [] && self::cliEntryMatchesProbe($entry, $probe)) {
+                return $entry;
+            }
+        }
+
+        $wanted = self::normalizeEvidenceKey($key);
+        foreach ($entries as $entryKey => $entry) {
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            if (is_string($entryKey)
+                && self::normalizeEvidenceKey($entryKey) === $wanted
+                && self::cliEntryMatchesProbe($entry, $probe)) {
+                return $entry;
+            }
+
+            foreach ([
+                'query_class',
+                'queryClass',
+                'class',
+                'kind',
+                'operation',
+                'name',
+                'diagnostic',
+                'case',
+            ] as $field) {
+                if (self::normalizeEvidenceKey(self::stringValue($entry[$field] ?? null)) === $wanted
+                    && self::cliEntryMatchesProbe($entry, $probe)) {
+                    return $entry;
+                }
+            }
+
+            if ($probe !== null && is_int($entryKey) && self::cliEntryMatchesProbe($entry, $probe)) {
+                return $entry;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<mixed> $entry
+     */
+    private static function cliEntryMatchesProbe(array $entry, ?string $probe): bool
+    {
+        if ($probe === null) {
+            return true;
+        }
+
+        $wantedProbe = self::normalizeExactProbeEvidence($probe);
+
+        return $wantedProbe === '' || self::cliEntryContainsExactProbe($entry, $wantedProbe);
+    }
+
+    /**
+     * @param array<mixed> $entry
+     */
+    private static function cliEntryContainsExactProbe(array $entry, string $wantedProbe): bool
+    {
+        foreach (['query', 'input', 'probe', 'rejected_input', 'rejectedInput'] as $field) {
+            $value = $entry[$field] ?? null;
+            if (is_array($value)) {
+                foreach ($value as $item) {
+                    if (self::exactProbeEvidenceMatches(self::stringValue($item), $wantedProbe)) {
+                        return true;
+                    }
+                }
+
+                continue;
+            }
+
+            if (self::exactProbeEvidenceMatches(self::stringValue($value), $wantedProbe)) {
+                return true;
+            }
+        }
+
+        foreach (['arguments', 'args', 'argv'] as $field) {
+            $arguments = $entry[$field] ?? null;
+            if (is_array($arguments)) {
+                foreach ($arguments as $argument) {
+                    if (self::exactProbeEvidenceMatches(self::stringValue($argument), $wantedProbe)) {
+                        return true;
+                    }
+                }
+
+                continue;
+            }
+
+            if (self::exactProbeEvidenceMatches(self::stringValue($arguments), $wantedProbe)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<mixed> $entry
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function cliTranscriptFailures(array $entry, string $entryId, string $entryType): array
     {
         $failures = [];
 
         foreach ([
-            'workflow_list_query' => ['workflow_list_query', 'workflowListQuery'],
-            'search_attribute_list' => ['search_attribute_list', 'searchAttributeList'],
-            'search_attribute_create' => ['search_attribute_create', 'searchAttributeCreate'],
-            'search_attribute_delete' => ['search_attribute_delete', 'searchAttributeDelete'],
+            'command' => ['command'],
+            'arguments' => ['arguments', 'args', 'argv'],
         ] as $field => $aliases) {
-            if (! self::hasNonEmptyField($section, $aliases)) {
+            if (! self::hasNonEmptyField($entry, $aliases)) {
                 $failures[] = [
-                    'code' => 'missing_cli_surface_evidence',
+                    'code' => 'missing_cli_transcript_field',
                     'scenario_id' => 'cli_query_and_error_surface',
+                    'entry_type' => $entryType,
+                    'entry_id' => $entryId,
                     'field' => $field,
                 ];
             }
         }
 
-        if (! self::hasTruthyField($section, ['typed_error_observed', 'typedErrorObserved'])) {
+        foreach ([
+            'stdout' => ['stdout'],
+            'stderr' => ['stderr'],
+        ] as $field => $aliases) {
+            if (! self::hasAnyField($entry, $aliases)) {
+                $failures[] = [
+                    'code' => 'missing_cli_transcript_field',
+                    'scenario_id' => 'cli_query_and_error_surface',
+                    'entry_type' => $entryType,
+                    'entry_id' => $entryId,
+                    'field' => $field,
+                ];
+            }
+        }
+
+        if (! self::hasNumericField($entry, ['exit_code', 'exitCode', 'exit_status', 'exitStatus'])) {
             $failures[] = [
-                'code' => 'missing_cli_surface_evidence',
+                'code' => 'missing_cli_transcript_field',
                 'scenario_id' => 'cli_query_and_error_surface',
-                'field' => 'typed_error_observed',
+                'entry_type' => $entryType,
+                'entry_id' => $entryId,
+                'field' => 'exit_code',
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<mixed> $entry
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function cliQueryCountFailures(array $entry, string $queryClass): array
+    {
+        $failures = [];
+
+        foreach (['expected_count', 'actual_count'] as $field) {
+            if (! self::hasNumericField($entry, [$field, self::camelize($field)])) {
+                $failures[] = [
+                    'code' => 'missing_cli_query_count',
+                    'scenario_id' => 'cli_query_and_error_surface',
+                    'query_class' => $queryClass,
+                    'field' => $field,
+                ];
+            }
+        }
+
+        $expectedCount = self::numericField($entry, ['expected_count', 'expectedCount']);
+        $actualCount = self::numericField($entry, ['actual_count', 'actualCount']);
+        if ($expectedCount !== null && $actualCount !== null && $expectedCount !== $actualCount) {
+            $failures[] = [
+                'code' => 'cli_query_count_mismatch',
+                'scenario_id' => 'cli_query_and_error_surface',
+                'query_class' => $queryClass,
+                'expected_count' => $expectedCount,
+                'actual_count' => $actualCount,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<mixed> $entry
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function cliDiagnosticFailures(array $entry, string $diagnostic): array
+    {
+        $failures = [];
+
+        foreach ([
+            'error_code' => ['error_code', 'errorCode', 'code', 'type', 'reason', 'rejection_reason', 'rejectionReason'],
+            'message' => ['message', 'error', 'error_message', 'errorMessage'],
+        ] as $field => $aliases) {
+            if (! self::hasNonEmptyField($entry, $aliases)) {
+                $failures[] = [
+                    'code' => 'missing_cli_diagnostic_field',
+                    'scenario_id' => 'cli_query_and_error_surface',
+                    'diagnostic' => $diagnostic,
+                    'field' => $field,
+                ];
+            }
+        }
+
+        $exitCode = self::numericField($entry, ['exit_code', 'exitCode', 'exit_status', 'exitStatus']);
+        if ($exitCode === 0 || $exitCode === 0.0) {
+            $failures[] = [
+                'code' => 'cli_diagnostic_command_succeeded',
+                'scenario_id' => 'cli_query_and_error_surface',
+                'diagnostic' => $diagnostic,
+            ];
+        }
+
+        $failureKind = strtolower(self::firstStringField(
+            $entry,
+            ['failure_kind', 'failureKind', 'error_kind', 'errorKind', 'type', 'reason', 'error_code', 'errorCode'],
+        ));
+        if (str_contains($failureKind, 'transport') || str_contains($failureKind, 'network')) {
+            $failures[] = [
+                'code' => 'cli_diagnostic_collapsed_to_transport_failure',
+                'scenario_id' => 'cli_query_and_error_surface',
+                'diagnostic' => $diagnostic,
             ];
         }
 
@@ -1839,6 +2132,21 @@ final class SearchAttributeRuntimeResultGate
     }
 
     /**
+     * @param array<mixed> $value
+     * @param list<string> $fields
+     */
+    private static function hasAnyField(array $value, array $fields): bool
+    {
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $value)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * @param array<mixed> $rejections
      */
     private static function injectionRejectionsCoverProbe(array $rejections, string $requiredProbe): bool
@@ -1902,9 +2210,27 @@ final class SearchAttributeRuntimeResultGate
         };
     }
 
+    private static function exactProbeEvidenceMatches(string $evidence, string $requiredProbe): bool
+    {
+        $evidence = self::normalizeExactProbeEvidence($evidence);
+        $requiredProbe = self::normalizeExactProbeEvidence($requiredProbe);
+
+        return $evidence !== '' && $evidence === $requiredProbe;
+    }
+
+    private static function normalizeExactProbeEvidence(string $value): string
+    {
+        return preg_replace('/\s+/', ' ', trim($value)) ?? '';
+    }
+
     private static function normalizeProbeLabel(string $value): string
     {
         return preg_replace('/\s+/', ' ', strtolower(trim($value))) ?? '';
+    }
+
+    private static function normalizeEvidenceKey(string $value): string
+    {
+        return str_replace('-', '_', self::normalizeProbeLabel($value));
     }
 
     /**

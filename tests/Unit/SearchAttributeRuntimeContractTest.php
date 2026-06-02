@@ -14,7 +14,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $manifest = SearchAttributeRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.contract', $manifest['schema']);
-        $this->assertSame(4, SearchAttributeRuntimeContract::VERSION);
+        $this->assertSame(5, SearchAttributeRuntimeContract::VERSION);
         $this->assertSame(SearchAttributeRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.result', $manifest['result_schema']);
         $this->assertSame('search_attribute_runtime_contract', $manifest['fixture_category']);
@@ -150,7 +150,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $resultGate = SearchAttributeRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SearchAttributeRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(3, SearchAttributeRuntimeResultGate::VERSION);
+        $this->assertSame(4, SearchAttributeRuntimeResultGate::VERSION);
         $this->assertSame(SearchAttributeRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SearchAttributeRuntimeContract::RESULT_SCHEMA,
@@ -176,6 +176,33 @@ class SearchAttributeRuntimeContractTest extends TestCase
         );
         $this->assertContains('overall_outcome_matches_gate_status', $resultGate['pass_requires']);
         $this->assertSame('non_passing', $resultGate['smoke_subset_outcome']);
+    }
+
+    public function test_manifest_names_focused_cli_surface_evidence_requirements(): void
+    {
+        $requirements = SearchAttributeRuntimeContract::manifest()['scenario_requirements']['cli_query_and_error_surface'];
+
+        $this->assertSame(
+            [
+                'equality',
+                'range',
+                'bool',
+                'or',
+                'not',
+                'keyword_list',
+            ],
+            array_keys($requirements['required_queries']),
+        );
+        $this->assertSame(['list', 'create', 'delete'], $requirements['required_definition_commands']);
+        $this->assertArrayHasKey('wrong_literal', $requirements['required_diagnostics']);
+        $this->assertArrayHasKey('injection', $requirements['required_diagnostics']);
+        foreach (['command', 'arguments', 'stdout', 'stderr', 'exit_code'] as $field) {
+            $this->assertContains($field, $requirements['command_transcript_required_fields']);
+        }
+        foreach (['error_code', 'message'] as $field) {
+            $this->assertContains($field, $requirements['diagnostic_required_fields']);
+        }
+        $this->assertTrue($requirements['diagnostic_must_not_be_transport_failure']);
     }
 
     public function test_result_gate_rejects_python_smoke_subset_even_when_the_smoke_passes(): void
@@ -282,7 +309,9 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $this->assertContains('missing_published_artifact_install_source', $failureCodes);
         $this->assertContains('missing_schema_type_evidence', $failureCodes);
         $this->assertContains('missing_reserved_name_refusal_evidence', $failureCodes);
-        $this->assertContains('missing_cli_surface_evidence', $failureCodes);
+        $this->assertContains('missing_cli_query_evidence', $failureCodes);
+        $this->assertContains('missing_cli_definition_command_evidence', $failureCodes);
+        $this->assertContains('missing_cli_diagnostic_evidence', $failureCodes);
         $this->assertContains('missing_codec_round_trip_field', $failureCodes);
         $this->assertContains('missing_type_safety_error_evidence', $failureCodes);
         $this->assertContains('missing_namespace_isolation_field', $failureCodes);
@@ -354,6 +383,72 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $this->assertContains('query_count_mismatch', $failureCodes);
     }
 
+    public function test_result_gate_rejects_incomplete_cli_query_and_diagnostic_evidence(): void
+    {
+        $result = $this->completeSearchAttributeResult();
+        unset($result['cli_surface']['workflow_list_queries']['keyword_list']);
+        unset($result['cli_surface']['search_attribute_commands']['delete']['stderr']);
+        $result['cli_surface']['diagnostics']['wrong_literal']['exit_code'] = 0;
+        $result['cli_surface']['diagnostics']['injection']['error_code'] = 'transport_failure';
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('missing_cli_query_evidence', $failureCodes);
+        $this->assertContains('missing_cli_transcript_field', $failureCodes);
+        $this->assertContains('cli_diagnostic_command_succeeded', $failureCodes);
+        $this->assertContains('cli_diagnostic_collapsed_to_transport_failure', $failureCodes);
+    }
+
+    public function test_result_gate_rejects_keyed_cli_query_entry_with_mismatched_contract_query(): void
+    {
+        $result = $this->completeSearchAttributeResult();
+        $result['cli_surface']['workflow_list_queries']['equality'] = $this->cliTranscript(
+            ['workflows', 'list', '--query', 'customer_id = "cust-8"'],
+            '{"workflows":[{"workflow_id":"sa-python-8"}]}',
+            query: 'customer_id = "cust-8"',
+            expectedCount: 1,
+            actualCount: 1,
+        );
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+        $matchingFailures = array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_cli_query_evidence'
+                && ($failure['query_class'] ?? null) === 'equality'
+                && ($failure['query'] ?? null) === 'customer_id = "cust-7"',
+        );
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($matchingFailures);
+    }
+
+    public function test_result_gate_rejects_keyed_cli_diagnostic_entry_with_mismatched_contract_probe(): void
+    {
+        $result = $this->completeSearchAttributeResult();
+        $result['cli_surface']['diagnostics']['wrong_literal'] = $this->cliTranscript(
+            ['workflows', 'list', '--query', 'customer_id = "x" OR 1=1'],
+            '',
+            stderr: 'Server error: query parser rejected unsupported literal.',
+            exitCode: 2,
+        ) + [
+            'error_code' => 'invalid_visibility_query',
+            'message' => 'query parser rejected unsupported literal.',
+        ];
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+        $matchingFailures = array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_cli_diagnostic_evidence'
+                && ($failure['diagnostic'] ?? null) === 'wrong_literal'
+                && ($failure['probe'] ?? null) === 'order_total_cents = "not-a-number"',
+        );
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($matchingFailures);
+    }
+
     public function test_result_gate_requires_contract_injection_rejection_probes(): void
     {
         $result = $this->completeSearchAttributeResult();
@@ -378,6 +473,43 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $this->assertSame([], $evaluation['missing_scenarios']);
         $this->assertSame([], $evaluation['non_pass_scenarios']);
         $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    /**
+     * @param list<string> $arguments
+     *
+     * @return array<string, mixed>
+     */
+    private function cliTranscript(
+        array $arguments,
+        string $stdout,
+        string $stderr = '',
+        int $exitCode = 0,
+        ?string $query = null,
+        ?int $expectedCount = null,
+        ?int $actualCount = null,
+    ): array {
+        $entry = [
+            'command' => 'dw',
+            'arguments' => $arguments,
+            'stdout' => $stdout,
+            'stderr' => $stderr,
+            'exit_code' => $exitCode,
+        ];
+
+        if ($query !== null) {
+            $entry['query'] = $query;
+        }
+
+        if ($expectedCount !== null) {
+            $entry['expected_count'] = $expectedCount;
+        }
+
+        if ($actualCount !== null) {
+            $entry['actual_count'] = $actualCount;
+        }
+
+        return $entry;
     }
 
     /**
@@ -409,6 +541,84 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'is_vip' => true,
             'created_at' => '2026-05-20T12:00:00Z',
             'tags' => ['urgent', 'renewal'],
+        ];
+        $cliQueries = [
+            'equality' => $this->cliTranscript(
+                ['workflows', 'list', '--query', 'customer_id = "cust-7"'],
+                '{"workflows":[{"workflow_id":"sa-python-7"}]}',
+                query: 'customer_id = "cust-7"',
+                expectedCount: 1,
+                actualCount: 1,
+            ),
+            'range' => $this->cliTranscript(
+                ['workflows', 'list', '--query', 'order_total_cents > 5000 AND order_total_cents <= 10000'],
+                '{"workflows":[{"workflow_id":"sa-python-4"},{"workflow_id":"sa-python-5"},{"workflow_id":"sa-python-6"},{"workflow_id":"sa-python-7"}]}',
+                query: 'order_total_cents > 5000 AND order_total_cents <= 10000',
+                expectedCount: 4,
+                actualCount: 4,
+            ),
+            'bool' => $this->cliTranscript(
+                ['workflows', 'list', '--query', 'is_vip = true'],
+                '{"workflows":[{"workflow_id":"sa-python-1"},{"workflow_id":"sa-python-3"},{"workflow_id":"sa-python-5"},{"workflow_id":"sa-python-7"},{"workflow_id":"sa-python-9"}]}',
+                query: 'is_vip = true',
+                expectedCount: 5,
+                actualCount: 5,
+            ),
+            'or' => $this->cliTranscript(
+                ['workflows', 'list', '--query', 'customer_id = "cust-2" OR customer_id = "cust-8"'],
+                '{"workflows":[{"workflow_id":"sa-python-2"},{"workflow_id":"sa-python-8"}]}',
+                query: 'customer_id = "cust-2" OR customer_id = "cust-8"',
+                expectedCount: 2,
+                actualCount: 2,
+            ),
+            'not' => $this->cliTranscript(
+                ['workflows', 'list', '--query', 'priority_tier IN ("gold","platinum") AND NOT is_vip'],
+                '{"workflows":[{"workflow_id":"sa-python-2"},{"workflow_id":"sa-python-4"},{"workflow_id":"sa-python-6"}]}',
+                query: 'priority_tier IN ("gold","platinum") AND NOT is_vip',
+                expectedCount: 3,
+                actualCount: 3,
+            ),
+            'keyword_list' => $this->cliTranscript(
+                ['workflows', 'list', '--query', 'tags = "urgent"'],
+                '{"workflows":[{"workflow_id":"sa-python-1"},{"workflow_id":"sa-python-4"},{"workflow_id":"sa-python-8"}]}',
+                query: 'tags = "urgent"',
+                expectedCount: 3,
+                actualCount: 3,
+            ),
+        ];
+        $cliDefinitionCommands = [
+            'list' => $this->cliTranscript(
+                ['search-attributes', 'list'],
+                '{"custom_attributes":{"customer_id":"string","order_total_cents":"int","priority_tier":"keyword"}}',
+            ),
+            'create' => $this->cliTranscript(
+                ['search-attributes', 'create', 'priority_tier_tmp', 'keyword'],
+                '{"name":"priority_tier_tmp","type":"keyword"}',
+            ),
+            'delete' => $this->cliTranscript(
+                ['search-attributes', 'delete', 'priority_tier_tmp'],
+                '{"name":"priority_tier_tmp","deleted":true}',
+            ),
+        ];
+        $cliDiagnostics = [
+            'wrong_literal' => $this->cliTranscript(
+                ['workflows', 'list', '--query', 'order_total_cents = "not-a-number"'],
+                '',
+                stderr: 'Server error: order_total_cents expects an integer literal.',
+                exitCode: 2,
+            ) + [
+                'error_code' => 'invalid_search_attribute_literal',
+                'message' => 'order_total_cents expects an integer literal.',
+            ],
+            'injection' => $this->cliTranscript(
+                ['workflows', 'list', '--query', 'customer_id = "x" OR 1=1'],
+                '',
+                stderr: 'Server error: query parser rejected unsupported literal.',
+                exitCode: 2,
+            ) + [
+                'error_code' => 'invalid_visibility_query',
+                'message' => 'query parser rejected unsupported literal.',
+            ],
         ];
         $scenarioResults = [];
         foreach (SearchAttributeRuntimeContract::manifest()['required_scenarios'] as $scenario) {
@@ -443,11 +653,9 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'visibility_query_match' => true,
         ];
         $scenarioResults['cli_query_and_error_surface']['observed_outputs'] += [
-            'workflow_list_query' => ['query' => 'customer_id = "cust-7"', 'actual_count' => 1],
-            'search_attribute_list' => ['customer_id', 'order_total_cents'],
-            'search_attribute_create' => ['name' => 'priority_tier', 'type' => 'keyword'],
-            'search_attribute_delete' => ['name' => 'priority_tier_tmp', 'status' => 'deleted'],
-            'typed_error_observed' => true,
+            'workflow_list_queries' => $cliQueries,
+            'search_attribute_commands' => $cliDefinitionCommands,
+            'diagnostics' => $cliDiagnostics,
         ];
         $scenarioResults['python_to_php_codec_round_trip']['observed_outputs']['python_to_php'] = [
             'encoded_payload' => 'base64:python-payload',
@@ -562,11 +770,9 @@ class SearchAttributeRuntimeContractTest extends TestCase
                 'saved_filter_state' => true,
             ],
             'cli_surface' => [
-                'workflow_list_query' => ['query' => 'customer_id = "cust-7"', 'actual_count' => 1],
-                'search_attribute_list' => ['customer_id', 'order_total_cents', 'discount_ratio'],
-                'search_attribute_create' => ['name' => 'priority_tier_tmp', 'type' => 'keyword'],
-                'search_attribute_delete' => ['name' => 'priority_tier_tmp', 'status' => 'deleted'],
-                'typed_error_observed' => true,
+                'workflow_list_queries' => $cliQueries,
+                'search_attribute_commands' => $cliDefinitionCommands,
+                'diagnostics' => $cliDiagnostics,
             ],
             'codec_round_trips' => [
                 'python_to_php' => [

@@ -16,7 +16,7 @@ final class SearchAttributeRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.contract';
 
-    public const VERSION = 4;
+    public const VERSION = 5;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result';
 
@@ -288,6 +288,55 @@ final class SearchAttributeRuntimeContract
                         'saved view filter state',
                     ],
                 ],
+                'cli_query_and_error_surface' => [
+                    'required_queries' => [
+                        'equality' => 'customer_id = "cust-7"',
+                        'range' => 'order_total_cents > 5000 AND order_total_cents <= 10000',
+                        'bool' => 'is_vip = true',
+                        'or' => 'customer_id = "cust-2" OR customer_id = "cust-8"',
+                        'not' => 'priority_tier IN ("gold","platinum") AND NOT is_vip',
+                        'keyword_list' => 'tags = "urgent"',
+                    ],
+                    'required_definition_commands' => [
+                        'list',
+                        'create',
+                        'delete',
+                    ],
+                    'required_diagnostics' => [
+                        'wrong_literal' => 'order_total_cents = "not-a-number"',
+                        'injection' => 'customer_id = "x" OR 1=1',
+                    ],
+                    'command_transcript_required_fields' => [
+                        'command',
+                        'arguments',
+                        'stdout',
+                        'stderr',
+                        'exit_code',
+                    ],
+                    'query_count_fields' => [
+                        'expected_count',
+                        'actual_count',
+                    ],
+                    'diagnostic_required_fields' => [
+                        'command',
+                        'arguments',
+                        'stdout',
+                        'stderr',
+                        'exit_code',
+                        'error_code',
+                        'message',
+                    ],
+                    'diagnostic_must_not_be_transport_failure' => true,
+                    'cli_mismatch_finding_required_fields' => [
+                        'command',
+                        'arguments',
+                        'stdout',
+                        'stderr',
+                        'exit_code',
+                        'artifact_versions',
+                        'expected_server_response',
+                    ],
+                ],
             ],
             'coverage_gate' => [
                 'passing_outcome_requires' => [
@@ -324,6 +373,7 @@ final class SearchAttributeRuntimeContract
                 'waterline_observer_mismatch' => 'link_root_cause_finding_against_waterline',
                 'query_injection_accepted' => 'link_root_cause_security_finding_against_server',
                 'unsupported_public_surface' => 'link_root_cause_finding_against_surface_owner',
+                'cli_surface_uncovered_by_runner' => 'link_root_cause_finding_against_conformance_harness',
                 'documentation_gap' => 'link_root_cause_finding_against_docs',
             ],
         ];
