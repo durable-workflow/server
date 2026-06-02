@@ -5,6 +5,7 @@ namespace Tests\Unit;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NamespaceRuntimeResultGate;
 use PHPUnit\Framework\TestCase;
+use Workflow\V2\Support\PlatformConformanceSuite;
 
 class NamespaceConformanceRunnerContractTest extends TestCase
 {
@@ -112,6 +113,38 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('DW_NAMESPACES_WATERLINE_RESULT="$waterline_result_path"', $source);
         $this->assertStringContainsString('write_waterline_setup_failure', $source);
         $this->assertStringContainsString('Waterline namespace shard could not run in the published-artifact harness', $source);
+    }
+
+    public function test_runner_reports_suite_version_from_namespace_scenario_manifest(): void
+    {
+        $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
+        $manifest = json_decode(
+            $this->read('static/platform-conformance/namespace-runtime-scenarios.json'),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+
+        $this->assertStringContainsString(
+            'namespace_scenario_manifest="${DW_NAMESPACES_SCENARIO_MANIFEST:-$repo_root/static/platform-conformance/namespace-runtime-scenarios.json}"',
+            $source,
+            'the runner must use the advertised namespace scenario manifest as its suite-version source',
+        );
+        $this->assertSame(
+            PlatformConformanceSuite::VERSION,
+            $manifest['suite_version'],
+            'the shipped namespace runner handoff must stay aligned with the installed platform conformance suite version',
+        );
+        $this->assertStringContainsString(
+            'namespace_suite_version="${DW_NAMESPACES_SUITE_VERSION:-$(read_namespace_suite_version)}"',
+            $source,
+            'the runner must resolve suite_version from the manifest unless the host overrides it',
+        );
+        $this->assertStringNotContainsString(
+            'namespace_suite_version="${DW_NAMESPACES_SUITE_VERSION:-15}"',
+            $source,
+            'the namespace runner must not hardcode a suite version that can drift from the public manifest',
+        );
     }
 
     public function test_runner_requires_all_workflow_php_namespace_shard_rows_before_passing_php_backed_cells(): void

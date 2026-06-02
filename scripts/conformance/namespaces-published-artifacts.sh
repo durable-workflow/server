@@ -77,7 +77,26 @@ timestamp() {
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
-namespace_suite_version="${DW_NAMESPACES_SUITE_VERSION:-15}"
+namespace_scenario_manifest="${DW_NAMESPACES_SCENARIO_MANIFEST:-$repo_root/static/platform-conformance/namespace-runtime-scenarios.json}"
+
+read_namespace_suite_version() {
+  local version
+
+  if [[ ! -f "$namespace_scenario_manifest" ]]; then
+    printf 'namespace scenario manifest not found: %s\n' "$namespace_scenario_manifest" >&2
+    exit 2
+  fi
+
+  version="$(sed -n 's/^[[:space:]]*"suite_version"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$namespace_scenario_manifest" | head -n 1)"
+  if [[ -z "$version" ]]; then
+    printf 'namespace scenario manifest does not declare suite_version: %s\n' "$namespace_scenario_manifest" >&2
+    exit 2
+  fi
+
+  printf '%s\n' "$version"
+}
+
+namespace_suite_version="${DW_NAMESPACES_SUITE_VERSION:-$(read_namespace_suite_version)}"
 
 run_root="${DW_NAMESPACES_RUN_ROOT:-}"
 if [[ -z "$run_root" ]]; then
