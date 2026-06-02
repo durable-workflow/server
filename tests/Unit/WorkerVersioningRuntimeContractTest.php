@@ -853,6 +853,41 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         }
     }
 
+    public function test_result_gate_rejects_top_level_published_worker_evidence_local_checkout_flag(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['published_worker_execution_evidence']['local_product_source_checkouts_used'] = true;
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'local_product_source_checkouts_used_must_be_false'
+                && ($failure['scenario_id'] ?? null) === 'replay_only_by_compatible_workers'
+                && ($failure['field'] ?? null) === 'published_worker_execution_evidence.local_product_source_checkouts_used',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($failures);
+    }
+
+    public function test_result_gate_requires_top_level_published_worker_evidence_local_checkout_flag(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        unset($result['published_worker_execution_evidence']['local_product_source_checkouts_used']);
+        $result['published_worker_execution_evidence']['supplied_shard_local_product_source_checkouts_used'] = true;
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'local_product_source_checkouts_used_must_be_false'
+                && ($failure['scenario_id'] ?? null) === 'replay_across_cache_eviction'
+                && ($failure['field'] ?? null) === 'published_worker_execution_evidence.local_product_source_checkouts_used',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($failures);
+    }
+
     public function test_result_gate_rejects_placeholder_artifact_versions(): void
     {
         $result = $this->completeWorkerVersioningResult();
@@ -1051,6 +1086,20 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'generated_at' => '2026-05-24T08:05:01Z',
             'artifact_versions' => $artifactVersions,
             'artifact_sources' => $artifactSources,
+            'published_worker_execution_evidence' => [
+                'local_product_source_checkouts_used' => false,
+                'scenario_results' => [
+                    'replay_only_by_compatible_workers' => [
+                        'status' => 'pass',
+                    ],
+                    'replay_across_cache_eviction' => [
+                        'status' => 'pass',
+                    ],
+                    'cross_language_php_python_pinning' => [
+                        'status' => 'pass',
+                    ],
+                ],
+            ],
             'scenario_results' => $scenarioResults,
             'findings' => ['none' => 'no open findings for passing evidence'],
             'finding_links' => ['none' => 'not-applicable'],

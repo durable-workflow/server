@@ -78,6 +78,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'publishedWorkerExecutionEntries',
             'DW_WV_PUBLISHED_WORKER_EVIDENCE',
             'local_product_source_checkouts_used: truthyEvidenceFlag(evidence.local_product_source_checkouts_used)',
+            'supplied_shard_local_product_source_checkouts_used',
+            'outputs?.supplied_shard_local_product_source_checkouts_used !== false',
             'explicitFalse(outputs?.local_product_source_checkouts_used)',
         ] as $token) {
             $this->assertStringContainsString($token, $node);

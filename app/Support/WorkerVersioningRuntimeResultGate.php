@@ -880,7 +880,10 @@ final class WorkerVersioningRuntimeResultGate
 
         array_push($failures, ...self::routingInvariantFailures($scenarioResults));
         array_push($failures, ...self::crossLanguageInvariantFailures($scenarioResults));
-        array_push($failures, ...self::publishedWorkerExecutionEvidenceFailures($scenarioResults));
+        array_push(
+            $failures,
+            ...self::publishedWorkerExecutionEvidenceFailures($scenarioResults, $result),
+        );
 
         return $failures;
     }
@@ -1212,6 +1215,7 @@ final class WorkerVersioningRuntimeResultGate
 
     /**
      * @param array<string, array<string, mixed>> $scenarioResults
+     * @param array<string, mixed> $result
      *
      * @return array<int, array<string, mixed>>
      */
@@ -1244,12 +1248,19 @@ final class WorkerVersioningRuntimeResultGate
 
     /**
      * @param array<string, array<string, mixed>> $scenarioResults
+     * @param array<string, mixed> $result
      *
      * @return array<int, array<string, mixed>>
      */
-    private static function publishedWorkerExecutionEvidenceFailures(array $scenarioResults): array
+    private static function publishedWorkerExecutionEvidenceFailures(array $scenarioResults, array $result): array
     {
         $failures = [];
+        $topLevelWorkerEvidence = self::arrayField($result, [
+            'published_worker_execution_evidence',
+            'publishedWorkerExecutionEvidence',
+            'published_worker_evidence',
+            'publishedWorkerEvidence',
+        ]);
         $scenarios = [
             'replay_only_by_compatible_workers' => [
                 'published_artifact_worker_execution',
@@ -1268,6 +1279,27 @@ final class WorkerVersioningRuntimeResultGate
             $evidence = self::passingScenarioEvidence($scenarioResults, $scenarioId);
             if ($evidence === null) {
                 continue;
+            }
+
+            if ($topLevelWorkerEvidence === null
+                || ! self::hasExplicitFalseField($topLevelWorkerEvidence, [
+                    'local_product_source_checkouts_used',
+                    'localProductSourceCheckoutsUsed',
+                ])
+                || self::truthyField($topLevelWorkerEvidence, [
+                    'supplied_shard_local_product_source_checkouts_used',
+                    'suppliedShardLocalProductSourceCheckoutsUsed',
+                ])) {
+                $failures[] = [
+                    'code' => 'local_product_source_checkouts_used_must_be_false',
+                    'scenario_id' => $scenarioId,
+                    'field' => 'published_worker_execution_evidence.local_product_source_checkouts_used',
+                    'value' => $topLevelWorkerEvidence['local_product_source_checkouts_used']
+                        ?? $topLevelWorkerEvidence['localProductSourceCheckoutsUsed']
+                        ?? $topLevelWorkerEvidence['supplied_shard_local_product_source_checkouts_used']
+                        ?? $topLevelWorkerEvidence['suppliedShardLocalProductSourceCheckoutsUsed']
+                        ?? null,
+                ];
             }
 
             foreach ($requiredTrueFields as $field) {

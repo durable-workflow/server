@@ -1229,6 +1229,8 @@ function publishedWorkerExecutionEvidence(artifactVersions, artifactSources) {
       || 'durable-workflow.v2.worker-versioning-runtime.published-worker-execution-evidence',
     local_product_source_checkouts_used: truthyEvidenceFlag(supplied.local_product_source_checkouts_used)
       || truthyEvidenceFlag(supplied.localProductSourceCheckoutsUsed),
+    supplied_shard_local_product_source_checkouts_used: !explicitFalse(supplied.local_product_source_checkouts_used)
+      && !explicitFalse(supplied.localProductSourceCheckoutsUsed),
     generated_at: stringValue(supplied.generated_at) || stringValue(supplied.generatedAt) || timestamp(),
     artifact_versions: {
       ...artifactVersions,
@@ -1266,6 +1268,7 @@ function publishedWorkerScenarioOutputs(evidence, scenarioId) {
     local_product_source_checkouts_used: truthyEvidenceFlag(evidence.local_product_source_checkouts_used)
       || truthyEvidenceFlag(observedOutputs.local_product_source_checkouts_used)
       || truthyEvidenceFlag(observedOutputs.localProductSourceCheckoutsUsed),
+    supplied_shard_local_product_source_checkouts_used: evidence.supplied_shard_local_product_source_checkouts_used,
     published_worker_evidence_status: normalizedArtifactStatus(scenario.status),
     published_worker_evidence_source: evidence.source_path ?? null,
   };
@@ -1283,6 +1286,10 @@ function mergeScenarioOutputs(base, supplied) {
 }
 
 function publishedWorkerScenarioPasses(outputs, requiredArtifacts, requireAllArtifacts) {
+  if (outputs?.supplied_shard_local_product_source_checkouts_used !== false) {
+    return false;
+  }
+
   if (!explicitFalse(outputs?.local_product_source_checkouts_used)
     && !explicitFalse(outputs?.localProductSourceCheckoutsUsed)) {
     return false;
