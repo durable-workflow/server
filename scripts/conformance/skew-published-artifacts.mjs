@@ -297,7 +297,6 @@ async function main() {
     protocolManifestVersions,
     serverUrl,
     runId: `skew-${Date.now().toString(36)}`,
-    liveWorkflowWorker: liveWorkflowWorkerState(),
   };
 
   const surfaceResults = {};
@@ -509,15 +508,13 @@ async function probeOperation({
     });
   }
 
-  const workerDependencyGap = workflowWorkerDependencyGap({
-    surfaceName,
+  const workerTaskGap = workerTaskCompletionGap({
     pairingClass,
     operationGroup,
     requestTemplate,
-    context,
     state,
   });
-  if (workerDependencyGap) {
+  if (workerTaskGap) {
     return notCoveredProbe({
       surfaceName,
       surface,
@@ -527,8 +524,8 @@ async function probeOperation({
       method,
       requestPath,
       context,
-      status: workerDependencyGap.status,
-      reason: workerDependencyGap.reason,
+      status: workerTaskGap.status,
+      reason: workerTaskGap.reason,
     });
   }
 
@@ -686,7 +683,7 @@ async function probeOperation({
     evidence.refusal_context = loudRefusalContext(surfaceName, surfaceVersion, context, pairing, response);
   }
 
-  if (isCompatibleCliControlPlaneInterop({ surfaceName, pairingClass, operationGroup, response })) {
+  if (isCompatibleControlPlaneInterop({ surfaceName, pairingClass, operationGroup, response })) {
     evidence.interop_classification = 'structured_control_plane_domain_response';
     capture.interop_classification = evidence.interop_classification;
   }
@@ -1010,56 +1007,30 @@ function waterlineSurfaceUrlFor(record = {}) {
   return url ? trimTrailingSlash(url) : '';
 }
 
-function workflowWorkerDependencyGap({
-  surfaceName,
+function workerTaskCompletionGap({
   pairingClass,
   operationGroup,
   requestTemplate,
-  context,
   state,
 }) {
   if (
-    operationGroup === 'worker_lifecycle'
-    && workflowTaskCompletionRequests.has(requestTemplate)
-    && !state.taskId
-  ) {
-    if (!requiresPublishedWorkerTaskId(pairingClass)) {
-      return null;
-    }
-
-    return {
-      status: 'not_covered',
-      reason: [
-        `${requestTemplate} requires a workflow task id obtained from a successful fixture poll before completing or failing an inside-window task.`,
-        'Protocol-refusal rows may use the advertised task placeholder only when the server must reject before task lookup.',
-      ].join(' '),
-    };
-  }
-
-  if (
-    surfaceName !== 'sdk-python'
-    || operationGroup !== 'workflow_control_plane'
-    || !workflowWorkerDependentRequests.has(requestTemplate)
+    operationGroup !== 'worker_lifecycle'
+    || !workflowTaskCompletionRequests.has(requestTemplate)
+    || state.taskId
   ) {
     return null;
   }
 
-  const liveWorker = context.liveWorkflowWorker ?? liveWorkflowWorkerState();
-  if (liveWorker.ready) {
-    return null;
-  }
-
-  if (pairingClass !== 'compatible') {
+  if (!requiresPublishedWorkerTaskId(pairingClass)) {
     return null;
   }
 
   return {
     status: 'not_covered',
     reason: [
-      `${requestTemplate} requires a live compatible published workflow worker for skew_conformance_workflow.`,
-      liveWorker.reason,
-      'Workflow package availability alone is not live worker coordination.',
-    ].filter(Boolean).join(' '),
+      `${requestTemplate} requires a workflow task id obtained from a successful fixture poll before completing or failing an inside-window task.`,
+      'Protocol-refusal rows may use the advertised task placeholder only when the server must reject before task lookup.',
+    ].join(' '),
   };
 }
 
@@ -1532,17 +1503,6 @@ function workflowTaskAttemptFromBody(body) {
   );
 }
 
-function liveWorkflowWorkerState() {
-  const rawReady = envValue('DW_SKEW_LIVE_WORKFLOW_WORKER_READY').toLowerCase();
-  const ready = ['1', 'true', 'yes'].includes(rawReady);
-
-  return {
-    ready,
-    reason: envValue('DW_SKEW_LIVE_WORKFLOW_WORKER_REASON')
-      || 'The runner has not booted a live published durable-workflow/workflow worker process.',
-  };
-}
-
 async function invokeSurfaceOperation(options) {
   if (options.surfaceName === 'cli') {
     return invokeCliOperation(options);
@@ -1778,6 +1738,9 @@ async function invokeWaterlineOperation({
     request_path: requestPath,
   };
   const docker = phpDockerInvocation(availability, script, payload);
+  const targetUrl = operationGroup === 'waterline_render'
+    ? availability.surfaceUrl
+    : null;
 
   return runArtifactWithProxy({
     surfaceName,
@@ -1785,7 +1748,7 @@ async function invokeWaterlineOperation({
     operationGroup,
     method,
     requestPath,
-    targetUrl: availability.surfaceUrl,
+    targetUrl,
     context,
     pairing,
     command: docker.command,
@@ -2975,7 +2938,7 @@ function classifyEvidenceStatus({ surfaceName, pairingClass, operationGroup, res
     return 'loud_refuse';
   }
 
-  if (isCompatibleCliControlPlaneInterop({
+  if (isCompatibleControlPlaneInterop({
     surfaceName,
     pairingClass,
     operationGroup,
@@ -3003,14 +2966,14 @@ function classifyEvidenceStatus({ surfaceName, pairingClass, operationGroup, res
   return 'silent_success';
 }
 
-function isCompatibleCliControlPlaneInterop({
+function isCompatibleControlPlaneInterop({
   surfaceName,
   pairingClass,
   operationGroup,
   response,
 }) {
   if (
-    surfaceName !== 'cli'
+    !['cli', 'sdk-python'].includes(surfaceName)
     || pairingClass !== 'compatible'
     || operationGroup !== 'workflow_control_plane'
     || response.status < 400

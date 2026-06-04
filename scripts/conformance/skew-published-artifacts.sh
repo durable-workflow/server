@@ -25,7 +25,9 @@ Environment overrides:
   DW_PYTHON_SDK_VERSION        Published PyPI durable-workflow version under test.
   DW_WORKFLOW_PHP_VERSION      Published durable-workflow/workflow version under test.
   DW_WATERLINE_VERSION         Published Waterline version under test.
-  DW_SKEW_WATERLINE_URL        Running Composer-installed Waterline HTTP surface to render through.
+  DW_SKEW_WATERLINE_URL        Optional existing Composer-installed Waterline HTTP surface.
+                               If unset, the runner starts a disposable Laravel Waterline app.
+  DW_SKEW_WATERLINE_PORT       Host port for the disposable Waterline app. Defaults to a free port.
   DW_SKEW_DOCKER_HOST_GATEWAY_NAME
                                Host name Dockerized PHP probes use to reach the recording proxy.
                                Defaults to host.docker.internal with a host-gateway mapping.
@@ -133,6 +135,38 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 NODE
 }
 
+wait_for_waterline() {
+  local url="$1"
+
+node - <<'NODE' "$url"
+const baseUrl = process.argv[2].replace(/\/+$/, '');
+const readyUrl = `${baseUrl}/waterline/api/v2/health`;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+(async () => {
+  for (let attempt = 0; attempt < 90; attempt += 1) {
+    try {
+      const response = await fetch(readyUrl, {
+        headers: {
+          Accept: 'application/json',
+          'X-Durable-Workflow-Control-Plane-Version': '2',
+        },
+      });
+      if (response.status > 0 && response.status < 500 && response.status !== 404) {
+        process.exit(0);
+      }
+    } catch {
+    }
+
+    await sleep(1000);
+  }
+
+  console.error(`published Waterline app did not expose ${readyUrl}`);
+  process.exit(1);
+})();
+NODE
+}
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
 
@@ -153,9 +187,15 @@ server_url="${DW_SKEW_SERVER_URL:-}"
 server_started=0
 compose_cleanup_needed=0
 server_artifact_source="published_server_url"
+waterline_container=""
 
 cleanup() {
   local code=$?
+
+  if [[ -n "$waterline_container" ]]; then
+    docker logs "$waterline_container" >"$result_dir/waterline-serve-container.log" 2>&1 || true
+    docker rm -f "$waterline_container" >/dev/null 2>&1 || true
+  fi
 
   if [[ "$server_started" == "1" || "$compose_cleanup_needed" == "1" ]]; then
     docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" down -v >/dev/null 2>&1 || true
@@ -351,17 +391,124 @@ if [[ -n "${DW_WATERLINE_VERSION:-}" ]]; then
     waterline_status="runner_blocked"
     waterline_reason="Waterline install requires an exact durable-workflow/workflow version; got ${workflow_version}"
   elif require_command docker; then
-    if docker run --rm -v "$run_root/waterline:/app" composer:2 \
-      composer require --no-interaction --no-progress \
-        "durable-workflow/workflow:${workflow_version}" \
-        "durable-workflow/waterline:${DW_WATERLINE_VERSION}" >"$result_dir/waterline-composer-install.log" 2>&1; then
+    waterline_create_status=0
+    waterline_require_status=1
+    waterline_key_status=0
+    waterline_migrate_status=0
+    waterline_serve_status=0
+
+    if [[ -z "$waterline_surface_url" ]]; then
+      if docker run --rm -v "$run_root/waterline:/app" -w /app composer:2 \
+        composer create-project laravel/laravel . --no-interaction --no-progress \
+        >"$result_dir/waterline-create-project.log" 2>&1; then
+        waterline_create_status=0
+      else
+        waterline_create_status=1
+      fi
+    fi
+
+    if [[ "$waterline_create_status" -eq 0 ]]; then
+      mkdir -p "$run_root/waterline/database"
+      : > "$run_root/waterline/database/database.sqlite"
+
+      if docker run --rm -v "$run_root/waterline:/app" -w /app composer:2 \
+        composer require --no-interaction --no-progress \
+          "durable-workflow/workflow:${workflow_version}" \
+          "durable-workflow/waterline:${DW_WATERLINE_VERSION}" >"$result_dir/waterline-composer-install.log" 2>&1; then
+        waterline_require_status=0
+      else
+        waterline_require_status=1
+      fi
+    fi
+
+    if [[ "$waterline_require_status" -eq 0 && -z "$waterline_surface_url" ]]; then
+      if docker run --rm \
+        -v "$run_root/waterline:/app" \
+        -w /app \
+        -e APP_ENV=local \
+        -e DB_CONNECTION=sqlite \
+        -e DB_DATABASE=/app/database/database.sqlite \
+        -e WATERLINE_ENGINE_SOURCE=v2 \
+        -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
+        -e WATERLINE_NAMESPACE="${DW_SKEW_NAMESPACE:-default}" \
+        composer:2 php artisan key:generate --force \
+        >"$result_dir/waterline-key-generate.log" 2>&1; then
+        waterline_key_status=0
+      else
+        waterline_key_status=1
+      fi
+    fi
+
+    if [[ "$waterline_key_status" -eq 0 && -z "$waterline_surface_url" ]]; then
+      if docker run --rm \
+        -v "$run_root/waterline:/app" \
+        -w /app \
+        -e APP_ENV=local \
+        -e DB_CONNECTION=sqlite \
+        -e DB_DATABASE=/app/database/database.sqlite \
+        -e WATERLINE_ENGINE_SOURCE=v2 \
+        -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
+        -e WATERLINE_NAMESPACE="${DW_SKEW_NAMESPACE:-default}" \
+        composer:2 php artisan migrate --force \
+        >"$result_dir/waterline-migrate.log" 2>&1; then
+        waterline_migrate_status=0
+      else
+        waterline_migrate_status=1
+      fi
+    fi
+
+    if [[ "$waterline_migrate_status" -eq 0 && -z "$waterline_surface_url" ]]; then
+      waterline_port="${DW_SKEW_WATERLINE_PORT:-$(free_port)}"
+      waterline_surface_url="http://127.0.0.1:${waterline_port}"
+      waterline_container="dw-skew-waterline-${run_label}"
+      if docker run -d \
+        --name "$waterline_container" \
+        -p "127.0.0.1:${waterline_port}:${waterline_port}" \
+        -v "$run_root/waterline:/app" \
+        -w /app \
+        -e APP_ENV=local \
+        -e DB_CONNECTION=sqlite \
+        -e DB_DATABASE=/app/database/database.sqlite \
+        -e WATERLINE_ENGINE_SOURCE=v2 \
+        -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
+        -e WATERLINE_NAMESPACE="${DW_SKEW_NAMESPACE:-default}" \
+        composer:2 php artisan serve --host=0.0.0.0 --port "$waterline_port" \
+        >"$result_dir/waterline-serve-container.id" 2>"$result_dir/waterline-serve-start.log"; then
+        if wait_for_waterline "$waterline_surface_url" >"$result_dir/waterline-ready.log" 2>&1; then
+          waterline_serve_status=0
+        else
+          waterline_serve_status=1
+        fi
+      else
+        waterline_serve_status=1
+      fi
+    fi
+
+    if [[ "$waterline_create_status" -ne 0 ]]; then
+      waterline_status="runner_blocked"
+      waterline_reason="Laravel app creation failed before Waterline skew surface startup; see waterline-create-project.log"
+      waterline_surface_url=""
+    elif [[ "$waterline_require_status" -ne 0 ]]; then
+      waterline_status="runner_blocked"
+      waterline_reason="Composer install failed for durable-workflow/waterline:${DW_WATERLINE_VERSION}; see waterline-composer-install.log"
+      waterline_surface_url=""
+    elif [[ "$waterline_key_status" -ne 0 ]]; then
+      waterline_status="runner_blocked"
+      waterline_reason="Laravel key generation failed before Waterline skew surface startup; see waterline-key-generate.log"
+      waterline_surface_url=""
+    elif [[ "$waterline_migrate_status" -ne 0 ]]; then
+      waterline_status="runner_blocked"
+      waterline_reason="Laravel migration failed before Waterline skew surface startup; see waterline-migrate.log"
+      waterline_surface_url=""
+    elif [[ "$waterline_serve_status" -ne 0 ]]; then
+      waterline_status="runner_blocked"
+      waterline_reason="Disposable Waterline app failed to expose /waterline/api/v2/health; see waterline-ready.log and waterline-serve-container.log"
+      waterline_surface_url=""
+    else
       waterline_status="available"
       waterline_reason=""
       waterline_source="packagist"
       waterline_app_dir="$run_root/waterline"
-    else
-      waterline_status="runner_blocked"
-      waterline_reason="Composer install failed for durable-workflow/waterline:${DW_WATERLINE_VERSION}; see waterline-composer-install.log"
     fi
   else
     waterline_status="runner_blocked"

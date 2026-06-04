@@ -479,7 +479,22 @@ final class SkewRefusalMatrixContractTest extends TestCase
         $this->assertStringContainsString(
             'DW_SKEW_WATERLINE_URL',
             $shell,
-            'Waterline render evidence must require a running Waterline HTTP surface in addition to Composer package install',
+            'host runners may still point at a pre-existing Composer-installed Waterline HTTP surface',
+        );
+        $this->assertStringContainsString(
+            'composer create-project laravel/laravel . --no-interaction --no-progress',
+            $shell,
+            'when no Waterline URL is supplied, the skew runner must create a disposable Laravel app for the published Waterline package',
+        );
+        $this->assertStringContainsString(
+            'composer:2 php artisan serve --host=0.0.0.0 --port "$waterline_port"',
+            $shell,
+            'the skew runner must boot the disposable Waterline app before reporting Waterline render evidence',
+        );
+        $this->assertStringContainsString(
+            'wait_for_waterline',
+            $shell,
+            'the skew runner must wait for the Waterline HTTP surface before handing it to the Node matrix runner',
         );
         $this->assertStringContainsString(
             'surface_url: env.WATERLINE_SURFACE_URL',
@@ -646,40 +661,25 @@ final class SkewRefusalMatrixContractTest extends TestCase
             $runner,
             'unimplemented shards must emit explicit not_covered evidence instead of pretending public artifacts were exercised',
         );
-        $this->assertStringContainsString(
-            'workflowWorkerDependentRequests',
+        $this->assertStringNotContainsString(
+            'workflowWorkerDependencyGap',
             $runner,
-            'CLI and Python query/update probes must be distinguishable from worker-independent workflow control-plane probes',
+            'compatible Python SDK query/update probes must reach the SDK artifact so user-visible domain responses can prove inside-window interop',
         );
         $this->assertStringContainsString(
-            'requires a live compatible published workflow worker for skew_conformance_workflow',
+            "!['cli', 'sdk-python'].includes(surfaceName)",
             $runner,
-            'worker-backed CLI and Python probes must stay not_covered until the published worker shard is booted',
+            'compatible CLI and Python SDK query/update probes must classify structured server domain responses as interop evidence',
         );
         $this->assertStringContainsString(
-            'DW_SKEW_LIVE_WORKFLOW_WORKER_READY',
+            'isCompatibleControlPlaneInterop',
             $runner,
-            'worker-backed CLI and Python probes must require an explicit live-worker coordination signal, not only an installed package',
-        );
-        $this->assertStringContainsString(
-            'Workflow package availability alone is not live worker coordination.',
-            $runner,
-            'the skew runner must not treat a Composer-installed workflow package as proof that query/update probes can be served',
-        );
-        $this->assertStringContainsString(
-            "surfaceName !== 'sdk-python'",
-            $runner,
-            'compatible CLI query/update probes must still reach the CLI and record structured server interop evidence when no live worker is coordinated',
-        );
-        $this->assertStringContainsString(
-            'isCompatibleCliControlPlaneInterop',
-            $runner,
-            'compatible CLI control-plane domain responses must classify as inside-window interop rather than silent_failure',
+            'compatible control-plane domain responses must classify as inside-window interop rather than silent_failure',
         );
         $this->assertStringContainsString(
             'structured_control_plane_domain_response',
             $runner,
-            'compatible CLI rows must label structured control-plane domain responses as interop evidence',
+            'compatible CLI and Python SDK rows must label structured control-plane domain responses as interop evidence',
         );
         $this->assertStringContainsString(
             'next_step: nextStep',
@@ -702,9 +702,9 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'published-artifact worker complete/fail probes must use task ids obtained from poll rather than a synthetic fixture id',
         );
         $this->assertStringContainsString(
-            "if (pairingClass !== 'compatible')",
+            'workerTaskCompletionGap',
             $runner,
-            'skewed query/update rows must reach the artifact so unsupported control-plane versions can refuse before worker dispatch',
+            'worker lifecycle complete/fail rows must keep their task-id guard without blocking SDK query/update coverage',
         );
         $this->assertStringContainsString(
             'workerProtocolCompatible(',
@@ -943,9 +943,14 @@ PHP,
             'missing Waterline artifact output must be non-pass instead of falling back to proxy-selected output',
         );
         $this->assertStringContainsString(
-            'targetUrl: availability.surfaceUrl',
+            "operationGroup === 'waterline_render'",
             $runner,
-            'Waterline render probes must send the recording proxy to the running Waterline HTTP surface, not directly to the server',
+            'only Waterline render probes should send the recording proxy to the running Waterline HTTP surface',
+        );
+        $this->assertStringContainsString(
+            'targetUrl,',
+            $runner,
+            'Waterline cluster-info probes should keep the default published-server target while render probes use the Waterline app target',
         );
         $this->assertStringContainsString(
             'targetUrl = null',
