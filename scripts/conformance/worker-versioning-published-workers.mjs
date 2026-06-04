@@ -1264,7 +1264,16 @@ function arrayValue(value) {
 }
 
 function isExplicitNoCompatibleSignal(value) {
-  return ['no_compatible_worker', 'compatibility_blocked', 'compatibility_unsupported'].includes(stringValue(value));
+  const normalized = stringValue(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  return [
+    'no_compatible_worker',
+    'compatibility_blocked',
+    'compatibility_unsupported',
+  ].some((token) => normalized.includes(token));
 }
 
 function sleep(milliseconds) {

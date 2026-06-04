@@ -300,6 +300,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'incompatible_worker_polls: incompatiblePolls',
             'operator_visible_signal: operatorVisibleSignal',
             'isExplicitNoCompatibleSignal(operatorVisibleSignal)',
+            ".replace(/[^a-z0-9]+/g, '_')",
+            '.some((token) => normalized.includes(token))',
             'Published Python no-compatible-worker shard',
             '"poll_status": (response or {}).get("poll_status")',
             "stringValue(existingScenario?.status) === 'pass'",
