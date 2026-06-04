@@ -20,6 +20,8 @@ const evidenceDirPath = process.env.DW_MIGRATION_EVIDENCE_DIR
   ?? path.join(resultDir, 'migration-evidence.d');
 const storageSmokePath = process.env.DW_MIGRATION_STORAGE_SMOKE_JSON
   ?? path.join(resultDir, 'storage-connection-smoke.json');
+const publicArtifactsPath = process.env.DW_MIGRATION_PUBLIC_ARTIFACTS_JSON
+  ?? path.join(resultDir, 'migration-public-artifacts.json');
 
 const FALLBACK_REQUIRED_ARTIFACTS = [
   'server-v1',
@@ -193,7 +195,7 @@ main().catch((error) => {
   const startedAt = stringValue(process.env.DW_MIGRATION_STARTED_AT) || timestamp();
   const finishedAt = timestamp();
   const artifactVersions = artifactVersionsFromEnv();
-  const artifactSources = artifactSourcesFromEnv();
+  const artifactSources = artifactSourcesFromEnv({ includeDefaults: true });
   writeArtifacts(artifactVersions, artifactVersions, artifactSources, null);
   writeResult(blockedResult(reason, startedAt, finishedAt, artifactVersions, artifactSources));
 });
@@ -213,8 +215,10 @@ async function main() {
   const finishedAt = stringValue(evidence.finished_at)
     || stringValue(evidence.finishedAt)
     || timestamp();
+  const publicArtifactResolution = await resolvePublicArtifactDefaults();
 
   const publishedArtifactVersions = normalizeArtifactAliases(mergeMaps(
+    publicArtifactResolution.artifact_versions,
     artifactVersionsFromEnv(),
     objectValue(evidence.artifact_versions),
     objectValue(evidence.artifactVersions),
@@ -226,16 +230,16 @@ async function main() {
     objectValue(evidence.resolved_artifact_versions),
     objectValue(evidence.resolvedArtifactVersions),
   ));
-  const artifactSources = normalizeArtifactAliases(mergeMaps(
-    artifactSourcesFromEnv(),
-    objectValue(evidence.artifact_sources),
-    objectValue(evidence.artifactSources),
-    objectValue(evidence.install_sources),
-    objectValue(evidence.installSources),
+  const artifactSources = normalizeArtifactAliases(mergeArtifactSourceMapsPreservingForbidden(
+    mergeArtifactSourceMaps(
+      publicArtifactResolution.artifact_sources,
+      artifactSourcesFromEnv({ includeDefaults: false }),
+    ),
+    ...artifactSourceMapsFromEvidence(evidence),
   ), true);
   const storageSmoke = normalizeStorageSmoke(evidence);
 
-  writeArtifacts(publishedArtifactVersions, resolvedArtifactVersions, artifactSources, evidence);
+  writeArtifacts(publishedArtifactVersions, resolvedArtifactVersions, artifactSources, evidence, publicArtifactResolution);
 
   if (blockedReason !== '' || runnerBlocked) {
     writeResult(blockedResult(
@@ -248,11 +252,14 @@ async function main() {
     return;
   }
 
-  const artifactPrerequisiteFailures = artifactPrerequisiteFailuresFor(
-    publishedArtifactVersions,
-    resolvedArtifactVersions,
-    artifactSources,
-  );
+  const artifactPrerequisiteFailures = [
+    ...artifactPrerequisiteFailuresFor(
+      publishedArtifactVersions,
+      resolvedArtifactVersions,
+      artifactSources,
+    ),
+    ...artifactSourceFailuresForEvidence(evidence),
+  ];
   const scenarioResults = buildScenarioResults(
     evidence,
     resolvedArtifactVersions,
@@ -274,6 +281,7 @@ async function main() {
     published_artifact_versions: publishedArtifactVersions,
     resolved_artifact_versions: resolvedArtifactVersions,
     artifact_sources: artifactSources,
+    public_artifact_resolution: publicArtifactResolution,
     artifact_prerequisite_failures: artifactPrerequisiteFailures,
     local_product_source_checkouts_used: localProductSourceCheckoutsUsed,
     scenario_results: scenarioResults,
@@ -509,7 +517,9 @@ function artifactPrerequisiteFindings(scenarioId, artifactVersions, artifactPrer
     const field = stringValue(failure.field);
     const code = stringValue(failure.code);
     const value = stringValue(failure.value);
+    const path = stringValue(failure.path);
     const valueDetail = value === '' ? '' : `; observed ${field}=${value}`;
+    const pathDetail = path === '' ? '' : ` at ${path}`;
 
     return {
       scenario_id: scenarioId,
@@ -517,7 +527,7 @@ function artifactPrerequisiteFindings(scenarioId, artifactVersions, artifactPrer
       finding_type: 'missing_or_invalid_published_migration_artifact',
       artifact,
       artifact_versions: artifactVersions,
-      observed_behavior: `Required migration artifact ${artifact} has ${code} in ${field}${valueDetail}.`,
+      observed_behavior: `Required migration artifact ${artifact} has ${code} in ${field}${pathDetail}${valueDetail}.`,
       expected_behavior: 'Migration conformance starts from exact published v1 and v2 artifacts with a recorded install source for every required channel.',
       next_acceptance_criterion: `publish or record a concrete ${artifact} artifact version and install source, then rerun the ${scenarioId} migration cell`,
     };
@@ -702,6 +712,8 @@ function resultPasses(result) {
     result.runner_blocked !== false
     || result.local_product_source_checkouts_used !== false
     || localProductSourceCheckoutsUsedIn(result, objectValue(result.scenario_results))
+    || arrayValue(result.artifact_prerequisite_failures).length > 0
+    || artifactSourceFailuresForEvidence(result).length > 0
   ) {
     return false;
   }
@@ -881,13 +893,20 @@ function mergeFindings(evidence, findingLinks, runRecordFindings = []) {
   return merged;
 }
 
-function writeArtifacts(publishedArtifactVersions, resolvedArtifactVersions, artifactSources, evidence) {
+function writeArtifacts(
+  publishedArtifactVersions,
+  resolvedArtifactVersions,
+  artifactSources,
+  evidence,
+  publicArtifactResolution = {},
+) {
   writeJson('migration-published-artifacts.json', {
     schema: ARTIFACT_SCHEMA,
     generated_at: timestamp(),
     published_artifact_versions: publishedArtifactVersions,
     resolved_artifact_versions: resolvedArtifactVersions,
     artifact_sources: artifactSources,
+    public_artifact_resolution: publicArtifactResolution,
     local_product_source_checkouts_used: localProductSourceCheckoutsUsedIn(evidence),
     required_artifacts: effectiveRequiredArtifacts(),
   });
@@ -908,6 +927,7 @@ function writeResult(result) {
     published_artifact_versions: result.published_artifact_versions,
     resolved_artifact_versions: result.resolved_artifact_versions,
     artifact_sources: result.artifact_sources,
+    public_artifact_resolution: result.public_artifact_resolution ?? {},
     artifact_prerequisite_failures: result.artifact_prerequisite_failures,
     local_product_source_checkouts_used: result.local_product_source_checkouts_used,
     result_file: 'migration-conformance-result.json',
@@ -1110,22 +1130,204 @@ function artifactVersionsFromEnv() {
   };
 }
 
-function artifactSourcesFromEnv() {
+async function resolvePublicArtifactDefaults() {
+  const disabled = ['0', 'false', 'no'].includes(
+    stringValue(process.env.DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS || '1').toLowerCase(),
+  );
+  const fixture = readJsonIfExists(publicArtifactsPath);
+  const resolution = {
+    artifact_versions: {},
+    artifact_sources: {},
+    observations: {},
+  };
+
+  mergePublicArtifactResolution(resolution, fixture);
+
+  if (disabled) {
+    resolution.observations.resolution = {
+      status: 'disabled',
+      source: 'DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS',
+    };
+    return resolution;
+  }
+
+  if (stringValue(resolution.artifact_versions['workflow-php-v1']) === '') {
+    try {
+      const workflowV1 = await latestPackagistVersion('laravel-workflow/laravel-workflow', /^v?1\./);
+      if (workflowV1 !== '') {
+        resolution.artifact_versions['workflow-php-v1'] = workflowV1;
+        resolution.artifact_sources['workflow-php-v1'] =
+          `packagist:laravel-workflow/laravel-workflow:${workflowV1}`;
+        resolution.observations['workflow-php-v1'] = {
+          status: 'resolved',
+          channel: 'packagist',
+          package: 'laravel-workflow/laravel-workflow',
+          version: workflowV1,
+        };
+      }
+    } catch (error) {
+      resolution.observations['workflow-php-v1'] = {
+        status: 'resolution_error',
+        channel: 'packagist',
+        package: 'laravel-workflow/laravel-workflow',
+        error: errorMessage(error),
+      };
+    }
+  }
+
+  if (
+    stringValue(resolution.artifact_versions['server-v1']) === ''
+    && stringValue(resolution.observations['server-v1']?.status) !== 'missing'
+  ) {
+    try {
+      const serverV1 = await latestDockerHubTag('durableworkflow/server', /^v?1\./);
+      if (serverV1 !== '') {
+        resolution.artifact_versions['server-v1'] = serverV1;
+        resolution.artifact_sources['server-v1'] = `docker_hub:durableworkflow/server:${serverV1}`;
+        resolution.observations['server-v1'] = {
+          status: 'resolved',
+          channel: 'docker_hub',
+          repository: 'durableworkflow/server',
+          tag: serverV1,
+        };
+      } else if (stringValue(resolution.artifact_sources['server-v1']) === '') {
+        resolution.artifact_sources['server-v1'] =
+          'docker_hub:durableworkflow/server:no_v1_release_tag_found';
+        resolution.observations['server-v1'] = {
+          status: 'missing',
+          channel: 'docker_hub',
+          repository: 'durableworkflow/server',
+          expected_tag_family: '1.x',
+        };
+      }
+    } catch (error) {
+      resolution.observations['server-v1'] = {
+        status: 'resolution_error',
+        channel: 'docker_hub',
+        repository: 'durableworkflow/server',
+        error: errorMessage(error),
+      };
+    }
+  }
+
+  return resolution;
+}
+
+function mergePublicArtifactResolution(target, source) {
+  const object = objectValue(source);
+  target.artifact_versions = mergeMaps(
+    target.artifact_versions,
+    objectValue(object.artifact_versions),
+    objectValue(object.artifactVersions),
+    objectValue(object.published_artifact_versions),
+    objectValue(object.publishedArtifactVersions),
+  );
+  target.artifact_sources = mergeArtifactSourceMaps(
+    target.artifact_sources,
+    objectValue(object.artifact_sources),
+    objectValue(object.artifactSources),
+    objectValue(object.install_sources),
+    objectValue(object.installSources),
+  );
+  target.observations = mergeEvidenceValue(
+    target.observations,
+    objectValue(object.observations ?? object.public_artifact_resolution ?? object.publicArtifactResolution),
+  );
+}
+
+async function latestPackagistVersion(packageName, versionPattern) {
+  const metadata = await fetchJson(`https://repo.packagist.org/p2/${packageName}.json`);
+  const versions = arrayValue(metadata?.packages?.[packageName])
+    .map((entry) => stringValue(entry?.version))
+    .filter((version) => versionPattern.test(version) && !isPrereleaseVersion(version));
+
+  return versions.sort(compareVersionStrings).pop() ?? '';
+}
+
+async function latestDockerHubTag(repository, tagPattern) {
+  let next = `https://registry.hub.docker.com/v2/repositories/${repository}/tags?page_size=100`;
+  const tags = [];
+  let pages = 0;
+
+  while (next && pages < 10) {
+    pages += 1;
+    const metadata = await fetchJson(next);
+    for (const tag of arrayValue(metadata.results)) {
+      const name = stringValue(tag?.name);
+      if (tagPattern.test(name) && !isPrereleaseVersion(name)) {
+        tags.push(name);
+      }
+    }
+    next = stringValue(metadata.next);
+  }
+
+  return tags.sort(compareVersionStrings).pop() ?? '';
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url, {
+    headers: {
+      'user-agent': 'durable-workflow-migration-conformance',
+      accept: 'application/json',
+    },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!response.ok) {
+    throw new Error(`GET ${url} returned HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+function isPrereleaseVersion(version) {
+  return /(?:alpha|beta|rc|dev|snapshot)/i.test(version);
+}
+
+function compareVersionStrings(left, right) {
+  const leftParts = versionParts(left);
+  const rightParts = versionParts(right);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftParts[index] ?? 0;
+    const rightPart = rightParts[index] ?? 0;
+    if (leftPart !== rightPart) {
+      return leftPart - rightPart;
+    }
+  }
+
+  return left.localeCompare(right);
+}
+
+function versionParts(version) {
+  return stringValue(version)
+    .replace(/^v/i, '')
+    .split(/[^0-9]+/)
+    .filter((part) => part !== '')
+    .map((part) => Number.parseInt(part, 10));
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function artifactSourcesFromEnv({ includeDefaults = false } = {}) {
+  const defaultSource = includeDefaults ? 'not_exercised' : '';
+
   return {
-    'server-v1': stringValue(process.env.DW_SERVER_V1_ARTIFACT_SOURCE) || 'not_exercised',
+    'server-v1': stringValue(process.env.DW_SERVER_V1_ARTIFACT_SOURCE) || defaultSource,
     'server-v2': stringValue(process.env.DW_SERVER_V2_ARTIFACT_SOURCE)
       || stringValue(process.env.DW_SERVER_ARTIFACT_SOURCE)
-      || 'not_exercised',
-    cli: stringValue(process.env.DW_CLI_ARTIFACT_SOURCE) || 'not_exercised',
+      || defaultSource,
+    cli: stringValue(process.env.DW_CLI_ARTIFACT_SOURCE) || defaultSource,
     'workflow-php-v1': stringValue(process.env.DW_WORKFLOW_PHP_V1_ARTIFACT_SOURCE)
       || stringValue(process.env.DW_WORKFLOW_V1_ARTIFACT_SOURCE)
-      || 'not_exercised',
+      || defaultSource,
     'workflow-php-v2': stringValue(process.env.DW_WORKFLOW_PHP_V2_ARTIFACT_SOURCE)
       || stringValue(process.env.DW_WORKFLOW_PHP_ARTIFACT_SOURCE)
       || stringValue(process.env.DW_WORKFLOW_ARTIFACT_SOURCE)
-      || 'not_exercised',
-    'sdk-python': stringValue(process.env.DW_PYTHON_SDK_ARTIFACT_SOURCE) || 'not_exercised',
-    waterline: stringValue(process.env.DW_WATERLINE_ARTIFACT_SOURCE) || 'not_exercised',
+      || defaultSource,
+    'sdk-python': stringValue(process.env.DW_PYTHON_SDK_ARTIFACT_SOURCE) || defaultSource,
+    waterline: stringValue(process.env.DW_WATERLINE_ARTIFACT_SOURCE) || defaultSource,
   };
 }
 
@@ -1301,6 +1503,180 @@ function mergeMaps(...maps) {
     }
   }
   return merged;
+}
+
+function mergeArtifactSourceMaps(...maps) {
+  return mergeArtifactSourceMapsWithPolicy(false, ...maps);
+}
+
+function mergeArtifactSourceMapsPreservingForbidden(...maps) {
+  return mergeArtifactSourceMapsWithPolicy(true, ...maps);
+}
+
+function mergeArtifactSourceMapsWithPolicy(preserveForbiddenSources, ...maps) {
+  const merged = {};
+  for (const map of maps) {
+    for (const [key, value] of Object.entries(objectValue(map))) {
+      const source = stringValue(value);
+      const existing = stringValue(merged[key]);
+      if (source === '') {
+        if (!Object.hasOwn(merged, key)) {
+          merged[key] = value;
+        }
+        continue;
+      }
+      if (preserveForbiddenSources && containsForbiddenSourceToken(existing)) {
+        continue;
+      }
+      if (preserveForbiddenSources && containsForbiddenSourceToken(source)) {
+        merged[key] = value;
+        continue;
+      }
+      if (source === 'not_exercised' && existing !== '' && existing !== 'not_exercised') {
+        continue;
+      }
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
+function artifactSourceMapsFromEvidence(evidence) {
+  const maps = [];
+  for (const field of ['artifact_sources', 'artifactSources', 'install_sources', 'installSources']) {
+    const map = objectValue(evidence?.[field]);
+    if (Object.keys(map).length > 0) {
+      maps.push(map);
+    }
+  }
+  return maps;
+}
+
+function artifactSourceFailuresForEvidence(evidence) {
+  const failures = topLevelArtifactSourceFailuresForEvidence(evidence);
+  const scenarios = scenarioResultsById(evidence);
+
+  for (const [scenarioId, scenario] of Object.entries(scenarios)) {
+    appendScenarioArtifactSourceFailures(
+      failures,
+      scenarioId,
+      objectValue(scenario),
+      `$.scenario_results.${scenarioId}`,
+    );
+
+    const observedOutputs = nonEmptyObject(scenario.observed_outputs)
+      ?? nonEmptyObject(scenario.observedOutputs)
+      ?? nonEmptyObject(scenario.evidence)
+      ?? null;
+    if (observedOutputs !== null) {
+      appendScenarioArtifactSourceFailures(
+        failures,
+        scenarioId,
+        observedOutputs,
+        `$.scenario_results.${scenarioId}.observed_outputs`,
+      );
+    }
+  }
+
+  return failures;
+}
+
+function topLevelArtifactSourceFailuresForEvidence(evidence) {
+  const failures = [];
+
+  for (const field of ['artifact_sources', 'artifactSources', 'install_sources', 'installSources']) {
+    const sources = objectValue(evidence?.[field]);
+    if (Object.keys(sources).length === 0) {
+      continue;
+    }
+
+    failures.push(...artifactSourceMapFailuresFor(sources, {
+      field,
+      path: `$.${field}`,
+      scenarioId: null,
+      requireComplete: false,
+    }));
+  }
+
+  return failures;
+}
+
+function appendScenarioArtifactSourceFailures(failures, scenarioId, container, pathPrefix) {
+  const requiresCompleteSources = requiredFieldsFor(scenarioId).includes('artifact_sources');
+
+  for (const field of ['artifact_sources', 'artifactSources', 'install_sources', 'installSources']) {
+    const sources = objectValue(container[field]);
+    if (Object.keys(sources).length === 0) {
+      continue;
+    }
+
+    failures.push(...artifactSourceMapFailuresFor(sources, {
+      field,
+      path: `${pathPrefix}.${field}`,
+      scenarioId,
+      requireComplete: requiresCompleteSources,
+    }));
+  }
+}
+
+function artifactSourceMapFailuresFor(sources, {
+  field,
+  path: sourcePath,
+  scenarioId = null,
+  requireComplete = false,
+}) {
+  const failures = [];
+  const reportedForbiddenArtifacts = new Set();
+
+  for (const [key, value] of Object.entries(objectValue(sources))) {
+    const source = stringValue(value);
+    if (source === '' || !containsForbiddenSourceToken(source)) {
+      continue;
+    }
+
+    const artifact = canonicalArtifactFor(key);
+    reportedForbiddenArtifacts.add(artifact);
+    failures.push({
+      artifact,
+      field,
+      code: 'forbidden_published_artifact_source',
+      value: source,
+      path: sourcePath,
+      scenario_id: scenarioId,
+    });
+  }
+
+  if (!requireComplete) {
+    return failures;
+  }
+
+  for (const artifact of effectiveRequiredArtifacts()) {
+    const source = stringValue(artifactMapEntry(objectValue(sources), artifact));
+    if (source !== '' || reportedForbiddenArtifacts.has(artifact)) {
+      continue;
+    }
+
+    failures.push({
+      artifact,
+      field,
+      code: 'missing_published_artifact_source',
+      path: sourcePath,
+      scenario_id: scenarioId,
+    });
+  }
+
+  return failures;
+}
+
+function canonicalArtifactFor(key) {
+  const artifactKey = stringValue(key);
+  if (effectiveRequiredArtifacts().includes(artifactKey)) {
+    return artifactKey;
+  }
+
+  return effectiveRequiredArtifacts()
+    .find((artifact) => artifactAliasesFor(artifact).includes(artifactKey))
+    ?? artifactKey;
 }
 
 function truthy(value) {

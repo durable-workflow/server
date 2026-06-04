@@ -23,6 +23,9 @@ Environment overrides:
   DW_MIGRATION_EVIDENCE_JSON         Full-result or scenario-shard JSON from the host migration runner.
   DW_MIGRATION_EVIDENCE_DIR          Directory of sorted JSON evidence shards from the host migration runner.
   DW_MIGRATION_STORAGE_SMOKE_JSON    Advisory storage-connection smoke JSON.
+  DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS
+                                      Resolve missing v1 artifact pins from public package registries. Defaults to 1.
+  DW_MIGRATION_PUBLIC_ARTIFACTS_JSON Optional JSON fixture/cache for public artifact resolution.
   DW_SERVER_V1_VERSION               Exact latest supported v1 server artifact version.
   DW_SERVER_V1_ARTIFACT_SOURCE       Published source for the v1 server artifact.
   DW_SERVER_VERSION                  Exact target v2 server artifact version.

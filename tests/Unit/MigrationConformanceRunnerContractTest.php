@@ -24,6 +24,8 @@ class MigrationConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('DW_MIGRATION_EVIDENCE_JSON', $shell);
         $this->assertStringContainsString('DW_MIGRATION_EVIDENCE_DIR', $shell);
         $this->assertStringContainsString('DW_MIGRATION_STORAGE_SMOKE_JSON', $shell);
+        $this->assertStringContainsString('DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS', $shell);
+        $this->assertStringContainsString('DW_MIGRATION_PUBLIC_ARTIFACTS_JSON', $shell);
 
         foreach ([
             'migration-published-artifacts.json',
@@ -35,9 +37,13 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'resolved_artifact_versions',
             'artifact_sources',
             'storage_connection_smoke',
+            'public_artifact_resolution',
             'readMigrationEvidence',
             'evidenceShardPaths',
             'mergeScenarioResults',
+            'resolvePublicArtifactDefaults',
+            'latestPackagistVersion',
+            'latestDockerHubTag',
             'SCENARIO_FINDING_POLICIES',
             'findingForNonPassScenario',
             'scenario_statuses',
@@ -115,6 +121,7 @@ class MigrationConformanceRunnerContractTest extends TestCase
                     'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
                     'DW_MIGRATION_REPO_ROOT' => $repoRoot,
                     'DW_MIGRATION_RESULT_DIR' => $resultDir,
+                    'DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS' => '0',
                     'DW_SERVER_VERSION' => '0.2.239',
                     'DW_SERVER_ARTIFACT_SOURCE' => 'published_docker_image',
                     'DW_CLI_VERSION' => '0.1.75',
@@ -247,6 +254,168 @@ class MigrationConformanceRunnerContractTest extends TestCase
         $this->assertNotContains('pass', array_column($result['scenario_results'], 'status'));
     }
 
+    public function test_runner_rejects_explicit_forbidden_sources_masked_by_public_defaults(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner artifact source gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['artifact_sources']['workflow-php-v1'] = 'not_exercised';
+        $evidence['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['workflow-php-v1'] =
+            'not_exercised';
+
+        $publicArtifacts = [
+            'artifact_versions' => $this->artifactVersions(),
+            'artifact_sources' => $this->artifactSources(),
+        ];
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            $evidence,
+            'dw-migration-forbidden-source-defaults-',
+            [],
+            null,
+            $publicArtifacts,
+        );
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame(
+            'not_exercised',
+            $result['artifact_sources']['workflow-php-v1'],
+            'explicit forbidden artifact source evidence must not be replaced by public resolver defaults',
+        );
+        $this->assertSame('fail', $result['scenario_results']['published_artifact_install_only']['status']);
+        $this->assertNotEmpty(array_filter(
+            $result['artifact_prerequisite_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'forbidden_published_artifact_source'
+                && ($failure['artifact'] ?? null) === 'workflow-php-v1'
+                && ($failure['field'] ?? null) === 'artifact_sources'
+                && ($failure['value'] ?? null) === 'not_exercised',
+        ));
+        $this->assertNotEmpty(array_filter(
+            $result['artifact_prerequisite_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'forbidden_published_artifact_source'
+                && ($failure['artifact'] ?? null) === 'workflow-php-v1'
+                && ($failure['path'] ?? null) === '$.scenario_results.published_artifact_install_only.observed_outputs.artifact_sources',
+        ));
+    }
+
+    public function test_runner_resolves_latest_v1_workflow_artifact_from_public_metadata(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner public artifact resolver.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $tempRoot = sys_get_temp_dir().'/dw-migration-public-artifacts-'.bin2hex(random_bytes(6));
+        $resultDir = $tempRoot.'/result';
+        $metadataPath = $tempRoot.'/public-artifacts.json';
+
+        try {
+            mkdir($resultDir, 0777, true);
+            file_put_contents(
+                $metadataPath,
+                json_encode([
+                    'artifact_versions' => [
+                        'workflow-php-v1' => '1.0.76',
+                    ],
+                    'artifact_sources' => [
+                        'workflow-php-v1' => 'packagist:laravel-workflow/laravel-workflow:1.0.76',
+                        'server-v1' => 'docker_hub:durableworkflow/server:no_v1_release_tag_found',
+                    ],
+                    'observations' => [
+                        'workflow-php-v1' => [
+                            'status' => 'resolved',
+                            'channel' => 'packagist',
+                        ],
+                        'server-v1' => [
+                            'status' => 'missing',
+                            'channel' => 'docker_hub',
+                        ],
+                    ],
+                ], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+            );
+
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/migration-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_MIGRATION_REPO_ROOT' => $repoRoot,
+                    'DW_MIGRATION_RESULT_DIR' => $resultDir,
+                    'DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS' => '1',
+                    'DW_MIGRATION_PUBLIC_ARTIFACTS_JSON' => $metadataPath,
+                    'DW_SERVER_VERSION' => '0.2.276',
+                    'DW_SERVER_ARTIFACT_SOURCE' => 'published_docker_image',
+                    'DW_CLI_VERSION' => '0.1.76',
+                    'DW_CLI_ARTIFACT_SOURCE' => 'official_install_script',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.195',
+                    'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'composer_release',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.85',
+                    'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi_release',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.81',
+                    'DW_WATERLINE_ARTIFACT_SOURCE' => 'published_waterline_release',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, ($stdout === false ? '' : $stdout).($stderr === false ? '' : $stderr));
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/migration-conformance-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                (string) file_get_contents($resultDir.'/migration-conformance-record.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('1.0.76', $result['published_artifact_versions']['workflow-php-v1']);
+            $this->assertSame(
+                'packagist:laravel-workflow/laravel-workflow:1.0.76',
+                $result['artifact_sources']['workflow-php-v1'],
+            );
+            $this->assertSame(
+                'missing',
+                $result['public_artifact_resolution']['observations']['server-v1']['status'],
+            );
+            $this->assertSame(
+                $result['public_artifact_resolution'],
+                $record['public_artifact_resolution'],
+            );
+            $this->assertNotContains(
+                'workflow-php-v1',
+                array_column($result['artifact_prerequisite_failures'], 'artifact'),
+                'public metadata should satisfy the latest supported v1 workflow install channel',
+            );
+            $this->assertContains(
+                'server-v1',
+                array_column($result['artifact_prerequisite_failures'], 'artifact'),
+                'a missing published v1 server artifact remains a focused install-channel failure',
+            );
+        } finally {
+            $this->removeTree($tempRoot);
+        }
+    }
+
     public function test_runner_synthesizes_published_install_cell_from_artifact_pins(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -275,6 +444,7 @@ class MigrationConformanceRunnerContractTest extends TestCase
                     'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
                     'DW_MIGRATION_REPO_ROOT' => $repoRoot,
                     'DW_MIGRATION_RESULT_DIR' => $resultDir,
+                    'DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS' => '0',
                     'DW_SERVER_V1_VERSION' => $artifactVersions['server-v1'],
                     'DW_SERVER_V2_VERSION' => $artifactVersions['server-v2'],
                     'DW_SERVER_V1_ARTIFACT_SOURCE' => $artifactSources['server-v1'],
@@ -390,6 +560,7 @@ class MigrationConformanceRunnerContractTest extends TestCase
                     'DW_MIGRATION_REPO_ROOT' => $repoRoot,
                     'DW_MIGRATION_RESULT_DIR' => $resultDir,
                     'DW_MIGRATION_EVIDENCE_JSON' => $evidencePath,
+                    'DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS' => '0',
                 ],
             );
 
@@ -616,6 +787,7 @@ class MigrationConformanceRunnerContractTest extends TestCase
                     'DW_MIGRATION_RESULT_DIR' => $resultDir,
                     'DW_MIGRATION_EVIDENCE_JSON' => $evidencePath,
                     'DW_MIGRATION_EVIDENCE_DIR' => $evidenceDir,
+                    'DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS' => '0',
                 ],
             );
 
@@ -806,6 +978,7 @@ class MigrationConformanceRunnerContractTest extends TestCase
                     'DW_MIGRATION_REPO_ROOT' => $repoRoot,
                     'DW_MIGRATION_RESULT_DIR' => $resultDir,
                     'DW_MIGRATION_EVIDENCE_JSON' => $evidencePath,
+                    'DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS' => '0',
                 ],
             );
 
@@ -843,6 +1016,7 @@ class MigrationConformanceRunnerContractTest extends TestCase
         string $tempPrefix,
         array $environment = [],
         ?array $storageSmoke = null,
+        ?array $publicArtifacts = null,
     ): array {
         $repoRoot = dirname(__DIR__, 2);
         $tempRoot = sys_get_temp_dir().'/'.$tempPrefix.bin2hex(random_bytes(6));
@@ -865,6 +1039,15 @@ class MigrationConformanceRunnerContractTest extends TestCase
                 $environment['DW_MIGRATION_STORAGE_SMOKE_JSON'] = $storageSmokePath;
             }
 
+            if ($publicArtifacts !== null) {
+                $publicArtifactsPath = $tempRoot.'/public-artifacts.json';
+                file_put_contents(
+                    $publicArtifactsPath,
+                    json_encode($publicArtifacts, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+                );
+                $environment['DW_MIGRATION_PUBLIC_ARTIFACTS_JSON'] = $publicArtifactsPath;
+            }
+
             $process = proc_open(
                 [$nodeBinary, $repoRoot.'/scripts/conformance/migration-published-artifacts.mjs'],
                 [
@@ -878,6 +1061,7 @@ class MigrationConformanceRunnerContractTest extends TestCase
                     'DW_MIGRATION_REPO_ROOT' => $repoRoot,
                     'DW_MIGRATION_RESULT_DIR' => $resultDir,
                     'DW_MIGRATION_EVIDENCE_JSON' => $evidencePath,
+                    'DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS' => '0',
                 ] + $environment,
             );
 

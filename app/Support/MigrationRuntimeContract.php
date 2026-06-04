@@ -273,6 +273,8 @@ final class MigrationRuntimeContract
                     'DW_MIGRATION_EVIDENCE_JSON' => 'Optional full-result or scenario-shard JSON captured by the host runner after executing the public migration guide against published artifacts.',
                     'DW_MIGRATION_EVIDENCE_DIR' => 'Optional directory of JSON evidence shards; files are merged in lexical order so the host runner can collect required migration scopes independently.',
                     'DW_MIGRATION_STORAGE_SMOKE_JSON' => 'Optional storage-connection smoke JSON to attach as advisory context.',
+                    'DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS' => 'Set to 0/false/no to disable default public-channel resolution for missing latest supported v1 artifact pins.',
+                    'DW_MIGRATION_PUBLIC_ARTIFACTS_JSON' => 'Optional JSON cache/fixture for public artifact resolution. Supports artifact_versions and artifact_sources maps.',
                 ],
                 'required_execution_scopes' => [
                     'published-artifact-install',
