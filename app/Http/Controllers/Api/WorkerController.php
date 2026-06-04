@@ -479,7 +479,7 @@ class WorkerController
         ?WorkerRegistration $existing,
         ?array $incomingProcessMetrics,
     ): bool {
-        if (! $existing instanceof WorkerRegistration || $existing->status !== 'active') {
+        if (! $existing instanceof WorkerRegistration) {
             return false;
         }
 
@@ -489,6 +489,10 @@ class WorkerController
             // died mid-task. Reclaim its leases before the replacement polls so
             // recovery does not wait for the full task lease timeout.
             return true;
+        }
+
+        if ($existing->status !== 'active') {
+            return false;
         }
 
         $incomingIdentity = $this->workerProcessIdentity($incomingProcessMetrics);
