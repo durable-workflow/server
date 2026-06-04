@@ -994,6 +994,30 @@ PHP,
         );
     }
 
+    public function test_skew_runner_materializes_waterline_flow_detail_with_workflow_id(): void
+    {
+        $materialized = $this->evaluateSkewRequestMaterialization([
+            'workflowId' => 'wf-waterline-detail',
+            'scheduleId' => 'schedule-should-not-match-waterline',
+        ]);
+
+        $this->assertSame(
+            ['method' => 'GET', 'path' => '/waterline/api/flows/wf-waterline-detail'],
+            $materialized['waterline_detail'],
+            'Waterline detail captures must match the workflow id requested by the published Waterline probe.',
+        );
+        $this->assertSame(
+            ['method' => 'GET', 'path' => '/api/schedules/schedule-should-not-match-waterline'],
+            $materialized['schedule_detail'],
+            'Schedule detail rows must continue to use schedule ids for the shared {id} placeholder.',
+        );
+        $this->assertSame(
+            ['method' => 'POST', 'path' => '/api/schedules/schedule-should-not-match-waterline/trigger'],
+            $materialized['schedule_trigger'],
+            'Schedule trigger rows must continue to use schedule ids for the shared {id} placeholder.',
+        );
+    }
+
     public function test_skew_runner_uses_published_php_clients_for_worker_protocol_rows(): void
     {
         $runner = $this->read('scripts/conformance/skew-published-artifacts.mjs');
@@ -1830,5 +1854,64 @@ PHP,
         $this->assertNotFalse($source, "{$path} must be readable");
 
         return $source;
+    }
+
+    /**
+     * @param array<string, string> $state
+     * @return array<string, array{method: string, path: string}>
+     */
+    private function evaluateSkewRequestMaterialization(array $state): array
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise skew runner request materialization.');
+        }
+
+        $script = <<<'JS'
+import { pathToFileURL } from 'node:url';
+
+const moduleUrl = pathToFileURL(process.argv[2]).href;
+const { materializeRequest } = await import(moduleUrl);
+const state = JSON.parse(process.argv[3]);
+
+console.log(JSON.stringify({
+  waterline_detail: materializeRequest('GET /waterline/api/flows/{id}', '2938', state),
+  schedule_detail: materializeRequest('GET /api/schedules/{id}', '2938', state),
+  schedule_trigger: materializeRequest('POST /api/schedules/{id}/trigger', '2938', state),
+}));
+JS;
+
+        $process = proc_open(
+            [
+                $nodeBinary,
+                '--input-type=module',
+                '-e',
+                $script,
+                'import-skew-runner-helper',
+                $repoRoot.'/scripts/conformance/skew-published-artifacts.mjs',
+                json_encode($state, JSON_THROW_ON_ERROR),
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            $repoRoot,
+            [
+                'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+            ],
+        );
+
+        $this->assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stderr);
+
+        return json_decode((string) $stdout, true, 512, JSON_THROW_ON_ERROR);
     }
 }

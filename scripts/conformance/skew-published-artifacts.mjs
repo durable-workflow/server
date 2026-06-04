@@ -4,14 +4,16 @@ import http from 'node:http';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const RESULT_SCHEMA = 'durable-workflow.v2.skew-refusal-matrix.result';
 const METADATA_SCHEMA = 'durable-workflow.v2.skew-refusal-matrix.metadata';
 const RECORD_SCHEMA = 'durable-workflow.v2.skew-refusal-matrix.record';
 const CAPTURE_SCHEMA = 'durable-workflow.v2.skew-refusal-matrix.request-response-captures';
 
+const modulePath = fileURLToPath(import.meta.url);
 const repoRoot = process.env.DW_SKEW_REPO_ROOT
-  ?? path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
+  ?? path.resolve(path.dirname(modulePath), '../..');
 const resultDir = process.env.DW_SKEW_RESULT_DIR
   ?? process.env.DW_SKEW_RUN_ROOT
   ?? process.cwd();
@@ -209,12 +211,14 @@ const workerTaskFixtureRequests = new Set([
   'POST /api/worker/workflow-tasks/{task}/fail',
 ]);
 
-main().catch((error) => {
-  const now = timestamp();
-  const reason = error instanceof Error ? error.message : String(error);
-  writeBlockedResult(reason, now, now);
-  process.exitCode = 0;
-});
+if (isMainModule()) {
+  main().catch((error) => {
+    const now = timestamp();
+    const reason = error instanceof Error ? error.message : String(error);
+    writeBlockedResult(reason, now, now);
+    process.exitCode = 0;
+  });
+}
 
 async function main() {
   fs.mkdirSync(resultDir, { recursive: true });
@@ -3321,10 +3325,13 @@ function isProtocolRefusal(response) {
     );
 }
 
-function materializeRequest(template, runId, state = {}) {
+export function materializeRequest(template, runId, state = {}) {
   const parts = template.split(' ');
   const method = parts[0];
   let requestPath = parts.slice(1).join(' ');
+  const idReplacement = requestPath.includes('/waterline/api/flows/{id}')
+    ? state.workflowId || `skew-${runId}`
+    : state.scheduleId || `schedule-${runId}`;
   const replacements = {
     '{workflowId}': state.workflowId || `skew-${runId}`,
     '{runId}': state.runId || `run-${runId}`,
@@ -3332,7 +3339,7 @@ function materializeRequest(template, runId, state = {}) {
     '{queryName}': 'currentState',
     '{updateName}': 'approve',
     '{task}': state.taskId || 'poll-task-id-required',
-    '{id}': state.scheduleId || `schedule-${runId}`,
+    '{id}': idReplacement,
   };
 
   for (const [from, to] of Object.entries(replacements)) {
@@ -3641,6 +3648,14 @@ function isHttpUrl(value) {
 
 function trimTrailingSlash(value) {
   return value.replace(/\/+$/, '');
+}
+
+function isMainModule() {
+  if (process.execArgv.some((arg) => arg === '-e' || arg === '--eval' || arg.startsWith('--eval='))) {
+    return false;
+  }
+
+  return Boolean(process.argv[1]) && path.resolve(process.argv[1]) === modulePath;
 }
 
 function normalizeRequestKey(value) {
