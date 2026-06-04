@@ -506,6 +506,14 @@ class PrincipalAttributionContractTest extends TestCase
             $manifest['spoofing_guards'],
             $scenarioManifest['spoofing_guards'],
         );
+        $this->assertSame(
+            $manifest['host_runner_contract'],
+            $scenarioManifest['host_runner_contract'],
+        );
+        $this->assertContains(
+            'anonymous-no-auth-topology',
+            $scenarioManifest['host_runner_contract']['required_execution_scopes'],
+        );
     }
 
     public function test_published_artifact_runner_fails_closed_for_required_evidence(): void
