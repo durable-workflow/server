@@ -168,6 +168,7 @@ final class PrincipalAttributionContract
                     'start_signal_query_cancel_completion_failure_principals_reported',
                     'spoofed_payload_and_header_principals_do_not_land_in_history',
                     'spoofing_matrix_records_exact_requested_values_and_observed_principals',
+                    'anonymous_no_auth_topology_reported',
                     'anonymous_start_signal_cancel_principals_reported',
                     'anonymous_spoofed_payload_and_gateway_headers_do_not_land_in_history',
                     'anonymous_behavior_is_explicit',

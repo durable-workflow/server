@@ -76,6 +76,7 @@ final class PrincipalAttributionResultGate
                 'alice_bob_rotation_anonymous_python_php_cli_and_waterline_cells_reported',
                 'spoofing_payload_and_gateway_header_attempts_reported',
                 'spoofing_matrix_records_exact_requested_values_and_observed_principals',
+                'anonymous_no_auth_topology_reported',
                 'anonymous_start_signal_cancel_principals_reported',
                 'anonymous_spoofing_payload_and_gateway_header_attempts_reported',
                 'each_pass_scenario_has_required_evidence_fields',
@@ -188,6 +189,7 @@ final class PrincipalAttributionResultGate
         }
 
         array_push($failures, ...self::runRecordFailures($result, $contract));
+        array_push($failures, ...self::anonymousTopologyFailures($result));
         array_push($failures, ...self::artifactVersionFailures($result, $contract));
         array_push($failures, ...self::sourcePolicyFailures($result, $contract, $scenarioResults));
         array_push($failures, ...self::missingScenarioFindingFailures($missingScenarios, $result));
@@ -1407,6 +1409,47 @@ final class PrincipalAttributionResultGate
         if ($runnerBlocked !== null && $runnerBlocked !== false) {
             $failures[] = [
                 'code' => 'runner_blocked_result_is_not_product_evidence',
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function anonymousTopologyFailures(array $result): array
+    {
+        if (self::declaredOutcomeStatus(self::declaredOutcome($result)) !== 'pass') {
+            return [];
+        }
+
+        $topology = self::arrayValue($result, 'topology');
+        if ($topology === null) {
+            return [[
+                'code' => 'missing_anonymous_no_auth_topology',
+                'field' => 'topology',
+            ]];
+        }
+
+        $failures = [];
+        $authDriver = self::stringValue($topology['anonymous_auth_driver'] ?? $topology['anonymousAuthDriver'] ?? null);
+        if ($authDriver !== 'none') {
+            $failures[] = [
+                'code' => 'anonymous_topology_auth_driver_not_none',
+                'field' => 'topology.anonymous_auth_driver',
+                'expected_auth_driver' => 'none',
+                'actual_auth_driver' => $authDriver,
+            ];
+        }
+
+        $serverUrl = self::stringValue($topology['anonymous_server_url'] ?? $topology['anonymousServerUrl'] ?? null);
+        if ($serverUrl === '') {
+            $failures[] = [
+                'code' => 'anonymous_topology_server_url_missing',
+                'field' => 'topology.anonymous_server_url',
             ];
         }
 

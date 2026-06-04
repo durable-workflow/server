@@ -193,6 +193,10 @@ class PrincipalAttributionContractTest extends TestCase
             'python_php_sdk_principals_match_expected_ids_and_raw_http_shape',
             $manifest['result_gate']['pass_requires'],
         );
+        $this->assertContains(
+            'anonymous_no_auth_topology_reported',
+            $manifest['result_gate']['pass_requires'],
+        );
     }
 
     public function test_result_gate_rejects_role_token_smoke_subset_as_complete_evidence(): void
@@ -1012,6 +1016,20 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertContains('anonymous_spoofing_attempts_not_executed', $codes);
     }
 
+    public function test_result_gate_requires_anonymous_no_auth_topology_for_pass(): void
+    {
+        $result = $this->completePrincipalAttributionResult();
+        unset($result['topology']['anonymous_server_url']);
+        $result['topology']['anonymous_auth_driver'] = 'token';
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+        $codes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('anonymous_topology_auth_driver_not_none', $codes);
+        $this->assertContains('anonymous_topology_server_url_missing', $codes);
+    }
+
     public function test_result_gate_accepts_routed_anonymous_null_leakage_as_non_passing_product_evidence(): void
     {
         $finding = $this->structuredPrincipalFinding(
@@ -1388,8 +1406,10 @@ class PrincipalAttributionContractTest extends TestCase
                 'waterline' => 'published Waterline package',
             ],
             'topology' => [
+                'server_url' => 'http://127.0.0.1:18080',
                 'auth_driver' => 'token',
                 'anonymous_auth_driver' => 'none',
+                'anonymous_server_url' => 'http://127.0.0.1:18081',
             ],
             'actor_matrix' => [
                 'alice' => ['credentials' => ['alice-token-v1', 'alice-token-v2']],
@@ -1652,7 +1672,12 @@ class PrincipalAttributionContractTest extends TestCase
                 'sdk-python' => 'pypi',
                 'waterline' => 'npm',
             ],
-            'topology' => ['auth_driver' => 'token'],
+            'topology' => [
+                'server_url' => 'http://127.0.0.1:18080',
+                'auth_driver' => 'token',
+                'anonymous_auth_driver' => 'none',
+                'anonymous_server_url' => 'http://127.0.0.1:18081',
+            ],
             'actor_matrix' => [
                 'alice' => ['credentials' => ['alice-token-v1', 'alice-token-v2']],
                 'bob' => ['credentials' => ['bob-token']],
