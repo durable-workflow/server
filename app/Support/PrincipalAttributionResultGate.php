@@ -400,6 +400,40 @@ final class PrincipalAttributionResultGate
             ];
         }
 
+        $operationOutputs = self::arrayValue($scenarioResult, 'operation_outputs');
+        if ($operationOutputs === null && is_array($clientOperation)) {
+            $operationOutputs = self::arrayValue($clientOperation, 'operation_outputs');
+        }
+
+        if ($operationOutputs === null) {
+            $failures[] = [
+                'code' => 'missing_sdk_operation_outputs',
+                'scenario_id' => $scenarioId,
+                'field' => 'operation_outputs',
+            ];
+        } else {
+            foreach (['start_workflow', 'signal_workflow'] as $operation) {
+                if (! self::isEmptyEvidenceValue($operationOutputs[$operation] ?? null)) {
+                    continue;
+                }
+
+                $failures[] = [
+                    'code' => 'missing_sdk_operation_output',
+                    'scenario_id' => $scenarioId,
+                    'operation' => $operation,
+                    'field' => 'operation_outputs.'.$operation,
+                ];
+            }
+        }
+
+        if (self::isEmptyEvidenceValue(self::scenarioFieldValue($scenarioResult, 'operation_output_sample'))) {
+            $failures[] = [
+                'code' => 'missing_sdk_operation_output_sample',
+                'scenario_id' => $scenarioId,
+                'field' => 'operation_output_sample',
+            ];
+        }
+
         $credentialUsed = self::scenarioFieldValue($scenarioResult, 'credential_used');
         if (! is_array($credentialUsed)) {
             $failures[] = [

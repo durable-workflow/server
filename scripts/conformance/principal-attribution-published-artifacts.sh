@@ -206,6 +206,7 @@ emit_principal_blocked_placeholder_fields() {
       printf ',\n      "expected_principal": null'
       printf ',\n      "raw_http_reference_principal": null'
       printf ',\n      "history_api_principal_samples": {}'
+      printf ',\n      "operation_outputs": {}'
       printf ',\n      "operation_output_sample": null'
       printf ',\n      "recorded_principal": null'
       printf ',\n      "shape_matches_http": null'
@@ -1750,8 +1751,24 @@ async def main() -> None:
             workflow_id=workflow_id,
             input=[{"client": "python-sdk"}],
         )
-        await client.signal_workflow(workflow_id, "nudge", args=[{"client": "python-sdk"}])
-        print(json.dumps({"workflow_id": workflow_id, "run_id": handle.run_id}))
+        signal_result = await client.signal_workflow(workflow_id, "nudge", args=[{"client": "python-sdk"}])
+        print(json.dumps({
+            "workflow_id": workflow_id,
+            "run_id": handle.run_id,
+            "operations": ["start_workflow", "signal_workflow"],
+            "operation_outputs": {
+                "start_workflow": {
+                    "workflow_id": handle.workflow_id,
+                    "run_id": handle.run_id,
+                    "workflow_type": getattr(handle, "workflow_type", None),
+                },
+                "signal_workflow": {
+                    "workflow_id": workflow_id,
+                    "signal_name": "nudge",
+                    "returned": signal_result,
+                },
+            },
+        }))
 
 
 asyncio.run(main())
@@ -1782,7 +1799,12 @@ asyncio.run(main())
     except Exception as exc:  # noqa: BLE001 - conformance result captures product failures
         return {"status": "fail", "errors": [f"Python SDK output was not JSON: {exc}; output={completed.stdout[-4000:]}"]}
 
-    return {"status": "pass", "client_operation": "python-sdk start_workflow + signal_workflow", **payload, "output": completed.stdout[-4000:]}
+    return {
+        "status": "pass",
+        "client_operation": "python-sdk start_workflow + signal_workflow",
+        **payload,
+        "output": completed.stdout[-4000:],
+    }
 
 
 def run_php_code(code: str, env: dict[str, str], *, timeout: int = 45) -> subprocess.CompletedProcess[str]:
@@ -1865,6 +1887,11 @@ echo json_encode([
     'autoload' => $autoload,
     'client_class' => \Workflow\V2\Client\WorkflowClient::class,
     'operation' => 'WorkflowClient::startWorkflow + WorkflowClient::signalWorkflow',
+    'operations' => ['start_workflow', 'signal_workflow'],
+    'operation_outputs' => [
+        'start_workflow' => $start,
+        'signal_workflow' => $signal,
+    ],
     'start_response' => $start,
     'signal_response' => $signal,
 ]).PHP_EOL;
@@ -2458,6 +2485,7 @@ def main() -> int:
         expected_principal=python_expected_principal,
         raw_http_reference_principal=python_raw_http_reference_principal,
         history_api_principal_samples=principal_samples(python_principals, ["WorkflowStarted", "SignalReceived"]),
+        operation_outputs=python_operation.get("operation_outputs"),
         operation_output_sample=python_operation.get("output"),
         recorded_principal=python_recorded_principal,
         shape_matches_http=python_shape_matches_http,
@@ -2495,6 +2523,7 @@ def main() -> int:
         expected_principal=php_expected_principal,
         raw_http_reference_principal=php_raw_http_reference_principal,
         history_api_principal_samples=principal_samples(php_principals, ["WorkflowStarted", "SignalReceived"]),
+        operation_outputs=php_operation.get("operation_outputs"),
         operation_output_sample=php_operation.get("output"),
         recorded_principal=php_recorded_principal,
         shape_matches_http=php_shape_matches_http,

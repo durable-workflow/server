@@ -146,6 +146,7 @@ class PrincipalAttributionContractTest extends TestCase
                 'expected_principal',
                 'raw_http_reference_principal',
                 'history_api_principal_samples',
+                'operation_outputs',
                 'operation_output_sample',
             ] as $requiredField) {
                 $this->assertContains(
@@ -580,11 +581,13 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('python_linked_findings: list[dict[str, Any]] = []', $script);
         $this->assertStringContainsString('linked_findings=python_linked_findings', $script);
         $this->assertStringContainsString('"python_sdk_visibility", "sdk-python"', $script);
+        $this->assertStringContainsString('operation_outputs=python_operation.get("operation_outputs")', $script);
         $this->assertStringContainsString('run_php_client_operation', $script);
         $this->assertStringContainsString('php_operation = run_php_client_operation(php_client_id)', $script);
         $this->assertStringContainsString('php_linked_findings: list[dict[str, Any]] = []', $script);
         $this->assertStringContainsString('linked_findings=php_linked_findings', $script);
         $this->assertStringContainsString('"php_client_visibility", "workflow"', $script);
+        $this->assertStringContainsString('operation_outputs=php_operation.get("operation_outputs")', $script);
         $this->assertStringNotContainsString('Python SDK client operation was not exercised by this runner revision', $script);
         $this->assertStringNotContainsString('PHP client operation was not exercised by this runner revision', $script);
         $this->assertStringContainsString('waterline:principal-attribution-conformance', $script);
@@ -1190,6 +1193,8 @@ class PrincipalAttributionContractTest extends TestCase
             'type' => 'auth:token',
             'id' => 'alice',
         ];
+        unset($result['scenario_results']['python_sdk_visibility']['operation_outputs']);
+        $result['scenario_results']['python_sdk_visibility']['operation_output_sample'] = '';
         $result['scenario_results']['python_sdk_visibility']['shape_matches_http'] = false;
 
         $evaluation = PrincipalAttributionResultGate::evaluate($result);
@@ -1202,6 +1207,8 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertContains('sdk_expected_principal_mismatch', $codes);
         $this->assertContains('sdk_recorded_principal_mismatch', $codes);
         $this->assertContains('sdk_history_api_principal_sample_mismatch', $codes);
+        $this->assertContains('missing_sdk_operation_outputs', $codes);
+        $this->assertContains('missing_sdk_operation_output_sample', $codes);
         $this->assertContains('sdk_shape_matches_http_not_true', $codes);
         $this->assertContains('sdk_principal_shape_mismatch', $codes);
     }
@@ -1221,6 +1228,7 @@ class PrincipalAttributionContractTest extends TestCase
             'type' => 'auth:token',
             'id' => 'bob',
         ];
+        unset($result['scenario_results']['php_client_visibility']['operation_outputs']['signal_workflow']);
 
         $evaluation = PrincipalAttributionResultGate::evaluate($result);
         $codes = array_column($evaluation['gate_failures'], 'code');
@@ -1230,6 +1238,7 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertContains('sdk_credential_ref_mismatch', $codes);
         $this->assertContains('sdk_recorded_principal_mismatch', $codes);
         $this->assertContains('sdk_history_api_principal_sample_mismatch', $codes);
+        $this->assertContains('missing_sdk_operation_output', $codes);
     }
 
     public function test_result_gate_rejects_bare_string_links_for_non_pass_scenarios(): void
@@ -1545,6 +1554,10 @@ class PrincipalAttributionContractTest extends TestCase
                         'WorkflowStarted' => $bob,
                         'SignalReceived' => $bob,
                     ],
+                    'operation_outputs' => [
+                        'start_workflow' => ['workflow_id' => 'pa-python', 'run_id' => 'run-python'],
+                        'signal_workflow' => ['workflow_id' => 'pa-python', 'signal_name' => 'nudge'],
+                    ],
                     'operation_output_sample' => '{"workflow_id":"pa-python","operation":"start+signal"}',
                     'recorded_principal' => $bob,
                     'shape_matches_http' => true,
@@ -1559,6 +1572,10 @@ class PrincipalAttributionContractTest extends TestCase
                     'history_api_principal_samples' => [
                         'WorkflowStarted' => $alice,
                         'SignalReceived' => $alice,
+                    ],
+                    'operation_outputs' => [
+                        'start_workflow' => ['workflow_id' => 'pa-php', 'run_id' => 'run-php'],
+                        'signal_workflow' => ['workflow_id' => 'pa-php', 'signal_name' => 'nudge'],
                     ],
                     'operation_output_sample' => '{"workflow_id":"pa-php","operation":"WorkflowClient::startWorkflow+signalWorkflow"}',
                     'recorded_principal' => $alice,
@@ -1863,6 +1880,10 @@ class PrincipalAttributionContractTest extends TestCase
                     'WorkflowStarted' => $bob,
                     'SignalReceived' => $bob,
                 ],
+                'operation_outputs' => [
+                    'start_workflow' => ['workflow_id' => 'pa-python', 'run_id' => 'run-python'],
+                    'signal_workflow' => ['workflow_id' => 'pa-python', 'signal_name' => 'nudge'],
+                ],
                 'operation_output_sample' => '{"workflow_id":"pa-python","operation":"start+signal"}',
                 'recorded_principal' => $bob,
                 'shape_matches_http' => true,
@@ -1876,6 +1897,10 @@ class PrincipalAttributionContractTest extends TestCase
                 'history_api_principal_samples' => [
                     'WorkflowStarted' => $alice,
                     'SignalReceived' => $alice,
+                ],
+                'operation_outputs' => [
+                    'start_workflow' => ['workflow_id' => 'pa-php', 'run_id' => 'run-php'],
+                    'signal_workflow' => ['workflow_id' => 'pa-php', 'signal_name' => 'nudge'],
                 ],
                 'operation_output_sample' => '{"workflow_id":"pa-php","operation":"WorkflowClient::startWorkflow+signalWorkflow"}',
                 'recorded_principal' => $alice,
