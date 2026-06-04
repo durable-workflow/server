@@ -301,7 +301,7 @@ category emits a warning and does not block.
   delivery count above zero is blocking product evidence. When no external
   published-worker evidence shard is supplied, the handoff attempts to install
   the published PyPI Python SDK and Packagist PHP workflow runtime and generate
-  Python replay/cache plus PHP/Python cross-language shards itself.
+  Python replay/cache/adversarial plus PHP/Python cross-language shards itself.
 - Migration runtime contract: `GET /api/cluster/info` re-exports
   `migration_runtime_contract`, schema
   `durable-workflow.v2.migration-runtime.contract`. It names the

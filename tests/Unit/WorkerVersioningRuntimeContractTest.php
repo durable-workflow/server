@@ -129,6 +129,10 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'adversarial no-version-bump cells',
             $manifest['host_runner_contract']['evidence_inputs']['DW_WV_PUBLISHED_WORKER_EVIDENCE'],
         );
+        $this->assertStringContainsString(
+            'Python replay/cache/adversarial shards',
+            $manifest['host_runner_contract']['evidence_inputs']['DW_WV_PUBLISHED_WORKER_EVIDENCE'],
+        );
         $this->assertArrayHasKey(
             'DW_WV_ARTIFACT_INSTALL_EVIDENCE',
             $manifest['host_runner_contract']['evidence_inputs'],

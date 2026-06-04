@@ -333,7 +333,7 @@ final class WorkerVersioningRuntimeContract
                 ],
                 'evidence_inputs' => [
                     'DW_WV_ARTIFACT_INSTALL_EVIDENCE' => 'Optional JSON report proving required artifacts were installed and smoke-executed from published channels.',
-                    'DW_WV_PUBLISHED_WORKER_EVIDENCE' => 'Optional JSON report from the host worker-versioning topology after published worker artifacts executed replay, cache-eviction, no-compatible-worker, cross-language, or adversarial no-version-bump cells. When unset, the runner attempts to generate a Python replay/cache shard and a PHP/Python cross-language shard from published PyPI and Packagist artifacts.',
+                    'DW_WV_PUBLISHED_WORKER_EVIDENCE' => 'Optional JSON report from the host worker-versioning topology after published worker artifacts executed replay, cache-eviction, no-compatible-worker, cross-language, or adversarial no-version-bump cells. When unset, the runner attempts to generate Python replay/cache/adversarial shards and a PHP/Python cross-language shard from published PyPI and Packagist artifacts.',
                     'DW_WV_SKIP_PUBLISHED_WORKER_SHARD' => 'Set to 1 to skip automatic published PHP/Python worker shard generation when an external host topology is responsible for the shard.',
                 ],
                 'evidence_shards' => [

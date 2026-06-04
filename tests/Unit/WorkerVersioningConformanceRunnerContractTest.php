@@ -91,7 +91,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'published_artifact_worker_execution',
             'local_product_source_checkouts_used: false',
             'mergeExistingShard',
-            "stringValue(existingCrossLanguage.status) === 'pass'",
+            'for (const [scenarioId, existingScenario] of Object.entries(existingScenarios))',
         ] as $token) {
             $this->assertStringContainsString($token, $publishedWorkers);
         }
@@ -252,6 +252,13 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'expected_replay_worker_build_id: pinnedRunBuildId',
             "scenario_id: REPLAY_SCENARIO",
             "scenario_id: CACHE_EVICTION_SCENARIO",
+            'runPythonAdversarialShard',
+            "scenario_id: ADVERSARIAL_SCENARIO",
+            'allow_register_error: true',
+            'workflow_definition_changed',
+            'workflowDefinitionFingerprintConflictVisible',
+            'published_artifact_worker_execution: workerExecution',
+            "stringValue(existingScenario?.status) === 'pass'",
         ] as $token) {
             $this->assertStringContainsString($token, $publishedWorkers);
         }

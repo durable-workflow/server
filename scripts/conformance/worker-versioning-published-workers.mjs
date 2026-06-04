@@ -8,6 +8,7 @@ const SHARD_SCHEMA = 'durable-workflow.v2.worker-versioning-runtime.published-wo
 const REPLAY_SCENARIO = 'replay_only_by_compatible_workers';
 const CACHE_EVICTION_SCENARIO = 'replay_across_cache_eviction';
 const CROSS_LANGUAGE_SCENARIO = 'cross_language_php_python_pinning';
+const ADVERSARIAL_SCENARIO = 'adversarial_no_version_bump';
 
 const resultDir = process.env.DW_WV_RESULT_DIR ?? process.cwd();
 const runRoot = process.env.DW_WV_RUN_ROOT ?? resultDir;
@@ -72,6 +73,7 @@ async function main() {
   const phpV2WorkerId = `php-v2-${suffix}`;
 
   const pythonReplay = await runPythonReplayShardSafely(python);
+  const pythonAdversarial = await runPythonAdversarialShardSafely(python);
 
   runPhpWorker(php, {
     action: 'register',
@@ -235,6 +237,7 @@ async function main() {
       workflow_type: workflowType,
       workers: [
         ...pythonReplay.workers,
+        ...pythonAdversarial.workers,
         { worker_id: phpV1WorkerId, runtime: 'php', build_id: phpV1BuildId },
         { worker_id: pythonV2WorkerId, runtime: 'python', build_id: pythonV2BuildId },
         { worker_id: pythonV1WorkerId, runtime: 'python', build_id: pythonV1BuildId },
@@ -243,6 +246,7 @@ async function main() {
     },
     scenario_results: {
       ...pythonReplay.scenario_results,
+      ...pythonAdversarial.scenario_results,
       [CROSS_LANGUAGE_SCENARIO]: {
         scenario_id: CROSS_LANGUAGE_SCENARIO,
         status: passes ? 'pass' : 'fail',
@@ -252,6 +256,7 @@ async function main() {
     },
     findings: [
       ...pythonReplay.findings,
+      ...pythonAdversarial.findings,
       ...(finding ? [finding] : []),
     ],
     logs: {
@@ -260,6 +265,141 @@ async function main() {
       shard_root: shardRoot,
     },
   });
+}
+
+async function runPythonAdversarialShardSafely(python) {
+  try {
+    return await runPythonAdversarialShard(python);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return notCoveredPythonAdversarialShard(message);
+  }
+}
+
+async function runPythonAdversarialShard(python) {
+  const adversarialBuildId = `wv-python-adversarial-v1-${suffix}`;
+  const adversarialWorkerId = `python-adversarial-${suffix}`;
+  const adversarialRoot = path.join(runRoot, 'published-php-python-worker-shard', 'adversarial');
+  const v1Fingerprint = `sequence-python-adversarial-v1-${suffix}`;
+  const divergentFingerprint = `sequence-python-adversarial-v2-divergent-${suffix}`;
+
+  runPythonWorker(python, {
+    action: 'register',
+    worker_id: adversarialWorkerId,
+    build_id: adversarialBuildId,
+    fingerprint: v1Fingerprint,
+    output_path: path.join(adversarialRoot, 'python-adversarial-v1-register.json'),
+  });
+
+  const changedRegister = runPythonWorker(python, {
+    action: 'register',
+    worker_id: adversarialWorkerId,
+    build_id: adversarialBuildId,
+    fingerprint: divergentFingerprint,
+    allow_register_error: true,
+    output_path: path.join(adversarialRoot, 'python-adversarial-divergent-reregister.json'),
+  });
+  const rolloutState = await requestJson(
+    'GET',
+    `/api/task-queues/${encodeURIComponent(taskQueue)}/build-ids`,
+    undefined,
+    controlHeaders(namespace),
+    [200],
+  );
+
+  const httpStatus = numberValue(changedRegister.http_status);
+  const reason = stringValue(changedRegister.reason)
+    || stringValue(changedRegister.response?.reason);
+  const rejectedDefinitionChange = httpStatus === 409 && reason === 'workflow_definition_changed';
+  const acceptedSameBuildId = httpStatus !== null && httpStatus >= 200 && httpStatus < 300;
+  const fingerprintConflictVisible = workflowDefinitionFingerprintConflictVisible(
+    rolloutState,
+    adversarialBuildId,
+    workflowType,
+  );
+  const observedBehavior = rejectedDefinitionChange
+    ? 'register_rejected_changed_workflow_definition'
+    : (
+        acceptedSameBuildId
+          ? 'accepted_with_same_build_id'
+          : `register_failed_${httpStatus ?? 'unknown'}`
+      );
+  const operatorAuditSignal = rejectedDefinitionChange
+    ? reason
+    : (fingerprintConflictVisible ? 'worker_definition_fingerprint_conflict_visible' : '');
+  const workerExecution = publishedPythonWorkerExecution();
+  const observedOutputs = {
+    observed_behavior: observedBehavior,
+    operator_audit_signal: operatorAuditSignal,
+    worker_id: adversarialWorkerId,
+    build_id: adversarialBuildId,
+    initial_workflow_definition_fingerprint: v1Fingerprint,
+    divergent_workflow_definition_fingerprint: divergentFingerprint,
+    register_response: changedRegister,
+    rollout_state: rolloutState,
+    workflow_definition_fingerprint_conflict_visible: fingerprintConflictVisible,
+    worker_execution_mode: 'published_python_worker_protocol_client',
+    published_artifact_worker_execution: workerExecution,
+    local_product_source_checkouts_used: false,
+  };
+  const passes = observedBehavior !== '' && operatorAuditSignal !== '';
+  const finding = passes ? null : {
+    scenario_id: ADVERSARIAL_SCENARIO,
+    owning_surface: acceptedSameBuildId ? 'server' : 'conformance_harness',
+    artifact_versions: artifactVersions(),
+    observed_behavior: acceptedSameBuildId
+      ? 'A published Python worker registered divergent workflow code under the same build id without an operator-visible fingerprint conflict.'
+      : 'Published Python worker adversarial no-version-bump evidence did not record an accepted or rejected registration outcome with an operator audit signal.',
+    expected_behavior: 'A published worker artifact that ships divergent workflow code under an existing build id is rejected or exposes an auditable conflict signal.',
+    next_acceptance_criterion: 'rerun the adversarial no-version-bump cell with the installed Python worker artifact and record observed_behavior plus operator_audit_signal from the public worker registration or rollout surfaces',
+    register_http_status: httpStatus,
+    register_reason: reason,
+    workflow_definition_fingerprint_conflict_visible: fingerprintConflictVisible,
+  };
+
+  return {
+    workers: [
+      { worker_id: adversarialWorkerId, runtime: 'python', build_id: adversarialBuildId },
+    ],
+    scenario_results: {
+      [ADVERSARIAL_SCENARIO]: {
+        scenario_id: ADVERSARIAL_SCENARIO,
+        status: passes ? 'pass' : 'fail',
+        observed_outputs: observedOutputs,
+        linked_findings: finding ? [finding] : [],
+      },
+    },
+    findings: finding ? [finding] : [],
+  };
+}
+
+function notCoveredPythonAdversarialShard(reason) {
+  const finding = {
+    scenario_id: ADVERSARIAL_SCENARIO,
+    owning_surface: 'conformance_harness',
+    artifact_versions: artifactVersions(),
+    observed_behavior: `Published Python worker adversarial no-version-bump shard could not complete: ${reason}`,
+    expected_behavior: 'A published worker artifact that ships divergent workflow code under an existing build id is rejected or exposes an auditable conflict signal.',
+    next_acceptance_criterion: 'rerun the published worker-versioning adversarial shard and record observed_behavior plus operator_audit_signal from published worker execution',
+  };
+
+  return {
+    workers: [],
+    scenario_results: {
+      [ADVERSARIAL_SCENARIO]: {
+        scenario_id: ADVERSARIAL_SCENARIO,
+        status: 'not_covered',
+        observed_outputs: {
+          shard_error: reason,
+          worker_execution_mode: 'published_python_worker_protocol_client',
+          published_artifact_worker_execution: publishedPythonWorkerExecution(),
+          local_product_source_checkouts_used: false,
+        },
+        linked_findings: [finding],
+      },
+    },
+    findings: [finding],
+  };
 }
 
 async function runPythonReplayShardSafely(python) {
@@ -809,16 +949,16 @@ function mergeExistingShard(value) {
 
   const existingScenarios = objectValue(existing.scenario_results);
   const incomingScenarios = objectValue(value.scenario_results);
-  const existingCrossLanguage = objectValue(existingScenarios[CROSS_LANGUAGE_SCENARIO]);
-  const incomingCrossLanguage = objectValue(incomingScenarios[CROSS_LANGUAGE_SCENARIO]);
-  const keepExistingCrossLanguage = stringValue(existingCrossLanguage.status) === 'pass'
-    && stringValue(incomingCrossLanguage.status) !== 'pass';
   const scenarioResults = {
     ...existingScenarios,
     ...incomingScenarios,
   };
-  if (keepExistingCrossLanguage) {
-    scenarioResults[CROSS_LANGUAGE_SCENARIO] = existingCrossLanguage;
+  for (const [scenarioId, existingScenario] of Object.entries(existingScenarios)) {
+    const incomingScenario = objectValue(incomingScenarios[scenarioId]);
+    if (stringValue(existingScenario?.status) === 'pass'
+      && stringValue(incomingScenario.status) !== 'pass') {
+      scenarioResults[scenarioId] = existingScenario;
+    }
   }
 
   return {
@@ -894,6 +1034,50 @@ function truthyEvidenceFlag(value) {
   return ['1', 'true', 'yes'].includes(value.trim().toLowerCase());
 }
 
+function workflowDefinitionFingerprintConflictVisible(value, buildId, workflowType) {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  if (Array.isArray(value)) {
+    return value.some((item) => workflowDefinitionFingerprintConflictVisible(item, buildId, workflowType));
+  }
+
+  const reportedBuildId = stringValue(value.build_id) || stringValue(value.buildId);
+  if (reportedBuildId !== '' && reportedBuildId !== buildId) {
+    return false;
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    const normalizedKey = key.toLowerCase();
+    if (normalizedKey.includes('workflow_definition_fingerprint_conflict')) {
+      if (Array.isArray(child)) {
+        if (child.length > 0) {
+          return true;
+        }
+      } else if (child && typeof child === 'object') {
+        if (Object.keys(child).length > 0) {
+          return true;
+        }
+      } else if (stringValue(child) !== '') {
+        return true;
+      }
+    }
+
+    if (normalizedKey === workflowType.toLowerCase()
+      && Array.isArray(child)
+      && child.length > 1) {
+      return true;
+    }
+
+    if (workflowDefinitionFingerprintConflictVisible(child, buildId, workflowType)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function objectValue(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -918,6 +1102,7 @@ import sys
 import time
 
 from durable_workflow import Client
+from durable_workflow.errors import ServerError
 
 
 def process_metrics():
@@ -941,21 +1126,33 @@ async def main():
         timeout=8.0,
     ) as client:
         if payload["action"] == "register":
-            response = await client.register_worker(
-                worker_id=payload["worker_id"],
-                task_queue=payload["task_queue"],
-                supported_workflow_types=[payload["workflow_type"]],
-                workflow_definition_fingerprints={payload["workflow_type"]: payload["fingerprint"]},
-                supported_activity_types=payload["supported_activity_types"],
-                max_concurrent_workflow_tasks=10,
-                max_concurrent_activity_tasks=10,
-                runtime="python",
-                sdk_version=payload["python_version"],
-                build_id=payload["build_id"],
-                task_slots={"workflow_available": 10, "activity_available": 10},
-                process_metrics=process_metrics(),
-            )
-            result = {"action": "register", "response": response, "task": None}
+            try:
+                response = await client.register_worker(
+                    worker_id=payload["worker_id"],
+                    task_queue=payload["task_queue"],
+                    supported_workflow_types=[payload["workflow_type"]],
+                    workflow_definition_fingerprints={payload["workflow_type"]: payload["fingerprint"]},
+                    supported_activity_types=payload["supported_activity_types"],
+                    max_concurrent_workflow_tasks=10,
+                    max_concurrent_activity_tasks=10,
+                    runtime="python",
+                    sdk_version=payload["python_version"],
+                    build_id=payload["build_id"],
+                    task_slots={"workflow_available": 10, "activity_available": 10},
+                    process_metrics=process_metrics(),
+                )
+                result = {"action": "register", "response": response, "task": None, "http_status": 201}
+            except ServerError as exc:
+                if not payload.get("allow_register_error"):
+                    raise
+                result = {
+                    "action": "register",
+                    "response": exc.body,
+                    "task": None,
+                    "http_status": exc.status,
+                    "reason": exc.reason(),
+                    "error": str(exc),
+                }
         elif payload["action"] == "poll":
             task = await client.poll_workflow_task(
                 worker_id=payload["worker_id"],
