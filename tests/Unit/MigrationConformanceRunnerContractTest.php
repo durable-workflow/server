@@ -494,6 +494,79 @@ class MigrationConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_routes_storage_smoke_only_runs_to_focused_contract_findings(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner storage-smoke-only gate.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            [],
+            'dw-migration-storage-smoke-only-',
+            [
+                'DW_SERVER_V1_VERSION' => $artifactVersions['server-v1'],
+                'DW_SERVER_V2_VERSION' => $artifactVersions['server-v2'],
+                'DW_SERVER_V1_ARTIFACT_SOURCE' => $artifactSources['server-v1'],
+                'DW_SERVER_V2_ARTIFACT_SOURCE' => $artifactSources['server-v2'],
+                'DW_CLI_VERSION' => $artifactVersions['cli'],
+                'DW_CLI_ARTIFACT_SOURCE' => $artifactSources['cli'],
+                'DW_WORKFLOW_PHP_V1_VERSION' => $artifactVersions['workflow-php-v1'],
+                'DW_WORKFLOW_PHP_V2_VERSION' => $artifactVersions['workflow-php-v2'],
+                'DW_WORKFLOW_PHP_V1_ARTIFACT_SOURCE' => $artifactSources['workflow-php-v1'],
+                'DW_WORKFLOW_PHP_V2_ARTIFACT_SOURCE' => $artifactSources['workflow-php-v2'],
+                'DW_PYTHON_SDK_VERSION' => $artifactVersions['sdk-python'],
+                'DW_PYTHON_SDK_ARTIFACT_SOURCE' => $artifactSources['sdk-python'],
+                'DW_WATERLINE_VERSION' => $artifactVersions['waterline'],
+                'DW_WATERLINE_ARTIFACT_SOURCE' => $artifactSources['waterline'],
+            ],
+            [
+                'status' => 'pass',
+                'storage_connection' => 'workflow_storage',
+            ],
+        );
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame('pass', $result['scenario_results']['published_artifact_install_only']['status']);
+        $this->assertSame('fail', $result['scenario_results']['latest_supported_v1_state_setup']['status']);
+        $this->assertSame('fail', $result['scenario_results']['documented_migration_steps_execute']['status']);
+        $this->assertSame('fail', $result['scenario_results']['waterline_operator_visibility_preserved']['status']);
+        $this->assertSame('fail', $result['scenario_results']['cli_access_to_preupgrade_state']['status']);
+        $this->assertSame('fail', $result['scenario_results']['version_skew_refusal']['status']);
+        $this->assertSame('fail', $result['migration_plan']['status']);
+        $this->assertSame(true, $result['migration_plan']['storage_connection_smoke_only']);
+        $this->assertArrayNotHasKey(
+            'run_record',
+            $result['finding_links'],
+            'storage-smoke-only runs should carry failed run-record observations instead of generic missing-record findings',
+        );
+
+        $this->assertSame(
+            'migration_v1_state_setup_failure',
+            $result['scenario_results']['latest_supported_v1_state_setup']['linked_findings'][0]['finding_type'],
+        );
+        $this->assertSame(
+            'missing_or_wrong_migration_guide_step',
+            $result['scenario_results']['documented_migration_steps_execute']['linked_findings'][0]['finding_type'],
+        );
+        $this->assertSame(
+            'waterline_visibility_break',
+            $result['scenario_results']['waterline_operator_visibility_preserved']['linked_findings'][0]['finding_type'],
+        );
+        $this->assertSame(
+            'cli_regression',
+            $result['scenario_results']['cli_access_to_preupgrade_state']['linked_findings'][0]['finding_type'],
+        );
+        $this->assertSame(
+            'skew_silence',
+            $result['scenario_results']['version_skew_refusal']['linked_findings'][0]['finding_type'],
+        );
+    }
+
     public function test_runner_rejects_contract_placeholder_artifact_versions_before_passing(): void
     {
         $node = $this->read('scripts/conformance/migration-published-artifacts.mjs');

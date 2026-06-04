@@ -238,6 +238,8 @@ async function main() {
     ...artifactSourceMapsFromEvidence(evidence),
   ), true);
   const storageSmoke = normalizeStorageSmoke(evidence);
+  const storageSmokeOnlyProductEvidence = storageSmokeProvidesProductEvidence(storageSmoke)
+    && !hasSuppliedFullMigrationEvidence(evidence);
 
   writeArtifacts(publishedArtifactVersions, resolvedArtifactVersions, artifactSources, evidence, publicArtifactResolution);
 
@@ -266,6 +268,8 @@ async function main() {
     artifactPrerequisiteFailures,
     publishedArtifactVersions,
     artifactSources,
+    storageSmokeOnlyProductEvidence,
+    storageSmoke,
   );
   const localProductSourceCheckoutsUsed = localProductSourceCheckoutsUsedIn(evidence, scenarioResults);
   const result = {
@@ -288,27 +292,71 @@ async function main() {
     findings: [],
     finding_links: {},
     migration_plan: nonEmptyObject(evidence.migration_plan)
-      ?? notCoveredObservation('migration_plan', 'No public migration-guide execution plan was supplied.'),
+      ?? missingRunRecordObservation(
+        'migration_plan',
+        'No public migration-guide execution plan was supplied.',
+        storageSmokeOnlyProductEvidence,
+      ),
     preupgrade_state_snapshot: nonEmptyObject(evidence.preupgrade_state_snapshot)
-      ?? notCoveredObservation('preupgrade_state_snapshot', 'No realistic v1 state snapshot was supplied.'),
+      ?? missingRunRecordObservation(
+        'preupgrade_state_snapshot',
+        'No realistic v1 state snapshot was supplied.',
+        storageSmokeOnlyProductEvidence,
+      ),
     postupgrade_state_snapshot: nonEmptyObject(evidence.postupgrade_state_snapshot)
-      ?? notCoveredObservation('postupgrade_state_snapshot', 'No migrated v2 state snapshot was supplied.'),
+      ?? missingRunRecordObservation(
+        'postupgrade_state_snapshot',
+        'No migrated v2 state snapshot was supplied.',
+        storageSmokeOnlyProductEvidence,
+      ),
     history_dumps: nonEmptyObject(evidence.history_dumps)
-      ?? notCoveredObservation('history_dumps', 'No before/after history dumps were supplied.'),
+      ?? missingRunRecordObservation(
+        'history_dumps',
+        'No before/after history dumps were supplied.',
+        storageSmokeOnlyProductEvidence,
+      ),
     activity_attempts: nonEmptyObject(evidence.activity_attempts)
-      ?? notCoveredObservation('activity_attempts', 'No activity retry observations were supplied.'),
+      ?? missingRunRecordObservation(
+        'activity_attempts',
+        'No activity retry observations were supplied.',
+        storageSmokeOnlyProductEvidence,
+      ),
     schedule_ticks: nonEmptyObject(evidence.schedule_ticks)
-      ?? notCoveredObservation('schedule_ticks', 'No cross-upgrade schedule tick observations were supplied.'),
+      ?? missingRunRecordObservation(
+        'schedule_ticks',
+        'No cross-upgrade schedule tick observations were supplied.',
+        storageSmokeOnlyProductEvidence,
+      ),
     worker_registration_observations: nonEmptyObject(evidence.worker_registration_observations)
-      ?? notCoveredObservation('worker_registration_observations', 'No worker registration projection observations were supplied.'),
+      ?? missingRunRecordObservation(
+        'worker_registration_observations',
+        'No worker registration projection observations were supplied.',
+        storageSmokeOnlyProductEvidence,
+      ),
     cli_observations: nonEmptyObject(evidence.cli_observations)
-      ?? notCoveredObservation('cli_observations', 'No CLI observations against migrated state were supplied.'),
+      ?? missingRunRecordObservation(
+        'cli_observations',
+        'No CLI observations against migrated state were supplied.',
+        storageSmokeOnlyProductEvidence,
+      ),
     waterline_observations: nonEmptyObject(evidence.waterline_observations)
-      ?? notCoveredObservation('waterline_observations', 'No Waterline/operator observations were supplied.'),
+      ?? missingRunRecordObservation(
+        'waterline_observations',
+        'No Waterline/operator observations were supplied.',
+        storageSmokeOnlyProductEvidence,
+      ),
     rollback_observations: nonEmptyObject(evidence.rollback_observations)
-      ?? notCoveredObservation('rollback_observations', 'No rollback observations were supplied.'),
+      ?? missingRunRecordObservation(
+        'rollback_observations',
+        'No rollback observations were supplied.',
+        storageSmokeOnlyProductEvidence,
+      ),
     version_skew_observations: nonEmptyObject(evidence.version_skew_observations)
-      ?? notCoveredObservation('version_skew_observations', 'No version-skew refusal observations were supplied.'),
+      ?? missingRunRecordObservation(
+        'version_skew_observations',
+        'No version-skew refusal observations were supplied.',
+        storageSmokeOnlyProductEvidence,
+      ),
     storage_connection_smoke: storageSmoke,
     implementation_identity: {
       runner: 'scripts/conformance/migration-published-artifacts.sh',
@@ -331,6 +379,8 @@ function buildScenarioResults(
   artifactPrerequisiteFailures = [],
   publishedArtifactVersions = {},
   artifactSources = {},
+  storageSmokeOnlyProductEvidence = false,
+  storageSmoke = {},
 ) {
   const supplied = scenarioResultsById(evidence);
   const results = {};
@@ -375,21 +425,12 @@ function buildScenarioResults(
       continue;
     }
 
-    const finding = coverageGapFinding(scenarioId, artifactVersions, {
-      observed_behavior: `No published-artifact migration evidence was supplied for ${scenarioId}.`,
-      expected_behavior: 'The host migration runner executes this required v1-to-v2 migration cell against pinned published artifacts.',
-      next_acceptance_criterion: `run the ${scenarioId} migration cell and attach observed outputs for every required field`,
-    });
-    results[scenarioId] = {
-      scenario_id: scenarioId,
-      status: 'not_covered',
-      observed_outputs: {
-        coverage_gap: true,
-        required_fields: requiredFieldsFor(scenarioId),
-        local_product_source_checkouts_used: false,
-      },
-      linked_findings: [finding],
-    };
+    results[scenarioId] = missingScenarioResult(
+      scenarioId,
+      artifactVersions,
+      storageSmokeOnlyProductEvidence,
+      storageSmoke,
+    );
   }
 
   for (const [scenarioId, suppliedScenario] of Object.entries(supplied)) {
@@ -404,6 +445,51 @@ function buildScenarioResults(
   }
 
   return results;
+}
+
+function missingScenarioResult(
+  scenarioId,
+  artifactVersions,
+  storageSmokeOnlyProductEvidence,
+  storageSmoke,
+) {
+  if (storageSmokeOnlyProductEvidence) {
+    const scenario = {
+      scenario_id: scenarioId,
+      status: 'fail',
+      observed_outputs: {
+        storage_connection_smoke_only: true,
+        storage_connection_smoke_status: observedStorageSmokeStatus(storageSmoke),
+        required_fields: requiredFieldsFor(scenarioId),
+        local_product_source_checkouts_used: false,
+        observed_behavior: `Published-artifact migration conformance exercised storage-connection smoke but did not execute ${scenarioId}.`,
+      },
+    };
+
+    return {
+      ...scenario,
+      linked_findings: [
+        findingForNonPassScenario(scenarioId, 'fail', scenario, artifactVersions),
+      ],
+    };
+  }
+
+  const finding = coverageGapFinding(scenarioId, artifactVersions, {
+    observed_behavior: `No published-artifact migration evidence was supplied for ${scenarioId}.`,
+    expected_behavior: 'The host migration runner executes this required v1-to-v2 migration cell against pinned published artifacts.',
+    next_acceptance_criterion: `run the ${scenarioId} migration cell and attach observed outputs for every required field`,
+  });
+
+  return {
+    scenario_id: scenarioId,
+    status: 'not_covered',
+    observed_outputs: {
+      coverage_gap: true,
+      required_fields: requiredFieldsFor(scenarioId),
+      local_product_source_checkouts_used: false,
+    },
+    linked_findings: [finding],
+  };
 }
 
 function synthesizedPublishedArtifactInstallScenario(
@@ -645,6 +731,44 @@ function normalizeStorageSmoke(evidence) {
     required_context_not_passing_by_itself: true,
     observed_behavior: 'No storage-connection smoke result was supplied to this migration run.',
   };
+}
+
+function storageSmokeProvidesProductEvidence(storageSmoke) {
+  const smoke = objectValue(storageSmoke);
+  const status = stringValue(smoke.status || smoke.outcome || smoke.result).toLowerCase();
+
+  return truthy(smoke.passed)
+    || truthy(smoke.pass)
+    || truthy(smoke.success)
+    || truthy(smoke.storage_connection_smoke_passed)
+    || ['pass', 'passed', 'success', 'succeeded', 'ok'].includes(status);
+}
+
+function observedStorageSmokeStatus(storageSmoke) {
+  const smoke = objectValue(storageSmoke);
+  const status = stringValue(smoke.status || smoke.outcome || smoke.result);
+  if (status !== '') {
+    return status;
+  }
+  if (storageSmokeProvidesProductEvidence(storageSmoke)) {
+    return 'pass';
+  }
+  return 'unknown';
+}
+
+function hasSuppliedFullMigrationEvidence(evidence) {
+  const supplied = scenarioResultsById(evidence);
+  for (const scenarioId of effectiveRequiredScenarios()) {
+    if (scenarioId === 'published_artifact_install_only') {
+      continue;
+    }
+
+    if (supplied[scenarioId]) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function blockedResult(reason, startedAt, finishedAt, artifactVersions, artifactSources) {
@@ -1346,6 +1470,19 @@ function notCoveredObservation(kind, reason) {
     status: 'not_covered',
     kind,
     observed_behavior: reason,
+  };
+}
+
+function missingRunRecordObservation(kind, reason, storageSmokeOnlyProductEvidence) {
+  if (!storageSmokeOnlyProductEvidence) {
+    return notCoveredObservation(kind, reason);
+  }
+
+  return {
+    status: 'fail',
+    kind,
+    storage_connection_smoke_only: true,
+    observed_behavior: `${reason} The current non-runner-blocked product evidence only covers storage-connection migration smoke.`,
   };
 }
 
