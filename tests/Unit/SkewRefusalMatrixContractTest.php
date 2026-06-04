@@ -667,19 +667,39 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'compatible Python SDK query/update probes must reach the SDK artifact so user-visible domain responses can prove inside-window interop',
         );
         $this->assertStringContainsString(
-            "!['cli', 'sdk-python'].includes(surfaceName)",
+            'compatibleControlPlaneInteropClassification',
             $runner,
-            'compatible CLI and Python SDK query/update probes must classify structured server domain responses as interop evidence',
+            'compatible CLI and Python SDK control-plane domain responses must classify as inside-window interop rather than silent_failure',
         );
         $this->assertStringContainsString(
-            'isCompatibleControlPlaneInterop',
+            "!['cli', 'sdk-python'].includes(surfaceName)",
             $runner,
-            'compatible control-plane domain responses must classify as inside-window interop rather than silent_failure',
+            'the compatible control-plane interop classifier must cover the published Python SDK as well as the CLI',
+        );
+        $this->assertStringContainsString(
+            'typed_sdk_structured_control_plane_domain_response',
+            $runner,
+            'compatible Python SDK domain responses must be labeled as typed SDK interop evidence',
+        );
+        $this->assertStringContainsString(
+            'typed_sdk_evidence = true',
+            $runner,
+            'Python SDK evidence rows must explicitly distinguish SDK artifact evidence from generic HTTP probes',
+        );
+        $this->assertStringContainsString(
+            "typed_sdk_client: 'durable_workflow.Client'",
+            $runner,
+            'artifact invocation metadata must identify the published Python SDK client API used for evidence',
         );
         $this->assertStringContainsString(
             'structured_control_plane_domain_response',
             $runner,
-            'compatible CLI and Python SDK rows must label structured control-plane domain responses as interop evidence',
+            'compatible CLI rows must continue to label structured control-plane domain responses as interop evidence',
+        );
+        $this->assertStringNotContainsString(
+            'requires a live compatible published workflow worker for skew_conformance_workflow',
+            $runner,
+            'compatible Python SDK control-plane rows must not be marked not_covered only because no live workflow worker was coordinated',
         );
         $this->assertStringContainsString(
             'next_step: nextStep',

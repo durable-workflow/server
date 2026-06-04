@@ -683,9 +683,26 @@ async function probeOperation({
     evidence.refusal_context = loudRefusalContext(surfaceName, surfaceVersion, context, pairing, response);
   }
 
-  if (isCompatibleControlPlaneInterop({ surfaceName, pairingClass, operationGroup, response })) {
-    evidence.interop_classification = 'structured_control_plane_domain_response';
+  const interopClassification = compatibleControlPlaneInteropClassification({
+    surfaceName,
+    pairingClass,
+    operationGroup,
+    response,
+  });
+  if (interopClassification) {
+    evidence.interop_classification = interopClassification;
     capture.interop_classification = evidence.interop_classification;
+  }
+
+  if (surfaceName === 'sdk-python') {
+    evidence.sdk_python_version = surfaceVersion;
+    evidence.sdk_version = surfaceVersion;
+    evidence.typed_sdk_evidence = true;
+    evidence.sdk_operation = requestTemplate;
+    capture.sdk_python_version = surfaceVersion;
+    capture.sdk_version = surfaceVersion;
+    capture.typed_sdk_evidence = true;
+    capture.sdk_operation = requestTemplate;
   }
 
   if (protocolGap) {
@@ -2340,6 +2357,14 @@ async function runArtifactWithProxy({
       surface: surfaceName,
       pairing_class: pairingClass,
       operation_group: operationGroup,
+      ...(surfaceName === 'sdk-python' ? {
+        sdk_python_version: context.artifactVersions['sdk-python'],
+        sdk_version: context.artifactVersions['sdk-python'],
+        typed_sdk_evidence: true,
+        typed_sdk_client: 'durable_workflow.Client',
+        sdk_operation: `${method} ${requestPath}`,
+        artifact_output: redactJsonSecrets(stdoutJson),
+      } : {}),
       command: path.basename(command),
       args: redactCommandArgs(proxyResult.process.args),
       exit_code: proxyResult.process.exitCode,
@@ -2938,7 +2963,7 @@ function classifyEvidenceStatus({ surfaceName, pairingClass, operationGroup, res
     return 'loud_refuse';
   }
 
-  if (isCompatibleControlPlaneInterop({
+  if (compatibleControlPlaneInteropClassification({
     surfaceName,
     pairingClass,
     operationGroup,
@@ -2966,35 +2991,46 @@ function classifyEvidenceStatus({ surfaceName, pairingClass, operationGroup, res
   return 'silent_success';
 }
 
-function isCompatibleControlPlaneInterop({
+function compatibleControlPlaneInteropClassification({
   surfaceName,
   pairingClass,
   operationGroup,
   response,
 }) {
+  if (pairingClass !== 'compatible') {
+    return '';
+  }
+
   if (
     !['cli', 'sdk-python'].includes(surfaceName)
-    || pairingClass !== 'compatible'
     || operationGroup !== 'workflow_control_plane'
     || response.status < 400
     || response.status >= 500
   ) {
-    return false;
+    return '';
   }
 
   const contract = response?.body?.control_plane;
   if (!contract || typeof contract !== 'object') {
-    return false;
+    return '';
   }
 
   const operation = stringValue(contract.operation);
   const schema = stringValue(contract.schema);
   const reason = stringValue(response.body?.reason ?? contract.reason);
 
-  return operation !== ''
+  const isStructuredControlPlaneResponse = operation !== ''
     && schema !== ''
     && reason !== ''
     && schema.startsWith('durable-workflow.v2.control-plane-response');
+
+  if (!isStructuredControlPlaneResponse) {
+    return '';
+  }
+
+  return surfaceName === 'sdk-python'
+    ? 'typed_sdk_structured_control_plane_domain_response'
+    : 'structured_control_plane_domain_response';
 }
 
 function summarizePairing(surfaceName, pairingClass, rows, context) {
