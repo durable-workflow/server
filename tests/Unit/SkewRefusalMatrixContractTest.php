@@ -842,9 +842,24 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'inside-window worker complete/fail fixtures must retry compatible poll setup instead of marking the cell uncovered after one empty poll',
         );
         $this->assertStringContainsString(
-            'poll_request_id: `fixture-${context.runId}-${normalizeRequestKey(requestTemplate)}-${attempt}`',
+            'poll_request_id: workerFixturePollRequestId(context, surfaceName, pairingClass, requestTemplate, attempt)',
             $runner,
-            'fixture poll retries must use distinct request ids so server-side idempotency does not replay an earlier empty poll',
+            'fixture poll retries must include surface and pairing scope so server-side idempotency does not replay an earlier empty poll',
+        );
+        $this->assertStringContainsString(
+            'function workerFixturePollRequestId(context, surfaceName, pairingClass, requestTemplate, attempt)',
+            $runner,
+            'worker fixture poll request ids must be generated from the conformance cell identity',
+        );
+        $this->assertStringContainsString(
+            "process.env.DW_SKEW_WORKER_FIXTURE_POLL_ATTEMPTS ?? '10'",
+            $runner,
+            'fixture poll retries need a long enough default window for queue-backed published server task creation',
+        );
+        $this->assertStringContainsString(
+            "process.env.DW_SKEW_WORKER_FIXTURE_POLL_INTERVAL_MS ?? '500'",
+            $runner,
+            'fixture poll retry cadence should be explicit and tunable for host runners',
         );
         $this->assertStringContainsString(
             'body?.task?.workflow_task_id',

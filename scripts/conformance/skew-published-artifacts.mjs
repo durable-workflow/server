@@ -1263,6 +1263,8 @@ async function prepareWorkerTaskFixture({
   try {
     pollResponse = await pollWorkflowTaskFixture({
       context,
+      surfaceName,
+      pairingClass,
       workerHeaders,
       workerId,
       taskQueue,
@@ -1297,6 +1299,8 @@ async function prepareWorkerTaskFixture({
 
 async function pollWorkflowTaskFixture({
   context,
+  surfaceName,
+  pairingClass,
   workerHeaders,
   workerId,
   taskQueue,
@@ -1304,7 +1308,11 @@ async function pollWorkflowTaskFixture({
 }) {
   const attempts = Math.max(
     1,
-    Math.min(5, Number.parseInt(process.env.DW_SKEW_WORKER_FIXTURE_POLL_ATTEMPTS ?? '2', 10) || 2),
+    Math.min(30, Number.parseInt(process.env.DW_SKEW_WORKER_FIXTURE_POLL_ATTEMPTS ?? '10', 10) || 10),
+  );
+  const intervalMs = Math.max(
+    50,
+    Math.min(5000, Number.parseInt(process.env.DW_SKEW_WORKER_FIXTURE_POLL_INTERVAL_MS ?? '500', 10) || 500),
   );
   let lastResponse = null;
 
@@ -1317,7 +1325,7 @@ async function pollWorkflowTaskFixture({
       {
         worker_id: workerId,
         task_queue: taskQueue,
-        poll_request_id: `fixture-${context.runId}-${normalizeRequestKey(requestTemplate)}-${attempt}`,
+        poll_request_id: workerFixturePollRequestId(context, surfaceName, pairingClass, requestTemplate, attempt),
       },
     );
     lastResponse = response;
@@ -1327,11 +1335,22 @@ async function pollWorkflowTaskFixture({
     }
 
     if (attempt < attempts) {
-      await sleep(250);
+      await sleep(intervalMs);
     }
   }
 
   return lastResponse;
+}
+
+function workerFixturePollRequestId(context, surfaceName, pairingClass, requestTemplate, attempt) {
+  return [
+    'fixture',
+    context.runId,
+    surfaceName,
+    pairingClass,
+    normalizeRequestKey(requestTemplate),
+    attempt,
+  ].join('-');
 }
 
 async function prepareWorkflowFixture({
