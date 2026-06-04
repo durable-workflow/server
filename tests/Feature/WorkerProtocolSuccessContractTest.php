@@ -1774,6 +1774,72 @@ class WorkerProtocolSuccessContractTest extends TestCase
 
         $timerTaskId = (string) $complete->json('created_task_ids.0');
 
+        Queue::assertPushed(RunTimerTask::class, 1);
+        Queue::assertPushed(
+            RunTimerTask::class,
+            static fn (RunTimerTask $job): bool => $job->taskId === $timerTaskId
+                && $job->queue === null,
+        );
+    }
+
+    public function test_worker_completion_dispatches_service_mode_timer_when_task_observer_is_suppressed(): void
+    {
+        Queue::fake();
+
+        config([
+            'server.mode' => 'service',
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-service-timer-fallback-contract',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $this->registerWorker(
+            workerId: 'worker-service-timer-fallback-contract',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-service-timer-fallback-contract',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll);
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $complete = WorkflowTask::withoutEvents(
+            fn (): TestResponse => $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => 'worker-service-timer-fallback-contract',
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'start_timer',
+                        'delay_seconds' => 0,
+                    ],
+                ],
+            ], $this->workerProtocolHeaders()),
+        );
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('run_status', 'waiting')
+            ->assertJsonStructure(['created_task_ids']);
+
+        $timerTaskId = (string) $complete->json('created_task_ids.0');
+
+        Queue::assertPushed(RunTimerTask::class, 1);
         Queue::assertPushed(
             RunTimerTask::class,
             static fn (RunTimerTask $job): bool => $job->taskId === $timerTaskId

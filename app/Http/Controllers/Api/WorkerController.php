@@ -11,6 +11,7 @@ use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\QueryTaskQueueUnavailableException;
 use App\Support\SearchAttributeValueValidator;
+use App\Support\ServiceModeTimerDispatcher;
 use App\Support\WorkerProtocol;
 use App\Support\WorkflowQueryTaskBroker;
 use App\Support\WorkflowTaskLeaseRecovery;
@@ -978,6 +979,8 @@ class WorkerController
         } catch (ExternalPayloadStorageUnavailable $exception) {
             return $this->externalPayloadFailure($taskId, (int) $validated['workflow_task_attempt'], $exception, 503);
         }
+
+        app(ServiceModeTimerDispatcher::class)->dispatchCreatedTaskIds($outcome['created_task_ids'] ?? []);
 
         return WorkerProtocol::json([
             'task_id' => $taskId,
