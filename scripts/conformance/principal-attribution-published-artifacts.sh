@@ -168,6 +168,7 @@ emit_principal_blocked_placeholder_fields() {
       printf ',\n      "history_events": []'
       printf ',\n      "recorded_principals": {}'
       printf ',\n      "spoofing_attempts": {"payload_values": [], "headers": [], "executed": false}'
+      printf ',\n      "spoofing_matrix": []'
       printf ',\n      "action_credentials": {}'
       ;;
     query_attribution)
@@ -175,6 +176,7 @@ emit_principal_blocked_placeholder_fields() {
       printf ',\n      "recorded_principal": null'
       printf ',\n      "history_or_query_task_surface": null'
       printf ',\n      "spoofing_attempts": {"payload_values": [], "headers": [], "executed": false}'
+      printf ',\n      "spoofing_matrix": []'
       ;;
     completion_failure_attribution)
       printf ',\n      "completion_event_principal": null'
@@ -194,6 +196,7 @@ emit_principal_blocked_placeholder_fields() {
       printf ',\n      "history_events": []'
       printf ',\n      "recorded_principals": {}'
       printf ',\n      "spoofing_attempts": {"payload_fields": [], "headers": [], "actions": [], "executed": false}'
+      printf ',\n      "spoofing_matrix": []'
       printf ',\n      "anonymous_auth_driver": "none"'
       ;;
     python_sdk_visibility|php_client_visibility)
@@ -366,6 +369,7 @@ blocked_result() {
     "headers": [],
     "executed": false
   },
+  "spoofing_matrix": [],
   "operator_visibility": {
     "cli_history_json_principal_visible": null,
     "waterline": null
@@ -1373,6 +1377,11 @@ ADVERSARIAL_HEADERS = {
     "X-Remote-User": "mallory",
     "Authorization-Override": "Bearer mallory",
 }
+ADVERSARIAL_VALUE_MARKERS = {
+    str(value).strip().lower()
+    for value in [*ADVERSARIAL_BODY_FIELDS.values(), *ADVERSARIAL_HEADERS.values()]
+    if str(value).strip()
+}
 
 
 def now() -> str:
@@ -1444,8 +1453,11 @@ def signal_workflow(workflow_id: str, token_name: str, signal_name: str = "nudge
     return request("POST", f"/workflows/{workflow_id}/signal/{signal_name}", token=TOKENS[token_name], body=body, headers=headers, allowed={200, 202})
 
 
-def cancel_workflow(workflow_id: str, token_name: str) -> dict[str, Any]:
-    return request("POST", f"/workflows/{workflow_id}/cancel", token=TOKENS[token_name], body={"reason": "principal attribution conformance"}, allowed={200, 202, 409})
+def cancel_workflow(workflow_id: str, token_name: str, extra: dict[str, Any] | None = None, headers: dict[str, str] | None = None) -> dict[str, Any]:
+    body = {"reason": "principal attribution conformance"}
+    if extra:
+        body.update(extra)
+    return request("POST", f"/workflows/{workflow_id}/cancel", token=TOKENS[token_name], body=body, headers=headers, allowed={200, 202, 409})
 
 
 def history(workflow_id: str, run_id: str, token_name: str = "alice_v1") -> dict[str, Any]:
@@ -1558,6 +1570,70 @@ def principal_id(principal: Any) -> str | None:
         return None
     value = principal.get("id")
     return value if isinstance(value, str) and value else None
+
+
+def spoofing_attempt_catalog(actions: list[str], executed: bool = True) -> dict[str, Any]:
+    return {
+        "payload_values": sorted({str(value) for value in ADVERSARIAL_BODY_FIELDS.values()}),
+        "payload_fields": dict(ADVERSARIAL_BODY_FIELDS),
+        "body_fields": dict(ADVERSARIAL_BODY_FIELDS),
+        "headers": dict(ADVERSARIAL_HEADERS),
+        "actions": actions,
+        "executed": executed,
+    }
+
+
+def principal_string_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        strings: list[str] = []
+        for item in value.values():
+            strings.extend(principal_string_values(item))
+        return strings
+    if isinstance(value, list):
+        strings = []
+        for item in value:
+            strings.extend(principal_string_values(item))
+        return strings
+
+    return []
+
+
+def caller_controlled_principal_hits(principal: Any) -> list[str]:
+    hits = []
+    for value in principal_string_values(principal):
+        normalized = value.strip().lower()
+        if normalized in ADVERSARIAL_VALUE_MARKERS:
+            hits.append(value)
+
+    return sorted(set(hits))
+
+
+def spoofing_matrix_row(
+    action: str,
+    *,
+    surface: str,
+    credential_used: dict[str, Any] | None,
+    expected_principal: dict[str, str],
+    observed_principal: Any,
+    event_type: str | None = None,
+    auth_driver: str = "token",
+) -> dict[str, Any]:
+    return {
+        "action": action,
+        "surface": surface,
+        "auth_driver": auth_driver,
+        "credential_used": credential_used,
+        "event_type": event_type,
+        "requested_spoof_values": {
+            "body_fields": dict(ADVERSARIAL_BODY_FIELDS),
+            "headers": dict(ADVERSARIAL_HEADERS),
+        },
+        "expected_principal": expected_principal,
+        "observed_principal": observed_principal,
+        "caller_controlled_value_hits": caller_controlled_principal_hits(observed_principal),
+    }
 
 
 def principal_matches(principal: Any, expected: dict[str, str]) -> bool:
@@ -1979,7 +2055,12 @@ def main() -> int:
         headers=ADVERSARIAL_HEADERS,
     )
     query_observation = query_with_worker(main_id, MAIN_WORKER_ID, MAIN_TASK_QUEUE)
-    cancel_workflow(main_id, "alice_v2")
+    cancel_workflow(
+        main_id,
+        "alice_v2",
+        extra=ADVERSARIAL_BODY_FIELDS,
+        headers=ADVERSARIAL_HEADERS,
+    )
     main_history = history(main_id, main_run)
     history_dumps["start_signal_cancel_spoofing"] = main_history
     main_principals = event_principals(main_history)
@@ -2137,8 +2218,35 @@ def main() -> int:
             "observed_principal": main_principals.get("WorkflowCancelled"),
             "credential_material_recorded_as_principal": principal_id(main_principals.get("WorkflowCancelled")) == "alice-token-v2",
             "event_type": "WorkflowCancelled",
+            "spoofing_payload_and_headers": True,
         },
     }
+    main_spoofing_matrix = [
+        spoofing_matrix_row(
+            "start",
+            surface="history_api",
+            credential_used=action_credentials["start"],
+            expected_principal=expected_main["WorkflowStarted"],
+            observed_principal=main_principals.get("WorkflowStarted"),
+            event_type="WorkflowStarted",
+        ),
+        spoofing_matrix_row(
+            "signal",
+            surface="history_api",
+            credential_used=action_credentials["signal"],
+            expected_principal=expected_main["SignalReceived"],
+            observed_principal=main_principals.get("SignalReceived"),
+            event_type="SignalReceived",
+        ),
+        spoofing_matrix_row(
+            "cancel",
+            surface="history_api",
+            credential_used=action_credentials["cancel"],
+            expected_principal=expected_main["WorkflowCancelled"],
+            observed_principal=main_principals.get("WorkflowCancelled"),
+            event_type="WorkflowCancelled",
+        ),
+    ]
     credential_rotation = {
         "actor": "alice",
         "before": {
@@ -2184,9 +2292,12 @@ def main() -> int:
         actual = main_principals.get(event_type)
         if not principal_matches(actual, expected):
             main_failures.append(f"{event_type} principal expected {expected}, got {actual!r}")
-    spoof_successes = [value for value in main_principals.values() if isinstance(value, dict) and value.get("id") == "mallory"]
+    spoof_successes = [
+        row for row in main_spoofing_matrix
+        if row.get("caller_controlled_value_hits")
+    ]
     if spoof_successes:
-        main_failures.append("spoofed principal mallory appeared in history")
+        main_failures.append(f"caller-controlled spoof value appeared in history principal: {spoof_successes!r}")
     main_linked_findings: list[dict[str, Any]] = []
     if main_failures:
         main_linked_findings.append(finding(
@@ -2198,10 +2309,19 @@ def main() -> int:
             "P0" if spoof_successes else "P1",
         ))
         findings.extend(main_linked_findings)
-    scenario_results.append(scenario("pass" if not main_failures else "fail", "start_signal_cancel_spoofing", history_events=list(main_principals), recorded_principals=main_principals, spoofing_attempts={"payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS)}, action_credentials=action_credentials, linked_findings=main_linked_findings, findings=main_failures))
+    scenario_results.append(scenario("pass" if not main_failures else "fail", "start_signal_cancel_spoofing", history_events=list(main_principals), recorded_principals=main_principals, spoofing_attempts=spoofing_attempt_catalog(["start", "signal", "cancel"]), spoofing_matrix=main_spoofing_matrix, action_credentials=action_credentials, linked_findings=main_linked_findings, findings=main_failures))
 
     query_recorded = query_observation.get("query_response", {})
     recorded_query_principal = principal_from_query_observation(query_observation)
+    query_spoofing_matrix = [
+        spoofing_matrix_row(
+            "query",
+            surface="query_task_or_response",
+            credential_used={"actor": "bob", "credential_ref": "bob-token", "credential_label": "bob credential"},
+            expected_principal={"type": "auth:token", "id": "bob"},
+            observed_principal=recorded_query_principal,
+        ),
+    ]
     query_principal_failures = []
     if not query_recorded:
         query_principal_failures.append("query did not return a response")
@@ -2209,9 +2329,22 @@ def main() -> int:
         query_principal_failures.append(f"query errors: {query_observation.get('errors')}")
     if principal_id(recorded_query_principal) != "bob":
         query_principal_failures.append(f"query principal expected bob, got {recorded_query_principal!r}")
-    scenario_results.append(scenario("pass" if not query_principal_failures else "fail", "query_attribution", query_result=query_recorded, recorded_principal=recorded_query_principal, history_or_query_task_surface=query_observation, spoofing_attempts={"payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS)}, findings=query_principal_failures))
+    query_spoof_successes = [
+        row for row in query_spoofing_matrix
+        if row.get("caller_controlled_value_hits")
+    ]
+    if query_spoof_successes:
+        query_principal_failures.append(f"caller-controlled spoof value appeared in query principal: {query_spoof_successes!r}")
+    scenario_results.append(scenario("pass" if not query_principal_failures else "fail", "query_attribution", query_result=query_recorded, recorded_principal=recorded_query_principal, history_or_query_task_surface=query_observation, spoofing_attempts=spoofing_attempt_catalog(["query"]), spoofing_matrix=query_spoofing_matrix, findings=query_principal_failures))
     if query_principal_failures:
-        findings.append(finding("query_attribution", "server", f"query attribution could not be confirmed: {query_principal_failures}", "query operations expose the caller principal in a documented server-controlled audit surface", "add query principal evidence to history or query task audit output"))
+        findings.append(finding(
+            "query_attribution",
+            "server",
+            f"query attribution could not be confirmed: {query_principal_failures}",
+            "query operations expose the caller principal in a documented server-controlled audit surface and ignore caller-supplied spoofing fields",
+            "add query principal evidence to history or query task audit output and reject caller-controlled attribution values",
+            "P0" if query_spoof_successes else "P1",
+        ))
 
     expected_worker_principal = {"id": "worker:principal-attribution", "type": "auth:token"}
     documented_system_principals: list[dict[str, str]] = []
@@ -2249,19 +2382,52 @@ def main() -> int:
     scenario_results.append(scenario("pass", "server_originated_events", event_types=list(server_originated), principal_values=server_originated, classification="explicit_null_for_events_without_originating_control_plane_command"))
 
     expected_anonymous_principal = {"type": "server", "id": "anonymous"}
+    anonymous_spoofing_matrix = [
+        spoofing_matrix_row(
+            "anonymous_start",
+            surface="history_api",
+            credential_used=None,
+            expected_principal=expected_anonymous_principal,
+            observed_principal=anonymous_principals.get("WorkflowStarted"),
+            event_type="WorkflowStarted",
+            auth_driver="none",
+        ),
+        spoofing_matrix_row(
+            "anonymous_signal",
+            surface="history_api",
+            credential_used=None,
+            expected_principal=expected_anonymous_principal,
+            observed_principal=anonymous_principals.get("SignalReceived"),
+            event_type="SignalReceived",
+            auth_driver="none",
+        ),
+        spoofing_matrix_row(
+            "anonymous_cancel",
+            surface="history_api",
+            credential_used=None,
+            expected_principal=expected_anonymous_principal,
+            observed_principal=anonymous_principals.get("WorkflowCancelled"),
+            event_type="WorkflowCancelled",
+            auth_driver="none",
+        ),
+    ]
     anonymous_failures = []
     for event_type in ["WorkflowStarted", "SignalReceived", "WorkflowCancelled"]:
         if anonymous_principals.get(event_type) is None:
             anonymous_failures.append(f"{event_type} caller-generated anonymous history event leaked null/undefined principal")
         elif not principal_matches(anonymous_principals.get(event_type), expected_anonymous_principal):
             anonymous_failures.append(f"{event_type} anonymous principal expected {expected_anonymous_principal!r}, got {anonymous_principals.get(event_type)!r}")
-    if any(isinstance(value, dict) and value.get("id") == "mallory" for value in anonymous_principals.values()):
-        anonymous_failures.append("spoofed anonymous principal mallory appeared in history")
+    anonymous_spoof_successes = [
+        row for row in anonymous_spoofing_matrix
+        if row.get("caller_controlled_value_hits")
+    ]
+    if anonymous_spoof_successes:
+        anonymous_failures.append(f"caller-controlled spoof value appeared in anonymous history principal: {anonymous_spoof_successes!r}")
     anonymous_linked_findings: list[dict[str, Any]] = []
     if anonymous_failures:
-        anonymous_linked_findings.append(finding("anonymous_attribution", "server", f"anonymous attribution failures: {anonymous_failures}", "auth-disabled requests record principal type=server id=anonymous for start, signal, and cancel, and ignore caller-supplied principal fields and gateway-style headers", "fix auth-disabled command context attribution before marking anonymous principal coverage pass"))
+        anonymous_linked_findings.append(finding("anonymous_attribution", "server", f"anonymous attribution failures: {anonymous_failures}", "auth-disabled requests record principal type=server id=anonymous for start, signal, and cancel, and ignore caller-supplied principal fields and gateway-style headers", "fix auth-disabled command context attribution before marking anonymous principal coverage pass", "P0" if anonymous_spoof_successes else "P1"))
         findings.extend(anonymous_linked_findings)
-    scenario_results.append(scenario("pass" if not anonymous_failures else "fail", "anonymous_attribution", anonymous_principal=anonymous_principals.get("WorkflowStarted"), documented_value=expected_anonymous_principal, history_events=list(anonymous_principals), recorded_principals=anonymous_principals, spoofing_attempts={"payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS), "actions": ["start", "signal", "cancel"], "executed": True}, anonymous_auth_driver="none", linked_findings=anonymous_linked_findings, findings=anonymous_failures))
+    scenario_results.append(scenario("pass" if not anonymous_failures else "fail", "anonymous_attribution", anonymous_principal=anonymous_principals.get("WorkflowStarted"), documented_value=expected_anonymous_principal, history_events=list(anonymous_principals), recorded_principals=anonymous_principals, spoofing_attempts=spoofing_attempt_catalog(["start", "signal", "cancel"]), spoofing_matrix=anonymous_spoofing_matrix, anonymous_auth_driver="none", linked_findings=anonymous_linked_findings, findings=anonymous_failures))
 
     python_expected_principal = {"type": "auth:token", "id": "bob"}
     python_raw_http_reference_principal = main_principals.get("SignalReceived")
@@ -2443,9 +2609,10 @@ def main() -> int:
         "topology": {"server_url": SERVER_URL, "anonymous_server_url": ANONYMOUS_SERVER_URL, "task_queues": {"main": MAIN_TASK_QUEUE, "completion": COMPLETE_TASK_QUEUE, "failure": FAIL_TASK_QUEUE}, "auth_driver": "token", "anonymous_auth_driver": "none", "principal_tokens": ["alice", "bob", "worker"]},
         "actor_matrix": {"alice": {"credentials": ["alice-token-v1", "alice-token-v2"]}, "bob": {"credentials": ["bob-token"]}, "action_credentials": action_credentials},
         "history_dumps": history_dumps,
-        "spoofing_attempts": {"payload_values": ["mallory"], "payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS)},
+        "spoofing_attempts": spoofing_attempt_catalog(["start", "signal", "cancel", "query"]),
+        "spoofing_matrix": [*main_spoofing_matrix, *query_spoofing_matrix, *anonymous_spoofing_matrix],
         "operator_visibility": {"cli_history_json_principal_visible": cli_json_ok, "waterline": {"status": waterline_status, "principal_visible": waterline_principal_visible, "linked_findings": waterline_linked_findings, "result_path": str(WATERLINE_PRINCIPAL_RESULT) if WATERLINE_PRINCIPAL_RESULT is not None else None}},
-        "anonymous_observations": {"status": "pass" if not anonymous_failures else "fail", "anonymous_principal": anonymous_principals.get("WorkflowStarted"), "documented_value": expected_anonymous_principal, "history_events": list(anonymous_principals), "recorded_principals": anonymous_principals, "spoofing_attempts": {"payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS), "actions": ["start", "signal", "cancel"], "executed": True}, "anonymous_auth_driver": "none"},
+        "anonymous_observations": {"status": "pass" if not anonymous_failures else "fail", "anonymous_principal": anonymous_principals.get("WorkflowStarted"), "documented_value": expected_anonymous_principal, "history_events": list(anonymous_principals), "recorded_principals": anonymous_principals, "spoofing_attempts": spoofing_attempt_catalog(["start", "signal", "cancel"]), "spoofing_matrix": anonymous_spoofing_matrix, "anonymous_auth_driver": "none"},
         "scenario_results": scenario_results,
         "findings": findings,
     }

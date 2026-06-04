@@ -15,7 +15,7 @@ final class PrincipalAttributionContract
 {
     public const SCHEMA = 'durable-workflow.v2.principal-attribution.contract';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.principal-attribution-conformance.result';
 
@@ -94,6 +94,7 @@ final class PrincipalAttributionContract
                     'actor_matrix',
                     'history_dumps',
                     'spoofing_attempts',
+                    'spoofing_matrix',
                     'operator_visibility',
                     'anonymous_observations',
                 ],
@@ -121,6 +122,13 @@ final class PrincipalAttributionContract
             'scenario_requirements' => self::scenarioRequirements(),
             'spoofing_guards' => [
                 'request_body_fields' => ['principal', 'principal_id', 'principal_type', 'actor', 'user'],
+                'request_body_field_values' => [
+                    'principal' => 'mallory',
+                    'principal_id' => 'mallory',
+                    'principal_type' => 'attacker',
+                    'actor' => 'mallory',
+                    'user' => 'mallory',
+                ],
                 'request_headers' => [
                     'X-Workflow-Principal-Id',
                     'X-Workflow-Principal-Type',
@@ -134,6 +142,19 @@ final class PrincipalAttributionContract
                     'X-Remote-User',
                     'Authorization-Override',
                 ],
+                'request_header_values' => [
+                    'X-Workflow-Principal-Id' => 'mallory',
+                    'X-Workflow-Principal-Type' => 'attacker',
+                    'X-Workflow-Principal-Label' => 'Mallory',
+                    'X-Workflow-Caller-Type' => 'spoofed-gateway',
+                    'X-Workflow-Caller-Label' => 'Mallory Gateway',
+                    'X-Workflow-Auth-Status' => 'trusted_elsewhere',
+                    'X-Workflow-Auth-Method' => 'gateway_token',
+                    'X-Forwarded-User' => 'mallory',
+                    'X-Forwarded-Email' => 'mallory@example.invalid',
+                    'X-Remote-User' => 'mallory',
+                    'Authorization-Override' => 'Bearer mallory',
+                ],
                 'expected_behavior' => 'recorded principal is derived only from authenticated server Principal',
             ],
             'coverage_gate' => [
@@ -146,6 +167,7 @@ final class PrincipalAttributionContract
                     'rotated_credential_actions_record_before_after_labels_and_observed_principals',
                     'start_signal_query_cancel_completion_failure_principals_reported',
                     'spoofed_payload_and_header_principals_do_not_land_in_history',
+                    'spoofing_matrix_records_exact_requested_values_and_observed_principals',
                     'anonymous_start_signal_cancel_principals_reported',
                     'anonymous_spoofed_payload_and_gateway_headers_do_not_land_in_history',
                     'anonymous_behavior_is_explicit',
@@ -178,6 +200,7 @@ final class PrincipalAttributionContract
                 'must_execute_against_published_artifacts' => true,
                 'must_record_runner_blocked_false_for_product_evidence' => true,
                 'must_attempt_spoofing_payloads_and_headers' => true,
+                'must_record_spoofing_matrix' => true,
                 'required_execution_scopes' => [
                     'published-artifact-install',
                     'named-token-actor-matrix',
@@ -188,6 +211,7 @@ final class PrincipalAttributionContract
                     'anonymous-no-auth-topology',
                     'anonymous-spoofing-payload-header',
                     'spoofing-payload-header',
+                    'adversarial-gateway-header-matrix',
                     'cli-history-operator-output',
                     'python-sdk-client',
                     'php-client',
@@ -253,10 +277,10 @@ final class PrincipalAttributionContract
                 'required_fields' => ['actors', 'credentials', 'rotation_observations', 'credential_rotation', 'action_credentials'],
             ],
             'start_signal_cancel_spoofing' => [
-                'required_fields' => ['history_events', 'recorded_principals', 'spoofing_attempts', 'action_credentials'],
+                'required_fields' => ['history_events', 'recorded_principals', 'spoofing_attempts', 'spoofing_matrix', 'action_credentials'],
             ],
             'query_attribution' => [
-                'required_fields' => ['query_result', 'recorded_principal', 'history_or_query_task_surface', 'spoofing_attempts'],
+                'required_fields' => ['query_result', 'recorded_principal', 'history_or_query_task_surface', 'spoofing_attempts', 'spoofing_matrix'],
             ],
             'completion_failure_attribution' => [
                 'required_fields' => [
@@ -277,6 +301,7 @@ final class PrincipalAttributionContract
                     'history_events',
                     'recorded_principals',
                     'spoofing_attempts',
+                    'spoofing_matrix',
                     'anonymous_auth_driver',
                 ],
             ],

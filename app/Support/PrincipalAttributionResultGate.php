@@ -10,7 +10,29 @@ final class PrincipalAttributionResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.principal-attribution.result-gate';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
+
+    private const REQUIRED_SPOOFING_BODY_FIELD_VALUES = [
+        'principal' => 'mallory',
+        'principal_id' => 'mallory',
+        'principal_type' => 'attacker',
+        'actor' => 'mallory',
+        'user' => 'mallory',
+    ];
+
+    private const REQUIRED_SPOOFING_HEADER_VALUES = [
+        'X-Workflow-Principal-Id' => 'mallory',
+        'X-Workflow-Principal-Type' => 'attacker',
+        'X-Workflow-Principal-Label' => 'Mallory',
+        'X-Workflow-Caller-Type' => 'spoofed-gateway',
+        'X-Workflow-Caller-Label' => 'Mallory Gateway',
+        'X-Workflow-Auth-Status' => 'trusted_elsewhere',
+        'X-Workflow-Auth-Method' => 'gateway_token',
+        'X-Forwarded-User' => 'mallory',
+        'X-Forwarded-Email' => 'mallory@example.invalid',
+        'X-Remote-User' => 'mallory',
+        'Authorization-Override' => 'Bearer mallory',
+    ];
 
     /**
      * @return array<string, mixed>
@@ -53,6 +75,7 @@ final class PrincipalAttributionResultGate
                 'rotated_credential_actions_record_before_after_labels_and_observed_principals',
                 'alice_bob_rotation_anonymous_python_php_cli_and_waterline_cells_reported',
                 'spoofing_payload_and_gateway_header_attempts_reported',
+                'spoofing_matrix_records_exact_requested_values_and_observed_principals',
                 'anonymous_start_signal_cancel_principals_reported',
                 'anonymous_spoofing_payload_and_gateway_header_attempts_reported',
                 'each_pass_scenario_has_required_evidence_fields',
@@ -286,8 +309,27 @@ final class PrincipalAttributionResultGate
             array_push($failures, ...self::credentialRotationEvidenceFailures($scenarioResult, $scenarioId));
         }
 
+        if ($scenarioId === 'start_signal_cancel_spoofing') {
+            array_push($failures, ...self::spoofingMatrixEvidenceFailures($scenarioResult, $scenarioId, [
+                'start' => ['type' => 'auth:token', 'id' => 'alice'],
+                'signal' => ['type' => 'auth:token', 'id' => 'bob'],
+                'cancel' => ['type' => 'auth:token', 'id' => 'alice'],
+            ]));
+        }
+
+        if ($scenarioId === 'query_attribution') {
+            array_push($failures, ...self::spoofingMatrixEvidenceFailures($scenarioResult, $scenarioId, [
+                'query' => ['type' => 'auth:token', 'id' => 'bob'],
+            ]));
+        }
+
         if ($scenarioId === 'anonymous_attribution') {
             array_push($failures, ...self::anonymousAttributionEvidenceFailures($scenarioResult, $scenarioId));
+            array_push($failures, ...self::spoofingMatrixEvidenceFailures($scenarioResult, $scenarioId, [
+                'anonymous_start' => ['type' => 'server', 'id' => 'anonymous'],
+                'anonymous_signal' => ['type' => 'server', 'id' => 'anonymous'],
+                'anonymous_cancel' => ['type' => 'server', 'id' => 'anonymous'],
+            ]));
         }
 
         if ($scenarioId !== 'waterline_operator_visibility') {
@@ -453,6 +495,146 @@ final class PrincipalAttributionResultGate
                 'field' => 'spoofing_attempts.executed',
                 'value' => $executed,
             ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     * @param array<string, array<string, string>> $requiredActions
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function spoofingMatrixEvidenceFailures(array $scenarioResult, string $scenarioId, array $requiredActions): array
+    {
+        $matrix = self::scenarioFieldValue($scenarioResult, 'spoofing_matrix');
+        if (! is_array($matrix) || $matrix === []) {
+            return [[
+                'code' => 'missing_spoofing_matrix',
+                'scenario_id' => $scenarioId,
+                'field' => 'spoofing_matrix',
+            ]];
+        }
+
+        $rowsByAction = [];
+        foreach ($matrix as $key => $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+
+            $action = self::stringValue($row['action'] ?? null);
+            if ($action === '' && is_string($key)) {
+                $action = $key;
+            }
+
+            if ($action !== '') {
+                $rowsByAction[$action] = $row;
+            }
+        }
+
+        $failures = [];
+        foreach ($requiredActions as $action => $expectedPrincipal) {
+            $row = $rowsByAction[$action] ?? null;
+            if (! is_array($row)) {
+                $failures[] = [
+                    'code' => 'missing_spoofing_matrix_action',
+                    'scenario_id' => $scenarioId,
+                    'action' => $action,
+                ];
+                continue;
+            }
+
+            $requested = self::arrayFromAliases($row, [
+                'requested_spoof_values',
+                'requestedSpoofValues',
+                'requested_values',
+                'requestedValues',
+                'attempted_values',
+                'attemptedValues',
+            ]) ?? $row;
+
+            $bodyFields = self::arrayFromAliases($requested, [
+                'body_fields',
+                'bodyFields',
+                'payload_fields',
+                'payloadFields',
+                'request_body_fields',
+                'requestBodyFields',
+            ]);
+            foreach (self::REQUIRED_SPOOFING_BODY_FIELD_VALUES as $field => $value) {
+                if (is_array($bodyFields) && self::stringValue($bodyFields[$field] ?? null) === $value) {
+                    continue;
+                }
+
+                $failures[] = [
+                    'code' => 'missing_spoofing_matrix_body_value',
+                    'scenario_id' => $scenarioId,
+                    'action' => $action,
+                    'field' => $field,
+                    'expected_value' => $value,
+                    'actual_value' => is_array($bodyFields) ? ($bodyFields[$field] ?? null) : null,
+                ];
+            }
+
+            $headers = self::arrayFromAliases($requested, [
+                'headers',
+                'request_headers',
+                'requestHeaders',
+                'header_values',
+                'headerValues',
+            ]);
+            foreach (self::REQUIRED_SPOOFING_HEADER_VALUES as $header => $value) {
+                if (is_array($headers) && self::stringValue($headers[$header] ?? null) === $value) {
+                    continue;
+                }
+
+                $failures[] = [
+                    'code' => 'missing_spoofing_matrix_header_value',
+                    'scenario_id' => $scenarioId,
+                    'action' => $action,
+                    'header' => $header,
+                    'expected_value' => $value,
+                    'actual_value' => is_array($headers) ? ($headers[$header] ?? null) : null,
+                ];
+            }
+
+            $observed = $row['observed_principal']
+                ?? $row['observedPrincipal']
+                ?? $row['recorded_principal']
+                ?? $row['recordedPrincipal']
+                ?? null;
+            if (! is_array($observed)) {
+                $failures[] = [
+                    'code' => 'missing_spoofing_matrix_observed_principal',
+                    'scenario_id' => $scenarioId,
+                    'action' => $action,
+                ];
+                continue;
+            }
+
+            if (! self::principalMatches($observed, $expectedPrincipal)) {
+                $failures[] = [
+                    'code' => 'spoofing_matrix_observed_principal_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'action' => $action,
+                    'expected_principal' => $expectedPrincipal,
+                    'actual_principal' => $observed,
+                ];
+            }
+
+            $hits = self::callerControlledPrincipalValues($observed);
+            if ($hits !== []) {
+                $failures[] = [
+                    'code' => 'caller_controlled_principal_recorded',
+                    'scenario_id' => $scenarioId,
+                    'action' => $action,
+                    'security_severity' => 'P0',
+                    'owning_surface' => 'server',
+                    'caller_controlled_values' => $hits,
+                    'actual_principal' => $observed,
+                ];
+            }
         }
 
         return $failures;
@@ -1458,6 +1640,54 @@ final class PrincipalAttributionResultGate
     }
 
     /**
+     * @return list<string>
+     */
+    private static function callerControlledPrincipalValues(mixed $principal): array
+    {
+        $markers = array_map(
+            static fn (string $value): string => strtolower(trim($value)),
+            array_merge(
+                array_values(self::REQUIRED_SPOOFING_BODY_FIELD_VALUES),
+                array_values(self::REQUIRED_SPOOFING_HEADER_VALUES),
+            ),
+        );
+        $markers = array_values(array_unique(array_filter($markers, static fn (string $value): bool => $value !== '')));
+        $hits = [];
+
+        foreach (self::recursiveStringValues($principal) as $value) {
+            $normalized = strtolower(trim($value));
+            if ($normalized === '' || ! in_array($normalized, $markers, true)) {
+                continue;
+            }
+
+            $hits[] = $value;
+        }
+
+        return array_values(array_unique($hits));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function recursiveStringValues(mixed $value): array
+    {
+        if (is_string($value)) {
+            return [$value];
+        }
+
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $strings = [];
+        foreach ($value as $item) {
+            array_push($strings, ...self::recursiveStringValues($item));
+        }
+
+        return $strings;
+    }
+
+    /**
      * @param array<string, string> $expected
      */
     private static function principalMatches(mixed $principal, array $expected): bool
@@ -1587,7 +1817,8 @@ final class PrincipalAttributionResultGate
         array $result,
         array $contract,
         string $evaluatedStatus,
-    ): array {
+    ): array
+    {
         $declaredOutcomes = self::declaredOutcomeTokens($result);
         if ($declaredOutcomes === []) {
             return [];
@@ -1754,6 +1985,25 @@ final class PrincipalAttributionResultGate
         $value = $array[$field] ?? $array[self::camelize($field)] ?? null;
 
         return is_array($value) ? $value : null;
+    }
+
+    /**
+     * @param array<string, mixed> $array
+     * @param list<string> $fields
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function arrayFromAliases(array $array, array $fields): ?array
+    {
+        foreach ($fields as $field) {
+            if (! array_key_exists($field, $array)) {
+                continue;
+            }
+
+            return is_array($array[$field]) ? $array[$field] : null;
+        }
+
+        return null;
     }
 
     /**

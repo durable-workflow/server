@@ -25,6 +25,7 @@
     "actor_matrix",
     "history_dumps",
     "spoofing_attempts",
+    "spoofing_matrix",
     "operator_visibility",
     "anonymous_observations"
   ],
@@ -39,6 +40,13 @@
   },
   "spoofing_guards": {
     "request_body_fields": ["principal", "principal_id", "principal_type", "actor", "user"],
+    "request_body_field_values": {
+      "principal": "mallory",
+      "principal_id": "mallory",
+      "principal_type": "attacker",
+      "actor": "mallory",
+      "user": "mallory"
+    },
     "request_headers": [
       "X-Workflow-Principal-Id",
       "X-Workflow-Principal-Type",
@@ -52,6 +60,19 @@
       "X-Remote-User",
       "Authorization-Override"
     ],
+    "request_header_values": {
+      "X-Workflow-Principal-Id": "mallory",
+      "X-Workflow-Principal-Type": "attacker",
+      "X-Workflow-Principal-Label": "Mallory",
+      "X-Workflow-Caller-Type": "spoofed-gateway",
+      "X-Workflow-Caller-Label": "Mallory Gateway",
+      "X-Workflow-Auth-Status": "trusted_elsewhere",
+      "X-Workflow-Auth-Method": "gateway_token",
+      "X-Forwarded-User": "mallory",
+      "X-Forwarded-Email": "mallory@example.invalid",
+      "X-Remote-User": "mallory",
+      "Authorization-Override": "Bearer mallory"
+    },
     "expected_behavior": "recorded principal is derived only from authenticated server Principal"
   },
   "scenarios": [
@@ -68,12 +89,12 @@
     {
       "id": "start_signal_cancel_spoofing",
       "title": "Start, signal, cancel, and spoofing attribution",
-      "required_fields": ["history_events", "recorded_principals", "spoofing_attempts", "action_credentials"]
+      "required_fields": ["history_events", "recorded_principals", "spoofing_attempts", "spoofing_matrix", "action_credentials"]
     },
     {
       "id": "query_attribution",
       "title": "Query attribution",
-      "required_fields": ["query_result", "recorded_principal", "history_or_query_task_surface", "spoofing_attempts"]
+      "required_fields": ["query_result", "recorded_principal", "history_or_query_task_surface", "spoofing_attempts", "spoofing_matrix"]
     },
     {
       "id": "completion_failure_attribution",
@@ -88,7 +109,7 @@
     {
       "id": "anonymous_attribution",
       "title": "Anonymous attribution",
-      "required_fields": ["anonymous_principal", "documented_value", "history_events", "recorded_principals", "spoofing_attempts", "anonymous_auth_driver"]
+      "required_fields": ["anonymous_principal", "documented_value", "history_events", "recorded_principals", "spoofing_attempts", "spoofing_matrix", "anonymous_auth_driver"]
     },
     {
       "id": "python_sdk_visibility",
@@ -119,10 +140,10 @@
       "required_fields": ["actors", "credentials", "rotation_observations", "credential_rotation", "action_credentials"]
     },
     "start_signal_cancel_spoofing": {
-      "required_fields": ["history_events", "recorded_principals", "spoofing_attempts", "action_credentials"]
+      "required_fields": ["history_events", "recorded_principals", "spoofing_attempts", "spoofing_matrix", "action_credentials"]
     },
     "query_attribution": {
-      "required_fields": ["query_result", "recorded_principal", "history_or_query_task_surface", "spoofing_attempts"]
+      "required_fields": ["query_result", "recorded_principal", "history_or_query_task_surface", "spoofing_attempts", "spoofing_matrix"]
     },
     "completion_failure_attribution": {
       "required_fields": ["completion_event_principal", "failure_event_principal", "worker_principal", "expected_worker_principal", "documented_system_principals"]
@@ -131,7 +152,7 @@
       "required_fields": ["event_types", "principal_values", "classification"]
     },
     "anonymous_attribution": {
-      "required_fields": ["anonymous_principal", "documented_value", "history_events", "recorded_principals", "spoofing_attempts", "anonymous_auth_driver"]
+      "required_fields": ["anonymous_principal", "documented_value", "history_events", "recorded_principals", "spoofing_attempts", "spoofing_matrix", "anonymous_auth_driver"]
     },
     "python_sdk_visibility": {
       "required_fields": ["client_operation", "sdk_package_version", "credential_used", "expected_principal", "raw_http_reference_principal", "history_api_principal_samples", "operation_output_sample", "recorded_principal", "shape_matches_http"]

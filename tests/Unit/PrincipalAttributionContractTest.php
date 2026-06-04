@@ -14,7 +14,7 @@ class PrincipalAttributionContractTest extends TestCase
         $manifest = PrincipalAttributionContract::manifest();
 
         $this->assertSame('durable-workflow.v2.principal-attribution.contract', $manifest['schema']);
-        $this->assertSame(1, PrincipalAttributionContract::VERSION);
+        $this->assertSame(2, PrincipalAttributionContract::VERSION);
         $this->assertSame(PrincipalAttributionContract::VERSION, $manifest['version']);
         $this->assertSame(
             'durable-workflow.v2.principal-attribution-conformance.result',
@@ -36,8 +36,13 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertTrue($manifest['host_runner_contract']['must_execute_against_published_artifacts']);
         $this->assertTrue($manifest['host_runner_contract']['must_record_runner_blocked_false_for_product_evidence']);
         $this->assertTrue($manifest['host_runner_contract']['must_attempt_spoofing_payloads_and_headers']);
+        $this->assertTrue($manifest['host_runner_contract']['must_record_spoofing_matrix']);
         $this->assertContains(
             'runner_blocked_false_for_product_evidence',
+            $manifest['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertContains(
+            'spoofing_matrix_records_exact_requested_values_and_observed_principals',
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertSame(
@@ -103,10 +108,18 @@ class PrincipalAttributionContractTest extends TestCase
             $manifest['scenario_requirements']['start_signal_cancel_spoofing']['required_fields'],
         );
         $this->assertContains(
+            'spoofing_matrix',
+            $manifest['scenario_requirements']['start_signal_cancel_spoofing']['required_fields'],
+        );
+        $this->assertContains(
             'spoofing_attempts',
             $manifest['scenario_requirements']['query_attribution']['required_fields'],
         );
-        foreach (['recorded_principals', 'spoofing_attempts', 'anonymous_auth_driver'] as $requiredField) {
+        $this->assertContains(
+            'spoofing_matrix',
+            $manifest['scenario_requirements']['query_attribution']['required_fields'],
+        );
+        foreach (['recorded_principals', 'spoofing_attempts', 'spoofing_matrix', 'anonymous_auth_driver'] as $requiredField) {
             $this->assertContains(
                 $requiredField,
                 $manifest['scenario_requirements']['anonymous_attribution']['required_fields'],
@@ -495,6 +508,12 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('"X-Workflow-Caller-Type": "spoofed-gateway"', $script);
         $this->assertStringContainsString('"X-Workflow-Auth-Method": "gateway_token"', $script);
         $this->assertStringContainsString('"X-Remote-User": "mallory"', $script);
+        $this->assertStringContainsString('"Authorization-Override": "Bearer mallory"', $script);
+        $this->assertStringContainsString('def spoofing_matrix_row(', $script);
+        $this->assertStringContainsString('"requested_spoof_values": {', $script);
+        $this->assertStringContainsString('"caller_controlled_value_hits": caller_controlled_principal_hits(observed_principal)', $script);
+        $this->assertStringContainsString('spoofing_matrix=main_spoofing_matrix', $script);
+        $this->assertStringContainsString('spoofing_matrix=query_spoofing_matrix', $script);
         $this->assertStringContainsString('main_linked_findings: list[dict[str, Any]] = []', $script);
         $this->assertStringContainsString('linked_findings=main_linked_findings', $script);
         $this->assertStringContainsString('start/signal/cancel attribution failures', $script);
@@ -520,8 +539,11 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('caller-generated anonymous history event leaked null/undefined principal', $script);
         $this->assertStringContainsString('anonymous_linked_findings: list[dict[str, Any]] = []', $script);
         $this->assertStringContainsString('recorded_principals=anonymous_principals', $script);
+        $this->assertStringContainsString('cancel_workflow(', $script);
+        $this->assertStringContainsString('extra=ADVERSARIAL_BODY_FIELDS', $script);
         $this->assertStringContainsString('body={"reason": "anonymous principal attribution", **ADVERSARIAL_BODY_FIELDS}', $script);
-        $this->assertStringContainsString('spoofing_attempts={"payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS), "actions": ["start", "signal", "cancel"], "executed": True}', $script);
+        $this->assertStringContainsString('spoofing_attempts=spoofing_attempt_catalog(["start", "signal", "cancel"])', $script);
+        $this->assertStringContainsString('spoofing_matrix=anonymous_spoofing_matrix', $script);
         $this->assertStringContainsString('anonymous_auth_driver="none"', $script);
         $this->assertStringContainsString('linked_findings=anonymous_linked_findings', $script);
         $this->assertStringContainsString('run_python_sdk_client_operation', $script);
@@ -841,6 +863,60 @@ class PrincipalAttributionContractTest extends TestCase
                 array_column($evaluation['gate_failures'], 'code'),
             );
         }
+    }
+
+    public function test_result_gate_requires_exact_adversarial_spoofing_matrix_for_pass(): void
+    {
+        $result = $this->completePrincipalAttributionResult();
+        unset($result['scenario_results']['start_signal_cancel_spoofing']['spoofing_matrix']);
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+        $codes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('missing_scenario_evidence', $codes);
+        $this->assertContains('missing_spoofing_matrix', $codes);
+
+        $result = $this->completePrincipalAttributionResult();
+        unset($result['scenario_results']['query_attribution']['spoofing_matrix'][0]['requested_spoof_values']['headers']['Authorization-Override']);
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            [
+                'code' => 'missing_spoofing_matrix_header_value',
+                'scenario_id' => 'query_attribution',
+                'action' => 'query',
+                'header' => 'Authorization-Override',
+                'expected_value' => 'Bearer mallory',
+                'actual_value' => null,
+            ],
+            $evaluation['gate_failures'],
+        );
+    }
+
+    public function test_result_gate_routes_caller_controlled_principal_as_security_failure(): void
+    {
+        $result = $this->completePrincipalAttributionResult();
+        $result['scenario_results']['start_signal_cancel_spoofing']['spoofing_matrix'][0]['observed_principal'] = [
+            'type' => 'auth:token',
+            'id' => 'mallory',
+        ];
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+        $codes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('spoofing_matrix_observed_principal_mismatch', $codes);
+        $this->assertContains('caller_controlled_principal_recorded', $codes);
+
+        $securityFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'caller_controlled_principal_recorded',
+        ));
+        $this->assertSame('P0', $securityFailures[0]['security_severity']);
+        $this->assertSame('server', $securityFailures[0]['owning_surface']);
     }
 
     public function test_result_gate_rejects_credential_ref_as_observed_principal(): void
@@ -1214,6 +1290,7 @@ class PrincipalAttributionContractTest extends TestCase
                 'payload_values' => ['mallory'],
                 'headers' => ['X-Workflow-Principal-Id', 'X-Workflow-Caller-Type', 'X-Forwarded-User'],
             ],
+            'spoofing_matrix' => $this->spoofingMatrix(),
             'operator_visibility' => [
                 'cli_history_json_principal_visible' => true,
                 'waterline' => ['principal_visible' => true],
@@ -1230,6 +1307,7 @@ class PrincipalAttributionContractTest extends TestCase
                     'actions' => ['start', 'signal', 'cancel'],
                     'executed' => true,
                 ],
+                'spoofing_matrix' => $this->spoofingMatrix(['anonymous_start', 'anonymous_signal', 'anonymous_cancel']),
                 'anonymous_auth_driver' => 'none',
             ],
             'scenario_results' => [
@@ -1265,6 +1343,7 @@ class PrincipalAttributionContractTest extends TestCase
                         'payload_values' => ['mallory'],
                         'headers' => ['X-Workflow-Principal-Id', 'X-Workflow-Caller-Type', 'X-Forwarded-User'],
                     ],
+                    'spoofing_matrix' => $this->spoofingMatrix(['start', 'signal', 'cancel']),
                     'action_credentials' => $actionCredentials,
                 ],
                 'query_attribution' => [
@@ -1276,6 +1355,7 @@ class PrincipalAttributionContractTest extends TestCase
                         'payload_values' => ['mallory'],
                         'headers' => ['X-Workflow-Principal-Id', 'X-Workflow-Caller-Type', 'X-Forwarded-User'],
                     ],
+                    'spoofing_matrix' => $this->spoofingMatrix(['query']),
                 ],
                 'completion_failure_attribution' => [
                     'status' => 'pass',
@@ -1303,6 +1383,7 @@ class PrincipalAttributionContractTest extends TestCase
                         'actions' => ['start', 'signal', 'cancel'],
                         'executed' => true,
                     ],
+                    'spoofing_matrix' => $this->spoofingMatrix(['anonymous_start', 'anonymous_signal', 'anonymous_cancel']),
                     'anonymous_auth_driver' => 'none',
                 ],
                 'python_sdk_visibility' => [
@@ -1362,7 +1443,8 @@ class PrincipalAttributionContractTest extends TestCase
         string $owner,
         string $expected,
         string $nextAcceptance,
-    ): array {
+    ): array
+    {
         return [
             'scenario_id' => $scenarioId,
             'owning_surface' => $owner,
@@ -1459,6 +1541,7 @@ class PrincipalAttributionContractTest extends TestCase
             ],
             'history_dumps' => ['main' => ['events' => []]],
             'spoofing_attempts' => ['payload_values' => ['mallory'], 'headers' => ['X-Forwarded-User']],
+            'spoofing_matrix' => $this->spoofingMatrix(),
             'operator_visibility' => ['cli_history_json_principal_visible' => true],
             'anonymous_observations' => [
                 'status' => 'pass',
@@ -1476,6 +1559,7 @@ class PrincipalAttributionContractTest extends TestCase
                     'actions' => ['start', 'signal', 'cancel'],
                     'executed' => true,
                 ],
+                'spoofing_matrix' => $this->spoofingMatrix(['anonymous_start', 'anonymous_signal', 'anonymous_cancel']),
                 'anonymous_auth_driver' => 'none',
             ],
             'scenario_results' => $this->passingScenarioResults(),
@@ -1577,6 +1661,7 @@ class PrincipalAttributionContractTest extends TestCase
                 'history_events' => ['WorkflowStarted', 'SignalReceived', 'WorkflowCancelled'],
                 'recorded_principals' => ['WorkflowStarted' => $alice, 'SignalReceived' => $bob, 'WorkflowCancelled' => $alice],
                 'spoofing_attempts' => ['payload_fields' => ['principal' => 'mallory'], 'headers' => ['X-Forwarded-User']],
+                'spoofing_matrix' => $this->spoofingMatrix(['start', 'signal', 'cancel']),
                 'action_credentials' => $this->actionCredentials(),
             ],
             'query_attribution' => [
@@ -1587,6 +1672,7 @@ class PrincipalAttributionContractTest extends TestCase
                     'payload_fields' => ['principal' => 'mallory'],
                     'headers' => ['X-Forwarded-User'],
                 ],
+                'spoofing_matrix' => $this->spoofingMatrix(['query']),
             ],
             'completion_failure_attribution' => [
                 'completion_event_principal' => $worker,
@@ -1611,6 +1697,7 @@ class PrincipalAttributionContractTest extends TestCase
                     'actions' => ['start', 'signal', 'cancel'],
                     'executed' => true,
                 ],
+                'spoofing_matrix' => $this->spoofingMatrix(['anonymous_start', 'anonymous_signal', 'anonymous_cancel']),
                 'anonymous_auth_driver' => 'none',
             ],
             'python_sdk_visibility' => [
@@ -1714,6 +1801,140 @@ class PrincipalAttributionContractTest extends TestCase
             ],
             'stable_principal_id' => 'alice',
             'credential_material_recorded_as_principal' => false,
+        ];
+    }
+
+    /**
+     * @param list<string> $actions
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function spoofingMatrix(array $actions = [
+        'start',
+        'signal',
+        'cancel',
+        'query',
+        'anonymous_start',
+        'anonymous_signal',
+        'anonymous_cancel',
+    ]): array
+    {
+        $alice = ['type' => 'auth:token', 'id' => 'alice'];
+        $bob = ['type' => 'auth:token', 'id' => 'bob'];
+        $anonymous = ['type' => 'server', 'id' => 'anonymous'];
+        $actionCredentials = $this->actionCredentials();
+        $rows = [
+            'start' => [
+                'action' => 'start',
+                'surface' => 'history_api',
+                'auth_driver' => 'token',
+                'credential_used' => $actionCredentials['start'],
+                'event_type' => 'WorkflowStarted',
+                'requested_spoof_values' => $this->spoofingRequestedValues(),
+                'expected_principal' => $alice,
+                'observed_principal' => $alice,
+                'caller_controlled_value_hits' => [],
+            ],
+            'signal' => [
+                'action' => 'signal',
+                'surface' => 'history_api',
+                'auth_driver' => 'token',
+                'credential_used' => $actionCredentials['signal'],
+                'event_type' => 'SignalReceived',
+                'requested_spoof_values' => $this->spoofingRequestedValues(),
+                'expected_principal' => $bob,
+                'observed_principal' => $bob,
+                'caller_controlled_value_hits' => [],
+            ],
+            'cancel' => [
+                'action' => 'cancel',
+                'surface' => 'history_api',
+                'auth_driver' => 'token',
+                'credential_used' => $actionCredentials['cancel'],
+                'event_type' => 'WorkflowCancelled',
+                'requested_spoof_values' => $this->spoofingRequestedValues(),
+                'expected_principal' => $alice,
+                'observed_principal' => $alice,
+                'caller_controlled_value_hits' => [],
+            ],
+            'query' => [
+                'action' => 'query',
+                'surface' => 'query_task_or_response',
+                'auth_driver' => 'token',
+                'credential_used' => [
+                    'actor' => 'bob',
+                    'credential_ref' => 'bob-token',
+                    'credential_label' => 'bob credential',
+                ],
+                'requested_spoof_values' => $this->spoofingRequestedValues(),
+                'expected_principal' => $bob,
+                'observed_principal' => $bob,
+                'caller_controlled_value_hits' => [],
+            ],
+            'anonymous_start' => [
+                'action' => 'anonymous_start',
+                'surface' => 'history_api',
+                'auth_driver' => 'none',
+                'credential_used' => null,
+                'event_type' => 'WorkflowStarted',
+                'requested_spoof_values' => $this->spoofingRequestedValues(),
+                'expected_principal' => $anonymous,
+                'observed_principal' => $anonymous,
+                'caller_controlled_value_hits' => [],
+            ],
+            'anonymous_signal' => [
+                'action' => 'anonymous_signal',
+                'surface' => 'history_api',
+                'auth_driver' => 'none',
+                'credential_used' => null,
+                'event_type' => 'SignalReceived',
+                'requested_spoof_values' => $this->spoofingRequestedValues(),
+                'expected_principal' => $anonymous,
+                'observed_principal' => $anonymous,
+                'caller_controlled_value_hits' => [],
+            ],
+            'anonymous_cancel' => [
+                'action' => 'anonymous_cancel',
+                'surface' => 'history_api',
+                'auth_driver' => 'none',
+                'credential_used' => null,
+                'event_type' => 'WorkflowCancelled',
+                'requested_spoof_values' => $this->spoofingRequestedValues(),
+                'expected_principal' => $anonymous,
+                'observed_principal' => $anonymous,
+                'caller_controlled_value_hits' => [],
+            ],
+        ];
+
+        return array_values(array_intersect_key($rows, array_flip($actions)));
+    }
+
+    /**
+     * @return array<string, array<string, string>>
+     */
+    private function spoofingRequestedValues(): array
+    {
+        return [
+            'body_fields' => [
+                'principal' => 'mallory',
+                'principal_id' => 'mallory',
+                'principal_type' => 'attacker',
+                'actor' => 'mallory',
+                'user' => 'mallory',
+            ],
+            'headers' => [
+                'X-Workflow-Principal-Id' => 'mallory',
+                'X-Workflow-Principal-Type' => 'attacker',
+                'X-Workflow-Principal-Label' => 'Mallory',
+                'X-Workflow-Caller-Type' => 'spoofed-gateway',
+                'X-Workflow-Caller-Label' => 'Mallory Gateway',
+                'X-Workflow-Auth-Status' => 'trusted_elsewhere',
+                'X-Workflow-Auth-Method' => 'gateway_token',
+                'X-Forwarded-User' => 'mallory',
+                'X-Forwarded-Email' => 'mallory@example.invalid',
+                'X-Remote-User' => 'mallory',
+                'Authorization-Override' => 'Bearer mallory',
+            ],
         ];
     }
 

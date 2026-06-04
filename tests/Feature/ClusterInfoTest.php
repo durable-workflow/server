@@ -764,6 +764,14 @@ class ClusterInfoTest extends TestCase
             'X-Workflow-Auth-Method',
             $contract['spoofing_guards']['request_headers'],
         );
+        $this->assertContains(
+            'Authorization-Override',
+            $contract['spoofing_guards']['request_headers'],
+        );
+        $this->assertSame(
+            'Bearer mallory',
+            $contract['spoofing_guards']['request_header_values']['Authorization-Override'],
+        );
         $this->assertSame(
             'required_for_passing_principal_attribution_conformance',
             $contract['host_runner_contract']['status'],
