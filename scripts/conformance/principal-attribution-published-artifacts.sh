@@ -161,11 +161,13 @@ emit_principal_blocked_placeholder_fields() {
       printf ',\n      "actors": []'
       printf ',\n      "credentials": {}'
       printf ',\n      "rotation_observations": {}'
+      printf ',\n      "action_credentials": {}'
       ;;
     start_signal_cancel_spoofing)
       printf ',\n      "history_events": []'
       printf ',\n      "recorded_principals": {}'
       printf ',\n      "spoofing_attempts": {"payload_values": [], "headers": [], "executed": false}'
+      printf ',\n      "action_credentials": {}'
       ;;
     query_attribution)
       printf ',\n      "query_result": null'
@@ -2049,13 +2051,40 @@ def main() -> int:
     for install_finding in install_findings:
         findings.append(finding("published_artifact_install_only", "conformance_harness", install_finding, "every required artifact is installed from its published channel and exercised before install-only coverage passes", "install and import-smoke the server, CLI, Python SDK, PHP workflow package, and Waterline artifacts before marking this scenario pass"))
 
-    scenario_results.append(scenario("pass", "named_token_actor_matrix", actors=["alice", "bob"], credentials={"alice": ["alice-token-v1", "alice-token-v2"], "bob": ["bob-token"]}, rotation_observations={"alice_v1_start": "alice", "alice_v2_cancel": "alice"}))
+    action_credentials = {
+        "start": {
+            "actor": "alice",
+            "credential_ref": "alice-token-v1",
+            "expected_principal": {"type": "auth:token", "id": "alice"},
+            "event_type": "WorkflowStarted",
+            "spoofing_payload_and_headers": True,
+        },
+        "signal": {
+            "actor": "bob",
+            "credential_ref": "bob-token",
+            "expected_principal": {"type": "auth:token", "id": "bob"},
+            "event_type": "SignalReceived",
+            "spoofing_payload_and_headers": True,
+        },
+        "cancel": {
+            "actor": "alice",
+            "credential_ref": "alice-token-v2",
+            "previous_credential_ref": "alice-token-v1",
+            "expected_principal": {"type": "auth:token", "id": "alice"},
+            "event_type": "WorkflowCancelled",
+        },
+    }
+    scenario_results.append(scenario("pass", "named_token_actor_matrix", actors=["alice", "bob"], credentials={"alice": ["alice-token-v1", "alice-token-v2"], "bob": ["bob-token"]}, rotation_observations={"alice_v1_start": "alice", "alice_v2_cancel": "alice"}, action_credentials=action_credentials))
 
-    expected_main = {"WorkflowStarted": "alice", "SignalReceived": "bob", "WorkflowCancelled": "alice"}
+    expected_main = {
+        "WorkflowStarted": {"type": "auth:token", "id": "alice"},
+        "SignalReceived": {"type": "auth:token", "id": "bob"},
+        "WorkflowCancelled": {"type": "auth:token", "id": "alice"},
+    }
     main_failures = []
     for event_type, expected in expected_main.items():
         actual = main_principals.get(event_type)
-        if not isinstance(actual, dict) or actual.get("id") != expected:
+        if not principal_matches(actual, expected):
             main_failures.append(f"{event_type} principal expected {expected}, got {actual!r}")
     spoof_successes = [value for value in main_principals.values() if isinstance(value, dict) and value.get("id") == "mallory"]
     if spoof_successes:
@@ -2071,7 +2100,7 @@ def main() -> int:
             "P0" if spoof_successes else "P1",
         ))
         findings.extend(main_linked_findings)
-    scenario_results.append(scenario("pass" if not main_failures else "fail", "start_signal_cancel_spoofing", history_events=list(main_principals), recorded_principals=main_principals, spoofing_attempts={"payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS)}, linked_findings=main_linked_findings, findings=main_failures))
+    scenario_results.append(scenario("pass" if not main_failures else "fail", "start_signal_cancel_spoofing", history_events=list(main_principals), recorded_principals=main_principals, spoofing_attempts={"payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS)}, action_credentials=action_credentials, linked_findings=main_linked_findings, findings=main_failures))
 
     query_recorded = query_observation.get("query_response", {})
     recorded_query_principal = principal_from_query_observation(query_observation)
@@ -2268,7 +2297,7 @@ def main() -> int:
         "resolved_artifact_versions": versions,
         "artifact_sources": pins.get("artifact_sources", {}),
         "topology": {"server_url": SERVER_URL, "anonymous_server_url": ANONYMOUS_SERVER_URL, "task_queues": {"main": MAIN_TASK_QUEUE, "completion": COMPLETE_TASK_QUEUE, "failure": FAIL_TASK_QUEUE}, "auth_driver": "token", "anonymous_auth_driver": "none", "principal_tokens": ["alice", "bob", "worker"]},
-        "actor_matrix": {"alice": {"credentials": ["alice-token-v1", "alice-token-v2"]}, "bob": {"credentials": ["bob-token"]}},
+        "actor_matrix": {"alice": {"credentials": ["alice-token-v1", "alice-token-v2"]}, "bob": {"credentials": ["bob-token"]}, "action_credentials": action_credentials},
         "history_dumps": history_dumps,
         "spoofing_attempts": {"payload_values": ["mallory"], "payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS)},
         "operator_visibility": {"cli_history_json_principal_visible": cli_json_ok, "waterline": {"status": waterline_status, "principal_visible": waterline_principal_visible, "linked_findings": waterline_linked_findings, "result_path": str(WATERLINE_PRINCIPAL_RESULT) if WATERLINE_PRINCIPAL_RESULT is not None else None}},

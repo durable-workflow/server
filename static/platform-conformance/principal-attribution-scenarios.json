@@ -63,12 +63,12 @@
     {
       "id": "named_token_actor_matrix",
       "title": "Named token actor matrix",
-      "required_fields": ["actors", "credentials", "rotation_observations"]
+      "required_fields": ["actors", "credentials", "rotation_observations", "action_credentials"]
     },
     {
       "id": "start_signal_cancel_spoofing",
       "title": "Start, signal, cancel, and spoofing attribution",
-      "required_fields": ["history_events", "recorded_principals", "spoofing_attempts"]
+      "required_fields": ["history_events", "recorded_principals", "spoofing_attempts", "action_credentials"]
     },
     {
       "id": "query_attribution",
@@ -116,10 +116,10 @@
       "required_fields": ["resolved_artifact_versions", "artifact_sources", "local_product_source_checkouts_used"]
     },
     "named_token_actor_matrix": {
-      "required_fields": ["actors", "credentials", "rotation_observations"]
+      "required_fields": ["actors", "credentials", "rotation_observations", "action_credentials"]
     },
     "start_signal_cancel_spoofing": {
-      "required_fields": ["history_events", "recorded_principals", "spoofing_attempts"]
+      "required_fields": ["history_events", "recorded_principals", "spoofing_attempts", "action_credentials"]
     },
     "query_attribution": {
       "required_fields": ["query_result", "recorded_principal", "history_or_query_task_surface"]

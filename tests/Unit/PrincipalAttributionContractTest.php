@@ -90,6 +90,14 @@ class PrincipalAttributionContractTest extends TestCase
             'documented_system_principals',
             $manifest['scenario_requirements']['completion_failure_attribution']['required_fields'],
         );
+        $this->assertContains(
+            'action_credentials',
+            $manifest['scenario_requirements']['named_token_actor_matrix']['required_fields'],
+        );
+        $this->assertContains(
+            'action_credentials',
+            $manifest['scenario_requirements']['start_signal_cancel_spoofing']['required_fields'],
+        );
     }
 
     public function test_manifest_publishes_enforceable_principal_attribution_result_gate(): void
@@ -419,6 +427,10 @@ class PrincipalAttributionContractTest extends TestCase
             array_keys($scenarioManifest['scenario_requirements']),
         );
         $this->assertSame(
+            $manifest['scenario_requirements'],
+            $scenarioManifest['scenario_requirements'],
+        );
+        $this->assertSame(
             $manifest['worker_terminal_event_policy'],
             $scenarioManifest['worker_terminal_event_policy'],
         );
@@ -452,6 +464,14 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('main_linked_findings: list[dict[str, Any]] = []', $script);
         $this->assertStringContainsString('linked_findings=main_linked_findings', $script);
         $this->assertStringContainsString('start/signal/cancel attribution failures', $script);
+        $this->assertStringContainsString('action_credentials = {', $script);
+        $this->assertStringContainsString('"credential_ref": "alice-token-v1"', $script);
+        $this->assertStringContainsString('"credential_ref": "bob-token"', $script);
+        $this->assertStringContainsString('"credential_ref": "alice-token-v2"', $script);
+        $this->assertStringContainsString('action_credentials=action_credentials', $script);
+        $this->assertStringContainsString('"WorkflowStarted": {"type": "auth:token", "id": "alice"}', $script);
+        $this->assertStringContainsString('"SignalReceived": {"type": "auth:token", "id": "bob"}', $script);
+        $this->assertStringContainsString('principal_matches(actual, expected)', $script);
         $this->assertStringContainsString('ANONYMOUS_SERVER_URL="$anonymous_server_base_url"', $script);
         $this->assertStringContainsString('anonymous_auth_driver": "none"', $script);
         $this->assertStringContainsString('run_python_sdk_client_operation', $script);
@@ -731,6 +751,32 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertFalse($evaluation['smoke_subset_detected']);
     }
 
+    public function test_result_gate_requires_expected_action_credential_mapping_for_alice_bob_matrix(): void
+    {
+        foreach (['named_token_actor_matrix', 'start_signal_cancel_spoofing'] as $scenarioId) {
+            $result = $this->completePrincipalAttributionResult();
+            $result['scenario_results'][$scenarioId]['action_credentials']['signal']['credential_ref'] = 'alice-token-v1';
+
+            $evaluation = PrincipalAttributionResultGate::evaluate($result);
+            $credentialFailures = array_values(array_filter(
+                $evaluation['gate_failures'],
+                static fn (array $failure): bool => ($failure['code'] ?? null) === 'action_credential_ref_mismatch',
+            ));
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertContains(
+                [
+                    'code' => 'action_credential_ref_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'action' => 'signal',
+                    'expected_credential_ref' => 'bob-token',
+                    'actual_credential_ref' => 'alice-token-v1',
+                ],
+                $credentialFailures,
+            );
+        }
+    }
+
     public function test_result_gate_rejects_role_token_smoke_subset_even_when_declared_pass(): void
     {
         $result = $this->completePrincipalAttributionResult();
@@ -959,6 +1005,7 @@ class PrincipalAttributionContractTest extends TestCase
         $bob = ['type' => 'auth:token', 'id' => 'bob'];
         $worker = ['type' => 'auth:token', 'id' => 'worker:principal-attribution'];
         $anonymous = ['type' => 'server', 'id' => 'anonymous'];
+        $actionCredentials = $this->actionCredentials();
 
         return [
             'schema' => PrincipalAttributionContract::RESULT_SCHEMA,
@@ -983,6 +1030,7 @@ class PrincipalAttributionContractTest extends TestCase
             'actor_matrix' => [
                 'alice' => ['credentials' => ['alice-token-v1', 'alice-token-v2']],
                 'bob' => ['credentials' => ['bob-token']],
+                'action_credentials' => $actionCredentials,
             ],
             'history_dumps' => [
                 'main' => [
@@ -1023,6 +1071,7 @@ class PrincipalAttributionContractTest extends TestCase
                     'actors' => ['alice', 'bob'],
                     'credentials' => ['alice' => ['alice-token-v1', 'alice-token-v2'], 'bob' => ['bob-token']],
                     'rotation_observations' => ['alice_v1_start' => 'alice', 'alice_v2_cancel' => 'alice'],
+                    'action_credentials' => $actionCredentials,
                 ],
                 'start_signal_cancel_spoofing' => [
                     'status' => 'pass',
@@ -1036,6 +1085,7 @@ class PrincipalAttributionContractTest extends TestCase
                         'payload_values' => ['mallory'],
                         'headers' => ['X-Workflow-Principal-Id', 'X-Workflow-Caller-Type', 'X-Forwarded-User'],
                     ],
+                    'action_credentials' => $actionCredentials,
                 ],
                 'query_attribution' => [
                     'status' => 'pass',
@@ -1191,7 +1241,7 @@ class PrincipalAttributionContractTest extends TestCase
                 'waterline' => 'npm',
             ],
             'topology' => ['auth_driver' => 'token'],
-            'actor_matrix' => ['alice' => ['credentials' => ['alice-token-v1', 'alice-token-v2']], 'bob' => ['credentials' => ['bob-token']]],
+            'actor_matrix' => ['alice' => ['credentials' => ['alice-token-v1', 'alice-token-v2']], 'bob' => ['credentials' => ['bob-token']], 'action_credentials' => $this->actionCredentials()],
             'history_dumps' => ['main' => ['events' => []]],
             'spoofing_attempts' => ['payload_values' => ['mallory'], 'headers' => ['X-Forwarded-User']],
             'operator_visibility' => ['cli_history_json_principal_visible' => true],
@@ -1282,11 +1332,13 @@ class PrincipalAttributionContractTest extends TestCase
                 'actors' => ['alice', 'bob'],
                 'credentials' => ['alice' => ['alice-token-v1', 'alice-token-v2'], 'bob' => ['bob-token']],
                 'rotation_observations' => ['alice_v1_start' => 'alice', 'alice_v2_cancel' => 'alice'],
+                'action_credentials' => $this->actionCredentials(),
             ],
             'start_signal_cancel_spoofing' => [
                 'history_events' => ['WorkflowStarted', 'SignalReceived', 'WorkflowCancelled'],
                 'recorded_principals' => ['WorkflowStarted' => $alice, 'SignalReceived' => $bob, 'WorkflowCancelled' => $alice],
                 'spoofing_attempts' => ['payload_fields' => ['principal' => 'mallory'], 'headers' => ['X-Forwarded-User']],
+                'action_credentials' => $this->actionCredentials(),
             ],
             'query_attribution' => [
                 'query_result' => ['status' => 'ready'],
@@ -1332,6 +1384,34 @@ class PrincipalAttributionContractTest extends TestCase
             ],
             default => [],
         };
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private function actionCredentials(): array
+    {
+        return [
+            'start' => [
+                'actor' => 'alice',
+                'credential_ref' => 'alice-token-v1',
+                'expected_principal' => ['type' => 'auth:token', 'id' => 'alice'],
+                'event_type' => 'WorkflowStarted',
+            ],
+            'signal' => [
+                'actor' => 'bob',
+                'credential_ref' => 'bob-token',
+                'expected_principal' => ['type' => 'auth:token', 'id' => 'bob'],
+                'event_type' => 'SignalReceived',
+            ],
+            'cancel' => [
+                'actor' => 'alice',
+                'credential_ref' => 'alice-token-v2',
+                'previous_credential_ref' => 'alice-token-v1',
+                'expected_principal' => ['type' => 'auth:token', 'id' => 'alice'],
+                'event_type' => 'WorkflowCancelled',
+            ],
+        ];
     }
 
     /**

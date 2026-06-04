@@ -273,11 +273,16 @@ final class PrincipalAttributionResultGate
      */
     private static function passingScenarioEvidenceValueFailures(array $scenarioResult, string $scenarioId): array
     {
-        if ($scenarioId !== 'waterline_operator_visibility') {
-            return [];
+        $failures = [];
+
+        if (in_array($scenarioId, ['named_token_actor_matrix', 'start_signal_cancel_spoofing'], true)) {
+            array_push($failures, ...self::actionCredentialEvidenceFailures($scenarioResult, $scenarioId));
         }
 
-        $failures = [];
+        if ($scenarioId !== 'waterline_operator_visibility') {
+            return $failures;
+        }
+
         if (self::scenarioFieldValue($scenarioResult, 'principal_visible') !== true) {
             $failures[] = [
                 'code' => 'waterline_principal_visibility_not_true',
@@ -295,6 +300,121 @@ final class PrincipalAttributionResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function actionCredentialEvidenceFailures(array $scenarioResult, string $scenarioId): array
+    {
+        $requiredActions = [
+            'start' => [
+                'actor' => 'alice',
+                'credential_ref' => 'alice-token-v1',
+                'principal_id' => 'alice',
+            ],
+            'signal' => [
+                'actor' => 'bob',
+                'credential_ref' => 'bob-token',
+                'principal_id' => 'bob',
+            ],
+            'cancel' => [
+                'actor' => 'alice',
+                'credential_ref' => 'alice-token-v2',
+                'principal_id' => 'alice',
+            ],
+        ];
+
+        $actions = self::scenarioFieldValue($scenarioResult, 'action_credentials');
+        if (! is_array($actions) || $actions === []) {
+            return [[
+                'code' => 'missing_action_credentials',
+                'scenario_id' => $scenarioId,
+                'field' => 'action_credentials',
+            ]];
+        }
+
+        $failures = [];
+        foreach ($requiredActions as $action => $expected) {
+            $evidence = $actions[$action] ?? null;
+            if (! is_array($evidence)) {
+                $failures[] = [
+                    'code' => 'missing_action_credential',
+                    'scenario_id' => $scenarioId,
+                    'action' => $action,
+                ];
+                continue;
+            }
+
+            if (self::stringValue($evidence['actor'] ?? null) !== $expected['actor']) {
+                $failures[] = [
+                    'code' => 'action_credential_actor_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'action' => $action,
+                    'expected_actor' => $expected['actor'],
+                    'actual_actor' => self::stringValue($evidence['actor'] ?? null),
+                ];
+            }
+
+            if (self::actionCredentialRef($evidence) !== $expected['credential_ref']) {
+                $failures[] = [
+                    'code' => 'action_credential_ref_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'action' => $action,
+                    'expected_credential_ref' => $expected['credential_ref'],
+                    'actual_credential_ref' => self::actionCredentialRef($evidence),
+                ];
+            }
+
+            if (self::actionCredentialPrincipalId($evidence) !== $expected['principal_id']) {
+                $failures[] = [
+                    'code' => 'action_credential_principal_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'action' => $action,
+                    'expected_principal_id' => $expected['principal_id'],
+                    'actual_principal_id' => self::actionCredentialPrincipalId($evidence),
+                ];
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     */
+    private static function actionCredentialRef(array $evidence): string
+    {
+        return self::stringValue(
+            $evidence['credential_ref']
+                ?? $evidence['credentialRef']
+                ?? $evidence['credential']
+                ?? null,
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     */
+    private static function actionCredentialPrincipalId(array $evidence): string
+    {
+        $principal = $evidence['expected_principal'] ?? $evidence['expectedPrincipal'] ?? null;
+        if (is_array($principal)) {
+            $id = self::stringValue($principal['id'] ?? null);
+            if ($id !== '') {
+                return $id;
+            }
+        }
+
+        return self::stringValue(
+            $evidence['principal_id']
+                ?? $evidence['principalId']
+                ?? $evidence['expected_principal_id']
+                ?? $evidence['expectedPrincipalId']
+                ?? null,
+        );
     }
 
     /**

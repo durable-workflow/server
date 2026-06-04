@@ -142,6 +142,7 @@ final class PrincipalAttributionContract
                     'all_required_artifacts_resolved_from_published_channels',
                     'server_image_is_exact_patch_or_digest_pinned_with_version',
                     'actor_matrix_distinguishes_alice_bob_and_rotated_alice_credentials',
+                    'action_credentials_recorded_for_alice_bob_start_signal_cancel',
                     'start_signal_query_cancel_completion_failure_principals_reported',
                     'spoofed_payload_and_header_principals_do_not_land_in_history',
                     'anonymous_behavior_is_explicit',
@@ -243,10 +244,10 @@ final class PrincipalAttributionContract
                 'required_fields' => ['resolved_artifact_versions', 'artifact_sources', 'local_product_source_checkouts_used'],
             ],
             'named_token_actor_matrix' => [
-                'required_fields' => ['actors', 'credentials', 'rotation_observations'],
+                'required_fields' => ['actors', 'credentials', 'rotation_observations', 'action_credentials'],
             ],
             'start_signal_cancel_spoofing' => [
-                'required_fields' => ['history_events', 'recorded_principals', 'spoofing_attempts'],
+                'required_fields' => ['history_events', 'recorded_principals', 'spoofing_attempts', 'action_credentials'],
             ],
             'query_attribution' => [
                 'required_fields' => ['query_result', 'recorded_principal', 'history_or_query_task_surface'],
