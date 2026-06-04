@@ -38,6 +38,9 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'readMigrationEvidence',
             'evidenceShardPaths',
             'mergeScenarioResults',
+            'SCENARIO_FINDING_POLICIES',
+            'findingForNonPassScenario',
+            'scenario_statuses',
         ] as $token) {
             $this->assertStringContainsString($token, $node);
         }
@@ -392,6 +395,40 @@ class MigrationConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_runner_routes_supplied_failed_cells_to_product_findings(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner failure finding routing.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['scenario_results']['waterline_operator_visibility_preserved'] = [
+            'status' => 'fail',
+            'observed_outputs' => [
+                'failure_reason' => 'preupgrade run detail was not visible after migration',
+                'preupgrade_waterline_snapshot' => 'captured',
+                'postupgrade_waterline_snapshot' => 'missing run detail',
+                'run_detail_visibility' => 'missing',
+                'history_visibility' => 'present',
+            ],
+        ];
+
+        $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-product-finding-routing-');
+        $scenario = $result['scenario_results']['waterline_operator_visibility_preserved'];
+        $finding = $scenario['linked_findings'][0] ?? [];
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertSame('waterline', $finding['owning_surface']);
+        $this->assertSame('waterline_visibility_break', $finding['finding_type']);
+        $this->assertSame(
+            'preupgrade run detail was not visible after migration',
+            $finding['observed_behavior'],
+        );
+        $this->assertArrayHasKey('waterline_operator_visibility_preserved', $result['finding_links']);
+    }
+
     public function test_runner_uses_normalized_env_and_file_backed_run_record_fields_before_passing(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -520,6 +557,12 @@ class MigrationConformanceRunnerContractTest extends TestCase
                 512,
                 JSON_THROW_ON_ERROR,
             );
+            $record = json_decode(
+                (string) file_get_contents($resultDir.'/migration-conformance-record.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
 
             $this->assertSame('pass', $result['outcome']);
             $this->assertSame(
@@ -527,6 +570,15 @@ class MigrationConformanceRunnerContractTest extends TestCase
                 $result['scenario_results']['latest_supported_v1_state_setup']['status'],
             );
             $this->assertSame($evidence['history_dumps'], $result['history_dumps']);
+            $this->assertSame($evidence['artifact_sources'], $record['artifact_sources']);
+            $this->assertSame($evidence['migration_plan'], $record['migration_plan']);
+            $this->assertSame($evidence['preupgrade_state_snapshot'], $record['preupgrade_state_snapshot']);
+            $this->assertSame($evidence['rollback_observations'], $record['rollback_observations']);
+            $this->assertSame($evidence['version_skew_observations'], $record['version_skew_observations']);
+            $this->assertSame(
+                'pass',
+                $record['scenario_statuses']['latest_supported_v1_state_setup'],
+            );
         } finally {
             $this->removeTree($tempRoot);
         }

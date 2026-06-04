@@ -95,6 +95,86 @@ const ARTIFACT_OWNERS = {
   'sdk-python': 'sdk-python',
   waterline: 'waterline',
 };
+const SCENARIO_FINDING_POLICIES = {
+  published_artifact_install_only: {
+    owning_surface: 'conformance_harness',
+    finding_type: 'missing_or_invalid_published_migration_artifact',
+    expected_behavior: 'Migration conformance installs every required v1 and v2 artifact from a pinned published channel.',
+    next_acceptance_criterion: 'rerun migration conformance with exact downloadable artifact versions and install sources for every required channel',
+  },
+  latest_supported_v1_state_setup: {
+    owning_surface: 'workflow',
+    finding_type: 'migration_v1_state_setup_failure',
+    expected_behavior: 'The latest supported v1 release set can seed completed, in-flight, retrying, scheduled, worker, history, and operator-visible state through public surfaces.',
+    next_acceptance_criterion: 'seed all required v1 state kinds from published artifacts and attach the preupgrade observations',
+  },
+  documented_migration_steps_execute: {
+    owning_surface: 'docs',
+    finding_type: 'missing_or_wrong_migration_guide_step',
+    expected_behavior: 'A user can follow the live public migration guide verbatim and start the target v2 stack without manual undocumented steps.',
+    next_acceptance_criterion: 'fix the public guide or product command so every documented migration step executes as written',
+  },
+  completed_history_preservation_and_replay: {
+    owning_surface: 'workflow',
+    finding_type: 'data_loss_or_replay_break',
+    expected_behavior: 'Completed v1 histories remain readable, exportable, queryable, and replay-safe after migration.',
+    next_acceptance_criterion: 'preserve completed history replay/query behavior across the v1-to-v2 upgrade and attach before/after history evidence',
+  },
+  in_flight_workflow_progress_preserved: {
+    owning_surface: 'workflow',
+    finding_type: 'data_loss_or_replay_break',
+    expected_behavior: 'Open v1 workflows resume from their preupgrade durable progress marker under v2 workers.',
+    next_acceptance_criterion: 'preserve in-flight progress across migration and attach before/after progress and completion evidence',
+  },
+  mid_activity_retry_preserved: {
+    owning_surface: 'workflow',
+    finding_type: 'data_loss_or_replay_break',
+    expected_behavior: 'Activity retry attempt counts, retry timing, and final results survive migration without duplicate execution.',
+    next_acceptance_criterion: 'preserve mid-activity retry state across migration and attach retry attempt evidence',
+  },
+  schedule_cross_upgrade_cadence_preserved: {
+    owning_surface: 'server',
+    finding_type: 'schedule_drift',
+    expected_behavior: 'Schedules retain cadence across the upgrade without silent missed or duplicate ticks.',
+    next_acceptance_criterion: 'preserve cross-upgrade schedule cadence and attach before/after tick evidence',
+  },
+  worker_registration_projection_preserved: {
+    owning_surface: 'server',
+    finding_type: 'worker_compatibility_gap',
+    expected_behavior: 'Worker registrations and task queue projections remain operator-visible and compatible across the upgrade.',
+    next_acceptance_criterion: 'preserve worker registration projection across migration and attach worker-list and polling evidence',
+  },
+  waterline_operator_visibility_preserved: {
+    owning_surface: 'waterline',
+    finding_type: 'waterline_visibility_break',
+    expected_behavior: 'Waterline continues to render preupgrade workflow, run, schedule, and history state after migration.',
+    next_acceptance_criterion: 'restore Waterline visibility for migrated state and attach before/after operator snapshots',
+  },
+  cli_access_to_preupgrade_state: {
+    owning_surface: 'cli',
+    finding_type: 'cli_regression',
+    expected_behavior: 'The v2 CLI can describe migrated workflows, histories, and schedules with typed JSON responses.',
+    next_acceptance_criterion: 'restore CLI access to migrated state and attach command, exit-code, and JSON response evidence',
+  },
+  new_v2_workflow_start_after_upgrade: {
+    owning_surface: 'workflow',
+    finding_type: 'postupgrade_start_regression',
+    expected_behavior: 'New v2 workflows can start and complete after the migrated v1-origin state remains readable.',
+    next_acceptance_criterion: 'start and complete a new v2 workflow after migration and attach completion and history evidence',
+  },
+  rollback_contract_verified: {
+    owning_surface: 'docs',
+    finding_type: 'rollback_mismatch',
+    expected_behavior: 'The guide either verifies a supported rollback path or clearly documents rollback as unsupported with typed refusal behavior.',
+    next_acceptance_criterion: 'verify documented rollback behavior or update the guide with explicit rollback limits and attach rollback observations',
+  },
+  version_skew_refusal: {
+    owning_surface: 'server',
+    finding_type: 'skew_silence',
+    expected_behavior: 'Unsupported v1/v2 server, worker, CLI, SDK, and Waterline combinations refuse loudly before partial durable-state mutation.',
+    next_acceptance_criterion: 'record loud version-skew refusal for every required migration skew cell and attach no-partial-mutation evidence',
+  },
+};
 
 const scenarioManifest = readJsonIfExists(scenarioManifestPath) ?? {};
 const requiredArtifacts = arrayOfStrings(scenarioManifest?.artifact_policy?.required_artifacts);
@@ -433,15 +513,57 @@ function normalizeScenarioResult(scenarioId, scenario, artifactVersions) {
 
   if (status !== 'pass' && !hasLinkedFinding(normalized)) {
     normalized.linked_findings = [
-      coverageGapFinding(scenarioId, artifactVersions, {
-        observed_behavior: `Scenario ${scenarioId} reported ${status} without a linked root-cause finding.`,
-        expected_behavior: 'Every non-pass migration scenario links to the focused product or conformance finding that explains the result.',
-        next_acceptance_criterion: 'attach the root-cause finding link to the scenario result before recording the run',
-      }),
+      findingForNonPassScenario(scenarioId, status, normalized, artifactVersions),
     ];
   }
 
   return normalized;
+}
+
+function findingForNonPassScenario(scenarioId, status, scenario, artifactVersions) {
+  if (['fail', 'unsupported'].includes(status)) {
+    const policy = SCENARIO_FINDING_POLICIES[scenarioId] ?? {
+      owning_surface: 'conformance_harness',
+      finding_type: 'migration_contract_failure',
+      expected_behavior: 'Migration conformance records a focused root-cause finding for every failed or unsupported migration contract cell.',
+      next_acceptance_criterion: 'attach the owning product or documentation root-cause finding before recording this scenario as non-passing',
+    };
+
+    return {
+      scenario_id: scenarioId,
+      owning_surface: policy.owning_surface,
+      finding_type: policy.finding_type,
+      artifact_versions: artifactVersions,
+      observed_behavior: observedBehaviorForScenarioFailure(scenarioId, status, scenario),
+      expected_behavior: policy.expected_behavior,
+      next_acceptance_criterion: policy.next_acceptance_criterion,
+    };
+  }
+
+  return coverageGapFinding(scenarioId, artifactVersions, {
+    observed_behavior: `Scenario ${scenarioId} reported ${status} without a linked root-cause finding.`,
+    expected_behavior: 'Every non-pass migration scenario links to the focused product or conformance finding that explains the result.',
+    next_acceptance_criterion: 'attach the root-cause finding link to the scenario result before recording the run',
+  });
+}
+
+function observedBehaviorForScenarioFailure(scenarioId, status, scenario) {
+  const observedOutputs = objectValue(scenario.observed_outputs);
+  const candidates = [
+    scenario.observed_behavior,
+    scenario.observedBehavior,
+    scenario.failure_reason,
+    scenario.failureReason,
+    observedOutputs.observed_behavior,
+    observedOutputs.observedBehavior,
+    observedOutputs.failure_reason,
+    observedOutputs.failureReason,
+    observedOutputs.error,
+    observedOutputs.message,
+  ];
+
+  const detail = candidates.map((candidate) => stringValue(candidate)).find((candidate) => candidate !== '');
+  return detail || `Migration scenario ${scenarioId} reported ${status} without a detailed observed behavior.`;
 }
 
 function missingRequiredFieldsForScenario(scenarioId, scenario, observedOutputs) {
@@ -726,21 +848,46 @@ function writeArtifacts(publishedArtifactVersions, resolvedArtifactVersions, art
 }
 
 function writeResult(result) {
+  const scenarioResults = objectValue(result.scenario_results);
   writeJson('migration-conformance-result.json', result);
   writeJson('migration-conformance-record.json', {
     schema: RECORD_SCHEMA,
     version: 1,
     generated_at: result.generated_at,
+    started_at: result.started_at,
+    finished_at: result.finished_at,
     outcome: result.outcome,
     runner_blocked: result.runner_blocked,
+    artifact_versions: result.artifact_versions,
+    published_artifact_versions: result.published_artifact_versions,
+    resolved_artifact_versions: result.resolved_artifact_versions,
+    artifact_sources: result.artifact_sources,
+    artifact_prerequisite_failures: result.artifact_prerequisite_failures,
+    local_product_source_checkouts_used: result.local_product_source_checkouts_used,
     result_file: 'migration-conformance-result.json',
     artifact_file: 'migration-published-artifacts.json',
     required_scenarios: effectiveRequiredScenarios(),
-    reported_scenarios: Object.keys(objectValue(result.scenario_results)),
-    non_pass_scenarios: Object.entries(objectValue(result.scenario_results))
+    reported_scenarios: Object.keys(scenarioResults),
+    scenario_statuses: Object.fromEntries(
+      Object.entries(scenarioResults).map(([scenarioId, scenario]) => [scenarioId, scenario?.status ?? null]),
+    ),
+    non_pass_scenarios: Object.entries(scenarioResults)
       .filter(([, scenario]) => scenario?.status !== 'pass')
       .map(([scenarioId]) => scenarioId),
     finding_links: result.finding_links,
+    findings: result.findings,
+    migration_plan: result.migration_plan,
+    preupgrade_state_snapshot: result.preupgrade_state_snapshot,
+    postupgrade_state_snapshot: result.postupgrade_state_snapshot,
+    history_dumps: result.history_dumps,
+    activity_attempts: result.activity_attempts,
+    schedule_ticks: result.schedule_ticks,
+    worker_registration_observations: result.worker_registration_observations,
+    cli_observations: result.cli_observations,
+    waterline_observations: result.waterline_observations,
+    rollback_observations: result.rollback_observations,
+    version_skew_observations: result.version_skew_observations,
+    storage_connection_smoke: result.storage_connection_smoke,
   });
 }
 
