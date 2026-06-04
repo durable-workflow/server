@@ -26,6 +26,8 @@ const cliEvidencePath = process.env.DW_SCHEDULES_CLI_EVIDENCE
   ?? path.join(resultDir, 'schedules-cli-evidence.json');
 const operatorControlsEvidencePath = process.env.DW_SCHEDULES_OPERATOR_CONTROLS_EVIDENCE
   ?? path.join(resultDir, 'schedules-operator-controls-evidence.json');
+const missedRestartEvidencePath = process.env.DW_SCHEDULES_MISSED_RESTART_EVIDENCE
+  ?? path.join(resultDir, 'schedules-missed-restart-evidence.json');
 
 const DEFAULT_REQUIRED_SCENARIOS = [
   'published_artifact_install_only',
@@ -74,6 +76,10 @@ async function main() {
   const operatorControlsEvidence = await maybeRunOperatorControlsShard(startedAt, artifactVersions, artifactSources);
   if (operatorControlsEvidence !== null) {
     evidenceInputs.push(operatorControlsEvidence);
+  }
+  const missedRestartEvidence = await maybeRunMissedRestartShard(startedAt, artifactVersions, artifactSources);
+  if (missedRestartEvidence !== null) {
+    evidenceInputs.push(missedRestartEvidence);
   }
   const cliSurfaceEvidence = await maybeRunCliSurfaceShard(startedAt, artifactVersions, artifactSources);
   if (cliSurfaceEvidence !== null) {
@@ -391,6 +397,7 @@ function readEvidenceInputs() {
     smokeEvidencePath,
     process.env.DW_SCHEDULES_CADENCE_EVIDENCE,
     operatorControlsEvidencePath,
+    missedRestartEvidencePath,
     cliEvidencePath,
   ].filter((value, index, values) => stringValue(value) !== '' && values.indexOf(value) === index);
 
@@ -1958,6 +1965,616 @@ function operatorControlsBlockedEvidence(reason, startedAt, artifactVersions, ar
       delete: { blocked_reason: reason },
     },
   };
+}
+
+async function maybeRunMissedRestartShard(startedAt, artifactVersions, artifactSources) {
+  const mode = stringValue(process.env.DW_SCHEDULES_RUN_MISSED_RESTART_SHARD).toLowerCase();
+  if (!['1', 'true', 'yes', 'auto'].includes(mode)) {
+    return null;
+  }
+
+  if (readJsonIfExists(missedRestartEvidencePath) !== null) {
+    return null;
+  }
+
+  const explicit = mode !== 'auto';
+  const dockerAvailable = await commandSucceeds('docker', ['--version']);
+  const composeAvailable = dockerAvailable && await commandSucceeds('docker', ['compose', 'version']);
+  const serverImage = resolveServerImage(artifactVersions);
+
+  if (!dockerAvailable || !composeAvailable || serverImage === '') {
+    if (!explicit) {
+      return null;
+    }
+
+    const missing = [
+      !dockerAvailable ? 'docker' : null,
+      dockerAvailable && !composeAvailable ? 'docker compose' : null,
+      serverImage === '' ? 'DW_SERVER_VERSION or DW_SERVER_IMAGE' : null,
+    ].filter(Boolean).join(', ');
+
+    return missedRestartBlockedEvidence(
+      `Missed-fire/restart shard could not start because ${missing} is unavailable.`,
+      startedAt,
+      artifactVersions,
+      artifactSources,
+    );
+  }
+
+  try {
+    return await runMissedRestartShard({
+      startedAt,
+      artifactVersions,
+      artifactSources,
+      serverImage,
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return missedRestartFailureEvidence(reason, startedAt, artifactVersions, artifactSources);
+  }
+}
+
+async function runMissedRestartShard({ startedAt, artifactVersions, artifactSources, serverImage }) {
+  const shardStartedAt = timestamp();
+  const runId = `schedules-missed-restart-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const namespace = sanitizeDockerName(`${stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance'}-${runId}`).slice(0, 96);
+  const taskQueue = stringValue(process.env.DW_SCHEDULES_TASK_QUEUE) || 'schedules-missed-restart';
+  const token = stringValue(process.env.DW_SCHEDULES_AUTH_TOKEN) || 'dev-token';
+  const serverPort = positiveInt(process.env.DW_SCHEDULES_SERVER_PORT, 0) || await freePort();
+  const serverUrl = `http://127.0.0.1:${serverPort}`;
+  const composeProject = sanitizeDockerName(runId);
+  const schedulerTickSeconds = positiveInt(process.env.DW_SCHEDULES_SCHEDULER_TICK_SECONDS, 5);
+  const missedDowntimeSeconds = Math.max(120, positiveInt(process.env.DW_SCHEDULES_MISSED_FIRE_DOWNTIME_SECONDS, 125));
+  const missedResumeTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_MISSED_FIRE_RESUME_TIMEOUT_SECONDS, 170);
+  const restartFireDeadlineSeconds = Math.max(90, positiveInt(process.env.DW_SCHEDULES_RESTART_FIRE_DEADLINE_SECONDS, 90));
+  const pollSeconds = positiveInt(process.env.DW_SCHEDULES_MISSED_RESTART_POLL_SECONDS, 5);
+  const overlayPath = path.join(resultDir, 'schedules-missed-restart-compose.override.yml');
+  const composeFiles = [
+    '-f',
+    path.join(repoRoot, 'docker-compose.published.yml'),
+    '-f',
+    overlayPath,
+  ];
+  const env = composeEnv(serverPort, serverImage, token, artifactVersions);
+  let composeStarted = false;
+  let schedulesCreated = [];
+
+  markArtifactSource(artifactSources, 'server', 'published_docker_image');
+
+  writeSchedulerOverlay(overlayPath, schedulerTickSeconds);
+  await execLogged(
+    'docker',
+    ['image', 'pull', serverImage],
+    path.join(resultDir, 'schedules-missed-restart-docker-pull.log'),
+  );
+  await execLogged(
+    'docker',
+    ['compose', '-p', composeProject, ...composeFiles, 'up', '-d', 'server'],
+    path.join(resultDir, 'schedules-missed-restart-compose-up.log'),
+    env,
+  );
+  composeStarted = true;
+
+  try {
+    await waitForServerReady(serverUrl, 120);
+    await ensureNamespace(serverUrl, token, namespace);
+
+    const missedScheduleId = `${runId}-missed`;
+    schedulesCreated.push(missedScheduleId);
+    await createMissedRestartSchedule({
+      serverUrl,
+      token,
+      namespace,
+      scheduleId: missedScheduleId,
+      taskQueue,
+      probeName: 'MissedFireProbe',
+    });
+
+    const missedCreatedDescription = await describeSchedule(serverUrl, token, namespace, missedScheduleId);
+    const schedulerStoppedAt = timestamp();
+    await sleep(missedDowntimeSeconds * 1000);
+    const schedulerResumeRequestedAt = timestamp();
+    await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'up', '-d', 'scheduler'],
+      path.join(resultDir, 'schedules-missed-restart-scheduler-resume.log'),
+      env,
+    );
+
+    const missedFire = await observeMissedFirePolicy({
+      serverUrl,
+      token,
+      namespace,
+      scheduleId: missedScheduleId,
+      documentedPolicy: documentedMissedFirePolicy(),
+      schedulerStoppedAt,
+      schedulerResumeRequestedAt,
+      preResumeDescription: missedCreatedDescription,
+      downtimeSeconds: missedDowntimeSeconds,
+      resumeTimeoutSeconds: missedResumeTimeoutSeconds,
+      pollSeconds,
+      artifactVersions,
+      artifactSources,
+    });
+
+    await bestEffortDeleteSchedule(serverUrl, token, namespace, missedScheduleId);
+    await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'stop', 'scheduler'],
+      path.join(resultDir, 'schedules-missed-restart-scheduler-stop.log'),
+      env,
+    ).catch(() => {});
+
+    const restartScheduleId = `${runId}-restart`;
+    schedulesCreated.push(restartScheduleId);
+    await createMissedRestartSchedule({
+      serverUrl,
+      token,
+      namespace,
+      scheduleId: restartScheduleId,
+      taskQueue,
+      probeName: 'RestartSurvivalProbe',
+    });
+    const preRestartList = await listSchedules(serverUrl, token, namespace);
+    const preRestartDescription = await describeSchedule(serverUrl, token, namespace, restartScheduleId);
+    const serverRestartRequestedAt = timestamp();
+    await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'restart', 'server'],
+      path.join(resultDir, 'schedules-missed-restart-server-restart.log'),
+      env,
+    );
+    await waitForServerReady(serverUrl, 120);
+    const serverRestartReadyAt = timestamp();
+    const postRestartList = await listSchedules(serverUrl, token, namespace);
+    const postRestartDescription = await describeSchedule(serverUrl, token, namespace, restartScheduleId);
+
+    await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'up', '-d', 'scheduler'],
+      path.join(resultDir, 'schedules-missed-restart-scheduler-after-restart.log'),
+      env,
+    );
+
+    const restartSurvival = await observeRestartSurvival({
+      serverUrl,
+      token,
+      namespace,
+      scheduleId: restartScheduleId,
+      preRestartList,
+      preRestartDescription,
+      postRestartList,
+      postRestartDescription,
+      serverRestartRequestedAt,
+      serverRestartReadyAt,
+      restartFireDeadlineSeconds,
+      pollSeconds,
+      artifactVersions,
+      artifactSources,
+    });
+
+    await bestEffortDeleteSchedule(serverUrl, token, namespace, restartScheduleId);
+
+    const evidence = missedRestartEvidenceFromObservations({
+      startedAt: shardStartedAt,
+      finishedAt: timestamp(),
+      artifactVersions,
+      artifactSources,
+      namespace,
+      taskQueue,
+      schedulesCreated,
+      missedFire,
+      restartSurvival,
+      timing: {
+        scheduler_tick_seconds: schedulerTickSeconds,
+        missed_fire_downtime_seconds: missedDowntimeSeconds,
+        missed_fire_resume_timeout_seconds: missedResumeTimeoutSeconds,
+        restart_fire_deadline_seconds: restartFireDeadlineSeconds,
+      },
+    });
+    writeJson(missedRestartEvidencePath, evidence);
+
+    return evidence;
+  } finally {
+    if (composeStarted) {
+      await collectMissedRestartComposeLogs(composeProject, composeFiles);
+      await execFile('docker', ['compose', '-p', composeProject, ...composeFiles, 'down', '-v'], {
+        env,
+        maxBuffer: 1024 * 1024 * 8,
+      }).catch(() => {});
+    }
+
+    writeJson(path.join(resultDir, 'schedules-missed-restart-run-metadata.json'), {
+      schema: 'durable-workflow.v2.schedules-runtime.missed-restart-run-metadata',
+      started_at: startedAt,
+      missed_restart_started_at: shardStartedAt,
+      finished_at: timestamp(),
+      server_url: serverUrl,
+      namespace,
+      task_queue: taskQueue,
+      server_image: serverImage,
+      compose_project: composeProject,
+      published_artifact_versions: artifactVersions,
+      artifact_sources: artifactSources,
+      local_product_source_checkouts_used: false,
+      schedules_created: schedulesCreated,
+    });
+  }
+}
+
+async function createMissedRestartSchedule({
+  serverUrl,
+  token,
+  namespace,
+  scheduleId,
+  taskQueue,
+  probeName,
+}) {
+  await apiRequest(serverUrl, token, namespace, 'POST', '/schedules', {
+    schedule_id: scheduleId,
+    spec: { cron_expressions: ['* * * * *'], timezone: 'UTC' },
+    action: {
+      workflow_type: `schedules.${probeName}`,
+      task_queue: taskQueue,
+      input: [{ schedule_id: scheduleId }],
+    },
+    overlap_policy: 'allow_all',
+    jitter_seconds: 0,
+  });
+}
+
+async function observeMissedFirePolicy({
+  serverUrl,
+  token,
+  namespace,
+  scheduleId,
+  documentedPolicy,
+  schedulerStoppedAt,
+  schedulerResumeRequestedAt,
+  preResumeDescription,
+  downtimeSeconds,
+  resumeTimeoutSeconds,
+  pollSeconds,
+  artifactVersions,
+  artifactSources,
+}) {
+  const resumeRequestedMs = Date.parse(schedulerResumeRequestedAt);
+  const deadlineMs = Date.now() + resumeTimeoutSeconds * 1000;
+  let latestHistory = { events: [] };
+  let postResumeTriggers = [];
+  let catchupTriggers = [];
+  let normalTriggers = [];
+
+  while (Date.now() < deadlineMs) {
+    latestHistory = await scheduleHistory(serverUrl, token, namespace, scheduleId);
+    postResumeTriggers = scheduleTriggeredEvents(latestHistory.events ?? [])
+      .filter((event) => eventRecordedMs(event) >= resumeRequestedMs);
+    catchupTriggers = postResumeTriggers.filter((event) => {
+      const occurrenceMs = eventOccurrenceMs(event);
+      return occurrenceMs !== null && occurrenceMs < resumeRequestedMs;
+    });
+    normalTriggers = postResumeTriggers.filter((event) => {
+      const occurrenceMs = eventOccurrenceMs(event);
+      return occurrenceMs !== null && occurrenceMs >= resumeRequestedMs;
+    });
+
+    if (catchupTriggers.length > 0 && normalTriggers.length > 0) {
+      break;
+    }
+
+    await sleep(pollSeconds * 1000);
+  }
+
+  const catchupFireCount = catchupTriggers.length;
+  const postResumeNormalFireObserved = normalTriggers.length > 0;
+  const observedPolicy = inferMissedFirePolicy(catchupFireCount, postResumeNormalFireObserved);
+  const failures = [];
+
+  if (documentedPolicy !== 'fire_once_on_resume_then_skip_remaining_missed') {
+    failures.push(`documented policy was ${documentedPolicy || '<missing>'}`);
+  }
+  if (observedPolicy !== 'fire_once_on_resume_then_skip_remaining_missed') {
+    failures.push(`observed policy was ${observedPolicy}`);
+  }
+  if (catchupFireCount !== 1) {
+    failures.push(`observed ${catchupFireCount} catch-up fire(s); expected exactly 1`);
+  }
+  if (!postResumeNormalFireObserved) {
+    failures.push('no later normal fire was observed after scheduler evaluation resumed');
+  }
+
+  return {
+    scenario_id: 'missed_fire_policy',
+    schedule_id: scheduleId,
+    documented_policy: documentedPolicy,
+    observed_policy: observedPolicy,
+    catchup_fire_count: catchupFireCount,
+    post_resume_normal_fire_observed: postResumeNormalFireObserved,
+    scheduler_stopped_at: schedulerStoppedAt,
+    scheduler_resume_requested_at: schedulerResumeRequestedAt,
+    downtime_seconds: downtimeSeconds,
+    resume_timeout_seconds: resumeTimeoutSeconds,
+    stored_overdue_occurrence_time: scheduleTimeField(preResumeDescription, ['next_fire_at', 'nextFireAt', 'next_fire', 'nextFire']),
+    catchup_fires: catchupTriggers.map(normalizeScheduleEvent).filter(Boolean),
+    normal_fires_after_resume: normalTriggers.map(normalizeScheduleEvent).filter(Boolean),
+    post_resume_trigger_count: postResumeTriggers.length,
+    history_after_resume: latestHistory,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    failures,
+    verdict: failures.length === 0 ? 'pass' : 'fail',
+  };
+}
+
+async function observeRestartSurvival({
+  serverUrl,
+  token,
+  namespace,
+  scheduleId,
+  preRestartList,
+  preRestartDescription,
+  postRestartList,
+  postRestartDescription,
+  serverRestartRequestedAt,
+  serverRestartReadyAt,
+  restartFireDeadlineSeconds,
+  pollSeconds,
+  artifactVersions,
+  artifactSources,
+}) {
+  const restartRequestedMs = Date.parse(serverRestartRequestedAt);
+  const readyMs = Date.parse(serverRestartReadyAt);
+  const listedBeforeRestart = scheduleListContains(preRestartList, scheduleId)
+    || scheduleIdField(preRestartDescription) === scheduleId;
+  const listedAfterRestart = scheduleListContains(postRestartList, scheduleId)
+    || scheduleIdField(postRestartDescription) === scheduleId;
+  const trigger = await waitForScheduleTrigger({
+    serverUrl,
+    token,
+    namespace,
+    scheduleId,
+    afterRecordedMs: restartRequestedMs,
+    deadlineMs: Date.now() + restartFireDeadlineSeconds * 1000,
+    pollSeconds,
+  });
+  const fireRecordedMs = eventRecordedMs(trigger.first_trigger);
+  const firedAfterRestart = trigger.observed === true && fireRecordedMs >= readyMs;
+  const fireWithinRestartDeadline = firedAfterRestart
+    && fireRecordedMs <= readyMs + restartFireDeadlineSeconds * 1000;
+  const failures = [];
+
+  if (!listedBeforeRestart) {
+    failures.push('schedule was not listed before restart');
+  }
+  if (!listedAfterRestart) {
+    failures.push('schedule was not listed after restart with durable storage preserved');
+  }
+  if (!firedAfterRestart) {
+    failures.push('no schedule fire was observed after server restart');
+  } else if (!fireWithinRestartDeadline) {
+    failures.push(`schedule fired after the ${restartFireDeadlineSeconds}s restart deadline`);
+  }
+
+  return {
+    scenario_id: 'restart_survival',
+    schedule_id: scheduleId,
+    schedule_listed_before_restart: listedBeforeRestart,
+    schedule_listed_after_restart: listedAfterRestart,
+    fired_after_restart: firedAfterRestart,
+    fire_within_restart_deadline: fireWithinRestartDeadline,
+    restart_deadline_seconds: restartFireDeadlineSeconds,
+    server_restart_requested_at: serverRestartRequestedAt,
+    server_restart_ready_at: serverRestartReadyAt,
+    first_fire_after_restart: trigger.first_trigger,
+    trigger_after_restart: trigger,
+    pre_restart_list: preRestartList,
+    pre_restart_description: preRestartDescription,
+    post_restart_list: postRestartList,
+    post_restart_description: postRestartDescription,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    failures,
+    verdict: failures.length === 0 ? 'pass' : 'fail',
+  };
+}
+
+function missedRestartEvidenceFromObservations({
+  startedAt,
+  finishedAt,
+  artifactVersions,
+  artifactSources,
+  namespace,
+  taskQueue,
+  schedulesCreated,
+  missedFire,
+  restartSurvival,
+  timing,
+}) {
+  const observations = {
+    missed_fire_policy: missedFire,
+    restart_survival: restartSurvival,
+  };
+  const scenarioResults = {};
+  const findings = [];
+
+  for (const [scenarioId, observation] of Object.entries(observations)) {
+    const status = observation.verdict === 'pass'
+      ? 'pass'
+      : (observation.verdict === 'runner_blocked' ? 'runner_blocked' : 'fail');
+    const linkedFindings = status === 'pass' ? [] : [missedRestartFinding(scenarioId, observation)];
+    findings.push(...linkedFindings);
+    scenarioResults[scenarioId] = {
+      scenario_id: scenarioId,
+      status,
+      observed_outputs: observation,
+      linked_findings: linkedFindings,
+    };
+  }
+
+  return {
+    schema: 'durable-workflow.v2.schedules-runtime.missed-restart-evidence',
+    started_at: startedAt,
+    finished_at: finishedAt,
+    generated_at: finishedAt,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    scenario_results: scenarioResults,
+    findings,
+    missed_fire_policy: missedFire,
+    restart_survival: restartSurvival,
+    topology: {
+      namespace,
+      task_queue: taskQueue,
+      worker_execution_mode: 'missed_fire_restart_schedule_history_probe',
+      schedules_created: schedulesCreated,
+    },
+    runtime_matrix: {
+      runtimes: ['server-scheduler'],
+      client_paths: ['server-http-api'],
+      schedule_types: ['cron_expression'],
+    },
+    timing,
+  };
+}
+
+function missedRestartFinding(scenarioId, observation) {
+  const configured = coverageGapFindings[scenarioId] ?? {};
+  const observed = arrayValue(observation.failures).join('; ')
+    || stringValue(observation.failure_reason)
+    || 'Missed-fire/restart evidence did not satisfy the schedules contract.';
+  const runnerBlocked = observation.verdict === 'runner_blocked';
+  const productFindingType = scenarioId === 'missed_fire_policy'
+    ? 'schedule_missed_fire_policy_contract_gap'
+    : 'schedule_restart_survival_contract_gap';
+  const expectedBehavior = stringValue(configured.expected_behavior)
+    || 'Schedules survive scheduler/server restart boundaries and resume firing according to policy.';
+  const nextAcceptance = arrayValue(configured.acceptance).join('; ')
+    || 'rerun the missed-fire/restart shard and observe passing evidence';
+
+  return {
+    finding_id: runnerBlocked
+      ? `schedules-missed-restart-runner-blocked-${scenarioId}`
+      : `${stringValue(configured.id) || `schedules-${scenarioId}`}-runtime-finding`,
+    scenario_id: scenarioId,
+    finding_type: runnerBlocked ? 'conformance_runner_blocked' : productFindingType,
+    owning_surface: runnerBlocked ? 'conformance_harness' : 'server',
+    execution_scope: stringValue(configured.scope) || 'missed-fire-restart-shard',
+    artifact_versions: observation.artifact_versions ?? {},
+    observed_behavior: observed,
+    expected_behavior: runnerBlocked
+      ? 'The schedules conformance host can run the missed-fire/restart shard against published artifacts.'
+      : expectedBehavior,
+    next_acceptance_criterion: runnerBlocked
+      ? 'restore the missing host capability and rerun schedules conformance'
+      : nextAcceptance,
+    observed_outputs: observation,
+  };
+}
+
+function missedRestartFailureEvidence(reason, startedAt, artifactVersions, artifactSources) {
+  const finishedAt = timestamp();
+  return missedRestartEvidenceFromObservations({
+    startedAt,
+    finishedAt,
+    artifactVersions,
+    artifactSources,
+    namespace: stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance',
+    taskQueue: stringValue(process.env.DW_SCHEDULES_TASK_QUEUE) || 'schedules-missed-restart',
+    schedulesCreated: [],
+    missedFire: failedMissedRestartObservation('missed_fire_policy', reason, artifactVersions, artifactSources),
+    restartSurvival: failedMissedRestartObservation('restart_survival', reason, artifactVersions, artifactSources),
+    timing: {},
+  });
+}
+
+function missedRestartBlockedEvidence(reason, startedAt, artifactVersions, artifactSources) {
+  const finishedAt = timestamp();
+  return missedRestartEvidenceFromObservations({
+    startedAt,
+    finishedAt,
+    artifactVersions,
+    artifactSources,
+    namespace: stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance',
+    taskQueue: stringValue(process.env.DW_SCHEDULES_TASK_QUEUE) || 'schedules-missed-restart',
+    schedulesCreated: [],
+    missedFire: blockedMissedRestartObservation('missed_fire_policy', reason, artifactVersions, artifactSources),
+    restartSurvival: blockedMissedRestartObservation('restart_survival', reason, artifactVersions, artifactSources),
+    timing: {},
+  });
+}
+
+function failedMissedRestartObservation(scenarioId, reason, artifactVersions, artifactSources) {
+  const common = {
+    scenario_id: scenarioId,
+    schedule_id: null,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    failures: [reason],
+    failure_reason: reason,
+    verdict: 'fail',
+  };
+
+  if (scenarioId === 'missed_fire_policy') {
+    return {
+      ...common,
+      documented_policy: documentedMissedFirePolicy(),
+      observed_policy: 'not_observed',
+      catchup_fire_count: -1,
+      post_resume_normal_fire_observed: false,
+    };
+  }
+
+  return {
+    ...common,
+    schedule_listed_after_restart: false,
+    fired_after_restart: false,
+    fire_within_restart_deadline: false,
+  };
+}
+
+function blockedMissedRestartObservation(scenarioId, reason, artifactVersions, artifactSources) {
+  return {
+    ...failedMissedRestartObservation(scenarioId, reason, artifactVersions, artifactSources),
+    failures: [reason],
+    blocked_reason: reason,
+    verdict: 'runner_blocked',
+  };
+}
+
+function inferMissedFirePolicy(catchupFireCount, postResumeNormalFireObserved) {
+  if (catchupFireCount === 1 && postResumeNormalFireObserved) {
+    return 'fire_once_on_resume_then_skip_remaining_missed';
+  }
+
+  if (catchupFireCount === 0 && postResumeNormalFireObserved) {
+    return 'skip_missed';
+  }
+
+  if (catchupFireCount > 1) {
+    return 'fire_all_missed';
+  }
+
+  if (catchupFireCount === 1) {
+    return 'fire_once_on_resume_without_later_normal_fire';
+  }
+
+  return 'not_observed';
+}
+
+function documentedMissedFirePolicy() {
+  return stringValue(scenarioManifest.schedule_policy?.missed_fire_policy)
+    || 'fire_once_on_resume_then_skip_remaining_missed';
+}
+
+async function collectMissedRestartComposeLogs(composeProject, composeFiles) {
+  for (const service of ['server', 'scheduler', 'bootstrap', 'mysql', 'redis']) {
+    const logPath = path.join(resultDir, `schedules-missed-restart-${service}.log`);
+    await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'logs', service],
+      logPath,
+    ).catch(() => {});
+  }
 }
 
 function hasCronOrIntervalDefinition(schedule) {

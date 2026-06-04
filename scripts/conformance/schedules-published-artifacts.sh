@@ -37,6 +37,10 @@ Environment overrides:
                                     Optional JSON from a focused list/describe,
                                     pause/resume, and delete shard. Scenario
                                     results in this file are merged into the output.
+  DW_SCHEDULES_MISSED_RESTART_EVIDENCE
+                                    Optional JSON from a focused missed-fire and
+                                    restart-survival shard. Scenario results in
+                                    this file are merged into the output.
   DW_SCHEDULES_RUN_CADENCE_SHARD    Set to 0 to skip the automatic Docker-backed
                                     cadence shard. Defaults to auto in this shell
                                     handoff: run it when Docker Compose and a
@@ -44,6 +48,9 @@ Environment overrides:
   DW_SCHEDULES_RUN_OPERATOR_CONTROLS_SHARD
                                     Set to 0 to skip the automatic Docker-backed
                                     operator-controls shard. Defaults to auto.
+  DW_SCHEDULES_RUN_MISSED_RESTART_SHARD
+                                    Set to 0 to skip the automatic Docker-backed
+                                    missed-fire/restart shard. Defaults to auto.
   DW_SCHEDULES_RUN_CLI_SURFACE_SHARD
                                     Set to 0 to skip the automatic official-CLI
                                     schedule lifecycle shard. Defaults to auto.
@@ -60,6 +67,12 @@ Environment overrides:
                                     Pause-window duration. Minimum/default is 120/125.
   DW_SCHEDULES_OPERATOR_DELETE_WINDOW_SECONDS
                                     Delete observation window. Defaults to 65.
+  DW_SCHEDULES_MISSED_FIRE_DOWNTIME_SECONDS
+                                    Scheduler downtime for missed-fire policy.
+                                    Minimum/default is 120/125.
+  DW_SCHEDULES_RESTART_FIRE_DEADLINE_SECONDS
+                                    Restart survival fire deadline. Minimum/default
+                                    is 90.
 USAGE
 }
 
@@ -143,6 +156,7 @@ export DW_SCHEDULES_RUN_ROOT="$run_root"
 export DW_SCHEDULES_REPO_ROOT="$repo_root"
 export DW_SCHEDULES_RUN_CADENCE_SHARD="${DW_SCHEDULES_RUN_CADENCE_SHARD:-auto}"
 export DW_SCHEDULES_RUN_OPERATOR_CONTROLS_SHARD="${DW_SCHEDULES_RUN_OPERATOR_CONTROLS_SHARD:-auto}"
+export DW_SCHEDULES_RUN_MISSED_RESTART_SHARD="${DW_SCHEDULES_RUN_MISSED_RESTART_SHARD:-auto}"
 export DW_SCHEDULES_RUN_CLI_SURFACE_SHARD="${DW_SCHEDULES_RUN_CLI_SURFACE_SHARD:-auto}"
 
 node "$script_dir/schedules-published-artifacts.mjs"

@@ -443,6 +443,146 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_preserves_supplied_missed_fire_and_restart_cells(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+
+        $missedFire = [
+            'schedule_id' => 'missed-fire-schedule',
+            'documented_policy' => 'fire_once_on_resume_then_skip_remaining_missed',
+            'observed_policy' => 'fire_once_on_resume_then_skip_remaining_missed',
+            'catchup_fire_count' => 1,
+            'post_resume_normal_fire_observed' => true,
+            'scheduler_stopped_at' => '2026-06-04T10:00:00Z',
+            'scheduler_resume_requested_at' => '2026-06-04T10:02:10Z',
+            'catchup_fires' => [[
+                'recorded_at' => '2026-06-04T10:02:12Z',
+                'occurrence_time' => '2026-06-04T10:01:00Z',
+            ]],
+            'normal_fires_after_resume' => [[
+                'recorded_at' => '2026-06-04T10:03:02Z',
+                'occurrence_time' => '2026-06-04T10:03:00Z',
+            ]],
+            'verdict' => 'pass',
+        ];
+        $restart = [
+            'schedule_id' => 'restart-survival-schedule',
+            'schedule_listed_before_restart' => true,
+            'schedule_listed_after_restart' => true,
+            'fired_after_restart' => true,
+            'fire_within_restart_deadline' => true,
+            'restart_deadline_seconds' => 90,
+            'server_restart_requested_at' => '2026-06-04T11:00:00Z',
+            'server_restart_ready_at' => '2026-06-04T11:00:12Z',
+            'first_fire_after_restart' => [
+                'recorded_at' => '2026-06-04T11:01:02Z',
+                'occurrence_time' => '2026-06-04T11:01:00Z',
+            ],
+            'verdict' => 'pass',
+        ];
+
+        file_put_contents($resultDir.'/missed-restart-evidence.json', json_encode([
+            'schema' => 'durable-workflow.v2.schedules-runtime.missed-restart-evidence',
+            'scenario_results' => [
+                'missed_fire_policy' => [
+                    'scenario_id' => 'missed_fire_policy',
+                    'status' => 'pass',
+                    'observed_outputs' => $missedFire,
+                    'linked_findings' => [],
+                ],
+                'restart_survival' => [
+                    'scenario_id' => 'restart_survival',
+                    'status' => 'pass',
+                    'observed_outputs' => $restart,
+                    'linked_findings' => [],
+                ],
+            ],
+            'missed_fire_policy' => $missedFire,
+            'restart_survival' => $restart,
+            'runtime_matrix' => [
+                'client_paths' => ['server-http-api'],
+                'runtimes' => ['server-scheduler'],
+                'schedule_types' => ['cron_expression'],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SCHEDULES_MISSED_RESTART_EVIDENCE' => $resultDir.'/missed-restart-evidence.json',
+                    'DW_SERVER_VERSION' => '0.2.307',
+                    'DW_CLI_VERSION' => '0.1.77',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.85',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('pass', $result['scenario_results']['missed_fire_policy']['status']);
+            $this->assertSame('pass', $result['scenario_results']['restart_survival']['status']);
+            $this->assertSame(
+                'fire_once_on_resume_then_skip_remaining_missed',
+                $result['scenario_results']['missed_fire_policy']['observed_outputs']['observed_policy'],
+            );
+            $this->assertSame(
+                1,
+                $result['scenario_results']['missed_fire_policy']['observed_outputs']['catchup_fire_count'],
+            );
+            $this->assertTrue(
+                $result['scenario_results']['missed_fire_policy']['observed_outputs']['post_resume_normal_fire_observed'],
+            );
+            $this->assertTrue(
+                $result['scenario_results']['restart_survival']['observed_outputs']['schedule_listed_after_restart'],
+            );
+            $this->assertTrue(
+                $result['scenario_results']['restart_survival']['observed_outputs']['fired_after_restart'],
+            );
+            $this->assertSame(
+                $missedFire['catchup_fires'],
+                $result['missed_fire_policy']['catchup_fires'],
+            );
+            $this->assertSame(
+                $restart['first_fire_after_restart'],
+                $result['restart_survival']['first_fire_after_restart'],
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_runner_promotes_supplied_cli_surface_evidence(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
