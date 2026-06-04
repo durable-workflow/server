@@ -548,6 +548,8 @@ async function runCadenceShard({ startedAt, artifactVersions, artifactSources, s
   ];
   let composeStarted = false;
 
+  markArtifactSource(artifactSources, 'server', existingServerUrl === '' ? 'published_docker_image' : 'existing_published_server_url');
+
   if (existingServerUrl === '') {
     writeSchedulerOverlay(overlayPath, schedulerTickSeconds);
     await execLogged(
@@ -555,12 +557,16 @@ async function runCadenceShard({ startedAt, artifactVersions, artifactSources, s
       ['image', 'pull', serverImage],
       path.join(resultDir, 'schedules-cadence-docker-pull.log'),
     );
-    await execLogged(
-      'docker',
-      ['compose', '-p', composeProject, ...composeFiles, 'up', '-d', 'server', 'scheduler'],
-      path.join(resultDir, 'schedules-cadence-compose-up.log'),
-      composeEnv(serverPort, serverImage, token, artifactVersions),
-    );
+    await startPublishedComposeServices({
+      composeProject,
+      composeFiles,
+      serverPort,
+      serverImage,
+      token,
+      artifactVersions,
+      logPrefix: 'schedules-cadence',
+      services: ['server', 'scheduler'],
+    });
     composeStarted = true;
   }
 
@@ -1050,12 +1056,16 @@ async function runOperatorControlsShard({ startedAt, artifactVersions, artifactS
       ['image', 'pull', serverImage],
       path.join(resultDir, 'schedules-operator-controls-docker-pull.log'),
     );
-    await execLogged(
-      'docker',
-      ['compose', '-p', composeProject, ...composeFiles, 'up', '-d', 'server', 'scheduler'],
-      path.join(resultDir, 'schedules-operator-controls-compose-up.log'),
-      composeEnv(serverPort, serverImage, token, artifactVersions),
-    );
+    await startPublishedComposeServices({
+      composeProject,
+      composeFiles,
+      serverPort,
+      serverImage,
+      token,
+      artifactVersions,
+      logPrefix: 'schedules-operator-controls',
+      services: ['server', 'scheduler'],
+    });
     composeStarted = true;
   }
 
@@ -2133,12 +2143,16 @@ async function runCliSurfaceShard({ startedAt, artifactVersions, artifactSources
       ['image', 'pull', serverImage],
       path.join(resultDir, 'schedules-cli-docker-pull.log'),
     );
-    await execLogged(
-      'docker',
-      ['compose', '-p', composeProject, ...composeFiles, 'up', '-d', 'server'],
-      path.join(resultDir, 'schedules-cli-compose-up.log'),
-      composeEnv(serverPort, serverImage, token, artifactVersions),
-    );
+    await startPublishedComposeServices({
+      composeProject,
+      composeFiles,
+      serverPort,
+      serverImage,
+      token,
+      artifactVersions,
+      logPrefix: 'schedules-cli',
+      services: ['server'],
+    });
     composeStarted = true;
   }
 
@@ -2299,6 +2313,39 @@ async function downloadUrlToFile(url, filePath) {
   }
 
   await execLogged('curl', ['-fsSL', '--retry', '3', '-o', filePath, url], `${filePath}.download.log`);
+}
+
+async function startPublishedComposeServices({
+  composeProject,
+  composeFiles,
+  serverPort,
+  serverImage,
+  token,
+  artifactVersions,
+  logPrefix,
+  services,
+}) {
+  const env = composeEnv(serverPort, serverImage, token, artifactVersions);
+  const baseArgs = ['compose', '-p', composeProject, ...composeFiles];
+
+  await execLogged(
+    'docker',
+    [...baseArgs, 'up', '-d', 'mysql', 'redis'],
+    path.join(resultDir, `${logPrefix}-compose-dependencies-up.log`),
+    env,
+  );
+  await execLogged(
+    'docker',
+    [...baseArgs, 'run', '--rm', 'bootstrap'],
+    path.join(resultDir, `${logPrefix}-bootstrap.log`),
+    env,
+  );
+  await execLogged(
+    'docker',
+    [...baseArgs, 'up', '-d', '--no-deps', ...services],
+    path.join(resultDir, `${logPrefix}-compose-up.log`),
+    env,
+  );
 }
 
 async function ensureNamespace(serverUrl, token, namespace) {
@@ -2703,6 +2750,7 @@ async function apiRequestResult(serverUrl, token, namespace, method, pathAndQuer
 async function waitForServerReady(serverUrl, timeoutSeconds) {
   const deadline = Date.now() + timeoutSeconds * 1000;
   const readyUrl = `${serverUrl.replace(/\/+$/, '')}/api/ready`;
+  let lastObservation = 'no readiness probe completed';
 
   while (Date.now() < deadline) {
     try {
@@ -2710,13 +2758,25 @@ async function waitForServerReady(serverUrl, timeoutSeconds) {
       if (response.ok) {
         return;
       }
-    } catch {
+      const text = await response.text().catch(() => '');
+      lastObservation = `HTTP ${response.status}: ${compactLogText(text)}`;
+    } catch (error) {
+      lastObservation = error instanceof Error ? error.message : String(error);
     }
 
     await sleep(1000);
   }
 
-  throw new Error(`published server did not become ready at ${readyUrl}`);
+  throw new Error(`published server did not become ready at ${readyUrl}; last observation: ${lastObservation}`);
+}
+
+function compactLogText(value, limit = 1000) {
+  const normalized = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (normalized === '') {
+    return '<empty response body>';
+  }
+
+  return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized;
 }
 
 async function collectComposeLogs(composeProject, composeFiles) {

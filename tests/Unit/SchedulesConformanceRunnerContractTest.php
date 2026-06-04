@@ -565,6 +565,31 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_bootstraps_published_compose_before_starting_schedule_shards(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $source = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
+
+        $this->assertStringContainsString('async function startPublishedComposeServices', $source);
+        $this->assertStringContainsString("'run', '--rm', 'bootstrap'", $source);
+        $this->assertStringContainsString("'up', '-d', '--no-deps', ...services", $source);
+        $this->assertGreaterThanOrEqual(
+            3,
+            substr_count($source, "markArtifactSource(artifactSources, 'server'"),
+            'Each Docker-backed schedules shard should record the published server image source.',
+        );
+    }
+
+    public function test_runner_readiness_timeout_reports_last_probe_observation(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $source = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
+
+        $this->assertStringContainsString('last observation:', $source);
+        $this->assertStringContainsString('compactLogText(text)', $source);
+        $this->assertStringContainsString('<empty response body>', $source);
+    }
+
     /**
      * @param list<string> $command
      * @param array<string, mixed> $payload
