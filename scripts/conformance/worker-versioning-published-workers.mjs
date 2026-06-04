@@ -71,7 +71,7 @@ async function main() {
   const pythonV1WorkerId = `python-v1-${suffix}`;
   const phpV2WorkerId = `php-v2-${suffix}`;
 
-  const pythonReplay = await runPythonReplayShard(python);
+  const pythonReplay = await runPythonReplayShardSafely(python);
 
   runPhpWorker(php, {
     action: 'register',
@@ -262,6 +262,15 @@ async function main() {
   });
 }
 
+async function runPythonReplayShardSafely(python) {
+  try {
+    return await runPythonReplayShard(python);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return notCoveredPythonReplayShard(message);
+  }
+}
+
 async function runPythonReplayShard(python) {
   const replayV1BuildId = `wv-python-replay-v1-${suffix}`;
   const replayV2BuildId = `wv-python-replay-v2-${suffix}`;
@@ -440,6 +449,50 @@ async function runPythonReplayShard(python) {
       ...(replayFinding ? [replayFinding] : []),
       ...(cacheFinding ? [cacheFinding] : []),
     ],
+  };
+}
+
+function notCoveredPythonReplayShard(reason) {
+  const replayFinding = {
+    scenario_id: REPLAY_SCENARIO,
+    owning_surface: 'conformance_harness',
+    artifact_versions: artifactVersions(),
+    observed_behavior: `Published Python worker replay shard could not complete: ${reason}`,
+    expected_behavior: 'A v1-pinned workflow with divergent v2 code is replayed only by a v1-compatible worker while v2 workers poll the same task queue.',
+    next_acceptance_criterion: 'rerun the published worker-versioning replay shard and record positive v1-compatible delivery with zero v2 delivery for the v1-pinned run',
+  };
+  const cacheFinding = {
+    scenario_id: CACHE_EVICTION_SCENARIO,
+    owning_surface: 'conformance_harness',
+    artifact_versions: artifactVersions(),
+    observed_behavior: `Published Python worker cache-eviction shard could not complete: ${reason}`,
+    expected_behavior: 'After a published worker task failure/restart, v1-pinned history is replayed only by the v1-compatible build while v2 workers receive zero tasks for that run.',
+    next_acceptance_criterion: 'rerun the published worker-versioning cache-eviction shard and record replay_worker_build_id equal to pinned_run_build_id with zero incompatible delivery',
+  };
+  const observedOutputs = {
+    shard_error: reason,
+    worker_execution_mode: 'published_python_worker_protocol_client',
+    published_artifact_worker_execution: publishedPythonWorkerExecution(),
+    local_product_source_checkouts_used: false,
+  };
+
+  return {
+    workers: [],
+    scenario_results: {
+      [REPLAY_SCENARIO]: {
+        scenario_id: REPLAY_SCENARIO,
+        status: 'not_covered',
+        observed_outputs: observedOutputs,
+        linked_findings: [replayFinding],
+      },
+      [CACHE_EVICTION_SCENARIO]: {
+        scenario_id: CACHE_EVICTION_SCENARIO,
+        status: 'not_covered',
+        observed_outputs: observedOutputs,
+        linked_findings: [cacheFinding],
+      },
+    },
+    findings: [replayFinding, cacheFinding],
   };
 }
 

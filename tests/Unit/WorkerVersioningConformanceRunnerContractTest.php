@@ -149,6 +149,17 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         }
 
         $this->assertStringContainsString(
+            'const pythonReplay = await runPythonReplayShardSafely(python);',
+            $publishedWorkers,
+            'a replay/cache shard exception must be recorded without preventing the cross-language cell from running',
+        );
+        $this->assertStringContainsString(
+            'notCoveredPythonReplayShard',
+            $publishedWorkers,
+            'replay/cache shard exceptions must become focused non-passing evidence instead of aborting the PHP/Python shard',
+        );
+
+        $this->assertStringContainsString(
             'v1TaskCount > 0',
             $node,
             'the compatible replay cell may pass only when v1 receives work and v2 receives zero v1-pinned tasks',
