@@ -53,6 +53,8 @@ final class PrincipalAttributionResultGate
                 'rotated_credential_actions_record_before_after_labels_and_observed_principals',
                 'alice_bob_rotation_anonymous_python_php_cli_and_waterline_cells_reported',
                 'spoofing_payload_and_gateway_header_attempts_reported',
+                'anonymous_start_signal_cancel_principals_reported',
+                'anonymous_spoofing_payload_and_gateway_header_attempts_reported',
                 'each_pass_scenario_has_required_evidence_fields',
                 'each_non_pass_scenario_has_focused_linked_findings',
                 'omitted_required_scenarios_link_focused_findings',
@@ -284,6 +286,10 @@ final class PrincipalAttributionResultGate
             array_push($failures, ...self::credentialRotationEvidenceFailures($scenarioResult, $scenarioId));
         }
 
+        if ($scenarioId === 'anonymous_attribution') {
+            array_push($failures, ...self::anonymousAttributionEvidenceFailures($scenarioResult, $scenarioId));
+        }
+
         if ($scenarioId !== 'waterline_operator_visibility') {
             return $failures;
         }
@@ -301,6 +307,151 @@ final class PrincipalAttributionResultGate
                 'code' => 'missing_waterline_operator_output_sample',
                 'scenario_id' => $scenarioId,
                 'field' => 'output_sample',
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function anonymousAttributionEvidenceFailures(array $scenarioResult, string $scenarioId): array
+    {
+        $expected = ['type' => 'server', 'id' => 'anonymous'];
+        $failures = [];
+
+        $documented = self::scenarioFieldValue($scenarioResult, 'documented_value');
+        if (! self::principalMatches($documented, $expected)) {
+            $failures[] = [
+                'code' => 'documented_anonymous_principal_mismatch',
+                'scenario_id' => $scenarioId,
+                'expected_principal' => $expected,
+                'actual_principal' => $documented,
+            ];
+        }
+
+        $anonymousPrincipal = self::scenarioFieldValue($scenarioResult, 'anonymous_principal');
+        if (! self::principalMatches($anonymousPrincipal, $expected)) {
+            $failures[] = [
+                'code' => 'anonymous_principal_mismatch',
+                'scenario_id' => $scenarioId,
+                'expected_principal' => $expected,
+                'actual_principal' => $anonymousPrincipal,
+            ];
+        }
+
+        $authDriver = self::stringValue(self::scenarioFieldValue($scenarioResult, 'anonymous_auth_driver'));
+        if ($authDriver !== 'none') {
+            $failures[] = [
+                'code' => 'anonymous_auth_driver_not_none',
+                'scenario_id' => $scenarioId,
+                'expected_auth_driver' => 'none',
+                'actual_auth_driver' => $authDriver,
+            ];
+        }
+
+        $recorded = self::scenarioFieldValue($scenarioResult, 'recorded_principals');
+        if (! is_array($recorded) || $recorded === []) {
+            $failures[] = [
+                'code' => 'missing_anonymous_recorded_principals',
+                'scenario_id' => $scenarioId,
+                'field' => 'recorded_principals',
+            ];
+            $recorded = [];
+        }
+
+        $historyEvents = self::scenarioFieldValue($scenarioResult, 'history_events');
+        foreach (['WorkflowStarted', 'SignalReceived', 'WorkflowCancelled'] as $eventType) {
+            if (! self::historyEventsContain($historyEvents, $eventType)) {
+                $failures[] = [
+                    'code' => 'missing_anonymous_history_event',
+                    'scenario_id' => $scenarioId,
+                    'event_type' => $eventType,
+                ];
+            }
+
+            $actual = $recorded[$eventType] ?? null;
+            if (! self::principalMatches($actual, $expected)) {
+                $failures[] = [
+                    'code' => 'anonymous_event_principal_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'event_type' => $eventType,
+                    'expected_principal' => $expected,
+                    'actual_principal' => $actual,
+                ];
+            }
+        }
+
+        foreach ($recorded as $eventType => $principal) {
+            if (! is_array($principal) || self::stringValue($principal['id'] ?? null) !== 'mallory') {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'anonymous_spoofed_principal_recorded',
+                'scenario_id' => $scenarioId,
+                'event_type' => (string) $eventType,
+                'actual_principal' => $principal,
+            ];
+        }
+
+        $spoofing = self::scenarioFieldValue($scenarioResult, 'spoofing_attempts');
+        if (! is_array($spoofing) || $spoofing === []) {
+            $failures[] = [
+                'code' => 'missing_anonymous_spoofing_attempts',
+                'scenario_id' => $scenarioId,
+                'field' => 'spoofing_attempts',
+            ];
+
+            return $failures;
+        }
+
+        $payloadFields = self::stringSet($spoofing['payload_fields'] ?? $spoofing['payloadFields'] ?? $spoofing['body_fields'] ?? $spoofing['bodyFields'] ?? []);
+        if (array_intersect(['principal', 'principal_id', 'principal_type', 'actor', 'user'], $payloadFields) === []) {
+            $failures[] = [
+                'code' => 'missing_anonymous_spoofing_payload_fields',
+                'scenario_id' => $scenarioId,
+                'field' => 'spoofing_attempts.payload_fields',
+            ];
+        }
+
+        $headers = self::stringSet($spoofing['headers'] ?? []);
+        $requiredHeaders = ['X-Workflow-Caller-Type', 'X-Workflow-Auth-Method', 'X-Forwarded-User'];
+        foreach ($requiredHeaders as $header) {
+            if (in_array($header, $headers, true)) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'missing_anonymous_spoofing_gateway_header',
+                'scenario_id' => $scenarioId,
+                'header' => $header,
+            ];
+        }
+
+        $actions = self::stringSet($spoofing['actions'] ?? []);
+        foreach (['start', 'signal', 'cancel'] as $action) {
+            if (in_array($action, $actions, true)) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'missing_anonymous_spoofing_action',
+                'scenario_id' => $scenarioId,
+                'action' => $action,
+            ];
+        }
+
+        $executed = $spoofing['executed'] ?? $spoofing['wasExecuted'] ?? null;
+        if (! self::isTruthyFlag($executed)) {
+            $failures[] = [
+                'code' => 'anonymous_spoofing_attempts_not_executed',
+                'scenario_id' => $scenarioId,
+                'field' => 'spoofing_attempts.executed',
+                'value' => $executed,
             ];
         }
 
@@ -1304,6 +1455,80 @@ final class PrincipalAttributionResultGate
             || str_contains($normalized, '>')
             || str_contains($normalized, '${')
             || str_contains($normalized, '{{');
+    }
+
+    /**
+     * @param array<string, string> $expected
+     */
+    private static function principalMatches(mixed $principal, array $expected): bool
+    {
+        if (! is_array($principal)) {
+            return false;
+        }
+
+        foreach ($expected as $field => $value) {
+            if (self::stringValue($principal[$field] ?? null) !== $value) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static function historyEventsContain(mixed $historyEvents, string $eventType): bool
+    {
+        if (! is_array($historyEvents)) {
+            return false;
+        }
+
+        if (array_key_exists($eventType, $historyEvents)) {
+            return true;
+        }
+
+        foreach ($historyEvents as $event) {
+            if ($event === $eventType) {
+                return true;
+            }
+
+            if (! is_array($event)) {
+                continue;
+            }
+
+            $reported = self::stringValue(
+                $event['event_type']
+                    ?? $event['eventType']
+                    ?? $event['type']
+                    ?? null,
+            );
+            if ($reported === $eventType) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function stringSet(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $strings = [];
+        foreach ($value as $key => $item) {
+            if (is_string($key) && $key !== '') {
+                $strings[] = $key;
+            }
+
+            if (is_string($item) && $item !== '') {
+                $strings[] = $item;
+            }
+        }
+
+        return array_values(array_unique($strings));
     }
 
     /**

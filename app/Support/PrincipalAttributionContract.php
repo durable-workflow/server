@@ -146,6 +146,8 @@ final class PrincipalAttributionContract
                     'rotated_credential_actions_record_before_after_labels_and_observed_principals',
                     'start_signal_query_cancel_completion_failure_principals_reported',
                     'spoofed_payload_and_header_principals_do_not_land_in_history',
+                    'anonymous_start_signal_cancel_principals_reported',
+                    'anonymous_spoofed_payload_and_gateway_headers_do_not_land_in_history',
                     'anonymous_behavior_is_explicit',
                     'server_originated_events_are_explicitly_classified',
                     'cli_python_php_and_waterline_visibility_reported_or_linked_as_non_pass_findings',
@@ -183,6 +185,8 @@ final class PrincipalAttributionContract
                     'start-signal-query-cancel-history',
                     'completion-failure-history',
                     'anonymous-history',
+                    'anonymous-no-auth-topology',
+                    'anonymous-spoofing-payload-header',
                     'spoofing-payload-header',
                     'cli-history-operator-output',
                     'python-sdk-client',
@@ -267,7 +271,14 @@ final class PrincipalAttributionContract
                 'required_fields' => ['event_types', 'principal_values', 'classification'],
             ],
             'anonymous_attribution' => [
-                'required_fields' => ['anonymous_principal', 'documented_value', 'history_events'],
+                'required_fields' => [
+                    'anonymous_principal',
+                    'documented_value',
+                    'history_events',
+                    'recorded_principals',
+                    'spoofing_attempts',
+                    'anonymous_auth_driver',
+                ],
             ],
             'python_sdk_visibility' => [
                 'required_fields' => [

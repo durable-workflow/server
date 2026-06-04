@@ -192,6 +192,9 @@ emit_principal_blocked_placeholder_fields() {
       printf ',\n      "anonymous_principal": null'
       printf ',\n      "documented_value": {"type": "server", "id": "anonymous"}'
       printf ',\n      "history_events": []'
+      printf ',\n      "recorded_principals": {}'
+      printf ',\n      "spoofing_attempts": {"payload_fields": [], "headers": [], "actions": [], "executed": false}'
+      printf ',\n      "anonymous_auth_driver": "none"'
       ;;
     python_sdk_visibility|php_client_visibility)
       printf ',\n      "client_operation": null'
@@ -2033,7 +2036,8 @@ def main() -> int:
         f"/workflows/{anonymous_id}/cancel",
         token=None,
         api=ANONYMOUS_API,
-        body={"reason": "anonymous principal attribution"},
+        body={"reason": "anonymous principal attribution", **ADVERSARIAL_BODY_FIELDS},
+        headers=ADVERSARIAL_HEADERS,
         allowed={200, 202, 409},
     )
     anonymous_history = request(
@@ -2247,13 +2251,17 @@ def main() -> int:
     expected_anonymous_principal = {"type": "server", "id": "anonymous"}
     anonymous_failures = []
     for event_type in ["WorkflowStarted", "SignalReceived", "WorkflowCancelled"]:
-        if not principal_matches(anonymous_principals.get(event_type), expected_anonymous_principal):
+        if anonymous_principals.get(event_type) is None:
+            anonymous_failures.append(f"{event_type} caller-generated anonymous history event leaked null/undefined principal")
+        elif not principal_matches(anonymous_principals.get(event_type), expected_anonymous_principal):
             anonymous_failures.append(f"{event_type} anonymous principal expected {expected_anonymous_principal!r}, got {anonymous_principals.get(event_type)!r}")
     if any(isinstance(value, dict) and value.get("id") == "mallory" for value in anonymous_principals.values()):
         anonymous_failures.append("spoofed anonymous principal mallory appeared in history")
-    scenario_results.append(scenario("pass" if not anonymous_failures else "fail", "anonymous_attribution", anonymous_principal=anonymous_principals.get("WorkflowStarted"), documented_value=expected_anonymous_principal, history_events=list(anonymous_principals), recorded_principals=anonymous_principals, findings=anonymous_failures))
+    anonymous_linked_findings: list[dict[str, Any]] = []
     if anonymous_failures:
-        findings.append(finding("anonymous_attribution", "server", f"anonymous attribution failures: {anonymous_failures}", "auth-disabled requests record principal type=server id=anonymous and ignore caller-supplied principal fields", "fix auth-disabled command context attribution before marking anonymous principal coverage pass"))
+        anonymous_linked_findings.append(finding("anonymous_attribution", "server", f"anonymous attribution failures: {anonymous_failures}", "auth-disabled requests record principal type=server id=anonymous for start, signal, and cancel, and ignore caller-supplied principal fields and gateway-style headers", "fix auth-disabled command context attribution before marking anonymous principal coverage pass"))
+        findings.extend(anonymous_linked_findings)
+    scenario_results.append(scenario("pass" if not anonymous_failures else "fail", "anonymous_attribution", anonymous_principal=anonymous_principals.get("WorkflowStarted"), documented_value=expected_anonymous_principal, history_events=list(anonymous_principals), recorded_principals=anonymous_principals, spoofing_attempts={"payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS), "actions": ["start", "signal", "cancel"], "executed": True}, anonymous_auth_driver="none", linked_findings=anonymous_linked_findings, findings=anonymous_failures))
 
     python_expected_principal = {"type": "auth:token", "id": "bob"}
     python_raw_http_reference_principal = main_principals.get("SignalReceived")
@@ -2437,7 +2445,7 @@ def main() -> int:
         "history_dumps": history_dumps,
         "spoofing_attempts": {"payload_values": ["mallory"], "payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS)},
         "operator_visibility": {"cli_history_json_principal_visible": cli_json_ok, "waterline": {"status": waterline_status, "principal_visible": waterline_principal_visible, "linked_findings": waterline_linked_findings, "result_path": str(WATERLINE_PRINCIPAL_RESULT) if WATERLINE_PRINCIPAL_RESULT is not None else None}},
-        "anonymous_observations": {"status": "pass" if not anonymous_failures else "fail", "anonymous_principal": anonymous_principals.get("WorkflowStarted"), "documented_value": expected_anonymous_principal, "history_events": list(anonymous_principals)},
+        "anonymous_observations": {"status": "pass" if not anonymous_failures else "fail", "anonymous_principal": anonymous_principals.get("WorkflowStarted"), "documented_value": expected_anonymous_principal, "history_events": list(anonymous_principals), "recorded_principals": anonymous_principals, "spoofing_attempts": {"payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS), "actions": ["start", "signal", "cancel"], "executed": True}, "anonymous_auth_driver": "none"},
         "scenario_results": scenario_results,
         "findings": findings,
     }

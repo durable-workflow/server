@@ -106,6 +106,12 @@ class PrincipalAttributionContractTest extends TestCase
             'spoofing_attempts',
             $manifest['scenario_requirements']['query_attribution']['required_fields'],
         );
+        foreach (['recorded_principals', 'spoofing_attempts', 'anonymous_auth_driver'] as $requiredField) {
+            $this->assertContains(
+                $requiredField,
+                $manifest['scenario_requirements']['anonymous_attribution']['required_fields'],
+            );
+        }
 
         foreach (['python_sdk_visibility', 'php_client_visibility'] as $sdkScenario) {
             foreach ([
@@ -510,6 +516,14 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('principal_matches(actual, expected)', $script);
         $this->assertStringContainsString('ANONYMOUS_SERVER_URL="$anonymous_server_base_url"', $script);
         $this->assertStringContainsString('anonymous_auth_driver": "none"', $script);
+        $this->assertStringContainsString('DW_AUTH_DRIVER: none', $script);
+        $this->assertStringContainsString('caller-generated anonymous history event leaked null/undefined principal', $script);
+        $this->assertStringContainsString('anonymous_linked_findings: list[dict[str, Any]] = []', $script);
+        $this->assertStringContainsString('recorded_principals=anonymous_principals', $script);
+        $this->assertStringContainsString('body={"reason": "anonymous principal attribution", **ADVERSARIAL_BODY_FIELDS}', $script);
+        $this->assertStringContainsString('spoofing_attempts={"payload_fields": ADVERSARIAL_BODY_FIELDS, "headers": list(ADVERSARIAL_HEADERS), "actions": ["start", "signal", "cancel"], "executed": True}', $script);
+        $this->assertStringContainsString('anonymous_auth_driver="none"', $script);
+        $this->assertStringContainsString('linked_findings=anonymous_linked_findings', $script);
         $this->assertStringContainsString('run_python_sdk_client_operation', $script);
         $this->assertStringContainsString('python_operation = run_python_sdk_client_operation(python_client_id)', $script);
         $this->assertStringContainsString('run_php_client_operation', $script);
@@ -856,6 +870,76 @@ class PrincipalAttributionContractTest extends TestCase
         );
     }
 
+    public function test_result_gate_requires_anonymous_start_signal_cancel_principals_for_pass(): void
+    {
+        $result = $this->completePrincipalAttributionResult();
+        $result['scenario_results']['anonymous_attribution']['documented_value'] = ['type' => 'server', 'id' => 'guest'];
+        $result['scenario_results']['anonymous_attribution']['anonymous_auth_driver'] = 'token';
+        $result['scenario_results']['anonymous_attribution']['history_events'] = ['WorkflowStarted', 'SignalReceived'];
+        $result['scenario_results']['anonymous_attribution']['recorded_principals']['SignalReceived'] = null;
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+        $codes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('documented_anonymous_principal_mismatch', $codes);
+        $this->assertContains('anonymous_auth_driver_not_none', $codes);
+        $this->assertContains('missing_anonymous_history_event', $codes);
+        $this->assertContains('anonymous_event_principal_mismatch', $codes);
+    }
+
+    public function test_result_gate_rejects_spoofed_or_unexercised_anonymous_evidence_for_pass(): void
+    {
+        $result = $this->completePrincipalAttributionResult();
+        $result['scenario_results']['anonymous_attribution']['recorded_principals']['WorkflowStarted'] = [
+            'type' => 'gateway',
+            'id' => 'mallory',
+        ];
+        $result['scenario_results']['anonymous_attribution']['spoofing_attempts'] = [
+            'payload_fields' => [],
+            'headers' => ['X-Workflow-Principal-Id'],
+            'executed' => false,
+        ];
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+        $codes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('anonymous_event_principal_mismatch', $codes);
+        $this->assertContains('anonymous_spoofed_principal_recorded', $codes);
+        $this->assertContains('missing_anonymous_spoofing_payload_fields', $codes);
+        $this->assertContains('missing_anonymous_spoofing_gateway_header', $codes);
+        $this->assertContains('missing_anonymous_spoofing_action', $codes);
+        $this->assertContains('anonymous_spoofing_attempts_not_executed', $codes);
+    }
+
+    public function test_result_gate_accepts_routed_anonymous_null_leakage_as_non_passing_product_evidence(): void
+    {
+        $finding = $this->structuredPrincipalFinding(
+            'anonymous_attribution',
+            'Caller-generated anonymous WorkflowStarted history event leaked a null principal.',
+            'server',
+            'Auth-disabled start, signal, and cancel history records type=server id=anonymous.',
+            'Thread the anonymous server principal into caller-generated no-auth events.',
+        );
+        $result = $this->completePrincipalAttributionResult();
+        $result['outcome'] = 'fail';
+        $result['scenario_results']['anonymous_attribution']['status'] = 'fail';
+        $result['scenario_results']['anonymous_attribution']['recorded_principals']['WorkflowStarted'] = null;
+        $result['scenario_results']['anonymous_attribution']['linked_findings'] = [$finding];
+        $result['scenario_results']['anonymous_attribution']['findings'] = [$finding];
+        $result['findings'] = [$finding];
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('anonymous_attribution', $evaluation['non_pass_scenarios']);
+        $this->assertNotContains(
+            'missing_focused_linked_finding',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
     public function test_result_gate_rejects_role_token_smoke_subset_even_when_declared_pass(): void
     {
         $result = $this->completePrincipalAttributionResult();
@@ -1084,6 +1168,11 @@ class PrincipalAttributionContractTest extends TestCase
         $bob = ['type' => 'auth:token', 'id' => 'bob'];
         $worker = ['type' => 'auth:token', 'id' => 'worker:principal-attribution'];
         $anonymous = ['type' => 'server', 'id' => 'anonymous'];
+        $anonymousRecorded = [
+            'WorkflowStarted' => $anonymous,
+            'SignalReceived' => $anonymous,
+            'WorkflowCancelled' => $anonymous,
+        ];
         $actionCredentials = $this->actionCredentials();
 
         return [
@@ -1132,6 +1221,16 @@ class PrincipalAttributionContractTest extends TestCase
             'anonymous_observations' => [
                 'status' => 'pass',
                 'anonymous_principal' => $anonymous,
+                'documented_value' => $anonymous,
+                'history_events' => ['WorkflowStarted', 'SignalReceived', 'WorkflowCancelled'],
+                'recorded_principals' => $anonymousRecorded,
+                'spoofing_attempts' => [
+                    'payload_fields' => ['principal' => 'mallory'],
+                    'headers' => ['X-Workflow-Caller-Type', 'X-Workflow-Auth-Method', 'X-Forwarded-User'],
+                    'actions' => ['start', 'signal', 'cancel'],
+                    'executed' => true,
+                ],
+                'anonymous_auth_driver' => 'none',
             ],
             'scenario_results' => [
                 'published_artifact_install_only' => [
@@ -1197,6 +1296,14 @@ class PrincipalAttributionContractTest extends TestCase
                     'anonymous_principal' => $anonymous,
                     'documented_value' => $anonymous,
                     'history_events' => ['WorkflowStarted', 'SignalReceived', 'WorkflowCancelled'],
+                    'recorded_principals' => $anonymousRecorded,
+                    'spoofing_attempts' => [
+                        'payload_fields' => ['principal' => 'mallory'],
+                        'headers' => ['X-Workflow-Caller-Type', 'X-Workflow-Auth-Method', 'X-Forwarded-User'],
+                        'actions' => ['start', 'signal', 'cancel'],
+                        'executed' => true,
+                    ],
+                    'anonymous_auth_driver' => 'none',
                 ],
                 'python_sdk_visibility' => [
                     'status' => 'pass',
@@ -1353,7 +1460,24 @@ class PrincipalAttributionContractTest extends TestCase
             'history_dumps' => ['main' => ['events' => []]],
             'spoofing_attempts' => ['payload_values' => ['mallory'], 'headers' => ['X-Forwarded-User']],
             'operator_visibility' => ['cli_history_json_principal_visible' => true],
-            'anonymous_observations' => ['status' => 'pass', 'anonymous_principal' => ['type' => 'server', 'id' => 'anonymous']],
+            'anonymous_observations' => [
+                'status' => 'pass',
+                'anonymous_principal' => ['type' => 'server', 'id' => 'anonymous'],
+                'documented_value' => ['type' => 'server', 'id' => 'anonymous'],
+                'history_events' => ['WorkflowStarted', 'SignalReceived', 'WorkflowCancelled'],
+                'recorded_principals' => [
+                    'WorkflowStarted' => ['type' => 'server', 'id' => 'anonymous'],
+                    'SignalReceived' => ['type' => 'server', 'id' => 'anonymous'],
+                    'WorkflowCancelled' => ['type' => 'server', 'id' => 'anonymous'],
+                ],
+                'spoofing_attempts' => [
+                    'payload_fields' => ['principal' => 'mallory'],
+                    'headers' => ['X-Workflow-Caller-Type', 'X-Workflow-Auth-Method', 'X-Forwarded-User'],
+                    'actions' => ['start', 'signal', 'cancel'],
+                    'executed' => true,
+                ],
+                'anonymous_auth_driver' => 'none',
+            ],
             'scenario_results' => $this->passingScenarioResults(),
             'findings' => [],
             ...$overrides,
@@ -1429,6 +1553,11 @@ class PrincipalAttributionContractTest extends TestCase
         $bob = ['type' => 'auth:token', 'id' => 'bob'];
         $worker = ['type' => 'auth:token', 'id' => 'worker:principal-attribution'];
         $anonymous = ['type' => 'server', 'id' => 'anonymous'];
+        $anonymousRecorded = [
+            'WorkflowStarted' => $anonymous,
+            'SignalReceived' => $anonymous,
+            'WorkflowCancelled' => $anonymous,
+        ];
         $versions = $this->artifactVersions();
 
         return match ($scenarioId) {
@@ -1475,6 +1604,14 @@ class PrincipalAttributionContractTest extends TestCase
                 'anonymous_principal' => $anonymous,
                 'documented_value' => $anonymous,
                 'history_events' => ['WorkflowStarted', 'SignalReceived', 'WorkflowCancelled'],
+                'recorded_principals' => $anonymousRecorded,
+                'spoofing_attempts' => [
+                    'payload_fields' => ['principal' => 'mallory'],
+                    'headers' => ['X-Workflow-Caller-Type', 'X-Workflow-Auth-Method', 'X-Forwarded-User'],
+                    'actions' => ['start', 'signal', 'cancel'],
+                    'executed' => true,
+                ],
+                'anonymous_auth_driver' => 'none',
             ],
             'python_sdk_visibility' => [
                 'client_operation' => ['status' => 'pass'],
