@@ -79,6 +79,7 @@ final class PrincipalAttributionResultGate
                 'anonymous_start_signal_cancel_principals_reported',
                 'anonymous_spoofing_payload_and_gateway_header_attempts_reported',
                 'each_pass_scenario_has_required_evidence_fields',
+                'python_php_sdk_principals_match_expected_ids_and_raw_http_shape',
                 'each_non_pass_scenario_has_focused_linked_findings',
                 'omitted_required_scenarios_link_focused_findings',
                 'run_timestamps_outcome_runner_blocked_and_findings_are_recorded',
@@ -332,6 +333,10 @@ final class PrincipalAttributionResultGate
             ]));
         }
 
+        if (in_array($scenarioId, ['python_sdk_visibility', 'php_client_visibility'], true)) {
+            array_push($failures, ...self::sdkVisibilityEvidenceFailures($scenarioResult, $scenarioId));
+        }
+
         if ($scenarioId !== 'waterline_operator_visibility') {
             return $failures;
         }
@@ -349,6 +354,135 @@ final class PrincipalAttributionResultGate
                 'code' => 'missing_waterline_operator_output_sample',
                 'scenario_id' => $scenarioId,
                 'field' => 'output_sample',
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function sdkVisibilityEvidenceFailures(array $scenarioResult, string $scenarioId): array
+    {
+        $expectations = [
+            'python_sdk_visibility' => [
+                'principal' => ['type' => 'auth:token', 'id' => 'bob'],
+                'actor' => 'bob',
+                'credential_ref' => 'bob-token',
+            ],
+            'php_client_visibility' => [
+                'principal' => ['type' => 'auth:token', 'id' => 'alice'],
+                'actor' => 'alice',
+                'credential_ref' => 'alice-token-v1',
+            ],
+        ];
+
+        $expected = $expectations[$scenarioId] ?? null;
+        if ($expected === null) {
+            return [];
+        }
+
+        $expectedPrincipal = $expected['principal'];
+        $failures = [];
+
+        $clientOperation = self::scenarioFieldValue($scenarioResult, 'client_operation');
+        if (! is_array($clientOperation) || self::stringValue($clientOperation['status'] ?? null) !== 'pass') {
+            $failures[] = [
+                'code' => 'sdk_client_operation_not_passed',
+                'scenario_id' => $scenarioId,
+                'field' => 'client_operation.status',
+                'actual_status' => is_array($clientOperation) ? self::stringValue($clientOperation['status'] ?? null) : null,
+            ];
+        }
+
+        $credentialUsed = self::scenarioFieldValue($scenarioResult, 'credential_used');
+        if (! is_array($credentialUsed)) {
+            $failures[] = [
+                'code' => 'missing_sdk_credential_used',
+                'scenario_id' => $scenarioId,
+                'field' => 'credential_used',
+            ];
+        } else {
+            if (self::stringValue($credentialUsed['actor'] ?? null) !== $expected['actor']) {
+                $failures[] = [
+                    'code' => 'sdk_credential_actor_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'expected_actor' => $expected['actor'],
+                    'actual_actor' => self::stringValue($credentialUsed['actor'] ?? null),
+                ];
+            }
+
+            if (self::actionCredentialRef($credentialUsed) !== $expected['credential_ref']) {
+                $failures[] = [
+                    'code' => 'sdk_credential_ref_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'expected_credential_ref' => $expected['credential_ref'],
+                    'actual_credential_ref' => self::actionCredentialRef($credentialUsed),
+                ];
+            }
+        }
+
+        foreach ([
+            'expected_principal' => self::scenarioFieldValue($scenarioResult, 'expected_principal'),
+            'recorded_principal' => self::scenarioFieldValue($scenarioResult, 'recorded_principal'),
+            'raw_http_reference_principal' => self::scenarioFieldValue($scenarioResult, 'raw_http_reference_principal'),
+        ] as $field => $principal) {
+            if (self::principalMatches($principal, $expectedPrincipal)) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'sdk_'.$field.'_mismatch',
+                'scenario_id' => $scenarioId,
+                'field' => $field,
+                'expected_principal' => $expectedPrincipal,
+                'actual_principal' => $principal,
+            ];
+        }
+
+        $samples = self::scenarioFieldValue($scenarioResult, 'history_api_principal_samples');
+        if (! is_array($samples)) {
+            $failures[] = [
+                'code' => 'missing_sdk_history_api_principal_samples',
+                'scenario_id' => $scenarioId,
+                'field' => 'history_api_principal_samples',
+            ];
+        } else {
+            foreach (['WorkflowStarted', 'SignalReceived'] as $eventType) {
+                if (self::principalMatches($samples[$eventType] ?? null, $expectedPrincipal)) {
+                    continue;
+                }
+
+                $failures[] = [
+                    'code' => 'sdk_history_api_principal_sample_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'event_type' => $eventType,
+                    'expected_principal' => $expectedPrincipal,
+                    'actual_principal' => $samples[$eventType] ?? null,
+                ];
+            }
+        }
+
+        if (! self::isTruthyFlag(self::scenarioFieldValue($scenarioResult, 'shape_matches_http'))) {
+            $failures[] = [
+                'code' => 'sdk_shape_matches_http_not_true',
+                'scenario_id' => $scenarioId,
+                'field' => 'shape_matches_http',
+                'value' => self::scenarioFieldValue($scenarioResult, 'shape_matches_http'),
+            ];
+        }
+
+        $recorded = self::scenarioFieldValue($scenarioResult, 'recorded_principal');
+        $rawHttp = self::scenarioFieldValue($scenarioResult, 'raw_http_reference_principal');
+        if (! self::principalShapeMatches($recorded, $rawHttp)) {
+            $failures[] = [
+                'code' => 'sdk_principal_shape_mismatch',
+                'scenario_id' => $scenarioId,
+                'recorded_signature' => self::principalShapeSignature($recorded),
+                'raw_http_signature' => self::principalShapeSignature($rawHttp),
             ];
         }
 
@@ -1703,6 +1837,37 @@ final class PrincipalAttributionResultGate
         }
 
         return true;
+    }
+
+    private static function principalShapeMatches(mixed $principal, mixed $reference): bool
+    {
+        $signature = self::principalShapeSignature($principal);
+        $referenceSignature = self::principalShapeSignature($reference);
+
+        return $signature !== null && $signature === $referenceSignature;
+    }
+
+    /**
+     * @return array<string, string>|null
+     */
+    private static function principalShapeSignature(mixed $principal): ?array
+    {
+        if (! is_array($principal)) {
+            return null;
+        }
+
+        $signature = [];
+        foreach ($principal as $key => $value) {
+            if (! is_string($key)) {
+                continue;
+            }
+
+            $signature[$key] = get_debug_type($value);
+        }
+
+        ksort($signature);
+
+        return $signature;
     }
 
     private static function historyEventsContain(mixed $historyEvents, string $eventType): bool

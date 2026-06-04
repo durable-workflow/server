@@ -189,6 +189,10 @@ class PrincipalAttributionContractTest extends TestCase
             'rotated_credential_actions_record_before_after_labels_and_observed_principals',
             $manifest['result_gate']['pass_requires'],
         );
+        $this->assertContains(
+            'python_php_sdk_principals_match_expected_ids_and_raw_http_shape',
+            $manifest['result_gate']['pass_requires'],
+        );
     }
 
     public function test_result_gate_rejects_role_token_smoke_subset_as_complete_evidence(): void
@@ -1135,6 +1139,71 @@ class PrincipalAttributionContractTest extends TestCase
                 array_column($evaluation['gate_failures'], 'code'),
             );
         }
+    }
+
+    public function test_result_gate_requires_sdk_principal_values_and_shape_for_pass(): void
+    {
+        $result = $this->completePrincipalAttributionResult();
+        $result['scenario_results']['python_sdk_visibility']['client_operation']['status'] = 'fail';
+        $result['scenario_results']['python_sdk_visibility']['credential_used']['actor'] = 'alice';
+        $result['scenario_results']['python_sdk_visibility']['credential_used']['credential_ref'] = 'alice-token-v1';
+        $result['scenario_results']['python_sdk_visibility']['expected_principal'] = [
+            'type' => 'auth:token',
+            'id' => 'alice',
+        ];
+        $result['scenario_results']['python_sdk_visibility']['recorded_principal'] = [
+            'type' => 'auth:token',
+            'id' => 'alice',
+        ];
+        $result['scenario_results']['python_sdk_visibility']['raw_http_reference_principal'] = [
+            'type' => 'auth:token',
+            'id' => 'bob',
+            'label' => 'Bob',
+        ];
+        $result['scenario_results']['python_sdk_visibility']['history_api_principal_samples']['SignalReceived'] = [
+            'type' => 'auth:token',
+            'id' => 'alice',
+        ];
+        $result['scenario_results']['python_sdk_visibility']['shape_matches_http'] = false;
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+        $codes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('sdk_client_operation_not_passed', $codes);
+        $this->assertContains('sdk_credential_actor_mismatch', $codes);
+        $this->assertContains('sdk_credential_ref_mismatch', $codes);
+        $this->assertContains('sdk_expected_principal_mismatch', $codes);
+        $this->assertContains('sdk_recorded_principal_mismatch', $codes);
+        $this->assertContains('sdk_history_api_principal_sample_mismatch', $codes);
+        $this->assertContains('sdk_shape_matches_http_not_true', $codes);
+        $this->assertContains('sdk_principal_shape_mismatch', $codes);
+    }
+
+    public function test_result_gate_applies_php_client_sdk_principal_expectations(): void
+    {
+        $result = $this->completePrincipalAttributionResult();
+        $result['scenario_results']['php_client_visibility']['credential_used'] = [
+            'actor' => 'bob',
+            'credential_ref' => 'bob-token',
+        ];
+        $result['scenario_results']['php_client_visibility']['recorded_principal'] = [
+            'type' => 'auth:token',
+            'id' => 'bob',
+        ];
+        $result['scenario_results']['php_client_visibility']['history_api_principal_samples']['WorkflowStarted'] = [
+            'type' => 'auth:token',
+            'id' => 'bob',
+        ];
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+        $codes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('sdk_credential_actor_mismatch', $codes);
+        $this->assertContains('sdk_credential_ref_mismatch', $codes);
+        $this->assertContains('sdk_recorded_principal_mismatch', $codes);
+        $this->assertContains('sdk_history_api_principal_sample_mismatch', $codes);
     }
 
     public function test_result_gate_rejects_bare_string_links_for_non_pass_scenarios(): void
