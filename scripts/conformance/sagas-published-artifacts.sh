@@ -2512,7 +2512,7 @@ async def run_operator_visibility(client: Client) -> dict[str, Any]:
     for label, snapshot in snapshots["cli"].items():
         if not snapshot.get("ok"):
             failures.append(f"CLI {label} visibility snapshot failed: {snapshot}")
-    unsupported_findings = [
+    routed_findings = [
         finding(
             (
                 "Waterline operator visibility was not exercised because the "
@@ -2525,12 +2525,12 @@ async def run_operator_visibility(client: Client) -> dict[str, Any]:
             next_acceptance_criterion="run saga operator visibility with a published Waterline app or keep this unsupported surface routed to Waterline coverage",
         )
     ]
-    status = "unsupported" if unsupported_findings and not failures else scenario_status(failures)
+    status = scenario_status(failures)
     return {
         "scenario_id": scenario_id,
         "status": status,
         "failures": failures,
-        "findings": unsupported_findings,
+        "findings": routed_findings,
         "completed_forward_steps": completed_forward,
         "running_compensation_step": "pause_after_refund" if observed_pause else None,
         "completed_compensations": completed_compensation,
@@ -2544,6 +2544,7 @@ async def run_operator_visibility(client: Client) -> dict[str, Any]:
                 "required_topology": snapshots["waterline"]["required_topology"],
             }
         ],
+        "routed_operator_surface_findings": routed_findings,
         "control_plane_state": control_plane_state,
         "workflow_status": control_plane_state,
         "history_dump": history_payload,
@@ -2817,7 +2818,7 @@ async def main() -> None:
             "php_worker": "composer:2 container with durable-workflow/workflow package",
             "python_worker": "venv with durable-workflow PyPI package",
             "cli": "official GitHub release installer and standalone dw binary",
-            "waterline": "Composer package resolved and install-verified only; this server-only topology does not boot a Waterline app, so Waterline operator visibility is reported as unsupported rather than probed through server routes",
+            "waterline": "Composer package resolved and install-verified only; this server-only topology does not boot a Waterline app, so Waterline operator visibility is routed as separate surface coverage rather than probed through server routes",
         },
         "book_trip_inputs": basic_payloads,
         "side_store_deltas": all_side_rows(),

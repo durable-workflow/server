@@ -329,6 +329,21 @@ class SagaConformanceRunnerContractTest extends TestCase
             $source,
             'the saga runner evidence must explain that no Waterline app is present in this topology',
         );
+        $this->assertStringContainsString(
+            'status = scenario_status(failures)',
+            $source,
+            'a Waterline-only observer gap must not make otherwise passing saga product behavior non-passing',
+        );
+        $this->assertStringContainsString(
+            '"routed_operator_surface_findings": routed_findings',
+            $source,
+            'Waterline observer gaps must stay routed in the scenario evidence for separate coverage work',
+        );
+        $this->assertStringNotContainsString(
+            'status = "unsupported" if unsupported_findings and not failures else scenario_status(failures)',
+            $source,
+            'the server-only Waterline topology gap must not force operator visibility to unsupported when server and CLI evidence passed',
+        );
         $this->assertStringNotContainsString(
             $unbootedWaterlineRoute,
             $source,

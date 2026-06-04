@@ -88,6 +88,18 @@ class SagaRuntimeContractTest extends TestCase
             'runner_blocked_false_for_product_evidence',
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
+        $this->assertContains(
+            'operator_visibility_surfaces_reported_or_routed_to_surface_coverage_findings',
+            $manifest['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertSame(
+            'passing_product_behavior_with_separate_coverage_finding',
+            $manifest['coverage_gate']['routed_operator_surface_gap_outcome'],
+        );
+        $this->assertSame(
+            'pass_when_server_and_cli_visibility_pass',
+            $manifest['host_runner_contract']['routing_policy']['routed_waterline_operator_visibility_gap']['scenario_status'],
+        );
     }
 
     public function test_scenario_manifest_source_path_is_published_and_matches_contract(): void
@@ -150,6 +162,11 @@ class SagaRuntimeContractTest extends TestCase
         $this->assertSame(
             $manifest['host_runner_contract']['required_execution_scopes'],
             $scenarioManifest['host_runner_contract']['required_execution_scopes'],
+        );
+        $this->assertSame(
+            $manifest['host_runner_contract']['routing_policy']['routed_waterline_operator_visibility_gap'],
+            $scenarioManifest['host_runner_contract']['routing_policy']['routed_waterline_operator_visibility_gap'],
+            'public saga scenario manifest must advertise the same Waterline operator gap routing as cluster info',
         );
 
         $this->assertContains('worker_restart_observations', $scenarioManifest['common_result_evidence']);
