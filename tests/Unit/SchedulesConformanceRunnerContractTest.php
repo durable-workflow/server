@@ -182,6 +182,138 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_preserves_supplied_cadence_pass_and_fail_cells(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+
+        $cronObservation = [
+            'schedule_id' => 'cadence-cron',
+            'cron_expression' => '* * * * *',
+            'actual_fire_timestamps' => [
+                '2026-06-04T10:00:03Z',
+                '2026-06-04T10:01:04Z',
+                '2026-06-04T10:02:03Z',
+                '2026-06-04T10:03:05Z',
+            ],
+            'nominal_fire_timestamps' => [
+                '2026-06-04T10:00:00Z',
+                '2026-06-04T10:01:00Z',
+                '2026-06-04T10:02:00Z',
+                '2026-06-04T10:03:00Z',
+            ],
+            'drift_ms' => [3000, 4000, 3000, 5000],
+        ];
+
+        $fixedRateObservation = [
+            'schedule_id' => 'cadence-fixed',
+            'interval' => 'PT30S',
+            'actual_fire_timestamps' => [
+                '2026-06-04T10:00:35Z',
+                '2026-06-04T10:01:05Z',
+            ],
+            'nominal_fire_timestamps' => [
+                '2026-06-04T10:00:30Z',
+                '2026-06-04T10:01:00Z',
+            ],
+            'drift_ms' => [5000, 5000],
+            'observed_fire_count' => 2,
+        ];
+
+        file_put_contents($resultDir.'/cadence-evidence.json', json_encode([
+            'scenario_results' => [
+                'cron_cadence' => [
+                    'status' => 'pass',
+                    'observed_outputs' => $cronObservation,
+                    'linked_findings' => [],
+                ],
+                'fixed_rate_cadence' => [
+                    'status' => 'fail',
+                    'observed_outputs' => $fixedRateObservation,
+                    'linked_findings' => [[
+                        'finding_id' => 'schedules-fixed-rate-cadence-finding',
+                        'scenario_id' => 'fixed_rate_cadence',
+                        'finding_type' => 'schedule_cadence_contract_gap',
+                        'owning_surface' => 'server',
+                        'observed_behavior' => 'observed 2 fires; expected at least 8',
+                        'expected_behavior' => 'PT30S fixed-rate schedule fires eight times.',
+                        'next_acceptance_criterion' => 'observe at least eight PT30S fires',
+                    ]],
+                ],
+            ],
+            'cadence_observations' => [
+                'cron' => $cronObservation,
+                'fixed_rate' => $fixedRateObservation,
+            ],
+            'runtime_matrix' => [
+                'schedule_types' => ['cron_expression', 'fixed_rate_interval'],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SCHEDULES_CADENCE_EVIDENCE' => $resultDir.'/cadence-evidence.json',
+                    'DW_SERVER_VERSION' => '0.2.283',
+                    'DW_CLI_VERSION' => '0.1.76',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.85',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.195',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.81',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('pass', $result['scenario_results']['cron_cadence']['status']);
+            $this->assertSame('fail', $result['scenario_results']['fixed_rate_cadence']['status']);
+            $this->assertSame(
+                $cronObservation['nominal_fire_timestamps'],
+                $result['scenario_results']['cron_cadence']['observed_outputs']['nominal_fire_timestamps'],
+            );
+            $this->assertSame(
+                'schedule_cadence_contract_gap',
+                $result['scenario_results']['fixed_rate_cadence']['linked_findings'][0]['finding_type'],
+            );
+            $this->assertSame(
+                $fixedRateObservation['actual_fire_timestamps'],
+                $result['cadence_observations']['fixed_rate']['actual_fire_timestamps'],
+            );
+            $this->assertSame('not_covered', $result['scenario_results']['restart_survival']['status']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     private function removeDirectory(string $path): void
     {
         if (! is_dir($path)) {

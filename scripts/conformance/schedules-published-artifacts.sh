@@ -27,6 +27,20 @@ Environment overrides:
   DW_SCHEDULES_SMOKE_EVIDENCE       Optional JSON from a published-artifact
                                     smoke or shard run. Scenario results in
                                     this file are merged into the output.
+  DW_SCHEDULES_CADENCE_EVIDENCE     Optional JSON from a focused cron/fixed-rate
+                                    cadence shard. Scenario results in this file
+                                    are merged into the output.
+  DW_SCHEDULES_RUN_CADENCE_SHARD    Set to 0 to skip the automatic Docker-backed
+                                    cadence shard. Defaults to auto in this shell
+                                    handoff: run it when Docker Compose and a
+                                    published server artifact are available.
+  DW_SCHEDULES_SERVER_URL           Existing published server URL to probe instead
+                                    of starting docker-compose.published.yml.
+  DW_SERVER_IMAGE                   Exact published server image/tag/digest to test.
+  DW_SCHEDULES_SERVER_PORT          Host port for the published server. Defaults
+                                    to a free port.
+  DW_SCHEDULES_CADENCE_TIMEOUT_SECONDS
+                                    Overall wait for cadence fires. Defaults to 420.
 USAGE
 }
 
@@ -108,5 +122,6 @@ fi
 export DW_SCHEDULES_RESULT_DIR="$result_dir"
 export DW_SCHEDULES_RUN_ROOT="$run_root"
 export DW_SCHEDULES_REPO_ROOT="$repo_root"
+export DW_SCHEDULES_RUN_CADENCE_SHARD="${DW_SCHEDULES_RUN_CADENCE_SHARD:-auto}"
 
 node "$script_dir/schedules-published-artifacts.mjs"
