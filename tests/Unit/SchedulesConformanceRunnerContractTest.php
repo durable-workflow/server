@@ -314,6 +314,145 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_promotes_supplied_cli_surface_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+
+        $scheduleId = 'cli-surface-schedule';
+        $commandOutputs = [
+            'create' => $this->cliTranscript(
+                ['dw', 'schedules', 'create', '--schedule-id='.$scheduleId, '--json'],
+                ['schedule_id' => $scheduleId],
+            ),
+            'describe' => $this->cliTranscript(
+                ['dw', 'schedules', 'describe', $scheduleId, '--json'],
+                ['schedule_id' => $scheduleId, 'state' => ['paused' => true]],
+            ),
+            'list' => $this->cliTranscript(
+                ['dw', 'schedules', 'list', '--json'],
+                ['schedules' => [['schedule_id' => $scheduleId, 'paused' => true]]],
+            ),
+            'pause' => $this->cliTranscript(
+                ['dw', 'schedules', 'pause', $scheduleId, '--json'],
+                ['schedule_id' => $scheduleId],
+            ),
+            'resume' => $this->cliTranscript(
+                ['dw', 'schedules', 'resume', $scheduleId, '--json'],
+                ['schedule_id' => $scheduleId],
+            ),
+            'trigger' => $this->cliTranscript(
+                ['dw', 'schedules', 'trigger', $scheduleId, '--json'],
+                ['schedule_id' => $scheduleId, 'outcome' => 'started'],
+            ),
+            'delete' => $this->cliTranscript(
+                ['dw', 'schedules', 'delete', $scheduleId, '--json'],
+                ['schedule_id' => $scheduleId],
+            ),
+        ];
+        $observedOutputs = [
+            'create_or_observe' => true,
+            'list_observed' => true,
+            'describe_observed' => true,
+            'control_observed' => true,
+            'schedule_id' => $scheduleId,
+            'command_outputs' => $commandOutputs,
+            'failed_commands' => [],
+            'unsupported_commands' => [],
+        ];
+
+        file_put_contents($resultDir.'/cli-evidence.json', json_encode([
+            'schema' => 'durable-workflow.v2.schedules-runtime.cli-surface-evidence',
+            'scenario_results' => [
+                'cli_schedule_surface' => [
+                    'scenario_id' => 'cli_schedule_surface',
+                    'status' => 'pass',
+                    'observed_outputs' => $observedOutputs,
+                    'linked_findings' => [],
+                ],
+            ],
+            'client_surfaces' => [
+                'cli' => $observedOutputs,
+            ],
+            'runtime_matrix' => [
+                'client_paths' => ['cli'],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SCHEDULES_CLI_EVIDENCE' => $resultDir.'/cli-evidence.json',
+                    'DW_SERVER_VERSION' => '0.2.288',
+                    'DW_CLI_VERSION' => '0.1.77',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.85',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.196',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.82',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $cliScenario = $result['scenario_results']['cli_schedule_surface'];
+            $this->assertSame('pass', $cliScenario['status']);
+            $this->assertTrue($cliScenario['observed_outputs']['create_or_observe']);
+            $this->assertTrue($cliScenario['observed_outputs']['list_observed']);
+            $this->assertTrue($cliScenario['observed_outputs']['control_observed']);
+            $this->assertSame(0, $cliScenario['observed_outputs']['command_outputs']['delete']['exit_code']);
+            $this->assertSame($scheduleId, $result['client_surfaces']['cli']['schedule_id']);
+            $this->assertContains('cli', $result['runtime_matrix']['client_paths']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    /**
+     * @param list<string> $command
+     * @param array<string, mixed> $payload
+     *
+     * @return array<string, mixed>
+     */
+    private function cliTranscript(array $command, array $payload): array
+    {
+        return [
+            'command' => $command,
+            'exit_code' => 0,
+            'stdout' => json_encode($payload, JSON_THROW_ON_ERROR)."\n",
+            'stderr' => '',
+            'parsed_json' => $payload,
+        ];
+    }
+
     private function removeDirectory(string $path): void
     {
         if (! is_dir($path)) {

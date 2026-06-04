@@ -1094,18 +1094,86 @@ final class SchedulesRuntimeResultGate
         $evidence = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs'])
             ?? self::arrayField($surfaces, [$client])
             ?? [];
+        $failures = [];
 
         foreach (['create_or_observe', 'list_observed', 'control_observed'] as $field) {
             if (! self::hasTruthyField($evidence, [$field, self::camelize($field)])) {
-                return [[
+                $failures[] = [
                     'code' => 'missing_client_surface_evidence',
                     'client' => $client,
                     'field' => $field,
-                ]];
+                ];
             }
         }
 
-        return [];
+        if ($client === 'cli') {
+            array_push($failures, ...self::cliScheduleCommandTranscriptFailures($evidence));
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function cliScheduleCommandTranscriptFailures(array $evidence): array
+    {
+        $commands = self::arrayField($evidence, [
+            'command_outputs',
+            'commandOutputs',
+            'transcripts',
+            'command_transcripts',
+            'commandTranscripts',
+        ]) ?? [];
+        $failures = [];
+
+        foreach (['create', 'list', 'describe', 'pause', 'resume', 'trigger', 'delete'] as $operation) {
+            $transcript = self::arrayField($commands, [$operation]);
+            if ($transcript === null) {
+                $failures[] = [
+                    'code' => 'missing_cli_schedule_command_transcript',
+                    'operation' => $operation,
+                ];
+                continue;
+            }
+
+            $command = $transcript['command'] ?? null;
+            if (! is_string($command) && ! is_array($command)) {
+                $failures[] = [
+                    'code' => 'missing_cli_schedule_command_field',
+                    'operation' => $operation,
+                    'field' => 'command',
+                ];
+            }
+
+            if (! array_key_exists('exit_code', $transcript) || ! is_int($transcript['exit_code'])) {
+                $failures[] = [
+                    'code' => 'missing_cli_schedule_command_field',
+                    'operation' => $operation,
+                    'field' => 'exit_code',
+                ];
+            } elseif ($transcript['exit_code'] !== 0) {
+                $failures[] = [
+                    'code' => 'cli_schedule_command_nonzero_exit_in_pass',
+                    'operation' => $operation,
+                    'exit_code' => $transcript['exit_code'],
+                ];
+            }
+
+            foreach (['stdout', 'stderr'] as $field) {
+                if (! array_key_exists($field, $transcript) || ! is_string($transcript[$field])) {
+                    $failures[] = [
+                        'code' => 'missing_cli_schedule_command_field',
+                        'operation' => $operation,
+                        'field' => $field,
+                    ];
+                }
+            }
+        }
+
+        return $failures;
     }
 
     /**

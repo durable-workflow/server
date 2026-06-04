@@ -22,6 +22,8 @@ const scenarioManifestPath = process.env.DW_SCHEDULES_SCENARIO_MANIFEST
   ?? path.join(repoRoot, 'static/platform-conformance/schedules-runtime-scenarios.json');
 const smokeEvidencePath = process.env.DW_SCHEDULES_SMOKE_EVIDENCE
   ?? path.join(resultDir, 'schedules-smoke-evidence.json');
+const cliEvidencePath = process.env.DW_SCHEDULES_CLI_EVIDENCE
+  ?? path.join(resultDir, 'schedules-cli-evidence.json');
 
 const DEFAULT_REQUIRED_SCENARIOS = [
   'published_artifact_install_only',
@@ -66,6 +68,10 @@ async function main() {
   const cadenceEvidence = await maybeRunCadenceShard(startedAt, artifactVersions, artifactSources);
   if (cadenceEvidence !== null) {
     evidenceInputs.push(cadenceEvidence);
+  }
+  const cliSurfaceEvidence = await maybeRunCliSurfaceShard(startedAt, artifactVersions, artifactSources);
+  if (cliSurfaceEvidence !== null) {
+    evidenceInputs.push(cliSurfaceEvidence);
   }
   const smokeEvidence = mergeEvidence(...evidenceInputs);
   const finishedAt = timestamp();
@@ -378,6 +384,7 @@ function readEvidenceInputs() {
   const paths = [
     smokeEvidencePath,
     process.env.DW_SCHEDULES_CADENCE_EVIDENCE,
+    cliEvidencePath,
   ].filter((value, index, values) => stringValue(value) !== '' && values.indexOf(value) === index);
 
   return paths
@@ -951,6 +958,605 @@ function cadenceFinding(scenarioId, observation) {
       ? 'observe at least eight PT30S fixed-rate fires with nominal timestamps, actual timestamps, and drift milliseconds'
       : 'observe at least four cron fires with nominal timestamps, actual timestamps, and drift milliseconds',
   };
+}
+
+async function maybeRunCliSurfaceShard(startedAt, artifactVersions, artifactSources) {
+  const mode = stringValue(process.env.DW_SCHEDULES_RUN_CLI_SURFACE_SHARD).toLowerCase();
+  if (!['1', 'true', 'yes', 'auto'].includes(mode)) {
+    return null;
+  }
+
+  if (readJsonIfExists(cliEvidencePath) !== null) {
+    return null;
+  }
+
+  const explicit = mode !== 'auto';
+  const serverUrl = stringValue(process.env.DW_SCHEDULES_SERVER_URL);
+  const dockerAvailable = await commandSucceeds('docker', ['--version']);
+  const composeAvailable = dockerAvailable && await commandSucceeds('docker', ['compose', 'version']);
+  const serverImage = resolveServerImage(artifactVersions);
+  const configuredCli = stringValue(process.env.DW_SCHEDULES_CLI_EXECUTABLE ?? process.env.DW_CLI_EXECUTABLE);
+  const cliVersion = stringValue(artifactVersions.cli);
+
+  if (configuredCli === '' && cliVersion === '') {
+    if (!explicit) {
+      return null;
+    }
+
+    return cliSurfaceBlockedEvidence(
+      'CLI surface shard could not run because DW_CLI_VERSION or DW_SCHEDULES_CLI_EXECUTABLE is unavailable.',
+      startedAt,
+      artifactVersions,
+      artifactSources,
+    );
+  }
+
+  if (serverUrl === '' && (!dockerAvailable || !composeAvailable || serverImage === '')) {
+    if (!explicit) {
+      return null;
+    }
+
+    const missing = [
+      !dockerAvailable ? 'docker' : null,
+      dockerAvailable && !composeAvailable ? 'docker compose' : null,
+      serverImage === '' ? 'DW_SERVER_VERSION or DW_SERVER_IMAGE' : null,
+    ].filter(Boolean).join(', ');
+
+    return cliSurfaceBlockedEvidence(
+      `CLI surface shard could not start because ${missing} is unavailable.`,
+      startedAt,
+      artifactVersions,
+      artifactSources,
+    );
+  }
+
+  try {
+    return await runCliSurfaceShard({
+      startedAt,
+      artifactVersions,
+      artifactSources,
+      serverImage,
+      existingServerUrl: serverUrl,
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return cliSurfaceBlockedEvidence(reason, startedAt, artifactVersions, artifactSources);
+  }
+}
+
+async function runCliSurfaceShard({ startedAt, artifactVersions, artifactSources, serverImage, existingServerUrl }) {
+  const cliStartedAt = timestamp();
+  const runId = `schedules-cli-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const namespace = sanitizeDockerName(`${stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance'}-${runId}`).slice(0, 96);
+  const taskQueue = stringValue(process.env.DW_SCHEDULES_TASK_QUEUE) || 'schedules-cli-surface';
+  const token = stringValue(process.env.DW_SCHEDULES_AUTH_TOKEN) || 'dev-token';
+  const serverPort = positiveInt(process.env.DW_SCHEDULES_SERVER_PORT, 0) || await freePort();
+  const serverUrl = existingServerUrl || `http://127.0.0.1:${serverPort}`;
+  const composeProject = sanitizeDockerName(runId);
+  const composeFiles = ['-f', path.join(repoRoot, 'docker-compose.published.yml')];
+  let composeStarted = false;
+  let cliPath = '';
+
+  markArtifactSource(artifactSources, 'server', existingServerUrl === '' ? 'published_docker_image' : 'existing_published_server_url');
+
+  if (existingServerUrl === '') {
+    await execLogged(
+      'docker',
+      ['image', 'pull', serverImage],
+      path.join(resultDir, 'schedules-cli-docker-pull.log'),
+    );
+    await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'up', '-d', 'server'],
+      path.join(resultDir, 'schedules-cli-compose-up.log'),
+      composeEnv(serverPort, serverImage, token, artifactVersions),
+    );
+    composeStarted = true;
+  }
+
+  try {
+    await waitForServerReady(serverUrl, 120);
+    await ensureNamespace(serverUrl, token, namespace);
+    cliPath = await resolvePublishedCli(artifactVersions, artifactSources);
+
+    const scheduleId = `${runId}-surface`;
+    const context = { serverUrl, namespace, token };
+    const operations = {};
+
+    operations.create = await runDwJson(cliPath, [
+      'schedules',
+      'create',
+      `--schedule-id=${scheduleId}`,
+      '--workflow-type=schedules.CliSurfaceProbe',
+      '--interval=PT1H',
+      `--task-queue=${taskQueue}`,
+      '--paused',
+      '--json',
+    ], context);
+    operations.describe = await runDwJson(cliPath, ['schedules', 'describe', scheduleId, '--json'], context);
+    operations.list = await runDwJson(cliPath, ['schedules', 'list', '--json'], context);
+    operations.resume = await runDwJson(cliPath, ['schedules', 'resume', scheduleId, '--note=schedules conformance CLI resume', '--json'], context);
+    operations.trigger = await runDwJson(cliPath, ['schedules', 'trigger', scheduleId, '--json'], context);
+    operations.pause = await runDwJson(cliPath, ['schedules', 'pause', scheduleId, '--note=schedules conformance CLI pause', '--json'], context);
+    operations.delete = await runDwJson(cliPath, ['schedules', 'delete', scheduleId, '--json'], context);
+
+    await bestEffortDeleteSchedule(serverUrl, token, namespace, scheduleId);
+
+    const evidence = cliSurfaceEvidenceFromOperations({
+      operations,
+      startedAt: cliStartedAt,
+      finishedAt: timestamp(),
+      artifactVersions,
+      artifactSources,
+      namespace,
+      taskQueue,
+      scheduleId,
+      cliPath,
+    });
+    writeJson(cliEvidencePath, evidence);
+
+    return evidence;
+  } finally {
+    if (cliPath !== '') {
+      writeJson(path.join(resultDir, 'schedules-cli-run-metadata.json'), {
+        schema: 'durable-workflow.v2.schedules-runtime.cli-run-metadata',
+        started_at: startedAt,
+        cli_started_at: cliStartedAt,
+        finished_at: timestamp(),
+        server_url: serverUrl,
+        namespace,
+        task_queue: taskQueue,
+        server_image: existingServerUrl === '' ? serverImage : null,
+        compose_project: existingServerUrl === '' ? composeProject : null,
+        cli_executable: cliPath,
+        published_artifact_versions: artifactVersions,
+        artifact_sources: artifactSources,
+        local_product_source_checkouts_used: false,
+      });
+    }
+
+    if (composeStarted) {
+      await collectCliComposeLogs(composeProject, composeFiles);
+      await execFile('docker', ['compose', '-p', composeProject, ...composeFiles, 'down', '-v'], {
+        env: composeEnv(serverPort, serverImage, token, artifactVersions),
+        maxBuffer: 1024 * 1024 * 8,
+      }).catch(() => {});
+    }
+  }
+}
+
+async function resolvePublishedCli(artifactVersions, artifactSources) {
+  const configuredCli = stringValue(process.env.DW_SCHEDULES_CLI_EXECUTABLE ?? process.env.DW_CLI_EXECUTABLE);
+  if (configuredCli !== '') {
+    fs.accessSync(configuredCli, fs.constants.X_OK);
+    markArtifactSource(artifactSources, 'cli', 'official_cli_executable');
+    return configuredCli;
+  }
+
+  const cliVersion = stringValue(artifactVersions.cli);
+  if (cliVersion === '') {
+    throw new Error('DW_CLI_VERSION is required to install the official CLI artifact.');
+  }
+
+  const installDir = path.join(resultDir, 'cli', 'bin');
+  const installerPath = path.join(resultDir, 'cli', 'install.sh');
+  fs.mkdirSync(installDir, { recursive: true });
+  fs.mkdirSync(path.dirname(installerPath), { recursive: true });
+
+  const installerUrl = await downloadCliInstaller(cliVersion, installerPath);
+  const installLogPath = path.join(resultDir, 'schedules-cli-install.log');
+  const install = await execCommandCapture('sh', [installerPath], {
+    env: {
+      ...process.env,
+      VERSION: cliVersion,
+      DURABLE_WORKFLOW_INSTALL_DIR: installDir,
+      DURABLE_WORKFLOW_INSTALL_VERIFY_ATTESTATIONS: '0',
+    },
+    timeout: 120000,
+  });
+  writeText(installLogPath, `${install.stdout}${install.stderr}`);
+  if (install.exit_code !== 0) {
+    throw new Error(`official CLI installer failed for release ${cliVersion}; see ${path.basename(installLogPath)}`);
+  }
+
+  const cliPath = path.join(installDir, 'dw');
+  fs.accessSync(cliPath, fs.constants.X_OK);
+  markArtifactSource(artifactSources, 'cli', 'official_install_script');
+  writeJson(path.join(resultDir, 'schedules-cli-install.json'), {
+    schema: 'durable-workflow.v2.schedules-runtime.cli-install',
+    cli_version: cliVersion,
+    installer_url: installerUrl,
+    install_dir: installDir,
+    executable: cliPath,
+    source: 'official_install_script',
+  });
+
+  return cliPath;
+}
+
+async function downloadCliInstaller(cliVersion, installerPath) {
+  const explicit = stringValue(process.env.DW_SCHEDULES_CLI_INSTALLER_URL ?? process.env.DW_CLI_INSTALLER_URL);
+  const normalized = cliVersion.replace(/^v/, '');
+  const candidates = [
+    explicit,
+    `https://github.com/durable-workflow/cli/releases/download/${normalized}/install.sh`,
+    `https://github.com/durable-workflow/cli/releases/download/v${normalized}/install.sh`,
+  ].filter((value, index, values) => value !== '' && values.indexOf(value) === index);
+
+  const errors = [];
+  for (const url of candidates) {
+    try {
+      await downloadUrlToFile(url, installerPath);
+      return url;
+    } catch (error) {
+      errors.push(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  throw new Error(`official CLI installer is not downloadable for release ${cliVersion}; ${errors.join('; ')}`);
+}
+
+async function downloadUrlToFile(url, filePath) {
+  if (typeof fetch === 'function') {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const body = Buffer.from(await response.arrayBuffer());
+    if (body.length === 0) {
+      throw new Error('downloaded file is empty');
+    }
+    writeText(filePath, body.toString('utf8'));
+    return;
+  }
+
+  await execLogged('curl', ['-fsSL', '--retry', '3', '-o', filePath, url], `${filePath}.download.log`);
+}
+
+async function ensureNamespace(serverUrl, token, namespace) {
+  const base = serverUrl.replace(/\/+$/, '');
+  const response = await fetch(`${base}/api/namespaces`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      'X-Durable-Workflow-Control-Plane-Version': '2',
+    },
+    body: JSON.stringify({
+      name: namespace,
+      description: 'Schedules conformance CLI surface namespace',
+      retention_days: 1,
+    }),
+  });
+
+  if (response.status === 201 || response.status === 409) {
+    return;
+  }
+
+  const text = await response.text();
+  throw new Error(`POST /api/namespaces returned ${response.status}: ${text.slice(0, 1000)}`);
+}
+
+async function runDwJson(cliPath, args, context) {
+  const fullArgs = [
+    ...args,
+    `--server=${context.serverUrl}`,
+    `--namespace=${context.namespace}`,
+  ];
+  if (context.token !== '') {
+    fullArgs.push(`--token=${context.token}`);
+  }
+
+  const transcript = await execCommandCapture(cliPath, fullArgs, {
+    env: {
+      ...process.env,
+      DURABLE_WORKFLOW_SERVER_URL: context.serverUrl,
+      DURABLE_WORKFLOW_NAMESPACE: context.namespace,
+    },
+    timeout: 45000,
+  });
+  const parsed = parseJsonOutput(transcript.stdout);
+
+  return {
+    command: ['dw', ...fullArgs.map(redactCliArg)],
+    exit_code: transcript.exit_code,
+    stdout: transcript.stdout,
+    stderr: transcript.stderr,
+    parsed_json: parsed.value,
+    json_parse_error: parsed.error,
+  };
+}
+
+async function execCommandCapture(command, args, options = {}) {
+  try {
+    const result = await execFile(command, args, {
+      env: options.env ?? process.env,
+      timeout: options.timeout ?? 30000,
+      maxBuffer: options.maxBuffer ?? 1024 * 1024 * 4,
+    });
+
+    return {
+      exit_code: 0,
+      stdout: String(result.stdout ?? ''),
+      stderr: String(result.stderr ?? ''),
+    };
+  } catch (error) {
+    return {
+      exit_code: Number.isInteger(error?.code) ? error.code : 1,
+      stdout: String(error?.stdout ?? ''),
+      stderr: String(error?.stderr ?? error?.message ?? ''),
+    };
+  }
+}
+
+function cliSurfaceEvidenceFromOperations({
+  operations,
+  startedAt,
+  finishedAt,
+  artifactVersions,
+  artifactSources,
+  namespace,
+  taskQueue,
+  scheduleId,
+  cliPath,
+}) {
+  const checks = cliSurfaceChecks(operations, scheduleId);
+  const observedOutputs = {
+    create_or_observe: checks.createObserved,
+    list_observed: checks.listObserved && checks.describeObserved,
+    describe_observed: checks.describeObserved,
+    control_observed: checks.controlObserved,
+    schedule_id: scheduleId,
+    namespace,
+    task_queue: taskQueue,
+    cli_executable: cliPath,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    command_outputs: operations,
+    failed_commands: checks.failedCommands,
+    unsupported_commands: checks.unsupportedCommands,
+    output_shape_failures: checks.outputShapeFailures,
+  };
+  const status = checks.passed
+    ? 'pass'
+    : (checks.unsupportedCommands.length > 0 ? 'unsupported' : 'fail');
+  const linkedFindings = status === 'pass'
+    ? []
+    : [cliSurfaceFinding(status, checks, observedOutputs, artifactVersions)];
+
+  return {
+    schema: 'durable-workflow.v2.schedules-runtime.cli-surface-evidence',
+    started_at: startedAt,
+    finished_at: finishedAt,
+    generated_at: finishedAt,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    scenario_results: {
+      cli_schedule_surface: {
+        scenario_id: 'cli_schedule_surface',
+        status,
+        observed_outputs: observedOutputs,
+        linked_findings: linkedFindings,
+      },
+    },
+    findings: linkedFindings,
+    client_surfaces: {
+      cli: observedOutputs,
+    },
+    runtime_matrix: {
+      client_paths: ['cli'],
+    },
+    topology: {
+      namespace,
+      task_queue: taskQueue,
+      worker_execution_mode: 'official_cli_schedule_lifecycle_surface',
+      schedules_created: [scheduleId],
+    },
+  };
+}
+
+function cliSurfaceChecks(operations, scheduleId) {
+  const failedCommands = [];
+  const unsupportedCommands = [];
+  const outputShapeFailures = [];
+
+  for (const [operation, transcript] of Object.entries(operations)) {
+    if (transcript.exit_code !== 0) {
+      failedCommands.push(operation);
+      if (isUnsupportedCliCommand(transcript)) {
+        unsupportedCommands.push(operation);
+      }
+      continue;
+    }
+
+    if (!transcript.parsed_json || typeof transcript.parsed_json !== 'object') {
+      outputShapeFailures.push({ operation, reason: transcript.json_parse_error || 'stdout was not a JSON object' });
+    }
+  }
+
+  const createObserved = scheduleIdField(operations.create?.parsed_json) === scheduleId;
+  const describeObserved = scheduleIdField(operations.describe?.parsed_json) === scheduleId;
+  const listObserved = scheduleListContains(operations.list?.parsed_json, scheduleId);
+  const pauseObserved = scheduleIdField(operations.pause?.parsed_json) === scheduleId;
+  const resumeObserved = scheduleIdField(operations.resume?.parsed_json) === scheduleId;
+  const triggerObserved = scheduleIdField(operations.trigger?.parsed_json) === scheduleId
+    && Object.prototype.hasOwnProperty.call(operations.trigger?.parsed_json ?? {}, 'outcome');
+  const deleteObserved = scheduleIdField(operations.delete?.parsed_json) === scheduleId;
+
+  if (!createObserved) {
+    outputShapeFailures.push({ operation: 'create', reason: 'JSON response did not include the created schedule_id' });
+  }
+  if (!describeObserved) {
+    outputShapeFailures.push({ operation: 'describe', reason: 'JSON response did not include the described schedule_id' });
+  }
+  if (!listObserved) {
+    outputShapeFailures.push({ operation: 'list', reason: 'JSON response did not include the schedule in schedules[]' });
+  }
+  for (const [operation, observed] of Object.entries({
+    pause: pauseObserved,
+    resume: resumeObserved,
+    trigger: triggerObserved,
+    delete: deleteObserved,
+  })) {
+    if (!observed) {
+      outputShapeFailures.push({ operation, reason: 'JSON response did not confirm the target schedule lifecycle operation' });
+    }
+  }
+
+  const controlObserved = pauseObserved && resumeObserved && triggerObserved && deleteObserved;
+  const passed = failedCommands.length === 0
+    && outputShapeFailures.length === 0
+    && createObserved
+    && describeObserved
+    && listObserved
+    && controlObserved;
+
+  return {
+    passed,
+    createObserved,
+    describeObserved,
+    listObserved,
+    controlObserved,
+    failedCommands,
+    unsupportedCommands,
+    outputShapeFailures,
+  };
+}
+
+function cliSurfaceFinding(status, checks, observedOutputs, artifactVersions) {
+  const reasons = [];
+  if (checks.unsupportedCommands.length > 0) {
+    reasons.push(`unsupported dw schedules command(s): ${checks.unsupportedCommands.join(', ')}`);
+  }
+  if (checks.failedCommands.length > 0) {
+    reasons.push(`failed dw schedules command(s): ${checks.failedCommands.join(', ')}`);
+  }
+  for (const failure of checks.outputShapeFailures) {
+    reasons.push(`${failure.operation} output shape: ${failure.reason}`);
+  }
+
+  return {
+    finding_id: status === 'unsupported'
+      ? 'schedules-cli-surface-unsupported-command'
+      : 'schedules-cli-surface-command-output',
+    scenario_id: 'cli_schedule_surface',
+    finding_type: status === 'unsupported'
+      ? 'cli_schedule_command_unsupported'
+      : 'cli_schedule_surface_gap',
+    owning_surface: 'cli',
+    execution_scope: 'cli-schedule-surface-shard',
+    artifact_versions: artifactVersions,
+    observed_behavior: reasons.join('; ') || 'The official CLI schedule lifecycle surface did not satisfy the JSON evidence contract.',
+    expected_behavior: 'The official dw schedules surface creates or observes a schedule and exposes list, describe, pause, resume, trigger, and delete as machine-readable JSON.',
+    next_acceptance_criterion: 'rerun schedules conformance with dw schedules lifecycle commands returning parseable JSON and confirming the target schedule',
+    command_outputs: observedOutputs.command_outputs,
+    failed_commands: observedOutputs.failed_commands,
+    unsupported_commands: observedOutputs.unsupported_commands,
+    output_shape_failures: observedOutputs.output_shape_failures,
+  };
+}
+
+function cliSurfaceBlockedEvidence(reason, startedAt, artifactVersions, artifactSources) {
+  const finishedAt = timestamp();
+  const finding = {
+    finding_id: 'schedules-cli-surface-runner-blocked',
+    scenario_id: 'cli_schedule_surface',
+    finding_type: 'conformance_runner_blocked',
+    owning_surface: 'conformance_harness',
+    execution_scope: 'cli-schedule-surface-shard',
+    artifact_versions: artifactVersions,
+    observed_behavior: reason,
+    expected_behavior: 'The schedules conformance host can install the official CLI and run its schedule lifecycle surface against published artifacts.',
+    next_acceptance_criterion: 'restore the missing host capability and rerun schedules conformance',
+  };
+
+  return {
+    schema: 'durable-workflow.v2.schedules-runtime.cli-surface-evidence',
+    started_at: startedAt,
+    finished_at: finishedAt,
+    generated_at: finishedAt,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    scenario_results: {
+      cli_schedule_surface: {
+        scenario_id: 'cli_schedule_surface',
+        status: 'runner_blocked',
+        observed_outputs: { blocked_reason: reason },
+        linked_findings: [finding],
+      },
+    },
+    findings: [finding],
+    client_surfaces: {
+      cli: {
+        create_or_observe: false,
+        list_observed: false,
+        control_observed: false,
+        blocked_reason: reason,
+      },
+    },
+  };
+}
+
+function parseJsonOutput(stdout) {
+  const trimmed = String(stdout ?? '').trim();
+  if (trimmed === '') {
+    return { value: null, error: 'stdout was empty' };
+  }
+
+  try {
+    return { value: JSON.parse(trimmed), error: null };
+  } catch (error) {
+    return { value: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function scheduleIdField(value) {
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+
+  return stringValue(value.schedule_id ?? value.scheduleId);
+}
+
+function scheduleListContains(value, scheduleId) {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const schedules = arrayValue(value.schedules);
+  return schedules.some((schedule) => scheduleIdField(schedule) === scheduleId);
+}
+
+function isUnsupportedCliCommand(transcript) {
+  const text = `${transcript.stdout ?? ''}\n${transcript.stderr ?? ''}`.toLowerCase();
+  return /command .* not defined|no commands defined|unknown command|does not exist|not enough arguments/.test(text);
+}
+
+function redactCliArg(arg) {
+  if (String(arg).startsWith('--token=')) {
+    return '--token=<redacted>';
+  }
+
+  return arg;
+}
+
+function markArtifactSource(artifactSources, artifact, source) {
+  const current = stringValue(artifactSources[artifact]);
+  if (current === '' || current === 'not_exercised') {
+    artifactSources[artifact] = source;
+  }
+}
+
+async function collectCliComposeLogs(composeProject, composeFiles) {
+  for (const service of ['server', 'bootstrap', 'mysql', 'redis']) {
+    const logPath = path.join(resultDir, `schedules-cli-${service}.log`);
+    await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'logs', service],
+      logPath,
+    ).catch(() => {});
+  }
 }
 
 async function scheduleHistory(serverUrl, token, namespace, scheduleId) {

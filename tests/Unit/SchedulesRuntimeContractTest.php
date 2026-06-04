@@ -519,6 +519,23 @@ class SchedulesRuntimeContractTest extends TestCase
         $this->assertSame([], $evaluation['gate_failures']);
     }
 
+    public function test_result_gate_requires_cli_schedule_command_transcripts_for_cli_surface_pass(): void
+    {
+        $result = $this->completeSchedulesResult();
+        unset($result['scenario_results']['cli_schedule_surface']['observed_outputs']['command_outputs']['trigger']);
+        unset($result['client_surfaces']['cli']['command_outputs']['trigger']);
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+        $transcriptFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_cli_schedule_command_transcript'
+                && ($failure['operation'] ?? null) === 'trigger',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($transcriptFailures);
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -594,11 +611,37 @@ class SchedulesRuntimeContractTest extends TestCase
             'schedule_listed_after_restart' => true,
             'fired_after_restart' => true,
         ];
+        $cliTranscript = static fn (string $operation): array => [
+            'command' => ['dw', 'schedules', $operation, '--json'],
+            'exit_code' => 0,
+            'stdout' => '{"schedule_id":"cli-surface-schedule"}'."\n",
+            'stderr' => '',
+        ];
+        $cliCommandOutputs = [
+            'create' => $cliTranscript('create'),
+            'list' => [
+                'command' => ['dw', 'schedules', 'list', '--json'],
+                'exit_code' => 0,
+                'stdout' => '{"schedules":[{"schedule_id":"cli-surface-schedule"}]}'."\n",
+                'stderr' => '',
+            ],
+            'describe' => $cliTranscript('describe'),
+            'pause' => $cliTranscript('pause'),
+            'resume' => $cliTranscript('resume'),
+            'trigger' => [
+                'command' => ['dw', 'schedules', 'trigger', '--json'],
+                'exit_code' => 0,
+                'stdout' => '{"schedule_id":"cli-surface-schedule","outcome":"started"}'."\n",
+                'stderr' => '',
+            ],
+            'delete' => $cliTranscript('delete'),
+        ];
         $clientSurfaces = [
             'cli' => [
                 'create_or_observe' => true,
                 'list_observed' => true,
                 'control_observed' => true,
+                'command_outputs' => $cliCommandOutputs,
             ],
             'sdk-python' => [
                 'create_or_observe' => true,
