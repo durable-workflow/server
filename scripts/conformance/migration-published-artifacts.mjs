@@ -253,7 +253,13 @@ async function main() {
     resolvedArtifactVersions,
     artifactSources,
   );
-  const scenarioResults = buildScenarioResults(evidence, resolvedArtifactVersions, artifactPrerequisiteFailures);
+  const scenarioResults = buildScenarioResults(
+    evidence,
+    resolvedArtifactVersions,
+    artifactPrerequisiteFailures,
+    publishedArtifactVersions,
+    artifactSources,
+  );
   const localProductSourceCheckoutsUsed = localProductSourceCheckoutsUsedIn(evidence, scenarioResults);
   const result = {
     schema: RESULT_SCHEMA,
@@ -311,7 +317,13 @@ async function main() {
   writeResult(result);
 }
 
-function buildScenarioResults(evidence, artifactVersions, artifactPrerequisiteFailures = []) {
+function buildScenarioResults(
+  evidence,
+  artifactVersions,
+  artifactPrerequisiteFailures = [],
+  publishedArtifactVersions = {},
+  artifactSources = {},
+) {
   const supplied = scenarioResultsById(evidence);
   const results = {};
 
@@ -323,6 +335,22 @@ function buildScenarioResults(evidence, artifactVersions, artifactPrerequisiteFa
         normalizeScenarioResult(scenarioId, suppliedScenario, artifactVersions),
         artifactVersions,
         artifactPrerequisiteFailures,
+      );
+      continue;
+    }
+
+    if (
+      scenarioId === 'published_artifact_install_only'
+      && artifactPrerequisiteFailures.length === 0
+      && artifactMapComplete(publishedArtifactVersions, false)
+      && artifactMapComplete(artifactVersions, false)
+      && artifactMapComplete(artifactSources, true)
+      && !localProductSourceCheckoutsUsedIn(evidence)
+    ) {
+      results[scenarioId] = synthesizedPublishedArtifactInstallScenario(
+        publishedArtifactVersions,
+        artifactVersions,
+        artifactSources,
       );
       continue;
     }
@@ -368,6 +396,24 @@ function buildScenarioResults(evidence, artifactVersions, artifactPrerequisiteFa
   }
 
   return results;
+}
+
+function synthesizedPublishedArtifactInstallScenario(
+  publishedArtifactVersions,
+  resolvedArtifactVersions,
+  artifactSources,
+) {
+  return {
+    scenario_id: 'published_artifact_install_only',
+    status: 'pass',
+    observed_outputs: {
+      published_artifact_versions: publishedArtifactVersions,
+      resolved_artifact_versions: resolvedArtifactVersions,
+      artifact_sources: artifactSources,
+      local_product_source_checkouts_used: false,
+      source: 'recorded_published_artifact_install_policy',
+    },
+  };
 }
 
 function scenarioResultWithArtifactPrerequisiteFailures(

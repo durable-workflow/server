@@ -247,6 +247,83 @@ class MigrationConformanceRunnerContractTest extends TestCase
         $this->assertNotContains('pass', array_column($result['scenario_results'], 'status'));
     }
 
+    public function test_runner_synthesizes_published_install_cell_from_artifact_pins(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner artifact install synthesis.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $tempRoot = sys_get_temp_dir().'/dw-migration-install-cell-'.bin2hex(random_bytes(6));
+        $resultDir = $tempRoot.'/result';
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+
+        try {
+            mkdir($resultDir, 0777, true);
+
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/migration-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_MIGRATION_REPO_ROOT' => $repoRoot,
+                    'DW_MIGRATION_RESULT_DIR' => $resultDir,
+                    'DW_SERVER_V1_VERSION' => $artifactVersions['server-v1'],
+                    'DW_SERVER_V2_VERSION' => $artifactVersions['server-v2'],
+                    'DW_SERVER_V1_ARTIFACT_SOURCE' => $artifactSources['server-v1'],
+                    'DW_SERVER_V2_ARTIFACT_SOURCE' => $artifactSources['server-v2'],
+                    'DW_CLI_VERSION' => $artifactVersions['cli'],
+                    'DW_CLI_ARTIFACT_SOURCE' => $artifactSources['cli'],
+                    'DW_WORKFLOW_PHP_V1_VERSION' => $artifactVersions['workflow-php-v1'],
+                    'DW_WORKFLOW_PHP_V2_VERSION' => $artifactVersions['workflow-php-v2'],
+                    'DW_WORKFLOW_PHP_V1_ARTIFACT_SOURCE' => $artifactSources['workflow-php-v1'],
+                    'DW_WORKFLOW_PHP_V2_ARTIFACT_SOURCE' => $artifactSources['workflow-php-v2'],
+                    'DW_PYTHON_SDK_VERSION' => $artifactVersions['sdk-python'],
+                    'DW_PYTHON_SDK_ARTIFACT_SOURCE' => $artifactSources['sdk-python'],
+                    'DW_WATERLINE_VERSION' => $artifactVersions['waterline'],
+                    'DW_WATERLINE_ARTIFACT_SOURCE' => $artifactSources['waterline'],
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, ($stdout === false ? '' : $stdout).($stderr === false ? '' : $stderr));
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/migration-conformance-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $scenario = $result['scenario_results']['published_artifact_install_only'];
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertSame('pass', $scenario['status']);
+            $this->assertSame($artifactVersions, $scenario['observed_outputs']['resolved_artifact_versions']);
+            $this->assertSame($artifactSources, $scenario['observed_outputs']['artifact_sources']);
+            $this->assertFalse($scenario['observed_outputs']['local_product_source_checkouts_used']);
+            $this->assertSame(
+                'not_covered',
+                $result['scenario_results']['latest_supported_v1_state_setup']['status'],
+                'install evidence must not collapse the full migration-state contract into a passing result',
+            );
+        } finally {
+            $this->removeTree($tempRoot);
+        }
+    }
+
     public function test_runner_rejects_contract_placeholder_artifact_versions_before_passing(): void
     {
         $node = $this->read('scripts/conformance/migration-published-artifacts.mjs');
