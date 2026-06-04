@@ -18,6 +18,7 @@ use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -316,6 +317,81 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('run_id', $runId)
             ->assertJsonPath('run_status', 'completed')
             ->assertJsonStructure(['created_task_ids']);
+    }
+
+    public function test_worker_registration_reclaims_existing_leases_for_same_worker_identity(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-restart-reclaims-lease',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $workerId = 'worker-restart-reclaims-lease';
+        $registration = [
+            'worker_id' => $workerId,
+            'task_queue' => 'contract-queue',
+            'runtime' => 'php',
+            'sdk_version' => '2.0.0-test',
+            'supported_workflow_types' => ['tests.external-greeting-workflow'],
+            'supported_activity_types' => [],
+            'process_metrics' => [
+                'host' => 'same-container-host',
+                'process_id' => 1,
+                'process_started_at' => '2026-06-04T00:00:00Z',
+                'process_uptime_seconds' => 0,
+            ],
+        ];
+
+        $this->postJson('/api/worker/register', $registration, $this->workerProtocolHeaders())
+            ->assertCreated();
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.lease_owner', $workerId)
+            ->assertJsonPath('task.workflow_task_attempt', 1);
+
+        $taskId = (string) $poll->json('task.task_id');
+        $leasedTask = WorkflowTask::query()->findOrFail($taskId);
+
+        $this->assertSame(TaskStatus::Leased, $leasedTask->status);
+        $this->assertSame($workerId, $leasedTask->lease_owner);
+        $this->assertNotNull($leasedTask->lease_expires_at);
+
+        $this->postJson('/api/worker/register', $registration, $this->workerProtocolHeaders())
+            ->assertCreated();
+
+        $releasedTask = WorkflowTask::query()->findOrFail($taskId);
+
+        $this->assertSame(TaskStatus::Ready, $releasedTask->status);
+        $this->assertNull($releasedTask->lease_owner);
+        $this->assertNull($releasedTask->leased_at);
+        $this->assertNull($releasedTask->lease_expires_at);
+
+        $replacementPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => $workerId,
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($replacementPoll)
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.task_id', $taskId)
+            ->assertJsonPath('task.lease_owner', $workerId)
+            ->assertJsonPath('task.workflow_task_attempt', 2);
     }
 
     public function test_workflow_task_poll_capability_filters_use_worker_protocol_contract(): void

@@ -483,6 +483,14 @@ class WorkerController
             return false;
         }
 
+        if ($this->workerHasLeasedTasks($existing->namespace, $existing->worker_id)) {
+            // A fresh registration is the only immediate signal that a worker
+            // process using the same worker_id may have replaced a process that
+            // died mid-task. Reclaim its leases before the replacement polls so
+            // recovery does not wait for the full task lease timeout.
+            return true;
+        }
+
         $incomingIdentity = $this->workerProcessIdentity($incomingProcessMetrics);
 
         if ($incomingIdentity === []) {
@@ -501,6 +509,16 @@ class WorkerController
         }
 
         return $existingIdentity !== $incomingIdentity;
+    }
+
+    private function workerHasLeasedTasks(string $namespace, string $workerId): bool
+    {
+        return WorkflowTask::query()
+            ->where('namespace', $namespace)
+            ->whereIn('task_type', [TaskType::Workflow->value, TaskType::Activity->value])
+            ->where('status', TaskStatus::Leased->value)
+            ->where('lease_owner', $workerId)
+            ->exists();
     }
 
     /**
