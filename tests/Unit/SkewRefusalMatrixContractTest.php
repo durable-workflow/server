@@ -998,6 +998,26 @@ PHP,
             'server image pull or startup failures must still write blocked result files with compose diagnostics',
         );
         $this->assertStringContainsString(
+            'up -d server worker',
+            $shell,
+            'compose-backed skew runs must start the server queue worker so workflow-worker compatible rows can create and lease real workflow tasks',
+        );
+        $this->assertStringContainsString(
+            'server-queue-worker.log',
+            $shell,
+            'queue worker startup failures must leave diagnostics before the runner writes a blocked result',
+        );
+        $this->assertStringContainsString(
+            'published server queue worker failed to start',
+            $shell,
+            'queue worker startup failures must be wrapped with write_blocked_result instead of becoming uncovered workflow-worker cells',
+        );
+        $this->assertStringContainsString(
+            'workflow-worker compatible skew evidence requires queue-backed workflow task fixture polling',
+            $shell,
+            'the blocked-result reason must name the workflow-worker evidence that depends on the server queue worker',
+        );
+        $this->assertStringContainsString(
             'published server failed to start from ${server_image}',
             $shell,
             'docker compose startup failures must be wrapped with write_blocked_result instead of exiting before result files are written',

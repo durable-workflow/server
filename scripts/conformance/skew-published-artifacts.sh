@@ -275,7 +275,7 @@ if [[ -z "$server_url" ]]; then
     DW_SERVER_IMAGE="$server_image" \
     DW_SERVER_TAG="${DW_SERVER_VERSION:-}" \
     DW_AUTH_TOKEN="${DW_SKEW_AUTH_TOKEN:-dev-token}" \
-    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d server >"$result_dir/docker-compose-up.log" 2>&1; then
+    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d server worker >"$result_dir/docker-compose-up.log" 2>&1; then
     write_blocked_result "published server failed to start from ${server_image}; see docker-compose-up.log"
     exit 0
   fi
@@ -283,6 +283,24 @@ if [[ -z "$server_url" ]]; then
 
   if ! wait_for_server "$server_url"; then
     write_blocked_result "published server did not become ready at ${server_url}/api/ready"
+    exit 0
+  fi
+
+  server_queue_worker_id=""
+  for _ in {1..30}; do
+    server_queue_worker_id="$(docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" ps -q worker 2>/dev/null || true)"
+    if [[ -n "$server_queue_worker_id" ]] \
+      && [[ "$(docker inspect -f '{{.State.Running}}' "$server_queue_worker_id" 2>/dev/null || true)" == "true" ]]; then
+      break
+    fi
+
+    server_queue_worker_id=""
+    sleep 1
+  done
+
+  if [[ -z "$server_queue_worker_id" ]]; then
+    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" logs worker >"$result_dir/server-queue-worker.log" 2>&1 || true
+    write_blocked_result "published server queue worker failed to start; workflow-worker compatible skew evidence requires queue-backed workflow task fixture polling; see server-queue-worker.log"
     exit 0
   fi
 fi
