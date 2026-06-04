@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 const SHARD_SCHEMA = 'durable-workflow.v2.worker-versioning-runtime.published-worker-execution-evidence';
 const REPLAY_SCENARIO = 'replay_only_by_compatible_workers';
 const CACHE_EVICTION_SCENARIO = 'replay_across_cache_eviction';
+const NO_COMPATIBLE_SCENARIO = 'no_compatible_worker_behavior';
 const CROSS_LANGUAGE_SCENARIO = 'cross_language_php_python_pinning';
 const ADVERSARIAL_SCENARIO = 'adversarial_no_version_bump';
 
@@ -73,6 +74,7 @@ async function main() {
   const phpV2WorkerId = `php-v2-${suffix}`;
 
   const pythonReplay = await runPythonReplayShardSafely(python);
+  const pythonNoCompatible = await runPythonNoCompatibleShardSafely(python);
   const pythonAdversarial = await runPythonAdversarialShardSafely(python);
 
   runPhpWorker(php, {
@@ -246,6 +248,7 @@ async function main() {
     },
     scenario_results: {
       ...pythonReplay.scenario_results,
+      ...pythonNoCompatible.scenario_results,
       ...pythonAdversarial.scenario_results,
       [CROSS_LANGUAGE_SCENARIO]: {
         scenario_id: CROSS_LANGUAGE_SCENARIO,
@@ -256,6 +259,7 @@ async function main() {
     },
     findings: [
       ...pythonReplay.findings,
+      ...pythonNoCompatible.findings,
       ...pythonAdversarial.findings,
       ...(finding ? [finding] : []),
     ],
@@ -265,6 +269,163 @@ async function main() {
       shard_root: shardRoot,
     },
   });
+}
+
+async function runPythonNoCompatibleShardSafely(python) {
+  try {
+    return await runPythonNoCompatibleShard(python);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return notCoveredPythonNoCompatibleShard(message);
+  }
+}
+
+async function runPythonNoCompatibleShard(python) {
+  const noCompatibleV1BuildId = `wv-python-no-compatible-v1-${suffix}`;
+  const noCompatibleV2BuildId = `wv-python-no-compatible-v2-${suffix}`;
+  const noCompatibleV1WorkerId = `python-no-compatible-v1-${suffix}`;
+  const noCompatibleV2WorkerId = `python-no-compatible-v2-${suffix}`;
+  const noCompatibleWorkflowId = `wv-python-no-compatible-${suffix}`;
+  const noCompatibleRoot = path.join(runRoot, 'published-php-python-worker-shard', 'no-compatible');
+
+  runPythonWorker(python, {
+    action: 'register',
+    worker_id: noCompatibleV1WorkerId,
+    build_id: noCompatibleV1BuildId,
+    fingerprint: `sequence-python-no-compatible-v1-${suffix}`,
+    output_path: path.join(noCompatibleRoot, 'python-no-compatible-v1-register.json'),
+  });
+  runPythonWorker(python, {
+    action: 'register',
+    worker_id: noCompatibleV2WorkerId,
+    build_id: noCompatibleV2BuildId,
+    fingerprint: `sequence-python-no-compatible-v2-${suffix}`,
+    output_path: path.join(noCompatibleRoot, 'python-no-compatible-v2-register.json'),
+  });
+
+  await promoteBuildId(noCompatibleV1BuildId);
+  const started = await startWorkflow(noCompatibleWorkflowId, ['python-no-compatible-v1']);
+  const runId = stringValue(started.run_id);
+  const pinnedRunBuildId = stringValue(started.compatibility) || noCompatibleV1BuildId;
+  const deregisterResponse = await requestJson(
+    'DELETE',
+    `/api/workers/${encodeURIComponent(noCompatibleV1WorkerId)}`,
+    undefined,
+    controlHeaders(namespace),
+    [200, 404],
+  );
+
+  await sleep(1200);
+
+  const incompatiblePoll = runPythonWorker(python, {
+    action: 'raw_poll',
+    worker_id: noCompatibleV2WorkerId,
+    build_id: noCompatibleV2BuildId,
+    output_path: path.join(noCompatibleRoot, 'python-no-compatible-v2-poll.json'),
+  });
+  const workflowVisibility = runId === ''
+    ? {}
+    : await requestJson(
+      'GET',
+      `/api/workflows/${encodeURIComponent(noCompatibleWorkflowId)}/runs/${encodeURIComponent(runId)}`,
+      undefined,
+      controlHeaders(namespace),
+      [200],
+    );
+  const operatorVisibleSignal = stringValue(incompatiblePoll.poll_status)
+    || stringValue(incompatiblePoll.response?.poll_status)
+    || stringValue(workflowVisibility.compatibility_status);
+  const pendingOrTypedError = isExplicitNoCompatibleSignal(operatorVisibleSignal)
+    ? operatorVisibleSignal
+    : 'pending';
+  const incompatibleWorkerTaskCount = countTaskForRun(incompatiblePoll, runId);
+  const compatibleWorkerDeregistered = numberValue(deregisterResponse.__http_status) === 200;
+  const workerExecution = publishedPythonWorkerExecution();
+  const observedOutputs = {
+    operator_visible_signal: operatorVisibleSignal,
+    operator_visible_signal_explicit: isExplicitNoCompatibleSignal(operatorVisibleSignal),
+    pending_or_typed_error: pendingOrTypedError,
+    incompatible_worker_task_count: incompatibleWorkerTaskCount,
+    workflow_id: noCompatibleWorkflowId,
+    v1_pinned_run_id: runId,
+    pinned_run_build_id: pinnedRunBuildId,
+    v1_worker_build_id: noCompatibleV1BuildId,
+    v2_worker_build_id: noCompatibleV2BuildId,
+    compatible_worker_deregistered: compatibleWorkerDeregistered,
+    deregister_response: deregisterResponse,
+    incompatible_worker_poll: incompatiblePoll,
+    workflow_visibility: workflowVisibility,
+    worker_execution_mode: 'published_python_worker_protocol_client',
+    published_artifact_worker_execution: workerExecution,
+    local_product_source_checkouts_used: false,
+  };
+  const passes = runId !== ''
+    && compatibleWorkerDeregistered
+    && incompatibleWorkerTaskCount === 0
+    && isExplicitNoCompatibleSignal(operatorVisibleSignal)
+    && (
+      pendingOrTypedError === 'pending'
+      || isExplicitNoCompatibleSignal(pendingOrTypedError)
+    );
+  const finding = passes ? null : {
+    scenario_id: NO_COMPATIBLE_SCENARIO,
+    owning_surface: incompatibleWorkerTaskCount > 0 || operatorVisibleSignal === '' ? 'server' : 'conformance_harness',
+    artifact_versions: artifactVersions(),
+    observed_behavior: incompatibleWorkerTaskCount > 0
+      ? 'A published Python v2 worker received a task for a v1-pinned run after the v1-compatible worker was deregistered.'
+      : 'Published Python no-compatible-worker evidence did not prove the v1 worker was deregistered and paired with an explicit public signal.',
+    expected_behavior: 'A v1-pinned workflow with no compatible registered worker remains unclaimed by v2 workers and exposes a typed no-compatible-worker or compatibility-blocked signal.',
+    next_acceptance_criterion: 'rerun the published worker-versioning shard and record incompatible_worker_task_count equal to zero plus an explicit no-compatible-worker or compatibility-blocked signal from the published Python worker poll',
+    incompatible_worker_task_count: incompatibleWorkerTaskCount,
+    compatible_worker_deregistered: compatibleWorkerDeregistered,
+    operator_visible_signal: operatorVisibleSignal,
+    v1_pinned_run_id: runId,
+  };
+
+  return {
+    workers: [
+      { worker_id: noCompatibleV1WorkerId, runtime: 'python', build_id: noCompatibleV1BuildId },
+      { worker_id: noCompatibleV2WorkerId, runtime: 'python', build_id: noCompatibleV2BuildId },
+    ],
+    scenario_results: {
+      [NO_COMPATIBLE_SCENARIO]: {
+        scenario_id: NO_COMPATIBLE_SCENARIO,
+        status: passes ? 'pass' : 'fail',
+        observed_outputs: observedOutputs,
+        linked_findings: finding ? [finding] : [],
+      },
+    },
+    findings: finding ? [finding] : [],
+  };
+}
+
+function notCoveredPythonNoCompatibleShard(reason) {
+  const finding = {
+    scenario_id: NO_COMPATIBLE_SCENARIO,
+    owning_surface: 'conformance_harness',
+    artifact_versions: artifactVersions(),
+    observed_behavior: `Published Python no-compatible-worker shard could not complete: ${reason}`,
+    expected_behavior: 'A v1-pinned workflow with no compatible registered worker remains unclaimed by v2 workers and exposes a typed no-compatible-worker or compatibility-blocked signal.',
+    next_acceptance_criterion: 'rerun the published worker-versioning shard and record zero incompatible delivery plus an explicit public no-compatible-worker diagnostic from published Python worker execution',
+  };
+
+  return {
+    workers: [],
+    scenario_results: {
+      [NO_COMPATIBLE_SCENARIO]: {
+        scenario_id: NO_COMPATIBLE_SCENARIO,
+        status: 'not_covered',
+        observed_outputs: {
+          shard_error: reason,
+          worker_execution_mode: 'published_python_worker_protocol_client',
+          published_artifact_worker_execution: publishedPythonWorkerExecution(),
+          local_product_source_checkouts_used: false,
+        },
+        linked_findings: [finding],
+      },
+    },
+    findings: [finding],
+  };
 }
 
 async function runPythonAdversarialShardSafely(python) {
@@ -1086,6 +1247,14 @@ function arrayValue(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function isExplicitNoCompatibleSignal(value) {
+  return ['no_compatible_worker', 'compatibility_blocked', 'compatibility_unsupported'].includes(stringValue(value));
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
@@ -1180,6 +1349,26 @@ async def main():
                     failure_type=payload.get("failure_type") or "RuntimeError",
                 )
             result = {"action": "poll", "task": task}
+        elif payload["action"] == "raw_poll":
+            body = {
+                "worker_id": payload["worker_id"],
+                "task_queue": payload["task_queue"],
+                "build_id": payload["build_id"],
+                "poll_request_id": f"{payload['worker_id']}-{time.time_ns()}",
+            }
+            response = await client._request(
+                "POST",
+                "/worker/workflow-tasks/poll",
+                worker=True,
+                json=body,
+                timeout=2.0,
+            )
+            result = {
+                "action": "raw_poll",
+                "response": response,
+                "task": (response or {}).get("task"),
+                "poll_status": (response or {}).get("poll_status"),
+            }
         else:
             raise RuntimeError(f"unknown action: {payload['action']}")
 

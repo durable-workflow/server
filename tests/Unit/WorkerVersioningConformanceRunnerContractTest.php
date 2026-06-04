@@ -88,6 +88,9 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'published_php_python_worker_protocol_clients',
             'php_v1_not_delivered_to_python_v2',
             'python_v1_not_delivered_to_php_v2',
+            'NO_COMPATIBLE_SCENARIO',
+            'runPythonNoCompatibleShardSafely',
+            'raw_poll',
             'published_artifact_worker_execution',
             'local_product_source_checkouts_used: false',
             'mergeExistingShard',
@@ -152,6 +155,11 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'const pythonReplay = await runPythonReplayShardSafely(python);',
             $publishedWorkers,
             'a replay/cache shard exception must be recorded without preventing the cross-language cell from running',
+        );
+        $this->assertStringContainsString(
+            'const pythonNoCompatible = await runPythonNoCompatibleShardSafely(python);',
+            $publishedWorkers,
+            'the no-compatible cell must be measured by an installed published worker shard',
         );
         $this->assertStringContainsString(
             'notCoveredPythonReplayShard',
@@ -258,6 +266,15 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'workflow_definition_changed',
             'workflowDefinitionFingerprintConflictVisible',
             'published_artifact_worker_execution: workerExecution',
+            'runPythonNoCompatibleShard',
+            "scenario_id: NO_COMPATIBLE_SCENARIO",
+            "/api/workers/\${encodeURIComponent(noCompatibleV1WorkerId)}",
+            'compatible_worker_deregistered: compatibleWorkerDeregistered',
+            'incompatible_worker_task_count: incompatibleWorkerTaskCount',
+            'operator_visible_signal: operatorVisibleSignal',
+            'isExplicitNoCompatibleSignal(operatorVisibleSignal)',
+            'Published Python no-compatible-worker shard',
+            '"poll_status": (response or {}).get("poll_status")',
             "stringValue(existingScenario?.status) === 'pass'",
         ] as $token) {
             $this->assertStringContainsString($token, $publishedWorkers);
