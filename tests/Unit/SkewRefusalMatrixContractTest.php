@@ -502,6 +502,21 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'every skewed operation must be attachable as request/response evidence',
         );
         $this->assertStringContainsString(
+            'selectProxyCapture(proxyResult.captures, method, requestPath, requestTemplate)',
+            $runner,
+            'recorded artifact evidence must match templated operation paths as well as exact materialized paths',
+        );
+        $this->assertStringContainsString(
+            'operationRequestMatchesTemplate',
+            $runner,
+            'proxy evidence selection must recognize published artifact requests whose dynamic ids differ from prepared fixture ids',
+        );
+        $this->assertStringContainsString(
+            'operationPathTemplateRegex',
+            $runner,
+            'template-based capture matching must stay constrained to the advertised operation path shape',
+        );
+        $this->assertStringContainsString(
             'DURABLE_WORKFLOW_INSTALL_DIR',
             $shell,
             'the skew runner must install the CLI through the official published installer before reporting CLI evidence',
@@ -680,6 +695,26 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'artifactProxyHost',
             $runner,
             'the recording proxy URL handed to Dockerized PHP probes must use the container-reachable host-gateway name',
+        );
+        $this->assertStringContainsString(
+            'runPhpArtifactWithProxyFallback',
+            $runner,
+            'Dockerized PHP probes must retry through an alternate host route before marking workflow-worker or Waterline rows uncovered',
+        );
+        $this->assertStringContainsString(
+            "'--network',",
+            $runner,
+            'the PHP probe fallback must support Docker host networking when host-gateway traffic never reaches the recording proxy',
+        );
+        $this->assertStringContainsString(
+            'docker_network_strategy',
+            $runner,
+            'PHP probe evidence must say which Docker network path produced the captured skew evidence',
+        );
+        $this->assertStringContainsString(
+            'previous_proxy_attempt',
+            $runner,
+            'PHP probe fallback evidence must preserve diagnostics from the failed host-gateway attempt',
         );
         $this->assertStringContainsString(
             "'DW_SKEW_AUTH_TOKEN'",
@@ -865,6 +900,16 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'body?.task?.workflow_task_id',
             $runner,
             'fixture task-id extraction must accept workflow_task_id aliases returned by published server poll responses',
+        );
+        $this->assertStringContainsString(
+            "firstArrayObjectStringValue(body?.tasks, ['task_id', 'taskId', 'workflow_task_id', 'workflowTaskId', 'id'])",
+            $runner,
+            'fixture task-id extraction must accept task arrays returned by published server poll responses',
+        );
+        $this->assertStringContainsString(
+            "firstArrayObjectIntegerValue(body?.tasks, ['workflow_task_attempt', 'workflowTaskAttempt', 'attempt', 'attempt_number'])",
+            $runner,
+            'fixture task-attempt extraction must accept task arrays returned by published server poll responses',
         );
         $this->assertStringContainsString(
             'workflow_task_attempt: state.workflowTaskAttempt ?? 1',

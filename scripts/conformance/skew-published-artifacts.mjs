@@ -1546,6 +1546,7 @@ function workflowRunIdFromBody(body) {
 
 function workflowTaskIdFromBody(body) {
   return firstStringValue(
+    firstArrayObjectStringValue(Array.isArray(body) ? body : [], ['task_id', 'taskId', 'workflow_task_id', 'workflowTaskId', 'id']),
     body?.task?.task_id,
     body?.task?.taskId,
     body?.task?.workflow_task_id,
@@ -1572,11 +1573,14 @@ function workflowTaskIdFromBody(body) {
     body?.result?.workflowTask?.taskId,
     body?.result?.workflow_task?.id,
     body?.result?.workflowTask?.id,
+    firstArrayObjectStringValue(body?.tasks, ['task_id', 'taskId', 'workflow_task_id', 'workflowTaskId', 'id']),
+    firstArrayObjectStringValue(body?.result?.tasks, ['task_id', 'taskId', 'workflow_task_id', 'workflowTaskId', 'id']),
   );
 }
 
 function workflowTaskAttemptFromBody(body) {
   return firstIntegerValue(
+    firstArrayObjectIntegerValue(Array.isArray(body) ? body : [], ['workflow_task_attempt', 'workflowTaskAttempt', 'attempt', 'attempt_number']),
     body?.task?.workflow_task_attempt,
     body?.task?.workflowTaskAttempt,
     body?.task?.attempt,
@@ -1597,6 +1601,8 @@ function workflowTaskAttemptFromBody(body) {
     body?.result?.workflowTask?.workflowTaskAttempt,
     body?.result?.workflow_task?.attempt,
     body?.result?.workflowTask?.attempt,
+    firstArrayObjectIntegerValue(body?.tasks, ['workflow_task_attempt', 'workflowTaskAttempt', 'attempt', 'attempt_number']),
+    firstArrayObjectIntegerValue(body?.result?.tasks, ['workflow_task_attempt', 'workflowTaskAttempt', 'attempt', 'attempt_number']),
   );
 }
 
@@ -1637,6 +1643,7 @@ async function invokeCliOperation({
     surfaceName,
     pairingClass,
     operationGroup,
+    requestTemplate,
     method,
     requestPath,
     context,
@@ -1754,6 +1761,7 @@ async function invokePythonSdkOperation({
     surfaceName,
     pairingClass,
     operationGroup,
+    requestTemplate,
     method,
     requestPath,
     context,
@@ -1793,19 +1801,18 @@ async function invokeWorkflowWorkerOperation({
     task_id: taskIdForPublishedWorkerProbe(state, pairingClass),
     workflow_task_attempt: state.workflowTaskAttempt ?? 1,
   };
-  const docker = phpDockerInvocation(availability, script, payload);
-
-  return runArtifactWithProxy({
+  return runPhpArtifactWithProxyFallback({
     surfaceName,
     pairingClass,
     operationGroup,
+    requestTemplate,
     method,
     requestPath,
     context,
     pairing,
-    command: docker.command,
-    args: docker.args,
-    artifactProxyHost: docker.artifactProxyHost,
+    availability,
+    script,
+    payload,
     env: {
       DW_SKEW_AUTH_TOKEN: process.env.DW_SKEW_AUTH_TOKEN ?? 'dev-token',
     },
@@ -1834,23 +1841,23 @@ async function invokeWaterlineOperation({
     workflow_id: state.workflowId,
     request_path: requestPath,
   };
-  const docker = phpDockerInvocation(availability, script, payload);
   const targetUrl = operationGroup === 'waterline_render'
     ? availability.surfaceUrl
     : null;
 
-  return runArtifactWithProxy({
+  return runPhpArtifactWithProxyFallback({
     surfaceName,
     pairingClass,
     operationGroup,
+    requestTemplate,
     method,
     requestPath,
     targetUrl,
     context,
     pairing,
-    command: docker.command,
-    args: docker.args,
-    artifactProxyHost: docker.artifactProxyHost,
+    availability,
+    script,
+    payload,
     env: {
       DW_SKEW_AUTH_TOKEN: process.env.DW_SKEW_AUTH_TOKEN ?? 'dev-token',
     },
@@ -1858,16 +1865,74 @@ async function invokeWaterlineOperation({
   });
 }
 
-function phpDockerInvocation(availability, script, payload) {
+async function runPhpArtifactWithProxyFallback({
+  availability,
+  script,
+  payload,
+  ...options
+}) {
+  const strategies = envValue('DW_SKEW_DISABLE_PHP_HOST_NETWORK_FALLBACK') === '1'
+    ? ['host-gateway']
+    : ['host-gateway', 'host-network'];
+  let firstResult = null;
+
+  for (const strategy of strategies) {
+    const docker = phpDockerInvocation(availability, script, payload, strategy);
+    const result = await runArtifactWithProxy({
+      ...options,
+      command: docker.command,
+      args: docker.args,
+      artifactProxyHost: docker.artifactProxyHost,
+      dockerNetworkStrategy: docker.dockerNetworkStrategy,
+    });
+
+    if (firstResult === null) {
+      firstResult = result;
+    } else {
+      result.artifact_invocation.previous_proxy_attempt = phpProxyAttemptSummary(firstResult);
+    }
+
+    if (!phpProxyRetryable(result, strategy)) {
+      return result;
+    }
+  }
+
+  return firstResult;
+}
+
+function phpProxyRetryable(result, strategy) {
+  return strategy === 'host-gateway'
+    && result?.wire_evidence_gap !== null
+    && Array.isArray(result?.proxy_captures)
+    && result.proxy_captures.length === 0
+    && result?.artifact_invocation?.response_source === 'no_matched_proxy_capture';
+}
+
+function phpProxyAttemptSummary(result) {
+  return {
+    docker_network_strategy: result?.artifact_invocation?.docker_network_strategy ?? null,
+    response_source: result?.artifact_invocation?.response_source ?? null,
+    exit_code: result?.artifact_invocation?.exit_code ?? null,
+    timed_out: result?.artifact_invocation?.timed_out ?? null,
+    proxy_capture_count: Array.isArray(result?.proxy_captures) ? result.proxy_captures.length : 0,
+    wire_evidence_gap: result?.wire_evidence_gap?.reason ?? null,
+    stdout_excerpt: result?.artifact_invocation?.stdout_excerpt ?? '',
+    stderr_excerpt: result?.artifact_invocation?.stderr_excerpt ?? '',
+  };
+}
+
+function phpDockerInvocation(availability, script, payload, dockerNetworkStrategy = 'host-gateway') {
   const artifactProxyHost = envValue('DW_SKEW_DOCKER_HOST_GATEWAY_NAME') || 'host.docker.internal';
+  const networkArgs = dockerNetworkStrategy === 'host-network'
+    ? ['--network', 'host']
+    : ['--add-host', `${artifactProxyHost}:host-gateway`];
 
   return {
     command: 'docker',
     args: [
       'run',
       '--rm',
-      '--add-host',
-      `${artifactProxyHost}:host-gateway`,
+      ...networkArgs,
       '-e',
       'DW_SKEW_AUTH_TOKEN',
       '-v',
@@ -1881,7 +1946,8 @@ function phpDockerInvocation(availability, script, payload) {
       '/tmp/dw-skew-probe.php',
       JSON.stringify(payload),
     ],
-    artifactProxyHost,
+    artifactProxyHost: dockerNetworkStrategy === 'host-network' ? null : artifactProxyHost,
+    dockerNetworkStrategy,
   };
 }
 
@@ -2313,10 +2379,12 @@ async function runArtifactWithProxy({
   surfaceName,
   pairingClass,
   operationGroup,
+  requestTemplate,
   method,
   requestPath,
   targetUrl = null,
   artifactProxyHost = null,
+  dockerNetworkStrategy = null,
   context,
   pairing,
   command,
@@ -2339,7 +2407,7 @@ async function runArtifactWithProxy({
     }, timeoutMs);
   });
 
-  const exactCapture = selectProxyCapture(proxyResult.captures, method, requestPath);
+  const exactCapture = selectProxyCapture(proxyResult.captures, method, requestPath, requestTemplate);
   const stdoutJson = parseJson(proxyResult.process.stdout.trim());
   const artifactResponse = artifactOutputResponse(surfaceName, operationGroup, stdoutJson);
   const artifactOutputAuthoritative = surfaceName === 'waterline'
@@ -2449,6 +2517,7 @@ async function runArtifactWithProxy({
       args: redactCommandArgs(proxyResult.process.args),
       exit_code: proxyResult.process.exitCode,
       timed_out: proxyResult.process.timedOut,
+      ...(dockerNetworkStrategy ? { docker_network_strategy: dockerNetworkStrategy } : {}),
       stdout_excerpt: redactKnownSecrets(proxyResult.process.stdout.slice(0, 4000)),
       stderr_excerpt: redactKnownSecrets(proxyResult.process.stderr.slice(0, 4000)),
       matched_proxy_capture: matchedCapture?.id ?? null,
@@ -2737,11 +2806,56 @@ function runProcess(command, args, env, timeoutMs) {
   });
 }
 
-function selectProxyCapture(captures, method, requestPath) {
+function selectProxyCapture(captures, method, requestPath, requestTemplate = '') {
   const normalized = normalizeOperationRequest(`${method} ${requestPath}`);
-  return captures.find((capture) => normalizeOperationRequest(
+  const exact = captures.find((capture) => normalizeOperationRequest(
     `${capture.request.method} ${capture.request.path}`,
   ) === normalized) ?? null;
+
+  if (exact !== null) {
+    return exact;
+  }
+
+  const normalizedTemplate = normalizeOperationRequest(requestTemplate);
+  if (normalizedTemplate === '' || !normalizedTemplate.includes('{')) {
+    return null;
+  }
+
+  return captures.find((capture) => operationRequestMatchesTemplate(
+    normalizedTemplate,
+    normalizeOperationRequest(`${capture.request.method} ${capture.request.path}`),
+  )) ?? null;
+}
+
+function operationRequestMatchesTemplate(templateRequest, observedRequest) {
+  const template = splitOperationRequest(templateRequest);
+  const observed = splitOperationRequest(observedRequest);
+  if (template.method !== observed.method) {
+    return false;
+  }
+
+  return operationPathTemplateRegex(template.path).test(observed.path);
+}
+
+function splitOperationRequest(value) {
+  const normalized = normalizeOperationRequest(value);
+  const [method, ...pathParts] = normalized.split(' ');
+
+  return {
+    method: stringValue(method) || 'GET',
+    path: pathParts.join(' ') || '/',
+  };
+}
+
+function operationPathTemplateRegex(pathTemplate) {
+  const pattern = pathTemplate
+    .split('/')
+    .map((segment) => /^\{[^/{}]+\}$/.test(segment)
+      ? '[^/]+'
+      : segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('/');
+
+  return new RegExp(`^${pattern}$`);
 }
 
 function normalizedCaptureRequest(capture) {
@@ -2936,6 +3050,25 @@ function firstArrayObjectStringValue(values, fields) {
   }
 
   return '';
+}
+
+function firstArrayObjectIntegerValue(values, fields) {
+  if (!Array.isArray(values)) {
+    return null;
+  }
+
+  for (const value of values) {
+    if (!value || typeof value !== 'object') {
+      continue;
+    }
+
+    const candidate = firstIntegerValue(...fields.map((field) => value[field]));
+    if (candidate !== null) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 function pairingState(context, surfaceName, pairingClass) {
