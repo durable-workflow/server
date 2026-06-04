@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use App\Support\SkewRefusalMatrixContract;
 use App\Support\SkewRefusalMatrixResultGate;
+use App\Support\WorkerProtocol;
 use PHPUnit\Framework\TestCase;
 use Workflow\V2\Support\PlatformConformanceSuite;
 
@@ -186,6 +187,70 @@ final class SkewRefusalMatrixContractTest extends TestCase
         $this->assertContains(
             'waterline_render',
             $manifest['required_surfaces']['waterline']['operation_groups'],
+        );
+    }
+
+    public function test_skew_runner_pairing_protocol_window_tracks_server_protocol(): void
+    {
+        $runner = $this->read('scripts/conformance/skew-published-artifacts.mjs');
+        [$major, $minor] = array_map('intval', explode('.', WorkerProtocol::VERSION, 2));
+        $previousMinor = sprintf('%d.%d', $major, $minor - 1);
+        $nextMinor = sprintf('%d.%d', $major, $minor + 1);
+
+        $this->assertGreaterThan(
+            0,
+            $minor,
+            'the skew runner backward row assumes the current server protocol has an older same-major minor to exercise',
+        );
+        $this->assertMatchesRegularExpression(
+            "/const serverWorkerProtocolVersion = '".preg_quote(WorkerProtocol::VERSION, '/')."';/",
+            $runner,
+            'the skew runner compatible row must track the worker protocol advertised by the server',
+        );
+        $this->assertMatchesRegularExpression(
+            "/const backwardWorkerProtocolVersion = '".preg_quote($previousMinor, '/')."';/",
+            $runner,
+            'the backward worker-protocol row must be the previous same-major minor',
+        );
+        $this->assertMatchesRegularExpression(
+            "/const forwardWorkerProtocolVersion = '".preg_quote($nextMinor, '/')."';/",
+            $runner,
+            'the forward worker-protocol row must be the next same-major minor',
+        );
+        $this->assertStringContainsString(
+            'workerProtocolVersion: serverWorkerProtocolVersion',
+            $runner,
+            'compatible skew rows must exercise the current server worker protocol',
+        );
+        $this->assertStringContainsString(
+            'workerProtocolVersion: backwardWorkerProtocolVersion',
+            $runner,
+            'backward skew rows must exercise an older same-major worker protocol',
+        );
+        $this->assertStringContainsString(
+            'workerProtocolVersion: forwardWorkerProtocolVersion',
+            $runner,
+            'forward skew rows must exercise a newer same-major worker protocol',
+        );
+        $this->assertStringContainsString(
+            'workerProtocolCompatibilityWindow',
+            $runner,
+            'pairing classes must share one worker-protocol compatibility window string',
+        );
+        $this->assertStringContainsString(
+            'supported_version: stringValue(clusterInfo?.worker_protocol?.version) || serverWorkerProtocolVersion',
+            $runner,
+            'generated conformance evidence must fall back to the current server worker protocol',
+        );
+        $this->assertStringNotContainsString(
+            'same-major <= 1.8',
+            $runner,
+            'the published skew runner must not keep the stale 1.8 server compatibility window',
+        );
+        $this->assertStringNotContainsString(
+            'worker protocol 1.x minors <= 1.8',
+            $runner,
+            'the published skew runner must not emit stale 1.8 window text for backward or forward rows',
         );
     }
 

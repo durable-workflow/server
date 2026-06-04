@@ -166,30 +166,35 @@ const surfaces = {
   },
 };
 
+const serverWorkerProtocolVersion = '1.9';
+const backwardWorkerProtocolVersion = '1.8';
+const forwardWorkerProtocolVersion = '1.10';
+const workerProtocolCompatibilityWindow = `server supports control-plane 2 and worker protocol 1.x minors <= ${serverWorkerProtocolVersion}`;
+
 const pairingClasses = {
   compatible: {
     controlPlaneVersion: '2',
-    workerProtocolVersion: '1.8',
+    workerProtocolVersion: serverWorkerProtocolVersion,
     expected: 'inside-window interop',
-    compatibilityWindow: 'control-plane version 2; worker protocol same-major <= 1.8',
+    compatibilityWindow: `control-plane version 2; worker protocol same-major <= ${serverWorkerProtocolVersion}`,
   },
   backward_skew: {
     controlPlaneVersion: '1',
-    workerProtocolVersion: '1.7',
+    workerProtocolVersion: backwardWorkerProtocolVersion,
     expected: 'inside-window interop or loud refusal before unsupported shape',
-    compatibilityWindow: 'server supports control-plane 2 and worker protocol 1.x minors <= 1.8',
+    compatibilityWindow: workerProtocolCompatibilityWindow,
   },
   forward_skew: {
     controlPlaneVersion: '3',
-    workerProtocolVersion: '1.9',
+    workerProtocolVersion: forwardWorkerProtocolVersion,
     expected: 'inside-window interop or loud refusal before unsupported shape',
-    compatibilityWindow: 'server supports control-plane 2 and worker protocol 1.x minors <= 1.8',
+    compatibilityWindow: workerProtocolCompatibilityWindow,
   },
   outside_window: {
     controlPlaneVersion: '999',
     workerProtocolVersion: '2.0',
     expected: 'loud refusal before mutation, registration, dropped work, or stale render',
-    compatibilityWindow: 'outside supported control-plane 2 and worker protocol same-major <= 1.8 window',
+    compatibilityWindow: `outside supported control-plane 2 and worker protocol same-major <= ${serverWorkerProtocolVersion} window`,
   },
 };
 
@@ -3456,7 +3461,7 @@ function compatibilityWindowReport(clusterInfo) {
       window: 'exact control-plane version match required',
     },
     worker_protocol: {
-      supported_version: stringValue(clusterInfo?.worker_protocol?.version) || '1.8',
+      supported_version: stringValue(clusterInfo?.worker_protocol?.version) || serverWorkerProtocolVersion,
       enforced_header: stringValue(clusterInfo?.worker_protocol?.header) || 'X-Durable-Workflow-Protocol-Version',
       window: 'same major and client minor <= server minor',
     },

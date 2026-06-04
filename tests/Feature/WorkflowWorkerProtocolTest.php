@@ -294,21 +294,10 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('worker_id', 'php-worker-register')
             ->assertJsonPath('registered', true)
             ->assertJsonPath('server_capabilities.long_poll_timeout', 0)
-            ->assertJsonFragment([
-                'supported_workflow_task_commands' => [
-                    'complete_workflow',
-                    'fail_workflow',
-                    'continue_as_new',
-                    'schedule_activity',
-                    'start_timer',
-                    'start_child_workflow',
-                    'complete_update',
-                    'fail_update',
-                    'record_side_effect',
-                    'record_version_marker',
-                    'upsert_search_attributes',
-                ],
-            ]);
+            ->assertJsonPath(
+                'server_capabilities.supported_workflow_task_commands',
+                WorkerProtocol::supportedWorkflowTaskCommands(),
+            );
 
         $this->withHeaders([
             'X-Namespace' => 'default',
@@ -1328,6 +1317,68 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonPath('workflow_task_attempt', $attempt)
             ->assertJsonPath('recorded', true)
             ->assertJsonPath('run_status', 'waiting');
+    }
+
+    public function test_completion_accepts_open_signal_wait_command_and_records_wait(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-open-signal-wait',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $runId = (string) $start->json('run_id');
+
+        $this->registerWorker('php-worker-open-signal-wait', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-open-signal-wait',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+        $leaseOwner = (string) $poll->json('task.lease_owner');
+
+        $complete = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                'lease_owner' => $leaseOwner,
+                'workflow_task_attempt' => $attempt,
+                'commands' => [
+                    [
+                        'type' => 'open_signal_wait',
+                        'signal_name' => 'advance',
+                        'timeout_seconds' => 45,
+                    ],
+                ],
+            ]);
+
+        $complete->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('run_status', 'waiting');
+
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->firstOrFail();
+
+        $this->assertSame('advance', $opened->payload['signal_name'] ?? null);
+        $this->assertSame(45, $opened->payload['timeout_seconds'] ?? null);
+        $this->assertIsString($opened->payload['signal_wait_id'] ?? null);
     }
 
     public function test_completion_returns_422_when_structural_limit_exceeded(): void

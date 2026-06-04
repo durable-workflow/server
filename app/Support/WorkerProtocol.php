@@ -16,7 +16,7 @@ class WorkerProtocol
      * here. WorkflowPackageApiFloor asserts the installed package still
      * provides the companion protocol helpers for this version.
      */
-    public const VERSION = '1.8';
+    public const VERSION = '1.9';
 
     public const HEADER = 'X-Durable-Workflow-Protocol-Version';
 

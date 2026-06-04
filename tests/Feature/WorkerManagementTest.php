@@ -365,19 +365,35 @@ class WorkerManagementTest extends TestCase
         StandaloneWorkerVisibility::recordCompatibility('default', 'worker-a', 'queue', 'build-v1');
         StandaloneWorkerVisibility::recordCompatibility('default', 'worker-b', 'queue', 'build-v2');
 
-        self::assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-v1', null, 'queue'));
-        self::assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-v2', null, 'queue'));
+        $buildV1BeforeDeregister = WorkerCompatibilityFleet::detailsForNamespace('default', 'build-v1', null, 'queue');
+        $buildV2BeforeDeregister = WorkerCompatibilityFleet::detailsForNamespace('default', 'build-v2', null, 'queue');
+
+        self::assertSame(['worker-a', 'worker-b'], array_column($buildV1BeforeDeregister, 'worker_id'));
+        self::assertTrue($buildV1BeforeDeregister[0]['supports_required']);
+        self::assertFalse($buildV1BeforeDeregister[1]['supports_required']);
+        self::assertSame(['worker-a', 'worker-b'], array_column($buildV2BeforeDeregister, 'worker_id'));
+        self::assertFalse($buildV2BeforeDeregister[0]['supports_required']);
+        self::assertTrue($buildV2BeforeDeregister[1]['supports_required']);
 
         $this->deleteJson('/api/workers/worker-a', [], $this->apiHeaders())
             ->assertOk()
             ->assertJsonPath('outcome', 'deregistered');
 
-        self::assertSame([], WorkerCompatibilityFleet::detailsForNamespace('default', 'build-v1', null, 'queue'));
-        self::assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-v2', null, 'queue'));
+        $buildV1AfterDeregister = WorkerCompatibilityFleet::detailsForNamespace('default', 'build-v1', null, 'queue');
+        $buildV2AfterDeregister = WorkerCompatibilityFleet::detailsForNamespace('default', 'build-v2', null, 'queue');
+
+        self::assertSame(['worker-b'], array_column($buildV1AfterDeregister, 'worker_id'));
+        self::assertFalse($buildV1AfterDeregister[0]['supports_required']);
+        self::assertSame(['worker-b'], array_column($buildV2AfterDeregister, 'worker_id'));
+        self::assertTrue($buildV2AfterDeregister[0]['supports_required']);
 
         StandaloneWorkerVisibility::recordCompatibility('default', 'worker-a', 'queue', 'build-v1');
 
-        self::assertCount(1, WorkerCompatibilityFleet::detailsForNamespace('default', 'build-v1', null, 'queue'));
+        $buildV1AfterReregister = WorkerCompatibilityFleet::detailsForNamespace('default', 'build-v1', null, 'queue');
+
+        self::assertSame(['worker-a', 'worker-b'], array_column($buildV1AfterReregister, 'worker_id'));
+        self::assertTrue($buildV1AfterReregister[0]['supports_required']);
+        self::assertFalse($buildV1AfterReregister[1]['supports_required']);
     }
 
     public function test_deregister_returns_404_for_unknown_worker(): void
