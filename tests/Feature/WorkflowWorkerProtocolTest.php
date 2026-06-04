@@ -676,16 +676,10 @@ class WorkflowWorkerProtocolTest extends TestCase
                     ];
                 });
 
-            $paginatedHistoryPayload = array_merge($historyPayload, [
-                'after_sequence' => 0,
-                'page_size' => 500,
-                'has_more' => false,
-                'next_after_sequence' => null,
-            ]);
-
-            $mock->shouldReceive('historyPayloadPaginated')
+            $mock->shouldReceive('historyPayload')
                 ->times(2)
-                ->andReturn($paginatedHistoryPayload, $paginatedHistoryPayload);
+                ->with($task->id)
+                ->andReturn($historyPayload, $historyPayload);
 
             $mock->shouldReceive('heartbeat')
                 ->andReturnUsing(function (string $heartbeatTaskId) use ($leaseExpiresAt): array {
@@ -1544,8 +1538,9 @@ class WorkflowWorkerProtocolTest extends TestCase
                     'reason_detail' => null,
                 ]);
 
-            $mock->shouldReceive('historyPayloadPaginated')
+            $mock->shouldReceive('historyPayload')
                 ->once()
+                ->with('wf-task-missing-row')
                 ->andReturn(null);
         });
 
@@ -3654,6 +3649,96 @@ class WorkflowWorkerProtocolTest extends TestCase
         );
     }
 
+    public function test_poll_response_returns_complete_history_when_history_page_size_is_not_requested(): void
+    {
+        Queue::fake();
+
+        config()->set('server.worker_protocol.history_page_size_default', 2);
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-unpaginated-history',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Ada'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->registerWorker('php-worker-unpaginated-history', 'external-workflows');
+        $this->registerWorker(
+            'php-worker-unpaginated-activity',
+            'external-activities',
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+        );
+
+        $firstPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-unpaginated-history',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $firstPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-unpaginated-history');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson(sprintf('/api/worker/workflow-tasks/%s/complete', $firstPoll->json('task.task_id')), [
+                'lease_owner' => $firstPoll->json('task.lease_owner'),
+                'workflow_task_attempt' => $firstPoll->json('task.workflow_task_attempt'),
+                'commands' => [
+                    [
+                        'type' => 'schedule_activity',
+                        'activity_type' => 'tests.external-greeting-activity',
+                        'arguments' => Serializer::serializeWithCodec((string) config('workflows.serializer'), ['Ada']),
+                        'queue' => 'external-activities',
+                    ],
+                ],
+            ])
+            ->assertOk()
+            ->assertJsonPath('run_status', 'waiting');
+
+        $activityPoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'php-worker-unpaginated-activity',
+                'task_queue' => 'external-activities',
+            ]);
+
+        $activityPoll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-unpaginated-history')
+            ->assertJsonPath('task.activity_type', 'tests.external-greeting-activity');
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson(sprintf('/api/worker/activity-tasks/%s/complete', $activityPoll->json('task.task_id')), [
+                'activity_attempt_id' => $activityPoll->json('task.activity_attempt_id'),
+                'lease_owner' => $activityPoll->json('task.lease_owner'),
+                'result' => 'Hello, Ada!',
+            ])
+            ->assertOk()
+            ->assertJsonPath('recorded', true);
+
+        $resumePoll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-unpaginated-history',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $resumePoll->assertOk()
+            ->assertJsonPath('task.workflow_id', 'wf-unpaginated-history');
+
+        $events = (array) $resumePoll->json('task.history_events');
+        $eventTypes = array_column($events, 'event_type');
+
+        $this->assertGreaterThan(2, count($events));
+        $this->assertSame(count($events), $resumePoll->json('task.total_history_events'));
+        $this->assertNull($resumePoll->json('task.next_history_page_token'));
+        $this->assertContains('ActivityScheduled', $eventTypes);
+        $this->assertContains('ActivityStarted', $eventTypes);
+        $this->assertContains('ActivityCompleted', $eventTypes);
+    }
+
     public function test_poll_response_includes_all_history_events_when_within_default_page_size(): void
     {
         Queue::fake();
@@ -3960,8 +4045,9 @@ class WorkflowWorkerProtocolTest extends TestCase
                     'reason_detail' => null,
                 ]);
 
-            $mock->shouldReceive('historyPayloadPaginated')
+            $mock->shouldReceive('historyPayload')
                 ->once()
+                ->with('wf-task-compress')
                 ->andReturn([
                     'task_id' => 'wf-task-compress',
                     'workflow_run_id' => 'run-compress',
@@ -3972,10 +4058,6 @@ class WorkflowWorkerProtocolTest extends TestCase
                     'arguments' => null,
                     'run_status' => 'pending',
                     'last_history_sequence' => 60,
-                    'after_sequence' => 0,
-                    'page_size' => 500,
-                    'has_more' => false,
-                    'next_after_sequence' => null,
                     'history_events' => $events,
                 ]);
         });
@@ -3996,6 +4078,7 @@ class WorkflowWorkerProtocolTest extends TestCase
         $this->assertNotNull($poll->json('task.history_events_compressed'));
         $this->assertSame('gzip', $poll->json('task.history_events_encoding'));
         $this->assertSame([], $poll->json('task.history_events'));
+        $this->assertSame(60, $poll->json('task.total_history_events'));
 
         // Verify the compressed payload is decompressible.
         $compressed = base64_decode($poll->json('task.history_events_compressed'), true);

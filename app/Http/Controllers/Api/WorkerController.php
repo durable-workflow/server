@@ -678,12 +678,10 @@ class WorkerController
             'server.worker_protocol.history_page_size_max',
             WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE,
         );
-        $defaultPageSize = (int) config(
-            'server.worker_protocol.history_page_size_default',
-            WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
-        );
         $requestedPageSize = $validated['history_page_size'] ?? null;
-        $pageSize = min($requestedPageSize ?? $defaultPageSize, $maxPageSize);
+        $pageSize = $requestedPageSize === null
+            ? null
+            : min((int) $requestedPageSize, $maxPageSize);
 
         $acceptHistoryEncoding = $validated['accept_history_encoding'] ?? null;
 
@@ -1851,10 +1849,12 @@ class WorkerController
         $hasMore = $task['has_more'] ?? false;
         $nextAfterSequence = $task['next_after_sequence'] ?? null;
 
-        // total_history_events is set by the poller from last_history_sequence
-        // when pagination metadata is present, or defaults to event count.
+        // Prefer the run's last sequence when the poller did not already set
+        // a total; compressed responses intentionally carry an empty event list.
         if (! isset($task['total_history_events'])) {
-            $task['total_history_events'] = count($task['history_events'] ?? []);
+            $task['total_history_events'] = isset($task['last_history_sequence'])
+                ? (int) $task['last_history_sequence']
+                : count($task['history_events'] ?? []);
         }
 
         $task['next_history_page_token'] = ($hasMore && $nextAfterSequence !== null)
