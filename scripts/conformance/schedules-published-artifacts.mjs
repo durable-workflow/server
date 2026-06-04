@@ -559,6 +559,7 @@ async function runCadenceShard({ startedAt, artifactVersions, artifactSources, s
 
   try {
     await waitForServerReady(serverUrl, 120);
+    await ensureNamespace(serverUrl, token, namespace);
 
     const cronScheduleId = `${runId}-cron`;
     const fixedRateScheduleId = `${runId}-fixed-rate`;
@@ -1214,6 +1215,11 @@ async function downloadUrlToFile(url, filePath) {
 }
 
 async function ensureNamespace(serverUrl, token, namespace) {
+  const normalized = stringValue(namespace).toLowerCase();
+  if (normalized === '') {
+    return;
+  }
+
   const base = serverUrl.replace(/\/+$/, '');
   const response = await fetch(`${base}/api/namespaces`, {
     method: 'POST',
@@ -1224,8 +1230,8 @@ async function ensureNamespace(serverUrl, token, namespace) {
       'X-Durable-Workflow-Control-Plane-Version': '2',
     },
     body: JSON.stringify({
-      name: namespace,
-      description: 'Schedules conformance CLI surface namespace',
+      name: normalized,
+      description: 'Schedules conformance namespace',
       retention_days: 1,
     }),
   });
