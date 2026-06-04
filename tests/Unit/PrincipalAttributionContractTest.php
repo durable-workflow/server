@@ -581,13 +581,17 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('python_linked_findings: list[dict[str, Any]] = []', $script);
         $this->assertStringContainsString('linked_findings=python_linked_findings', $script);
         $this->assertStringContainsString('"python_sdk_visibility", "sdk-python"', $script);
-        $this->assertStringContainsString('operation_outputs=python_operation.get("operation_outputs")', $script);
+        $this->assertStringContainsString('def sdk_operation_outputs(', $script);
+        $this->assertStringContainsString('"source": "normalized_from_fire_and_forget_sdk_result"', $script);
+        $this->assertStringContainsString('python_operation_outputs = sdk_operation_outputs(python_operation, python_client_id, "sdk-python")', $script);
+        $this->assertStringContainsString('operation_outputs=python_operation_outputs', $script);
         $this->assertStringContainsString('run_php_client_operation', $script);
         $this->assertStringContainsString('php_operation = run_php_client_operation(php_client_id)', $script);
         $this->assertStringContainsString('php_linked_findings: list[dict[str, Any]] = []', $script);
         $this->assertStringContainsString('linked_findings=php_linked_findings', $script);
         $this->assertStringContainsString('"php_client_visibility", "workflow"', $script);
-        $this->assertStringContainsString('operation_outputs=php_operation.get("operation_outputs")', $script);
+        $this->assertStringContainsString('php_operation_outputs = sdk_operation_outputs(php_operation, php_client_id, "workflow-php")', $script);
+        $this->assertStringContainsString('operation_outputs=php_operation_outputs', $script);
         $this->assertStringNotContainsString('Python SDK client operation was not exercised by this runner revision', $script);
         $this->assertStringNotContainsString('PHP client operation was not exercised by this runner revision', $script);
         $this->assertStringContainsString('waterline:principal-attribution-conformance', $script);
@@ -1239,6 +1243,25 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertContains('sdk_recorded_principal_mismatch', $codes);
         $this->assertContains('sdk_history_api_principal_sample_mismatch', $codes);
         $this->assertContains('missing_sdk_operation_output', $codes);
+    }
+
+    public function test_result_gate_accepts_explicit_fire_and_forget_sdk_signal_evidence(): void
+    {
+        $result = $this->completePrincipalAttributionResult();
+        foreach (['python_sdk_visibility', 'php_client_visibility'] as $scenarioId) {
+            $result['scenario_results'][$scenarioId]['operation_outputs']['signal_workflow'] = [
+                'workflow_id' => 'pa-sdk',
+                'signal_name' => 'nudge',
+                'accepted' => true,
+                'raw_response' => null,
+                'source' => 'normalized_from_fire_and_forget_sdk_result',
+            ];
+        }
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $evaluation['gate_failures']);
     }
 
     public function test_result_gate_rejects_bare_string_links_for_non_pass_scenarios(): void

@@ -1661,6 +1661,37 @@ def principal_shape_matches_http(principal: Any, reference: Any) -> bool:
     return signature == reference_signature
 
 
+def sdk_operation_outputs(operation: dict[str, Any], workflow_id: str, client_name: str) -> dict[str, Any]:
+    raw_outputs = operation.get("operation_outputs")
+    outputs = raw_outputs if isinstance(raw_outputs, dict) else {}
+
+    start_output = outputs.get("start_workflow")
+    if not isinstance(start_output, dict) or start_output == {}:
+        start_output = {
+            "client": client_name,
+            "workflow_id": workflow_id,
+            "run_id": operation.get("run_id"),
+            "accepted": operation.get("status") == "pass" and isinstance(operation.get("run_id"), str),
+            "source": "normalized_from_sdk_result",
+        }
+
+    signal_output = outputs.get("signal_workflow")
+    if not isinstance(signal_output, dict) or signal_output == {}:
+        signal_output = {
+            "client": client_name,
+            "workflow_id": workflow_id,
+            "signal_name": "nudge",
+            "accepted": operation.get("status") == "pass",
+            "source": "normalized_from_fire_and_forget_sdk_result",
+            "raw_response": signal_output,
+        }
+
+    return {
+        "start_workflow": start_output,
+        "signal_workflow": signal_output,
+    }
+
+
 def principal_samples(principals: dict[str, Any], event_types: list[str] | None = None) -> dict[str, Any]:
     selected = event_types if event_types is not None else sorted(principals)
 
@@ -2459,6 +2490,7 @@ def main() -> int:
     python_expected_principal = {"type": "auth:token", "id": "bob"}
     python_raw_http_reference_principal = main_principals.get("SignalReceived")
     python_recorded_principal = python_principals.get("SignalReceived") or python_principals.get("WorkflowStarted")
+    python_operation_outputs = sdk_operation_outputs(python_operation, python_client_id, "sdk-python")
     python_failures = list(python_operation.get("errors", [])) if isinstance(python_operation.get("errors"), list) else []
     if python_operation.get("status") != "pass":
         python_failures.append(f"Python SDK operation status={python_operation.get('status')}")
@@ -2485,7 +2517,7 @@ def main() -> int:
         expected_principal=python_expected_principal,
         raw_http_reference_principal=python_raw_http_reference_principal,
         history_api_principal_samples=principal_samples(python_principals, ["WorkflowStarted", "SignalReceived"]),
-        operation_outputs=python_operation.get("operation_outputs"),
+        operation_outputs=python_operation_outputs,
         operation_output_sample=python_operation.get("output"),
         recorded_principal=python_recorded_principal,
         shape_matches_http=python_shape_matches_http,
@@ -2497,6 +2529,7 @@ def main() -> int:
     php_expected_principal = {"type": "auth:token", "id": "alice"}
     php_raw_http_reference_principal = main_principals.get("WorkflowStarted")
     php_recorded_principal = php_principals.get("SignalReceived") or php_principals.get("WorkflowStarted")
+    php_operation_outputs = sdk_operation_outputs(php_operation, php_client_id, "workflow-php")
     php_failures = list(php_operation.get("errors", [])) if isinstance(php_operation.get("errors"), list) else []
     if php_operation.get("status") != "pass":
         php_failures.append(f"PHP client operation status={php_operation.get('status')}")
@@ -2523,7 +2556,7 @@ def main() -> int:
         expected_principal=php_expected_principal,
         raw_http_reference_principal=php_raw_http_reference_principal,
         history_api_principal_samples=principal_samples(php_principals, ["WorkflowStarted", "SignalReceived"]),
-        operation_outputs=php_operation.get("operation_outputs"),
+        operation_outputs=php_operation_outputs,
         operation_output_sample=php_operation.get("output"),
         recorded_principal=php_recorded_principal,
         shape_matches_http=php_shape_matches_http,
