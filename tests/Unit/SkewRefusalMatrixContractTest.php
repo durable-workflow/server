@@ -747,6 +747,21 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'published-artifact complete/fail probes must use the attempt returned by the fixture poll',
         );
         $this->assertStringContainsString(
+            'pollWorkflowTaskFixture',
+            $runner,
+            'inside-window worker complete/fail fixtures must retry compatible poll setup instead of marking the cell uncovered after one empty poll',
+        );
+        $this->assertStringContainsString(
+            'poll_request_id: `fixture-${context.runId}-${normalizeRequestKey(requestTemplate)}-${attempt}`',
+            $runner,
+            'fixture poll retries must use distinct request ids so server-side idempotency does not replay an earlier empty poll',
+        );
+        $this->assertStringContainsString(
+            'body?.task?.workflow_task_id',
+            $runner,
+            'fixture task-id extraction must accept workflow_task_id aliases returned by published server poll responses',
+        );
+        $this->assertStringContainsString(
             'workflow_task_attempt: state.workflowTaskAttempt ?? 1',
             $runner,
             'generated worker probe payloads must carry the leased workflow task attempt',
@@ -1174,6 +1189,16 @@ PHP,
             'artifact_compatibility_refusal',
             $runner,
             'client-side compatibility refusals must be typed so refusal evidence names the skew context',
+        );
+        $this->assertStringContainsString(
+            'artifactOutputPayloads(stdoutJson)',
+            $runner,
+            'nested PHP probe output must be scanned for compatibility refusals, not only top-level JSON fields',
+        );
+        $this->assertStringContainsString(
+            'payload.ok === false',
+            $runner,
+            'PHP probes report thrown client refusals as response.ok=false, which must count as artifact-side refusal evidence',
         );
         $this->assertStringContainsString(
             "const artifactRefusal = pairingClass !== 'compatible'",

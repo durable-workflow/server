@@ -1248,16 +1248,13 @@ async function prepareWorkerTaskFixture({
 
   let pollResponse;
   try {
-    pollResponse = await requestJson(
-      context.serverUrl,
-      'POST',
-      '/api/worker/workflow-tasks/poll',
+    pollResponse = await pollWorkflowTaskFixture({
+      context,
       workerHeaders,
-      {
-        worker_id: workerId,
-        task_queue: taskQueue,
-      },
-    );
+      workerId,
+      taskQueue,
+      requestTemplate,
+    });
   } catch (error) {
     return {
       status: 'runner_blocked',
@@ -1283,6 +1280,45 @@ async function prepareWorkerTaskFixture({
   Object.assign(state, fixture);
 
   return null;
+}
+
+async function pollWorkflowTaskFixture({
+  context,
+  workerHeaders,
+  workerId,
+  taskQueue,
+  requestTemplate,
+}) {
+  const attempts = Math.max(
+    1,
+    Math.min(5, Number.parseInt(process.env.DW_SKEW_WORKER_FIXTURE_POLL_ATTEMPTS ?? '2', 10) || 2),
+  );
+  let lastResponse = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const response = await requestJson(
+      context.serverUrl,
+      'POST',
+      '/api/worker/workflow-tasks/poll',
+      workerHeaders,
+      {
+        worker_id: workerId,
+        task_queue: taskQueue,
+        poll_request_id: `fixture-${context.runId}-${normalizeRequestKey(requestTemplate)}-${attempt}`,
+      },
+    );
+    lastResponse = response;
+
+    if (response.status >= 400 || response.status === 0 || workflowTaskIdFromBody(response.body)) {
+      return response;
+    }
+
+    if (attempt < attempts) {
+      await sleep(250);
+    }
+  }
+
+  return lastResponse;
 }
 
 async function prepareWorkflowFixture({
@@ -1480,18 +1516,26 @@ function workflowTaskIdFromBody(body) {
   return firstStringValue(
     body?.task?.task_id,
     body?.task?.taskId,
+    body?.task?.workflow_task_id,
+    body?.task?.workflowTaskId,
     body?.task?.id,
     body?.task_id,
     body?.taskId,
+    body?.workflow_task_id,
+    body?.workflowTaskId,
     body?.workflow_task?.task_id,
     body?.workflowTask?.taskId,
     body?.workflow_task?.id,
     body?.workflowTask?.id,
     body?.result?.task?.task_id,
     body?.result?.task?.taskId,
+    body?.result?.task?.workflow_task_id,
+    body?.result?.task?.workflowTaskId,
     body?.result?.task?.id,
     body?.result?.task_id,
     body?.result?.taskId,
+    body?.result?.workflow_task_id,
+    body?.result?.workflowTaskId,
     body?.result?.workflow_task?.task_id,
     body?.result?.workflowTask?.taskId,
     body?.result?.workflow_task?.id,
@@ -2417,13 +2461,13 @@ function artifactCompatibilityRefusalResponse({
 
 function artifactCompatibilityRefusalMessage(stdoutJson, processResult) {
   const candidates = [];
-  if (stdoutJson && typeof stdoutJson === 'object') {
+  for (const payload of artifactOutputPayloads(stdoutJson)) {
     candidates.push(
-      stringValue(stdoutJson.message),
-      stringValue(stdoutJson.reason),
-      stringValue(stdoutJson.exception_type),
-      JSON.stringify(redactJsonSecrets(stdoutJson.body ?? null)),
-      JSON.stringify(redactJsonSecrets(stdoutJson.errors ?? null)),
+      stringValue(payload.message),
+      stringValue(payload.reason),
+      stringValue(payload.exception_type),
+      JSON.stringify(redactJsonSecrets(payload.body ?? null)),
+      JSON.stringify(redactJsonSecrets(payload.errors ?? null)),
     );
   }
   candidates.push(processResult.stderr, processResult.stdout);
@@ -2435,7 +2479,11 @@ function artifactCompatibilityRefusalMessage(stdoutJson, processResult) {
 
   const artifactReportedFailure = processResult.exitCode !== 0
     || processResult.timedOut
-    || (stdoutJson && typeof stdoutJson === 'object' && stdoutJson.ok === false);
+    || artifactOutputPayloads(stdoutJson).some((payload) => (
+      payload.ok === false
+      || stringValue(payload.exception_type) !== ''
+      || ((integerValue(payload.status) ?? integerValue(payload.status_code) ?? 0) >= 400)
+    ));
   if (!artifactReportedFailure) {
     return '';
   }
@@ -2446,6 +2494,20 @@ function artifactCompatibilityRefusalMessage(stdoutJson, processResult) {
   }
 
   return text.slice(0, 2000);
+}
+
+function artifactOutputPayloads(stdoutJson) {
+  if (!stdoutJson || typeof stdoutJson !== 'object' || Array.isArray(stdoutJson)) {
+    return [];
+  }
+
+  return [
+    stdoutJson,
+    stdoutJson.response,
+    stdoutJson.result,
+    stdoutJson.error,
+    stdoutJson.artifact_response,
+  ].filter((payload) => payload && typeof payload === 'object' && !Array.isArray(payload));
 }
 
 function selectCompatibilityGuardCapture(captures, pairing, operationGroup) {
@@ -3363,6 +3425,10 @@ async function requestJson(baseUrl, method, requestPath, headers, body = undefin
     headers: Object.fromEntries(response.headers.entries()),
     body: parsed ?? text,
   };
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function extractServerVersion(clusterInfo) {
