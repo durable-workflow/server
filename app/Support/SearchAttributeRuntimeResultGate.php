@@ -10,7 +10,7 @@ final class SearchAttributeRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result-gate';
 
-    public const VERSION = 5;
+    public const VERSION = 7;
 
     /**
      * @return array<string, mixed>
@@ -56,6 +56,7 @@ final class SearchAttributeRuntimeResultGate
                 'codec_round_trips_compare_written_or_wire_values_to_decoded_attributes',
                 'query_verdict_expected_and_actual_counts_match',
                 'query_injection_required_rejection_probes_are_reported',
+                'waterline_operator_visibility_includes_operator_surface_matrix',
                 'each_pass_scenario_has_observed_outputs',
                 'each_pass_scenario_has_scenario_specific_evidence',
                 'each_non_pass_scenario_has_linked_findings',
@@ -63,6 +64,7 @@ final class SearchAttributeRuntimeResultGate
                 'overall_outcome_matches_gate_status',
                 'published_artifact_versions_are_recorded_and_pinned',
                 'no_local_product_source_artifacts_are_reported',
+                'runner_blocked_false_for_product_evidence',
             ],
             'smoke_subset_outcome' => 'non_passing',
         ];
@@ -324,6 +326,13 @@ final class SearchAttributeRuntimeResultGate
             ];
         }
 
+        $runnerBlocked = self::runnerBlockedValue($result);
+        if ($runnerBlocked !== null && $runnerBlocked !== false) {
+            $failures[] = [
+                'code' => 'runner_blocked_result_is_not_product_evidence',
+            ];
+        }
+
         return $failures;
     }
 
@@ -338,6 +347,7 @@ final class SearchAttributeRuntimeResultGate
             'finished_at' => self::hasScalarField($result, ['finished_at', 'finishedAt']),
             'generated_at' => self::hasScalarField($result, ['generated_at', 'generatedAt']),
             'outcome' => self::hasScalarField($result, ['outcome', 'status', 'verdict']),
+            'runner_blocked' => self::runnerBlockedValue($result) !== null,
             'scenario_results' => self::hasArrayField($result, ['scenario_results', 'scenarioResults']),
             'finding_links' => self::hasArrayField($result, ['finding_links', 'findingLinks']),
             default => self::hasScalarField($result, [$field, self::camelize($field)])
@@ -374,6 +384,22 @@ final class SearchAttributeRuntimeResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     */
+    private static function runnerBlockedValue(array $result): ?bool
+    {
+        foreach (['runner_blocked', 'runnerBlocked'] as $field) {
+            if (! array_key_exists($field, $result)) {
+                continue;
+            }
+
+            return is_bool($result[$field]) ? $result[$field] : null;
+        }
+
+        return null;
     }
 
     /**
@@ -881,7 +907,13 @@ final class SearchAttributeRuntimeResultGate
         if (self::isPassScenario($scenarioResults, 'waterline_operator_visibility')) {
             array_push(
                 $failures,
-                ...self::waterlineEvidenceFailures(self::sectionValue($result, 'waterline_operator_visibility') ?? []),
+                ...self::waterlineEvidenceFailures(
+                    self::scenarioEvidence(
+                        $result,
+                        $scenarioResults['waterline_operator_visibility'],
+                        'waterline_operator_visibility',
+                    ),
+                ),
             );
         }
 
@@ -1829,21 +1861,317 @@ final class SearchAttributeRuntimeResultGate
      */
     private static function waterlineEvidenceFailures(array $section): array
     {
+        $section = self::waterlineEvidenceSection($section);
         $failures = [];
-        foreach ([
-            'workflow_list_filter' => ['workflow_list_filter', 'workflowListFilter'],
-            'selected_run_detail' => ['selected_run_detail', 'selectedRunDetail'],
-            'saved_filter_state' => ['saved_filter_state', 'savedFilterState'],
-        ] as $field => $aliases) {
-            if (! self::hasTruthyField($section, $aliases)) {
+
+        $workflowList = self::arrayField($section, ['workflow_list_filter', 'workflowListFilter']);
+        if ($workflowList === null) {
+            self::addMissingWaterlineFields($failures, [
+                'workflow_list_filter.expected_count',
+                'workflow_list_filter.actual_count',
+            ]);
+        } else {
+            $expectedCount = self::numericField($workflowList, ['expected_count', 'expectedCount']);
+            $actualCount = self::numericField($workflowList, ['actual_count', 'actualCount']);
+
+            if ($expectedCount === null) {
+                self::addMissingWaterlineFields($failures, ['workflow_list_filter.expected_count']);
+            }
+            if ($actualCount === null) {
+                self::addMissingWaterlineFields($failures, ['workflow_list_filter.actual_count']);
+            }
+            if ($expectedCount !== null && $expectedCount <= 0) {
                 $failures[] = [
-                    'code' => 'missing_waterline_operator_visibility_field',
-                    'field' => $field,
+                    'code' => 'waterline_workflow_list_filter_empty',
+                    'field' => 'workflow_list_filter.expected_count',
+                    'expected_count' => $expectedCount,
+                ];
+            }
+            if ($expectedCount !== null && $actualCount !== null && (float) $expectedCount !== (float) $actualCount) {
+                $failures[] = [
+                    'code' => 'waterline_workflow_list_filter_count_mismatch',
+                    'field' => 'workflow_list_filter',
+                    'expected_count' => $expectedCount,
+                    'actual_count' => $actualCount,
+                ];
+            }
+
+            $expectedRunIds = self::stringArrayField($workflowList, ['expected_run_ids', 'expectedRunIds']);
+            $actualRunIds = self::stringArrayField($workflowList, ['actual_run_ids', 'actualRunIds']);
+            if ($expectedRunIds !== null && $actualRunIds !== null && ! self::sameStringSet($expectedRunIds, $actualRunIds)) {
+                $failures[] = [
+                    'code' => 'waterline_workflow_list_filter_run_id_mismatch',
+                    'field' => 'workflow_list_filter.actual_run_ids',
+                    'expected_run_ids' => $expectedRunIds,
+                    'actual_run_ids' => $actualRunIds,
                 ];
             }
         }
 
+        $selectedRun = self::arrayField($section, ['selected_run_detail', 'selectedRunDetail']);
+        if ($selectedRun === null) {
+            self::addMissingWaterlineFields($failures, [
+                'selected_run_detail.expected_search_attributes',
+                'selected_run_detail.actual_search_attributes',
+            ]);
+        } else {
+            $expectedAttributes = self::arrayField($selectedRun, ['expected_search_attributes', 'expectedSearchAttributes']);
+            $actualAttributes = self::arrayField($selectedRun, ['actual_search_attributes', 'actualSearchAttributes']);
+
+            if ($expectedAttributes === null || $expectedAttributes === []) {
+                self::addMissingWaterlineFields($failures, ['selected_run_detail.expected_search_attributes']);
+            }
+            if ($actualAttributes === null || $actualAttributes === []) {
+                self::addMissingWaterlineFields($failures, ['selected_run_detail.actual_search_attributes']);
+            }
+            if ($expectedAttributes !== null && $expectedAttributes !== [] && $actualAttributes !== null) {
+                foreach ($expectedAttributes as $attribute => $expectedValue) {
+                    if (! is_string($attribute) || ! array_key_exists($attribute, $actualAttributes)) {
+                        $failures[] = [
+                            'code' => 'missing_waterline_selected_run_attribute',
+                            'field' => 'selected_run_detail.actual_search_attributes',
+                            'attribute' => $attribute,
+                        ];
+                        continue;
+                    }
+
+                    if (! self::waterlineValuesMatch($actualAttributes[$attribute], $expectedValue)) {
+                        $failures[] = [
+                            'code' => 'waterline_selected_run_attribute_mismatch',
+                            'field' => 'selected_run_detail.actual_search_attributes',
+                            'attribute' => $attribute,
+                        ];
+                    }
+                }
+            }
+
+            $visible = self::boolField($selectedRun, ['expected_attributes_visible', 'expectedAttributesVisible']);
+            if ($visible === false) {
+                $failures[] = [
+                    'code' => 'waterline_selected_run_attributes_not_visible',
+                    'field' => 'selected_run_detail.expected_attributes_visible',
+                ];
+            }
+        }
+
+        $savedFilter = self::arrayField($section, ['saved_filter_state', 'savedFilterState']);
+        if ($savedFilter === null) {
+            self::addMissingWaterlineFields($failures, [
+                'saved_filter_state.stored_filters',
+                'saved_filter_state.retrieved_filters',
+            ]);
+        } else {
+            $storedFilters = self::arrayField($savedFilter, ['stored_filters', 'storedFilters']);
+            $retrievedFilters = self::arrayField($savedFilter, ['retrieved_filters', 'retrievedFilters']);
+
+            if ($storedFilters === null || $storedFilters === []) {
+                self::addMissingWaterlineFields($failures, ['saved_filter_state.stored_filters']);
+            }
+            if ($retrievedFilters === null || $retrievedFilters === []) {
+                self::addMissingWaterlineFields($failures, ['saved_filter_state.retrieved_filters']);
+            }
+            if ($storedFilters !== null && $storedFilters !== [] && $retrievedFilters !== null
+                && ! self::waterlineValuesMatch($retrievedFilters, $storedFilters)) {
+                $failures[] = [
+                    'code' => 'waterline_saved_filter_round_trip_mismatch',
+                    'field' => 'saved_filter_state.retrieved_filters',
+                ];
+            }
+
+            foreach ([
+                'filter_preserved_on_retrieval' => ['filter_preserved_on_retrieval', 'filterPreservedOnRetrieval'],
+                'filter_preserved_on_list_retrieval' => ['filter_preserved_on_list_retrieval', 'filterPreservedOnListRetrieval'],
+                'applied_filter_matched' => ['applied_filter_matched', 'appliedFilterMatched'],
+            ] as $field => $aliases) {
+                $value = self::boolField($savedFilter, $aliases);
+                if ($value === false) {
+                    $failures[] = [
+                        'code' => 'waterline_saved_filter_round_trip_mismatch',
+                        'field' => 'saved_filter_state.'.$field,
+                    ];
+                }
+            }
+        }
+
+        $namespaceIsolation = self::arrayField($section, ['namespace_isolation', 'namespaceIsolation']);
+        if ($namespaceIsolation === null) {
+            self::addMissingWaterlineFields($failures, [
+                'namespace_isolation.tenant_a_filter_actual_run_ids',
+                'namespace_isolation.tenant_b_filter_actual_run_ids',
+            ]);
+        } else {
+            $tenantAActual = self::stringArrayField(
+                $namespaceIsolation,
+                ['tenant_a_filter_actual_run_ids', 'tenantAFilterActualRunIds'],
+            );
+            $tenantBActual = self::stringArrayField(
+                $namespaceIsolation,
+                ['tenant_b_filter_actual_run_ids', 'tenantBFilterActualRunIds'],
+            );
+
+            if ($tenantAActual === null) {
+                self::addMissingWaterlineFields($failures, ['namespace_isolation.tenant_a_filter_actual_run_ids']);
+            } elseif ($tenantAActual === []) {
+                $failures[] = [
+                    'code' => 'waterline_namespace_isolation_empty_run_ids',
+                    'field' => 'namespace_isolation.tenant_a_filter_actual_run_ids',
+                ];
+            }
+
+            if ($tenantBActual === null) {
+                self::addMissingWaterlineFields($failures, ['namespace_isolation.tenant_b_filter_actual_run_ids']);
+            } elseif ($tenantBActual === []) {
+                $failures[] = [
+                    'code' => 'waterline_namespace_isolation_empty_run_ids',
+                    'field' => 'namespace_isolation.tenant_b_filter_actual_run_ids',
+                ];
+            }
+
+            if ($tenantAActual !== null
+                && $tenantBActual !== null
+                && array_intersect($tenantAActual, $tenantBActual) !== []) {
+                $failures[] = [
+                    'code' => 'waterline_namespace_isolation_run_id_overlap',
+                    'field' => 'namespace_isolation',
+                    'tenant_a_filter_actual_run_ids' => $tenantAActual,
+                    'tenant_b_filter_actual_run_ids' => $tenantBActual,
+                ];
+            }
+
+            foreach ([
+                'tenant_a_filter_expected_run_ids' => [
+                    'expected' => ['tenant_a_filter_expected_run_ids', 'tenantAFilterExpectedRunIds'],
+                    'actual' => ['tenant_a_filter_actual_run_ids', 'tenantAFilterActualRunIds'],
+                ],
+                'tenant_b_filter_expected_run_ids' => [
+                    'expected' => ['tenant_b_filter_expected_run_ids', 'tenantBFilterExpectedRunIds'],
+                    'actual' => ['tenant_b_filter_actual_run_ids', 'tenantBFilterActualRunIds'],
+                ],
+            ] as $field => $aliases) {
+                $expectedIds = self::stringArrayField($namespaceIsolation, $aliases['expected']);
+                $actualIds = self::stringArrayField($namespaceIsolation, $aliases['actual']);
+                if ($expectedIds !== null && $actualIds !== null && ! self::sameStringSet($expectedIds, $actualIds)) {
+                    $failures[] = [
+                        'code' => 'waterline_namespace_isolation_run_id_mismatch',
+                        'field' => 'namespace_isolation.'.str_replace('_expected_', '_actual_', $field),
+                        'expected_run_ids' => $expectedIds,
+                        'actual_run_ids' => $actualIds,
+                    ];
+                }
+            }
+
+            foreach ([
+                'tenant_a_excludes_tenant_b' => ['tenant_a_excludes_tenant_b', 'tenantAExcludesTenantB'],
+                'tenant_b_excludes_tenant_a' => ['tenant_b_excludes_tenant_a', 'tenantBExcludesTenantA'],
+                'tenant_b_filter_matched' => ['tenant_b_filter_matched', 'tenantBFilterMatched'],
+            ] as $field => $aliases) {
+                $value = self::boolField($namespaceIsolation, $aliases);
+                if ($value === false) {
+                    $failures[] = [
+                        'code' => 'waterline_namespace_isolation_failed',
+                        'field' => 'namespace_isolation.'.$field,
+                    ];
+                }
+            }
+        }
+
+        $captures = self::arrayField($section, ['api_captures', 'apiCaptures']);
+        if ($captures === null || $captures === []) {
+            self::addMissingWaterlineFields($failures, ['api_captures']);
+        } else {
+            foreach ([
+                'workflow_list_customer_filter',
+                'workflow_list_keyword_list_filter',
+                'selected_run_detail',
+                'saved_view_show',
+                'saved_view_list',
+                'saved_view_applied_workflow_list',
+                'foreign_namespace_workflow_list',
+            ] as $capture) {
+                $captureEvidence = self::arrayField($captures, [$capture, self::camelize($capture)]);
+                if ($captureEvidence === null) {
+                    $failures[] = [
+                        'code' => 'missing_waterline_api_capture',
+                        'field' => 'api_captures.'.$capture,
+                    ];
+                    continue;
+                }
+
+                $status = self::numericField($captureEvidence, ['status', 'status_code', 'statusCode']);
+                if ($status === null) {
+                    self::addMissingWaterlineFields($failures, ['api_captures.'.$capture.'.status']);
+                } elseif ((int) $status !== 200) {
+                    $failures[] = [
+                        'code' => 'waterline_api_capture_status_mismatch',
+                        'field' => 'api_captures.'.$capture.'.status',
+                        'status' => $status,
+                    ];
+                }
+            }
+        }
+
+        $surfaceMatrix = self::arrayField($section, ['operator_surface_matrix', 'operatorSurfaceMatrix']);
+        if ($surfaceMatrix === null) {
+            $failures[] = [
+                'code' => 'missing_waterline_operator_surface_matrix',
+                'field' => 'operator_surface_matrix',
+            ];
+        } else {
+            foreach ([
+                'workflow_list_search_attribute_filter',
+                'keyword_list_search_attribute_filter',
+                'selected_run_search_attributes',
+                'saved_filter_round_trip',
+                'namespace_scoped_visibility',
+            ] as $surface) {
+                if (self::boolField($surfaceMatrix, [$surface, self::camelize($surface)]) !== true) {
+                    $failures[] = [
+                        'code' => 'waterline_operator_surface_not_proved',
+                        'field' => 'operator_surface_matrix.'.$surface,
+                    ];
+                }
+            }
+        }
+
         return $failures;
+    }
+
+    /**
+     * @param array<mixed> $section
+     *
+     * @return array<mixed>
+     */
+    private static function waterlineEvidenceSection(array $section): array
+    {
+        foreach ([
+            'waterline_operator_visibility',
+            'waterlineOperatorVisibility',
+            'waterline_search_attribute_visibility',
+            'waterlineSearchAttributeVisibility',
+            'observed_outputs',
+            'observedOutputs',
+        ] as $field) {
+            $nested = self::arrayValue($section, $field);
+            if ($nested !== null && $nested !== []) {
+                return self::waterlineEvidenceSection($nested);
+            }
+        }
+
+        return $section;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $failures
+     * @param list<string> $fields
+     */
+    private static function addMissingWaterlineFields(array &$failures, array $fields): void
+    {
+        foreach ($fields as $field) {
+            $failures[] = [
+                'code' => 'missing_waterline_operator_visibility_field',
+                'field' => $field,
+            ];
+        }
     }
 
     /**
@@ -2438,6 +2766,57 @@ final class SearchAttributeRuntimeResultGate
         }
 
         return null;
+    }
+
+    /**
+     * @param array<mixed> $value
+     * @param list<string> $fields
+     *
+     * @return list<string>|null
+     */
+    private static function stringArrayField(array $value, array $fields): ?array
+    {
+        $fieldValue = self::arrayField($value, $fields);
+        if ($fieldValue === null) {
+            return null;
+        }
+
+        return self::stringList($fieldValue);
+    }
+
+    /**
+     * @param list<string> $expected
+     * @param list<string> $actual
+     */
+    private static function sameStringSet(array $expected, array $actual): bool
+    {
+        sort($expected);
+        sort($actual);
+
+        return $expected === $actual;
+    }
+
+    private static function waterlineValuesMatch(mixed $actual, mixed $expected): bool
+    {
+        return self::normalizeComparableValue($actual) === self::normalizeComparableValue($expected);
+    }
+
+    private static function normalizeComparableValue(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        $normalized = [];
+        foreach ($value as $key => $item) {
+            $normalized[$key] = self::normalizeComparableValue($item);
+        }
+
+        if (! array_is_list($normalized)) {
+            ksort($normalized);
+        }
+
+        return $normalized;
     }
 
     /**

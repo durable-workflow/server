@@ -16,7 +16,7 @@ final class SearchAttributeRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.contract';
 
-    public const VERSION = 6;
+    public const VERSION = 7;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result';
 
@@ -71,6 +71,7 @@ final class SearchAttributeRuntimeContract
                     'finished_at',
                     'generated_at',
                     'outcome',
+                    'runner_blocked',
                     'scenario_results',
                     'findings',
                     'finding_links',
@@ -366,12 +367,135 @@ final class SearchAttributeRuntimeContract
                     'run_timestamps_outcome_and_finding_links_are_recorded',
                     'declared_outcome_matches_evaluated_status',
                     'no_local_product_source_artifacts',
+                    'runner_blocked_false_for_product_evidence',
                     'findings_linked_for_non_pass_scenarios',
                 ],
                 'uncovered_required_scenario_outcome' => 'non_passing',
                 'smoke_subset_outcome' => 'non_passing',
                 'unsupported_public_surface_outcome' => 'non_passing_with_root_cause_finding',
                 'runner_blocked_outcome' => 'non_passing_runner_blocked',
+            ],
+            'host_runner_contract' => [
+                'status' => 'required_for_passing_search_attributes_conformance',
+                'runner_repository' => 'server',
+                'runner_path' => 'scripts/conformance/search-attributes-published-artifacts.sh',
+                'runner_command' => 'scripts/conformance/search-attributes-published-artifacts.sh --result-dir <result-dir>',
+                'result_schema' => self::RESULT_SCHEMA,
+                'result_files' => [
+                    'pins.json',
+                    'run-metadata.json',
+                    'artifact-install-evidence.json',
+                    'waterline-search-attributes-shard.json',
+                    'search-attributes-result.json',
+                    'search-attributes-record.json',
+                ],
+                'must_execute_against_published_artifacts' => true,
+                'must_record_runner_blocked_false_for_product_evidence' => true,
+                'must_emit_result_for_every_required_scenario' => true,
+                'smoke_summary_only_outcome' => 'non_passing',
+                'unexecuted_required_scenario_status' => 'not_covered',
+                'coverage_gap_finding_type' => 'conformance_runner_coverage_gap',
+                'coverage_gap_owner' => 'conformance_harness',
+                'required_execution_scopes' => [
+                    'published-artifact-install',
+                    'server-python-search-attribute-smoke',
+                    'workflow-php-search-attribute-shard',
+                    'cli-search-attribute-surface-shard',
+                    'waterline-operator-search-attribute-shard',
+                    'cross-language-codec-shard',
+                    'latency-and-load-shard',
+                    'adversarial-query-shard',
+                ],
+                'runtime_shards' => [
+                    'waterline' => [
+                        'scope' => 'waterline-operator-search-attribute-shard',
+                        'artifact' => 'durable-workflow/waterline',
+                        'artisan_command' => 'waterline:search-attributes-conformance',
+                        'must_cover_scenarios' => [
+                            'waterline_operator_visibility',
+                        ],
+                        'must_cover_surfaces' => [
+                            'workflow_list_search_attribute_filter',
+                            'keyword_list_search_attribute_filter',
+                            'selected_run_search_attributes',
+                            'saved_filter_round_trip',
+                            'namespace_scoped_visibility',
+                        ],
+                        'must_capture_fields' => [
+                            'workflow_list_filter.expected_count',
+                            'workflow_list_filter.actual_count',
+                            'selected_run_detail.expected_search_attributes',
+                            'selected_run_detail.actual_search_attributes',
+                            'saved_filter_state.stored_filters',
+                            'saved_filter_state.retrieved_filters',
+                            'namespace_isolation.tenant_a_filter_actual_run_ids',
+                            'namespace_isolation.tenant_b_filter_actual_run_ids',
+                            'api_captures',
+                        ],
+                        'fallback_status_when_command_missing' => 'unsupported',
+                        'fallback_status_when_surface_missing' => 'not_covered',
+                        'fallback_finding_type' => 'unsupported_public_surface',
+                    ],
+                    'workflow-php' => [
+                        'scope' => 'workflow-php-search-attribute-shard',
+                        'artifact' => 'durable-workflow/workflow',
+                        'must_cover_scenarios' => [
+                            'php_worker_start_and_upsert_visibility',
+                            'python_to_php_codec_round_trip',
+                            'php_to_python_codec_round_trip',
+                        ],
+                        'fallback_status_when_command_missing' => 'unsupported',
+                        'fallback_finding_type' => 'unsupported_public_surface',
+                    ],
+                    'cli' => [
+                        'scope' => 'cli-search-attribute-surface-shard',
+                        'artifact' => 'dw',
+                        'must_cover_scenarios' => [
+                            'cli_query_and_error_surface',
+                        ],
+                        'must_capture_fields' => [
+                            'workflow_list_queries',
+                            'search_attribute_commands',
+                            'diagnostics',
+                        ],
+                        'fallback_status_when_command_missing' => 'unsupported',
+                        'fallback_finding_type' => 'unsupported_public_surface',
+                    ],
+                ],
+                'merge_policy' => [
+                    'requires_waterline_operator_surface_matrix' => true,
+                    'waterline_pass_scenario' => 'waterline_operator_visibility',
+                    'waterline_evidence_section' => 'waterline_operator_visibility',
+                    'requires_sections' => [
+                        'topology',
+                        'query_verdicts',
+                        'cli_surface',
+                        'waterline_operator_visibility',
+                        'codec_round_trips',
+                        'latency_distribution',
+                        'load_profile',
+                        'type_safety_errors',
+                        'adversarial_queries',
+                        'namespace_isolation',
+                    ],
+                ],
+                'routing_policy' => [
+                    'waterline_shard_not_invoked' => [
+                        'scenario_status' => 'not_covered',
+                        'finding_type' => 'conformance_runner_coverage_gap',
+                        'owner' => 'conformance_harness',
+                    ],
+                    'waterline_operator_mismatch' => [
+                        'scenario_status' => 'fail',
+                        'finding_type' => 'operator_visibility_gap',
+                        'owner' => 'waterline',
+                    ],
+                    'host_environment_failure' => [
+                        'scenario_status' => 'runner_blocked',
+                        'finding_type' => 'runner_gap',
+                        'owner' => 'conformance_harness',
+                    ],
+                ],
             ],
             'result_gate' => SearchAttributeRuntimeResultGate::spec(),
             'finding_policy' => [
@@ -385,6 +509,7 @@ final class SearchAttributeRuntimeContract
                 'query_injection_accepted' => 'link_root_cause_security_finding_against_server',
                 'unsupported_public_surface' => 'link_root_cause_finding_against_surface_owner',
                 'cli_surface_uncovered_by_runner' => 'link_root_cause_finding_against_conformance_harness',
+                'waterline_operator_visibility_uncovered_by_runner' => 'link_root_cause_finding_against_conformance_harness',
                 'documentation_gap' => 'link_root_cause_finding_against_docs',
             ],
         ];

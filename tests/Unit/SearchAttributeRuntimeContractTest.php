@@ -14,7 +14,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $manifest = SearchAttributeRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.contract', $manifest['schema']);
-        $this->assertSame(6, SearchAttributeRuntimeContract::VERSION);
+        $this->assertSame(7, SearchAttributeRuntimeContract::VERSION);
         $this->assertSame(SearchAttributeRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.result', $manifest['result_schema']);
         $this->assertSame('search_attribute_runtime_contract', $manifest['fixture_category']);
@@ -55,6 +55,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'finished_at',
             'generated_at',
             'outcome',
+            'runner_blocked',
             'scenario_results',
             'findings',
             'finding_links',
@@ -144,6 +145,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'load_latency_reported',
             'or_not_grammar_reported',
             'query_injection_hardening_reported',
+            'runner_blocked_false_for_product_evidence',
             'findings_linked_for_non_pass_scenarios',
         ] as $requirement) {
             $this->assertContains($requirement, $gate['passing_outcome_requires']);
@@ -155,7 +157,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $resultGate = SearchAttributeRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SearchAttributeRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(5, SearchAttributeRuntimeResultGate::VERSION);
+        $this->assertSame(7, SearchAttributeRuntimeResultGate::VERSION);
         $this->assertSame(SearchAttributeRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SearchAttributeRuntimeContract::RESULT_SCHEMA,
@@ -183,8 +185,471 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'query_injection_required_rejection_probes_are_reported',
             $resultGate['pass_requires'],
         );
+        $this->assertContains(
+            'waterline_operator_visibility_includes_operator_surface_matrix',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains('runner_blocked_false_for_product_evidence', $resultGate['pass_requires']);
         $this->assertContains('overall_outcome_matches_gate_status', $resultGate['pass_requires']);
         $this->assertSame('non_passing', $resultGate['smoke_subset_outcome']);
+    }
+
+    public function test_manifest_publishes_source_free_host_runner_handoff(): void
+    {
+        $runner = SearchAttributeRuntimeContract::manifest()['host_runner_contract'];
+
+        $this->assertSame('required_for_passing_search_attributes_conformance', $runner['status']);
+        $this->assertSame('server', $runner['runner_repository']);
+        $this->assertSame(
+            'scripts/conformance/search-attributes-published-artifacts.sh',
+            $runner['runner_path'],
+        );
+        $runnerPath = dirname(__DIR__, 2).'/'.$runner['runner_path'];
+        $this->assertFileExists(
+            $runnerPath,
+            'cluster info must not advertise a search-attributes host runner path that is missing from the release tree',
+        );
+        $this->assertTrue(is_executable($runnerPath), 'the advertised search-attributes host runner must be executable');
+        $this->assertContains('waterline-search-attributes-shard.json', $runner['result_files']);
+        $this->assertTrue($runner['must_execute_against_published_artifacts']);
+        $this->assertTrue($runner['must_record_runner_blocked_false_for_product_evidence']);
+        $this->assertContains('waterline-operator-search-attribute-shard', $runner['required_execution_scopes']);
+
+        $waterline = $runner['runtime_shards']['waterline'];
+        $this->assertSame('durable-workflow/waterline', $waterline['artifact']);
+        $this->assertSame('waterline:search-attributes-conformance', $waterline['artisan_command']);
+        $this->assertContains('waterline_operator_visibility', $waterline['must_cover_scenarios']);
+        $this->assertContains('workflow_list_filter.expected_count', $waterline['must_capture_fields']);
+        $this->assertContains('workflow_list_filter.actual_count', $waterline['must_capture_fields']);
+        $this->assertContains('selected_run_detail.actual_search_attributes', $waterline['must_capture_fields']);
+        $this->assertContains('saved_filter_state.retrieved_filters', $waterline['must_capture_fields']);
+        $this->assertContains('namespace_isolation.tenant_b_filter_actual_run_ids', $waterline['must_capture_fields']);
+        $this->assertSame(
+            'conformance_harness',
+            $runner['routing_policy']['waterline_shard_not_invoked']['owner'],
+        );
+        $this->assertSame(
+            'waterline',
+            $runner['routing_policy']['waterline_operator_mismatch']['owner'],
+        );
+    }
+
+    public function test_published_artifact_runner_writes_gate_consumable_runner_blocked_record(): void
+    {
+        if (trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('node is required to exercise the search-attributes runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = SearchAttributeRuntimeContract::manifest()['host_runner_contract'];
+        $resultDir = sys_get_temp_dir().'/dw-search-attributes-'.bin2hex(random_bytes(6));
+        mkdir($resultDir);
+
+        try {
+            $command = implode(' ', [
+                'DW_SERVER_VERSION=0.2.224',
+                'DW_CLI_VERSION=0.1.74',
+                'DW_PYTHON_SDK_VERSION=0.4.84',
+                'DW_WORKFLOW_PHP_VERSION=2.0.0-alpha.187',
+                'DW_WATERLINE_VERSION=2.0.0-alpha.69',
+                escapeshellarg($repoRoot.'/'.$runner['runner_path']),
+                '--result-dir',
+                escapeshellarg($resultDir),
+            ]);
+
+            $output = [];
+            $exitCode = 0;
+            exec($command.' 2>&1', $output, $exitCode);
+
+            $this->assertSame(1, $exitCode, implode("\n", $output));
+
+            foreach ($runner['result_files'] as $file) {
+                $this->assertFileExists($resultDir.'/'.$file);
+            }
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/search-attributes-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                (string) file_get_contents($resultDir.'/search-attributes-record.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $waterlineShard = json_decode(
+                (string) file_get_contents($resultDir.'/waterline-search-attributes-shard.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing_runner_blocked', $result['outcome']);
+            $this->assertTrue($result['runner_blocked']);
+            $this->assertSame('non_passing_runner_blocked', $record['outcome']);
+            $this->assertTrue($record['runnerBlocked']);
+            $this->assertSame('runner_blocked', $waterlineShard['status']);
+
+            $scenarioResults = array_column($result['scenario_results'], null, 'scenario_id');
+            foreach (SearchAttributeRuntimeContract::manifest()['required_scenarios'] as $scenarioId) {
+                $this->assertArrayHasKey($scenarioId, $scenarioResults);
+                $this->assertSame('runner_blocked', $scenarioResults[$scenarioId]['status']);
+                $this->assertNotEmpty($scenarioResults[$scenarioId]['linked_findings']);
+            }
+
+            $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+            $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertNotContains('missing_run_record_field', $failureCodes);
+            $this->assertNotContains('missing_non_pass_finding', $failureCodes);
+            $this->assertNotContains('invalid_declared_outcome', $failureCodes);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_runner_rejects_incomplete_supplied_pass_result(): void
+    {
+        if (trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('node is required to exercise the search-attributes runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = SearchAttributeRuntimeContract::manifest()['host_runner_contract'];
+        $resultDir = sys_get_temp_dir().'/dw-search-attributes-'.bin2hex(random_bytes(6));
+        mkdir($resultDir);
+
+        try {
+            $command = implode(' ', [
+                'DW_SEARCH_ATTRIBUTES_RESULT_JSON='.escapeshellarg(json_encode(['outcome' => 'pass'], JSON_THROW_ON_ERROR)),
+                escapeshellarg($repoRoot.'/'.$runner['runner_path']),
+                '--result-dir',
+                escapeshellarg($resultDir),
+            ]);
+
+            $output = [];
+            $exitCode = 0;
+            exec($command.' 2>&1', $output, $exitCode);
+
+            $this->assertSame(1, $exitCode, implode("\n", $output));
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/search-attributes-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                (string) file_get_contents($resultDir.'/search-attributes-record.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('non_passing', $record['outcome']);
+            $this->assertFalse($record['runnerBlocked']);
+            $this->assertSame('non_passing', $result['result_gate']['status']);
+            $this->assertSame('non_passing', $record['resultGate']['status']);
+            $this->assertContains(
+                'placeholder_artifact_version',
+                array_column($result['result_gate']['gate_failures'], 'code'),
+            );
+
+            $scenarioResults = array_column($result['scenario_results'], null, 'scenario_id');
+            foreach (SearchAttributeRuntimeContract::manifest()['required_scenarios'] as $scenarioId) {
+                $this->assertArrayHasKey($scenarioId, $scenarioResults);
+                $this->assertSame('not_covered', $scenarioResults[$scenarioId]['status']);
+                $this->assertNotEmpty($scenarioResults[$scenarioId]['linked_findings']);
+            }
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_runner_accepts_gate_complete_supplied_pass_result(): void
+    {
+        if (trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('node is required to exercise the search-attributes runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = SearchAttributeRuntimeContract::manifest()['host_runner_contract'];
+        $resultDir = sys_get_temp_dir().'/dw-search-attributes-'.bin2hex(random_bytes(6));
+        mkdir($resultDir);
+        $resultFile = $resultDir.'/supplied-search-attributes-pass.json';
+
+        try {
+            file_put_contents(
+                $resultFile,
+                json_encode($this->completeSearchAttributeResult(), JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+            );
+
+            $command = implode(' ', [
+                'DW_SEARCH_ATTRIBUTES_RESULT_FILE='.escapeshellarg($resultFile),
+                escapeshellarg($repoRoot.'/'.$runner['runner_path']),
+                '--result-dir',
+                escapeshellarg($resultDir),
+            ]);
+
+            $output = [];
+            $exitCode = 0;
+            exec($command.' 2>&1', $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/search-attributes-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                (string) file_get_contents($resultDir.'/search-attributes-record.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('pass', $result['outcome']);
+            $this->assertSame('pass', $record['outcome']);
+            $this->assertSame('pass', $result['result_gate']['status']);
+            $this->assertSame('pass', $record['resultGate']['status']);
+            $this->assertSame([], $result['result_gate']['gate_failures']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_runner_rejects_runner_blocked_supplied_pass_result(): void
+    {
+        if (trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('node is required to exercise the search-attributes runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = SearchAttributeRuntimeContract::manifest()['host_runner_contract'];
+        $resultDir = sys_get_temp_dir().'/dw-search-attributes-'.bin2hex(random_bytes(6));
+        mkdir($resultDir);
+        $resultFile = $resultDir.'/supplied-search-attributes-runner-blocked-pass.json';
+
+        try {
+            $supplied = $this->completeSearchAttributeResult();
+            $supplied['runner_blocked'] = true;
+
+            file_put_contents(
+                $resultFile,
+                json_encode($supplied, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+            );
+
+            $command = implode(' ', [
+                'DW_SEARCH_ATTRIBUTES_RESULT_FILE='.escapeshellarg($resultFile),
+                escapeshellarg($repoRoot.'/'.$runner['runner_path']),
+                '--result-dir',
+                escapeshellarg($resultDir),
+            ]);
+
+            $output = [];
+            $exitCode = 0;
+            exec($command.' 2>&1', $output, $exitCode);
+
+            $this->assertSame(1, $exitCode, implode("\n", $output));
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/search-attributes-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertTrue($result['runner_blocked']);
+            $this->assertSame('non_passing', $result['result_gate']['status']);
+            $this->assertContains(
+                'runner_blocked_result_is_not_product_evidence',
+                array_column($result['result_gate']['gate_failures'], 'code'),
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_runner_rejects_duplicate_supplied_scenario_results(): void
+    {
+        if (trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('node is required to exercise the search-attributes runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = SearchAttributeRuntimeContract::manifest()['host_runner_contract'];
+        $resultDir = sys_get_temp_dir().'/dw-search-attributes-'.bin2hex(random_bytes(6));
+        mkdir($resultDir);
+        $resultFile = $resultDir.'/supplied-search-attributes-duplicate.json';
+
+        try {
+            $supplied = $this->completeSearchAttributeResult();
+            $supplied['scenario_results'] = array_values($supplied['scenario_results']);
+            $supplied['scenario_results'][] = $supplied['scenario_results'][0];
+
+            file_put_contents(
+                $resultFile,
+                json_encode($supplied, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+            );
+
+            $command = implode(' ', [
+                'DW_SEARCH_ATTRIBUTES_RESULT_FILE='.escapeshellarg($resultFile),
+                escapeshellarg($repoRoot.'/'.$runner['runner_path']),
+                '--result-dir',
+                escapeshellarg($resultDir),
+            ]);
+
+            $output = [];
+            $exitCode = 0;
+            exec($command.' 2>&1', $output, $exitCode);
+
+            $this->assertSame(1, $exitCode, implode("\n", $output));
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/search-attributes-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertSame('non_passing', $result['result_gate']['status']);
+            $this->assertSame(
+                2,
+                $result['result_gate']['duplicate_scenarios']['published_artifact_install_only'] ?? null,
+            );
+            $this->assertContains(
+                'duplicate_scenario_result',
+                array_column($result['result_gate']['gate_failures'], 'code'),
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_runner_rejects_shallow_waterline_operator_visibility_evidence(): void
+    {
+        if (trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('node is required to exercise the search-attributes runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = SearchAttributeRuntimeContract::manifest()['host_runner_contract'];
+        $resultDir = sys_get_temp_dir().'/dw-search-attributes-'.bin2hex(random_bytes(6));
+        mkdir($resultDir);
+        $resultFile = $resultDir.'/supplied-search-attributes-shallow-waterline.json';
+
+        try {
+            $supplied = $this->completeSearchAttributeResult();
+            $supplied['waterline_operator_visibility'] = [
+                'workflow_list_filter' => true,
+                'selected_run_detail' => true,
+                'saved_filter_state' => true,
+            ];
+
+            file_put_contents(
+                $resultFile,
+                json_encode($supplied, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+            );
+
+            $command = implode(' ', [
+                'DW_SEARCH_ATTRIBUTES_RESULT_FILE='.escapeshellarg($resultFile),
+                escapeshellarg($repoRoot.'/'.$runner['runner_path']),
+                '--result-dir',
+                escapeshellarg($resultDir),
+            ]);
+
+            $output = [];
+            $exitCode = 0;
+            exec($command.' 2>&1', $output, $exitCode);
+
+            $this->assertSame(1, $exitCode, implode("\n", $output));
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/search-attributes-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $missingFields = array_column(
+                array_values(array_filter(
+                    $result['result_gate']['gate_failures'],
+                    static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_waterline_operator_visibility_field',
+                )),
+                'field',
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertSame('non_passing', $result['result_gate']['status']);
+            $this->assertContains('workflow_list_filter.expected_count', $missingFields);
+            $this->assertContains('selected_run_detail.actual_search_attributes', $missingFields);
+            $this->assertContains('saved_filter_state.retrieved_filters', $missingFields);
+            $this->assertContains('namespace_isolation.tenant_b_filter_actual_run_ids', $missingFields);
+            $this->assertContains('api_captures', $missingFields);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_runner_rejects_complete_waterline_visibility_without_surface_matrix(): void
+    {
+        if (trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('node is required to exercise the search-attributes runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = SearchAttributeRuntimeContract::manifest()['host_runner_contract'];
+        $resultDir = sys_get_temp_dir().'/dw-search-attributes-'.bin2hex(random_bytes(6));
+        mkdir($resultDir);
+        $resultFile = $resultDir.'/supplied-search-attributes-missing-waterline-matrix.json';
+
+        try {
+            $supplied = $this->completeSearchAttributeResult();
+            unset($supplied['waterline_operator_visibility']['operator_surface_matrix']);
+            unset($supplied['scenario_results']['waterline_operator_visibility']['observed_outputs']['operator_surface_matrix']);
+
+            file_put_contents(
+                $resultFile,
+                json_encode($supplied, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+            );
+
+            $command = implode(' ', [
+                'DW_SEARCH_ATTRIBUTES_RESULT_FILE='.escapeshellarg($resultFile),
+                escapeshellarg($repoRoot.'/'.$runner['runner_path']),
+                '--result-dir',
+                escapeshellarg($resultDir),
+            ]);
+
+            $output = [];
+            $exitCode = 0;
+            exec($command.' 2>&1', $output, $exitCode);
+
+            $this->assertSame(1, $exitCode, implode("\n", $output));
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/search-attributes-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertSame('non_passing', $result['result_gate']['status']);
+            $this->assertContains(
+                'missing_waterline_operator_surface_matrix',
+                array_column($result['result_gate']['gate_failures'], 'code'),
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
     }
 
     public function test_manifest_names_focused_cli_surface_evidence_requirements(): void
@@ -426,6 +891,99 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $this->assertContains('cli_diagnostic_collapsed_to_transport_failure', $failureCodes);
     }
 
+    public function test_result_gate_rejects_shallow_waterline_operator_visibility_evidence(): void
+    {
+        $result = $this->completeSearchAttributeResult();
+        $result['waterline_operator_visibility'] = [
+            'workflow_list_filter' => true,
+            'selected_run_detail' => true,
+            'saved_filter_state' => true,
+        ];
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+        $missingFields = array_column(
+            array_values(array_filter(
+                $evaluation['gate_failures'],
+                static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_waterline_operator_visibility_field',
+            )),
+            'field',
+        );
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('workflow_list_filter.expected_count', $missingFields);
+        $this->assertContains('workflow_list_filter.actual_count', $missingFields);
+        $this->assertContains('selected_run_detail.expected_search_attributes', $missingFields);
+        $this->assertContains('selected_run_detail.actual_search_attributes', $missingFields);
+        $this->assertContains('saved_filter_state.stored_filters', $missingFields);
+        $this->assertContains('saved_filter_state.retrieved_filters', $missingFields);
+        $this->assertContains('namespace_isolation.tenant_a_filter_actual_run_ids', $missingFields);
+        $this->assertContains('namespace_isolation.tenant_b_filter_actual_run_ids', $missingFields);
+        $this->assertContains('api_captures', $missingFields);
+    }
+
+    public function test_result_gate_requires_waterline_operator_surface_matrix(): void
+    {
+        $result = $this->completeSearchAttributeResult();
+        unset($result['waterline_operator_visibility']['operator_surface_matrix']);
+        unset($result['scenario_results']['waterline_operator_visibility']['observed_outputs']['operator_surface_matrix']);
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('missing_waterline_operator_surface_matrix', $failureCodes);
+    }
+
+    public function test_result_gate_requires_explicit_runner_blocked_false_for_product_evidence(): void
+    {
+        $result = $this->completeSearchAttributeResult();
+        unset($result['runner_blocked']);
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('runner_blocked', $this->missingRunRecordFields($evaluation));
+
+        $result = $this->completeSearchAttributeResult();
+        $result['runner_blocked'] = 'false';
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('runner_blocked', $this->missingRunRecordFields($evaluation));
+
+        $result = $this->completeSearchAttributeResult();
+        $result['runner_blocked'] = true;
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'runner_blocked_result_is_not_product_evidence',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_unproved_waterline_operator_surface_matrix_entries(): void
+    {
+        $result = $this->completeSearchAttributeResult();
+        $result['waterline_operator_visibility']['operator_surface_matrix']['saved_filter_round_trip'] = false;
+        unset($result['waterline_operator_visibility']['operator_surface_matrix']['namespace_scoped_visibility']);
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+        $surfaceFailureFields = array_column(
+            array_values(array_filter(
+                $evaluation['gate_failures'],
+                static fn (array $failure): bool => ($failure['code'] ?? null) === 'waterline_operator_surface_not_proved',
+            )),
+            'field',
+        );
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('operator_surface_matrix.saved_filter_round_trip', $surfaceFailureFields);
+        $this->assertContains('operator_surface_matrix.namespace_scoped_visibility', $surfaceFailureFields);
+    }
+
     public function test_result_gate_rejects_keyed_cli_query_entry_with_mismatched_contract_query(): void
     {
         $result = $this->completeSearchAttributeResult();
@@ -501,6 +1059,21 @@ class SearchAttributeRuntimeContractTest extends TestCase
     }
 
     /**
+     * @param array<string, mixed> $evaluation
+     *
+     * @return list<string>
+     */
+    private function missingRunRecordFields(array $evaluation): array
+    {
+        return array_values(array_filter(array_map(
+            static fn (array $failure): string => ($failure['code'] ?? null) === 'missing_run_record_field'
+                ? (string) ($failure['field'] ?? '')
+                : '',
+            $evaluation['gate_failures'] ?? [],
+        )));
+    }
+
+    /**
      * @param list<string> $arguments
      *
      * @return array<string, mixed>
@@ -535,6 +1108,34 @@ class SearchAttributeRuntimeContractTest extends TestCase
         }
 
         return $entry;
+    }
+
+    private function removeDirectory(string $directory): void
+    {
+        if (! is_dir($directory)) {
+            return;
+        }
+
+        $items = scandir($directory);
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $path = $directory.'/'.$item;
+            if (is_dir($path) && ! is_link($path)) {
+                $this->removeDirectory($path);
+                continue;
+            }
+
+            unlink($path);
+        }
+
+        rmdir($directory);
     }
 
     /**
@@ -707,10 +1308,140 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'peer_query_count' => 0,
             'cross_namespace_leak_detected' => false,
         ];
+        $waterlineRunIds = [
+            'tenant-a-primary',
+            'tenant-a-secondary',
+        ];
+        $waterlineForeignRunIds = [
+            'tenant-b-foreign',
+        ];
+        $waterlineSavedFilter = [
+            'search_attributes' => [
+                'customer_id' => 'cust-7',
+            ],
+        ];
+        $waterlineVisibility = [
+            'namespaces' => [
+                'a' => 'sa-test',
+                'b' => 'sa-test-b',
+            ],
+            'workflow_list_filter' => [
+                'path' => '/api/flows/running?search_attributes[customer_id]=cust-7',
+                'status' => 200,
+                'filter' => $waterlineSavedFilter['search_attributes'],
+                'expected_count' => 2,
+                'actual_count' => 2,
+                'expected_run_ids' => $waterlineRunIds,
+                'actual_run_ids' => $waterlineRunIds,
+                'matched' => true,
+                'visibility_filter_echo' => $waterlineSavedFilter['search_attributes'],
+                'operator_scope' => ['namespace' => 'sa-test'],
+                'foreign_run_absent' => true,
+            ],
+            'keyword_list_filter' => [
+                'path' => '/api/flows/running?search_attributes[tags]=urgent',
+                'status' => 200,
+                'filter' => ['tags' => 'urgent'],
+                'expected_count' => 1,
+                'actual_count' => 1,
+                'expected_run_ids' => ['tenant-a-primary'],
+                'actual_run_ids' => ['tenant-a-primary'],
+                'matched' => true,
+                'visibility_filter_echo' => ['tags' => 'urgent'],
+                'operator_scope' => ['namespace' => 'sa-test'],
+            ],
+            'selected_run_detail' => [
+                'path' => '/api/flows/tenant-a-primary',
+                'status' => 200,
+                'run_id' => 'tenant-a-primary',
+                'namespace' => 'sa-test',
+                'expected_search_attributes' => $decodedAttributes,
+                'actual_search_attributes' => $decodedAttributes,
+                'expected_attributes_visible' => true,
+                'operator_scope' => ['namespace' => 'sa-test'],
+            ],
+            'saved_filter_state' => [
+                'saved_view_id' => 'saved-filter-1',
+                'stored_filters' => $waterlineSavedFilter,
+                'retrieved_filters' => $waterlineSavedFilter,
+                'listed_filters' => $waterlineSavedFilter,
+                'saved_view_show_status' => 200,
+                'saved_view_list_status' => 200,
+                'applied_list_status' => 200,
+                'filter_preserved_on_retrieval' => true,
+                'filter_preserved_on_list_retrieval' => true,
+                'applied_expected_count' => 2,
+                'applied_actual_count' => 2,
+                'applied_expected_run_ids' => $waterlineRunIds,
+                'applied_actual_run_ids' => $waterlineRunIds,
+                'applied_filter_matched' => true,
+                'applied_filter_echo' => $waterlineSavedFilter['search_attributes'],
+                'operator_scope' => ['namespace' => 'sa-test'],
+            ],
+            'namespace_isolation' => [
+                'tenant_a_namespace' => 'sa-test',
+                'tenant_b_namespace' => 'sa-test-b',
+                'tenant_a_filter_expected_run_ids' => $waterlineRunIds,
+                'tenant_a_filter_actual_run_ids' => $waterlineRunIds,
+                'tenant_b_filter_expected_run_ids' => $waterlineForeignRunIds,
+                'tenant_b_filter_actual_run_ids' => $waterlineForeignRunIds,
+                'tenant_a_excludes_tenant_b' => true,
+                'tenant_b_excludes_tenant_a' => true,
+                'tenant_b_filter_matched' => true,
+                'tenant_a_operator_scope' => ['namespace' => 'sa-test'],
+                'tenant_b_operator_scope' => ['namespace' => 'sa-test-b'],
+            ],
+            'operator_surface_matrix' => [
+                'workflow_list_search_attribute_filter' => true,
+                'keyword_list_search_attribute_filter' => true,
+                'selected_run_search_attributes' => true,
+                'saved_filter_round_trip' => true,
+                'namespace_scoped_visibility' => true,
+            ],
+            'api_captures' => [
+                'workflow_list_customer_filter' => [
+                    'status' => 200,
+                    'path' => '/api/flows/running?search_attributes[customer_id]=cust-7',
+                    'json' => ['data' => [['run_id' => 'tenant-a-primary'], ['run_id' => 'tenant-a-secondary']]],
+                ],
+                'workflow_list_keyword_list_filter' => [
+                    'status' => 200,
+                    'path' => '/api/flows/running?search_attributes[tags]=urgent',
+                    'json' => ['data' => [['run_id' => 'tenant-a-primary']]],
+                ],
+                'selected_run_detail' => [
+                    'status' => 200,
+                    'path' => '/api/flows/tenant-a-primary',
+                    'json' => ['run_id' => 'tenant-a-primary', 'search_attributes' => $decodedAttributes],
+                ],
+                'saved_view_show' => [
+                    'status' => 200,
+                    'path' => '/api/saved-views/saved-filter-1',
+                    'json' => ['filters' => $waterlineSavedFilter],
+                ],
+                'saved_view_list' => [
+                    'status' => 200,
+                    'path' => '/api/saved-views',
+                    'json' => ['data' => [['id' => 'saved-filter-1', 'filters' => $waterlineSavedFilter]]],
+                ],
+                'saved_view_applied_workflow_list' => [
+                    'status' => 200,
+                    'path' => '/api/flows/running?saved_view=saved-filter-1',
+                    'json' => ['data' => [['run_id' => 'tenant-a-primary'], ['run_id' => 'tenant-a-secondary']]],
+                ],
+                'foreign_namespace_workflow_list' => [
+                    'status' => 200,
+                    'path' => '/api/flows/running?search_attributes[customer_id]=cust-7',
+                    'json' => ['data' => [['run_id' => 'tenant-b-foreign']]],
+                ],
+            ],
+        ];
+        $scenarioResults['waterline_operator_visibility']['observed_outputs'] = $waterlineVisibility;
 
         return [
             'schema' => SearchAttributeRuntimeContract::RESULT_SCHEMA,
             'outcome' => 'pass',
+            'runner_blocked' => false,
             'started_at' => '2026-05-20T12:00:00Z',
             'finished_at' => '2026-05-20T12:05:00Z',
             'generated_at' => '2026-05-20T12:05:01Z',
@@ -791,11 +1522,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
                 'p95_ms' => 45,
                 'max_ms' => 80,
             ],
-            'waterline_operator_visibility' => [
-                'workflow_list_filter' => true,
-                'selected_run_detail' => true,
-                'saved_filter_state' => true,
-            ],
+            'waterline_operator_visibility' => $waterlineVisibility,
             'cli_surface' => [
                 'workflow_list_queries' => $cliQueries,
                 'search_attribute_commands' => $cliDefinitionCommands,

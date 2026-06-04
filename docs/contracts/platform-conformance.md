@@ -208,8 +208,10 @@ category emits a warning and does not block.
   load profile,
   namespace isolation, query-injection hardening, run-record fields, the
   coverage gate that keeps smoke-only search-attribute evidence non-passing,
-  and a result-gate evaluator that rejects incomplete, placeholder, or
-  finding-free non-pass scenario records.
+  a source-free host-runner contract that requires the published Waterline
+  `waterline:search-attributes-conformance` shard, and a result-gate evaluator
+  that rejects incomplete, placeholder, or finding-free non-pass scenario
+  records.
 - Schedules runtime contract: `GET /api/cluster/info` re-exports
   `schedules_runtime_contract`, schema
   `durable-workflow.v2.schedules-runtime.contract`. It names the required
