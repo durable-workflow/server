@@ -73,7 +73,7 @@
     {
       "id": "query_attribution",
       "title": "Query attribution",
-      "required_fields": ["query_result", "recorded_principal", "history_or_query_task_surface"]
+      "required_fields": ["query_result", "recorded_principal", "history_or_query_task_surface", "spoofing_attempts"]
     },
     {
       "id": "completion_failure_attribution",
@@ -122,7 +122,7 @@
       "required_fields": ["history_events", "recorded_principals", "spoofing_attempts", "action_credentials"]
     },
     "query_attribution": {
-      "required_fields": ["query_result", "recorded_principal", "history_or_query_task_surface"]
+      "required_fields": ["query_result", "recorded_principal", "history_or_query_task_surface", "spoofing_attempts"]
     },
     "completion_failure_attribution": {
       "required_fields": ["completion_event_principal", "failure_event_principal", "worker_principal", "expected_worker_principal", "documented_system_principals"]

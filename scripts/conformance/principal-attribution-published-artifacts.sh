@@ -174,6 +174,7 @@ emit_principal_blocked_placeholder_fields() {
       printf ',\n      "query_result": null'
       printf ',\n      "recorded_principal": null'
       printf ',\n      "history_or_query_task_surface": null'
+      printf ',\n      "spoofing_attempts": {"payload_values": [], "headers": [], "executed": false}'
       ;;
     completion_failure_attribution)
       printf ',\n      "completion_event_principal": null'

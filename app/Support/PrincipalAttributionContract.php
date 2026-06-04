@@ -252,7 +252,7 @@ final class PrincipalAttributionContract
                 'required_fields' => ['history_events', 'recorded_principals', 'spoofing_attempts', 'action_credentials'],
             ],
             'query_attribution' => [
-                'required_fields' => ['query_result', 'recorded_principal', 'history_or_query_task_surface'],
+                'required_fields' => ['query_result', 'recorded_principal', 'history_or_query_task_surface', 'spoofing_attempts'],
             ],
             'completion_failure_attribution' => [
                 'required_fields' => [

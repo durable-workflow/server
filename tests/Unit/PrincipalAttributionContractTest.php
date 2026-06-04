@@ -102,6 +102,10 @@ class PrincipalAttributionContractTest extends TestCase
             'action_credentials',
             $manifest['scenario_requirements']['start_signal_cancel_spoofing']['required_fields'],
         );
+        $this->assertContains(
+            'spoofing_attempts',
+            $manifest['scenario_requirements']['query_attribution']['required_fields'],
+        );
 
         foreach (['python_sdk_visibility', 'php_client_visibility'] as $sdkScenario) {
             foreach ([
@@ -1169,6 +1173,10 @@ class PrincipalAttributionContractTest extends TestCase
                     'query_result' => ['principal' => $bob],
                     'recorded_principal' => $bob,
                     'history_or_query_task_surface' => ['command_context' => ['context' => ['principal' => $bob]]],
+                    'spoofing_attempts' => [
+                        'payload_values' => ['mallory'],
+                        'headers' => ['X-Workflow-Principal-Id', 'X-Workflow-Caller-Type', 'X-Forwarded-User'],
+                    ],
                 ],
                 'completion_failure_attribution' => [
                     'status' => 'pass',
@@ -1446,6 +1454,10 @@ class PrincipalAttributionContractTest extends TestCase
                 'query_result' => ['status' => 'ready'],
                 'recorded_principal' => $bob,
                 'history_or_query_task_surface' => ['query_task' => ['principal' => $bob]],
+                'spoofing_attempts' => [
+                    'payload_fields' => ['principal' => 'mallory'],
+                    'headers' => ['X-Forwarded-User'],
+                ],
             ],
             'completion_failure_attribution' => [
                 'completion_event_principal' => $worker,
