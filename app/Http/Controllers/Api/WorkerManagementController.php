@@ -4,10 +4,12 @@ namespace App\Http\Controllers\Api;
 
 use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneProtocol;
+use Carbon\CarbonInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 
 class WorkerManagementController
@@ -28,13 +30,18 @@ class WorkerManagementController
             $query->where('task_queue', $request->query('task_queue'));
         }
 
-        if ($request->query('status')) {
-            $query->where('status', $request->query('status'));
-        }
+        $statusFilter = $this->statusFilter($request->query('status'));
+        $staleAfter = $this->workerStaleAfterSeconds();
 
-        $staleAfter = (int) config('server.workers.stale_after_seconds', 300);
-
-        $workers = $query->get()->map(fn (WorkerRegistration $worker): array => $this->workerSummary($worker, $staleAfter))->all();
+        $workers = $query->get()
+            ->filter(fn (WorkerRegistration $worker): bool => $this->workerMatchesStatus(
+                $worker,
+                $staleAfter,
+                $statusFilter,
+            ))
+            ->map(fn (WorkerRegistration $worker): array => $this->workerSummary($worker, $staleAfter))
+            ->values()
+            ->all();
 
         return ControlPlaneProtocol::json([
             'workers' => $workers,
@@ -47,8 +54,7 @@ class WorkerManagementController
      */
     private function workerSummary(WorkerRegistration $worker, int $staleAfter): array
     {
-        $isStale = $worker->last_heartbeat_at
-            && $worker->last_heartbeat_at->lt(now()->subSeconds($staleAfter));
+        $isStale = $this->workerIsStale($worker, $staleAfter);
 
         return [
             'worker_id' => $worker->worker_id,
@@ -74,7 +80,7 @@ class WorkerManagementController
             ],
             'process_metrics' => $worker->process_metrics ?? null,
             'heartbeat_interval_seconds' => $worker->heartbeat_interval_seconds,
-            'status' => $isStale ? 'stale' : $worker->status,
+            'status' => $isStale ? 'stale' : $this->storedWorkerStatus($worker),
             'last_heartbeat_at' => $worker->last_heartbeat_at?->toJSON(),
             'registered_at' => $worker->created_at?->toJSON(),
         ];
@@ -104,13 +110,72 @@ class WorkerManagementController
             ], 404);
         }
 
-        $staleAfter = (int) config('server.workers.stale_after_seconds', 300);
+        $staleAfter = $this->workerStaleAfterSeconds();
 
         $payload = $this->workerSummary($worker, $staleAfter);
         $payload['updated_at'] = $worker->updated_at?->toJSON();
         $payload['stale_after_seconds'] = $staleAfter;
 
         return ControlPlaneProtocol::json($payload);
+    }
+
+    private function statusFilter(mixed $status): ?string
+    {
+        if (! is_string($status)) {
+            return null;
+        }
+
+        $status = strtolower(trim($status));
+
+        return $status !== '' ? $status : null;
+    }
+
+    private function workerMatchesStatus(WorkerRegistration $worker, int $staleAfter, ?string $statusFilter): bool
+    {
+        $isStale = $this->workerIsStale($worker, $staleAfter);
+
+        if ($statusFilter === null) {
+            return ! $isStale;
+        }
+
+        if ($statusFilter === 'stale') {
+            return $isStale;
+        }
+
+        if ($isStale) {
+            return false;
+        }
+
+        return $this->storedWorkerStatus($worker) === $statusFilter;
+    }
+
+    private function workerIsStale(WorkerRegistration $worker, int $staleAfter): bool
+    {
+        $heartbeat = $worker->last_heartbeat_at;
+
+        if (! ($heartbeat instanceof CarbonInterface)) {
+            return true;
+        }
+
+        return $heartbeat->lt(now()->subSeconds($staleAfter));
+    }
+
+    private function storedWorkerStatus(WorkerRegistration $worker): string
+    {
+        $status = is_string($worker->status) ? strtolower(trim($worker->status)) : '';
+
+        return $status !== '' ? $status : 'active';
+    }
+
+    private function workerStaleAfterSeconds(): int
+    {
+        $configured = config('server.workers.stale_after_seconds');
+        $pollingTimeout = config('server.polling.timeout');
+
+        return StandaloneWorkerVisibility::staleAfterSeconds(
+            is_numeric($configured) ? (int) $configured : null,
+            is_numeric($pollingTimeout) ? (int) $pollingTimeout : null,
+        );
     }
 
     public function destroy(Request $request, string $workerId): JsonResponse

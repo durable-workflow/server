@@ -129,7 +129,7 @@ class WorkerManagementTest extends TestCase
         $response->assertJsonPath('workers.0.worker_id', 'worker-other');
     }
 
-    public function test_list_marks_stale_workers(): void
+    public function test_list_hides_stale_workers_by_default_and_exposes_them_explicitly(): void
     {
         config(['server.workers.stale_after_seconds' => 60]);
 
@@ -148,13 +148,50 @@ class WorkerManagementTest extends TestCase
 
         $response = $this->getJson('/api/workers', $this->apiHeaders());
         $response->assertOk();
+        $response->assertJsonCount(1, 'workers');
+        $response->assertJsonPath('workers.0.worker_id', 'worker-fresh');
+        $response->assertJsonPath('workers.0.status', 'active');
 
-        $workers = $response->json('workers');
-        $stale = collect($workers)->firstWhere('worker_id', 'worker-stale');
-        $fresh = collect($workers)->firstWhere('worker_id', 'worker-fresh');
+        $response = $this->getJson('/api/workers?status=stale', $this->apiHeaders());
+        $response->assertOk();
+        $response->assertJsonCount(1, 'workers');
+        $response->assertJsonPath('workers.0.worker_id', 'worker-stale');
+        $response->assertJsonPath('workers.0.status', 'stale');
+    }
 
-        self::assertSame('stale', $stale['status']);
-        self::assertSame('active', $fresh['status']);
+    public function test_status_filter_treats_expired_heartbeats_as_stale(): void
+    {
+        config(['server.workers.stale_after_seconds' => 60]);
+
+        WorkerRegistration::query()->create([
+            'worker_id' => 'worker-expired-draining',
+            'namespace' => 'default',
+            'task_queue' => 'queue',
+            'runtime' => 'php',
+            'supported_workflow_types' => [],
+            'supported_activity_types' => [],
+            'last_heartbeat_at' => now()->subSeconds(120),
+            'status' => 'draining',
+        ]);
+
+        $this->createWorker('worker-fresh-draining', 'queue', 'php');
+        WorkerRegistration::query()
+            ->where('worker_id', 'worker-fresh-draining')
+            ->update(['status' => 'draining']);
+
+        $response = $this->getJson('/api/workers?status=draining', $this->apiHeaders());
+        $response->assertOk();
+        $response->assertJsonCount(1, 'workers');
+        $response->assertJsonPath('workers.0.worker_id', 'worker-fresh-draining');
+
+        $response = $this->getJson('/api/workers?status=stale', $this->apiHeaders());
+        $response->assertOk();
+        $response->assertJsonCount(1, 'workers');
+        $response->assertJsonPath('workers.0.worker_id', 'worker-expired-draining');
+
+        $response = $this->getJson('/api/workers?status=active', $this->apiHeaders());
+        $response->assertOk();
+        $response->assertJsonPath('workers', []);
     }
 
     // ── Show ─────────────────────────────────────────────────────────

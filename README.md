@@ -697,9 +697,11 @@ check in" via `GET /api/workers`, the CLI `dw worker:list` /
 the same worker id and OS pid. The register and heartbeat acknowledgements
 advertise the recommended cadence in `heartbeat_interval_seconds` (default
 60s, configurable via `DW_WORKER_HEARTBEAT_INTERVAL_SECONDS`); workers that
-miss enough heartbeats are surfaced as `stale` after
-`DW_WORKER_STALE_AFTER_SECONDS` and stop being considered for query-task
-dispatch and routing-gate admission.
+miss enough heartbeats fall out of the default `GET /api/workers` and
+`dw worker:list` active roster after `DW_WORKER_STALE_AFTER_SECONDS`; operators
+can still ask for the expired diagnostic set with `status=stale`, and stale
+workers stop being considered for query-task dispatch and routing-gate
+admission.
 
 The current server advertises worker protocol `1.9` by default. Worker-plane
 requests should send the highest `X-Durable-Workflow-Protocol-Version` their SDK
