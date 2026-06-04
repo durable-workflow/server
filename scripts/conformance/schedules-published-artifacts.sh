@@ -33,10 +33,17 @@ Environment overrides:
   DW_SCHEDULES_CLI_EVIDENCE         Optional JSON from a focused official-CLI
                                     schedule lifecycle shard. Scenario results
                                     in this file are merged into the output.
+  DW_SCHEDULES_OPERATOR_CONTROLS_EVIDENCE
+                                    Optional JSON from a focused list/describe,
+                                    pause/resume, and delete shard. Scenario
+                                    results in this file are merged into the output.
   DW_SCHEDULES_RUN_CADENCE_SHARD    Set to 0 to skip the automatic Docker-backed
                                     cadence shard. Defaults to auto in this shell
                                     handoff: run it when Docker Compose and a
                                     published server artifact are available.
+  DW_SCHEDULES_RUN_OPERATOR_CONTROLS_SHARD
+                                    Set to 0 to skip the automatic Docker-backed
+                                    operator-controls shard. Defaults to auto.
   DW_SCHEDULES_RUN_CLI_SURFACE_SHARD
                                     Set to 0 to skip the automatic official-CLI
                                     schedule lifecycle shard. Defaults to auto.
@@ -49,6 +56,10 @@ Environment overrides:
                                     to a free port.
   DW_SCHEDULES_CADENCE_TIMEOUT_SECONDS
                                     Overall wait for cadence fires. Defaults to 420.
+  DW_SCHEDULES_OPERATOR_PAUSE_SECONDS
+                                    Pause-window duration. Minimum/default is 120/125.
+  DW_SCHEDULES_OPERATOR_DELETE_WINDOW_SECONDS
+                                    Delete observation window. Defaults to 65.
 USAGE
 }
 
@@ -131,6 +142,7 @@ export DW_SCHEDULES_RESULT_DIR="$result_dir"
 export DW_SCHEDULES_RUN_ROOT="$run_root"
 export DW_SCHEDULES_REPO_ROOT="$repo_root"
 export DW_SCHEDULES_RUN_CADENCE_SHARD="${DW_SCHEDULES_RUN_CADENCE_SHARD:-auto}"
+export DW_SCHEDULES_RUN_OPERATOR_CONTROLS_SHARD="${DW_SCHEDULES_RUN_OPERATOR_CONTROLS_SHARD:-auto}"
 export DW_SCHEDULES_RUN_CLI_SURFACE_SHARD="${DW_SCHEDULES_RUN_CLI_SURFACE_SHARD:-auto}"
 
 node "$script_dir/schedules-published-artifacts.mjs"

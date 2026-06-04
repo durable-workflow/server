@@ -24,6 +24,8 @@ const smokeEvidencePath = process.env.DW_SCHEDULES_SMOKE_EVIDENCE
   ?? path.join(resultDir, 'schedules-smoke-evidence.json');
 const cliEvidencePath = process.env.DW_SCHEDULES_CLI_EVIDENCE
   ?? path.join(resultDir, 'schedules-cli-evidence.json');
+const operatorControlsEvidencePath = process.env.DW_SCHEDULES_OPERATOR_CONTROLS_EVIDENCE
+  ?? path.join(resultDir, 'schedules-operator-controls-evidence.json');
 
 const DEFAULT_REQUIRED_SCENARIOS = [
   'published_artifact_install_only',
@@ -68,6 +70,10 @@ async function main() {
   const cadenceEvidence = await maybeRunCadenceShard(startedAt, artifactVersions, artifactSources);
   if (cadenceEvidence !== null) {
     evidenceInputs.push(cadenceEvidence);
+  }
+  const operatorControlsEvidence = await maybeRunOperatorControlsShard(startedAt, artifactVersions, artifactSources);
+  if (operatorControlsEvidence !== null) {
+    evidenceInputs.push(operatorControlsEvidence);
   }
   const cliSurfaceEvidence = await maybeRunCliSurfaceShard(startedAt, artifactVersions, artifactSources);
   if (cliSurfaceEvidence !== null) {
@@ -384,6 +390,7 @@ function readEvidenceInputs() {
   const paths = [
     smokeEvidencePath,
     process.env.DW_SCHEDULES_CADENCE_EVIDENCE,
+    operatorControlsEvidencePath,
     cliEvidencePath,
   ].filter((value, index, values) => stringValue(value) !== '' && values.indexOf(value) === index);
 
@@ -959,6 +966,1086 @@ function cadenceFinding(scenarioId, observation) {
       ? 'observe at least eight PT30S fixed-rate fires with nominal timestamps, actual timestamps, and drift milliseconds'
       : 'observe at least four cron fires with nominal timestamps, actual timestamps, and drift milliseconds',
   };
+}
+
+async function maybeRunOperatorControlsShard(startedAt, artifactVersions, artifactSources) {
+  const mode = stringValue(process.env.DW_SCHEDULES_RUN_OPERATOR_CONTROLS_SHARD).toLowerCase();
+  if (!['1', 'true', 'yes', 'auto'].includes(mode)) {
+    return null;
+  }
+
+  if (readJsonIfExists(operatorControlsEvidencePath) !== null) {
+    return null;
+  }
+
+  const explicit = mode !== 'auto';
+  const serverUrl = stringValue(process.env.DW_SCHEDULES_SERVER_URL);
+  const dockerAvailable = await commandSucceeds('docker', ['--version']);
+  const composeAvailable = dockerAvailable && await commandSucceeds('docker', ['compose', 'version']);
+  const serverImage = resolveServerImage(artifactVersions);
+
+  if (serverUrl === '' && (!dockerAvailable || !composeAvailable || serverImage === '')) {
+    if (!explicit) {
+      return null;
+    }
+
+    const missing = [
+      !dockerAvailable ? 'docker' : null,
+      dockerAvailable && !composeAvailable ? 'docker compose' : null,
+      serverImage === '' ? 'DW_SERVER_VERSION or DW_SERVER_IMAGE' : null,
+    ].filter(Boolean).join(', ');
+
+    return operatorControlsBlockedEvidence(
+      `Operator controls shard could not start because ${missing} is unavailable.`,
+      startedAt,
+      artifactVersions,
+      artifactSources,
+    );
+  }
+
+  try {
+    return await runOperatorControlsShard({
+      startedAt,
+      artifactVersions,
+      artifactSources,
+      serverImage,
+      existingServerUrl: serverUrl,
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return operatorControlsFailureEvidence(reason, startedAt, artifactVersions, artifactSources);
+  }
+}
+
+async function runOperatorControlsShard({ startedAt, artifactVersions, artifactSources, serverImage, existingServerUrl }) {
+  const operatorStartedAt = timestamp();
+  const runId = `schedules-operator-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const namespace = sanitizeDockerName(`${stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance'}-${runId}`).slice(0, 96);
+  const taskQueue = stringValue(process.env.DW_SCHEDULES_TASK_QUEUE) || 'schedules-operator-controls';
+  const token = stringValue(process.env.DW_SCHEDULES_AUTH_TOKEN) || 'dev-token';
+  const serverPort = positiveInt(process.env.DW_SCHEDULES_SERVER_PORT, 0) || await freePort();
+  const serverUrl = existingServerUrl || `http://127.0.0.1:${serverPort}`;
+  const composeProject = sanitizeDockerName(runId);
+  const schedulerTickSeconds = positiveInt(process.env.DW_SCHEDULES_SCHEDULER_TICK_SECONDS, 5);
+  const firstFireTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_OPERATOR_FIRST_FIRE_TIMEOUT_SECONDS, 140);
+  const pauseSeconds = Math.max(120, positiveInt(process.env.DW_SCHEDULES_OPERATOR_PAUSE_SECONDS, 125));
+  const resumeTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_OPERATOR_RESUME_TIMEOUT_SECONDS, 100);
+  const deleteWindowSeconds = positiveInt(process.env.DW_SCHEDULES_OPERATOR_DELETE_WINDOW_SECONDS, 65);
+  const pollSeconds = positiveInt(process.env.DW_SCHEDULES_OPERATOR_POLL_SECONDS, 5);
+  const overlayPath = path.join(resultDir, 'schedules-operator-controls-compose.override.yml');
+  const composeFiles = [
+    '-f',
+    path.join(repoRoot, 'docker-compose.published.yml'),
+    '-f',
+    overlayPath,
+  ];
+  let composeStarted = false;
+
+  markArtifactSource(artifactSources, 'server', existingServerUrl === '' ? 'published_docker_image' : 'existing_published_server_url');
+
+  if (existingServerUrl === '') {
+    writeSchedulerOverlay(overlayPath, schedulerTickSeconds);
+    await execLogged(
+      'docker',
+      ['image', 'pull', serverImage],
+      path.join(resultDir, 'schedules-operator-controls-docker-pull.log'),
+    );
+    await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'up', '-d', 'server', 'scheduler'],
+      path.join(resultDir, 'schedules-operator-controls-compose-up.log'),
+      composeEnv(serverPort, serverImage, token, artifactVersions),
+    );
+    composeStarted = true;
+  }
+
+  try {
+    await waitForServerReady(serverUrl, 120);
+    await ensureNamespace(serverUrl, token, namespace);
+
+    const cronScheduleId = `${runId}-cron`;
+    const fixedRateScheduleId = `${runId}-fixed-rate`;
+
+    await createOperatorSchedule({
+      serverUrl,
+      token,
+      namespace,
+      scheduleId: cronScheduleId,
+      spec: { cron_expressions: ['* * * * *'], timezone: 'UTC' },
+      taskQueue,
+    });
+    await createOperatorSchedule({
+      serverUrl,
+      token,
+      namespace,
+      scheduleId: fixedRateScheduleId,
+      spec: { intervals: [{ every: 'PT30S' }], timezone: 'UTC' },
+      taskQueue,
+    });
+
+    const [cronFirstFire, fixedRateFirstFire] = await Promise.all([
+      waitForScheduleTrigger({
+        serverUrl,
+        token,
+        namespace,
+        scheduleId: cronScheduleId,
+        afterRecordedMs: 0,
+        deadlineMs: Date.now() + firstFireTimeoutSeconds * 1000,
+        pollSeconds,
+      }),
+      waitForScheduleTrigger({
+        serverUrl,
+        token,
+        namespace,
+        scheduleId: fixedRateScheduleId,
+        afterRecordedMs: 0,
+        deadlineMs: Date.now() + firstFireTimeoutSeconds * 1000,
+        pollSeconds,
+      }),
+    ]);
+    const firstFires = {
+      cron: cronFirstFire,
+      fixed_rate: fixedRateFirstFire,
+    };
+
+    const httpList = await listSchedules(serverUrl, token, namespace);
+    const httpDescriptions = {
+      [cronScheduleId]: await describeSchedule(serverUrl, token, namespace, cronScheduleId),
+      [fixedRateScheduleId]: await describeSchedule(serverUrl, token, namespace, fixedRateScheduleId),
+    };
+    const cliVisibility = await probeCliListDescribe({
+      serverUrl,
+      token,
+      namespace,
+      scheduleIds: [cronScheduleId, fixedRateScheduleId],
+      artifactVersions,
+      artifactSources,
+    });
+    const sdkVisibility = await probePythonSdkListDescribe({
+      serverUrl,
+      token,
+      namespace,
+      scheduleIds: [cronScheduleId, fixedRateScheduleId],
+      artifactVersions,
+      artifactSources,
+    });
+    const listDescribe = buildListDescribeEvidence({
+      scheduleIds: [cronScheduleId, fixedRateScheduleId],
+      httpList,
+      httpDescriptions,
+      cliVisibility,
+      sdkVisibility,
+      firstFires,
+      artifactVersions,
+      artifactSources,
+    });
+
+    const pauseResume = await observePauseResumeWindow({
+      serverUrl,
+      token,
+      namespace,
+      scheduleId: fixedRateScheduleId,
+      pauseSeconds,
+      resumeTimeoutSeconds,
+      pollSeconds,
+      artifactVersions,
+      artifactSources,
+    });
+
+    const deleteEvidence = await observeDeleteWindow({
+      serverUrl,
+      token,
+      namespace,
+      scheduleId: fixedRateScheduleId,
+      deleteWindowSeconds,
+      artifactVersions,
+      artifactSources,
+    });
+
+    await bestEffortDeleteSchedule(serverUrl, token, namespace, cronScheduleId);
+
+    const evidence = operatorControlsEvidenceFromObservations({
+      startedAt: operatorStartedAt,
+      finishedAt: timestamp(),
+      artifactVersions,
+      artifactSources,
+      namespace,
+      taskQueue,
+      schedulesCreated: [cronScheduleId, fixedRateScheduleId],
+      listDescribe,
+      pauseResume,
+      deleteEvidence,
+      timing: {
+        first_fire_timeout_seconds: firstFireTimeoutSeconds,
+        pause_seconds: pauseSeconds,
+        resume_timeout_seconds: resumeTimeoutSeconds,
+        delete_window_seconds: deleteWindowSeconds,
+        scheduler_tick_seconds: schedulerTickSeconds,
+      },
+    });
+    writeJson(operatorControlsEvidencePath, evidence);
+
+    return evidence;
+  } finally {
+    if (composeStarted) {
+      await collectOperatorControlsComposeLogs(composeProject, composeFiles);
+      await execFile('docker', ['compose', '-p', composeProject, ...composeFiles, 'down', '-v'], {
+        env: composeEnv(serverPort, serverImage, token, artifactVersions),
+        maxBuffer: 1024 * 1024 * 8,
+      }).catch(() => {});
+    }
+
+    writeJson(path.join(resultDir, 'schedules-operator-controls-run-metadata.json'), {
+      schema: 'durable-workflow.v2.schedules-runtime.operator-controls-run-metadata',
+      started_at: startedAt,
+      operator_controls_started_at: operatorStartedAt,
+      finished_at: timestamp(),
+      server_url: serverUrl,
+      namespace,
+      task_queue: taskQueue,
+      server_image: existingServerUrl === '' ? serverImage : null,
+      compose_project: existingServerUrl === '' ? composeProject : null,
+      published_artifact_versions: artifactVersions,
+      artifact_sources: artifactSources,
+      local_product_source_checkouts_used: false,
+    });
+  }
+}
+
+async function createOperatorSchedule({ serverUrl, token, namespace, scheduleId, spec, taskQueue }) {
+  await apiRequest(serverUrl, token, namespace, 'POST', '/schedules', {
+    schedule_id: scheduleId,
+    spec,
+    action: {
+      workflow_type: 'schedules.OperatorControlsProbe',
+      task_queue: taskQueue,
+      input: [{ schedule_id: scheduleId }],
+    },
+    overlap_policy: 'allow_all',
+    jitter_seconds: 0,
+  });
+}
+
+async function waitForScheduleTrigger({
+  serverUrl,
+  token,
+  namespace,
+  scheduleId,
+  afterRecordedMs,
+  deadlineMs,
+  pollSeconds,
+}) {
+  let latestHistory = { events: [] };
+  while (Date.now() < deadlineMs) {
+    latestHistory = await scheduleHistory(serverUrl, token, namespace, scheduleId);
+    const triggers = scheduleTriggeredEvents(latestHistory.events ?? [])
+      .filter((event) => eventRecordedMs(event) > afterRecordedMs);
+
+    if (triggers.length > 0) {
+      return {
+        observed: true,
+        schedule_id: scheduleId,
+        trigger_count: triggers.length,
+        first_trigger: normalizeScheduleEvent(triggers[0]),
+        latest_trigger: normalizeScheduleEvent(triggers[triggers.length - 1]),
+        history: latestHistory,
+      };
+    }
+
+    await sleep(pollSeconds * 1000);
+  }
+
+  return {
+    observed: false,
+    schedule_id: scheduleId,
+    trigger_count: 0,
+    first_trigger: null,
+    latest_trigger: null,
+    history: latestHistory,
+  };
+}
+
+async function listSchedules(serverUrl, token, namespace) {
+  return apiRequest(serverUrl, token, namespace, 'GET', '/schedules');
+}
+
+async function describeSchedule(serverUrl, token, namespace, scheduleId) {
+  return apiRequest(serverUrl, token, namespace, 'GET', `/schedules/${encodeURIComponent(scheduleId)}`);
+}
+
+async function describeScheduleResult(serverUrl, token, namespace, scheduleId) {
+  return apiRequestResult(serverUrl, token, namespace, 'GET', `/schedules/${encodeURIComponent(scheduleId)}`);
+}
+
+async function probeCliListDescribe({
+  serverUrl,
+  token,
+  namespace,
+  scheduleIds,
+  artifactVersions,
+  artifactSources,
+}) {
+  try {
+    const cliPath = await resolvePublishedCli(artifactVersions, artifactSources);
+    const context = { serverUrl, namespace, token };
+    const list = await runDwJson(cliPath, ['schedules', 'list', '--json'], context);
+    const descriptions = {};
+
+    for (const scheduleId of scheduleIds) {
+      descriptions[scheduleId] = await runDwJson(cliPath, ['schedules', 'describe', scheduleId, '--json'], context);
+    }
+
+    const failedCommands = [
+      list.exit_code !== 0 ? 'list' : null,
+      ...Object.entries(descriptions)
+        .filter(([, transcript]) => transcript.exit_code !== 0)
+        .map(([scheduleId]) => `describe:${scheduleId}`),
+    ].filter(Boolean);
+    const outputShapeFailures = [];
+
+    if (!list.parsed_json || typeof list.parsed_json !== 'object') {
+      outputShapeFailures.push({ operation: 'list', reason: list.json_parse_error || 'stdout was not a JSON object' });
+    }
+
+    for (const [scheduleId, transcript] of Object.entries(descriptions)) {
+      if (!transcript.parsed_json || typeof transcript.parsed_json !== 'object') {
+        outputShapeFailures.push({
+          operation: `describe:${scheduleId}`,
+          reason: transcript.json_parse_error || 'stdout was not a JSON object',
+        });
+      }
+    }
+
+    const listContainsAll = scheduleIds.every((scheduleId) => scheduleListContains(list.parsed_json, scheduleId));
+    const describeContainsAll = scheduleIds.every((scheduleId) => scheduleIdField(descriptions[scheduleId]?.parsed_json) === scheduleId);
+
+    return {
+      observed: failedCommands.length === 0 && outputShapeFailures.length === 0 && listContainsAll && describeContainsAll,
+      cli_executable: cliPath,
+      list_contains_all: listContainsAll,
+      describe_contains_all: describeContainsAll,
+      failed_commands: failedCommands,
+      output_shape_failures: outputShapeFailures,
+      list,
+      descriptions,
+    };
+  } catch (error) {
+    return {
+      observed: false,
+      error: error instanceof Error ? error.message : String(error),
+      failed_commands: ['list_describe'],
+      output_shape_failures: [],
+      list: null,
+      descriptions: {},
+    };
+  }
+}
+
+async function probePythonSdkListDescribe({
+  serverUrl,
+  token,
+  namespace,
+  scheduleIds,
+  artifactVersions,
+  artifactSources,
+}) {
+  const pythonVersion = stringValue(artifactVersions['sdk-python']);
+  if (pythonVersion === '') {
+    return {
+      observed: false,
+      error: 'DW_PYTHON_SDK_VERSION is required to install the published Python SDK artifact.',
+      list_schedule_ids: [],
+      descriptions: [],
+    };
+  }
+
+  const python = stringValue(process.env.DW_SCHEDULES_PYTHON) || stringValue(process.env.PYTHON) || 'python3';
+  const venvDir = path.join(resultDir, 'python-sdk-list-describe-venv');
+  const venvPython = path.join(venvDir, process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+  const venvPip = path.join(venvDir, process.platform === 'win32' ? 'Scripts/pip.exe' : 'bin/pip');
+  const scriptPath = path.join(resultDir, 'python-sdk-list-describe-probe.py');
+
+  try {
+    if (!fs.existsSync(venvPython)) {
+      await execLogged(
+        python,
+        ['-m', 'venv', venvDir],
+        path.join(resultDir, 'schedules-python-sdk-venv.log'),
+      );
+    }
+
+    await execLogged(
+      venvPip,
+      ['install', '--disable-pip-version-check', `durable-workflow==${pythonVersion}`],
+      path.join(resultDir, 'schedules-python-sdk-install.log'),
+    );
+    writeText(scriptPath, pythonSdkListDescribeProbeSource());
+
+    const transcript = await execCommandCapture(venvPython, [scriptPath], {
+      env: {
+        ...process.env,
+        DW_SCHEDULES_SERVER_URL: serverUrl,
+        DW_SCHEDULES_AUTH_TOKEN: token,
+        DW_SCHEDULES_NAMESPACE: namespace,
+        DW_SCHEDULES_PROBE_IDS: JSON.stringify(scheduleIds),
+      },
+      timeout: 60000,
+      maxBuffer: 1024 * 1024 * 4,
+    });
+
+    if (transcript.exit_code !== 0) {
+      return {
+        observed: false,
+        error: transcript.stderr || transcript.stdout || 'Python SDK list/describe probe failed.',
+        transcript,
+        list_schedule_ids: [],
+        descriptions: [],
+      };
+    }
+
+    const parsed = parseJsonOutput(transcript.stdout);
+    if (!parsed.value || typeof parsed.value !== 'object') {
+      return {
+        observed: false,
+        error: parsed.error || 'Python SDK probe did not return JSON.',
+        transcript,
+        list_schedule_ids: [],
+        descriptions: [],
+      };
+    }
+
+    markArtifactSource(artifactSources, 'sdk-python', 'pypi');
+
+    const listScheduleIds = arrayValue(parsed.value.list_schedule_ids).map((value) => stringValue(value)).filter(Boolean);
+    const descriptions = arrayValue(parsed.value.descriptions);
+    const listContainsAll = scheduleIds.every((scheduleId) => listScheduleIds.includes(scheduleId));
+    const describeContainsAll = scheduleIds.every((scheduleId) => descriptions
+      .some((description) => scheduleIdField(description) === scheduleId));
+
+    return {
+      observed: listContainsAll && describeContainsAll,
+      list_contains_all: listContainsAll,
+      describe_contains_all: describeContainsAll,
+      list_schedule_ids: listScheduleIds,
+      descriptions,
+      raw: parsed.value,
+      transcript,
+    };
+  } catch (error) {
+    return {
+      observed: false,
+      error: error instanceof Error ? error.message : String(error),
+      list_schedule_ids: [],
+      descriptions: [],
+    };
+  }
+}
+
+function pythonSdkListDescribeProbeSource() {
+  return `import asyncio
+import dataclasses
+import json
+import os
+
+from durable_workflow.client import Client
+
+
+def as_dict(value):
+    try:
+        return dataclasses.asdict(value)
+    except TypeError:
+        return dict(getattr(value, "__dict__", {}))
+
+
+async def main():
+    schedule_ids = json.loads(os.environ["DW_SCHEDULES_PROBE_IDS"])
+    async with Client(
+        os.environ["DW_SCHEDULES_SERVER_URL"],
+        token=os.environ.get("DW_SCHEDULES_AUTH_TOKEN"),
+        namespace=os.environ["DW_SCHEDULES_NAMESPACE"],
+    ) as client:
+        listed = await client.list_schedules()
+        schedules = [as_dict(item) for item in listed.schedules]
+        descriptions = []
+        for schedule_id in schedule_ids:
+            descriptions.append(as_dict(await client.describe_schedule(schedule_id)))
+    print(json.dumps({
+        "schedule_ids": schedule_ids,
+        "list_schedule_ids": [item.get("schedule_id") for item in schedules],
+        "schedules": schedules,
+        "descriptions": descriptions,
+    }, default=str))
+
+
+asyncio.run(main())
+`;
+}
+
+function buildListDescribeEvidence({
+  scheduleIds,
+  httpList,
+  httpDescriptions,
+  cliVisibility,
+  sdkVisibility,
+  firstFires,
+  artifactVersions,
+  artifactSources,
+}) {
+  const listedSchedules = arrayValue(httpList?.schedules);
+  const httpListContainsAll = scheduleIds.every((scheduleId) => listedSchedules
+    .some((schedule) => scheduleIdField(schedule) === scheduleId));
+  const httpDescribeContainsAll = scheduleIds.every((scheduleId) => scheduleIdField(httpDescriptions[scheduleId]) === scheduleId);
+  const allPublicScheduleRecords = [
+    ...listedSchedules.filter((schedule) => scheduleIds.includes(scheduleIdField(schedule))),
+    ...Object.values(httpDescriptions).filter(Boolean),
+  ];
+  const cronOrIntervalObserved = scheduleIds.every((scheduleId) => allPublicScheduleRecords
+    .filter((schedule) => scheduleIdField(schedule) === scheduleId)
+    .some((schedule) => hasCronOrIntervalDefinition(schedule)));
+  const lastFireAtObserved = scheduleIds.every((scheduleId) => allPublicScheduleRecords
+    .filter((schedule) => scheduleIdField(schedule) === scheduleId)
+    .some((schedule) => scheduleTimeField(schedule, ['last_fire_at', 'lastFireAt', 'last_fired_at', 'lastFiredAt']) !== ''));
+  const nextFireAtObserved = scheduleIds.every((scheduleId) => allPublicScheduleRecords
+    .filter((schedule) => scheduleIdField(schedule) === scheduleId)
+    .some((schedule) => scheduleTimeField(schedule, ['next_fire_at', 'nextFireAt']) !== ''));
+  const pauseStateObserved = scheduleIds.every((scheduleId) => allPublicScheduleRecords
+    .filter((schedule) => scheduleIdField(schedule) === scheduleId)
+    .some((schedule) => hasPauseState(schedule)));
+  const failures = [];
+
+  if (!httpListContainsAll) {
+    failures.push('public HTTP list did not include both active schedules');
+  }
+  if (!httpDescribeContainsAll) {
+    failures.push('public HTTP describe did not return both active schedules');
+  }
+  if (!cliVisibility.observed) {
+    failures.push(`CLI list/describe did not observe both active schedules${cliVisibility.error ? `: ${cliVisibility.error}` : ''}`);
+  }
+  if (!sdkVisibility.observed) {
+    failures.push(`Python SDK list/describe did not observe both active schedules${sdkVisibility.error ? `: ${sdkVisibility.error}` : ''}`);
+  }
+  if (!cronOrIntervalObserved) {
+    failures.push('cron or interval definition was missing from list/describe output');
+  }
+  if (!lastFireAtObserved) {
+    failures.push('last_fire_at/last_fired_at was missing after observed fire windows');
+  }
+  if (!nextFireAtObserved) {
+    failures.push('next_fire_at was missing from list/describe output');
+  }
+  if (!pauseStateObserved) {
+    failures.push('paused/status state was missing from list/describe output');
+  }
+
+  return {
+    scenario_id: 'list_describe_visibility',
+    schedule_ids: scheduleIds,
+    public_api_list_observed: httpListContainsAll,
+    public_api_describe_observed: httpDescribeContainsAll,
+    cli_list_observed: cliVisibility.observed === true,
+    sdk_list_observed: sdkVisibility.observed === true,
+    cron_or_interval_observed: cronOrIntervalObserved,
+    last_fire_at_observed: lastFireAtObserved,
+    next_fire_at_observed: nextFireAtObserved,
+    pause_state_observed: pauseStateObserved,
+    first_fire_observations: firstFires,
+    http: {
+      list_contains_all: httpListContainsAll,
+      describe_contains_all: httpDescribeContainsAll,
+      list: httpList,
+      descriptions: httpDescriptions,
+    },
+    cli: cliVisibility,
+    'sdk-python': sdkVisibility,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    failures,
+    verdict: failures.length === 0 ? 'pass' : 'fail',
+  };
+}
+
+async function observePauseResumeWindow({
+  serverUrl,
+  token,
+  namespace,
+  scheduleId,
+  pauseSeconds,
+  resumeTimeoutSeconds,
+  pollSeconds,
+  artifactVersions,
+  artifactSources,
+}) {
+  const pauseRequestedAt = timestamp();
+  const pauseResponse = await apiRequest(serverUrl, token, namespace, 'POST', `/schedules/${encodeURIComponent(scheduleId)}/pause`, {
+    note: 'schedules conformance pause window',
+  });
+  const pauseConfirmedAt = timestamp();
+  const pauseConfirmedMs = Date.parse(pauseConfirmedAt);
+  const pausedDescription = await describeSchedule(serverUrl, token, namespace, scheduleId);
+
+  await sleep(pauseSeconds * 1000);
+
+  const beforeResumeAt = timestamp();
+  const beforeResumeHistory = await scheduleHistory(serverUrl, token, namespace, scheduleId);
+  const firesDuringPause = scheduleTriggeredEvents(beforeResumeHistory.events ?? [])
+    .filter((event) => isEventRecordedBetween(event, pauseConfirmedMs, Date.parse(beforeResumeAt)))
+    .map(normalizeScheduleEvent);
+
+  const resumeRequestedAt = timestamp();
+  const resumeResponse = await apiRequest(serverUrl, token, namespace, 'POST', `/schedules/${encodeURIComponent(scheduleId)}/resume`, {
+    note: 'schedules conformance resume window',
+  });
+  const resumeConfirmedAt = timestamp();
+  const resumeConfirmedMs = Date.parse(resumeConfirmedAt);
+  const resumedDescription = await describeSchedule(serverUrl, token, namespace, scheduleId);
+  const postResume = await waitForScheduleTrigger({
+    serverUrl,
+    token,
+    namespace,
+    scheduleId,
+    afterRecordedMs: resumeConfirmedMs,
+    deadlineMs: Date.now() + resumeTimeoutSeconds * 1000,
+    pollSeconds,
+  });
+  const postResumeTriggers = scheduleTriggeredEvents(postResume.history?.events ?? [])
+    .filter((event) => eventRecordedMs(event) > resumeConfirmedMs);
+  const catchupAfterResume = postResumeTriggers
+    .filter((event) => {
+      const occurrenceMs = eventOccurrenceMs(event);
+      return occurrenceMs !== null && occurrenceMs < resumeConfirmedMs;
+    })
+    .map(normalizeScheduleEvent);
+  const failures = [];
+  const resumedAfterPause = isScheduleActive(resumedDescription);
+  const postResumeFireObserved = postResume.observed === true;
+  const postResumeNormalFireObserved = postResumeTriggers.some((event) => {
+    const occurrenceMs = eventOccurrenceMs(event);
+    return occurrenceMs !== null && occurrenceMs >= resumeConfirmedMs;
+  });
+
+  if (firesDuringPause.length > 0) {
+    failures.push(`observed ${firesDuringPause.length} fire(s) during the paused window`);
+  }
+  if (!resumedAfterPause) {
+    failures.push('schedule did not return to active state after resume');
+  }
+  if (!postResumeFireObserved) {
+    failures.push('no normal fire was observed after resume');
+  }
+  if (catchupAfterResume.length > 0) {
+    failures.push(`observed ${catchupAfterResume.length} catch-up fire(s) for pause-window occurrence times after resume`);
+  }
+
+  return {
+    scenario_id: 'pause_resume_no_fire_window',
+    schedule_id: scheduleId,
+    surface: 'public_http_api',
+    pause_requested_at: pauseRequestedAt,
+    pause_confirmed_at: pauseConfirmedAt,
+    before_resume_at: beforeResumeAt,
+    resume_requested_at: resumeRequestedAt,
+    resume_confirmed_at: resumeConfirmedAt,
+    pause_window_seconds: pauseSeconds,
+    fires_during_pause_count: firesDuringPause.length,
+    fires_during_pause: firesDuringPause,
+    resumed_after_pause: resumedAfterPause,
+    post_resume_fire_observed: postResumeFireObserved,
+    post_resume_normal_fire_observed: postResumeNormalFireObserved,
+    catchup_after_resume_count: catchupAfterResume.length,
+    catchup_after_resume: catchupAfterResume,
+    first_post_resume_fire: normalizeScheduleEvent(postResumeTriggers[0] ?? null),
+    pause_response: pauseResponse,
+    resume_response: resumeResponse,
+    paused_description: pausedDescription,
+    resumed_description: resumedDescription,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    failures,
+    verdict: failures.length === 0 ? 'pass' : 'fail',
+  };
+}
+
+async function observeDeleteWindow({
+  serverUrl,
+  token,
+  namespace,
+  scheduleId,
+  deleteWindowSeconds,
+  artifactVersions,
+  artifactSources,
+}) {
+  const deleteRequestedAt = timestamp();
+  const deleteResponse = await apiRequest(serverUrl, token, namespace, 'DELETE', `/schedules/${encodeURIComponent(scheduleId)}`);
+  const deleteConfirmedAt = timestamp();
+  const deleteConfirmedMs = Date.parse(deleteConfirmedAt);
+  const listAfterDelete = await listSchedules(serverUrl, token, namespace);
+  const describeAfterDelete = await describeScheduleResult(serverUrl, token, namespace, scheduleId);
+
+  await sleep(deleteWindowSeconds * 1000);
+
+  const historyAfterDelete = await scheduleHistory(serverUrl, token, namespace, scheduleId).catch((error) => ({
+    error: error instanceof Error ? error.message : String(error),
+    events: [],
+  }));
+  const historyAvailable = stringValue(historyAfterDelete.error) === '';
+  const firesAfterDelete = scheduleTriggeredEvents(historyAfterDelete.events ?? [])
+    .filter((event) => eventRecordedMs(event) >= deleteConfirmedMs)
+    .map(normalizeScheduleEvent);
+  const absentFromList = !scheduleListContains(listAfterDelete, scheduleId);
+  const absentFromDescribe = describeAfterDelete.status === 404
+    || stringValue(describeAfterDelete.parsed?.reason) === 'schedule_not_found';
+  const noFiresAfterDelete = historyAvailable && firesAfterDelete.length === 0;
+  const failures = [];
+
+  if (!absentFromList) {
+    failures.push('deleted schedule was still present in public list output');
+  }
+  if (!absentFromDescribe) {
+    failures.push(`deleted schedule describe returned ${describeAfterDelete.status} instead of not found`);
+  }
+  if (!noFiresAfterDelete) {
+    failures.push(historyAvailable
+      ? `observed ${firesAfterDelete.length} fire(s) after delete`
+      : `could not read public schedule history after delete: ${historyAfterDelete.error}`);
+  }
+
+  return {
+    scenario_id: 'delete_stops_future_fires',
+    schedule_id: scheduleId,
+    surface: 'public_http_api',
+    delete_requested_at: deleteRequestedAt,
+    delete_confirmed_at: deleteConfirmedAt,
+    observation_window_seconds: deleteWindowSeconds,
+    absent_from_list_after_delete: absentFromList,
+    absent_from_describe_after_delete: absentFromDescribe,
+    describe_after_delete_status: describeAfterDelete.status,
+    fires_after_delete_count: firesAfterDelete.length,
+    history_available_after_delete: historyAvailable,
+    no_fires_after_delete: noFiresAfterDelete,
+    fires_after_delete: firesAfterDelete,
+    list_after_delete: listAfterDelete,
+    describe_after_delete: describeAfterDelete,
+    history_after_delete: historyAfterDelete,
+    delete_response: deleteResponse,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    failures,
+    verdict: failures.length === 0 ? 'pass' : 'fail',
+  };
+}
+
+function operatorControlsEvidenceFromObservations({
+  startedAt,
+  finishedAt,
+  artifactVersions,
+  artifactSources,
+  namespace,
+  taskQueue,
+  schedulesCreated,
+  listDescribe,
+  pauseResume,
+  deleteEvidence,
+  timing,
+}) {
+  const observations = {
+    list_describe_visibility: listDescribe,
+    pause_resume_no_fire_window: pauseResume,
+    delete_stops_future_fires: deleteEvidence,
+  };
+  const scenarioResults = {};
+  const findings = [];
+
+  for (const [scenarioId, observation] of Object.entries(observations)) {
+    const status = observation.verdict === 'pass' ? 'pass' : 'fail';
+    const linkedFindings = status === 'pass' ? [] : [operatorControlsFinding(scenarioId, observation)];
+    findings.push(...linkedFindings);
+    scenarioResults[scenarioId] = {
+      scenario_id: scenarioId,
+      status,
+      observed_outputs: observation,
+      linked_findings: linkedFindings,
+    };
+  }
+
+  return {
+    schema: 'durable-workflow.v2.schedules-runtime.operator-controls-evidence',
+    started_at: startedAt,
+    finished_at: finishedAt,
+    generated_at: finishedAt,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    scenario_results: scenarioResults,
+    findings,
+    operator_controls: {
+      list_describe: listDescribe,
+      pause_resume: pauseResume,
+      delete: deleteEvidence,
+    },
+    client_surfaces: {
+      'server-http-api': {
+        list_observed: listDescribe.public_api_list_observed,
+        describe_observed: listDescribe.public_api_describe_observed,
+        control_observed: pauseResume.verdict === 'pass' && deleteEvidence.verdict === 'pass',
+      },
+      cli: {
+        list_observed: listDescribe.cli_list_observed,
+        describe_observed: listDescribe.cli_list_observed,
+      },
+      'sdk-python': {
+        list_observed: listDescribe.sdk_list_observed,
+        describe_observed: listDescribe.sdk_list_observed,
+      },
+    },
+    runtime_matrix: {
+      runtimes: ['server-scheduler'],
+      client_paths: ['server-http-api', 'cli', 'sdk-python'],
+      schedule_types: ['cron_expression', 'fixed_rate_interval'],
+    },
+    topology: {
+      namespace,
+      task_queue: taskQueue,
+      worker_execution_mode: 'operator_controls_schedule_history_probe',
+      schedules_created: schedulesCreated,
+    },
+    timing,
+  };
+}
+
+function operatorControlsFinding(scenarioId, observation) {
+  const configured = coverageGapFindings[scenarioId] ?? {};
+  const observed = arrayValue(observation.failures).join('; ')
+    || 'Operator-controls evidence did not satisfy the schedules contract.';
+  let owner = 'server';
+  if (scenarioId === 'list_describe_visibility') {
+    if (observation.public_api_list_observed === true && observation.public_api_describe_observed === true) {
+      if (observation.cli_list_observed !== true) {
+        owner = 'cli';
+      } else if (observation.sdk_list_observed !== true) {
+        owner = 'sdk-python';
+      } else {
+        owner = 'conformance_harness';
+      }
+    }
+  }
+
+  return {
+    finding_id: `${stringValue(configured.id) || `schedules-${scenarioId}`}-runtime-finding`,
+    scenario_id: scenarioId,
+    finding_type: 'schedule_operator_controls_contract_gap',
+    owning_surface: owner,
+    execution_scope: stringValue(configured.scope) || 'operator-controls-shard',
+    artifact_versions: observation.artifact_versions ?? {},
+    observed_behavior: observed,
+    expected_behavior: stringValue(configured.expected_behavior)
+      || 'Schedules list, pause/resume, and delete controls satisfy the published runtime contract.',
+    next_acceptance_criterion: arrayValue(configured.acceptance).join('; ')
+      || 'rerun the operator-controls shard and observe passing list/describe, pause/resume, and delete evidence',
+    observed_outputs: observation,
+  };
+}
+
+function operatorControlsFailureEvidence(reason, startedAt, artifactVersions, artifactSources) {
+  const finishedAt = timestamp();
+  const observations = {
+    list_describe_visibility: failedOperatorObservation('list_describe_visibility', reason, artifactVersions, artifactSources),
+    pause_resume_no_fire_window: failedOperatorObservation('pause_resume_no_fire_window', reason, artifactVersions, artifactSources),
+    delete_stops_future_fires: failedOperatorObservation('delete_stops_future_fires', reason, artifactVersions, artifactSources),
+  };
+
+  return operatorControlsEvidenceFromObservations({
+    startedAt,
+    finishedAt,
+    artifactVersions,
+    artifactSources,
+    namespace: stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance',
+    taskQueue: stringValue(process.env.DW_SCHEDULES_TASK_QUEUE) || 'schedules-operator-controls',
+    schedulesCreated: [],
+    listDescribe: observations.list_describe_visibility,
+    pauseResume: observations.pause_resume_no_fire_window,
+    deleteEvidence: observations.delete_stops_future_fires,
+    timing: {},
+  });
+}
+
+function failedOperatorObservation(scenarioId, reason, artifactVersions, artifactSources) {
+  const common = {
+    scenario_id: scenarioId,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    failures: [reason],
+    failure_reason: reason,
+    verdict: 'fail',
+  };
+
+  if (scenarioId === 'pause_resume_no_fire_window') {
+    return {
+      ...common,
+      fires_during_pause_count: -1,
+      resumed_after_pause: false,
+    };
+  }
+
+  if (scenarioId === 'delete_stops_future_fires') {
+    return {
+      ...common,
+      absent_from_list_after_delete: false,
+      no_fires_after_delete: false,
+    };
+  }
+
+  return {
+    ...common,
+    public_api_list_observed: false,
+    public_api_describe_observed: false,
+    cli_list_observed: false,
+    sdk_list_observed: false,
+    last_fire_at_observed: false,
+    next_fire_at_observed: false,
+    pause_state_observed: false,
+  };
+}
+
+function operatorControlsBlockedEvidence(reason, startedAt, artifactVersions, artifactSources) {
+  const finishedAt = timestamp();
+  const scenarios = [
+    'list_describe_visibility',
+    'pause_resume_no_fire_window',
+    'delete_stops_future_fires',
+  ];
+  const findings = Object.fromEntries(scenarios.map((scenarioId) => [scenarioId, {
+    finding_id: `schedules-operator-controls-runner-blocked-${scenarioId}`,
+    scenario_id: scenarioId,
+    finding_type: 'conformance_runner_blocked',
+    owning_surface: 'conformance_harness',
+    execution_scope: 'operator-controls-shard',
+    artifact_versions: artifactVersions,
+    observed_behavior: reason,
+    expected_behavior: 'The schedules conformance host can run the operator-controls shard against published artifacts.',
+    next_acceptance_criterion: 'restore the missing host capability and rerun schedules conformance',
+  }]));
+
+  return {
+    schema: 'durable-workflow.v2.schedules-runtime.operator-controls-evidence',
+    started_at: startedAt,
+    finished_at: finishedAt,
+    generated_at: finishedAt,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    scenario_results: Object.fromEntries(scenarios.map((scenarioId) => [
+      scenarioId,
+      {
+        scenario_id: scenarioId,
+        status: 'runner_blocked',
+        observed_outputs: { blocked_reason: reason },
+        linked_findings: [findings[scenarioId]],
+      },
+    ])),
+    findings: Object.values(findings),
+    operator_controls: {
+      list_describe: { blocked_reason: reason },
+      pause_resume: { blocked_reason: reason },
+      delete: { blocked_reason: reason },
+    },
+  };
+}
+
+function hasCronOrIntervalDefinition(schedule) {
+  const spec = schedule && typeof schedule === 'object' && schedule.spec && typeof schedule.spec === 'object'
+    ? schedule.spec
+    : {};
+  return arrayValue(spec.cron_expressions ?? spec.cronExpressions).length > 0
+    || arrayValue(spec.intervals).length > 0
+    || stringValue(schedule?.cron ?? schedule?.cron_expression ?? schedule?.cronExpression) !== ''
+    || stringValue(schedule?.interval) !== '';
+}
+
+function hasPauseState(schedule) {
+  if (!schedule || typeof schedule !== 'object') {
+    return false;
+  }
+
+  if (typeof schedule.paused === 'boolean') {
+    return true;
+  }
+
+  return ['active', 'paused'].includes(stringValue(schedule.status).toLowerCase());
+}
+
+function isScheduleActive(schedule) {
+  if (!schedule || typeof schedule !== 'object') {
+    return false;
+  }
+
+  if (typeof schedule.paused === 'boolean') {
+    return schedule.paused === false;
+  }
+
+  return stringValue(schedule.status).toLowerCase() === 'active';
+}
+
+function scheduleTimeField(schedule, names) {
+  if (!schedule || typeof schedule !== 'object') {
+    return '';
+  }
+
+  for (const name of names) {
+    const value = stringValue(schedule[name]);
+    if (value !== '') {
+      return value;
+    }
+  }
+
+  return '';
+}
+
+function scheduleTriggeredEvents(events) {
+  return arrayValue(events)
+    .filter((event) => stringValue(event.event_type ?? event.eventType) === 'ScheduleTriggered')
+    .sort((left, right) => eventRecordedMs(left) - eventRecordedMs(right));
+}
+
+function eventRecordedMs(event) {
+  const parsed = Date.parse(stringValue(event?.recorded_at ?? event?.recordedAt));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function eventOccurrenceMs(event) {
+  const raw = stringValue(event?.payload?.occurrence_time ?? event?.payload?.occurrenceTime);
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isEventRecordedBetween(event, startMs, endMs) {
+  const recordedMs = eventRecordedMs(event);
+  return recordedMs >= startMs && recordedMs <= endMs;
+}
+
+function normalizeScheduleEvent(event) {
+  if (!event || typeof event !== 'object') {
+    return null;
+  }
+
+  return {
+    sequence: event.sequence ?? null,
+    event_type: stringValue(event.event_type ?? event.eventType),
+    recorded_at: stringValue(event.recorded_at ?? event.recordedAt),
+    occurrence_time: stringValue(event.payload?.occurrence_time ?? event.payload?.occurrenceTime),
+    workflow_instance_id: stringValue(event.workflow_instance_id ?? event.workflowInstanceId),
+    workflow_run_id: stringValue(event.workflow_run_id ?? event.workflowRunId),
+    payload: event.payload ?? {},
+  };
+}
+
+async function collectOperatorControlsComposeLogs(composeProject, composeFiles) {
+  for (const service of ['server', 'scheduler', 'bootstrap', 'mysql', 'redis']) {
+    const logPath = path.join(resultDir, `schedules-operator-controls-${service}.log`);
+    await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'logs', service],
+      logPath,
+    ).catch(() => {});
+  }
 }
 
 async function maybeRunCliSurfaceShard(startedAt, artifactVersions, artifactSources) {
@@ -1574,6 +2661,15 @@ async function bestEffortDeleteSchedule(serverUrl, token, namespace, scheduleId)
 }
 
 async function apiRequest(serverUrl, token, namespace, method, pathAndQuery, body = null) {
+  const result = await apiRequestResult(serverUrl, token, namespace, method, pathAndQuery, body);
+  if (!result.ok) {
+    throw new Error(`${method} ${pathAndQuery} returned ${result.status}: ${result.text.slice(0, 1000)}`);
+  }
+
+  return result.parsed;
+}
+
+async function apiRequestResult(serverUrl, token, namespace, method, pathAndQuery, body = null) {
   const base = serverUrl.replace(/\/+$/, '');
   const response = await fetch(`${base}/api${pathAndQuery}`, {
     method,
@@ -1596,11 +2692,12 @@ async function apiRequest(serverUrl, token, namespace, method, pathAndQuery, bod
     }
   }
 
-  if (!response.ok) {
-    throw new Error(`${method} ${pathAndQuery} returned ${response.status}: ${text.slice(0, 1000)}`);
-  }
-
-  return parsed;
+  return {
+    ok: response.ok,
+    status: response.status,
+    parsed,
+    text,
+  };
 }
 
 async function waitForServerReady(serverUrl, timeoutSeconds) {

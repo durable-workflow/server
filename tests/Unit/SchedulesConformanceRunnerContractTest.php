@@ -314,6 +314,135 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_preserves_supplied_operator_controls_cells(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+
+        $listDescribe = [
+            'schedule_ids' => ['operator-cron', 'operator-fixed-rate'],
+            'public_api_list_observed' => true,
+            'public_api_describe_observed' => true,
+            'cli_list_observed' => true,
+            'sdk_list_observed' => true,
+            'cron_or_interval_observed' => true,
+            'last_fire_at_observed' => true,
+            'next_fire_at_observed' => true,
+            'pause_state_observed' => true,
+            'verdict' => 'pass',
+        ];
+        $pauseResume = [
+            'schedule_id' => 'operator-fixed-rate',
+            'pause_window_seconds' => 125,
+            'fires_during_pause_count' => 0,
+            'resumed_after_pause' => true,
+            'post_resume_normal_fire_observed' => true,
+            'catchup_after_resume_count' => 0,
+            'verdict' => 'pass',
+        ];
+        $delete = [
+            'schedule_id' => 'operator-fixed-rate',
+            'observation_window_seconds' => 65,
+            'absent_from_list_after_delete' => true,
+            'absent_from_describe_after_delete' => true,
+            'fires_after_delete_count' => 0,
+            'no_fires_after_delete' => true,
+            'verdict' => 'pass',
+        ];
+
+        file_put_contents($resultDir.'/operator-controls-evidence.json', json_encode([
+            'schema' => 'durable-workflow.v2.schedules-runtime.operator-controls-evidence',
+            'scenario_results' => [
+                'list_describe_visibility' => [
+                    'scenario_id' => 'list_describe_visibility',
+                    'status' => 'pass',
+                    'observed_outputs' => $listDescribe,
+                    'linked_findings' => [],
+                ],
+                'pause_resume_no_fire_window' => [
+                    'scenario_id' => 'pause_resume_no_fire_window',
+                    'status' => 'pass',
+                    'observed_outputs' => $pauseResume,
+                    'linked_findings' => [],
+                ],
+                'delete_stops_future_fires' => [
+                    'scenario_id' => 'delete_stops_future_fires',
+                    'status' => 'pass',
+                    'observed_outputs' => $delete,
+                    'linked_findings' => [],
+                ],
+            ],
+            'operator_controls' => [
+                'list_describe' => $listDescribe,
+                'pause_resume' => $pauseResume,
+                'delete' => $delete,
+            ],
+            'runtime_matrix' => [
+                'client_paths' => ['server-http-api', 'cli', 'sdk-python'],
+                'schedule_types' => ['cron_expression', 'fixed_rate_interval'],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SCHEDULES_OPERATOR_CONTROLS_EVIDENCE' => $resultDir.'/operator-controls-evidence.json',
+                    'DW_SERVER_VERSION' => '0.2.305',
+                    'DW_CLI_VERSION' => '0.1.77',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.85',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('pass', $result['scenario_results']['list_describe_visibility']['status']);
+            $this->assertSame('pass', $result['scenario_results']['pause_resume_no_fire_window']['status']);
+            $this->assertSame('pass', $result['scenario_results']['delete_stops_future_fires']['status']);
+            $this->assertSame(
+                0,
+                $result['scenario_results']['pause_resume_no_fire_window']['observed_outputs']['fires_during_pause_count'],
+            );
+            $this->assertTrue(
+                $result['operator_controls']['delete']['absent_from_list_after_delete'],
+            );
+            $this->assertSame('not_covered', $result['scenario_results']['missed_fire_policy']['status']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_runner_promotes_supplied_cli_surface_evidence(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
