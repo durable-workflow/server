@@ -103,10 +103,12 @@ workflow read/mutation isolation, same-queue worker matching, search-attribute
 schema and value isolation, schedule isolation, namespace deletion cleanup and
 recreate, explicit Nexus crossing, CLI default-scope behavior, SDK namespace
 selection, and adversarial namespace-name refusal. The published Workflow PHP
-namespace shard is required for a passing result and must be attached through
-`DW_NAMESPACES_WORKFLOW_PHP_RESULT`; the aggregated evidence records the shard
-report as executed before the PHP worker task-queue cell can pass. A published
-Waterline shard is run automatically from a disposable Laravel app unless
+namespace shard is required for a passing result and is run automatically from a
+disposable Laravel app unless `DW_NAMESPACES_WORKFLOW_PHP_RESULT` points at a
+pre-generated `workflow:v2:namespace-conformance` report for the same artifact
+tuple; the aggregated evidence records the shard report as executed before the
+PHP worker task-queue cell can pass. A published Waterline shard is run
+automatically from a disposable Laravel app unless
 `DW_NAMESPACES_WATERLINE_RESULT` points at a pre-generated
 `waterline:namespace-conformance` report for the same artifact tuple. When a
 required or expected shard is absent or cannot be executed, the result remains

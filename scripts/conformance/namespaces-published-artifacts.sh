@@ -28,7 +28,8 @@ Environment overrides:
   DW_NAMESPACES_SERVER_PORT          Host port for the published server. Defaults to a free 127.0.0.1 port.
   DW_NAMESPACES_WATERLINE_RESULT     Optional pre-generated JSON report from waterline:namespace-conformance.
                                       If unset, the runner installs the published Waterline artifact and runs this shard.
-  DW_NAMESPACES_WORKFLOW_PHP_RESULT  Required JSON report from workflow:v2:namespace-conformance.
+  DW_NAMESPACES_WORKFLOW_PHP_RESULT  Optional pre-generated JSON report from workflow:v2:namespace-conformance.
+                                      If unset, the runner installs the published Workflow PHP artifact and runs this shard.
 USAGE
 }
 
@@ -646,6 +647,215 @@ PY
 if ! "$run_root/.venv/bin/python" "$run_root/artifact-smoke.py" "$run_root/pins.json" "$run_root/cli/bin/dw" "$result_dir/artifact-install-evidence.json" "$result_dir/server-image-digest.txt" > "$result_dir/artifact-smoke.log" 2>&1; then
   blocked_result "published artifact install smoke failed before namespace scenarios; see artifact-smoke.log" "$started_at"
   exit 1
+fi
+
+workflow_php_result_path="${DW_NAMESPACES_WORKFLOW_PHP_RESULT:-}"
+if [[ -z "$workflow_php_result_path" ]]; then
+  workflow_php_result_path="$result_dir/workflow-php-namespace-result.json"
+  workflow_php_app="$run_root/workflow-php-namespace-app"
+  mkdir -p "$workflow_php_app"
+
+  mapfile -t workflow_php_artifact_args < <(python3 - "$run_root/pins.json" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+pins = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+artifact_keys = ["server", "cli", "workflow-php", "sdk-python", "waterline"]
+for key in artifact_keys:
+    print(f"--artifact-version={key}={pins[key]}")
+for key in artifact_keys:
+    print(f"--artifact-source={key}={pins['artifact_sources'][key]}")
+PY
+)
+
+  write_workflow_php_setup_failure() {
+    local reason="$1"
+
+    python3 - "$run_root/pins.json" "$workflow_php_result_path" "$started_at" "$namespace_suite_version" "$reason" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+pins = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+out_path = Path(sys.argv[2])
+started_at = sys.argv[3]
+suite_version = int(sys.argv[4])
+reason = sys.argv[5]
+finished = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+versions = {
+    "server": pins["server"],
+    "cli": pins["cli"],
+    "workflow": pins["workflow"],
+    "workflow-php": pins["workflow-php"],
+    "sdk-python": pins["sdk-python"],
+    "waterline": pins["waterline"],
+}
+required_scenarios = [
+    "namespace_create_update_describe_and_list",
+    "sdk_namespace_selection_parity",
+    "php_worker_task_queue_namespace_isolation",
+]
+finding_template = {
+    "owning_surface": "conformance_harness",
+    "observed_behavior": f"Workflow PHP namespace shard could not run in the published-artifact harness: {reason}",
+    "expected_behavior": "workflow:v2:namespace-conformance runs against the published Workflow PHP artifact and emits namespace client and worker evidence",
+    "next_acceptance_criterion": "restore the Workflow PHP shard execution path and rerun namespaces conformance",
+    "priority": "P1",
+}
+scenario_results = [
+    {
+        "scenario_id": "published_artifact_install_only",
+        "status": "pass",
+        "observed_outputs": {
+            "artifact_versions": versions,
+            "artifact_sources": pins.get("artifact_sources", {}),
+        },
+        "linked_findings": [],
+    },
+]
+findings = []
+for scenario_id in required_scenarios:
+    finding = {"scenario_id": scenario_id, **finding_template}
+    findings.append(finding)
+    scenario_results.append(
+        {
+            "scenario_id": scenario_id,
+            "status": "fail",
+            "observed_outputs": {
+                "shard_command": "workflow:v2:namespace-conformance",
+                "setup_failure": reason,
+            },
+            "linked_findings": [finding],
+        }
+    )
+scenario_results.append(
+    {
+        "scenario_id": "result_record_and_product_finding_routing",
+        "status": "pass",
+        "observed_outputs": {
+            "artifact_versions_recorded": True,
+            "timestamps_recorded": True,
+            "finding_links_recorded": True,
+        },
+        "linked_findings": [],
+    }
+)
+report = {
+    "schema": "durable-workflow.v2.namespace-runtime.result",
+    "schema_version": 1,
+    "suite_version": suite_version,
+    "coverage_scope": "workflow-php-namespace-shard",
+    "outcome": "fail",
+    "started_at": started_at,
+    "finished_at": finished,
+    "generated_at": finished,
+    "artifact_versions": versions,
+    "artifact_sources": pins.get("artifact_sources", {}),
+    "namespace_topology": {"namespaces": ["tenant-a", "tenant-b", "shared"]},
+    "runtime_matrix": {
+        "claimed_targets": ["workflow-php"],
+        "covered_scenarios": required_scenarios,
+        "client_paths": ["workflow-php-sdk"],
+        "worker_isolation_cells": [
+            {"runtime": "workflow-php", "namespace": "tenant-a", "scenario": "php_worker_task_queue_namespace_isolation"},
+            {"runtime": "workflow-php", "namespace": "tenant-b", "scenario": "php_worker_task_queue_namespace_isolation"},
+        ],
+    },
+    "scenario_results": scenario_results,
+    "workflow_php_namespace_surface": {
+        "shard_command": "workflow:v2:namespace-conformance",
+        "setup_failure": reason,
+    },
+    "api_captures": {},
+    "findings": findings,
+    "finding_links": {item["scenario_id"]: [item] for item in findings},
+}
+out_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  }
+
+  set +e
+  docker run --rm -v "$workflow_php_app:/app" -w /app composer:2 \
+    composer create-project laravel/laravel . --no-interaction --no-progress \
+    > "$result_dir/workflow-php-create-project.log" 2>&1
+  workflow_php_create_status=$?
+  set -e
+
+  workflow_php_require_status=1
+  workflow_php_key_status=1
+  workflow_php_command_status=1
+  if [[ "$workflow_php_create_status" -eq 0 ]]; then
+    mkdir -p "$workflow_php_app/database"
+    : > "$workflow_php_app/database/database.sqlite"
+
+    set +e
+    docker run --rm -v "$workflow_php_app:/app" -w /app composer:2 \
+      composer require --no-interaction --no-progress \
+        "durable-workflow/workflow:${workflow_php_version}" \
+      > "$result_dir/workflow-php-composer-install.log" 2>&1
+    workflow_php_require_status=$?
+    set -e
+  fi
+
+  if [[ "$workflow_php_require_status" -eq 0 ]]; then
+    set +e
+    docker run --rm \
+      -v "$workflow_php_app:/app" \
+      -w /app \
+      -e DB_CONNECTION=sqlite \
+      -e DB_DATABASE=/app/database/database.sqlite \
+      composer:2 php artisan key:generate --force \
+      > "$result_dir/workflow-php-key-generate.log" 2>&1
+    workflow_php_key_status=$?
+    set -e
+  fi
+
+  if [[ "$workflow_php_key_status" -eq 0 ]]; then
+    server_container_id="$(docker compose -f "$run_root/compose.yml" ps -q server)"
+    if [[ -n "$server_container_id" ]]; then
+      set +e
+      docker run --rm \
+        --network "container:${server_container_id}" \
+        -v "$workflow_php_app:/app" \
+        -v "$result_dir:/result" \
+        -w /app \
+        -e DB_CONNECTION=sqlite \
+        -e DB_DATABASE=/app/database/database.sqlite \
+        composer:2 php artisan workflow:v2:namespace-conformance \
+          --server-url "http://127.0.0.1:8080" \
+          --token "admin-token" \
+          --run-id "published-namespaces-${RUN_ID:-workflow-php}" \
+          --task-queue "workflow-php-namespace-shard" \
+          "${workflow_php_artifact_args[@]}" \
+          --output /result/workflow-php-namespace-result.json \
+          --json \
+        > "$result_dir/workflow-php-namespace-conformance.log" 2>&1
+      workflow_php_command_status=$?
+      set -e
+    else
+      workflow_php_command_status=125
+    fi
+  fi
+
+  if [[ ! -s "$workflow_php_result_path" ]]; then
+    if [[ "$workflow_php_create_status" -ne 0 ]]; then
+      write_workflow_php_setup_failure "Laravel app creation failed; see workflow-php-create-project.log"
+    elif [[ "$workflow_php_require_status" -ne 0 ]]; then
+      write_workflow_php_setup_failure "Composer install failed for durable-workflow/workflow:${workflow_php_version}; see workflow-php-composer-install.log"
+    elif [[ "$workflow_php_key_status" -ne 0 ]]; then
+      write_workflow_php_setup_failure "Laravel key generation failed before Workflow PHP shard execution; see workflow-php-key-generate.log"
+    elif [[ "$workflow_php_command_status" -eq 125 ]]; then
+      write_workflow_php_setup_failure "server container id was unavailable before Workflow PHP shard execution"
+    else
+      write_workflow_php_setup_failure "workflow:v2:namespace-conformance exited with status ${workflow_php_command_status} without writing a report; see workflow-php-namespace-conformance.log"
+    fi
+  fi
 fi
 
 waterline_result_path="${DW_NAMESPACES_WATERLINE_RESULT:-}"
@@ -2202,6 +2412,7 @@ DW_NAMESPACES_SERVER_URL="$server_base_url" \
 DW_NAMESPACES_RESULT_DIR="$result_dir" \
 DW_NAMESPACES_RUN_ROOT="$run_root" \
 DW_NAMESPACES_DW_BIN="$run_root/cli/bin/dw" \
+DW_NAMESPACES_WORKFLOW_PHP_RESULT="$workflow_php_result_path" \
 DW_NAMESPACES_WATERLINE_RESULT="$waterline_result_path" \
 DW_NAMESPACES_STARTED_AT="$started_at" \
 DW_NAMESPACES_SUITE_VERSION="$namespace_suite_version" \

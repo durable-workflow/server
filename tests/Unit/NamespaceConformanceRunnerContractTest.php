@@ -20,7 +20,8 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('durable-workflow.v2.namespace-runtime.result', $source);
         $this->assertStringContainsString('workflow:v2:namespace-conformance', $source);
         $this->assertStringContainsString('waterline:namespace-conformance', $source);
-        $this->assertStringContainsString('DW_NAMESPACES_WORKFLOW_PHP_RESULT  Required JSON report', $source);
+        $this->assertStringContainsString('DW_NAMESPACES_WORKFLOW_PHP_RESULT  Optional pre-generated JSON report', $source);
+        $this->assertStringContainsString('If unset, the runner installs the published Workflow PHP artifact and runs this shard.', $source);
         $this->assertStringContainsString('If unset, the runner installs the published Waterline artifact and runs this shard.', $source);
         $this->assertStringContainsString('load_required_shard', $source);
         $this->assertStringContainsString('workflow_php_shard_execution', $source);
@@ -137,6 +138,24 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('DW_NAMESPACES_WATERLINE_RESULT="$waterline_result_path"', $source);
         $this->assertStringContainsString('write_waterline_setup_failure', $source);
         $this->assertStringContainsString('Waterline namespace shard could not run in the published-artifact harness', $source);
+    }
+
+    public function test_runner_executes_published_workflow_php_namespace_shard_when_not_pre_supplied(): void
+    {
+        $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
+
+        $this->assertStringContainsString('workflow_php_result_path="${DW_NAMESPACES_WORKFLOW_PHP_RESULT:-}"', $source);
+        $this->assertStringContainsString('workflow_php_result_path="$result_dir/workflow-php-namespace-result.json"', $source);
+        $this->assertStringContainsString('composer create-project laravel/laravel . --no-interaction --no-progress', $source);
+        $this->assertStringContainsString('"durable-workflow/workflow:${workflow_php_version}"', $source);
+        $this->assertStringContainsString('composer:2 php artisan key:generate --force', $source);
+        $this->assertStringContainsString('--network "container:${server_container_id}"', $source);
+        $this->assertStringContainsString('composer:2 php artisan workflow:v2:namespace-conformance', $source);
+        $this->assertStringContainsString('--server-url "http://127.0.0.1:8080"', $source);
+        $this->assertStringContainsString('--output /result/workflow-php-namespace-result.json', $source);
+        $this->assertStringContainsString('DW_NAMESPACES_WORKFLOW_PHP_RESULT="$workflow_php_result_path"', $source);
+        $this->assertStringContainsString('write_workflow_php_setup_failure', $source);
+        $this->assertStringContainsString('Workflow PHP namespace shard could not run in the published-artifact harness', $source);
     }
 
     public function test_runner_reports_suite_version_from_namespace_scenario_manifest(): void
