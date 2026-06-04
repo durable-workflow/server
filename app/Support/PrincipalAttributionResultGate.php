@@ -50,6 +50,7 @@ final class PrincipalAttributionResultGate
                 'every_required_scenario_has_one_result',
                 'every_result_uses_a_published_status',
                 'start_signal_query_cancel_completion_failure_principals_reported',
+                'rotated_credential_actions_record_before_after_labels_and_observed_principals',
                 'alice_bob_rotation_anonymous_python_php_cli_and_waterline_cells_reported',
                 'spoofing_payload_and_gateway_header_attempts_reported',
                 'each_pass_scenario_has_required_evidence_fields',
@@ -279,6 +280,10 @@ final class PrincipalAttributionResultGate
             array_push($failures, ...self::actionCredentialEvidenceFailures($scenarioResult, $scenarioId));
         }
 
+        if ($scenarioId === 'named_token_actor_matrix') {
+            array_push($failures, ...self::credentialRotationEvidenceFailures($scenarioResult, $scenarioId));
+        }
+
         if ($scenarioId !== 'waterline_operator_visibility') {
             return $failures;
         }
@@ -313,16 +318,19 @@ final class PrincipalAttributionResultGate
             'start' => [
                 'actor' => 'alice',
                 'credential_ref' => 'alice-token-v1',
+                'credential_label' => 'alice credential v1',
                 'principal_id' => 'alice',
             ],
             'signal' => [
                 'actor' => 'bob',
                 'credential_ref' => 'bob-token',
+                'credential_label' => 'bob credential',
                 'principal_id' => 'bob',
             ],
             'cancel' => [
                 'actor' => 'alice',
                 'credential_ref' => 'alice-token-v2',
+                'credential_label' => 'alice credential v2',
                 'principal_id' => 'alice',
             ],
         ];
@@ -368,6 +376,16 @@ final class PrincipalAttributionResultGate
                 ];
             }
 
+            if (self::actionCredentialLabel($evidence) !== $expected['credential_label']) {
+                $failures[] = [
+                    'code' => 'action_credential_label_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'action' => $action,
+                    'expected_credential_label' => $expected['credential_label'],
+                    'actual_credential_label' => self::actionCredentialLabel($evidence),
+                ];
+            }
+
             if (self::actionCredentialPrincipalId($evidence) !== $expected['principal_id']) {
                 $failures[] = [
                     'code' => 'action_credential_principal_mismatch',
@@ -375,6 +393,133 @@ final class PrincipalAttributionResultGate
                     'action' => $action,
                     'expected_principal_id' => $expected['principal_id'],
                     'actual_principal_id' => self::actionCredentialPrincipalId($evidence),
+                ];
+            }
+
+            if (self::actionCredentialObservedPrincipalId($evidence) !== $expected['principal_id']) {
+                $failures[] = [
+                    'code' => 'action_credential_observed_principal_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'action' => $action,
+                    'expected_principal_id' => $expected['principal_id'],
+                    'actual_principal_id' => self::actionCredentialObservedPrincipalId($evidence),
+                ];
+            }
+
+            if (self::actionCredentialObservedPrincipalId($evidence) === self::actionCredentialRef($evidence)) {
+                $failures[] = [
+                    'code' => 'credential_ref_recorded_as_principal',
+                    'scenario_id' => $scenarioId,
+                    'action' => $action,
+                    'credential_ref' => self::actionCredentialRef($evidence),
+                ];
+            }
+
+            if (self::actionCredentialMaterialRecordedAsPrincipal($evidence) !== false) {
+                $failures[] = [
+                    'code' => 'credential_material_recorded_as_principal_not_false',
+                    'scenario_id' => $scenarioId,
+                    'action' => $action,
+                    'value' => self::actionCredentialMaterialRecordedAsPrincipal($evidence),
+                ];
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function credentialRotationEvidenceFailures(array $scenarioResult, string $scenarioId): array
+    {
+        $rotation = self::scenarioFieldValue($scenarioResult, 'credential_rotation');
+        if (! is_array($rotation) || $rotation === []) {
+            return [[
+                'code' => 'missing_credential_rotation_evidence',
+                'scenario_id' => $scenarioId,
+                'field' => 'credential_rotation',
+            ]];
+        }
+
+        $failures = [];
+        if (self::stringValue($rotation['actor'] ?? null) !== 'alice') {
+            $failures[] = [
+                'code' => 'credential_rotation_actor_mismatch',
+                'scenario_id' => $scenarioId,
+                'expected_actor' => 'alice',
+                'actual_actor' => self::stringValue($rotation['actor'] ?? null),
+            ];
+        }
+
+        if (self::stringValue($rotation['stable_principal_id'] ?? $rotation['stablePrincipalId'] ?? null) !== 'alice') {
+            $failures[] = [
+                'code' => 'credential_rotation_stable_principal_mismatch',
+                'scenario_id' => $scenarioId,
+                'expected_principal_id' => 'alice',
+                'actual_principal_id' => self::stringValue($rotation['stable_principal_id'] ?? $rotation['stablePrincipalId'] ?? null),
+            ];
+        }
+
+        if (self::booleanValue($rotation['credential_material_recorded_as_principal'] ?? $rotation['credentialMaterialRecordedAsPrincipal'] ?? null) !== false) {
+            $failures[] = [
+                'code' => 'credential_rotation_material_recorded_as_principal_not_false',
+                'scenario_id' => $scenarioId,
+                'value' => $rotation['credential_material_recorded_as_principal'] ?? $rotation['credentialMaterialRecordedAsPrincipal'] ?? null,
+            ];
+        }
+
+        foreach ([
+            'before' => [
+                'credential_ref' => 'alice-token-v1',
+                'credential_label' => 'alice credential v1',
+                'principal_id' => 'alice',
+            ],
+            'after' => [
+                'credential_ref' => 'alice-token-v2',
+                'credential_label' => 'alice credential v2',
+                'principal_id' => 'alice',
+            ],
+        ] as $phase => $expected) {
+            $evidence = $rotation[$phase] ?? null;
+            if (! is_array($evidence)) {
+                $failures[] = [
+                    'code' => 'missing_credential_rotation_phase',
+                    'scenario_id' => $scenarioId,
+                    'phase' => $phase,
+                ];
+                continue;
+            }
+
+            if (self::actionCredentialRef($evidence) !== $expected['credential_ref']) {
+                $failures[] = [
+                    'code' => 'credential_rotation_ref_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'phase' => $phase,
+                    'expected_credential_ref' => $expected['credential_ref'],
+                    'actual_credential_ref' => self::actionCredentialRef($evidence),
+                ];
+            }
+
+            if (self::actionCredentialLabel($evidence) !== $expected['credential_label']) {
+                $failures[] = [
+                    'code' => 'credential_rotation_label_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'phase' => $phase,
+                    'expected_credential_label' => $expected['credential_label'],
+                    'actual_credential_label' => self::actionCredentialLabel($evidence),
+                ];
+            }
+
+            if (self::actionCredentialObservedPrincipalId($evidence) !== $expected['principal_id']) {
+                $failures[] = [
+                    'code' => 'credential_rotation_observed_principal_mismatch',
+                    'scenario_id' => $scenarioId,
+                    'phase' => $phase,
+                    'expected_principal_id' => $expected['principal_id'],
+                    'actual_principal_id' => self::actionCredentialObservedPrincipalId($evidence),
                 ];
             }
         }
@@ -391,6 +536,19 @@ final class PrincipalAttributionResultGate
             $evidence['credential_ref']
                 ?? $evidence['credentialRef']
                 ?? $evidence['credential']
+                ?? null,
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     */
+    private static function actionCredentialLabel(array $evidence): string
+    {
+        return self::stringValue(
+            $evidence['credential_label']
+                ?? $evidence['credentialLabel']
+                ?? $evidence['label']
                 ?? null,
         );
     }
@@ -415,6 +573,53 @@ final class PrincipalAttributionResultGate
                 ?? $evidence['expectedPrincipalId']
                 ?? null,
         );
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     */
+    private static function actionCredentialObservedPrincipalId(array $evidence): string
+    {
+        $principal = $evidence['observed_principal']
+            ?? $evidence['observedPrincipal']
+            ?? $evidence['recorded_principal']
+            ?? $evidence['recordedPrincipal']
+            ?? null;
+        if (is_array($principal)) {
+            $id = self::stringValue($principal['id'] ?? null);
+            if ($id !== '') {
+                return $id;
+            }
+        }
+
+        return self::stringValue(
+            $evidence['observed_principal_id']
+                ?? $evidence['observedPrincipalId']
+                ?? $evidence['recorded_principal_id']
+                ?? $evidence['recordedPrincipalId']
+                ?? null,
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     */
+    private static function actionCredentialMaterialRecordedAsPrincipal(array $evidence): ?bool
+    {
+        return self::booleanValue(
+            $evidence['credential_material_recorded_as_principal']
+                ?? $evidence['credentialMaterialRecordedAsPrincipal']
+                ?? null,
+        );
+    }
+
+    private static function booleanValue(mixed $value): ?bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return null;
     }
 
     /**

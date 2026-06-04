@@ -161,6 +161,7 @@ emit_principal_blocked_placeholder_fields() {
       printf ',\n      "actors": []'
       printf ',\n      "credentials": {}'
       printf ',\n      "rotation_observations": {}'
+      printf ',\n      "credential_rotation": {}'
       printf ',\n      "action_credentials": {}'
       ;;
     start_signal_cancel_spoofing)
@@ -2051,36 +2052,84 @@ def main() -> int:
     for install_finding in install_findings:
         findings.append(finding("published_artifact_install_only", "conformance_harness", install_finding, "every required artifact is installed from its published channel and exercised before install-only coverage passes", "install and import-smoke the server, CLI, Python SDK, PHP workflow package, and Waterline artifacts before marking this scenario pass"))
 
+    expected_main = {
+        "WorkflowStarted": {"type": "auth:token", "id": "alice"},
+        "SignalReceived": {"type": "auth:token", "id": "bob"},
+        "WorkflowCancelled": {"type": "auth:token", "id": "alice"},
+    }
     action_credentials = {
         "start": {
             "actor": "alice",
             "credential_ref": "alice-token-v1",
+            "credential_label": "alice credential v1",
             "expected_principal": {"type": "auth:token", "id": "alice"},
+            "observed_principal": main_principals.get("WorkflowStarted"),
+            "credential_material_recorded_as_principal": principal_id(main_principals.get("WorkflowStarted")) == "alice-token-v1",
             "event_type": "WorkflowStarted",
             "spoofing_payload_and_headers": True,
         },
         "signal": {
             "actor": "bob",
             "credential_ref": "bob-token",
+            "credential_label": "bob credential",
             "expected_principal": {"type": "auth:token", "id": "bob"},
+            "observed_principal": main_principals.get("SignalReceived"),
+            "credential_material_recorded_as_principal": principal_id(main_principals.get("SignalReceived")) == "bob-token",
             "event_type": "SignalReceived",
             "spoofing_payload_and_headers": True,
         },
         "cancel": {
             "actor": "alice",
             "credential_ref": "alice-token-v2",
+            "credential_label": "alice credential v2",
             "previous_credential_ref": "alice-token-v1",
+            "previous_credential_label": "alice credential v1",
             "expected_principal": {"type": "auth:token", "id": "alice"},
+            "observed_principal": main_principals.get("WorkflowCancelled"),
+            "credential_material_recorded_as_principal": principal_id(main_principals.get("WorkflowCancelled")) == "alice-token-v2",
             "event_type": "WorkflowCancelled",
         },
     }
-    scenario_results.append(scenario("pass", "named_token_actor_matrix", actors=["alice", "bob"], credentials={"alice": ["alice-token-v1", "alice-token-v2"], "bob": ["bob-token"]}, rotation_observations={"alice_v1_start": "alice", "alice_v2_cancel": "alice"}, action_credentials=action_credentials))
-
-    expected_main = {
-        "WorkflowStarted": {"type": "auth:token", "id": "alice"},
-        "SignalReceived": {"type": "auth:token", "id": "bob"},
-        "WorkflowCancelled": {"type": "auth:token", "id": "alice"},
+    credential_rotation = {
+        "actor": "alice",
+        "before": {
+            "action": "start",
+            "credential_ref": "alice-token-v1",
+            "credential_label": "alice credential v1",
+            "observed_principal": main_principals.get("WorkflowStarted"),
+        },
+        "after": {
+            "action": "cancel",
+            "credential_ref": "alice-token-v2",
+            "credential_label": "alice credential v2",
+            "observed_principal": main_principals.get("WorkflowCancelled"),
+        },
+        "stable_principal_id": "alice",
+        "credential_material_recorded_as_principal": any(
+            principal_id(action_credentials[action].get("observed_principal")) == action_credentials[action]["credential_ref"]
+            for action in ("start", "cancel")
+        ),
     }
+    rotation_failures = []
+    if principal_id(credential_rotation["before"].get("observed_principal")) != "alice":
+        rotation_failures.append(f"alice credential v1 principal expected alice, got {credential_rotation['before'].get('observed_principal')!r}")
+    if principal_id(credential_rotation["after"].get("observed_principal")) != "alice":
+        rotation_failures.append(f"alice credential v2 principal expected alice, got {credential_rotation['after'].get('observed_principal')!r}")
+    if credential_rotation["credential_material_recorded_as_principal"]:
+        rotation_failures.append("credential material was recorded as the user-visible principal")
+    rotation_linked_findings: list[dict[str, Any]] = []
+    if rotation_failures:
+        rotation_linked_findings.append(finding(
+            "named_token_actor_matrix",
+            "server",
+            f"credential rotation attribution failures: {rotation_failures}",
+            "alice credential v1 and alice credential v2 both resolve to principal id alice, and credential material is never recorded as the user-visible principal",
+            "fix token principal resolution across credential rotation before marking named-token actor coverage pass",
+            "P0" if credential_rotation["credential_material_recorded_as_principal"] else "P1",
+        ))
+        findings.extend(rotation_linked_findings)
+    scenario_results.append(scenario("pass" if not rotation_failures else "fail", "named_token_actor_matrix", actors=["alice", "bob"], credentials={"alice": ["alice-token-v1", "alice-token-v2"], "bob": ["bob-token"]}, rotation_observations={"alice_v1_start": "alice", "alice_v2_cancel": "alice"}, credential_rotation=credential_rotation, action_credentials=action_credentials, linked_findings=rotation_linked_findings, findings=rotation_failures))
+
     main_failures = []
     for event_type, expected in expected_main.items():
         actual = main_principals.get(event_type)

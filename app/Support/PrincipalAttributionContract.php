@@ -143,6 +143,7 @@ final class PrincipalAttributionContract
                     'server_image_is_exact_patch_or_digest_pinned_with_version',
                     'actor_matrix_distinguishes_alice_bob_and_rotated_alice_credentials',
                     'action_credentials_recorded_for_alice_bob_start_signal_cancel',
+                    'rotated_credential_actions_record_before_after_labels_and_observed_principals',
                     'start_signal_query_cancel_completion_failure_principals_reported',
                     'spoofed_payload_and_header_principals_do_not_land_in_history',
                     'anonymous_behavior_is_explicit',
@@ -178,6 +179,7 @@ final class PrincipalAttributionContract
                 'required_execution_scopes' => [
                     'published-artifact-install',
                     'named-token-actor-matrix',
+                    'credential-rotation-stable-identity',
                     'start-signal-query-cancel-history',
                     'completion-failure-history',
                     'anonymous-history',
@@ -244,7 +246,7 @@ final class PrincipalAttributionContract
                 'required_fields' => ['resolved_artifact_versions', 'artifact_sources', 'local_product_source_checkouts_used'],
             ],
             'named_token_actor_matrix' => [
-                'required_fields' => ['actors', 'credentials', 'rotation_observations', 'action_credentials'],
+                'required_fields' => ['actors', 'credentials', 'rotation_observations', 'credential_rotation', 'action_credentials'],
             ],
             'start_signal_cancel_spoofing' => [
                 'required_fields' => ['history_events', 'recorded_principals', 'spoofing_attempts', 'action_credentials'],

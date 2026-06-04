@@ -95,6 +95,10 @@ class PrincipalAttributionContractTest extends TestCase
             $manifest['scenario_requirements']['named_token_actor_matrix']['required_fields'],
         );
         $this->assertContains(
+            'credential_rotation',
+            $manifest['scenario_requirements']['named_token_actor_matrix']['required_fields'],
+        );
+        $this->assertContains(
             'action_credentials',
             $manifest['scenario_requirements']['start_signal_cancel_spoofing']['required_fields'],
         );
@@ -127,6 +131,10 @@ class PrincipalAttributionContractTest extends TestCase
         );
         $this->assertContains(
             'published_artifact_install_local_product_source_checkouts_used_false',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'rotated_credential_actions_record_before_after_labels_and_observed_principals',
             $manifest['result_gate']['pass_requires'],
         );
     }
@@ -466,8 +474,16 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('start/signal/cancel attribution failures', $script);
         $this->assertStringContainsString('action_credentials = {', $script);
         $this->assertStringContainsString('"credential_ref": "alice-token-v1"', $script);
+        $this->assertStringContainsString('"credential_label": "alice credential v1"', $script);
         $this->assertStringContainsString('"credential_ref": "bob-token"', $script);
         $this->assertStringContainsString('"credential_ref": "alice-token-v2"', $script);
+        $this->assertStringContainsString('"observed_principal": main_principals.get("WorkflowStarted")', $script);
+        $this->assertStringContainsString('"observed_principal": main_principals.get("WorkflowCancelled")', $script);
+        $this->assertStringContainsString('credential_rotation = {', $script);
+        $this->assertStringContainsString('credential_rotation=credential_rotation', $script);
+        $this->assertStringContainsString('credential rotation attribution failures', $script);
+        $this->assertStringContainsString('fix token principal resolution across credential rotation', $script);
+        $this->assertStringContainsString('"credential_material_recorded_as_principal": principal_id(main_principals.get("WorkflowStarted")) == "alice-token-v1"', $script);
         $this->assertStringContainsString('action_credentials=action_credentials', $script);
         $this->assertStringContainsString('"WorkflowStarted": {"type": "auth:token", "id": "alice"}', $script);
         $this->assertStringContainsString('"SignalReceived": {"type": "auth:token", "id": "bob"}', $script);
@@ -777,6 +793,49 @@ class PrincipalAttributionContractTest extends TestCase
         }
     }
 
+    public function test_result_gate_requires_observed_action_principals_for_alice_rotation(): void
+    {
+        foreach (['named_token_actor_matrix', 'start_signal_cancel_spoofing'] as $scenarioId) {
+            $result = $this->completePrincipalAttributionResult();
+            unset($result['scenario_results'][$scenarioId]['action_credentials']['cancel']['observed_principal']);
+
+            $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertContains(
+                'action_credential_observed_principal_mismatch',
+                array_column($evaluation['gate_failures'], 'code'),
+            );
+        }
+    }
+
+    public function test_result_gate_rejects_credential_ref_as_observed_principal(): void
+    {
+        $result = $this->completePrincipalAttributionResult();
+        $result['scenario_results']['named_token_actor_matrix']['action_credentials']['start']['observed_principal'] = [
+            'type' => 'auth:token',
+            'id' => 'alice-token-v1',
+        ];
+        $result['scenario_results']['named_token_actor_matrix']['action_credentials']['start']['credential_material_recorded_as_principal'] = true;
+        $result['scenario_results']['named_token_actor_matrix']['credential_rotation']['before']['observed_principal'] = [
+            'type' => 'auth:token',
+            'id' => 'alice-token-v1',
+        ];
+        $result['scenario_results']['named_token_actor_matrix']['credential_rotation']['credential_material_recorded_as_principal'] = true;
+
+        $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'credential_ref_recorded_as_principal',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+        $this->assertContains(
+            'credential_rotation_material_recorded_as_principal_not_false',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
     public function test_result_gate_rejects_role_token_smoke_subset_even_when_declared_pass(): void
     {
         $result = $this->completePrincipalAttributionResult();
@@ -1031,6 +1090,7 @@ class PrincipalAttributionContractTest extends TestCase
                 'alice' => ['credentials' => ['alice-token-v1', 'alice-token-v2']],
                 'bob' => ['credentials' => ['bob-token']],
                 'action_credentials' => $actionCredentials,
+                'credential_rotation' => $this->credentialRotationEvidence(),
             ],
             'history_dumps' => [
                 'main' => [
@@ -1071,6 +1131,7 @@ class PrincipalAttributionContractTest extends TestCase
                     'actors' => ['alice', 'bob'],
                     'credentials' => ['alice' => ['alice-token-v1', 'alice-token-v2'], 'bob' => ['bob-token']],
                     'rotation_observations' => ['alice_v1_start' => 'alice', 'alice_v2_cancel' => 'alice'],
+                    'credential_rotation' => $this->credentialRotationEvidence(),
                     'action_credentials' => $actionCredentials,
                 ],
                 'start_signal_cancel_spoofing' => [
@@ -1241,7 +1302,12 @@ class PrincipalAttributionContractTest extends TestCase
                 'waterline' => 'npm',
             ],
             'topology' => ['auth_driver' => 'token'],
-            'actor_matrix' => ['alice' => ['credentials' => ['alice-token-v1', 'alice-token-v2']], 'bob' => ['credentials' => ['bob-token']], 'action_credentials' => $this->actionCredentials()],
+            'actor_matrix' => [
+                'alice' => ['credentials' => ['alice-token-v1', 'alice-token-v2']],
+                'bob' => ['credentials' => ['bob-token']],
+                'action_credentials' => $this->actionCredentials(),
+                'credential_rotation' => $this->credentialRotationEvidence(),
+            ],
             'history_dumps' => ['main' => ['events' => []]],
             'spoofing_attempts' => ['payload_values' => ['mallory'], 'headers' => ['X-Forwarded-User']],
             'operator_visibility' => ['cli_history_json_principal_visible' => true],
@@ -1332,6 +1398,7 @@ class PrincipalAttributionContractTest extends TestCase
                 'actors' => ['alice', 'bob'],
                 'credentials' => ['alice' => ['alice-token-v1', 'alice-token-v2'], 'bob' => ['bob-token']],
                 'rotation_observations' => ['alice_v1_start' => 'alice', 'alice_v2_cancel' => 'alice'],
+                'credential_rotation' => $this->credentialRotationEvidence(),
                 'action_credentials' => $this->actionCredentials(),
             ],
             'start_signal_cancel_spoofing' => [
@@ -1395,22 +1462,56 @@ class PrincipalAttributionContractTest extends TestCase
             'start' => [
                 'actor' => 'alice',
                 'credential_ref' => 'alice-token-v1',
+                'credential_label' => 'alice credential v1',
                 'expected_principal' => ['type' => 'auth:token', 'id' => 'alice'],
+                'observed_principal' => ['type' => 'auth:token', 'id' => 'alice'],
+                'credential_material_recorded_as_principal' => false,
                 'event_type' => 'WorkflowStarted',
             ],
             'signal' => [
                 'actor' => 'bob',
                 'credential_ref' => 'bob-token',
+                'credential_label' => 'bob credential',
                 'expected_principal' => ['type' => 'auth:token', 'id' => 'bob'],
+                'observed_principal' => ['type' => 'auth:token', 'id' => 'bob'],
+                'credential_material_recorded_as_principal' => false,
                 'event_type' => 'SignalReceived',
             ],
             'cancel' => [
                 'actor' => 'alice',
                 'credential_ref' => 'alice-token-v2',
+                'credential_label' => 'alice credential v2',
                 'previous_credential_ref' => 'alice-token-v1',
+                'previous_credential_label' => 'alice credential v1',
                 'expected_principal' => ['type' => 'auth:token', 'id' => 'alice'],
+                'observed_principal' => ['type' => 'auth:token', 'id' => 'alice'],
+                'credential_material_recorded_as_principal' => false,
                 'event_type' => 'WorkflowCancelled',
             ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function credentialRotationEvidence(): array
+    {
+        return [
+            'actor' => 'alice',
+            'before' => [
+                'action' => 'start',
+                'credential_ref' => 'alice-token-v1',
+                'credential_label' => 'alice credential v1',
+                'observed_principal' => ['type' => 'auth:token', 'id' => 'alice'],
+            ],
+            'after' => [
+                'action' => 'cancel',
+                'credential_ref' => 'alice-token-v2',
+                'credential_label' => 'alice credential v2',
+                'observed_principal' => ['type' => 'auth:token', 'id' => 'alice'],
+            ],
+            'stable_principal_id' => 'alice',
+            'credential_material_recorded_as_principal' => false,
         ];
     }
 
