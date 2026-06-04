@@ -588,50 +588,63 @@ final class ActivityTaskPoller
         array $supportedActivityTypes = [],
         bool $workerSessionsAvailable = true,
     ): array {
-        $this->applyWorkerCompatibility($namespace, $buildId);
-
-        $task = $this->admission->withLeaseAdmission(
+        return $this->withWorkerCompatibility(
             $namespace,
-            $taskQueue,
-            TaskQueueAdmission::ACTIVITY_TASKS,
-            fn (): ?array => $this->claimGate->forSqliteClaim(
+            $buildId,
+            function () use (
                 $namespace,
                 $taskQueue,
-                TaskQueueAdmission::ACTIVITY_TASKS,
-                fn (): ?array => $this->claimReadyTask(
+                $leaseOwner,
+                $buildId,
+                $worker,
+                $limit,
+                $supportedActivityTypes,
+                $workerSessionsAvailable,
+            ): array {
+                $task = $this->admission->withLeaseAdmission(
                     $namespace,
                     $taskQueue,
-                    $leaseOwner,
-                    $buildId,
-                    $worker,
-                    $limit,
-                    $supportedActivityTypes,
-                    $workerSessionsAvailable,
-                ),
-            ),
+                    TaskQueueAdmission::ACTIVITY_TASKS,
+                    fn (): ?array => $this->claimGate->forSqliteClaim(
+                        $namespace,
+                        $taskQueue,
+                        TaskQueueAdmission::ACTIVITY_TASKS,
+                        fn (): ?array => $this->claimReadyTask(
+                            $namespace,
+                            $taskQueue,
+                            $leaseOwner,
+                            $buildId,
+                            $worker,
+                            $limit,
+                            $supportedActivityTypes,
+                            $workerSessionsAvailable,
+                        ),
+                    ),
+                );
+
+                if ($task === null && $this->queryTasks->hasPendingTaskForPoller(
+                    $namespace,
+                    $taskQueue,
+                    $this->stringList($worker->supported_workflow_types ?? []),
+                )) {
+                    return [
+                        'task' => null,
+                        'poll_status' => 'query_task_pending',
+                        'next_probe_at' => null,
+                    ];
+                }
+
+                return [
+                    'task' => $task,
+                    'poll_status' => is_array($task)
+                        ? 'leased'
+                        : $this->emptyPollStatus($namespace, $taskQueue, TaskQueueAdmission::ACTIVITY_TASKS),
+                    'next_probe_at' => $task === null
+                        ? $this->nextVisibleReadyAt($namespace, $taskQueue, $buildId)
+                        : null,
+                ];
+            },
         );
-
-        if ($task === null && $this->queryTasks->hasPendingTaskForPoller(
-            $namespace,
-            $taskQueue,
-            $this->stringList($worker->supported_workflow_types ?? []),
-        )) {
-            return [
-                'task' => null,
-                'poll_status' => 'query_task_pending',
-                'next_probe_at' => null,
-            ];
-        }
-
-        return [
-            'task' => $task,
-            'poll_status' => is_array($task)
-                ? 'leased'
-                : $this->emptyPollStatus($namespace, $taskQueue, TaskQueueAdmission::ACTIVITY_TASKS),
-            'next_probe_at' => $task === null
-                ? $this->nextVisibleReadyAt($namespace, $taskQueue, $buildId)
-                : null,
-        ];
     }
 
     /**
@@ -945,6 +958,33 @@ final class ActivityTaskPoller
             'workflows.v2.compatibility.current' => $buildId,
             'workflows.v2.compatibility.supported' => $buildId === null ? [] : [$buildId],
         ]);
+    }
+
+    /**
+     * @template TReturn
+     *
+     * @param  callable(): TReturn  $callback
+     * @return TReturn
+     */
+    private function withWorkerCompatibility(string $namespace, ?string $buildId, callable $callback): mixed
+    {
+        $previous = [
+            'namespace' => config('workflows.v2.compatibility.namespace'),
+            'current' => config('workflows.v2.compatibility.current'),
+            'supported' => config('workflows.v2.compatibility.supported'),
+        ];
+
+        $this->applyWorkerCompatibility($namespace, $buildId);
+
+        try {
+            return $callback();
+        } finally {
+            config([
+                'workflows.v2.compatibility.namespace' => $previous['namespace'],
+                'workflows.v2.compatibility.current' => $previous['current'],
+                'workflows.v2.compatibility.supported' => $previous['supported'],
+            ]);
+        }
     }
 
     private function nextVisibleReadyAt(string $namespace, string $taskQueue, ?string $buildId): ?\DateTimeInterface

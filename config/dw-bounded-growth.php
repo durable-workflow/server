@@ -30,6 +30,24 @@ use App\Support\WorkflowTaskPollRequestStore;
 
 return [
 
+    'polling_scan_limits' => [
+        'due_timer_recovery' => [
+            'owner' => WorkflowTaskPoller::class,
+            'config' => 'server.polling.due_timer_recovery_scan_limit',
+            'default' => 5,
+            'scope' => 'Per workflow-task worker poll pass for the polled namespace/task_queue/build-id compatibility cohort.',
+            'bound' => 'Each poll pass examines at most the configured number of ready due timer tasks before returning to normal task leasing.',
+        ],
+
+        'expired_workflow_task_recovery' => [
+            'owner' => WorkflowTaskPoller::class,
+            'config' => 'server.polling.expired_workflow_task_recovery_scan_limit',
+            'default' => 5,
+            'scope' => 'Per workflow-task worker poll path for expired workflow-task leases.',
+            'bound' => 'Each recovery pass examines at most the configured number of expired workflow task leases and duplicate recovery attempts are TTL-suppressed per task.',
+        ],
+    ],
+
     'cache_keys' => [
         'long_poll_signals' => [
             'owner' => LongPollSignalStore::class,

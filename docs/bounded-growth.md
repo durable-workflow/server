@@ -1,11 +1,11 @@
 # Server Bounded-Growth Policy
 
-The server owns a few cache-backed coordination surfaces, JSON metric surfaces,
-and the perf harness metrics that can be remote-written during soaks.
+The server owns a few cache-backed coordination surfaces, SQL recovery scans,
+JSON metric surfaces, and the perf harness metrics that can be remote-written during soaks.
 Each surface must declare a bounded-growth policy in
 `config/dw-bounded-growth.php` before it ships. The policy is intentionally
 machine-readable so tests can fail when new cache prefixes or `dw_*` metrics are
-added without a TTL, admission, or cardinality contract.
+added without a TTL, admission, scan, or cardinality contract.
 
 ## Review Rules
 
@@ -16,6 +16,8 @@ added without a TTL, admission, or cardinality contract.
   quickly enough that churn cannot grow without bound.
 - Queue or list keys that retain user-controlled IDs need an admission limit or
   a pruning path that executes on normal reads/writes.
+- SQL recovery scans on the worker-poll path must declare a configurable scan
+  limit so an old backlog cannot create unbounded poll latency.
 - Metrics must avoid unbounded label sets. Request-scoped values should stay in
   the request envelope, not become labels, unless a hard series limit and
   suppression counters are documented.
@@ -65,6 +67,13 @@ written only when a registered worker polls the query-task endpoint, are
 refreshed by the same worker's repeat polls, and are not retained in an index.
 Queue reads and writes prune stale pending task IDs by checking the referenced
 task records; query-poller markers have TTL-only eviction.
+
+## Polling Scan Limits
+
+| Policy ID | Config Key | Owner | Growth Bound |
+| --- | --- | --- | --- |
+| `due_timer_recovery` | `server.polling.due_timer_recovery_scan_limit` | `App\Support\WorkflowTaskPoller` | Service-mode due-timer recovery scans at most 5 ready timer tasks by default per worker poll pass, scoped to the polled namespace, task queue, and build-id compatibility cohort. |
+| `expired_workflow_task_recovery` | `server.polling.expired_workflow_task_recovery_scan_limit` | `App\Support\WorkflowTaskPoller` | Expired workflow-task recovery scans at most 5 expired leases by default per recovery pass, with duplicate recovery attempts TTL-suppressed per task. |
 
 ## Metric Inventory
 

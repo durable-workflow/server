@@ -245,6 +245,11 @@ return [
             'WORKFLOW_SERVER_SQLITE_CLAIM_LOCK_WAIT_SECONDS',
             5,
         ),
+        'due_timer_recovery_scan_limit' => (int) EnvAuditor::env(
+            'DW_DUE_TIMER_RECOVERY_SCAN_LIMIT',
+            'WORKFLOW_SERVER_DUE_TIMER_RECOVERY_SCAN_LIMIT',
+            5,
+        ),
         'expired_workflow_task_recovery_scan_limit' => (int) EnvAuditor::env(
             'DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT',
             'WORKFLOW_SERVER_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT',

@@ -12,6 +12,7 @@ use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
@@ -388,87 +389,157 @@ final class WorkflowTaskPoller
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
     ): array {
-        $this->applyWorkerCompatibility($namespace, $buildId);
-
-        $task = $this->admission->withLeaseAdmission(
+        return $this->withWorkerCompatibility(
             $namespace,
-            $taskQueue,
-            TaskQueueAdmission::WORKFLOW_TASKS,
-            fn (): ?array => $this->claimGate->forSqliteClaim(
+            $buildId,
+            function () use (
+                $request,
                 $namespace,
                 $taskQueue,
-                TaskQueueAdmission::WORKFLOW_TASKS,
-                fn (): ?array => $this->claimReadyTask(
-                    namespace: $namespace,
-                    taskQueue: $taskQueue,
-                    leaseOwner: $leaseOwner,
-                    buildId: $buildId,
-                    limit: $limit,
-                    historyPageSize: $historyPageSize,
-                    acceptHistoryEncoding: $acceptHistoryEncoding,
-                    supportedWorkflowTypes: $supportedWorkflowTypes,
-                ),
-            ),
-        );
+                $leaseOwner,
+                $buildId,
+                $limit,
+                $historyPageSize,
+                $acceptHistoryEncoding,
+                $supportedWorkflowTypes,
+            ): array {
+                $this->runDueServiceModeTimers($namespace, $taskQueue, $buildId);
 
-        if (is_array($task)) {
-            return [
-                'task' => $task,
-                'poll_status' => 'leased',
-                'next_probe_at' => null,
-            ];
-        }
-
-        if ($this->recoverExpiredLeases($request, $namespace, $taskQueue)) {
-            $task = $this->admission->withLeaseAdmission(
-                $namespace,
-                $taskQueue,
-                TaskQueueAdmission::WORKFLOW_TASKS,
-                fn (): ?array => $this->claimGate->forSqliteClaim(
+                $task = $this->admission->withLeaseAdmission(
                     $namespace,
                     $taskQueue,
                     TaskQueueAdmission::WORKFLOW_TASKS,
-                    fn (): ?array => $this->claimReadyTask(
-                        namespace: $namespace,
-                        taskQueue: $taskQueue,
-                        leaseOwner: $leaseOwner,
-                        buildId: $buildId,
-                        limit: $limit,
-                        historyPageSize: $historyPageSize,
-                        acceptHistoryEncoding: $acceptHistoryEncoding,
-                        supportedWorkflowTypes: $supportedWorkflowTypes,
+                    fn (): ?array => $this->claimGate->forSqliteClaim(
+                        $namespace,
+                        $taskQueue,
+                        TaskQueueAdmission::WORKFLOW_TASKS,
+                        fn (): ?array => $this->claimReadyTask(
+                            namespace: $namespace,
+                            taskQueue: $taskQueue,
+                            leaseOwner: $leaseOwner,
+                            buildId: $buildId,
+                            limit: $limit,
+                            historyPageSize: $historyPageSize,
+                            acceptHistoryEncoding: $acceptHistoryEncoding,
+                            supportedWorkflowTypes: $supportedWorkflowTypes,
+                        ),
                     ),
-                ),
-            );
+                );
 
-            if (is_array($task)) {
+                if (is_array($task)) {
+                    return [
+                        'task' => $task,
+                        'poll_status' => 'leased',
+                        'next_probe_at' => null,
+                    ];
+                }
+
+                if ($this->recoverExpiredLeases($request, $namespace, $taskQueue)) {
+                    $task = $this->admission->withLeaseAdmission(
+                        $namespace,
+                        $taskQueue,
+                        TaskQueueAdmission::WORKFLOW_TASKS,
+                        fn (): ?array => $this->claimGate->forSqliteClaim(
+                            $namespace,
+                            $taskQueue,
+                            TaskQueueAdmission::WORKFLOW_TASKS,
+                            fn (): ?array => $this->claimReadyTask(
+                                namespace: $namespace,
+                                taskQueue: $taskQueue,
+                                leaseOwner: $leaseOwner,
+                                buildId: $buildId,
+                                limit: $limit,
+                                historyPageSize: $historyPageSize,
+                                acceptHistoryEncoding: $acceptHistoryEncoding,
+                                supportedWorkflowTypes: $supportedWorkflowTypes,
+                            ),
+                        ),
+                    );
+
+                    if (is_array($task)) {
+                        return [
+                            'task' => $task,
+                            'poll_status' => 'leased',
+                            'next_probe_at' => null,
+                        ];
+                    }
+                }
+
+                if ($this->queryTasks->hasPendingTaskForPoller($namespace, $taskQueue, $supportedWorkflowTypes)) {
+                    return [
+                        'task' => null,
+                        'poll_status' => 'query_task_pending',
+                        'next_probe_at' => null,
+                    ];
+                }
+
                 return [
-                    'task' => $task,
-                    'poll_status' => 'leased',
-                    'next_probe_at' => null,
+                    'task' => null,
+                    'poll_status' => $this->emptyPollStatus(
+                        $namespace,
+                        $taskQueue,
+                        TaskQueueAdmission::WORKFLOW_TASKS,
+                        $buildId,
+                        $supportedWorkflowTypes,
+                    ),
+                    'next_probe_at' => $this->nextVisibleReadyOrTimerAt($namespace, $taskQueue, $buildId),
                 ];
+            },
+        );
+    }
+
+    private function runDueServiceModeTimers(string $namespace, string $taskQueue, ?string $buildId): void
+    {
+        if (
+            config('server.mode') !== 'service'
+            || config('workflows.v2.task_dispatch_mode') !== 'poll'
+        ) {
+            return;
+        }
+
+        $limit = max(1, (int) config('server.polling.due_timer_recovery_scan_limit', 5));
+        $availabilityCutoff = now()
+            ->addSeconds(DefaultWorkflowTaskBridge::AVAILABILITY_CEILING_SECONDS);
+
+        $timerTasks = NamespaceWorkflowScope::taskQuery($namespace)
+            ->select('workflow_tasks.*')
+            ->leftJoin('workflow_runs', 'workflow_runs.id', '=', 'workflow_tasks.workflow_run_id')
+            ->where('workflow_tasks.task_type', TaskType::Timer->value)
+            ->where('workflow_tasks.status', TaskStatus::Ready->value)
+            ->where('workflow_tasks.queue', $taskQueue)
+            ->where(function ($builder) use ($availabilityCutoff): void {
+                $builder->whereNull('workflow_tasks.available_at')
+                    ->orWhere('workflow_tasks.available_at', '<=', $availabilityCutoff);
+            })
+            ->where(function ($builder) use ($buildId): void {
+                $this->whereEffectiveCompatibilityMatches($builder, $buildId);
+            })
+            ->orderBy('workflow_tasks.available_at')
+            ->orderBy('workflow_tasks.id')
+            ->limit($limit)
+            ->get();
+
+        foreach ($timerTasks as $timerTask) {
+            $timerTaskId = is_string($timerTask->id) ? $timerTask->id : null;
+
+            if ($timerTaskId === null || $timerTaskId === '') {
+                continue;
+            }
+
+            // The query uses the same availability tolerance as workflow
+            // polling to survive backend timestamp precision drift. The
+            // in-memory check keeps timers from firing before their durable
+            // fire time when the tolerance only found a near-future row.
+            if ($timerTask->available_at instanceof \DateTimeInterface && $timerTask->available_at > now()) {
+                continue;
+            }
+
+            try {
+                app()->call([new RunTimerTask($timerTaskId), 'handle']);
+            } catch (Throwable $throwable) {
+                report($throwable);
             }
         }
-
-        if ($this->queryTasks->hasPendingTaskForPoller($namespace, $taskQueue, $supportedWorkflowTypes)) {
-            return [
-                'task' => null,
-                'poll_status' => 'query_task_pending',
-                'next_probe_at' => null,
-            ];
-        }
-
-        return [
-            'task' => null,
-            'poll_status' => $this->emptyPollStatus(
-                $namespace,
-                $taskQueue,
-                TaskQueueAdmission::WORKFLOW_TASKS,
-                $buildId,
-                $supportedWorkflowTypes,
-            ),
-            'next_probe_at' => $this->nextVisibleReadyAt($namespace, $taskQueue, $buildId),
-        ];
     }
 
     /**
@@ -708,6 +779,33 @@ final class WorkflowTaskPoller
         ]);
     }
 
+    /**
+     * @template TReturn
+     *
+     * @param  callable(): TReturn  $callback
+     * @return TReturn
+     */
+    private function withWorkerCompatibility(string $namespace, ?string $buildId, callable $callback): mixed
+    {
+        $previous = [
+            'namespace' => config('workflows.v2.compatibility.namespace'),
+            'current' => config('workflows.v2.compatibility.current'),
+            'supported' => config('workflows.v2.compatibility.supported'),
+        ];
+
+        $this->applyWorkerCompatibility($namespace, $buildId);
+
+        try {
+            return $callback();
+        } finally {
+            config([
+                'workflows.v2.compatibility.namespace' => $previous['namespace'],
+                'workflows.v2.compatibility.current' => $previous['current'],
+                'workflows.v2.compatibility.supported' => $previous['supported'],
+            ]);
+        }
+    }
+
     private function availableAtIsFuture(mixed $availableAt): bool
     {
         if ($availableAt instanceof \DateTimeInterface) {
@@ -846,6 +944,73 @@ final class WorkflowTaskPoller
         $task = $query->first();
 
         return $task?->available_at;
+    }
+
+    private function nextVisibleReadyOrTimerAt(string $namespace, string $taskQueue, ?string $buildId): ?\DateTimeInterface
+    {
+        $nextWorkflowAt = $this->nextVisibleReadyAt($namespace, $taskQueue, $buildId);
+        $nextTimerAt = $this->nextDueTimerProbeAt($namespace, $taskQueue, $buildId);
+
+        if (! $nextWorkflowAt instanceof \DateTimeInterface) {
+            return $nextTimerAt;
+        }
+
+        if (! $nextTimerAt instanceof \DateTimeInterface) {
+            return $nextWorkflowAt;
+        }
+
+        return $nextTimerAt < $nextWorkflowAt ? $nextTimerAt : $nextWorkflowAt;
+    }
+
+    private function nextDueTimerProbeAt(string $namespace, string $taskQueue, ?string $buildId): ?\DateTimeInterface
+    {
+        if (
+            config('server.mode') !== 'service'
+            || config('workflows.v2.task_dispatch_mode') !== 'poll'
+        ) {
+            return null;
+        }
+
+        /** @var WorkflowTask|null $task */
+        $task = NamespaceWorkflowScope::taskQuery($namespace)
+            ->select('workflow_tasks.*')
+            ->leftJoin('workflow_runs', 'workflow_runs.id', '=', 'workflow_tasks.workflow_run_id')
+            ->where('workflow_tasks.task_type', TaskType::Timer->value)
+            ->where('workflow_tasks.status', TaskStatus::Ready->value)
+            ->where('workflow_tasks.queue', $taskQueue)
+            ->whereNotNull('workflow_tasks.available_at')
+            ->where('workflow_tasks.available_at', '>', now())
+            ->where(function ($builder) use ($buildId): void {
+                $this->whereEffectiveCompatibilityMatches($builder, $buildId);
+            })
+            ->orderBy('workflow_tasks.available_at')
+            ->orderBy('workflow_tasks.id')
+            ->first();
+
+        return $task?->available_at;
+    }
+
+    private function whereEffectiveCompatibilityMatches(mixed $builder, ?string $buildId): void
+    {
+        $builder->where(function ($compatibility) use ($buildId): void {
+            $compatibility->where(function ($fallbackToRun) use ($buildId): void {
+                $fallbackToRun->where(function ($taskCompatibility): void {
+                    $taskCompatibility->whereNull('workflow_tasks.compatibility')
+                        ->orWhere('workflow_tasks.compatibility', '');
+                })->where(function ($runCompatibility) use ($buildId): void {
+                    $runCompatibility->whereNull('workflow_runs.compatibility')
+                        ->orWhere('workflow_runs.compatibility', '');
+
+                    if ($buildId !== null) {
+                        $runCompatibility->orWhere('workflow_runs.compatibility', $buildId);
+                    }
+                });
+            });
+
+            if ($buildId !== null) {
+                $compatibility->orWhere('workflow_tasks.compatibility', $buildId);
+            }
+        });
     }
 
     private function markRecoveryAttempt(string $taskId): bool

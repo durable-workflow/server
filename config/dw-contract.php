@@ -332,6 +332,12 @@ return [
             'since' => '2.0.0',
             'legacy' => 'WORKFLOW_SERVER_TASK_QUEUE_ADMISSION_OVERRIDES',
         ],
+        'DW_DUE_TIMER_RECOVERY_SCAN_LIMIT' => [
+            'description' => 'Maximum due service-mode timer tasks to recover per worker poll pass.',
+            'default' => '5',
+            'since' => '2.0.0',
+            'legacy' => 'WORKFLOW_SERVER_DUE_TIMER_RECOVERY_SCAN_LIMIT',
+        ],
         'DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT' => [
             'description' => 'Maximum expired workflow tasks to recover per pass.',
             'default' => '5',

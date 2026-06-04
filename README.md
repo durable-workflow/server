@@ -1392,6 +1392,7 @@ every operator-facing variable the server honors.
 | `DW_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE` | (unset) | Optional server-side cap for activity-task dispatches per minute per namespace/task queue. |
 | `DW_ACTIVITY_TASK_MAX_DISPATCHES_PER_MINUTE_PER_NAMESPACE` | (unset) | Optional server-side cap for activity-task dispatches per minute across all task queues in a namespace. |
 | `DW_TASK_QUEUE_ADMISSION_OVERRIDES` | `{}` | JSON overrides keyed by `namespace:task_queue`, `namespace:*`, `task_queue`, or `*` for workflow/activity active lease, dispatch-per-minute, namespace, and downstream budget-group caps. |
+| `DW_DUE_TIMER_RECOVERY_SCAN_LIMIT` | `5` | Max due service-mode timer tasks recovered per worker poll pass. |
 | `DW_EXPIRED_WORKFLOW_TASK_RECOVERY_SCAN_LIMIT` | `5` | Max expired workflow tasks recovered per pass. |
 | `DW_EXPIRED_WORKFLOW_TASK_RECOVERY_TTL_SECONDS` | `5` | Min seconds between expired-task recovery passes. |
 | `DW_WORKER_PROTOCOL_VERSION` | `WorkerProtocol::VERSION` | Override for the advertised worker protocol version. |

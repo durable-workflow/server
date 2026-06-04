@@ -222,6 +222,63 @@ class BoundedGrowthPolicyTest extends TestCase
         }
     }
 
+    public function test_polling_scan_limit_entries_have_review_fields(): void
+    {
+        $required = [
+            'owner',
+            'config',
+            'default',
+            'scope',
+            'bound',
+        ];
+
+        foreach ($this->policyPollingScanLimits() as $id => $entry) {
+            $this->assertIsString($id);
+            $this->assertNotSame('', $id);
+
+            foreach ($required as $field) {
+                $this->assertArrayHasKey($field, $entry, "{$id} is missing {$field}");
+            }
+
+            $this->assertPolicyOwnerExists((string) ($entry['owner'] ?? ''), $id);
+            $this->assertMatchesRegularExpression(
+                '/^server\.polling\.[a-z0-9_]+_scan_limit$/',
+                (string) ($entry['config'] ?? ''),
+                "{$id}.config must name a server polling scan-limit key.",
+            );
+            $this->assertIsInt($entry['default'], "{$id}.default must be an integer");
+            $this->assertGreaterThan(0, $entry['default'], "{$id}.default must be positive");
+
+            foreach (['scope', 'bound'] as $field) {
+                $this->assertIsString($entry[$field], "{$id}.{$field} must be a string");
+                $this->assertNotSame('', trim($entry[$field]), "{$id}.{$field} must not be empty");
+            }
+        }
+    }
+
+    public function test_worker_polling_scan_limits_are_declared_and_documented(): void
+    {
+        $declared = [];
+        $document = file_get_contents(self::$repoRoot.'/docs/bounded-growth.md');
+        $this->assertNotFalse($document, 'docs/bounded-growth.md must be readable');
+
+        foreach ($this->policyPollingScanLimits() as $id => $entry) {
+            $config = (string) ($entry['config'] ?? '');
+            $declared[] = $config;
+
+            $this->assertStringContainsString($id, $document, "docs/bounded-growth.md must mention {$id}");
+            $this->assertStringContainsString($config, $document, "docs/bounded-growth.md must mention {$config}");
+        }
+
+        foreach ($this->pollingScanLimitConfigsInAppSource() as $config) {
+            $this->assertContains(
+                $config,
+                $declared,
+                "{$config} appears in app source but is missing from config/dw-bounded-growth.php polling_scan_limits.",
+            );
+        }
+    }
+
     /**
      * @return array<string, array<string, mixed>>
      */
@@ -244,6 +301,43 @@ class BoundedGrowthPolicyTest extends TestCase
         $this->assertIsArray($metrics, 'config/dw-bounded-growth.php must define metrics.');
 
         return $metrics;
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private function policyPollingScanLimits(): array
+    {
+        $scanLimits = self::$policy['polling_scan_limits'] ?? null;
+
+        $this->assertIsArray($scanLimits, 'config/dw-bounded-growth.php must define polling_scan_limits.');
+        $this->assertNotEmpty($scanLimits, 'config/dw-bounded-growth.php polling_scan_limits must not be empty.');
+
+        return $scanLimits;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function pollingScanLimitConfigsInAppSource(): array
+    {
+        $configs = [];
+
+        foreach ($this->phpFiles(self::$repoRoot.'/app') as $file) {
+            $source = file_get_contents($file);
+            $this->assertNotFalse($source, "{$file} must be readable");
+
+            preg_match_all('/config\(\s*[\'"](server\.polling\.[a-z0-9_]+_scan_limit)[\'"]/', $source, $matches);
+
+            foreach ($matches[1] ?? [] as $config) {
+                $configs[$config] = $config;
+            }
+        }
+
+        $configs = array_values($configs);
+        sort($configs);
+
+        return $configs;
     }
 
     /**

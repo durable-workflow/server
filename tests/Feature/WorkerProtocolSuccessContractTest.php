@@ -23,6 +23,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
@@ -1725,6 +1726,8 @@ class WorkerProtocolSuccessContractTest extends TestCase
 
         config([
             'server.mode' => 'service',
+            'workflows.v2.compatibility.current' => null,
+            'workflows.v2.compatibility.supported' => [],
             'workflows.v2.task_dispatch_mode' => 'poll',
         ]);
 
@@ -1788,6 +1791,8 @@ class WorkerProtocolSuccessContractTest extends TestCase
 
         config([
             'server.mode' => 'service',
+            'workflows.v2.compatibility.current' => null,
+            'workflows.v2.compatibility.supported' => [],
             'workflows.v2.task_dispatch_mode' => 'poll',
         ]);
 
@@ -1845,6 +1850,275 @@ class WorkerProtocolSuccessContractTest extends TestCase
             static fn (RunTimerTask $job): bool => $job->taskId === $timerTaskId
                 && $job->queue === null,
         );
+    }
+
+    public function test_service_mode_poll_recovers_due_timer_when_queue_delivery_was_missed(): void
+    {
+        Queue::fake();
+
+        config([
+            'server.mode' => 'service',
+            'workflows.v2.compatibility.current' => null,
+            'workflows.v2.compatibility.supported' => [],
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+
+        $this->configureWorkflowTypes([
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $start = $this->postJson('/api/workflows', [
+            'workflow_id' => 'wf-worker-service-timer-poll-recovery',
+            'workflow_type' => 'tests.external-greeting-workflow',
+            'task_queue' => 'contract-queue',
+            'input' => ['Ada'],
+        ], $this->apiHeaders());
+
+        $start->assertCreated();
+
+        $workflowId = (string) $start->json('workflow_id');
+        $runId = (string) $start->json('run_id');
+
+        $this->registerWorker(
+            workerId: 'worker-service-timer-poll-recovery',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['tests.external-greeting-workflow'],
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-service-timer-poll-recovery',
+            'task_queue' => 'contract-queue',
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll);
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+            'lease_owner' => 'worker-service-timer-poll-recovery',
+            'workflow_task_attempt' => $attempt,
+            'commands' => [
+                [
+                    'type' => 'start_timer',
+                    'delay_seconds' => 0,
+                ],
+            ],
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($complete)
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('run_status', 'waiting')
+            ->assertJsonStructure(['created_task_ids']);
+
+        $timerTaskId = (string) $complete->json('created_task_ids.0');
+
+        Queue::assertPushed(RunTimerTask::class, 1);
+
+        /** @var WorkflowTask $timerTask */
+        $timerTask = WorkflowTask::query()->findOrFail($timerTaskId);
+        $timerId = $timerTask->payload['timer_id'] ?? null;
+
+        $this->assertIsString($timerId);
+        $this->assertSame(TaskStatus::Ready, $timerTask->status);
+
+        $dueAt = Carbon::parse('2026-05-20 12:00:00.500000');
+        $timerTask->forceFill(['available_at' => $dueAt])->save();
+        WorkflowTimer::query()
+            ->findOrFail($timerId)
+            ->forceFill(['fire_at' => $dueAt])
+            ->save();
+
+        Carbon::setTestNow(Carbon::parse('2026-05-20 12:00:00.750000'));
+
+        try {
+            $resumePoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'worker-service-timer-poll-recovery',
+                'task_queue' => 'contract-queue',
+            ], $this->workerProtocolHeaders());
+
+            $this->assertWorkerProtocolSuccess($resumePoll)
+                ->assertJsonPath('poll_status', 'leased')
+                ->assertJsonPath('task.workflow_id', $workflowId)
+                ->assertJsonPath('task.run_id', $runId)
+                ->assertJsonPath('task.workflow_type', 'tests.external-greeting-workflow')
+                ->assertJsonPath('task.lease_owner', 'worker-service-timer-poll-recovery')
+                ->assertJsonPath('task.workflow_wait_kind', 'timer')
+                ->assertJsonPath('task.resume_source_kind', 'timer')
+                ->assertJsonPath('task.resume_source_id', $timerId)
+                ->assertJsonPath('task.timer_id', $timerId)
+                ->assertJsonPath('task.workflow_event_type', 'TimerFired');
+        } finally {
+            Carbon::setTestNow();
+        }
+
+        /** @var WorkflowTask $firedTimerTask */
+        $firedTimerTask = WorkflowTask::query()->findOrFail($timerTaskId);
+
+        $this->assertSame(TaskStatus::Completed, $firedTimerTask->status);
+        Queue::assertPushed(RunTimerTask::class, 1);
+    }
+
+    public function test_service_mode_due_timer_recovery_skips_incompatible_backlog(): void
+    {
+        Queue::fake();
+        Carbon::setTestNow(Carbon::parse('2026-05-20 12:00:00'));
+
+        try {
+            config([
+                'server.mode' => 'service',
+                'server.polling.due_timer_recovery_scan_limit' => 2,
+                'workflows.v2.compatibility.current' => null,
+                'workflows.v2.compatibility.supported' => [],
+                'workflows.v2.task_dispatch_mode' => 'poll',
+            ]);
+
+            $this->configureWorkflowTypes([
+                'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+            ]);
+
+            foreach (['build-a', 'build-b'] as $buildId) {
+                $this->postJson('/api/worker/register', [
+                    'worker_id' => "worker-service-timer-backlog-{$buildId}",
+                    'task_queue' => 'contract-queue',
+                    'runtime' => 'php',
+                    'sdk_version' => '1.0.0',
+                    'build_id' => $buildId,
+                    'supported_workflow_types' => ['tests.external-greeting-workflow'],
+                ], $this->workerProtocolHeaders())->assertCreated();
+            }
+
+            $cases = [
+                [
+                    'workflow_id' => 'wf-worker-service-timer-backlog-a-1',
+                    'worker_id' => 'worker-service-timer-backlog-build-a',
+                    'build_id' => 'build-a',
+                    'available_at' => '2026-05-20 12:00:00',
+                ],
+                [
+                    'workflow_id' => 'wf-worker-service-timer-backlog-a-2',
+                    'worker_id' => 'worker-service-timer-backlog-build-a',
+                    'build_id' => 'build-a',
+                    'available_at' => '2026-05-20 12:00:01',
+                ],
+                [
+                    'workflow_id' => 'wf-worker-service-timer-backlog-b',
+                    'worker_id' => 'worker-service-timer-backlog-build-b',
+                    'build_id' => 'build-b',
+                    'available_at' => '2026-05-20 12:00:02',
+                ],
+            ];
+
+            $timerTasks = [];
+
+            foreach ($cases as $case) {
+                $start = $this->postJson('/api/workflows', [
+                    'workflow_id' => $case['workflow_id'],
+                    'workflow_type' => 'tests.external-greeting-workflow',
+                    'task_queue' => 'contract-queue',
+                    'input' => ['Ada'],
+                ], $this->apiHeaders());
+
+                $start->assertCreated();
+
+                $runId = (string) $start->json('run_id');
+
+                $this->assertNull(WorkflowRun::query()->whereKey($runId)->value('compatibility'));
+                $this->assertNull(WorkflowTask::query()
+                    ->where('workflow_run_id', $runId)
+                    ->where('task_type', 'workflow')
+                    ->where('status', TaskStatus::Ready->value)
+                    ->value('compatibility'));
+
+                WorkflowRun::query()
+                    ->whereKey($runId)
+                    ->update(['compatibility' => $case['build_id']]);
+
+                $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+                    'worker_id' => $case['worker_id'],
+                    'task_queue' => 'contract-queue',
+                ], $this->workerProtocolHeaders());
+
+                $this->assertWorkerProtocolSuccess($poll)
+                    ->assertJsonPath('poll_status', 'leased')
+                    ->assertJsonPath('task.workflow_id', $case['workflow_id']);
+
+                $taskId = (string) $poll->json('task.task_id');
+                $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+                $complete = $this->postJson("/api/worker/workflow-tasks/{$taskId}/complete", [
+                    'lease_owner' => $case['worker_id'],
+                    'workflow_task_attempt' => $attempt,
+                    'commands' => [
+                        [
+                            'type' => 'start_timer',
+                            'delay_seconds' => 30,
+                        ],
+                    ],
+                ], $this->workerProtocolHeaders());
+
+                $this->assertWorkerProtocolSuccess($complete)
+                    ->assertJsonPath('run_status', 'waiting')
+                    ->assertJsonStructure(['created_task_ids']);
+
+                $timerTaskId = (string) $complete->json('created_task_ids.0');
+
+                /** @var WorkflowTask $timerTask */
+                $timerTask = WorkflowTask::query()->findOrFail($timerTaskId);
+                $timerId = $timerTask->payload['timer_id'] ?? null;
+
+                $this->assertIsString($timerId);
+
+                $timerTasks[$case['workflow_id']] = [
+                    'task_id' => $timerTaskId,
+                    'timer_id' => $timerId,
+                    'build_id' => $case['build_id'],
+                    'available_at' => $case['available_at'],
+                ];
+            }
+
+            foreach ($timerTasks as $timer) {
+                $availableAt = Carbon::parse($timer['available_at']);
+
+                WorkflowTask::query()
+                    ->whereKey($timer['task_id'])
+                    ->update([
+                        'available_at' => $availableAt,
+                        'compatibility' => $timer['build_id'],
+                    ]);
+
+                WorkflowTimer::query()
+                    ->whereKey($timer['timer_id'])
+                    ->update(['fire_at' => $availableAt]);
+            }
+
+            Carbon::setTestNow(Carbon::parse('2026-05-20 12:00:10'));
+
+            $resumePoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'worker-service-timer-backlog-build-b',
+                'task_queue' => 'contract-queue',
+            ], $this->workerProtocolHeaders());
+
+            $this->assertWorkerProtocolSuccess($resumePoll)
+                ->assertJsonPath('poll_status', 'leased')
+                ->assertJsonPath('task.workflow_id', 'wf-worker-service-timer-backlog-b')
+                ->assertJsonPath('task.workflow_wait_kind', 'timer')
+                ->assertJsonPath('task.resume_source_kind', 'timer')
+                ->assertJsonPath('task.workflow_event_type', 'TimerFired');
+
+            $oldestIncompatibleTimerTask = WorkflowTask::query()
+                ->findOrFail($timerTasks['wf-worker-service-timer-backlog-a-1']['task_id']);
+            $secondIncompatibleTimerTask = WorkflowTask::query()
+                ->findOrFail($timerTasks['wf-worker-service-timer-backlog-a-2']['task_id']);
+            $compatibleTimerTask = WorkflowTask::query()
+                ->findOrFail($timerTasks['wf-worker-service-timer-backlog-b']['task_id']);
+
+            $this->assertSame(TaskStatus::Ready, $oldestIncompatibleTimerTask->status);
+            $this->assertSame(TaskStatus::Ready, $secondIncompatibleTimerTask->status);
+            $this->assertSame(TaskStatus::Completed, $compatibleTimerTask->status);
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_timer_resume_task_exposes_worker_protocol_context(): void
