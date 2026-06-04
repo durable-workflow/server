@@ -577,6 +577,21 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'the skew runner must wait for the Waterline HTTP surface before handing it to the Node matrix runner',
         );
         $this->assertStringContainsString(
+            'waterline_host_for_published_port',
+            $shell,
+            'containerized host runners must hand Waterline probes a host-reachable URL rather than hardcoding loopback',
+        );
+        $this->assertStringContainsString(
+            'waterline_bind_host_for_published_port',
+            $shell,
+            'the disposable Waterline app must publish on a container-reachable interface when the runner is containerized',
+        );
+        $this->assertStringContainsString(
+            '-p "${waterline_bind_host}:${waterline_port}:${waterline_port}"',
+            $shell,
+            'Waterline port publishing must use the computed host bind address',
+        );
+        $this->assertStringContainsString(
             'waterline-seed-fixture.log',
             $shell,
             'the disposable Waterline app must seed a visible v2 run before render probes can cover flow detail routes',
@@ -700,6 +715,21 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'runPhpArtifactWithProxyFallback',
             $runner,
             'Dockerized PHP probes must retry through an alternate host route before marking workflow-worker or Waterline rows uncovered',
+        );
+        $this->assertStringContainsString(
+            'phpDockerNetworkStrategies',
+            $runner,
+            'Dockerized PHP probes must select the correct proxy route for host and containerized runners',
+        );
+        $this->assertStringContainsString(
+            "'container-network'",
+            $runner,
+            'when the runner itself is containerized, PHP probes must be able to share its network namespace to reach the recording proxy',
+        );
+        $this->assertStringContainsString(
+            'DW_SKEW_PHP_CONTAINER_NETWORK_TARGET',
+            $runner,
+            'host runners need an override for the container-network target used by PHP probe containers',
         );
         $this->assertStringContainsString(
             "'--network',",

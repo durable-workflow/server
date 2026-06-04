@@ -27,9 +27,19 @@ Environment overrides:
   DW_WATERLINE_VERSION         Published Waterline version under test.
   DW_SKEW_WATERLINE_URL        Optional existing Composer-installed Waterline HTTP surface.
                                If unset, the runner starts a disposable Laravel Waterline app.
+  DW_SKEW_WATERLINE_HOST       Hostname the runner should use for the disposable Waterline app.
+                               Defaults to 127.0.0.1 on the host, or the published server host
+                               when the runner itself is containerized.
+  DW_SKEW_WATERLINE_BIND_HOST  Host interface for the disposable Waterline port publish.
+                               Defaults to 127.0.0.1 on the host, or 0.0.0.0 when containerized.
   DW_SKEW_WATERLINE_FIXTURE_RUN_ID
                                Existing Waterline run id to render, or the seeded fixture id.
   DW_SKEW_WATERLINE_PORT       Host port for the disposable Waterline app. Defaults to a free port.
+  DW_SKEW_PHP_CONTAINER_NETWORK_TARGET
+                               Container id/name whose network namespace PHP probes may share.
+                               Defaults to the runner container hostname when containerized.
+  DW_SKEW_DISABLE_PHP_CONTAINER_NETWORK=1
+                               Disable the container-network PHP probe strategy.
   DW_SKEW_DOCKER_HOST_GATEWAY_NAME
                                Host name Dockerized PHP probes use to reach the recording proxy.
                                Defaults to host.docker.internal with a host-gateway mapping.
@@ -167,6 +177,69 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   process.exit(1);
 })();
 NODE
+}
+
+running_in_container() {
+  if [[ -f /.dockerenv ]]; then
+    return 0
+  fi
+
+  if [[ -r /proc/1/cgroup ]] && grep -qaE '(docker|kubepods|containerd)' /proc/1/cgroup; then
+    return 0
+  fi
+
+  return 1
+}
+
+url_host() {
+  local url="$1"
+
+node - "$url" <<'NODE'
+try {
+  const parsed = new URL(process.argv[2]);
+  process.stdout.write(parsed.hostname);
+} catch {
+  process.exit(1);
+}
+NODE
+}
+
+waterline_host_for_published_port() {
+  if [[ -n "${DW_SKEW_WATERLINE_HOST:-}" ]]; then
+    printf '%s\n' "$DW_SKEW_WATERLINE_HOST"
+    return
+  fi
+
+  if running_in_container; then
+    local server_host=""
+    if [[ -n "$server_url" ]]; then
+      server_host="$(url_host "$server_url" 2>/dev/null || true)"
+    fi
+
+    if [[ -n "$server_host" && "$server_host" != "127.0.0.1" && "$server_host" != "localhost" ]]; then
+      printf '%s\n' "$server_host"
+      return
+    fi
+
+    printf '%s\n' "${DW_SKEW_DOCKER_HOST_GATEWAY_NAME:-host.docker.internal}"
+    return
+  fi
+
+  printf '%s\n' '127.0.0.1'
+}
+
+waterline_bind_host_for_published_port() {
+  if [[ -n "${DW_SKEW_WATERLINE_BIND_HOST:-}" ]]; then
+    printf '%s\n' "$DW_SKEW_WATERLINE_BIND_HOST"
+    return
+  fi
+
+  if running_in_container; then
+    printf '%s\n' '0.0.0.0'
+    return
+  fi
+
+  printf '%s\n' '127.0.0.1'
 }
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -599,11 +672,13 @@ PHP
 
     if [[ "$waterline_migrate_status" -eq 0 && -z "$waterline_surface_url" ]]; then
       waterline_port="${DW_SKEW_WATERLINE_PORT:-$(free_port)}"
-      waterline_surface_url="http://127.0.0.1:${waterline_port}"
+      waterline_host="$(waterline_host_for_published_port)"
+      waterline_bind_host="$(waterline_bind_host_for_published_port)"
+      waterline_surface_url="http://${waterline_host}:${waterline_port}"
       waterline_container="dw-skew-waterline-${run_label}"
       if docker run -d \
         --name "$waterline_container" \
-        -p "127.0.0.1:${waterline_port}:${waterline_port}" \
+        -p "${waterline_bind_host}:${waterline_port}:${waterline_port}" \
         -v "$run_root/waterline:/app" \
         -w /app \
         -e APP_ENV=local \

@@ -1871,12 +1871,12 @@ async function runPhpArtifactWithProxyFallback({
   payload,
   ...options
 }) {
-  const strategies = envValue('DW_SKEW_DISABLE_PHP_HOST_NETWORK_FALLBACK') === '1'
-    ? ['host-gateway']
-    : ['host-gateway', 'host-network'];
+  const strategies = phpDockerNetworkStrategies();
   let firstResult = null;
+  const previousAttempts = [];
 
-  for (const strategy of strategies) {
+  for (let index = 0; index < strategies.length; index += 1) {
+    const strategy = strategies[index];
     const docker = phpDockerInvocation(availability, script, payload, strategy);
     const result = await runArtifactWithProxy({
       ...options,
@@ -1888,20 +1888,63 @@ async function runPhpArtifactWithProxyFallback({
 
     if (firstResult === null) {
       firstResult = result;
-    } else {
-      result.artifact_invocation.previous_proxy_attempt = phpProxyAttemptSummary(firstResult);
     }
 
-    if (!phpProxyRetryable(result, strategy)) {
+    if (previousAttempts.length > 0) {
+      result.artifact_invocation.previous_proxy_attempt = previousAttempts[0];
+      result.artifact_invocation.previous_proxy_attempts = previousAttempts;
+    }
+
+    if (!phpProxyRetryable(result, index < strategies.length - 1)) {
       return result;
     }
+
+    previousAttempts.push(phpProxyAttemptSummary(result));
   }
 
   return firstResult;
 }
 
-function phpProxyRetryable(result, strategy) {
-  return strategy === 'host-gateway'
+function phpDockerNetworkStrategies() {
+  const strategies = [];
+  const containerTarget = phpContainerNetworkTarget();
+  if (containerTarget && envValue('DW_SKEW_DISABLE_PHP_CONTAINER_NETWORK') !== '1') {
+    strategies.push({
+      kind: 'container-network',
+      target: containerTarget,
+    });
+  }
+
+  strategies.push({ kind: 'host-gateway' });
+
+  if (envValue('DW_SKEW_DISABLE_PHP_HOST_NETWORK_FALLBACK') !== '1') {
+    strategies.push({ kind: 'host-network' });
+  }
+
+  return strategies;
+}
+
+function phpContainerNetworkTarget() {
+  return envValue('DW_SKEW_PHP_CONTAINER_NETWORK_TARGET')
+    || envValue('DW_SKEW_CONTAINER_NETWORK_TARGET')
+    || (runningInsideContainer() ? envValue('HOSTNAME') : '');
+}
+
+function runningInsideContainer() {
+  if (fs.existsSync('/.dockerenv')) {
+    return true;
+  }
+
+  try {
+    const cgroup = fs.readFileSync('/proc/1/cgroup', 'utf8');
+    return /(docker|kubepods|containerd)/i.test(cgroup);
+  } catch {
+    return false;
+  }
+}
+
+function phpProxyRetryable(result, hasMoreStrategies) {
+  return hasMoreStrategies
     && result?.wire_evidence_gap !== null
     && Array.isArray(result?.proxy_captures)
     && result.proxy_captures.length === 0
@@ -1921,11 +1964,14 @@ function phpProxyAttemptSummary(result) {
   };
 }
 
-function phpDockerInvocation(availability, script, payload, dockerNetworkStrategy = 'host-gateway') {
+function phpDockerInvocation(availability, script, payload, strategy = { kind: 'host-gateway' }) {
+  const dockerNetworkStrategy = strategy.kind ?? 'host-gateway';
   const artifactProxyHost = envValue('DW_SKEW_DOCKER_HOST_GATEWAY_NAME') || 'host.docker.internal';
-  const networkArgs = dockerNetworkStrategy === 'host-network'
-    ? ['--network', 'host']
-    : ['--add-host', `${artifactProxyHost}:host-gateway`];
+  const networkArgs = dockerNetworkStrategy === 'container-network'
+    ? ['--network', `container:${strategy.target}`]
+    : dockerNetworkStrategy === 'host-network'
+      ? ['--network', 'host']
+      : ['--add-host', `${artifactProxyHost}:host-gateway`];
 
   return {
     command: 'docker',
@@ -1946,7 +1992,7 @@ function phpDockerInvocation(availability, script, payload, dockerNetworkStrateg
       '/tmp/dw-skew-probe.php',
       JSON.stringify(payload),
     ],
-    artifactProxyHost: dockerNetworkStrategy === 'host-network' ? null : artifactProxyHost,
+    artifactProxyHost: ['container-network', 'host-network'].includes(dockerNetworkStrategy) ? null : artifactProxyHost,
     dockerNetworkStrategy,
   };
 }
