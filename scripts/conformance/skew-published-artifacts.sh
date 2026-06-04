@@ -27,6 +27,8 @@ Environment overrides:
   DW_WATERLINE_VERSION         Published Waterline version under test.
   DW_SKEW_WATERLINE_URL        Optional existing Composer-installed Waterline HTTP surface.
                                If unset, the runner starts a disposable Laravel Waterline app.
+  DW_SKEW_WATERLINE_FIXTURE_RUN_ID
+                               Existing Waterline run id to render, or the seeded fixture id.
   DW_SKEW_WATERLINE_PORT       Host port for the disposable Waterline app. Defaults to a free port.
   DW_SKEW_DOCKER_HOST_GATEWAY_NAME
                                Host name Dockerized PHP probes use to reach the recording proxy.
@@ -397,6 +399,8 @@ waterline_reason="DW_WATERLINE_VERSION is required to install the published Wate
 waterline_app_dir=""
 waterline_source="not_installed"
 waterline_surface_url="${DW_SKEW_WATERLINE_URL:-${DW_SKEW_WATERLINE_BASE_URL:-}}"
+waterline_fixture_run_id="${DW_SKEW_WATERLINE_FIXTURE_RUN_ID:-skew-waterline-fixture}"
+waterline_fixture_status=0
 if [[ -n "${DW_WATERLINE_VERSION:-}" ]]; then
   mkdir -p "$run_root/waterline"
   if ! is_exact_semver "$DW_WATERLINE_VERSION"; then
@@ -476,6 +480,124 @@ if [[ -n "${DW_WATERLINE_VERSION:-}" ]]; then
     fi
 
     if [[ "$waterline_migrate_status" -eq 0 && -z "$waterline_surface_url" ]]; then
+      waterline_fixture_script="$run_root/waterline-seed.php"
+      cat > "$waterline_fixture_script" <<'PHP'
+<?php
+declare(strict_types=1);
+
+use Illuminate\Contracts\Console\Kernel;
+use Illuminate\Support\Facades\DB;
+
+require __DIR__.'/waterline/vendor/autoload.php';
+
+$app = require __DIR__.'/waterline/bootstrap/app.php';
+$app->make(Kernel::class)->bootstrap();
+
+$runId = (string) (getenv('DW_SKEW_WATERLINE_FIXTURE_RUN_ID') ?: 'skew-waterline-fixture');
+$instanceId = (string) (getenv('DW_SKEW_WATERLINE_FIXTURE_INSTANCE_ID') ?: 'skew-waterline-instance');
+$namespace = (string) (getenv('WATERLINE_NAMESPACE') ?: 'default');
+$now = now()->format('Y-m-d H:i:s.u');
+$labels = json_encode(['source' => 'skew-conformance'], JSON_THROW_ON_ERROR);
+$memo = json_encode(['fixture' => 'waterline-skew-render'], JSON_THROW_ON_ERROR);
+
+DB::table('workflow_instances')->updateOrInsert(
+    ['id' => $instanceId],
+    [
+        'workflow_class' => 'SkewConformanceWorkflow',
+        'workflow_type' => 'skew_conformance_workflow',
+        'namespace' => $namespace,
+        'business_key' => 'skew-conformance',
+        'visibility_labels' => $labels,
+        'memo' => $memo,
+        'current_run_id' => $runId,
+        'run_count' => 1,
+        'last_message_sequence' => 0,
+        'started_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ],
+);
+
+DB::table('workflow_runs')->updateOrInsert(
+    ['id' => $runId],
+    [
+        'workflow_instance_id' => $instanceId,
+        'run_number' => 1,
+        'workflow_class' => 'SkewConformanceWorkflow',
+        'workflow_type' => 'skew_conformance_workflow',
+        'namespace' => $namespace,
+        'business_key' => 'skew-conformance',
+        'visibility_labels' => $labels,
+        'status' => 'running',
+        'compatibility' => 'skew-compatible',
+        'connection' => 'sync',
+        'queue' => 'skew-conformance',
+        'last_history_sequence' => 1,
+        'last_command_sequence' => 0,
+        'message_cursor_position' => 0,
+        'started_at' => $now,
+        'last_progress_at' => $now,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ],
+);
+
+DB::table('workflow_run_summaries')->updateOrInsert(
+    ['id' => $runId],
+    [
+        'workflow_instance_id' => $instanceId,
+        'run_number' => 1,
+        'is_current_run' => true,
+        'engine_source' => 'v2',
+        'projection_schema_version' => 1,
+        'class' => 'SkewConformanceWorkflow',
+        'workflow_type' => 'skew_conformance_workflow',
+        'namespace' => $namespace,
+        'compatibility' => 'skew-compatible',
+        'declared_entry_mode' => 'compatibility',
+        'declared_contract_source' => 'skew-conformance',
+        'business_key' => 'skew-conformance',
+        'visibility_labels' => $labels,
+        'status' => 'running',
+        'status_bucket' => 'running',
+        'connection' => 'sync',
+        'queue' => 'skew-conformance',
+        'started_at' => $now,
+        'sort_timestamp' => $now,
+        'sort_key' => $now.'|'.$runId,
+        'liveness_state' => 'running',
+        'liveness_reason' => 'Seeded Waterline skew conformance fixture.',
+        'repair_attention' => false,
+        'task_problem' => false,
+        'exception_count' => 0,
+        'history_event_count' => 1,
+        'history_size_bytes' => 0,
+        'continue_as_new_recommended' => false,
+        'created_at' => $now,
+        'updated_at' => $now,
+    ],
+);
+PHP
+
+      if docker run --rm \
+        -v "$run_root:/workspace" \
+        -w /workspace \
+        -e APP_ENV=local \
+        -e DB_CONNECTION=sqlite \
+        -e DB_DATABASE=/workspace/waterline/database/database.sqlite \
+        -e WATERLINE_ENGINE_SOURCE=v2 \
+        -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
+        -e WATERLINE_NAMESPACE="${DW_SKEW_NAMESPACE:-default}" \
+        -e DW_SKEW_WATERLINE_FIXTURE_RUN_ID="$waterline_fixture_run_id" \
+        composer:2 php /workspace/waterline-seed.php \
+        >"$result_dir/waterline-seed-fixture.log" 2>&1; then
+        waterline_fixture_status=0
+      else
+        waterline_fixture_status=1
+      fi
+    fi
+
+    if [[ "$waterline_migrate_status" -eq 0 && -z "$waterline_surface_url" ]]; then
       waterline_port="${DW_SKEW_WATERLINE_PORT:-$(free_port)}"
       waterline_surface_url="http://127.0.0.1:${waterline_port}"
       waterline_container="dw-skew-waterline-${run_label}"
@@ -518,6 +640,10 @@ if [[ -n "${DW_WATERLINE_VERSION:-}" ]]; then
       waterline_status="runner_blocked"
       waterline_reason="Laravel migration failed before Waterline skew surface startup; see waterline-migrate.log"
       waterline_surface_url=""
+    elif [[ "$waterline_fixture_status" -ne 0 ]]; then
+      waterline_status="runner_blocked"
+      waterline_reason="Waterline fixture seed failed before render evidence; see waterline-seed-fixture.log"
+      waterline_surface_url=""
     elif [[ "$waterline_serve_status" -ne 0 ]]; then
       waterline_status="runner_blocked"
       waterline_reason="Disposable Waterline app failed to expose /waterline/api/v2/health; see waterline-ready.log and waterline-serve-container.log"
@@ -553,6 +679,7 @@ WATERLINE_REASON="$waterline_reason" \
 WATERLINE_SOURCE="$waterline_source" \
 WATERLINE_APP_DIR="$waterline_app_dir" \
 WATERLINE_SURFACE_URL="$waterline_surface_url" \
+DW_SKEW_WATERLINE_FIXTURE_RUN_ID="$waterline_fixture_run_id" \
 node - <<'NODE' > "$artifact_manifest"
 const env = process.env;
 const surface = (status, reason, source, extra = {}) => ({
@@ -586,6 +713,7 @@ const manifest = {
     waterline: surface(env.WATERLINE_STATUS, env.WATERLINE_REASON, env.WATERLINE_SOURCE, {
       app_dir: env.WATERLINE_APP_DIR,
       surface_url: env.WATERLINE_SURFACE_URL,
+      fixture_run_id: env.DW_SKEW_WATERLINE_FIXTURE_RUN_ID,
     }),
   },
   local_product_source_checkouts_used: false,
@@ -599,5 +727,6 @@ DW_SKEW_RUN_ROOT="$run_root" \
 DW_SKEW_REPO_ROOT="$repo_root" \
 DW_SKEW_SERVER_URL="$server_url" \
 DW_SKEW_ARTIFACTS_JSON="$artifact_manifest" \
+DW_SKEW_WATERLINE_FIXTURE_RUN_ID="$waterline_fixture_run_id" \
 DW_SKEW_STARTED_AT="${DW_SKEW_STARTED_AT:-$(timestamp)}" \
 node "$script_dir/skew-published-artifacts.mjs"

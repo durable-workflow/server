@@ -562,9 +562,29 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'the skew runner must wait for the Waterline HTTP surface before handing it to the Node matrix runner',
         );
         $this->assertStringContainsString(
+            'waterline-seed-fixture.log',
+            $shell,
+            'the disposable Waterline app must seed a visible v2 run before render probes can cover flow detail routes',
+        );
+        $this->assertStringContainsString(
+            'workflow_run_summaries',
+            $shell,
+            'the Waterline fixture must include the v2 summary row used by running-flow list renders',
+        );
+        $this->assertStringContainsString(
+            'DW_SKEW_WATERLINE_FIXTURE_RUN_ID',
+            $shell,
+            'host runners must be able to name the Waterline run id used for render evidence',
+        );
+        $this->assertStringContainsString(
             'surface_url: env.WATERLINE_SURFACE_URL',
             $shell,
             'the artifact handoff must carry the Waterline surface URL that was actually rendered through',
+        );
+        $this->assertStringContainsString(
+            'fixture_run_id: env.DW_SKEW_WATERLINE_FIXTURE_RUN_ID',
+            $shell,
+            'the artifact handoff must carry the Waterline run id that the matrix runner should render',
         );
         $this->assertStringNotContainsString(
             '${workflow_version:-^2.0.0-alpha@alpha}',
@@ -630,6 +650,11 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'waterlineSurfaceUrlFor(record)',
             $runner,
             'Waterline render evidence must distinguish installed package metadata from a running Waterline surface',
+        );
+        $this->assertStringContainsString(
+            'waterlineFixtureRunId()',
+            $runner,
+            'Waterline flow-detail probes must render the seeded fixture run instead of a synthetic missing id',
         );
         $this->assertStringContainsString(
             'Composer package install alone is not Waterline render evidence.',

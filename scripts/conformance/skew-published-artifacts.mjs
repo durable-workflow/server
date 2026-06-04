@@ -1033,6 +1033,14 @@ function waterlineSurfaceUrlFor(record = {}) {
   return url ? trimTrailingSlash(url) : '';
 }
 
+function waterlineFixtureRunId() {
+  const record = artifactRecordForSurface('waterline');
+
+  return stringValue(record.fixture_run_id)
+    || stringValue(record.fixtureRunId)
+    || envValue('DW_SKEW_WATERLINE_FIXTURE_RUN_ID');
+}
+
 function workerTaskCompletionGap({
   pairingClass,
   operationGroup,
@@ -2913,9 +2921,12 @@ function firstArrayObjectStringValue(values, fields) {
 
 function pairingState(context, surfaceName, pairingClass) {
   const key = `${surfaceName}.${pairingClass}`;
+  const defaultWorkflowId = surfaceName === 'waterline'
+    ? waterlineFixtureRunId() || `skew-${context.runId}-${surfaceName.replace(/[^a-z0-9]+/gi, '-')}-${pairingClass}`
+    : `skew-${context.runId}-${surfaceName.replace(/[^a-z0-9]+/gi, '-')}-${pairingClass}`;
   context.pairingState ??= {};
   context.pairingState[key] ??= {
-    workflowId: `skew-${context.runId}-${surfaceName.replace(/[^a-z0-9]+/gi, '-')}-${pairingClass}`,
+    workflowId: defaultWorkflowId,
     runId: '',
     scheduleId: `schedule-${context.runId}-${surfaceName.replace(/[^a-z0-9]+/gi, '-')}-${pairingClass}`,
     workerId: `worker-${context.runId}-${surfaceName.replace(/[^a-z0-9]+/gi, '-')}-${pairingClass}`,
