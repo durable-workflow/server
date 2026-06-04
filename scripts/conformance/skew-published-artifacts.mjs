@@ -598,6 +598,11 @@ async function probeOperation({
     artifact_invocation: invocation.artifact_invocation,
     proxy_captures: invocation.proxy_captures,
   };
+  if (surfaceName === 'workflow-worker') {
+    capture.worker_version = surfaceVersion;
+    capture.workflow_package_version = surfaceVersion;
+    capture.worker_protocol_version = pairing.workerProtocolVersion;
+  }
 
   let evidence;
   if (operationGroup === 'cluster_info_probe') {
@@ -699,6 +704,9 @@ async function probeOperation({
   }
 
   if (surfaceName === 'workflow-worker') {
+    evidence.worker_version = surfaceVersion;
+    evidence.workflow_package_version = surfaceVersion;
+    evidence.worker_protocol_version = pairing.workerProtocolVersion;
     evidence.worker_skew_classification = workerClassification(pairingClass, response, operationGroup);
   }
 
@@ -770,6 +778,11 @@ function notCoveredProbe({
     },
     proxy_captures: proxyCaptures,
   };
+  if (surfaceName === 'workflow-worker') {
+    capture.worker_version = surfaceVersion;
+    capture.workflow_package_version = surfaceVersion;
+    capture.worker_protocol_version = pairing.workerProtocolVersion;
+  }
 
   let evidence;
   if (operationGroup === 'cluster_info_probe') {
@@ -834,6 +847,12 @@ function notCoveredProbe({
       coverage_gap_reason: reason,
       artifact_invocation: artifactInvocation ?? undefined,
     };
+  }
+
+  if (surfaceName === 'workflow-worker') {
+    evidence.worker_version = surfaceVersion;
+    evidence.workflow_package_version = surfaceVersion;
+    evidence.worker_protocol_version = pairing.workerProtocolVersion;
   }
 
   return { evidence, capture };
@@ -1729,6 +1748,7 @@ async function invokeWorkflowWorkerOperation({
     pairing,
     command: docker.command,
     args: docker.args,
+    artifactProxyHost: docker.artifactProxyHost,
     env: {
       DW_SKEW_AUTH_TOKEN: process.env.DW_SKEW_AUTH_TOKEN ?? 'dev-token',
     },
@@ -1770,6 +1790,7 @@ async function invokeWaterlineOperation({
     pairing,
     command: docker.command,
     args: docker.args,
+    artifactProxyHost: docker.artifactProxyHost,
     env: {
       DW_SKEW_AUTH_TOKEN: process.env.DW_SKEW_AUTH_TOKEN ?? 'dev-token',
     },
@@ -1778,13 +1799,15 @@ async function invokeWaterlineOperation({
 }
 
 function phpDockerInvocation(availability, script, payload) {
+  const artifactProxyHost = envValue('DW_SKEW_DOCKER_HOST_GATEWAY_NAME') || 'host.docker.internal';
+
   return {
     command: 'docker',
     args: [
       'run',
       '--rm',
-      '--network',
-      'host',
+      '--add-host',
+      `${artifactProxyHost}:host-gateway`,
       '-e',
       'DW_SKEW_AUTH_TOKEN',
       '-v',
@@ -1798,6 +1821,7 @@ function phpDockerInvocation(availability, script, payload) {
       '/tmp/dw-skew-probe.php',
       JSON.stringify(payload),
     ],
+    artifactProxyHost,
   };
 }
 
@@ -2232,6 +2256,7 @@ async function runArtifactWithProxy({
   method,
   requestPath,
   targetUrl = null,
+  artifactProxyHost = null,
   context,
   pairing,
   command,
@@ -2241,6 +2266,7 @@ async function runArtifactWithProxy({
 }) {
   const proxyResult = await withRecordingProxy({
     targetUrl: targetUrl ?? context.serverUrl,
+    artifactProxyHost,
   }, async (proxyUrl) => {
     const rewrittenArgs = args.map((arg) => arg.replaceAll('__DW_SKEW_PROXY_URL__', proxyUrl));
     const rewrittenEnv = Object.fromEntries(
@@ -2494,7 +2520,7 @@ function normalizeArtifactHeaders(headers) {
   return normalized;
 }
 
-async function withRecordingProxy({ targetUrl }, callback) {
+async function withRecordingProxy({ targetUrl, artifactProxyHost = null }, callback) {
   const captures = [];
   const server = http.createServer(async (request, response) => {
     const chunks = [];
@@ -2562,13 +2588,14 @@ async function withRecordingProxy({ targetUrl }, callback) {
     });
   });
 
+  const listenHost = artifactProxyHost ? '0.0.0.0' : '127.0.0.1';
   await new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(0, '127.0.0.1', resolve);
+    server.listen(0, listenHost, resolve);
   });
 
   const address = server.address();
-  const proxyUrl = `http://127.0.0.1:${address.port}`;
+  const proxyUrl = `http://${artifactProxyHost ?? '127.0.0.1'}:${address.port}`;
 
   try {
     const processResult = await callback(proxyUrl);
@@ -3033,6 +3060,11 @@ function summarizePairing(surfaceName, pairingClass, rows, context) {
     compatibility_window: pairing.compatibilityWindow,
     observed_operation_statuses: statuses,
   };
+  if (surfaceName === 'workflow-worker') {
+    result.worker_version = context.artifactVersions[surface.artifact];
+    result.workflow_package_version = context.artifactVersions[surface.artifact];
+    result.worker_protocol_version = pairing.workerProtocolVersion;
+  }
 
   if (status === 'loud_refuse') {
     result.refusal_requirements_met = refusalRequirements[surfaceName];
@@ -3249,7 +3281,7 @@ function waterlineCoverageGapReason(operationGroup, status, response) {
 }
 
 function loudRefusalContext(surfaceName, surfaceVersion, context, pairing, response) {
-  return {
+  const result = {
     surface: surfaceName,
     surface_version: surfaceVersion,
     server_version: context.observedServerVersion,
@@ -3258,6 +3290,13 @@ function loudRefusalContext(surfaceName, surfaceVersion, context, pairing, respo
     next_step: compatibilityNextStep(surfaceName, 'outside_window'),
     response_reason: response?.body?.reason ?? response?.reason ?? null,
   };
+  if (surfaceName === 'workflow-worker') {
+    result.worker_version = surfaceVersion;
+    result.workflow_package_version = surfaceVersion;
+    result.worker_protocol_version = pairing.workerProtocolVersion;
+  }
+
+  return result;
 }
 
 function compatibilityNextStep(surfaceName, pairingClass) {

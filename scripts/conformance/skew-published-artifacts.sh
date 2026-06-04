@@ -26,6 +26,9 @@ Environment overrides:
   DW_WORKFLOW_PHP_VERSION      Published durable-workflow/workflow version under test.
   DW_WATERLINE_VERSION         Published Waterline version under test.
   DW_SKEW_WATERLINE_URL        Running Composer-installed Waterline HTTP surface to render through.
+  DW_SKEW_DOCKER_HOST_GATEWAY_NAME
+                               Host name Dockerized PHP probes use to reach the recording proxy.
+                               Defaults to host.docker.internal with a host-gateway mapping.
   DW_SKEW_SERVER_PORT          Host port for the published server. Defaults to a free port.
   DW_SKEW_AUTH_TOKEN           Token used against the published server. Defaults to dev-token.
   DW_SKEW_NAMESPACE            Namespace used for probes. Defaults to default.

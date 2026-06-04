@@ -557,9 +557,24 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'the runner must mark Waterline render rows not_covered instead of attributing direct server responses to Waterline',
         );
         $this->assertStringContainsString(
-            "'--network'",
+            "'--add-host'",
             $runner,
-            'Dockerized PHP probes must use the host network so the recording proxy captures requests from inside the container',
+            'Dockerized PHP probes must route through an explicit host-gateway recording proxy instead of depending on Docker host networking',
+        );
+        $this->assertStringContainsString(
+            "'host.docker.internal'",
+            $runner,
+            'Dockerized PHP probes must default to a host-gateway name that resolves the host-side recording proxy from inside the container',
+        );
+        $this->assertStringContainsString(
+            ':host-gateway',
+            $runner,
+            'Dockerized PHP probes must install a host-gateway mapping for the recording proxy',
+        );
+        $this->assertStringContainsString(
+            'artifactProxyHost',
+            $runner,
+            'the recording proxy URL handed to Dockerized PHP probes must use the container-reachable host-gateway name',
         );
         $this->assertStringContainsString(
             "'DW_SKEW_AUTH_TOKEN'",
@@ -715,6 +730,26 @@ final class SkewRefusalMatrixContractTest extends TestCase
             'workflow_task_attempt: state.workflowTaskAttempt ?? 1',
             $runner,
             'generated worker probe payloads must carry the leased workflow task attempt',
+        );
+        $this->assertStringContainsString(
+            'evidence.worker_version = surfaceVersion',
+            $runner,
+            'workflow-worker evidence rows must explicitly name the published workflow package version under test',
+        );
+        $this->assertStringContainsString(
+            'evidence.worker_protocol_version = pairing.workerProtocolVersion',
+            $runner,
+            'workflow-worker evidence rows must explicitly name the worker protocol version used for the pairing',
+        );
+        $this->assertStringContainsString(
+            'capture.worker_version = surfaceVersion',
+            $runner,
+            'workflow-worker request/response captures must carry the published workflow package version under test',
+        );
+        $this->assertStringContainsString(
+            'result.worker_protocol_version = pairing.workerProtocolVersion',
+            $runner,
+            'workflow-worker pairing summaries must carry the pairing worker protocol version',
         );
         $this->assertStringContainsString(
             "supported_workflow_types: ['skew_conformance_workflow']",
