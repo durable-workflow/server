@@ -207,8 +207,8 @@ async function main() {
   });
   topology.workers.push({ worker_id: v2WorkerId, runtime: 'php', build_id: buildV2 });
 
-  const v2BeforeReplay = await pollWorkflowTask(serverUrl, workerHeaders, v2WorkerId, taskQueue);
-  const v1FirstPoll = await pollWorkflowTask(serverUrl, workerHeaders, v1WorkerId, taskQueue);
+  const v2BeforeReplay = await pollWorkflowTask(serverUrl, workerHeaders, v2WorkerId, taskQueue, buildV2);
+  const v1FirstPoll = await pollWorkflowTask(serverUrl, workerHeaders, v1WorkerId, taskQueue, buildV1);
   const v2TaskCountForV1Run = countTasksForRun([v2BeforeReplay], v1RunId);
   const v1TaskCount = countTasksForRun([v1FirstPoll], v1RunId);
 
@@ -234,8 +234,8 @@ async function main() {
     process_metrics: processMetrics(1002, timestamp()),
   });
 
-  const v2AfterRestart = await pollWorkflowTask(serverUrl, workerHeaders, v2WorkerId, taskQueue);
-  const v1ReplayPoll = await pollWorkflowTask(serverUrl, workerHeaders, v1WorkerId, taskQueue);
+  const v2AfterRestart = await pollWorkflowTask(serverUrl, workerHeaders, v2WorkerId, taskQueue, buildV2);
+  const v1ReplayPoll = await pollWorkflowTask(serverUrl, workerHeaders, v1WorkerId, taskQueue, buildV1);
   const replayWorkerBuildId = stringValue(v1ReplayPoll?.task?.compatibility);
   const cacheEvictionIncompatibleCount = countTasksForRun([v2AfterRestart], v1RunId);
   const cacheEvictionObserved = countTasksForRun([v1ReplayPoll], v1RunId) > 0
@@ -254,7 +254,7 @@ async function main() {
     task_queue: taskQueue,
     input: ['v2'],
   });
-  const promotedPoll = await pollWorkflowTask(serverUrl, workerHeaders, v2WorkerId, taskQueue);
+  const promotedPoll = await pollWorkflowTask(serverUrl, workerHeaders, v2WorkerId, taskQueue, buildV2);
   if (promotedPoll?.task) {
     await completeWorkflow(serverUrl, workerHeaders, promotedPoll.task, ['activity_b', 'activity_a']);
   }
@@ -277,7 +277,7 @@ async function main() {
     [200, 404],
   );
   await sleep(1200);
-  const noCompatiblePoll = await pollWorkflowTask(serverUrl, workerHeaders, v2WorkerId, taskQueue);
+  const noCompatiblePoll = await pollWorkflowTask(serverUrl, workerHeaders, v2WorkerId, taskQueue, buildV2);
   const noCompatibleShow = noCompatibleWorkflowId
     ? await getJson(
       serverUrl,
@@ -332,8 +332,14 @@ async function main() {
     input: ['php'],
   });
   const phpStartedRunId = stringValue(phpStarted.run_id);
-  const pythonV2PollForPhpV1 = await pollWorkflowTask(serverUrl, workerHeaders, pythonV2WorkerId, taskQueue);
-  const phpV1Poll = await pollWorkflowTask(serverUrl, workerHeaders, phpV1WorkerId, taskQueue);
+  const pythonV2PollForPhpV1 = await pollWorkflowTask(
+    serverUrl,
+    workerHeaders,
+    pythonV2WorkerId,
+    taskQueue,
+    `${buildV2}-python`,
+  );
+  const phpV1Poll = await pollWorkflowTask(serverUrl, workerHeaders, phpV1WorkerId, taskQueue, `${buildV1}-php`);
   if (phpV1Poll?.task) {
     await completeWorkflow(serverUrl, workerHeaders, phpV1Poll.task, ['activity_a', 'activity_b']);
   }
@@ -372,8 +378,20 @@ async function main() {
     input: ['python'],
   });
   const pythonStartedRunId = stringValue(pythonStarted.run_id);
-  const phpV2PollForPythonV1 = await pollWorkflowTask(serverUrl, workerHeaders, phpV2WorkerId, taskQueue);
-  const pythonV1Poll = await pollWorkflowTask(serverUrl, workerHeaders, pythonV1WorkerId, taskQueue);
+  const phpV2PollForPythonV1 = await pollWorkflowTask(
+    serverUrl,
+    workerHeaders,
+    phpV2WorkerId,
+    taskQueue,
+    `${buildV2}-php`,
+  );
+  const pythonV1Poll = await pollWorkflowTask(
+    serverUrl,
+    workerHeaders,
+    pythonV1WorkerId,
+    taskQueue,
+    `${buildV1}-python`,
+  );
   if (pythonV1Poll?.task) {
     await completeWorkflow(serverUrl, workerHeaders, pythonV1Poll.task, ['activity_a', 'activity_b']);
   }
@@ -714,14 +732,12 @@ async function main() {
   );
   if (publishedNoCompatiblePasses) {
     addPass('no_compatible_worker_behavior', publishedNoCompatibleOutputs);
-  } else if (publishedNoCompatibleWorkerExecuted) {
+  } else if (publishedNoCompatibleWorkerExecuted && publishedNoCompatibleIncompatibleCount > 0) {
     addFail('no_compatible_worker_behavior', publishedNoCompatibleOutputs, {
       scenario_id: 'no_compatible_worker_behavior',
       owning_surface: 'server',
       artifact_versions: artifactVersions,
-      observed_behavior: publishedNoCompatibleIncompatibleCount > 0
-        ? 'A v1-pinned run without a registered v1-compatible worker was delivered to an incompatible published worker.'
-        : 'A v1-pinned run without a registered v1-compatible worker did not expose an explicit public no-compatible-worker diagnostic in published-worker evidence.',
+      observed_behavior: 'A v1-pinned run without a registered v1-compatible worker was delivered to an incompatible published worker.',
       expected_behavior: 'Pinned runs with no compatible worker remain pending or surface a typed no-compatible-worker signal and are never delivered to v2 workers.',
       next_acceptance_criterion: 'rerun the published-artifact worker-versioning topology and record incompatible_worker_task_count equal to zero plus an explicit no-compatible-worker or compatibility-blocked public signal after stopping the compatible worker cohort',
       incompatible_worker_task_count: publishedNoCompatibleIncompatibleCount,
@@ -730,6 +746,18 @@ async function main() {
     });
   } else if (noCompatibleProtocolProbePasses) {
     addPass('no_compatible_worker_behavior', noCompatibleOutputs);
+  } else if (publishedNoCompatibleWorkerExecuted) {
+    addFail('no_compatible_worker_behavior', publishedNoCompatibleOutputs, {
+      scenario_id: 'no_compatible_worker_behavior',
+      owning_surface: 'server',
+      artifact_versions: artifactVersions,
+      observed_behavior: 'A v1-pinned run without a registered v1-compatible worker did not expose an explicit public no-compatible-worker diagnostic in published-worker evidence.',
+      expected_behavior: 'Pinned runs with no compatible worker remain pending or surface a typed no-compatible-worker signal and are never delivered to v2 workers.',
+      next_acceptance_criterion: 'rerun the published-artifact worker-versioning topology and record incompatible_worker_task_count equal to zero plus an explicit no-compatible-worker or compatibility-blocked public signal after stopping the compatible worker cohort',
+      incompatible_worker_task_count: publishedNoCompatibleIncompatibleCount,
+      operator_visible_signal: publishedNoCompatibleSignal,
+      pending_or_typed_error: publishedNoCompatiblePendingOrTypedError,
+    });
   } else {
     addFail('no_compatible_worker_behavior', noCompatibleOutputs, {
       scenario_id: 'no_compatible_worker_behavior',
@@ -1056,16 +1084,18 @@ async function startWorkflow(serverUrl, headers, payload) {
   return postJson(serverUrl, '/api/workflows', payload, headers, [201, 200]);
 }
 
-async function pollWorkflowTask(serverUrl, headers, workerId, taskQueue) {
+async function pollWorkflowTask(serverUrl, headers, workerId, taskQueue, buildId) {
   const poll = await postJson(serverUrl, '/api/worker/workflow-tasks/poll', {
     worker_id: workerId,
     task_queue: taskQueue,
+    build_id: buildId,
     poll_request_id: `${workerId}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     history_page_size: 100,
   }, headers, [200]);
 
   return {
     worker_id: workerId,
+    build_id: buildId,
     poll_status: poll.poll_status ?? null,
     task: poll.task ?? null,
   };

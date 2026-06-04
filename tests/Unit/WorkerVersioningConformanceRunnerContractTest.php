@@ -208,6 +208,16 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'the no-compatible cell must remove the compatible worker before polling with v2',
         );
         $this->assertStringContainsString(
+            'build_id: buildId',
+            $node,
+            'direct HTTP worker polls must name the registered build id so incompatible-cohort probes are explicit',
+        );
+        $this->assertStringContainsString(
+            'build_id: buildId,',
+            $node,
+            'direct HTTP worker poll outputs must preserve the requested build id for conformance evidence',
+        );
+        $this->assertStringContainsString(
             'noCompatibleServerProtocolProbePasses',
             $node,
             'the no-compatible cell may pass when the published-server protocol probe exercises the stopped-compatible-cohort topology',
@@ -221,6 +231,20 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'isExplicitNoCompatibleSignal(publishedNoCompatibleSignal)',
             $node,
             'the no-compatible cell may pass only when zero incompatible delivery is paired with an explicit diagnostic',
+        );
+        $this->assertStringContainsString(
+            'publishedNoCompatibleWorkerExecuted && publishedNoCompatibleIncompatibleCount > 0',
+            $node,
+            'published-worker evidence may only override a passing protocol probe when it actually observed incompatible delivery',
+        );
+        $protocolProbePassBranch = strpos($node, '} else if (noCompatibleProtocolProbePasses) {');
+        $genericPublishedWorkerFailBranch = strpos($node, '} else if (publishedNoCompatibleWorkerExecuted) {');
+        $this->assertIsInt($protocolProbePassBranch);
+        $this->assertIsInt($genericPublishedWorkerFailBranch);
+        $this->assertLessThan(
+            $genericPublishedWorkerFailBranch,
+            $protocolProbePassBranch,
+            'a passing published-server protocol probe must not be masked by a published-worker shard that merely missed the diagnostic',
         );
         $this->assertStringContainsString(
             "addPass('no_compatible_worker_behavior', noCompatibleOutputs)",
