@@ -58,6 +58,19 @@ class PrincipalAttributionContractTest extends TestCase
         foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
+
+        $this->assertSame(
+            'sdk-python',
+            $manifest['finding_policy']['root_cause_owners']['python_sdk_visibility_failure'],
+        );
+        $this->assertSame(
+            'workflow',
+            $manifest['finding_policy']['root_cause_owners']['php_client_visibility_failure'],
+        );
+        $this->assertSame(
+            'server_or_protocol',
+            $manifest['finding_policy']['root_cause_owners']['shared_attribution_shape_failure'],
+        );
     }
 
     public function test_manifest_names_required_audit_scenarios(): void
@@ -548,8 +561,14 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('linked_findings=anonymous_linked_findings', $script);
         $this->assertStringContainsString('run_python_sdk_client_operation', $script);
         $this->assertStringContainsString('python_operation = run_python_sdk_client_operation(python_client_id)', $script);
+        $this->assertStringContainsString('python_linked_findings: list[dict[str, Any]] = []', $script);
+        $this->assertStringContainsString('linked_findings=python_linked_findings', $script);
+        $this->assertStringContainsString('"python_sdk_visibility", "sdk-python"', $script);
         $this->assertStringContainsString('run_php_client_operation', $script);
         $this->assertStringContainsString('php_operation = run_php_client_operation(php_client_id)', $script);
+        $this->assertStringContainsString('php_linked_findings: list[dict[str, Any]] = []', $script);
+        $this->assertStringContainsString('linked_findings=php_linked_findings', $script);
+        $this->assertStringContainsString('"php_client_visibility", "workflow"', $script);
         $this->assertStringNotContainsString('Python SDK client operation was not exercised by this runner revision', $script);
         $this->assertStringNotContainsString('PHP client operation was not exercised by this runner revision', $script);
         $this->assertStringContainsString('waterline:principal-attribution-conformance', $script);
@@ -1084,6 +1103,38 @@ class PrincipalAttributionContractTest extends TestCase
             'missing_focused_linked_finding',
             array_column($evaluation['gate_failures'], 'code'),
         );
+    }
+
+    public function test_result_gate_accepts_routed_sdk_failures_as_non_passing_product_evidence(): void
+    {
+        foreach ([
+            'python_sdk_visibility' => 'sdk-python',
+            'php_client_visibility' => 'workflow',
+        ] as $scenarioId => $owningSurface) {
+            $finding = $this->structuredPrincipalFinding(
+                $scenarioId,
+                "{$scenarioId} failed against the published SDK package.",
+                $owningSurface,
+                "{$scenarioId} records the same server-derived principal shape as raw HTTP.",
+                "Fix {$owningSurface} credential propagation or the shared attribution shape before marking this cell pass.",
+            );
+
+            $result = $this->completePrincipalAttributionResult();
+            $result['outcome'] = 'fail';
+            $result['scenario_results'][$scenarioId]['status'] = 'fail';
+            $result['scenario_results'][$scenarioId]['linked_findings'] = [$finding];
+            $result['scenario_results'][$scenarioId]['findings'] = [$finding];
+            $result['findings'] = [$finding];
+
+            $evaluation = PrincipalAttributionResultGate::evaluate($result);
+
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertContains($scenarioId, $evaluation['non_pass_scenarios']);
+            $this->assertNotContains(
+                'missing_focused_linked_finding',
+                array_column($evaluation['gate_failures'], 'code'),
+            );
+        }
     }
 
     public function test_result_gate_rejects_bare_string_links_for_non_pass_scenarios(): void

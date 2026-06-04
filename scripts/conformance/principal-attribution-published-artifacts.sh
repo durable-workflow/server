@@ -2445,6 +2445,10 @@ def main() -> int:
             f"Python SDK principal shape {principal_shape_signature(python_recorded_principal)!r} "
             f"did not match raw HTTP signal shape {principal_shape_signature(python_raw_http_reference_principal)!r}"
         )
+    python_linked_findings: list[dict[str, Any]] = []
+    if python_failures:
+        python_linked_findings.append(finding("python_sdk_visibility", "sdk-python", f"Python SDK attribution failures: {python_failures}", "Python-authored client calls record the same principal shape as raw HTTP", "fix Python SDK credential propagation or server attribution shape before marking Python visibility pass"))
+        findings.extend(python_linked_findings)
     scenario_results.append(scenario(
         "pass" if not python_failures else "fail",
         "python_sdk_visibility",
@@ -2458,10 +2462,9 @@ def main() -> int:
         recorded_principal=python_recorded_principal,
         shape_matches_http=python_shape_matches_http,
         history_events=list(python_principals),
+        linked_findings=python_linked_findings,
         findings=python_failures,
     ))
-    if python_failures:
-        findings.append(finding("python_sdk_visibility", "sdk-python", f"Python SDK attribution failures: {python_failures}", "Python-authored client calls record the same principal shape as raw HTTP", "fix Python SDK credential propagation or server attribution shape before marking Python visibility pass"))
 
     php_expected_principal = {"type": "auth:token", "id": "alice"}
     php_raw_http_reference_principal = main_principals.get("WorkflowStarted")
@@ -2479,6 +2482,10 @@ def main() -> int:
             f"PHP client principal shape {principal_shape_signature(php_recorded_principal)!r} "
             f"did not match raw HTTP start shape {principal_shape_signature(php_raw_http_reference_principal)!r}"
         )
+    php_linked_findings: list[dict[str, Any]] = []
+    if php_failures:
+        php_linked_findings.append(finding("php_client_visibility", "workflow", f"PHP client attribution failures: {php_failures}", "PHP-authored client calls record the same principal shape as raw HTTP", "fix PHP credential propagation or server attribution shape before marking PHP visibility pass"))
+        findings.extend(php_linked_findings)
     scenario_results.append(scenario(
         "pass" if not php_failures else "fail",
         "php_client_visibility",
@@ -2492,10 +2499,9 @@ def main() -> int:
         recorded_principal=php_recorded_principal,
         shape_matches_http=php_shape_matches_http,
         history_events=list(php_principals),
+        linked_findings=php_linked_findings,
         findings=php_failures,
     ))
-    if php_failures:
-        findings.append(finding("php_client_visibility", "workflow", f"PHP client attribution failures: {php_failures}", "PHP-authored client calls record the same principal shape as raw HTTP", "fix PHP credential propagation or server attribution shape before marking PHP visibility pass"))
 
     scenario_results.append(scenario("pass" if cli_json_ok else "fail", "cli_operator_visibility", command=f"dw workflow:history {main_id} {main_run} --output=json", output_sample=cli_output[:4000], principal_visible=cli_json_ok))
     if not cli_json_ok:
