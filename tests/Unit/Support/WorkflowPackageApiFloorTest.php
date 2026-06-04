@@ -143,6 +143,10 @@ class WorkflowPackageApiFloorTest extends TestCase
         }
 
         $this->assertSame(['create', 'heartbeat', 'close'], WorkerProtocolVersion::workerSessionVerbs());
+        $this->assertSame(
+            '1.8',
+            WorkerProtocolVersion::workerSessionSemantics()['minimum_protocol_version'] ?? null,
+        );
         $this->assertSame('worker_session', WorkerProtocolVersion::workerSessionSemantics()['command_field'] ?? null);
     }
 
