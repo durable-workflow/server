@@ -861,7 +861,7 @@ final class WorkerVersioningRuntimeResultGate
             }
 
             foreach ($fields as $field) {
-                if (self::hasEvidenceField($scenarioResult, $field)) {
+                if (self::hasEvidenceField($scenarioResult, $field, $scenarioId)) {
                     continue;
                 }
 
@@ -1167,11 +1167,14 @@ final class WorkerVersioningRuntimeResultGate
                 $noCompatible,
                 'no_compatible_worker_behavior',
                 'incompatible_worker_task_count',
+                self::evidenceFieldAliases(
+                    'no_compatible_worker_behavior',
+                    'incompatible_worker_task_count',
+                ),
             );
 
             $operatorSignal = self::stringField($noCompatible, [
-                'operator_visible_signal',
-                'operatorVisibleSignal',
+                ...self::evidenceFieldAliases('no_compatible_worker_behavior', 'operator_visible_signal'),
             ]);
             if (! self::isExplicitNoCompatibleSignal($operatorSignal)) {
                 $failures[] = [
@@ -1188,8 +1191,7 @@ final class WorkerVersioningRuntimeResultGate
             }
 
             $pendingOrTypedError = self::stringField($noCompatible, [
-                'pending_or_typed_error',
-                'pendingOrTypedError',
+                ...self::evidenceFieldAliases('no_compatible_worker_behavior', 'pending_or_typed_error'),
             ]);
             if (
                 $pendingOrTypedError !== 'pending'
@@ -1353,10 +1355,10 @@ final class WorkerVersioningRuntimeResultGate
 
         $noCompatible = self::passingScenarioEvidence($scenarioResults, 'no_compatible_worker_behavior');
         if ($noCompatible !== null) {
-            $execution = self::fieldValue($noCompatible, [
-                'published_artifact_worker_execution',
-                'publishedArtifactWorkerExecution',
-            ]);
+            $execution = self::fieldValue(
+                $noCompatible,
+                self::evidenceFieldAliases('no_compatible_worker_behavior', 'published_artifact_worker_execution'),
+            );
 
             if (is_array($execution)) {
                 array_push(
@@ -1548,8 +1550,7 @@ final class WorkerVersioningRuntimeResultGate
         }
 
         $execution = self::fieldValue($evidence, [
-            'published_artifact_worker_execution',
-            'publishedArtifactWorkerExecution',
+            ...self::evidenceFieldAliases($scenarioId, 'published_artifact_worker_execution'),
         ]);
 
         if (! is_array($execution)) {
@@ -1753,9 +1754,15 @@ final class WorkerVersioningRuntimeResultGate
      * @param array<int, array<string, mixed>> $failures
      * @param array<string, mixed> $evidence
      */
-    private static function requireZeroCount(array &$failures, array $evidence, string $scenarioId, string $field): void
+    private static function requireZeroCount(
+        array &$failures,
+        array $evidence,
+        string $scenarioId,
+        string $field,
+        ?array $aliases = null,
+    ): void
     {
-        $aliases = [$field, self::camelize($field)];
+        $aliases ??= [$field, self::camelize($field)];
         if (! self::fieldExists($evidence, $aliases)) {
             return;
         }
@@ -1846,7 +1853,8 @@ final class WorkerVersioningRuntimeResultGate
 
     private static function isExplicitNoCompatibleSignal(string $signal): bool
     {
-        $normalized = strtolower(str_replace('-', '_', trim($signal)));
+        $normalized = (string) preg_replace('/[^a-z0-9]+/', '_', strtolower(trim($signal)));
+        $normalized = trim($normalized, '_');
 
         if ($normalized === '') {
             return false;
@@ -1893,9 +1901,9 @@ final class WorkerVersioningRuntimeResultGate
     /**
      * @param array<string, mixed> $scenarioResult
      */
-    private static function hasEvidenceField(array $scenarioResult, string $field): bool
+    private static function hasEvidenceField(array $scenarioResult, string $field, string $scenarioId): bool
     {
-        $aliases = [$field, self::camelize($field)];
+        $aliases = self::evidenceFieldAliases($scenarioId, $field);
         $observedOutputs = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs']);
 
         foreach ([$observedOutputs, $scenarioResult] as $evidence) {
@@ -1909,6 +1917,61 @@ final class WorkerVersioningRuntimeResultGate
         }
 
         return false;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function evidenceFieldAliases(string $scenarioId, string $field): array
+    {
+        $aliases = [$field, self::camelize($field)];
+
+        if ($scenarioId === 'no_compatible_worker_behavior') {
+            $aliases = match ($field) {
+                'incompatible_worker_task_count' => [
+                    ...$aliases,
+                    'incompatible_task_count',
+                    'incompatibleTaskCount',
+                    'incompatible_delivery_count',
+                    'incompatibleDeliveryCount',
+                    'v2_worker_task_count_for_v1_run',
+                    'v2WorkerTaskCountForV1Run',
+                ],
+                'operator_visible_signal' => [
+                    ...$aliases,
+                    'public_diagnostic',
+                    'publicDiagnostic',
+                    'diagnostic',
+                    'typed_error',
+                    'typedError',
+                    'poll_status',
+                    'pollStatus',
+                    'compatibility_status',
+                    'compatibilityStatus',
+                ],
+                'pending_or_typed_error' => [
+                    ...$aliases,
+                    'pending_state',
+                    'pendingState',
+                    'typed_error',
+                    'typedError',
+                    'poll_status',
+                    'pollStatus',
+                    'compatibility_status',
+                    'compatibilityStatus',
+                ],
+                'published_artifact_worker_execution' => [
+                    ...$aliases,
+                    'published_worker_execution',
+                    'publishedWorkerExecution',
+                    'published_artifact_execution',
+                    'publishedArtifactExecution',
+                ],
+                default => $aliases,
+            };
+        }
+
+        return array_values(array_unique($aliases));
     }
 
     /**

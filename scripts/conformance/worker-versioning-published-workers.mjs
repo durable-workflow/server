@@ -317,12 +317,22 @@ async function runPythonNoCompatibleShard(python) {
 
   await sleep(1200);
 
-  const incompatiblePoll = runPythonWorker(python, {
-    action: 'raw_poll',
-    worker_id: noCompatibleV2WorkerId,
-    build_id: noCompatibleV2BuildId,
-    output_path: path.join(noCompatibleRoot, 'python-no-compatible-v2-poll.json'),
-  });
+  const incompatiblePolls = [];
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const poll = runPythonWorker(python, {
+      action: 'raw_poll',
+      worker_id: noCompatibleV2WorkerId,
+      build_id: noCompatibleV2BuildId,
+      output_path: path.join(noCompatibleRoot, `python-no-compatible-v2-poll-${attempt}.json`),
+    });
+    incompatiblePolls.push(poll);
+
+    if (countTaskForRun(poll, runId) > 0 || isExplicitNoCompatibleSignal(
+      stringValue(poll.poll_status) || stringValue(poll.response?.poll_status),
+    )) {
+      break;
+    }
+  }
   const workflowVisibility = runId === ''
     ? {}
     : await requestJson(
@@ -332,13 +342,17 @@ async function runPythonNoCompatibleShard(python) {
       controlHeaders(namespace),
       [200],
     );
-  const operatorVisibleSignal = stringValue(incompatiblePoll.poll_status)
-    || stringValue(incompatiblePoll.response?.poll_status)
+  const incompatiblePollStatuses = incompatiblePolls
+    .map((poll) => stringValue(poll.poll_status) || stringValue(poll.response?.poll_status))
+    .filter(Boolean);
+  const operatorVisibleSignal = incompatiblePollStatuses.find((status) => isExplicitNoCompatibleSignal(status))
+    || incompatiblePollStatuses[0]
     || stringValue(workflowVisibility.compatibility_status);
   const pendingOrTypedError = isExplicitNoCompatibleSignal(operatorVisibleSignal)
     ? operatorVisibleSignal
     : 'pending';
-  const incompatibleWorkerTaskCount = countTaskForRun(incompatiblePoll, runId);
+  const incompatibleWorkerTaskCount = incompatiblePolls
+    .reduce((count, poll) => count + countTaskForRun(poll, runId), 0);
   const compatibleWorkerDeregistered = numberValue(deregisterResponse.__http_status) === 200;
   const workerExecution = publishedPythonWorkerExecution();
   const observedOutputs = {
@@ -353,7 +367,9 @@ async function runPythonNoCompatibleShard(python) {
     v2_worker_build_id: noCompatibleV2BuildId,
     compatible_worker_deregistered: compatibleWorkerDeregistered,
     deregister_response: deregisterResponse,
-    incompatible_worker_poll: incompatiblePoll,
+    incompatible_worker_poll_attempts: incompatiblePolls.length,
+    incompatible_worker_poll_statuses: incompatiblePollStatuses,
+    incompatible_worker_polls: incompatiblePolls,
     workflow_visibility: workflowVisibility,
     worker_execution_mode: 'published_python_worker_protocol_client',
     published_artifact_worker_execution: workerExecution,

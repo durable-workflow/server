@@ -448,6 +448,32 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         $this->assertContains('no_compatible_worker_pending_or_typed_error_not_explicit', $failureCodes);
     }
 
+    public function test_result_gate_accepts_no_compatible_alias_fields_and_public_diagnostic_text(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        unset(
+            $result['scenario_results']['no_compatible_worker_behavior']['observed_outputs'][
+                'operator_visible_signal'
+            ],
+            $result['scenario_results']['no_compatible_worker_behavior']['observed_outputs'][
+                'pending_or_typed_error'
+            ],
+            $result['scenario_results']['no_compatible_worker_behavior']['observed_outputs'][
+                'incompatible_worker_task_count'
+            ]
+        );
+        $result['scenario_results']['no_compatible_worker_behavior']['observed_outputs'] += [
+            'publicDiagnostic' => 'No compatible worker is currently available',
+            'pendingState' => 'pending',
+            'incompatibleTaskCount' => 0,
+        ];
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $evaluation['gate_failures']);
+    }
+
     public function test_result_gate_rejects_cache_eviction_when_replay_worker_does_not_match_pin(): void
     {
         $result = $this->completeWorkerVersioningResult();

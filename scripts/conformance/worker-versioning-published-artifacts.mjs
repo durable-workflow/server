@@ -1403,6 +1403,10 @@ export function publishedWorkerExecutionEvidence(artifactVersions, artifactSourc
   const publishedWorkerExecution = firstObjectValue(
     supplied.published_artifact_worker_execution,
     supplied.publishedArtifactWorkerExecution,
+    supplied.published_worker_execution,
+    supplied.publishedWorkerExecution,
+    supplied.published_artifact_execution,
+    supplied.publishedArtifactExecution,
   );
 
   return {
@@ -1453,8 +1457,16 @@ function publishedWorkerScenarioOutputs(evidence, scenarioId) {
   const publishedWorkerExecution = firstObjectValue(
     observedOutputs.published_artifact_worker_execution,
     observedOutputs.publishedArtifactWorkerExecution,
+    observedOutputs.published_worker_execution,
+    observedOutputs.publishedWorkerExecution,
+    observedOutputs.published_artifact_execution,
+    observedOutputs.publishedArtifactExecution,
     evidence.published_artifact_worker_execution,
     evidence.publishedArtifactWorkerExecution,
+    evidence.published_worker_execution,
+    evidence.publishedWorkerExecution,
+    evidence.published_artifact_execution,
+    evidence.publishedArtifactExecution,
   );
 
   return {
@@ -1480,14 +1492,37 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
   const rawIncompatibleWorkerTaskCount = firstDefined(
     outputs.incompatible_worker_task_count,
     outputs.incompatibleWorkerTaskCount,
+    outputs.incompatible_task_count,
+    outputs.incompatibleTaskCount,
+    outputs.incompatible_delivery_count,
+    outputs.incompatibleDeliveryCount,
+    outputs.v2_worker_task_count_for_v1_run,
+    outputs.v2WorkerTaskCountForV1Run,
   );
   const rawOperatorVisibleSignal = firstDefined(
     outputs.operator_visible_signal,
     outputs.operatorVisibleSignal,
+    outputs.public_diagnostic,
+    outputs.publicDiagnostic,
+    outputs.diagnostic,
+    outputs.typed_error,
+    outputs.typedError,
+    outputs.poll_status,
+    outputs.pollStatus,
+    outputs.compatibility_status,
+    outputs.compatibilityStatus,
   );
   const rawPendingOrTypedError = firstDefined(
     outputs.pending_or_typed_error,
     outputs.pendingOrTypedError,
+    outputs.pending_state,
+    outputs.pendingState,
+    outputs.typed_error,
+    outputs.typedError,
+    outputs.poll_status,
+    outputs.pollStatus,
+    outputs.compatibility_status,
+    outputs.compatibilityStatus,
   );
   const incompatibleWorkerTaskCount = numberValue(rawIncompatibleWorkerTaskCount);
   const operatorVisibleSignal = stringValue(rawOperatorVisibleSignal);
@@ -1660,6 +1695,10 @@ function publishedWorkerShardHasLocalSourceSignal(supplied) {
   const topLevelExecution = firstObjectValue(
     supplied.published_artifact_worker_execution,
     supplied.publishedArtifactWorkerExecution,
+    supplied.published_worker_execution,
+    supplied.publishedWorkerExecution,
+    supplied.published_artifact_execution,
+    supplied.publishedArtifactExecution,
   );
   if (publishedWorkerExecutionHasLocalSourceSignal(topLevelExecution)) {
     return true;
@@ -1677,8 +1716,16 @@ function publishedWorkerShardHasLocalSourceSignal(supplied) {
     const execution = firstObjectValue(
       outputs.published_artifact_worker_execution,
       outputs.publishedArtifactWorkerExecution,
+      outputs.published_worker_execution,
+      outputs.publishedWorkerExecution,
+      outputs.published_artifact_execution,
+      outputs.publishedArtifactExecution,
       supplied.published_artifact_worker_execution,
       supplied.publishedArtifactWorkerExecution,
+      supplied.published_worker_execution,
+      supplied.publishedWorkerExecution,
+      supplied.published_artifact_execution,
+      supplied.publishedArtifactExecution,
     );
 
     if (truthyEvidenceFlag(outputs.local_product_source_checkouts_used)
@@ -1800,6 +1847,8 @@ function topLevelPublishedWorkerScenarios(evidence) {
       'noCompatibleWorkerBehavior',
       'no_compatible_worker',
       'noCompatibleWorker',
+      'no_compatible_worker_diagnostics',
+      'noCompatibleWorkerDiagnostics',
     ],
     replay_only_by_compatible_workers: [
       'replay_only_by_compatible_workers',
@@ -2058,7 +2107,16 @@ function numberValue(value) {
 }
 
 function isExplicitNoCompatibleSignal(value) {
-  return ['no_compatible_worker', 'compatibility_blocked', 'compatibility_unsupported'].includes(stringValue(value));
+  const normalized = stringValue(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+  return [
+    'no_compatible_worker',
+    'compatibility_blocked',
+    'compatibility_unsupported',
+  ].some((token) => normalized.includes(token));
 }
 
 function isMainModule() {

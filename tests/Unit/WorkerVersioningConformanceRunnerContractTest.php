@@ -295,6 +295,9 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             "/api/workers/\${encodeURIComponent(noCompatibleV1WorkerId)}",
             'compatible_worker_deregistered: compatibleWorkerDeregistered',
             'incompatible_worker_task_count: incompatibleWorkerTaskCount',
+            'incompatible_worker_poll_attempts: incompatiblePolls.length',
+            'incompatible_worker_poll_statuses: incompatiblePollStatuses',
+            'incompatible_worker_polls: incompatiblePolls',
             'operator_visible_signal: operatorVisibleSignal',
             'isExplicitNoCompatibleSignal(operatorVisibleSignal)',
             'Published Python no-compatible-worker shard',
@@ -420,6 +423,42 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertSame('pending', $result['pending_or_typed_error']);
         $this->assertSame(0, $result['outputs']['incompatible_worker_task_count']);
         $this->assertSame('no_compatible_worker', $result['outputs']['operator_visible_signal']);
+    }
+
+    public function test_no_compatible_published_shard_accepts_diagnostic_aliases(): void
+    {
+        $result = $this->evaluateNoCompatiblePublishedWorkerEvidence([
+            'localProductSourceCheckoutsUsed' => false,
+            'suppliedShardLocalProductSourceCheckoutsUsed' => false,
+            'source_path' => 'published-worker-execution-evidence.json',
+            'publishedWorkerExecution' => [
+                'localProductSourceCheckoutsUsed' => false,
+                'artifacts' => [
+                    [
+                        'id' => 'sdk-python',
+                        'artifactVersion' => '0.4.84',
+                        'artifactSource' => 'pypi_release',
+                        'result' => 'pass',
+                        'localProductSourceCheckoutsUsed' => false,
+                    ],
+                ],
+            ],
+            'noCompatibleWorkerDiagnostics' => [
+                'incompatibleTaskCount' => 0,
+                'publicDiagnostic' => 'No compatible worker is currently available',
+                'pendingState' => 'pending',
+            ],
+        ]);
+
+        $this->assertTrue($result['worker_executed']);
+        $this->assertTrue($result['passes']);
+        $this->assertSame(0, $result['incompatible_worker_task_count']);
+        $this->assertSame(
+            'No compatible worker is currently available',
+            $result['operator_visible_signal'],
+        );
+        $this->assertSame('pending', $result['pending_or_typed_error']);
+        $this->assertSame(0, $result['outputs']['incompatible_worker_task_count']);
     }
 
     public function test_runner_normalization_preserves_top_level_no_compatible_shard(): void
