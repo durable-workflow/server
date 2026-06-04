@@ -286,8 +286,10 @@ async function main() {
       [200],
     )
     : {};
-  const noCompatibleSignal = stringValue(noCompatiblePoll.poll_status)
-    || stringValue(noCompatibleShow.compatibility_status)
+  const noCompatibleSignal = stringValue(firstExplicitNoCompatibleSignal(
+    noCompatiblePoll.poll_status,
+    noCompatibleShow.compatibility_status,
+  ))
     || 'pending';
   const noCompatiblePendingOrTypedError = isExplicitNoCompatibleSignal(noCompatibleSignal)
     ? noCompatibleSignal
@@ -1499,7 +1501,7 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
     outputs.v2_worker_task_count_for_v1_run,
     outputs.v2WorkerTaskCountForV1Run,
   );
-  const rawOperatorVisibleSignal = firstDefined(
+  const rawOperatorVisibleSignal = firstExplicitNoCompatibleSignal(
     outputs.operator_visible_signal,
     outputs.operatorVisibleSignal,
     outputs.public_diagnostic,
@@ -1519,10 +1521,12 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
     outputs.pendingState,
     outputs.typed_error,
     outputs.typedError,
-    outputs.poll_status,
-    outputs.pollStatus,
-    outputs.compatibility_status,
-    outputs.compatibilityStatus,
+    firstExplicitNoCompatibleSignal(
+      outputs.poll_status,
+      outputs.pollStatus,
+      outputs.compatibility_status,
+      outputs.compatibilityStatus,
+    ),
   );
   const incompatibleWorkerTaskCount = numberValue(rawIncompatibleWorkerTaskCount);
   const operatorVisibleSignal = stringValue(rawOperatorVisibleSignal);
@@ -1919,6 +1923,16 @@ function firstDefined(...values) {
   }
 
   return undefined;
+}
+
+function firstExplicitNoCompatibleSignal(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && isExplicitNoCompatibleSignal(value)) {
+      return value;
+    }
+  }
+
+  return firstDefined(...values);
 }
 
 function explicitFalse(value) {

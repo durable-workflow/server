@@ -345,9 +345,10 @@ async function runPythonNoCompatibleShard(python) {
   const incompatiblePollStatuses = incompatiblePolls
     .map((poll) => stringValue(poll.poll_status) || stringValue(poll.response?.poll_status))
     .filter(Boolean);
-  const operatorVisibleSignal = incompatiblePollStatuses.find((status) => isExplicitNoCompatibleSignal(status))
-    || incompatiblePollStatuses[0]
-    || stringValue(workflowVisibility.compatibility_status);
+  const operatorVisibleSignal = stringValue(firstExplicitNoCompatibleSignal(
+    ...incompatiblePollStatuses,
+    workflowVisibility.compatibility_status,
+  ));
   const pendingOrTypedError = isExplicitNoCompatibleSignal(operatorVisibleSignal)
     ? operatorVisibleSignal
     : 'pending';
@@ -1261,6 +1262,22 @@ function objectValue(value) {
 
 function arrayValue(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function firstExplicitNoCompatibleSignal(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && isExplicitNoCompatibleSignal(value)) {
+      return value;
+    }
+  }
+
+  for (const value of values) {
+    if (value !== undefined && value !== null) {
+      return value;
+    }
+  }
+
+  return undefined;
 }
 
 function isExplicitNoCompatibleSignal(value) {

@@ -463,6 +463,46 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertSame(0, $result['outputs']['incompatible_worker_task_count']);
     }
 
+    public function test_no_compatible_published_shard_prefers_explicit_compatibility_signal_over_empty_poll(): void
+    {
+        $result = $this->evaluateNoCompatiblePublishedWorkerEvidence([
+            'local_product_source_checkouts_used' => false,
+            'supplied_shard_local_product_source_checkouts_used' => false,
+            'source_path' => 'published-worker-execution-evidence.json',
+            'scenario_results' => [
+                'no_compatible_worker_behavior' => [
+                    'status' => 'pass',
+                    'observed_outputs' => [
+                        'local_product_source_checkouts_used' => false,
+                        'incompatible_worker_task_count' => 0,
+                        'poll_status' => 'empty',
+                        'compatibility_status' => 'no_compatible_worker',
+                        'published_artifact_worker_execution' => [
+                            'local_product_source_checkouts_used' => false,
+                            'artifacts' => [
+                                [
+                                    'artifact' => 'sdk-python',
+                                    'version' => '0.4.84',
+                                    'source' => 'pypi_release',
+                                    'status' => 'pass',
+                                    'local_product_source_checkouts_used' => false,
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->assertTrue($result['worker_executed']);
+        $this->assertTrue($result['passes']);
+        $this->assertSame(0, $result['incompatible_worker_task_count']);
+        $this->assertSame('no_compatible_worker', $result['operator_visible_signal']);
+        $this->assertSame('no_compatible_worker', $result['pending_or_typed_error']);
+        $this->assertSame('no_compatible_worker', $result['outputs']['operator_visible_signal']);
+        $this->assertSame('no_compatible_worker', $result['outputs']['pending_or_typed_error']);
+    }
+
     public function test_runner_normalization_preserves_top_level_no_compatible_shard(): void
     {
         $evaluation = $this->evaluateNoCompatiblePublishedWorkerEvidenceThroughRunnerNormalization([
