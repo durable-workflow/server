@@ -90,8 +90,11 @@ against the current published server image plus public CLI, Python SDK, PHP
 workflow, and Waterline packages. Principal-attribution evidence must record
 the server-derived actor for workflow start, signal, query, cancellation,
 completion, failure, anonymous, and server-originated history surfaces, plus
-adversarial payload/header spoofing attempts. Any missing public surface is
-non-passing unless it links a focused root-cause finding.
+adversarial payload/header spoofing attempts. The SDK parity cells must execute
+authenticated operations through the published Python client and the published
+PHP `Workflow\V2\Client\WorkflowClient`, then compare their history API
+principal samples with equivalent raw HTTP operations. Any missing public
+surface is non-passing unless it links a focused root-cause finding.
 
 The server repo also ships a source-free namespace runner at
 `scripts/conformance/namespaces-published-artifacts.sh`. Host conformance

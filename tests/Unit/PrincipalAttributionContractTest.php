@@ -102,6 +102,22 @@ class PrincipalAttributionContractTest extends TestCase
             'action_credentials',
             $manifest['scenario_requirements']['start_signal_cancel_spoofing']['required_fields'],
         );
+
+        foreach (['python_sdk_visibility', 'php_client_visibility'] as $sdkScenario) {
+            foreach ([
+                'sdk_package_version',
+                'credential_used',
+                'expected_principal',
+                'raw_http_reference_principal',
+                'history_api_principal_samples',
+                'operation_output_sample',
+            ] as $requiredField) {
+                $this->assertContains(
+                    $requiredField,
+                    $manifest['scenario_requirements'][$sdkScenario]['required_fields'],
+                );
+            }
+        }
     }
 
     public function test_manifest_publishes_enforceable_principal_attribution_result_gate(): void
@@ -1177,12 +1193,30 @@ class PrincipalAttributionContractTest extends TestCase
                 'python_sdk_visibility' => [
                     'status' => 'pass',
                     'client_operation' => ['status' => 'pass', 'client' => 'sdk-python'],
+                    'sdk_package_version' => $versions['sdk-python'],
+                    'credential_used' => ['actor' => 'bob', 'credential_ref' => 'bob-token'],
+                    'expected_principal' => $bob,
+                    'raw_http_reference_principal' => $bob,
+                    'history_api_principal_samples' => [
+                        'WorkflowStarted' => $bob,
+                        'SignalReceived' => $bob,
+                    ],
+                    'operation_output_sample' => '{"workflow_id":"pa-python","operation":"start+signal"}',
                     'recorded_principal' => $bob,
                     'shape_matches_http' => true,
                 ],
                 'php_client_visibility' => [
                     'status' => 'pass',
                     'client_operation' => ['status' => 'pass', 'client' => 'workflow-php'],
+                    'sdk_package_version' => $versions['workflow-php'],
+                    'credential_used' => ['actor' => 'alice', 'credential_ref' => 'alice-token-v1'],
+                    'expected_principal' => $alice,
+                    'raw_http_reference_principal' => $alice,
+                    'history_api_principal_samples' => [
+                        'WorkflowStarted' => $alice,
+                        'SignalReceived' => $alice,
+                    ],
+                    'operation_output_sample' => '{"workflow_id":"pa-php","operation":"WorkflowClient::startWorkflow+signalWorkflow"}',
                     'recorded_principal' => $alice,
                     'shape_matches_http' => true,
                 ],
@@ -1387,6 +1421,7 @@ class PrincipalAttributionContractTest extends TestCase
         $bob = ['type' => 'auth:token', 'id' => 'bob'];
         $worker = ['type' => 'auth:token', 'id' => 'worker:principal-attribution'];
         $anonymous = ['type' => 'server', 'id' => 'anonymous'];
+        $versions = $this->artifactVersions();
 
         return match ($scenarioId) {
             'published_artifact_install_only' => [
@@ -1431,11 +1466,29 @@ class PrincipalAttributionContractTest extends TestCase
             ],
             'python_sdk_visibility' => [
                 'client_operation' => ['status' => 'pass'],
+                'sdk_package_version' => $versions['sdk-python'],
+                'credential_used' => ['actor' => 'bob', 'credential_ref' => 'bob-token'],
+                'expected_principal' => $bob,
+                'raw_http_reference_principal' => $bob,
+                'history_api_principal_samples' => [
+                    'WorkflowStarted' => $bob,
+                    'SignalReceived' => $bob,
+                ],
+                'operation_output_sample' => '{"workflow_id":"pa-python","operation":"start+signal"}',
                 'recorded_principal' => $bob,
                 'shape_matches_http' => true,
             ],
             'php_client_visibility' => [
                 'client_operation' => ['status' => 'pass'],
+                'sdk_package_version' => $versions['workflow-php'],
+                'credential_used' => ['actor' => 'alice', 'credential_ref' => 'alice-token-v1'],
+                'expected_principal' => $alice,
+                'raw_http_reference_principal' => $alice,
+                'history_api_principal_samples' => [
+                    'WorkflowStarted' => $alice,
+                    'SignalReceived' => $alice,
+                ],
+                'operation_output_sample' => '{"workflow_id":"pa-php","operation":"WorkflowClient::startWorkflow+signalWorkflow"}',
                 'recorded_principal' => $alice,
                 'shape_matches_http' => true,
             ],

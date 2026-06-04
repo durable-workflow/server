@@ -194,6 +194,12 @@ emit_principal_blocked_placeholder_fields() {
       ;;
     python_sdk_visibility|php_client_visibility)
       printf ',\n      "client_operation": null'
+      printf ',\n      "sdk_package_version": null'
+      printf ',\n      "credential_used": null'
+      printf ',\n      "expected_principal": null'
+      printf ',\n      "raw_http_reference_principal": null'
+      printf ',\n      "history_api_principal_samples": {}'
+      printf ',\n      "operation_output_sample": null'
       printf ',\n      "recorded_principal": null'
       printf ',\n      "shape_matches_http": null'
       ;;
@@ -1557,6 +1563,29 @@ def principal_matches(principal: Any, expected: dict[str, str]) -> bool:
     return all(principal.get(key) == value for key, value in expected.items())
 
 
+def principal_shape_signature(principal: Any) -> dict[str, str] | None:
+    if not isinstance(principal, dict):
+        return None
+
+    return {str(key): type(value).__name__ for key, value in sorted(principal.items())}
+
+
+def principal_shape_matches_http(principal: Any, reference: Any) -> bool:
+    signature = principal_shape_signature(principal)
+    reference_signature = principal_shape_signature(reference)
+
+    if signature is None or reference_signature is None:
+        return False
+
+    return signature == reference_signature
+
+
+def principal_samples(principals: dict[str, Any], event_types: list[str] | None = None) -> dict[str, Any]:
+    selected = event_types if event_types is not None else sorted(principals)
+
+    return {event_type: principals.get(event_type) for event_type in selected if event_type in principals}
+
+
 def documented_system_principal_match(principal: Any, documented: list[dict[str, str]]) -> dict[str, str] | None:
     for candidate in documented:
         if principal_matches(principal, candidate):
@@ -1676,65 +1705,88 @@ asyncio.run(main())
     return {"status": "pass", "client_operation": "python-sdk start_workflow + signal_workflow", **payload, "output": completed.stdout[-4000:]}
 
 
+def run_php_code(code: str, env: dict[str, str], *, timeout: int = 45) -> subprocess.CompletedProcess[str]:
+    php_path = str(Path(PHP_BIN)) if Path(PHP_BIN).exists() else shutil.which(PHP_BIN)
+
+    if php_path is not None:
+        return subprocess.run(
+            [php_path, "-r", code],
+            check=False,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+        )
+
+    docker = shutil.which("docker")
+    if docker is None:
+        return subprocess.CompletedProcess(
+            [PHP_BIN, "-r", "<principal-attribution-client>"],
+            127,
+            stdout=f"PHP binary missing ({PHP_BIN}) and docker is unavailable for composer:2 fallback",
+        )
+
+    app_dir = WORKFLOW_PHP_AUTOLOAD.parent.parent
+    container_env = {
+        "SERVER_URL": env["SERVER_URL"],
+        "TOKEN": env["TOKEN"],
+        "WORKFLOW_ID": env["WORKFLOW_ID"],
+        "WORKFLOW_TYPE": env["WORKFLOW_TYPE"],
+        "TASK_QUEUE": env["TASK_QUEUE"],
+        "WORKFLOW_PHP_AUTOLOAD": "/app/vendor/autoload.php",
+    }
+    docker_command = [
+        docker,
+        "run",
+        "--rm",
+        "--network",
+        "host",
+        "-v",
+        f"{app_dir}:/app",
+        "-w",
+        "/app",
+    ]
+    for name, value in container_env.items():
+        docker_command.extend(["-e", f"{name}={value}"])
+    docker_command.extend(["composer:2", "php", "-r", code])
+
+    return subprocess.run(
+        docker_command,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=timeout,
+    )
+
+
 def run_php_client_operation(workflow_id: str) -> dict[str, Any]:
     if not WORKFLOW_PHP_AUTOLOAD.exists():
         return {"status": "not_covered", "errors": [f"Workflow PHP autoload missing at {WORKFLOW_PHP_AUTOLOAD}"]}
-    if shutil.which(PHP_BIN) is None and not Path(PHP_BIN).exists():
-        return {"status": "not_covered", "errors": [f"PHP binary missing: {PHP_BIN}"]}
 
     code = r'''
 $autoload = getenv('WORKFLOW_PHP_AUTOLOAD');
 require $autoload;
 
-function dw_request(string $method, string $path, ?array $body = null): array {
-    $headers = [
-        'Accept: application/json',
-        'Content-Type: application/json',
-        'Authorization: Bearer '.getenv('TOKEN'),
-        'X-Namespace: default',
-        'X-Durable-Workflow-Control-Plane-Version: 2',
-    ];
-    $options = [
-        'http' => [
-            'method' => $method,
-            'header' => implode("\r\n", $headers),
-            'ignore_errors' => true,
-            'timeout' => 10,
-        ],
-    ];
-    if ($body !== null) {
-        $options['http']['content'] = json_encode($body);
-    }
-    $response = file_get_contents(rtrim(getenv('SERVER_URL'), '/').'/api'.$path, false, stream_context_create($options));
-    $status = 0;
-    foreach (($http_response_header ?? []) as $header) {
-        if (preg_match('/^HTTP\/\S+\s+(\d+)/', $header, $matches)) {
-            $status = (int) $matches[1];
-            break;
-        }
-    }
-    if ($response === false || $status < 200 || $status >= 300) {
-        fwrite(STDERR, $method.' '.$path.' failed with HTTP '.$status.': '.(string) $response);
-        exit(1);
-    }
-    $decoded = json_decode((string) $response, true);
-    return is_array($decoded) ? $decoded : [];
-}
-
 $workflowId = getenv('WORKFLOW_ID');
-$start = dw_request('POST', '/workflows', [
-    'workflow_id' => $workflowId,
-    'workflow_type' => getenv('WORKFLOW_TYPE'),
-    'task_queue' => getenv('TASK_QUEUE'),
-    'input' => [['client' => 'php']],
-]);
-dw_request('POST', '/workflows/'.$workflowId.'/signal/nudge', [
-    'input' => [['client' => 'php']],
-]);
+$http = new \Illuminate\Http\Client\Factory();
+$client = new \Workflow\V2\Client\WorkflowClient($http, getenv('SERVER_URL'), getenv('TOKEN'), 'default', 10);
+$start = $client->startWorkflow(
+    getenv('WORKFLOW_TYPE'),
+    $workflowId,
+    [['client' => 'php-workflow-client']],
+    ['task_queue' => getenv('TASK_QUEUE')],
+);
+$signal = $client->signalWorkflow($workflowId, 'nudge', [['client' => 'php-workflow-client']]);
 echo json_encode([
     'workflow_id' => $workflowId,
-    'run_id' => $start['run_id'] ?? null,
+    'run_id' => $start['run_id'] ?? $start['workflow_run_id'] ?? null,
     'autoload' => $autoload,
+    'client_class' => \Workflow\V2\Client\WorkflowClient::class,
+    'operation' => 'WorkflowClient::startWorkflow + WorkflowClient::signalWorkflow',
+    'start_response' => $start,
+    'signal_response' => $signal,
 ]).PHP_EOL;
 '''
     env = {
@@ -1746,15 +1798,7 @@ echo json_encode([
         "TASK_QUEUE": MAIN_TASK_QUEUE,
         "WORKFLOW_PHP_AUTOLOAD": str(WORKFLOW_PHP_AUTOLOAD),
     }
-    completed = subprocess.run(
-        [PHP_BIN, "-r", code],
-        check=False,
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=30,
-    )
+    completed = run_php_code(code, env, timeout=120)
 
     if completed.returncode != 0:
         return {"status": "fail", "errors": [completed.stdout[-4000:]], "output": completed.stdout[-4000:]}
@@ -1764,7 +1808,7 @@ echo json_encode([
     except Exception as exc:  # noqa: BLE001
         return {"status": "fail", "errors": [f"PHP client output was not JSON: {exc}; output={completed.stdout[-4000:]}"]}
 
-    return {"status": "pass", "client_operation": "php published package autoload + HTTP start/signal client", **payload, "output": completed.stdout[-4000:]}
+    return {"status": "pass", "client_operation": "php WorkflowClient startWorkflow + signalWorkflow", **payload, "output": completed.stdout[-4000:]}
 
 
 def install_status_and_findings(evidence: dict[str, Any]) -> tuple[str, list[str]]:
@@ -2210,29 +2254,71 @@ def main() -> int:
     if anonymous_failures:
         findings.append(finding("anonymous_attribution", "server", f"anonymous attribution failures: {anonymous_failures}", "auth-disabled requests record principal type=server id=anonymous and ignore caller-supplied principal fields", "fix auth-disabled command context attribution before marking anonymous principal coverage pass"))
 
+    python_expected_principal = {"type": "auth:token", "id": "bob"}
+    python_raw_http_reference_principal = main_principals.get("SignalReceived")
     python_recorded_principal = python_principals.get("SignalReceived") or python_principals.get("WorkflowStarted")
     python_failures = list(python_operation.get("errors", [])) if isinstance(python_operation.get("errors"), list) else []
     if python_operation.get("status") != "pass":
         python_failures.append(f"Python SDK operation status={python_operation.get('status')}")
-    if not principal_matches(python_principals.get("WorkflowStarted"), {"type": "auth:token", "id": "bob"}):
+    if not principal_matches(python_principals.get("WorkflowStarted"), python_expected_principal):
         python_failures.append(f"Python SDK start principal expected bob, got {python_principals.get('WorkflowStarted')!r}")
-    if not principal_matches(python_principals.get("SignalReceived"), {"type": "auth:token", "id": "bob"}):
+    if not principal_matches(python_principals.get("SignalReceived"), python_expected_principal):
         python_failures.append(f"Python SDK signal principal expected bob, got {python_principals.get('SignalReceived')!r}")
-    python_shape_matches_http = isinstance(python_recorded_principal, dict) and isinstance(python_recorded_principal.get("type"), str) and isinstance(python_recorded_principal.get("id"), str)
-    scenario_results.append(scenario("pass" if not python_failures else "fail", "python_sdk_visibility", client_operation=python_operation, recorded_principal=python_recorded_principal, shape_matches_http=python_shape_matches_http, history_events=list(python_principals), findings=python_failures))
+    python_shape_matches_http = principal_shape_matches_http(python_recorded_principal, python_raw_http_reference_principal)
+    if python_operation.get("status") == "pass" and not python_shape_matches_http:
+        python_failures.append(
+            f"Python SDK principal shape {principal_shape_signature(python_recorded_principal)!r} "
+            f"did not match raw HTTP signal shape {principal_shape_signature(python_raw_http_reference_principal)!r}"
+        )
+    scenario_results.append(scenario(
+        "pass" if not python_failures else "fail",
+        "python_sdk_visibility",
+        client_operation=python_operation,
+        sdk_package_version=versions.get("sdk-python"),
+        credential_used={"actor": "bob", "credential_ref": "bob-token"},
+        expected_principal=python_expected_principal,
+        raw_http_reference_principal=python_raw_http_reference_principal,
+        history_api_principal_samples=principal_samples(python_principals, ["WorkflowStarted", "SignalReceived"]),
+        operation_output_sample=python_operation.get("output"),
+        recorded_principal=python_recorded_principal,
+        shape_matches_http=python_shape_matches_http,
+        history_events=list(python_principals),
+        findings=python_failures,
+    ))
     if python_failures:
         findings.append(finding("python_sdk_visibility", "sdk-python", f"Python SDK attribution failures: {python_failures}", "Python-authored client calls record the same principal shape as raw HTTP", "fix Python SDK credential propagation or server attribution shape before marking Python visibility pass"))
 
+    php_expected_principal = {"type": "auth:token", "id": "alice"}
+    php_raw_http_reference_principal = main_principals.get("WorkflowStarted")
     php_recorded_principal = php_principals.get("SignalReceived") or php_principals.get("WorkflowStarted")
     php_failures = list(php_operation.get("errors", [])) if isinstance(php_operation.get("errors"), list) else []
     if php_operation.get("status") != "pass":
         php_failures.append(f"PHP client operation status={php_operation.get('status')}")
-    if not principal_matches(php_principals.get("WorkflowStarted"), {"type": "auth:token", "id": "alice"}):
+    if not principal_matches(php_principals.get("WorkflowStarted"), php_expected_principal):
         php_failures.append(f"PHP client start principal expected alice, got {php_principals.get('WorkflowStarted')!r}")
-    if not principal_matches(php_principals.get("SignalReceived"), {"type": "auth:token", "id": "alice"}):
+    if not principal_matches(php_principals.get("SignalReceived"), php_expected_principal):
         php_failures.append(f"PHP client signal principal expected alice, got {php_principals.get('SignalReceived')!r}")
-    php_shape_matches_http = isinstance(php_recorded_principal, dict) and isinstance(php_recorded_principal.get("type"), str) and isinstance(php_recorded_principal.get("id"), str)
-    scenario_results.append(scenario("pass" if not php_failures else "fail", "php_client_visibility", client_operation=php_operation, recorded_principal=php_recorded_principal, shape_matches_http=php_shape_matches_http, history_events=list(php_principals), findings=php_failures))
+    php_shape_matches_http = principal_shape_matches_http(php_recorded_principal, php_raw_http_reference_principal)
+    if php_operation.get("status") == "pass" and not php_shape_matches_http:
+        php_failures.append(
+            f"PHP client principal shape {principal_shape_signature(php_recorded_principal)!r} "
+            f"did not match raw HTTP start shape {principal_shape_signature(php_raw_http_reference_principal)!r}"
+        )
+    scenario_results.append(scenario(
+        "pass" if not php_failures else "fail",
+        "php_client_visibility",
+        client_operation=php_operation,
+        sdk_package_version=versions.get("workflow-php") or versions.get("workflow"),
+        credential_used={"actor": "alice", "credential_ref": "alice-token-v1"},
+        expected_principal=php_expected_principal,
+        raw_http_reference_principal=php_raw_http_reference_principal,
+        history_api_principal_samples=principal_samples(php_principals, ["WorkflowStarted", "SignalReceived"]),
+        operation_output_sample=php_operation.get("output"),
+        recorded_principal=php_recorded_principal,
+        shape_matches_http=php_shape_matches_http,
+        history_events=list(php_principals),
+        findings=php_failures,
+    ))
     if php_failures:
         findings.append(finding("php_client_visibility", "workflow", f"PHP client attribution failures: {php_failures}", "PHP-authored client calls record the same principal shape as raw HTTP", "fix PHP credential propagation or server attribution shape before marking PHP visibility pass"))
 

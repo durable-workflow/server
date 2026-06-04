@@ -270,10 +270,30 @@ final class PrincipalAttributionContract
                 'required_fields' => ['anonymous_principal', 'documented_value', 'history_events'],
             ],
             'python_sdk_visibility' => [
-                'required_fields' => ['client_operation', 'recorded_principal', 'shape_matches_http'],
+                'required_fields' => [
+                    'client_operation',
+                    'sdk_package_version',
+                    'credential_used',
+                    'expected_principal',
+                    'raw_http_reference_principal',
+                    'history_api_principal_samples',
+                    'operation_output_sample',
+                    'recorded_principal',
+                    'shape_matches_http',
+                ],
             ],
             'php_client_visibility' => [
-                'required_fields' => ['client_operation', 'recorded_principal', 'shape_matches_http'],
+                'required_fields' => [
+                    'client_operation',
+                    'sdk_package_version',
+                    'credential_used',
+                    'expected_principal',
+                    'raw_http_reference_principal',
+                    'history_api_principal_samples',
+                    'operation_output_sample',
+                    'recorded_principal',
+                    'shape_matches_http',
+                ],
             ],
             'cli_operator_visibility' => [
                 'required_fields' => ['command', 'output_sample', 'principal_visible'],
