@@ -5441,7 +5441,7 @@ function writePublishedArtifacts(artifactVersions, artifactSources, smokeEvidenc
     artifact_versions: artifactVersions,
     artifact_sources: artifactSources,
     artifact_install_evidence: artifactInstallEvidence,
-    local_product_source_checkouts_used: artifactInstallEvidence?.local_product_source_checkouts_used ?? null,
+    local_product_source_checkouts_used: localProductSourceCheckoutsResultValue(smokeEvidence, artifactInstallEvidence),
     smoke_evidence_supplied: Object.keys(smokeEvidence).length > 0,
   });
 }

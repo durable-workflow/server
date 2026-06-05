@@ -392,7 +392,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
-    public function test_runner_accepts_source_free_proof_from_supplied_shard_evidence(): void
+    public function test_runner_reports_source_free_proof_from_supplied_shard_without_install_promotion(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
         if ($nodeBinary === '') {
@@ -466,11 +466,18 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 512,
                 JSON_THROW_ON_ERROR,
             );
+            $publishedArtifacts = json_decode(
+                (string) file_get_contents($resultDir.'/published-artifacts.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
 
             $scenario = $result['scenario_results']['published_artifact_install_only'];
-            $this->assertSame('pass', $scenario['status']);
+            $this->assertSame('not_covered', $scenario['status']);
             $this->assertFalse($result['local_product_source_checkouts_used']);
-            $this->assertSame([], $scenario['linked_findings']);
+            $this->assertFalse($publishedArtifacts['local_product_source_checkouts_used']);
+            $this->assertNotEmpty($scenario['linked_findings']);
         } finally {
             $this->removeDirectory($resultDir);
         }
