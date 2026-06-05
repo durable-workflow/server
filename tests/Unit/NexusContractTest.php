@@ -254,6 +254,18 @@ class NexusContractTest extends TestCase
             $manifest['scenario_evidence_requirements']['endpoint_permission_denied_without_information_leak'],
         );
         $this->assertContains(
+            'request',
+            $manifest['scenario_evidence_requirements']['endpoint_permission_denied_without_information_leak'],
+        );
+        $this->assertContains(
+            'response',
+            $manifest['scenario_evidence_requirements']['malformed_payload_refused_before_dispatch'],
+        );
+        $this->assertContains(
+            'dispatch_evidence',
+            $manifest['scenario_evidence_requirements']['nonexistent_endpoint_typed_not_found'],
+        );
+        $this->assertContains(
             'artifact_source_verification',
             $manifest['scenario_evidence_requirements']['published_artifact_install_only'],
         );
@@ -2179,18 +2191,81 @@ class NexusContractTest extends TestCase
             'endpoint_permission_denied_without_information_leak' => [
                 'caller_namespace' => 'denied',
                 'refusal_status' => 'rejected_forbidden',
+                'request' => [
+                    'method' => 'POST',
+                    'path' => '/api/service-endpoints/shared-greeter/services/Greeter/operations/greet/execute',
+                    'namespace' => 'shared',
+                    'body' => [
+                        'caller_namespace' => 'denied',
+                        'caller_workflow_instance_id' => 'denied-call-greeter',
+                        'caller_workflow_run_id' => '01JDENIED000000000000000',
+                    ],
+                ],
+                'response' => [
+                    'status' => 403,
+                    'body' => [
+                        'accepted' => false,
+                        'reason' => 'caller_namespace_denied',
+                        'outcome' => 'rejected_forbidden',
+                    ],
+                ],
+                'dispatch_evidence' => [
+                    'handler_dispatch_count' => 0,
+                    'service_invoked' => false,
+                    'caller_history_rows' => [],
+                ],
                 'authorization_refusal_disclosed_endpoint_existence' => false,
                 'handler_dispatch_count' => 0,
             ],
             'malformed_payload_refused_before_dispatch' => [
                 'refusal_status' => 'rejected_bad_payload',
                 'typed_error' => 'MalformedNexusPayload',
+                'request' => [
+                    'method' => 'POST',
+                    'path' => '/api/service-endpoints/shared-greeter/services/Greeter/operations/greet/execute',
+                    'namespace' => 'shared',
+                    'body' => [
+                        'wait_for' => 'dispatch_anyway',
+                    ],
+                ],
+                'response' => [
+                    'status' => 422,
+                    'body' => [
+                        'reason' => 'validation_failed',
+                        'validation_errors' => ['wait_for' => ['The selected wait for is invalid.']],
+                    ],
+                ],
+                'dispatch_evidence' => [
+                    'handler_dispatch_count' => 0,
+                    'service_invoked' => false,
+                    'caller_history_rows' => [],
+                ],
                 'handler_dispatch_count' => 0,
                 'service_invoked' => false,
             ],
             'nonexistent_endpoint_typed_not_found' => [
                 'refusal_status' => 'rejected_not_found',
                 'typed_error' => 'NexusEndpointNotFound',
+                'request' => [
+                    'method' => 'POST',
+                    'path' => '/api/service-endpoints/missing-greeter/services/Greeter/operations/greet/execute',
+                    'namespace' => 'shared',
+                    'body' => [
+                        'caller_namespace' => 'tenant-a',
+                    ],
+                ],
+                'response' => [
+                    'status' => 404,
+                    'body' => [
+                        'accepted' => false,
+                        'reason' => 'endpoint_not_found',
+                    ],
+                ],
+                'dispatch_evidence' => [
+                    'handler_dispatch_count' => 0,
+                    'service_invoked' => false,
+                    'caller_history_rows' => [],
+                ],
                 'handler_dispatch_count' => 0,
             ],
             'caller_history_attempt_visibility' => $base + [

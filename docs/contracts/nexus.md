@@ -69,10 +69,11 @@ The authoritative machine-readable contract is published from
   caller-history rows, target service logs, cancellation timing, the
   measured propagation duration, documented-window confirmation, or the
   typed cancellation observed by the service,
-  when retry-attempt visibility or authorization non-disclosure evidence
-  contradicts the Nexus contract, when the source-free evidence field is
-  omitted, or when the evidence reports local product source checkouts as
-  artifacts under test.
+  when adversarial refusal cells omit request, response, or no-dispatch
+  evidence, when retry-attempt visibility or authorization non-disclosure
+  evidence contradicts the Nexus contract, when the source-free evidence
+  field is omitted, or when the evidence reports local product source
+  checkouts as artifacts under test.
 - `sdk_implementation_notes` — the rules SDKs must follow when wiring
   Nexus calls and Nexus services into workflow code.
 - `out_of_scope` — the surfaces explicitly outside the Nexus contract.

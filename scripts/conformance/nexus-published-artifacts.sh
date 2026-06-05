@@ -109,8 +109,14 @@ const scenarioIds = [
   'tenant_a_calls_shared_service',
   'tenant_b_calls_shared_service',
 ];
+const adversarialScenarioIds = [
+  'endpoint_permission_denied_without_information_leak',
+  'malformed_payload_refused_before_dispatch',
+  'nonexistent_endpoint_typed_not_found',
+];
 const builtInProbeScenarioIds = [
   ...scenarioIds,
+  ...adversarialScenarioIds,
   'worker_restart_replay_does_not_reissue_call',
   'caller_cancellation_propagates_to_service',
 ];
@@ -731,6 +737,312 @@ async function invokeSharedService(baseUrl, token, callerNamespace, versions) {
   return passScenario(scenarioId, callerNamespace, execute, execute, describe, history);
 }
 
+function errorTypeFrom(response, fallback) {
+  return String(
+    response.body?.error_type
+    || response.body?.errorType
+    || response.body?.type
+    || response.body?.reason
+    || response.body?.outcome
+    || fallback
+    || '',
+  );
+}
+
+function refusalStatusFrom(response) {
+  return String(
+    response.body?.outcome
+    || response.body?.status
+    || response.body?.reason
+    || `http_${response.status}`,
+  );
+}
+
+function endpointLeakDetails(response, tokens) {
+  const body = response.body && typeof response.body === 'object' ? response.body : {};
+  const explicitFields = [
+    'endpoint_id',
+    'endpoint_name',
+    'service_id',
+    'service_name',
+    'operation_id',
+    'operation_name',
+  ].filter((field) => Object.hasOwn(body, field));
+  const lowerBody = JSON.stringify(body).toLowerCase();
+  const leakedTokens = tokens.filter((token) => lowerBody.includes(String(token).toLowerCase()));
+
+  return {
+    disclosed: explicitFields.length > 0 || leakedTokens.length > 0,
+    explicit_fields: explicitFields,
+    leaked_tokens: leakedTokens,
+  };
+}
+
+function responseEvidence(response) {
+  return {
+    status: response.status,
+    body: response.body,
+    raw_body: response.raw_body,
+  };
+}
+
+async function callerHistory(baseUrl, token, callerNamespace, workflowId, runId) {
+  return apiRequest(
+    baseUrl,
+    token,
+    callerNamespace,
+    'GET',
+    `/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}/nexus-operations`,
+  );
+}
+
+function dispatchEvidence(response, history, serviceCallId = '') {
+  const historyRows = historyRowsFrom(history);
+  const matchingRows = serviceCallId === ''
+    ? historyRows
+    : historyRows.filter((row) => String(row.service_call_id || '') === serviceCallId);
+  const dispatchLikeRows = matchingRows.filter((row) => {
+    const status = String(row.status || '');
+    const outcome = String(row.outcome || '');
+    return ['accepted', 'started', 'completed'].includes(status)
+      || ['accepted', 'completed'].includes(outcome);
+  });
+  const responseAccepted = response.body?.accepted === true;
+
+  return {
+    handler_dispatch_count: responseAccepted ? 1 : dispatchLikeRows.length,
+    service_invoked: responseAccepted || dispatchLikeRows.length > 0,
+    service_call_id: serviceCallId,
+    caller_history_rows: matchingRows,
+    caller_history_response: responseSummary(history),
+  };
+}
+
+async function probeEndpointPermissionDenied(baseUrl, token, versions) {
+  const scenarioId = 'endpoint_permission_denied_without_information_leak';
+  const callerNamespace = 'tenant-c';
+  const callerWorkflowInstanceId = `${callerNamespace}-forbidden-${crypto.randomBytes(5).toString('hex')}`;
+  const callerWorkflowRunId = ulidLike();
+  const requestBody = {
+    arguments: {
+      name: 'world',
+      caller_namespace: callerNamespace,
+    },
+    mode_override: 'async',
+    wait_for: 'accepted',
+    caller_namespace: callerNamespace,
+    caller_workflow_instance_id: callerWorkflowInstanceId,
+    caller_workflow_run_id: callerWorkflowRunId,
+    idempotency_key: `${callerNamespace}-${crypto.randomBytes(6).toString('hex')}`,
+    metadata: {
+      conformance: scenarioId,
+    },
+  };
+
+  const refusal = await apiRequest(
+    baseUrl,
+    token,
+    'shared',
+    'POST',
+    '/service-endpoints/shared-greeter/services/Greeter/operations/greet/execute',
+    requestBody,
+  );
+  const serviceCallId = serviceCallIdFrom(refusal);
+  const history = await callerHistory(
+    baseUrl,
+    token,
+    callerNamespace,
+    callerWorkflowInstanceId,
+    callerWorkflowRunId,
+  );
+  const leak = endpointLeakDetails(refusal, ['shared-greeter', 'Greeter', 'greet']);
+  const dispatch = dispatchEvidence(refusal, history, serviceCallId);
+  const observedOutputs = {
+    caller_namespace: callerNamespace,
+    target_namespace: 'shared',
+    endpoint_name: 'shared-greeter',
+    service_name: 'Greeter',
+    operation_name: 'greet',
+    refusal_status: refusalStatusFrom(refusal),
+    error_type: errorTypeFrom(refusal, 'permission_denied'),
+    authorization_refusal_disclosed_endpoint_existence: leak.disclosed,
+    endpoint_existence_disclosure_evidence: leak,
+    handler_dispatch_count: dispatch.handler_dispatch_count,
+    service_invoked: dispatch.service_invoked,
+    service_call_id: serviceCallId,
+    request: refusal.request,
+    response: responseEvidence(refusal),
+    dispatch_evidence: dispatch,
+    caller_history_evidence: history.body,
+  };
+  const typedPermissionDenied = refusal.status === 403
+    && ['rejected_forbidden', 'caller_namespace_denied', 'forbidden'].includes(errorTypeFrom(refusal, '').toLowerCase());
+
+  if (typedPermissionDenied && !leak.disclosed && dispatch.handler_dispatch_count === 0) {
+    return scenarioResult('pass', scenarioId, observedOutputs);
+  }
+
+  return scenarioResult('fail', scenarioId, observedOutputs, [
+    scenarioProductFailure(
+      scenarioId,
+      versions,
+      leak.disclosed ? 'permission_denied_information_leak' : 'nexus_authorization_refusal_shape_drift',
+      leak.disclosed
+        ? `Permission-denied response disclosed endpoint-specific fields: ${JSON.stringify(leak)}`
+        : `Permission-denied probe did not return the typed 403 shape: ${JSON.stringify(responseSummary(refusal)).slice(0, 1000)}`,
+      'Unauthorized Nexus callers receive a typed permission-denied refusal that does not disclose whether the endpoint, service, or operation exists.',
+      'fix Nexus authorization refusal shape and rerun the endpoint isolation cell',
+    ),
+  ]);
+}
+
+async function probeMalformedPayloadRefusal(baseUrl, token, versions) {
+  const scenarioId = 'malformed_payload_refused_before_dispatch';
+  const callerNamespace = 'tenant-a';
+  const callerWorkflowInstanceId = `${callerNamespace}-malformed-${crypto.randomBytes(5).toString('hex')}`;
+  const callerWorkflowRunId = ulidLike();
+  const requestBody = {
+    arguments: {
+      name: 'world',
+    },
+    mode_override: 'async',
+    wait_for: 'dispatch_anyway',
+    caller_namespace: callerNamespace,
+    caller_workflow_instance_id: callerWorkflowInstanceId,
+    caller_workflow_run_id: callerWorkflowRunId,
+    idempotency_key: `${callerNamespace}-malformed-${crypto.randomBytes(6).toString('hex')}`,
+    metadata: {
+      conformance: scenarioId,
+    },
+  };
+
+  const refusal = await apiRequest(
+    baseUrl,
+    token,
+    'shared',
+    'POST',
+    '/service-endpoints/shared-greeter/services/Greeter/operations/greet/execute',
+    requestBody,
+  );
+  const history = await callerHistory(
+    baseUrl,
+    token,
+    callerNamespace,
+    callerWorkflowInstanceId,
+    callerWorkflowRunId,
+  );
+  const dispatch = dispatchEvidence(refusal, history);
+  const observedOutputs = {
+    caller_namespace: callerNamespace,
+    target_namespace: 'shared',
+    endpoint_name: 'shared-greeter',
+    service_name: 'Greeter',
+    operation_name: 'greet',
+    refusal_status: refusalStatusFrom(refusal),
+    error_type: errorTypeFrom(refusal, 'validation_failed'),
+    typed_error: errorTypeFrom(refusal, 'validation_failed'),
+    handler_dispatch_count: dispatch.handler_dispatch_count,
+    service_invoked: dispatch.service_invoked,
+    request: refusal.request,
+    response: responseEvidence(refusal),
+    dispatch_evidence: dispatch,
+    caller_history_evidence: history.body,
+  };
+  const pass = refusal.status === 422
+    && errorTypeFrom(refusal, '').toLowerCase() === 'validation_failed'
+    && dispatch.handler_dispatch_count === 0
+    && dispatch.service_invoked === false;
+
+  if (pass) {
+    return scenarioResult('pass', scenarioId, observedOutputs);
+  }
+
+  return scenarioResult('fail', scenarioId, observedOutputs, [
+    scenarioProductFailure(
+      scenarioId,
+      versions,
+      dispatch.service_invoked ? 'malformed_payload_dispatched' : 'malformed_payload_refusal_shape_drift',
+      `Malformed payload refusal evidence did not satisfy the pre-dispatch contract: ${JSON.stringify(observedOutputs).slice(0, 1000)}`,
+      'Malformed Nexus operation payloads are rejected with a typed validation error before service-call admission or handler dispatch.',
+      'fix Nexus malformed-payload refusal and rerun the adversarial payload cell',
+    ),
+  ]);
+}
+
+async function probeNonexistentEndpointNotFound(baseUrl, token, versions) {
+  const scenarioId = 'nonexistent_endpoint_typed_not_found';
+  const callerNamespace = 'tenant-a';
+  const missingEndpoint = `missing-greeter-${crypto.randomBytes(5).toString('hex')}`;
+  const callerWorkflowInstanceId = `${callerNamespace}-missing-endpoint-${crypto.randomBytes(5).toString('hex')}`;
+  const callerWorkflowRunId = ulidLike();
+  const requestBody = {
+    arguments: {
+      name: 'world',
+    },
+    mode_override: 'async',
+    wait_for: 'accepted',
+    caller_namespace: callerNamespace,
+    caller_workflow_instance_id: callerWorkflowInstanceId,
+    caller_workflow_run_id: callerWorkflowRunId,
+    idempotency_key: `${callerNamespace}-missing-${crypto.randomBytes(6).toString('hex')}`,
+    metadata: {
+      conformance: scenarioId,
+    },
+  };
+
+  const refusal = await apiRequest(
+    baseUrl,
+    token,
+    'shared',
+    'POST',
+    `/service-endpoints/${encodeURIComponent(missingEndpoint)}/services/Greeter/operations/greet/execute`,
+    requestBody,
+  );
+  const history = await callerHistory(
+    baseUrl,
+    token,
+    callerNamespace,
+    callerWorkflowInstanceId,
+    callerWorkflowRunId,
+  );
+  const dispatch = dispatchEvidence(refusal, history);
+  const observedOutputs = {
+    caller_namespace: callerNamespace,
+    target_namespace: 'shared',
+    endpoint_name: missingEndpoint,
+    service_name: 'Greeter',
+    operation_name: 'greet',
+    refusal_status: refusalStatusFrom(refusal),
+    error_type: errorTypeFrom(refusal, 'endpoint_not_found'),
+    typed_error: errorTypeFrom(refusal, 'endpoint_not_found'),
+    handler_dispatch_count: dispatch.handler_dispatch_count,
+    service_invoked: dispatch.service_invoked,
+    request: refusal.request,
+    response: responseEvidence(refusal),
+    dispatch_evidence: dispatch,
+    caller_history_evidence: history.body,
+  };
+  const pass = refusal.status === 404
+    && errorTypeFrom(refusal, '').toLowerCase() === 'endpoint_not_found'
+    && dispatch.handler_dispatch_count === 0
+    && dispatch.service_invoked === false;
+
+  if (pass) {
+    return scenarioResult('pass', scenarioId, observedOutputs);
+  }
+
+  return scenarioResult('fail', scenarioId, observedOutputs, [
+    scenarioProductFailure(
+      scenarioId,
+      versions,
+      dispatch.service_invoked ? 'nonexistent_endpoint_dispatched' : 'nonexistent_endpoint_error_shape_drift',
+      `Nonexistent endpoint refusal evidence did not satisfy the typed not-found contract: ${JSON.stringify(observedOutputs).slice(0, 1000)}`,
+      'Invoking a nonexistent Nexus endpoint returns a typed not-found error without admitting or dispatching a service call.',
+      'fix Nexus nonexistent-endpoint refusal and rerun the not-found adversarial cell',
+    ),
+  ]);
+}
+
 function publishedServerWorkerExecution(versions, sources, image) {
   return {
     local_product_source_checkouts_used: false,
@@ -1348,13 +1660,16 @@ async function main() {
     let registration = null;
     let scenarioResults = [];
     try {
-      for (const namespace of ['tenant-a', 'tenant-b', 'shared']) {
+      for (const namespace of ['tenant-a', 'tenant-b', 'tenant-c', 'shared']) {
         namespaceResponses.push(await ensureNamespace(baseUrl, token, namespace));
       }
       registration = await setupSharedService(baseUrl, token);
       scenarioResults = [
         await invokeSharedService(baseUrl, token, 'tenant-a', versions),
         await invokeSharedService(baseUrl, token, 'tenant-b', versions),
+        await probeEndpointPermissionDenied(baseUrl, token, versions),
+        await probeMalformedPayloadRefusal(baseUrl, token, versions),
+        await probeNonexistentEndpointNotFound(baseUrl, token, versions),
       ];
       if (env('DW_NEXUS_SKIP_REPLAY_CANCEL_PROBE') !== '1') {
         scenarioResults.push(
@@ -1398,7 +1713,7 @@ async function main() {
       artifact_install_evidence: installEvidence,
       local_product_source_checkouts_used: false,
       topology: {
-        namespaces: ['tenant-a', 'tenant-b', 'shared'],
+        namespaces: ['tenant-a', 'tenant-b', 'tenant-c', 'shared'],
         endpoint: 'shared:shared-greeter',
         service: 'Greeter',
         operation: 'greet',
@@ -1665,6 +1980,9 @@ const scenarioEvidenceRequirements = {
   ],
   endpoint_permission_denied_without_information_leak: [
     {fields: ['caller_namespace', 'callerNamespace'], kind: 'non_empty_string', expected: 'unauthorized caller namespace attempted the invocation'},
+    {fields: ['request', 'requestEvidence', 'invocation_request', 'invocationRequest'], kind: 'non_empty_object', expected: 'request evidence for the unauthorized Nexus invocation'},
+    {fields: ['response', 'responseEvidence', 'invocation_response', 'invocationResponse'], kind: 'non_empty_object', expected: 'response evidence for the unauthorized Nexus refusal'},
+    {fields: ['dispatch_evidence', 'dispatchEvidence'], kind: 'non_empty_object', expected: 'dispatch/no-dispatch evidence for the unauthorized Nexus refusal'},
     {fields: ['refusal_status', 'refusalStatus', 'error_type', 'errorType'], kind: 'non_empty_string', expected: 'typed permission-denied refusal'},
     {
       fields: ['authorization_refusal_disclosed_endpoint_existence', 'authorizationRefusalDisclosedEndpointExistence', 'endpoint_existence_disclosed', 'endpointExistenceDisclosed'],
@@ -1677,12 +1995,18 @@ const scenarioEvidenceRequirements = {
     {fields: ['handler_dispatch_count', 'handlerDispatchCount'], kind: 'number_equals', value: 0, expected: 'forbidden call was refused before handler dispatch'},
   ],
   malformed_payload_refused_before_dispatch: [
+    {fields: ['request', 'requestEvidence', 'invocation_request', 'invocationRequest'], kind: 'non_empty_object', expected: 'request evidence for the malformed Nexus invocation'},
+    {fields: ['response', 'responseEvidence', 'invocation_response', 'invocationResponse'], kind: 'non_empty_object', expected: 'response evidence for the malformed-payload refusal'},
+    {fields: ['dispatch_evidence', 'dispatchEvidence'], kind: 'non_empty_object', expected: 'dispatch/no-dispatch evidence for the malformed-payload refusal'},
     {fields: ['refusal_status', 'refusalStatus', 'error_type', 'errorType'], kind: 'non_empty_string', expected: 'typed malformed-payload refusal'},
     {fields: ['typed_error', 'typedError'], kind: 'non_empty_string', expected: 'schema or payload error type returned to the caller'},
     {fields: ['handler_dispatch_count', 'handlerDispatchCount'], kind: 'number_equals', value: 0, expected: 'malformed payload was refused before handler dispatch'},
     {fields: ['service_invoked', 'serviceInvoked'], kind: 'boolean_false', expected: 'malformed payload did not invoke the service'},
   ],
   nonexistent_endpoint_typed_not_found: [
+    {fields: ['request', 'requestEvidence', 'invocation_request', 'invocationRequest'], kind: 'non_empty_object', expected: 'request evidence for the nonexistent Nexus endpoint invocation'},
+    {fields: ['response', 'responseEvidence', 'invocation_response', 'invocationResponse'], kind: 'non_empty_object', expected: 'response evidence for the nonexistent-endpoint refusal'},
+    {fields: ['dispatch_evidence', 'dispatchEvidence'], kind: 'non_empty_object', expected: 'dispatch/no-dispatch evidence for the nonexistent-endpoint refusal'},
     {fields: ['refusal_status', 'refusalStatus', 'error_type', 'errorType'], kind: 'non_empty_string', expected: 'typed not-found refusal'},
     {fields: ['typed_error', 'typedError'], kind: 'non_empty_string', expected: 'not-found error type returned to the caller'},
     {fields: ['handler_dispatch_count', 'handlerDispatchCount'], kind: 'number_equals', value: 0, expected: 'nonexistent endpoint did not dispatch a handler'},
