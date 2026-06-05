@@ -81,6 +81,15 @@ const OBSERVED_STATE_ENTRY_FIELDS = [
   'states',
 ];
 const STATE_ENTRY_KIND_FIELDS = ['state_kind', 'stateKind', 'kind', 'type', 'name', 'scenario'];
+const STATE_CELL_METADATA_FIELDS = [
+  ...STATE_ENTRY_KIND_FIELDS,
+  'status',
+  'phase',
+  'state_kinds',
+  'stateKinds',
+  'expected_state_kinds',
+  'expectedStateKinds',
+];
 const FALLBACK_PLACEHOLDER_VERSION_EXAMPLES = [
   'latest',
   'current',
@@ -1544,9 +1553,14 @@ function resultPasses(result) {
 }
 
 function stateSnapshotsComplete(result) {
+  return stateSnapshotFailuresFor(result).length === 0;
+}
+
+function stateSnapshotFailuresFor(result) {
+  const failures = [];
   const requiredStateKinds = arrayOfStrings(scenarioManifest?.required_matrix?.state_kinds);
   if (requiredStateKinds.length === 0) {
-    return true;
+    return failures;
   }
 
   for (const field of ['preupgrade_state_snapshot', 'postupgrade_state_snapshot']) {
@@ -1555,90 +1569,87 @@ function stateSnapshotsComplete(result) {
       continue;
     }
 
-    const stateKinds = observedStateKindsForSnapshot(snapshot);
+    const stateKinds = observedStateKindsForSnapshot(snapshot, requiredStateKinds);
     for (const stateKind of requiredStateKinds) {
       if (!stateKinds.has(stateKind)) {
-        return false;
+        failures.push({
+          field,
+          state_kind: stateKind,
+        });
       }
     }
   }
 
-  return true;
+  return failures;
 }
 
-function observedStateKindsForSnapshot(snapshot) {
+function observedStateKindsForSnapshot(snapshot, requiredStateKinds) {
+  const required = new Set(requiredStateKinds);
   const observed = new Set();
 
-  collectStateKindList(fieldValue(snapshot, 'state_kinds'), observed);
-  collectStateKindList(fieldValue(snapshot, 'stateKinds'), observed);
-  collectObservedStateEntries(snapshot, observed);
+  collectObservedStateEntries(snapshot, observed, required);
 
   for (const field of OBSERVED_STATE_ENTRY_FIELDS) {
-    collectObservedStateEntries(fieldValue(snapshot, field), observed);
+    collectObservedStateEntries(fieldValue(snapshot, field), observed, required);
   }
 
   return observed;
 }
 
-function collectStateKindList(value, observed) {
+function collectObservedStateEntries(value, observed, required) {
   if (!value || typeof value !== 'object') {
     return;
   }
 
   if (Array.isArray(value)) {
     for (const entry of value) {
-      collectObservedStateEntryKind(entry, observed);
+      collectObservedStateEntryKind(entry, observed, required);
     }
     return;
   }
 
   for (const [key, entry] of Object.entries(objectValue(value))) {
-    if (key !== '' && !isEmptyEvidence(entry)) {
+    if (required.has(key) && hasObservedStateCellEvidence(entry)) {
       observed.add(key);
     }
 
-    collectObservedStateEntryKind(entry, observed);
+    collectObservedStateEntryKind(entry, observed, required);
   }
 }
 
-function collectObservedStateEntries(value, observed) {
-  if (!value || typeof value !== 'object') {
-    return;
-  }
-
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      collectObservedStateEntryKind(entry, observed);
-    }
-    return;
-  }
-
-  for (const [key, entry] of Object.entries(objectValue(value))) {
-    if (key !== '' && !isEmptyEvidence(entry)) {
-      observed.add(key);
-    }
-
-    collectObservedStateEntryKind(entry, observed);
-  }
-}
-
-function collectObservedStateEntryKind(entry, observed) {
-  const kind = stateKindString(entry);
-  if (kind !== '') {
-    observed.add(kind);
-    return;
-  }
-
+function collectObservedStateEntryKind(entry, observed, required) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
     return;
   }
 
   for (const field of STATE_ENTRY_KIND_FIELDS) {
     const fieldKind = stateKindString(entry[field]);
-    if (fieldKind !== '') {
+    if (fieldKind !== '' && required.has(fieldKind) && hasObservedStateCellEvidence(entry)) {
       observed.add(fieldKind);
     }
   }
+}
+
+function hasObservedStateCellEvidence(value) {
+  if (isEmptyEvidence(value)) {
+    return false;
+  }
+
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return true;
+  }
+
+  for (const [key, entry] of Object.entries(value)) {
+    if (STATE_CELL_METADATA_FIELDS.includes(key)) {
+      continue;
+    }
+
+    if (!isEmptyEvidence(entry)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function stateKindString(value) {
@@ -1731,6 +1742,16 @@ function missingRunRecordFindingsFor(result, artifactVersions) {
       expected_behavior: 'Passing migration conformance records every top-level migration plan, before/after state, operator observation, rollback/skew observation, and storage smoke section required by the public scenario manifest.',
       next_acceptance_criterion: `attach non-placeholder ${field} evidence before recording migration conformance as passing`,
       missing_run_record_field: field,
+    }));
+  }
+
+  for (const failure of stateSnapshotFailuresFor(result)) {
+    findings.push(coverageGapFinding('run_record', artifactVersions, {
+      observed_behavior: `Migration run record ${failure.field} did not include observed state evidence for ${failure.state_kind}.`,
+      expected_behavior: 'Passing migration conformance records observed before/after state cells for every required migration state kind, not just the expected state-kind list.',
+      next_acceptance_criterion: `attach observed ${failure.state_kind} evidence to ${failure.field} before recording migration conformance as passing`,
+      missing_run_record_field: failure.field,
+      missing_state_kind: failure.state_kind,
     }));
   }
 

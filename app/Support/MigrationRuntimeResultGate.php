@@ -491,7 +491,7 @@ final class MigrationRuntimeResultGate
                 continue;
             }
 
-            $stateKinds = self::observedStateKindsForSnapshot($snapshot);
+            $stateKinds = self::observedStateKindsForSnapshot($snapshot, $requiredStateKinds);
             foreach ($requiredStateKinds as $stateKind) {
                 if (isset($stateKinds[$stateKind])) {
                     continue;
@@ -513,17 +513,12 @@ final class MigrationRuntimeResultGate
      *
      * @return array<string, true>
      */
-    private static function observedStateKindsForSnapshot(array $snapshot): array
+    private static function observedStateKindsForSnapshot(array $snapshot, array $requiredStateKinds): array
     {
         $observed = [];
+        $required = array_fill_keys($requiredStateKinds, true);
 
-        foreach (['state_kinds', 'stateKinds'] as $field) {
-            if (isset($snapshot[$field]) && is_array($snapshot[$field])) {
-                self::collectStateKindList($snapshot[$field], $observed);
-            }
-        }
-
-        self::collectObservedStateEntries($snapshot, $observed);
+        self::collectObservedStateEntries($snapshot, $observed, $required);
 
         foreach ([
             'observed_states',
@@ -535,7 +530,7 @@ final class MigrationRuntimeResultGate
             'states',
         ] as $field) {
             if (isset($snapshot[$field]) && is_array($snapshot[$field])) {
-                self::collectObservedStateEntries($snapshot[$field], $observed);
+                self::collectObservedStateEntries($snapshot[$field], $observed, $required);
             }
         }
 
@@ -543,73 +538,96 @@ final class MigrationRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $stateKinds
-     * @param array<string, true> $observed
-     */
-    private static function collectStateKindList(array $stateKinds, array &$observed): void
-    {
-        $isList = array_is_list($stateKinds);
-
-        foreach ($stateKinds as $key => $entry) {
-            if ($isList) {
-                self::collectObservedStateEntryKind($entry, $observed);
-
-                continue;
-            }
-
-            if (is_string($key) && $key !== '' && ! self::isEmptyEvidence($entry)) {
-                $observed[$key] = true;
-            }
-
-            self::collectObservedStateEntryKind($entry, $observed);
-        }
-    }
-
-    /**
      * @param array<mixed> $entries
      * @param array<string, true> $observed
+     * @param array<string, true> $required
      */
-    private static function collectObservedStateEntries(array $entries, array &$observed): void
+    private static function collectObservedStateEntries(array $entries, array &$observed, array $required): void
     {
         $isList = array_is_list($entries);
 
         foreach ($entries as $key => $entry) {
             if ($isList) {
-                self::collectObservedStateEntryKind($entry, $observed);
+                self::collectObservedStateEntryKind($entry, $observed, $required);
 
                 continue;
             }
 
-            if (is_string($key) && $key !== '' && ! self::isEmptyEvidence($entry)) {
+            if (
+                is_string($key)
+                && isset($required[$key])
+                && self::hasObservedStateCellEvidence($entry)
+            ) {
                 $observed[$key] = true;
             }
 
-            self::collectObservedStateEntryKind($entry, $observed);
+            self::collectObservedStateEntryKind($entry, $observed, $required);
         }
     }
 
     /**
      * @param array<string, true> $observed
+     * @param array<string, true> $required
      */
-    private static function collectObservedStateEntryKind(mixed $entry, array &$observed): void
+    private static function collectObservedStateEntryKind(mixed $entry, array &$observed, array $required): void
     {
-        $kind = self::stringValue($entry);
-        if ($kind !== '') {
-            $observed[$kind] = true;
-
-            return;
-        }
-
         if (! is_array($entry)) {
             return;
         }
 
         foreach (['state_kind', 'stateKind', 'kind', 'type', 'name', 'scenario'] as $field) {
             $kind = self::stringValue($entry[$field] ?? null);
-            if ($kind !== '') {
+            if ($kind !== '' && isset($required[$kind]) && self::hasObservedStateCellEvidence($entry)) {
                 $observed[$kind] = true;
             }
         }
+    }
+
+    /**
+     * @param mixed $value
+     */
+    private static function hasObservedStateCellEvidence(mixed $value): bool
+    {
+        if (self::isEmptyEvidence($value)) {
+            return false;
+        }
+
+        if (! is_array($value)) {
+            return true;
+        }
+
+        foreach ($value as $key => $entry) {
+            if (is_string($key) && in_array($key, self::stateCellMetadataFields(), true)) {
+                continue;
+            }
+
+            if (! self::isEmptyEvidence($entry)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function stateCellMetadataFields(): array
+    {
+        return [
+            'state_kind',
+            'stateKind',
+            'kind',
+            'type',
+            'name',
+            'scenario',
+            'status',
+            'phase',
+            'state_kinds',
+            'stateKinds',
+            'expected_state_kinds',
+            'expectedStateKinds',
+        ];
     }
 
     /**

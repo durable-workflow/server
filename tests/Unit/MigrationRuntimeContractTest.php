@@ -354,9 +354,17 @@ class MigrationRuntimeContractTest extends TestCase
             'completed_workflow' => ['workflow_id' => 'migration-completed'],
         ];
         $result['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_schedules'] = [];
-        $result['preupgrade_state_snapshot']['state_kinds'] = [
-            'completed_history',
-            'in_flight_workflow',
+        $result['preupgrade_state_snapshot']['observed_states'] = [
+            [
+                'state_kind' => 'completed_history',
+                'workflow_id' => 'migration-completed',
+                'history_event_count' => 8,
+            ],
+            [
+                'state_kind' => 'in_flight_workflow',
+                'workflow_id' => 'migration-awaiting-signal',
+                'signal_name' => 'approve',
+            ],
         ];
 
         $evaluation = MigrationRuntimeResultGate::evaluate($result);
@@ -392,6 +400,34 @@ class MigrationRuntimeContractTest extends TestCase
             'status' => 'pass',
             'expected_state_kinds' => $expectedStateKinds,
             'observed_behavior' => 'runner listed the expected state matrix without observed v2 state evidence',
+        ];
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        foreach (['preupgrade_state_snapshot', 'postupgrade_state_snapshot'] as $field) {
+            $this->assertNotEmpty(array_filter(
+                $evaluation['gate_failures'],
+                static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_run_record_state_kind'
+                    && ($failure['field'] ?? null) === $field
+                    && ($failure['state_kind'] ?? null) === 'completed_history',
+            ));
+        }
+    }
+
+    public function test_result_gate_rejects_declared_state_kind_snapshots_without_observed_state(): void
+    {
+        $result = $this->completeMigrationResult();
+        $stateKinds = MigrationRuntimeContract::manifest()['required_matrix']['state_kinds'];
+        $result['preupgrade_state_snapshot'] = [
+            'status' => 'pass',
+            'state_kinds' => $stateKinds,
+            'workflow_ids' => ['migration-completed', 'migration-awaiting-signal'],
+        ];
+        $result['postupgrade_state_snapshot'] = [
+            'status' => 'pass',
+            'state_kinds' => $stateKinds,
+            'workflow_ids' => ['migration-completed', 'migration-awaiting-signal'],
         ];
 
         $evaluation = MigrationRuntimeResultGate::evaluate($result);
@@ -814,14 +850,8 @@ class MigrationRuntimeContractTest extends TestCase
                 'commands_executed' => $scenarioResults['documented_migration_steps_execute']['observed_outputs']['commands_executed'],
                 'command_timings' => $scenarioResults['documented_migration_steps_execute']['observed_outputs']['command_timings'],
             ],
-            'preupgrade_state_snapshot' => [
-                'state_kinds' => MigrationRuntimeContract::manifest()['required_matrix']['state_kinds'],
-                'workflow_ids' => ['migration-completed', 'migration-awaiting-signal', 'migration-retrying-activity'],
-            ],
-            'postupgrade_state_snapshot' => [
-                'state_kinds' => MigrationRuntimeContract::manifest()['required_matrix']['state_kinds'],
-                'workflow_ids' => ['migration-completed', 'migration-awaiting-signal', 'migration-retrying-activity'],
-            ],
+            'preupgrade_state_snapshot' => $this->stateSnapshotEvidence('preupgrade'),
+            'postupgrade_state_snapshot' => $this->stateSnapshotEvidence('postupgrade'),
             'history_dumps' => ['completed' => true, 'running' => true],
             'activity_attempts' => ['retry_preserved' => true],
             'schedule_ticks' => ['cadence_preserved' => true],
@@ -832,6 +862,51 @@ class MigrationRuntimeContractTest extends TestCase
             'version_skew_observations' => ['refused_loudly' => true],
             'storage_connection_smoke' => ['passed' => true],
             'scenario_results' => $scenarioResults,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function stateSnapshotEvidence(string $phase): array
+    {
+        return [
+            'state_kinds' => MigrationRuntimeContract::manifest()['required_matrix']['state_kinds'],
+            'observed_states' => [
+                [
+                    'state_kind' => 'completed_history',
+                    'phase' => $phase,
+                    'workflow_id' => 'migration-completed',
+                    'history_event_count' => 8,
+                    'history_readable' => true,
+                ],
+                [
+                    'state_kind' => 'in_flight_workflow',
+                    'phase' => $phase,
+                    'workflow_id' => 'migration-awaiting-signal',
+                    'status' => $phase === 'preupgrade' ? 'running' : 'completed',
+                    'signal_name' => 'approve',
+                ],
+                [
+                    'state_kind' => 'retrying_activity',
+                    'phase' => $phase,
+                    'workflow_id' => 'migration-retrying-activity',
+                    'activity_type' => 'migration_sample_activity',
+                    'attempt' => $phase === 'preupgrade' ? 2 : 3,
+                ],
+                [
+                    'state_kind' => 'schedule',
+                    'phase' => $phase,
+                    'schedule_id' => 'migration-cross-upgrade-schedule',
+                    'next_fire_at' => '2026-05-31T22:45:00Z',
+                ],
+                [
+                    'state_kind' => 'worker_registration',
+                    'phase' => $phase,
+                    'worker_id' => 'migration-v1-worker',
+                    'task_queue' => 'migration-v1',
+                ],
+            ],
         ];
     }
 
