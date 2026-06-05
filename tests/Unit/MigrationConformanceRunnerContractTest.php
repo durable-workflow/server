@@ -449,16 +449,22 @@ class MigrationConformanceRunnerContractTest extends TestCase
                     'DW_SERVER_V2_VERSION' => $artifactVersions['server-v2'],
                     'DW_SERVER_V1_ARTIFACT_SOURCE' => $artifactSources['server-v1'],
                     'DW_SERVER_V2_ARTIFACT_SOURCE' => $artifactSources['server-v2'],
-                    'DW_CLI_VERSION' => $artifactVersions['cli'],
-                    'DW_CLI_ARTIFACT_SOURCE' => $artifactSources['cli'],
+                    'DW_CLI_V1_VERSION' => $artifactVersions['cli-v1'],
+                    'DW_CLI_VERSION' => $artifactVersions['cli-v2'],
+                    'DW_CLI_V1_ARTIFACT_SOURCE' => $artifactSources['cli-v1'],
+                    'DW_CLI_ARTIFACT_SOURCE' => $artifactSources['cli-v2'],
                     'DW_WORKFLOW_PHP_V1_VERSION' => $artifactVersions['workflow-php-v1'],
                     'DW_WORKFLOW_PHP_V2_VERSION' => $artifactVersions['workflow-php-v2'],
                     'DW_WORKFLOW_PHP_V1_ARTIFACT_SOURCE' => $artifactSources['workflow-php-v1'],
                     'DW_WORKFLOW_PHP_V2_ARTIFACT_SOURCE' => $artifactSources['workflow-php-v2'],
                     'DW_PYTHON_SDK_VERSION' => $artifactVersions['sdk-python'],
                     'DW_PYTHON_SDK_ARTIFACT_SOURCE' => $artifactSources['sdk-python'],
-                    'DW_WATERLINE_VERSION' => $artifactVersions['waterline'],
-                    'DW_WATERLINE_ARTIFACT_SOURCE' => $artifactSources['waterline'],
+                    'DW_WATERLINE_V1_VERSION' => $artifactVersions['waterline-v1'],
+                    'DW_WATERLINE_VERSION' => $artifactVersions['waterline-v2'],
+                    'DW_WATERLINE_V1_ARTIFACT_SOURCE' => $artifactSources['waterline-v1'],
+                    'DW_WATERLINE_ARTIFACT_SOURCE' => $artifactSources['waterline-v2'],
+                    'DW_SAMPLE_APP_V1_VERSION' => $artifactVersions['sample-app-v1'],
+                    'DW_SAMPLE_APP_V1_ARTIFACT_SOURCE' => $artifactSources['sample-app-v1'],
                 ],
             );
 
@@ -513,16 +519,22 @@ class MigrationConformanceRunnerContractTest extends TestCase
                 'DW_SERVER_V2_VERSION' => $artifactVersions['server-v2'],
                 'DW_SERVER_V1_ARTIFACT_SOURCE' => $artifactSources['server-v1'],
                 'DW_SERVER_V2_ARTIFACT_SOURCE' => $artifactSources['server-v2'],
-                'DW_CLI_VERSION' => $artifactVersions['cli'],
-                'DW_CLI_ARTIFACT_SOURCE' => $artifactSources['cli'],
+                'DW_CLI_V1_VERSION' => $artifactVersions['cli-v1'],
+                'DW_CLI_VERSION' => $artifactVersions['cli-v2'],
+                'DW_CLI_V1_ARTIFACT_SOURCE' => $artifactSources['cli-v1'],
+                'DW_CLI_ARTIFACT_SOURCE' => $artifactSources['cli-v2'],
                 'DW_WORKFLOW_PHP_V1_VERSION' => $artifactVersions['workflow-php-v1'],
                 'DW_WORKFLOW_PHP_V2_VERSION' => $artifactVersions['workflow-php-v2'],
                 'DW_WORKFLOW_PHP_V1_ARTIFACT_SOURCE' => $artifactSources['workflow-php-v1'],
                 'DW_WORKFLOW_PHP_V2_ARTIFACT_SOURCE' => $artifactSources['workflow-php-v2'],
                 'DW_PYTHON_SDK_VERSION' => $artifactVersions['sdk-python'],
                 'DW_PYTHON_SDK_ARTIFACT_SOURCE' => $artifactSources['sdk-python'],
-                'DW_WATERLINE_VERSION' => $artifactVersions['waterline'],
-                'DW_WATERLINE_ARTIFACT_SOURCE' => $artifactSources['waterline'],
+                'DW_WATERLINE_V1_VERSION' => $artifactVersions['waterline-v1'],
+                'DW_WATERLINE_VERSION' => $artifactVersions['waterline-v2'],
+                'DW_WATERLINE_V1_ARTIFACT_SOURCE' => $artifactSources['waterline-v1'],
+                'DW_WATERLINE_ARTIFACT_SOURCE' => $artifactSources['waterline-v2'],
+                'DW_SAMPLE_APP_V1_VERSION' => $artifactVersions['sample-app-v1'],
+                'DW_SAMPLE_APP_V1_ARTIFACT_SOURCE' => $artifactSources['sample-app-v1'],
             ],
             [
                 'status' => 'pass',
@@ -776,16 +788,22 @@ class MigrationConformanceRunnerContractTest extends TestCase
                 'DW_SERVER_V2_VERSION' => $artifactVersions['server-v2'],
                 'DW_SERVER_V1_ARTIFACT_SOURCE' => $artifactSources['server-v1'],
                 'DW_SERVER_V2_ARTIFACT_SOURCE' => $artifactSources['server-v2'],
-                'DW_CLI_VERSION' => $artifactVersions['cli'],
-                'DW_CLI_ARTIFACT_SOURCE' => $artifactSources['cli'],
+                'DW_CLI_V1_VERSION' => $artifactVersions['cli-v1'],
+                'DW_CLI_VERSION' => $artifactVersions['cli-v2'],
+                'DW_CLI_V1_ARTIFACT_SOURCE' => $artifactSources['cli-v1'],
+                'DW_CLI_ARTIFACT_SOURCE' => $artifactSources['cli-v2'],
                 'DW_WORKFLOW_PHP_V1_VERSION' => $artifactVersions['workflow-php-v1'],
                 'DW_WORKFLOW_PHP_V2_VERSION' => $artifactVersions['workflow-php-v2'],
                 'DW_WORKFLOW_PHP_V1_ARTIFACT_SOURCE' => $artifactSources['workflow-php-v1'],
                 'DW_WORKFLOW_PHP_V2_ARTIFACT_SOURCE' => $artifactSources['workflow-php-v2'],
                 'DW_PYTHON_SDK_VERSION' => $artifactVersions['sdk-python'],
                 'DW_PYTHON_SDK_ARTIFACT_SOURCE' => $artifactSources['sdk-python'],
-                'DW_WATERLINE_VERSION' => $artifactVersions['waterline'],
-                'DW_WATERLINE_ARTIFACT_SOURCE' => $artifactSources['waterline'],
+                'DW_WATERLINE_V1_VERSION' => $artifactVersions['waterline-v1'],
+                'DW_WATERLINE_VERSION' => $artifactVersions['waterline-v2'],
+                'DW_WATERLINE_V1_ARTIFACT_SOURCE' => $artifactSources['waterline-v1'],
+                'DW_WATERLINE_ARTIFACT_SOURCE' => $artifactSources['waterline-v2'],
+                'DW_SAMPLE_APP_V1_VERSION' => $artifactVersions['sample-app-v1'],
+                'DW_SAMPLE_APP_V1_ARTIFACT_SOURCE' => $artifactSources['sample-app-v1'],
             ],
             [
                 'passed' => true,
@@ -917,19 +935,34 @@ class MigrationConformanceRunnerContractTest extends TestCase
 
         $workflowV1Version = $evidence['published_artifact_versions']['workflow-php-v1'];
         $workflowV2Version = $evidence['published_artifact_versions']['workflow-php-v2'];
+        $cliV2Version = $evidence['published_artifact_versions']['cli-v2'];
+        $waterlineV2Version = $evidence['published_artifact_versions']['waterline-v2'];
         $workflowV1Source = $evidence['artifact_sources']['workflow-php-v1'];
         $workflowV2Source = $evidence['artifact_sources']['workflow-php-v2'];
+        $cliV2Source = $evidence['artifact_sources']['cli-v2'];
+        $waterlineV2Source = $evidence['artifact_sources']['waterline-v2'];
 
         foreach (['published_artifact_versions', 'resolved_artifact_versions', 'artifact_sources'] as $field) {
-            unset($evidence[$field]['workflow-php-v1'], $evidence[$field]['workflow-php-v2']);
+            unset(
+                $evidence[$field]['cli-v2'],
+                $evidence[$field]['workflow-php-v1'],
+                $evidence[$field]['workflow-php-v2'],
+                $evidence[$field]['waterline-v2'],
+            );
         }
 
+        $evidence['published_artifact_versions']['cli'] = $cliV2Version;
         $evidence['published_artifact_versions']['workflow-v1'] = $workflowV1Version;
         $evidence['published_artifact_versions']['workflow'] = $workflowV2Version;
+        $evidence['published_artifact_versions']['waterline'] = $waterlineV2Version;
+        $evidence['resolved_artifact_versions']['cli'] = $cliV2Version;
         $evidence['resolved_artifact_versions']['workflow-v1'] = $workflowV1Version;
         $evidence['resolved_artifact_versions']['workflow-php'] = $workflowV2Version;
+        $evidence['resolved_artifact_versions']['waterline'] = $waterlineV2Version;
+        $evidence['artifact_sources']['cli'] = $cliV2Source;
         $evidence['artifact_sources']['workflow-v1'] = $workflowV1Source;
         $evidence['artifact_sources']['workflow-php'] = $workflowV2Source;
+        $evidence['artifact_sources']['waterline'] = $waterlineV2Source;
 
         $evidence['scenario_results']['published_artifact_install_only']['observed_outputs']['resolved_artifact_versions'] =
             $evidence['resolved_artifact_versions'];
@@ -939,9 +972,13 @@ class MigrationConformanceRunnerContractTest extends TestCase
         $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-aliases-');
 
         $this->assertSame('pass', $result['outcome']);
+        $this->assertSame($cliV2Version, $result['resolved_artifact_versions']['cli-v2']);
         $this->assertSame($workflowV1Version, $result['resolved_artifact_versions']['workflow-php-v1']);
         $this->assertSame($workflowV2Version, $result['resolved_artifact_versions']['workflow-php-v2']);
+        $this->assertSame($waterlineV2Version, $result['resolved_artifact_versions']['waterline-v2']);
+        $this->assertSame($cliV2Source, $result['artifact_sources']['cli-v2']);
         $this->assertSame($workflowV2Source, $result['artifact_sources']['workflow-php-v2']);
+        $this->assertSame($waterlineV2Source, $result['artifact_sources']['waterline-v2']);
     }
 
     public function test_runner_keeps_runner_blocked_flag_non_passing_without_blocked_reason(): void
@@ -1213,11 +1250,14 @@ class MigrationConformanceRunnerContractTest extends TestCase
         return [
             'server-v1' => '1.3.9',
             'server-v2' => '0.2.203',
-            'cli' => '0.1.70',
+            'cli-v1' => '0.1.44',
+            'cli-v2' => '0.1.70',
             'workflow-php-v1' => '1.7.4',
             'workflow-php-v2' => '2.0.0-alpha.185',
             'sdk-python' => '0.4.83',
-            'waterline' => '2.0.0-alpha.69',
+            'waterline-v1' => '1.4.2',
+            'waterline-v2' => '2.0.0-alpha.69',
+            'sample-app-v1' => 'v1.12.0',
         ];
     }
 
@@ -1229,11 +1269,14 @@ class MigrationConformanceRunnerContractTest extends TestCase
         return [
             'server-v1' => 'published_docker_image',
             'server-v2' => 'published_docker_image',
-            'cli' => 'official_install_script',
+            'cli-v1' => 'official_v1_install_script',
+            'cli-v2' => 'official_install_script',
             'workflow-php-v1' => 'composer_release',
             'workflow-php-v2' => 'composer_release',
             'sdk-python' => 'pypi_release',
-            'waterline' => 'published_waterline_release',
+            'waterline-v1' => 'published_waterline_v1_release',
+            'waterline-v2' => 'published_waterline_release',
+            'sample-app-v1' => 'published_sample_app_v1_tag',
         ];
     }
 

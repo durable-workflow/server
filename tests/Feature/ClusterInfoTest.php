@@ -615,14 +615,30 @@ class ClusterInfoTest extends TestCase
 
         $contract = $response->json('migration_runtime_contract');
         $this->assertIsArray($contract);
-        foreach (['server-v1', 'server-v2', 'cli', 'workflow-php-v1', 'workflow-php-v2', 'sdk-python', 'waterline'] as $artifact) {
+        foreach ([
+            'server-v1',
+            'server-v2',
+            'cli-v1',
+            'cli-v2',
+            'workflow-php-v1',
+            'workflow-php-v2',
+            'sdk-python',
+            'waterline-v1',
+            'waterline-v2',
+            'sample-app-v1',
+        ] as $artifact) {
             $this->assertArrayHasKey($artifact, $contract['artifact_policy']['install_channels']);
         }
         $this->assertContains('server-v1', $contract['required_matrix']['source_release_set']);
+        $this->assertContains('cli-v1', $contract['required_matrix']['source_release_set']);
         $this->assertContains('workflow-php-v1', $contract['required_matrix']['source_release_set']);
+        $this->assertContains('waterline-v1', $contract['required_matrix']['source_release_set']);
+        $this->assertContains('sample-app-v1', $contract['required_matrix']['source_release_set']);
         $this->assertContains('server-v2', $contract['required_matrix']['target_release_set']);
+        $this->assertContains('cli-v2', $contract['required_matrix']['target_release_set']);
         $this->assertContains('workflow-php-v2', $contract['required_matrix']['target_release_set']);
         $this->assertContains('sdk-python', $contract['required_matrix']['target_release_set']);
+        $this->assertContains('waterline-v2', $contract['required_matrix']['target_release_set']);
         $this->assertContains('completed_history', $contract['required_matrix']['state_kinds']);
         $this->assertContains('in_flight_workflow', $contract['required_matrix']['state_kinds']);
         $this->assertContains('retrying_activity', $contract['required_matrix']['state_kinds']);

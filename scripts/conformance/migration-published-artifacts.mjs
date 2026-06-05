@@ -26,11 +26,14 @@ const publicArtifactsPath = process.env.DW_MIGRATION_PUBLIC_ARTIFACTS_JSON
 const FALLBACK_REQUIRED_ARTIFACTS = [
   'server-v1',
   'server-v2',
-  'cli',
+  'cli-v1',
+  'cli-v2',
   'workflow-php-v1',
   'workflow-php-v2',
   'sdk-python',
-  'waterline',
+  'waterline-v1',
+  'waterline-v2',
+  'sample-app-v1',
 ];
 const FALLBACK_REQUIRED_SCENARIOS = [
   'published_artifact_install_only',
@@ -91,11 +94,14 @@ const FORBIDDEN_SOURCE_TOKENS = [
 const ARTIFACT_OWNERS = {
   'server-v1': 'server',
   'server-v2': 'server',
-  cli: 'cli',
+  'cli-v1': 'cli',
+  'cli-v2': 'cli',
   'workflow-php-v1': 'workflow',
   'workflow-php-v2': 'workflow',
   'sdk-python': 'sdk-python',
-  waterline: 'waterline',
+  'waterline-v1': 'waterline',
+  'waterline-v2': 'waterline',
+  'sample-app-v1': 'sample-app',
 };
 const SCENARIO_FINDING_POLICIES = {
   published_artifact_install_only: {
@@ -1245,12 +1251,15 @@ function artifactVersionsFromEnv() {
   return {
     'server-v1': stringValue(process.env.DW_SERVER_V1_VERSION),
     'server-v2': stringValue(process.env.DW_SERVER_V2_VERSION) || stringValue(process.env.DW_SERVER_VERSION),
-    cli: stringValue(process.env.DW_CLI_VERSION),
+    'cli-v1': stringValue(process.env.DW_CLI_V1_VERSION),
+    'cli-v2': stringValue(process.env.DW_CLI_V2_VERSION) || stringValue(process.env.DW_CLI_VERSION),
     'workflow-php-v1': stringValue(process.env.DW_WORKFLOW_PHP_V1_VERSION)
       || stringValue(process.env.DW_WORKFLOW_V1_VERSION),
     'workflow-php-v2': workflowV2,
     'sdk-python': stringValue(process.env.DW_PYTHON_SDK_VERSION),
-    waterline: stringValue(process.env.DW_WATERLINE_VERSION),
+    'waterline-v1': stringValue(process.env.DW_WATERLINE_V1_VERSION),
+    'waterline-v2': stringValue(process.env.DW_WATERLINE_V2_VERSION) || stringValue(process.env.DW_WATERLINE_VERSION),
+    'sample-app-v1': stringValue(process.env.DW_SAMPLE_APP_V1_VERSION) || stringValue(process.env.DW_SAMPLE_APP_VERSION),
   };
 }
 
@@ -1442,7 +1451,10 @@ function artifactSourcesFromEnv({ includeDefaults = false } = {}) {
     'server-v2': stringValue(process.env.DW_SERVER_V2_ARTIFACT_SOURCE)
       || stringValue(process.env.DW_SERVER_ARTIFACT_SOURCE)
       || defaultSource,
-    cli: stringValue(process.env.DW_CLI_ARTIFACT_SOURCE) || defaultSource,
+    'cli-v1': stringValue(process.env.DW_CLI_V1_ARTIFACT_SOURCE) || defaultSource,
+    'cli-v2': stringValue(process.env.DW_CLI_V2_ARTIFACT_SOURCE)
+      || stringValue(process.env.DW_CLI_ARTIFACT_SOURCE)
+      || defaultSource,
     'workflow-php-v1': stringValue(process.env.DW_WORKFLOW_PHP_V1_ARTIFACT_SOURCE)
       || stringValue(process.env.DW_WORKFLOW_V1_ARTIFACT_SOURCE)
       || defaultSource,
@@ -1451,7 +1463,13 @@ function artifactSourcesFromEnv({ includeDefaults = false } = {}) {
       || stringValue(process.env.DW_WORKFLOW_ARTIFACT_SOURCE)
       || defaultSource,
     'sdk-python': stringValue(process.env.DW_PYTHON_SDK_ARTIFACT_SOURCE) || defaultSource,
-    waterline: stringValue(process.env.DW_WATERLINE_ARTIFACT_SOURCE) || defaultSource,
+    'waterline-v1': stringValue(process.env.DW_WATERLINE_V1_ARTIFACT_SOURCE) || defaultSource,
+    'waterline-v2': stringValue(process.env.DW_WATERLINE_V2_ARTIFACT_SOURCE)
+      || stringValue(process.env.DW_WATERLINE_ARTIFACT_SOURCE)
+      || defaultSource,
+    'sample-app-v1': stringValue(process.env.DW_SAMPLE_APP_V1_ARTIFACT_SOURCE)
+      || stringValue(process.env.DW_SAMPLE_APP_ARTIFACT_SOURCE)
+      || defaultSource,
   };
 }
 

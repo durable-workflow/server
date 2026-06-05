@@ -30,16 +30,22 @@ Environment overrides:
   DW_SERVER_V1_ARTIFACT_SOURCE       Published source for the v1 server artifact.
   DW_SERVER_VERSION                  Exact target v2 server artifact version.
   DW_SERVER_ARTIFACT_SOURCE          Published source for the v2 server artifact.
-  DW_CLI_VERSION                     Exact published CLI version.
-  DW_CLI_ARTIFACT_SOURCE             Published source for the CLI artifact.
+  DW_CLI_V1_VERSION                  Exact latest supported v1 CLI artifact version.
+  DW_CLI_V1_ARTIFACT_SOURCE          Published source for the v1 CLI artifact.
+  DW_CLI_VERSION                     Exact published v2 CLI version.
+  DW_CLI_ARTIFACT_SOURCE             Published source for the v2 CLI artifact.
   DW_WORKFLOW_PHP_V1_VERSION         Exact published v1 workflow package version.
   DW_WORKFLOW_PHP_V1_ARTIFACT_SOURCE Published source for the v1 workflow package.
   DW_WORKFLOW_PHP_VERSION            Exact published v2 workflow package version.
   DW_WORKFLOW_PHP_ARTIFACT_SOURCE    Published source for the v2 workflow package.
   DW_PYTHON_SDK_VERSION              Exact published Python SDK version.
   DW_PYTHON_SDK_ARTIFACT_SOURCE      Published source for the Python SDK package.
-  DW_WATERLINE_VERSION               Exact published Waterline version.
-  DW_WATERLINE_ARTIFACT_SOURCE       Published source for the Waterline package.
+  DW_WATERLINE_V1_VERSION            Exact published v1 Waterline artifact version.
+  DW_WATERLINE_V1_ARTIFACT_SOURCE    Published source for the v1 Waterline artifact.
+  DW_WATERLINE_VERSION               Exact published v2 Waterline version.
+  DW_WATERLINE_ARTIFACT_SOURCE       Published source for the v2 Waterline package.
+  DW_SAMPLE_APP_V1_VERSION           Exact published v1-compatible sample-app tag or commit.
+  DW_SAMPLE_APP_V1_ARTIFACT_SOURCE   Published source for the v1-compatible sample-app.
 USAGE
 }
 

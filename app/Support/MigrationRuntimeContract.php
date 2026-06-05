@@ -62,15 +62,20 @@ final class MigrationRuntimeContract
                 'install_channels' => [
                     'server-v1' => 'latest supported v1 server image or release artifact pinned by exact tag or digest',
                     'server-v2' => 'Docker image durableworkflow/server:<exact patch version or digest with DW_SERVER_VERSION>',
-                    'cli' => 'official dw GitHub release install.sh asset after downloadability check',
+                    'cli-v1' => 'latest supported v1 dw CLI release asset or install path after downloadability check',
+                    'cli-v2' => 'official dw GitHub release install.sh asset for the target v2 train after downloadability check',
                     'workflow-php-v1' => 'Composer package durable-workflow/workflow or laravel-workflow/laravel-workflow at the latest supported v1 release',
                     'workflow-php-v2' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<exact>',
                     'sdk-python' => 'PyPI package durable-workflow==<exact>',
-                    'waterline' => 'published Waterline package matching the target release set',
+                    'waterline-v1' => 'published Waterline package at the latest supported v1 release',
+                    'waterline-v2' => 'published Waterline package matching the target v2 release set',
+                    'sample-app-v1' => 'published v1-compatible sample-app tag or commit used to seed realistic migration state',
                 ],
                 'release_artifact_aliases' => [
+                    'cli-v2' => ['cli'],
                     'workflow-php-v1' => ['workflow-v1'],
                     'workflow-php-v2' => ['workflow', 'workflow-php'],
+                    'waterline-v2' => ['waterline'],
                 ],
                 'forbidden_sources' => [
                     'local_product_source_checkout',
@@ -148,15 +153,21 @@ final class MigrationRuntimeContract
             'required_matrix' => [
                 'source_release_set' => [
                     'server-v1',
+                    'cli-v1',
                     'workflow-php-v1',
+                    'waterline-v1',
+                    'sample-app-v1',
                 ],
                 'target_release_set' => [
                     'server-v2',
+                    'cli-v2',
                     'workflow-php-v2',
                     'sdk-python',
+                    'waterline-v2',
                 ],
                 'client_paths' => [
-                    'cli',
+                    'cli-v1',
+                    'cli-v2',
                     'workflow-php-sdk',
                     'sdk-python',
                 ],

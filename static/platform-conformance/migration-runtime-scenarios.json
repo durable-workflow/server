@@ -48,19 +48,28 @@
     "required_artifacts": [
       "server-v1",
       "server-v2",
-      "cli",
+      "cli-v1",
+      "cli-v2",
       "workflow-php-v1",
       "workflow-php-v2",
       "sdk-python",
-      "waterline"
+      "waterline-v1",
+      "waterline-v2",
+      "sample-app-v1"
     ],
     "release_artifact_aliases": {
+      "cli-v2": [
+        "cli"
+      ],
       "workflow-php-v1": [
         "workflow-v1"
       ],
       "workflow-php-v2": [
         "workflow",
         "workflow-php"
+      ],
+      "waterline-v2": [
+        "waterline"
       ]
     }
   },
@@ -99,15 +108,21 @@
   "required_matrix": {
     "source_release_set": [
       "server-v1",
-      "workflow-php-v1"
+      "cli-v1",
+      "workflow-php-v1",
+      "waterline-v1",
+      "sample-app-v1"
     ],
     "target_release_set": [
       "server-v2",
+      "cli-v2",
       "workflow-php-v2",
-      "sdk-python"
+      "sdk-python",
+      "waterline-v2"
     ],
     "client_paths": [
-      "cli",
+      "cli-v1",
+      "cli-v2",
       "workflow-php-sdk",
       "sdk-python"
     ],

@@ -30,18 +30,36 @@ class MigrationRuntimeContractTest extends TestCase
             $manifest['scenario_manifest']['source_path'],
         );
 
-        foreach (['server-v1', 'server-v2', 'cli', 'workflow-php-v1', 'workflow-php-v2', 'sdk-python', 'waterline'] as $artifact) {
+        foreach ([
+            'server-v1',
+            'server-v2',
+            'cli-v1',
+            'cli-v2',
+            'workflow-php-v1',
+            'workflow-php-v2',
+            'sdk-python',
+            'waterline-v1',
+            'waterline-v2',
+            'sample-app-v1',
+        ] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
 
+        $this->assertSame(['cli'], $manifest['artifact_policy']['release_artifact_aliases']['cli-v2']);
         $this->assertSame(['workflow-v1'], $manifest['artifact_policy']['release_artifact_aliases']['workflow-php-v1']);
         $this->assertContains('workflow', $manifest['artifact_policy']['release_artifact_aliases']['workflow-php-v2']);
+        $this->assertSame(['waterline'], $manifest['artifact_policy']['release_artifact_aliases']['waterline-v2']);
         $this->assertTrue($manifest['artifact_policy']['release_records_without_assets_are_rejected']);
         $this->assertContains('server-v1', $manifest['required_matrix']['source_release_set']);
+        $this->assertContains('cli-v1', $manifest['required_matrix']['source_release_set']);
         $this->assertContains('workflow-php-v1', $manifest['required_matrix']['source_release_set']);
+        $this->assertContains('waterline-v1', $manifest['required_matrix']['source_release_set']);
+        $this->assertContains('sample-app-v1', $manifest['required_matrix']['source_release_set']);
         $this->assertContains('server-v2', $manifest['required_matrix']['target_release_set']);
+        $this->assertContains('cli-v2', $manifest['required_matrix']['target_release_set']);
         $this->assertContains('workflow-php-v2', $manifest['required_matrix']['target_release_set']);
         $this->assertContains('sdk-python', $manifest['required_matrix']['target_release_set']);
+        $this->assertContains('waterline-v2', $manifest['required_matrix']['target_release_set']);
 
         foreach ([
             'published_artifact_install_only',
@@ -422,7 +440,7 @@ class MigrationRuntimeContractTest extends TestCase
         $result = $this->completeMigrationResult();
         $result['published_artifact_versions']['workflow-php-v1'] = '1.x';
         $result['published_artifact_versions']['workflow-php-v2'] = '2.0.0-alpha.<latest>';
-        unset($result['resolved_artifact_versions']['waterline']);
+        unset($result['resolved_artifact_versions']['waterline-v2']);
 
         $evaluation = MigrationRuntimeResultGate::evaluate($result);
         $artifactFailures = array_values(array_filter(
@@ -439,7 +457,7 @@ class MigrationRuntimeContractTest extends TestCase
             [
                 'code' => 'missing_artifact_version',
                 'field' => 'resolved_artifact_versions',
-                'artifact' => 'waterline',
+                'artifact' => 'waterline-v2',
             ],
             $artifactFailures,
         );
@@ -461,7 +479,7 @@ class MigrationRuntimeContractTest extends TestCase
     {
         $result = $this->completeMigrationResult();
         $result['artifact_versions'] = $this->artifactVersions();
-        $result['artifact_versions']['cli'] = " \t ";
+        $result['artifact_versions']['cli-v2'] = " \t ";
         $result['published_artifact_versions']['workflow-php-v1'] = "\n ";
         $result['resolved_artifact_versions']['workflow-php-v2'] = '   ';
 
@@ -473,7 +491,7 @@ class MigrationRuntimeContractTest extends TestCase
 
         $this->assertSame('non_passing', $evaluation['status']);
         foreach ([
-            ['field' => 'artifact_versions', 'artifact' => 'cli'],
+            ['field' => 'artifact_versions', 'artifact' => 'cli-v2'],
             ['field' => 'published_artifact_versions', 'artifact' => 'workflow-php-v1'],
             ['field' => 'resolved_artifact_versions', 'artifact' => 'workflow-php-v2'],
         ] as $expected) {
@@ -489,18 +507,26 @@ class MigrationRuntimeContractTest extends TestCase
     {
         $result = $this->completeMigrationResult();
 
+        $result['published_artifact_versions']['cli'] = $result['published_artifact_versions']['cli-v2'];
         $result['published_artifact_versions']['workflow-v1'] = $result['published_artifact_versions']['workflow-php-v1'];
         $result['published_artifact_versions']['workflow'] = $result['published_artifact_versions']['workflow-php-v2'];
+        $result['published_artifact_versions']['waterline'] = $result['published_artifact_versions']['waterline-v2'];
         unset(
+            $result['published_artifact_versions']['cli-v2'],
             $result['published_artifact_versions']['workflow-php-v1'],
             $result['published_artifact_versions']['workflow-php-v2'],
+            $result['published_artifact_versions']['waterline-v2'],
         );
 
+        $result['resolved_artifact_versions']['cli'] = $result['resolved_artifact_versions']['cli-v2'];
         $result['resolved_artifact_versions']['workflow-v1'] = $result['resolved_artifact_versions']['workflow-php-v1'];
         $result['resolved_artifact_versions']['workflow-php'] = $result['resolved_artifact_versions']['workflow-php-v2'];
+        $result['resolved_artifact_versions']['waterline'] = $result['resolved_artifact_versions']['waterline-v2'];
         unset(
+            $result['resolved_artifact_versions']['cli-v2'],
             $result['resolved_artifact_versions']['workflow-php-v1'],
             $result['resolved_artifact_versions']['workflow-php-v2'],
+            $result['resolved_artifact_versions']['waterline-v2'],
         );
 
         $evaluation = MigrationRuntimeResultGate::evaluate($result);
@@ -513,8 +539,8 @@ class MigrationRuntimeContractTest extends TestCase
     {
         $result = $this->completeMigrationResult();
         unset(
-            $result['artifact_sources']['waterline'],
-            $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['waterline'],
+            $result['artifact_sources']['waterline-v2'],
+            $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['waterline-v2'],
         );
 
         $evaluation = MigrationRuntimeResultGate::evaluate($result);
@@ -528,7 +554,7 @@ class MigrationRuntimeContractTest extends TestCase
             [
                 'code' => 'missing_published_artifact_install_source',
                 'scenario_id' => 'published_artifact_install_only',
-                'artifact' => 'waterline',
+                'artifact' => 'waterline-v2',
             ],
             $sourceFailures,
         );
@@ -537,8 +563,8 @@ class MigrationRuntimeContractTest extends TestCase
     public function test_result_gate_rejects_placeholder_artifact_sources(): void
     {
         $result = $this->completeMigrationResult();
-        $result['artifact_sources']['cli'] = 'not_exercised';
-        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['cli'] = 'not_exercised';
+        $result['artifact_sources']['cli-v2'] = 'not_exercised';
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['cli-v2'] = 'not_exercised';
 
         $evaluation = MigrationRuntimeResultGate::evaluate($result);
 
@@ -546,7 +572,7 @@ class MigrationRuntimeContractTest extends TestCase
         $this->assertNotEmpty(array_filter(
             $evaluation['gate_failures'],
             static fn (array $failure): bool => ($failure['code'] ?? null) === 'forbidden_artifact_source'
-                && ($failure['artifact'] ?? null) === 'cli',
+                && ($failure['artifact'] ?? null) === 'cli-v2',
         ));
     }
 
@@ -644,11 +670,14 @@ class MigrationRuntimeContractTest extends TestCase
         return [
             'server-v1' => '1.3.9',
             'server-v2' => '0.2.203',
-            'cli' => '0.1.70',
+            'cli-v1' => '0.1.44',
+            'cli-v2' => '0.1.70',
             'workflow-php-v1' => '1.7.4',
             'workflow-php-v2' => '2.0.0-alpha.185',
             'sdk-python' => '0.4.83',
-            'waterline' => '2.0.0-alpha.69',
+            'waterline-v1' => '1.4.2',
+            'waterline-v2' => '2.0.0-alpha.69',
+            'sample-app-v1' => 'v1.12.0',
         ];
     }
 
@@ -660,11 +689,14 @@ class MigrationRuntimeContractTest extends TestCase
         return [
             'server-v1' => 'published_docker_image',
             'server-v2' => 'published_docker_image',
-            'cli' => 'official_install_script',
+            'cli-v1' => 'official_v1_install_script',
+            'cli-v2' => 'official_install_script',
             'workflow-php-v1' => 'composer_release',
             'workflow-php-v2' => 'composer_release',
             'sdk-python' => 'pypi_release',
-            'waterline' => 'published_waterline_release',
+            'waterline-v1' => 'published_waterline_v1_release',
+            'waterline-v2' => 'published_waterline_release',
+            'sample-app-v1' => 'published_sample_app_v1_tag',
         ];
     }
 
