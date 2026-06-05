@@ -225,6 +225,90 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_reads_default_install_evidence_and_rejects_non_passing_entries(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+        $installEvidencePath = $resultDir.'/artifact-install-evidence.json';
+        file_put_contents($installEvidencePath, json_encode([
+            'schema' => 'durable-workflow.v2.schedules-runtime.artifact-install-evidence',
+            'local_product_source_checkouts_used' => false,
+            'artifacts' => [
+                ['artifact' => 'server', 'version' => '0.2.323', 'source' => 'docker://durableworkflow/server:0.2.323', 'status' => 'pass'],
+                ['artifact' => 'cli', 'version' => '0.1.77', 'source' => 'https://github.com/durable-workflow/cli/releases/download/0.1.77/dw.phar', 'status' => 'fail'],
+                ['artifact' => 'sdk-python', 'version' => '0.4.85', 'source' => 'pypi://durable-workflow==0.4.85', 'status' => 'pass'],
+                ['artifact' => 'workflow-php', 'version' => '2.0.0-alpha.197', 'source' => 'packagist://durable-workflow/workflow@2.0.0-alpha.197', 'status' => 'pass'],
+                ['artifact' => 'waterline', 'version' => '2.0.0-alpha.83', 'source' => 'packagist://durable-workflow/waterline@2.0.0-alpha.83', 'status' => 'pass'],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SERVER_VERSION' => '0.2.323',
+                    'DW_CLI_VERSION' => '0.1.77',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.85',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-record.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $publishedArtifacts = json_decode(
+                (string) file_get_contents($resultDir.'/published-artifacts.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $installScenario = $result['scenario_results']['published_artifact_install_only'];
+            $this->assertSame('not_covered', $installScenario['status']);
+            $this->assertTrue($result['artifact_install_evidence']['supplied_install_evidence']);
+            $this->assertSame($installEvidencePath, $result['artifact_install_evidence']['supplied_install_evidence_path']);
+            $this->assertSame('fail', $result['artifact_install_evidence']['non_passing_artifacts']['cli']);
+            $this->assertSame($result['artifact_install_evidence'], $record['artifactInstallEvidence']);
+            $this->assertSame($result['artifact_install_evidence'], $publishedArtifacts['artifact_install_evidence']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_runner_promotes_supplied_python_smoke_evidence_without_passing_uncovered_cells(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));

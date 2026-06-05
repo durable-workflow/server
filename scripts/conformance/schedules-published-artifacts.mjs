@@ -31,8 +31,16 @@ const missedRestartEvidencePath = process.env.DW_SCHEDULES_MISSED_RESTART_EVIDEN
   ?? path.join(resultDir, 'schedules-missed-restart-evidence.json');
 const crossLanguageEvidencePath = process.env.DW_SCHEDULES_CROSS_LANGUAGE_EVIDENCE
   ?? path.join(resultDir, 'schedules-cross-language-evidence.json');
-const artifactInstallEvidencePath = process.env.DW_SCHEDULES_ARTIFACT_INSTALL_EVIDENCE
-  ?? path.join(resultDir, 'schedules-artifact-install-evidence.json');
+const configuredArtifactInstallEvidencePath = process.env.DW_SCHEDULES_ARTIFACT_INSTALL_EVIDENCE;
+const hasConfiguredArtifactInstallEvidencePath =
+  configuredArtifactInstallEvidencePath !== undefined
+  && configuredArtifactInstallEvidencePath.trim() !== '';
+const artifactInstallEvidencePath = hasConfiguredArtifactInstallEvidencePath
+  ? configuredArtifactInstallEvidencePath
+  : path.join(resultDir, 'schedules-artifact-install-evidence.json');
+const artifactInstallEvidenceFallbackPaths = hasConfiguredArtifactInstallEvidencePath
+  ? []
+  : [path.join(resultDir, 'artifact-install-evidence.json')];
 
 const DEFAULT_REQUIRED_SCENARIOS = [
   'published_artifact_install_only',
@@ -468,9 +476,14 @@ function publishedArtifactInstallPolicy(artifactVersions, artifactSources, evide
 }
 
 function artifactInstallEvidenceFrom(...containers) {
-  const explicit = readJsonIfExists(artifactInstallEvidencePath);
-  if (explicit && typeof explicit === 'object' && !Array.isArray(explicit)) {
-    return { ...explicit, source_path: artifactInstallEvidencePath };
+  for (const installEvidencePath of [
+    artifactInstallEvidencePath,
+    ...artifactInstallEvidenceFallbackPaths,
+  ]) {
+    const explicit = readJsonIfExists(installEvidencePath);
+    if (explicit && typeof explicit === 'object' && !Array.isArray(explicit)) {
+      return { ...explicit, source_path: installEvidencePath };
+    }
   }
 
   for (const container of containers) {

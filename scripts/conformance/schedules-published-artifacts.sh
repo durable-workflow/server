@@ -46,6 +46,12 @@ Environment overrides:
                                     cross-language schedule dispatch shard.
                                     Scenario results in this file are merged
                                     into the output.
+  DW_SCHEDULES_ARTIFACT_INSTALL_EVIDENCE
+                                    Optional JSON proving each artifact was
+                                    installed from a published channel. Defaults
+                                    to schedules-artifact-install-evidence.json
+                                    and then artifact-install-evidence.json in
+                                    the result directory.
   DW_SCHEDULES_RUN_CADENCE_SHARD    Set to 0 to skip the automatic Docker-backed
                                     cadence shard. Defaults to auto in this shell
                                     handoff: run it when Docker Compose and a
