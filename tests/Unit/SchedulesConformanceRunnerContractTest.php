@@ -644,6 +644,83 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_uses_source_free_shard_evidence_for_install_local_source_policy(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+        file_put_contents($resultDir.'/schedules-smoke-evidence.json', json_encode([
+            'schema' => 'durable-workflow.v2.schedules-runtime.cadence-evidence',
+            'local_product_source_checkouts_used' => false,
+            'scenario_results' => [
+                'cron_cadence' => [
+                    'status' => 'fail',
+                    'observed_outputs' => [
+                        'failure_reason' => 'published server did not become ready',
+                        'observed_fire_count' => 0,
+                    ],
+                    'linked_findings' => [],
+                ],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SERVER_VERSION' => '0.2.332',
+                    'DW_CLI_VERSION' => '0.1.77',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.85',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.198',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $installEvidence = $result['scenario_results']['published_artifact_install_only']['observed_outputs'];
+
+            $this->assertSame('not_covered', $result['scenario_results']['published_artifact_install_only']['status']);
+            $this->assertFalse($result['local_product_source_checkouts_used']);
+            $this->assertFalse($installEvidence['local_product_source_checkouts_used']);
+            $this->assertTrue($installEvidence['local_product_source_checkouts_explicitly_false']);
+            $this->assertNotContains(
+                'artifact_install_evidence.local_product_source_checkouts_used=false missing',
+                $installEvidence['policy_failures'],
+            );
+            $this->assertContains('server.artifact_install_evidence.source missing', $installEvidence['policy_failures']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_runner_derives_install_evidence_from_published_sources_and_explicit_source_free_env(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -1535,7 +1612,8 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         $source = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
 
         $this->assertStringContainsString('async function startPublishedComposeServices', $source);
-        $this->assertStringContainsString("'up', '-d', ...services", $source);
+        $this->assertStringContainsString("'up', '-d', '--wait', '--wait-timeout'", $source);
+        $this->assertStringNotContainsString("'up', '-d', ...services", $source);
         $this->assertStringNotContainsString("'run', '--rm', 'bootstrap'", $source);
         $this->assertStringNotContainsString("'--no-deps'", $source);
         $this->assertGreaterThanOrEqual(
@@ -1553,6 +1631,8 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('last observation:', $source);
         $this->assertStringContainsString('compactLogText(text)', $source);
         $this->assertStringContainsString('<empty response body>', $source);
+        $this->assertStringContainsString('compose diagnostics:', $source);
+        $this->assertStringContainsString('tailLogSnippet', $source);
     }
 
     /**

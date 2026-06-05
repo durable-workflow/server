@@ -76,6 +76,9 @@ Environment overrides:
   DW_SERVER_IMAGE                   Exact published server image/tag/digest to test.
   DW_SCHEDULES_SERVER_PORT          Host port for the published server. Defaults
                                     to a free port.
+  DW_SCHEDULES_COMPOSE_WAIT_TIMEOUT_SECONDS
+                                    Docker Compose --wait timeout for published
+                                    stack startup. Defaults to 180.
   DW_SCHEDULES_CADENCE_TIMEOUT_SECONDS
                                     Overall wait for cadence fires. Defaults to 420.
   DW_SCHEDULES_OPERATOR_PAUSE_SECONDS

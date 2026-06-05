@@ -1117,6 +1117,8 @@ function buildArtifactInstallEvidence(artifactVersions, artifactSources, evidenc
     || truthyEvidenceFlag(supplied.localProductSourceCheckoutsUsed);
   const installEvidenceLocalProductSourceExplicitFalse = explicitFalse(supplied.local_product_source_checkouts_used)
     || explicitFalse(supplied.localProductSourceCheckoutsUsed);
+  const installLayerLocalProductSourceExplicitFalse = installEvidenceLocalProductSourceExplicitFalse
+    || localProductSourceCheckoutsExplicitlyFalse(evidence, outputs);
   const evidenceSupplied = suppliedEvidencePresent || derivedEvidencePresent;
   const policyFailures = [];
   const missingArtifactVersions = [];
@@ -1133,7 +1135,7 @@ function buildArtifactInstallEvidence(artifactVersions, artifactSources, evidenc
 
   if (localProductSourceUsed || installEvidenceLocalProductSourceUsed) {
     policyFailures.push('artifact_install_evidence.local_product_source_checkouts_used=true');
-  } else if (!installEvidenceLocalProductSourceExplicitFalse) {
+  } else if (!installLayerLocalProductSourceExplicitFalse) {
     policyFailures.push('artifact_install_evidence.local_product_source_checkouts_used=false missing');
   }
 
@@ -1244,8 +1246,8 @@ function buildArtifactInstallEvidence(artifactVersions, artifactSources, evidenc
     artifact_source_verification: artifactSourceVerification,
     local_product_source_checkouts_used: localProductSourceUsed
       ? true
-      : (installEvidenceLocalProductSourceExplicitFalse ? false : null),
-    local_product_source_checkouts_explicitly_false: installEvidenceLocalProductSourceExplicitFalse,
+      : (installLayerLocalProductSourceExplicitFalse ? false : null),
+    local_product_source_checkouts_explicitly_false: installLayerLocalProductSourceExplicitFalse,
     artifacts,
     missing_artifact_install_evidence: !evidenceSupplied,
     missing_artifact_install_evidence_artifacts: missingArtifacts,
@@ -1518,7 +1520,7 @@ async function maybeRunCadenceShard(startedAt, artifactVersions, artifactSources
       existingServerUrl: serverUrl,
     });
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    const reason = failureReasonWithShardLogs(error, 'schedules-cadence');
     return cadenceFailureEvidence(reason, startedAt, artifactVersions, artifactSources);
   }
 }
@@ -1556,6 +1558,7 @@ async function runCadenceShard({ startedAt, artifactVersions, artifactSources, s
       ['image', 'pull', serverImage],
       path.join(resultDir, 'schedules-cadence-docker-pull.log'),
     );
+    composeStarted = true;
     await startPublishedComposeServices({
       composeProject,
       composeFiles,
@@ -1564,9 +1567,7 @@ async function runCadenceShard({ startedAt, artifactVersions, artifactSources, s
       token,
       artifactVersions,
       logPrefix: 'schedules-cadence',
-      services: ['server', 'scheduler'],
     });
-    composeStarted = true;
   }
 
   try {
@@ -2018,7 +2019,7 @@ async function maybeRunOperatorControlsShard(startedAt, artifactVersions, artifa
       existingServerUrl: serverUrl,
     });
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    const reason = failureReasonWithShardLogs(error, 'schedules-operator-controls');
     return operatorControlsFailureEvidence(reason, startedAt, artifactVersions, artifactSources);
   }
 }
@@ -2056,6 +2057,7 @@ async function runOperatorControlsShard({ startedAt, artifactVersions, artifactS
       ['image', 'pull', serverImage],
       path.join(resultDir, 'schedules-operator-controls-docker-pull.log'),
     );
+    composeStarted = true;
     await startPublishedComposeServices({
       composeProject,
       composeFiles,
@@ -2064,9 +2066,7 @@ async function runOperatorControlsShard({ startedAt, artifactVersions, artifactS
       token,
       artifactVersions,
       logPrefix: 'schedules-operator-controls',
-      services: ['server', 'scheduler'],
     });
-    composeStarted = true;
   }
 
   try {
@@ -3003,7 +3003,7 @@ async function maybeRunMissedRestartShard(startedAt, artifactVersions, artifactS
       serverImage,
     });
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    const reason = failureReasonWithShardLogs(error, 'schedules-missed-restart');
     return missedRestartFailureEvidence(reason, startedAt, artifactVersions, artifactSources);
   }
 }
@@ -3041,13 +3041,24 @@ async function runMissedRestartShard({ startedAt, artifactVersions, artifactSour
     ['image', 'pull', serverImage],
     path.join(resultDir, 'schedules-missed-restart-docker-pull.log'),
   );
+  composeStarted = true;
   await execLogged(
     'docker',
-    ['compose', '-p', composeProject, ...composeFiles, 'up', '-d', 'server'],
+    [
+      'compose',
+      '-p',
+      composeProject,
+      ...composeFiles,
+      'up',
+      '-d',
+      '--wait',
+      '--wait-timeout',
+      String(positiveInt(process.env.DW_SCHEDULES_COMPOSE_WAIT_TIMEOUT_SECONDS, 180)),
+      'server',
+    ],
     path.join(resultDir, 'schedules-missed-restart-compose-up.log'),
     env,
   );
-  composeStarted = true;
 
   try {
     await waitForServerReady(serverUrl, 120);
@@ -3729,7 +3740,7 @@ async function maybeRunCliSurfaceShard(startedAt, artifactVersions, artifactSour
       existingServerUrl: serverUrl,
     });
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    const reason = failureReasonWithShardLogs(error, 'schedules-cli');
     return cliSurfaceBlockedEvidence(reason, startedAt, artifactVersions, artifactSources);
   }
 }
@@ -3755,6 +3766,7 @@ async function runCliSurfaceShard({ startedAt, artifactVersions, artifactSources
       ['image', 'pull', serverImage],
       path.join(resultDir, 'schedules-cli-docker-pull.log'),
     );
+    composeStarted = true;
     await startPublishedComposeServices({
       composeProject,
       composeFiles,
@@ -3763,9 +3775,7 @@ async function runCliSurfaceShard({ startedAt, artifactVersions, artifactSources
       token,
       artifactVersions,
       logPrefix: 'schedules-cli',
-      services: ['server'],
     });
-    composeStarted = true;
   }
 
   try {
@@ -3935,14 +3945,14 @@ async function startPublishedComposeServices({
   token,
   artifactVersions,
   logPrefix,
-  services,
 }) {
   const env = composeEnv(serverPort, serverImage, token, artifactVersions);
   const baseArgs = ['compose', '-p', composeProject, ...composeFiles];
+  const waitTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_COMPOSE_WAIT_TIMEOUT_SECONDS, 180);
 
   await execLogged(
     'docker',
-    [...baseArgs, 'up', '-d', ...services],
+    [...baseArgs, 'up', '-d', '--wait', '--wait-timeout', String(waitTimeoutSeconds)],
     path.join(resultDir, `${logPrefix}-compose-up.log`),
     env,
   );
@@ -4306,7 +4316,7 @@ async function maybeRunCrossLanguageShard(startedAt, artifactVersions, artifactS
       existingServerUrl: serverUrl,
     });
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    const reason = failureReasonWithShardLogs(error, 'schedules-cross-language');
     return crossLanguageBlockedEvidence(reason, startedAt, artifactVersions, artifactSources);
   }
 }
@@ -4351,6 +4361,7 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
       ['image', 'pull', serverImage],
       path.join(resultDir, 'schedules-cross-language-docker-pull.log'),
     );
+    composeStarted = true;
     await startPublishedComposeServices({
       composeProject,
       composeFiles,
@@ -4359,9 +4370,7 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
       token,
       artifactVersions,
       logPrefix: 'schedules-cross-language',
-      services: ['server', 'scheduler'],
     });
-    composeStarted = true;
   }
 
   try {
@@ -5413,6 +5422,52 @@ function compactLogText(value, limit = 1000) {
   }
 
   return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized;
+}
+
+function failureReasonWithShardLogs(error, logPrefix) {
+  const reason = error instanceof Error ? error.message : String(error);
+  const diagnostics = composeLogDiagnostics(logPrefix);
+
+  return diagnostics === '' ? reason : `${reason}; compose diagnostics: ${diagnostics}`;
+}
+
+function composeLogDiagnostics(logPrefix) {
+  const summaries = [];
+  for (const logName of [
+    'compose-up',
+    'server',
+    'bootstrap',
+    'scheduler',
+    'mysql',
+    'redis',
+  ]) {
+    const fileName = `${logPrefix}-${logName}.log`;
+    const snippet = tailLogSnippet(path.join(resultDir, fileName));
+    if (snippet !== '') {
+      summaries.push(`${fileName}: ${snippet}`);
+    }
+  }
+
+  return summaries.slice(0, 4).join(' | ');
+}
+
+function tailLogSnippet(filePath, limit = 700) {
+  let text = '';
+  try {
+    text = fs.readFileSync(filePath, 'utf8');
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      return '';
+    }
+    return `unable to read ${path.basename(filePath)}: ${error instanceof Error ? error.message : String(error)}`;
+  }
+
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+
+  return compactLogText(lines.slice(-12).join(' '), limit);
 }
 
 async function collectComposeLogs(composeProject, composeFiles) {
