@@ -24,6 +24,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         foreach ([
             "if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')",
             'scripts/ci/validate-release-image-publish.sh',
+            'scripts/ci/select-compatible-workflow-package-ref.sh',
             'DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}',
             'DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}',
             'GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}',
@@ -44,6 +45,31 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertLessThan($dockerHubLoginOffset, $guardOffset);
         $this->assertLessThan($ghcrLoginOffset, $guardOffset);
         $this->assertLessThan($pushOffset, $guardOffset);
+    }
+
+    public function test_release_workflow_selects_compatible_workflow_package_before_docker_work(): void
+    {
+        $workflow = $this->read('.github/workflows/release.yml');
+
+        $this->assertStringContainsString('Select compatible workflow package version', $workflow);
+        $this->assertStringContainsString('id: workflow', $workflow);
+        $this->assertStringContainsString('scripts/ci/select-compatible-workflow-package-ref.sh', $workflow);
+        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF=${{ steps.workflow.outputs.tag }}', $workflow);
+        $this->assertStringNotContainsString('Get latest workflow package version', $workflow);
+        $this->assertStringNotContainsString('LATEST_TAG=$(git ls-remote', $workflow);
+
+        $selectorOffset = strpos($workflow, 'Select compatible workflow package version');
+        $qemuOffset = strpos($workflow, 'Set up QEMU');
+        $buildxOffset = strpos($workflow, 'Set up Docker Buildx');
+        $buildOffset = strpos($workflow, 'Build and push exact image tags');
+
+        $this->assertIsInt($selectorOffset);
+        $this->assertIsInt($qemuOffset);
+        $this->assertIsInt($buildxOffset);
+        $this->assertIsInt($buildOffset);
+        $this->assertLessThan($qemuOffset, $selectorOffset);
+        $this->assertLessThan($buildxOffset, $selectorOffset);
+        $this->assertLessThan($buildOffset, $selectorOffset);
     }
 
     public function test_release_workflow_promotes_rolling_aliases_only_after_current_tag_guard(): void
@@ -282,6 +308,62 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         } finally {
             @unlink($evidenceFile);
         }
+    }
+
+    public function test_workflow_package_selector_picks_newest_prerelease_matching_server_protocol(): void
+    {
+        $outputFile = tempnam(sys_get_temp_dir(), 'workflow-package-output-');
+        $this->assertIsString($outputFile);
+
+        try {
+            $result = $this->runScript('scripts/ci/select-compatible-workflow-package-ref.sh', [
+                'WORKFLOW_PACKAGE_KNOWN_TAGS' => implode("\n", [
+                    'refs/tags/2.0.0-alpha.196',
+                    'refs/tags/2.0.0-alpha.198',
+                    'refs/tags/2.0.0-alpha.199',
+                    'refs/tags/2.0.0-alpha.be7ddbc37b41',
+                    'refs/tags/1.0.0-alpha.1',
+                ]),
+                'WORKFLOW_PACKAGE_PROTOCOL_VERSIONS' => implode("\n", [
+                    '2.0.0-alpha.196=1.9',
+                    '2.0.0-alpha.198=1.9',
+                    '2.0.0-alpha.199=1.10',
+                ]),
+                'GITHUB_OUTPUT' => $outputFile,
+            ]);
+
+            $this->assertSame(0, $result['exitCode']);
+            $outputs = file_get_contents($outputFile);
+            $this->assertNotFalse($outputs);
+            $this->assertStringContainsString("tag=2.0.0-alpha.198\n", $outputs);
+            $this->assertStringContainsString("protocol=1.9\n", $outputs);
+            $this->assertStringContainsString("server_protocol=1.9\n", $outputs);
+            $this->assertStringContainsString(
+                'Using workflow package version: 2.0.0-alpha.198 (worker protocol 1.9, server requires 1.9)',
+                $result['stdout'],
+            );
+        } finally {
+            @unlink($outputFile);
+        }
+    }
+
+    public function test_workflow_package_selector_fails_when_no_compatible_prerelease_exists(): void
+    {
+        $result = $this->runScript('scripts/ci/select-compatible-workflow-package-ref.sh', [
+            'WORKFLOW_PACKAGE_KNOWN_TAGS' => implode("\n", [
+                'refs/tags/2.0.0-alpha.199',
+            ]),
+            'WORKFLOW_PACKAGE_PROTOCOL_VERSIONS' => implode("\n", [
+                '2.0.0-alpha.199=1.10',
+            ]),
+        ]);
+
+        $this->assertSame(1, $result['exitCode']);
+        $this->assertStringContainsString(
+            'No compatible durable-workflow/workflow prerelease tag found for server worker protocol 1.9',
+            $result['stderr'],
+        );
+        $this->assertStringContainsString('2.0.0-alpha.199 advertises worker protocol 1.10', $result['stderr']);
     }
 
     /**
