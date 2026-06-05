@@ -220,6 +220,10 @@ class SchedulesRuntimeContractTest extends TestCase
             'cadence_observation_counts_match_scenario_requirements',
             $resultGate['pass_requires'],
         );
+        $this->assertContains(
+            'published_artifact_install_evidence_has_passing_non_local_entries',
+            $resultGate['pass_requires'],
+        );
         $this->assertSame('non_passing', $resultGate['smoke_subset_outcome']);
         $this->assertTrue($resultGate['artifact_version_policy']['requires_recorded_and_pinned_versions']);
         $this->assertTrue($resultGate['artifact_version_policy']['rejects_placeholder_versions']);
@@ -436,6 +440,57 @@ class SchedulesRuntimeContractTest extends TestCase
         $this->assertNotEmpty($missingExplicitFalseFailures);
     }
 
+    public function test_result_gate_requires_published_artifact_install_evidence(): void
+    {
+        $result = $this->completeSchedulesResult();
+        unset($result['artifact_install_evidence']);
+        unset($result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_install_evidence']);
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'missing_published_artifact_install_evidence',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_non_passing_artifact_install_evidence(): void
+    {
+        $result = $this->completeSchedulesResult();
+        $result['artifact_install_evidence']['artifacts'][1]['status'] = 'not_covered';
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_install_evidence']['artifacts'][1]['status'] =
+            'not_covered';
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'published_artifact_install_evidence_not_pass'
+                && ($failure['artifact'] ?? null) === 'cli',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($failures);
+    }
+
+    public function test_result_gate_rejects_forbidden_artifact_install_evidence_source(): void
+    {
+        $result = $this->completeSchedulesResult();
+        $result['artifact_install_evidence']['artifacts'][0]['source'] = 'workspace_repo_as_artifact_under_test';
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_install_evidence']['artifacts'][0]['source'] =
+            'workspace_repo_as_artifact_under_test';
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+        $failures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'forbidden_published_artifact_install_evidence_source'
+                && ($failure['artifact'] ?? null) === 'server',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($failures);
+    }
+
     public function test_result_gate_rejects_unallowlisted_published_install_source_label(): void
     {
         $result = $this->completeSchedulesResult();
@@ -449,6 +504,25 @@ class SchedulesRuntimeContractTest extends TestCase
             static fn (array $failure): bool => ($failure['code'] ?? null) === 'invalid_published_artifact_install_source'
                 && ($failure['scenario_id'] ?? null) === 'published_artifact_install_only'
                 && ($failure['artifact'] ?? null) === 'server',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($invalidSourceFailures);
+    }
+
+    public function test_result_gate_rejects_unallowlisted_artifact_install_evidence_source_label(): void
+    {
+        $result = $this->completeSchedulesResult();
+        $result['artifact_install_evidence']['artifacts'][2]['source'] = 'pypi_package';
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_install_evidence']['artifacts'][2]['source'] =
+            'pypi_package';
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+        $invalidSourceFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'invalid_published_artifact_install_evidence_source'
+                && ($failure['scenario_id'] ?? null) === 'published_artifact_install_only'
+                && ($failure['artifact'] ?? null) === 'sdk-python',
         ));
 
         $this->assertSame('non_passing', $evaluation['status']);
@@ -471,6 +545,21 @@ class SchedulesRuntimeContractTest extends TestCase
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertNotEmpty($forbiddenSourceFailures);
+    }
+
+    public function test_result_gate_rejects_local_product_source_checkout_use_flags(): void
+    {
+        $result = $this->completeSchedulesResult();
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['local_product_source_checkouts_used'] =
+            'true';
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_install_evidence']['artifacts'][1]['local_product_source_checkouts_used'] =
+            true;
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('local_product_source_checkouts_used_must_be_false', $failureCodes);
     }
 
     public function test_result_gate_rejects_placeholder_artifact_versions_embedded_in_install_channel_strings(): void
@@ -596,11 +685,12 @@ class SchedulesRuntimeContractTest extends TestCase
     private function completeSchedulesResult(): array
     {
         $artifactSources = [
-            'server' => 'published_docker_image',
-            'cli' => 'official_install_script',
-            'sdk-python' => 'pypi_release',
-            'workflow' => 'composer_release',
-            'waterline' => 'published_waterline_release',
+            'server' => 'docker://durableworkflow/server:0.2.174',
+            'cli' => 'https://github.com/durable-workflow/cli/releases/download/0.1.56/dw.phar',
+            'sdk-python' => 'pypi://durable-workflow==0.4.74',
+            'workflow' => 'packagist://durable-workflow/workflow@2.0.0-alpha.175',
+            'workflow-php' => 'packagist://durable-workflow/workflow@2.0.0-alpha.175',
+            'waterline' => 'packagist://durable-workflow/waterline@2.0.0-alpha.57',
         ];
         $cronCadence = [
             'actual_fire_timestamps' => [
@@ -733,8 +823,26 @@ class SchedulesRuntimeContractTest extends TestCase
             'published_artifact_install_only' => [
                 'status' => 'pass',
                 'observed_outputs' => [
+                    'resolved_artifact_versions' => [
+                        'server' => '0.2.174',
+                        'cli' => '0.1.56',
+                        'sdk-python' => '0.4.74',
+                        'workflow' => '2.0.0-alpha.175',
+                        'workflow-php' => '2.0.0-alpha.175',
+                        'waterline' => '2.0.0-alpha.57',
+                    ],
                     'artifact_sources' => $artifactSources,
                     'local_product_source_checkouts_used' => false,
+                    'artifact_install_evidence' => [
+                        'local_product_source_checkouts_used' => false,
+                        'artifacts' => [
+                            ['artifact' => 'server', 'version' => '0.2.174', 'source' => $artifactSources['server'], 'status' => 'pass'],
+                            ['artifact' => 'cli', 'version' => '0.1.56', 'source' => $artifactSources['cli'], 'status' => 'pass'],
+                            ['artifact' => 'sdk-python', 'version' => '0.4.74', 'source' => $artifactSources['sdk-python'], 'status' => 'pass'],
+                            ['artifact' => 'workflow-php', 'version' => '2.0.0-alpha.175', 'source' => $artifactSources['workflow-php'], 'status' => 'pass'],
+                            ['artifact' => 'waterline', 'version' => '2.0.0-alpha.57', 'source' => $artifactSources['waterline'], 'status' => 'pass'],
+                        ],
+                    ],
                 ],
             ],
             'cron_cadence' => ['status' => 'pass', 'observed_outputs' => $cronCadence],
@@ -768,6 +876,7 @@ class SchedulesRuntimeContractTest extends TestCase
             ],
             'artifact_sources' => $artifactSources,
             'local_product_source_checkouts_used' => false,
+            'artifact_install_evidence' => $scenarioResults['published_artifact_install_only']['observed_outputs']['artifact_install_evidence'],
             'topology' => [
                 'namespace' => 'schedules-conformance',
                 'task_queue' => 'schedules-shared',

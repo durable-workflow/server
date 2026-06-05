@@ -9,7 +9,7 @@ use PHPUnit\Framework\TestCase;
 
 final class SchedulesConformanceRunnerContractTest extends TestCase
 {
-    public function test_published_artifact_runner_writes_focused_not_covered_findings(): void
+    public function test_published_artifact_runner_requires_supplied_install_evidence_for_install_cell_pass(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
         if ($nodeBinary === '') {
@@ -66,9 +66,39 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             $this->assertFalse($result['runner_blocked']);
             $this->assertSame('0.2.244', $result['artifact_versions']['server']);
             $this->assertSame('0.1.75', $record['artifactVersions']['cli']);
+            $this->assertNull($result['local_product_source_checkouts_used']);
+            $this->assertSame('not_exercised', $result['artifact_sources']['server']);
+            $this->assertSame('not_exercised', $result['artifact_sources']['cli']);
+            $this->assertSame('not_exercised', $result['artifact_sources']['sdk-python']);
+            $this->assertSame('not_exercised', $result['artifact_sources']['workflow-php']);
+            $this->assertSame('not_exercised', $result['artifact_sources']['waterline']);
+            $this->assertSame($result['artifact_sources'], $record['artifactSources']);
 
             $requiredScenarios = SchedulesRuntimeContract::manifest()['required_scenarios'];
             $this->assertSame($requiredScenarios, array_keys($result['scenario_results']));
+            $this->assertSame('not_covered', $result['scenario_results']['published_artifact_install_only']['status']);
+            $this->assertNotEmpty($result['scenario_results']['published_artifact_install_only']['linked_findings']);
+            $this->assertFalse(
+                $result['scenario_results']['published_artifact_install_only']['observed_outputs']['published_install_tuple_proven'],
+            );
+            $this->assertNull(
+                $result['scenario_results']['published_artifact_install_only']['observed_outputs']['local_product_source_checkouts_used'],
+            );
+            $this->assertSame(
+                ['server', 'cli', 'sdk-python', 'workflow-php', 'waterline'],
+                array_column(
+                    $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifacts'],
+                    'artifact',
+                ),
+            );
+            $this->assertSame(
+                'not_covered',
+                $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifacts'][0]['status'],
+            );
+            $this->assertSame(
+                'not_exercised',
+                $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['waterline'],
+            );
 
             foreach ($requiredScenarios as $scenarioId) {
                 $scenario = $result['scenario_results'][$scenarioId];
@@ -98,6 +128,97 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             $this->assertSame(
                 'server',
                 $result['scenario_results']['invalid_cron_refusal']['linked_findings'][0]['owning_surface'],
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_runner_passes_install_cell_with_supplied_install_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+        $installEvidencePath = $resultDir.'/schedules-artifact-install-evidence.json';
+        file_put_contents($installEvidencePath, json_encode([
+            'schema' => 'durable-workflow.v2.schedules-runtime.artifact-install-evidence',
+            'local_product_source_checkouts_used' => false,
+            'artifacts' => [
+                ['artifact' => 'server', 'version' => '0.2.244', 'source' => 'docker://durableworkflow/server:0.2.244', 'status' => 'pass'],
+                ['artifact' => 'cli', 'version' => '0.1.75', 'source' => 'https://github.com/durable-workflow/cli/releases/download/0.1.75/dw.phar', 'status' => 'pass'],
+                ['artifact' => 'sdk-python', 'version' => '0.4.84', 'source' => 'pypi://durable-workflow==0.4.84', 'status' => 'pass'],
+                ['artifact' => 'workflow-php', 'version' => '2.0.0-alpha.189', 'source' => 'packagist://durable-workflow/workflow@2.0.0-alpha.189', 'status' => 'pass'],
+                ['artifact' => 'waterline', 'version' => '2.0.0-alpha.77', 'source' => 'packagist://durable-workflow/waterline@2.0.0-alpha.77', 'status' => 'pass'],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SCHEDULES_ARTIFACT_INSTALL_EVIDENCE' => $installEvidencePath,
+                    'DW_SERVER_VERSION' => '0.2.244',
+                    'DW_CLI_VERSION' => '0.1.75',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.84',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.189',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.77',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-record.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $installScenario = $result['scenario_results']['published_artifact_install_only'];
+            $this->assertSame('pass', $installScenario['status']);
+            $this->assertSame([], $installScenario['linked_findings']);
+            $this->assertTrue($installScenario['observed_outputs']['published_install_tuple_proven']);
+            $this->assertTrue($installScenario['observed_outputs']['supplied_install_evidence']);
+            $this->assertFalse($installScenario['observed_outputs']['local_product_source_checkouts_used']);
+            $this->assertSame(
+                ['pass', 'pass', 'pass', 'pass', 'pass'],
+                array_column($installScenario['observed_outputs']['artifacts'], 'status'),
+            );
+            $this->assertSame('docker://durableworkflow/server:0.2.244', $result['artifact_sources']['server']);
+            $this->assertSame(
+                'packagist://durable-workflow/workflow@2.0.0-alpha.189',
+                $record['artifactSources']['workflow-php'],
+            );
+            $this->assertSame(
+                $installScenario['observed_outputs'],
+                $result['artifact_install_evidence'],
             );
         } finally {
             $this->removeDirectory($resultDir);
@@ -192,6 +313,18 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         $repoRoot = dirname(__DIR__, 2);
         $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
         mkdir($resultDir);
+        $installEvidencePath = $resultDir.'/schedules-artifact-install-evidence.json';
+        file_put_contents($installEvidencePath, json_encode([
+            'schema' => 'durable-workflow.v2.schedules-runtime.artifact-install-evidence',
+            'local_product_source_checkouts_used' => false,
+            'artifacts' => [
+                ['artifact' => 'server', 'version' => '0.2.307', 'source' => 'docker://durableworkflow/server:0.2.307', 'status' => 'pass'],
+                ['artifact' => 'cli', 'version' => '0.1.77', 'source' => 'https://github.com/durable-workflow/cli/releases/download/0.1.77/dw.phar', 'status' => 'pass'],
+                ['artifact' => 'sdk-python', 'version' => '0.4.85', 'source' => 'pypi://durable-workflow==0.4.85', 'status' => 'pass'],
+                ['artifact' => 'workflow-php', 'version' => '2.0.0-alpha.197', 'source' => 'packagist://durable-workflow/workflow@2.0.0-alpha.197', 'status' => 'pass'],
+                ['artifact' => 'waterline', 'version' => '2.0.0-alpha.83', 'source' => 'packagist://durable-workflow/waterline@2.0.0-alpha.83', 'status' => 'pass'],
+            ],
+        ], JSON_THROW_ON_ERROR));
 
         try {
             $process = proc_open(
@@ -206,16 +339,17 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
                     'DW_SCHEDULES_RESULT_DIR' => $resultDir,
                     'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SCHEDULES_ARTIFACT_INSTALL_EVIDENCE' => $installEvidencePath,
                     'DW_SERVER_VERSION' => '0.2.307',
                     'DW_CLI_VERSION' => '0.1.77',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
                     'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
                     'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
-                    'DW_SERVER_ARTIFACT_SOURCE' => 'published_docker_image',
-                    'DW_CLI_ARTIFACT_SOURCE' => 'official_install_script',
-                    'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi',
-                    'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'composer_packagist',
-                    'DW_WATERLINE_ARTIFACT_SOURCE' => 'published_waterline_artifact',
+                    'DW_SERVER_ARTIFACT_SOURCE' => 'docker://durableworkflow/server:0.2.307',
+                    'DW_CLI_ARTIFACT_SOURCE' => 'https://github.com/durable-workflow/cli/releases/download/0.1.77/dw.phar',
+                    'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi://durable-workflow==0.4.85',
+                    'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'packagist://durable-workflow/workflow@2.0.0-alpha.197',
+                    'DW_WATERLINE_ARTIFACT_SOURCE' => 'packagist://durable-workflow/waterline@2.0.0-alpha.83',
                     'DW_SCHEDULES_LOCAL_PRODUCT_SOURCE_CHECKOUTS_USED' => 'false',
                 ],
             );
@@ -241,13 +375,16 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             $this->assertSame([], $scenario['linked_findings']);
             $this->assertFalse($result['local_product_source_checkouts_used']);
             $this->assertSame('0.2.307', $scenario['observed_outputs']['artifacts']['server']['version']);
-            $this->assertSame('official_install_script', $scenario['observed_outputs']['artifacts']['cli']['source']);
             $this->assertSame(
-                'composer_packagist',
+                'https://github.com/durable-workflow/cli/releases/download/0.1.77/dw.phar',
+                $scenario['observed_outputs']['artifacts']['cli']['source'],
+            );
+            $this->assertSame(
+                'packagist://durable-workflow/workflow@2.0.0-alpha.197',
                 $scenario['observed_outputs']['artifacts']['workflow-php']['source'],
             );
             $this->assertSame(
-                'published_waterline_artifact',
+                'packagist://durable-workflow/waterline@2.0.0-alpha.83',
                 $scenario['observed_outputs']['artifacts']['waterline']['source'],
             );
         } finally {

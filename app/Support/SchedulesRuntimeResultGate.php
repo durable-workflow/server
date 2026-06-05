@@ -130,6 +130,7 @@ final class SchedulesRuntimeResultGate
                 'overall_outcome_matches_gate_status',
                 'published_artifact_versions_are_recorded_and_pinned',
                 'no_local_product_source_artifacts_are_reported',
+                'published_artifact_install_evidence_has_passing_non_local_entries',
             ],
             'smoke_subset_outcome' => 'non_passing',
         ];
@@ -827,7 +828,15 @@ final class SchedulesRuntimeResultGate
     private static function sourcePolicyFailures(array $result, array $contract, array $scenarioResults): array
     {
         $artifactPolicy = self::arrayField($contract, ['artifact_policy']) ?? [];
-        $forbiddenSources = self::stringList($artifactPolicy['forbidden_sources'] ?? []);
+        $forbiddenSources = array_values(array_unique(array_merge(
+            self::stringList($artifactPolicy['forbidden_sources'] ?? []),
+            [
+                'local_checkout_artifact',
+                'local_checkout',
+                'local_source_checkout',
+                'workspace_repo',
+            ],
+        )));
         $reportedSourceSets = [];
         $topLevelSources = self::arrayField($result, ['artifact_sources', 'artifactSources']);
         if ($topLevelSources !== null) {
@@ -1192,6 +1201,167 @@ final class SchedulesRuntimeResultGate
                     'artifact' => $artifact,
                     'source' => $source,
                     'field' => 'artifact_sources',
+                ];
+            }
+        }
+
+        $installEvidence = self::arrayField($outputs, [
+            'artifact_install_evidence',
+            'artifactInstallEvidence',
+            'install_evidence',
+            'installEvidence',
+        ]);
+        if ($installEvidence === null && self::arrayField($outputs, ['artifacts']) !== null) {
+            $installEvidence = $outputs;
+        }
+        if ($installEvidence === null) {
+            $installEvidence = self::arrayField($result, [
+                'artifact_install_evidence',
+                'artifactInstallEvidence',
+                'install_evidence',
+                'installEvidence',
+            ]);
+        }
+        if ($installEvidence === null) {
+            $failures[] = [
+                'code' => 'missing_published_artifact_install_evidence',
+                'scenario_id' => 'published_artifact_install_only',
+                'field' => 'artifact_install_evidence',
+            ];
+
+            return $failures;
+        }
+
+        if (! self::hasExplicitFalseField($installEvidence, [
+            'local_product_source_checkouts_used',
+            'localProductSourceCheckoutsUsed',
+        ])) {
+            $failures[] = [
+                'code' => 'local_product_source_checkouts_used_must_be_false',
+                'scenario_id' => 'published_artifact_install_only',
+                'field' => 'artifact_install_evidence.local_product_source_checkouts_used',
+                'value' => $installEvidence['local_product_source_checkouts_used']
+                    ?? $installEvidence['localProductSourceCheckoutsUsed']
+                    ?? null,
+            ];
+        }
+
+        $installArtifacts = self::arrayField($installEvidence, ['artifacts']) ?? [];
+        foreach (array_keys($installChannels) as $artifact) {
+            $artifact = (string) $artifact;
+            $entry = self::artifactInstallEntry($installArtifacts, $artifact);
+            if ($entry === null) {
+                $failures[] = [
+                    'code' => 'missing_published_artifact_install_evidence_artifact',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                    'field' => 'artifact_install_evidence.artifacts',
+                ];
+                continue;
+            }
+
+            $status = strtolower(self::stringField($entry, ['status', 'result', 'outcome']));
+            if ($status !== 'pass') {
+                $failures[] = [
+                    'code' => 'published_artifact_install_evidence_not_pass',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                    'status' => $status,
+                    'field' => 'artifact_install_evidence.artifacts.status',
+                ];
+            }
+
+            $version = self::stringField($entry, [
+                'version',
+                'resolved_version',
+                'resolvedVersion',
+                'artifact_version',
+                'artifactVersion',
+            ]);
+            if ($version === '') {
+                $failures[] = [
+                    'code' => 'missing_published_artifact_install_evidence_version',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                    'field' => 'artifact_install_evidence.artifacts.version',
+                ];
+            } elseif (self::isPlaceholderVersion($version)) {
+                $failures[] = [
+                    'code' => 'placeholder_published_artifact_install_evidence_version',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                    'version' => $version,
+                    'field' => 'artifact_install_evidence.artifacts.version',
+                ];
+            } else {
+                $expectedVersion = self::artifactVersionValue($versions, $artifact);
+                if ($expectedVersion !== '' && $version !== $expectedVersion) {
+                    $failures[] = [
+                        'code' => 'published_artifact_install_evidence_version_mismatch',
+                        'scenario_id' => 'published_artifact_install_only',
+                        'artifact' => $artifact,
+                        'version' => $version,
+                        'expected_version' => $expectedVersion,
+                        'field' => 'artifact_install_evidence.artifacts.version',
+                    ];
+                }
+            }
+
+            $source = self::stringField($entry, [
+                'source',
+                'install_source',
+                'installSource',
+                'artifact_source',
+                'artifactSource',
+            ]);
+            if ($source === '') {
+                $failures[] = [
+                    'code' => 'missing_published_artifact_install_evidence_source',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                    'field' => 'artifact_install_evidence.artifacts.source',
+                ];
+            } elseif (self::artifactSourceIsForbidden($source)) {
+                $failures[] = [
+                    'code' => 'forbidden_published_artifact_install_evidence_source',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                    'source' => $source,
+                    'field' => 'artifact_install_evidence.artifacts.source',
+                ];
+            } else {
+                $verification = self::arrayField($entry, [
+                    'source_verification',
+                    'sourceVerification',
+                    'artifact_source_verification',
+                    'artifactSourceVerification',
+                    'artifact_source_resolution',
+                    'artifactSourceResolution',
+                ]) ?? self::artifactEvidenceValue($sourceVerification, $artifact);
+                if (! self::matchesPublishedArtifactSource($artifact, $version, $source)
+                    && ! self::artifactSourceVerificationPasses($version, $source, $verification)) {
+                    $failures[] = [
+                        'code' => 'invalid_published_artifact_install_evidence_source',
+                        'scenario_id' => 'published_artifact_install_only',
+                        'artifact' => $artifact,
+                        'source' => $source,
+                        'field' => 'artifact_install_evidence.artifacts.source',
+                    ];
+                }
+            }
+
+            if (self::hasTruthyField($entry, [
+                'local_product_source_checkouts_used',
+                'localProductSourceCheckoutsUsed',
+            ])) {
+                $failures[] = [
+                    'code' => 'local_product_source_checkouts_used_must_be_false',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                    'field' => 'artifact_install_evidence.artifacts.local_product_source_checkouts_used',
+                    'value' => $entry['local_product_source_checkouts_used']
+                        ?? $entry['localProductSourceCheckoutsUsed']
+                        ?? null,
                 ];
             }
         }
@@ -1693,6 +1863,40 @@ final class SchedulesRuntimeResultGate
     }
 
     /**
+     * @param array<mixed> $installArtifacts
+     * @return array<string, mixed>|null
+     */
+    private static function artifactInstallEntry(array $installArtifacts, string $artifact): ?array
+    {
+        $expected = self::canonicalArtifactName($artifact);
+        foreach ($installArtifacts as $key => $entry) {
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            $reported = self::canonicalArtifactName(
+                self::stringField($entry, ['artifact', 'name', 'id']) ?: (is_string($key) ? $key : ''),
+            );
+            if ($reported === $expected) {
+                return $entry;
+            }
+        }
+
+        return null;
+    }
+
+    private static function canonicalArtifactName(string $artifact): string
+    {
+        $normalized = str_replace('_', '-', strtolower(trim($artifact)));
+
+        return match ($normalized) {
+            'python', 'python-sdk', 'durable-workflow' => 'sdk-python',
+            'workflow', 'php', 'workflow-php', 'php-worker' => 'workflow-php',
+            default => $normalized,
+        };
+    }
+
+    /**
      * @param array<string, mixed> $value
      * @param list<string> $fields
      */
@@ -1720,7 +1924,11 @@ final class SchedulesRuntimeResultGate
             }
 
             $fieldValue = $value[$field];
-            if ($fieldValue === true || $fieldValue === 1 || $fieldValue === '1' || $fieldValue === 'true') {
+            if ($fieldValue === true || $fieldValue === 1 || $fieldValue === '1') {
+                return true;
+            }
+
+            if (is_string($fieldValue) && strtolower(trim($fieldValue)) === 'true') {
                 return true;
             }
         }
