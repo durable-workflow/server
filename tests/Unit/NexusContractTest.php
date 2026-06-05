@@ -230,6 +230,10 @@ class NexusContractTest extends TestCase
             $manifest['scenario_evidence_requirements']['worker_restart_replay_does_not_reissue_call'],
         );
         $this->assertContains(
+            'published_artifact_worker_execution',
+            $manifest['scenario_evidence_requirements']['worker_restart_replay_does_not_reissue_call'],
+        );
+        $this->assertContains(
             'service_invocation_count',
             $manifest['scenario_evidence_requirements']['worker_restart_replay_does_not_reissue_call'],
         );
@@ -239,6 +243,10 @@ class NexusContractTest extends TestCase
         );
         $this->assertContains(
             'within_propagation_window',
+            $manifest['scenario_evidence_requirements']['caller_cancellation_propagates_to_service'],
+        );
+        $this->assertContains(
+            'published_artifact_worker_execution',
             $manifest['scenario_evidence_requirements']['caller_cancellation_propagates_to_service'],
         );
         $this->assertContains(
@@ -315,6 +323,10 @@ class NexusContractTest extends TestCase
         );
         $this->assertContains(
             'shared_service_tenant_cells_attach_request_response_service_call_and_history',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'replay_and_cancellation_cells_attach_published_worker_execution',
             $manifest['result_gate']['pass_requires'],
         );
 
@@ -1539,6 +1551,41 @@ class NexusContractTest extends TestCase
         }
     }
 
+    public function test_host_runner_requires_published_worker_execution_for_replay_and_cancellation_cells(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        foreach ([
+            'worker_restart_replay_does_not_reissue_call',
+            'caller_cancellation_propagates_to_service',
+        ] as $scenarioId) {
+            $evidence = $this->completeRunnerEvidence();
+            foreach ($evidence['scenario_results'] as &$scenario) {
+                if (($scenario['scenario_id'] ?? null) === $scenarioId) {
+                    unset($scenario['observed_outputs']['published_artifact_worker_execution']);
+                }
+            }
+            unset($scenario);
+
+            $result = $this->runNexusEvidence($evidence, 'dw-nexus-worker-evidence-');
+            $scenario = $this->scenarioResult($result, $scenarioId);
+
+            $this->assertSame('fail', $result['outcome']);
+            $this->assertSame('not_covered', $scenario['status']);
+            $this->assertSame(
+                'published_artifact_worker_execution',
+                $scenario['observed_outputs']['scenario_evidence_failures'][0]['field'],
+            );
+            $this->assertContains(
+                'conformance_runner_coverage_gap',
+                array_column($scenario['linked_findings'], 'finding_type'),
+            );
+        }
+    }
+
     public function test_host_runner_rejects_duplicate_replay_invocation_evidence(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -1950,6 +1997,7 @@ class NexusContractTest extends TestCase
                 'typed_error_preserved' => true,
             ],
             'worker_restart_replay_does_not_reissue_call' => $base + [
+                'published_artifact_worker_execution' => $this->publishedWorkerExecution($artifactVersions, $artifactSources),
                 'issued_call_ids' => ['svc-'.$scenarioId],
                 'caller_history_rows' => [
                     [
@@ -1988,6 +2036,7 @@ class NexusContractTest extends TestCase
                 'duplicate_call_issue_count' => 0,
             ],
             'caller_cancellation_propagates_to_service' => $base + [
+                'published_artifact_worker_execution' => $this->publishedWorkerExecution($artifactVersions, $artifactSources),
                 'caller_history_rows' => [
                     [
                         'service_call_id' => 'svc-'.$scenarioId,
@@ -2124,6 +2173,29 @@ class NexusContractTest extends TestCase
                 'operation_name' => 'greet',
                 'status' => 'completed',
                 'outcome' => 'completed',
+            ],
+        ];
+    }
+
+    /**
+     * @param array<string, string> $artifactVersions
+     * @param array<string, string> $artifactSources
+     *
+     * @return array<string, mixed>
+     */
+    private function publishedWorkerExecution(array $artifactVersions, array $artifactSources): array
+    {
+        return [
+            'local_product_source_checkouts_used' => false,
+            'worker_execution_mode' => 'published_workflow_php_worker',
+            'artifacts' => [
+                [
+                    'artifact' => 'workflow-php',
+                    'version' => $artifactVersions['workflow'],
+                    'source' => $artifactSources['workflow'],
+                    'status' => 'pass',
+                    'local_product_source_checkouts_used' => false,
+                ],
             ],
         ];
     }

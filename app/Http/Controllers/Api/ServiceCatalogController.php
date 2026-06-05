@@ -665,7 +665,9 @@ class ServiceCatalogController
             );
         }
 
-        $options = array_filter(
+        $callerNamespace = $validated['caller_namespace'] ?? $this->namespace($request);
+
+        $executionOptions = array_filter(
             [
                 'namespace' => $this->namespace($request),
                 'arguments' => $validated['arguments'] ?? null,
@@ -691,9 +693,70 @@ class ServiceCatalogController
             static fn (mixed $value): bool => $value !== null,
         );
 
+        $idempotentCall = $this->findIdempotentServiceCall(
+            $request,
+            $operation,
+            $validated['idempotency_key'] ?? null,
+            $callerNamespace,
+        );
+        if ($idempotentCall) {
+            $replayRejection = $this->serviceCallBoundary->replayRejectionFor(
+                principal: $this->principal($request),
+                callerNamespace: $callerNamespace,
+                operation: $operation,
+                endpointName: $endpoint->endpoint_name,
+                serviceName: $service->service_name,
+                callerWorkflowInstanceId: $validated['caller_workflow_instance_id'] ?? null,
+                callerWorkflowRunId: $validated['caller_workflow_run_id'] ?? null,
+                idempotencyKey: $validated['idempotency_key'] ?? null,
+                operationModeOverride: $validated['mode_override'] ?? null,
+                endpointBoundaryPolicy: $this->arrayValue($endpoint->boundary_policy),
+                serviceBoundaryPolicy: $this->arrayValue($service->boundary_policy),
+                operationBoundaryPolicy: $this->arrayValue($operation->boundary_policy),
+                deadlinePolicy: $this->arrayValueOrNull($operation->deadline_policy),
+                idempotencyPolicy: $this->arrayValueOrNull($operation->idempotency_policy),
+                cancellationPolicy: $this->arrayValueOrNull($operation->cancellation_policy),
+                retryPolicy: $this->arrayValueOrNull($operation->retry_policy),
+            );
+
+            if ($replayRejection !== null) {
+                return ControlPlaneProtocol::json(
+                    $this->serializeAdmissionRejection($replayRejection, $endpoint, $service, $operation),
+                    $replayRejection->httpStatus(),
+                );
+            }
+
+            if ((string) $idempotentCall->status === 'accepted') {
+                $options = $executionOptions;
+                $options['service_call_id'] = $idempotentCall->id;
+                $options['boundary_policy_outcome'] = 'accepted';
+
+                $result = $this->serviceControlPlane->execute(
+                    $endpoint->endpoint_name,
+                    $service->service_name,
+                    $operation->operation_name,
+                    $options,
+                );
+                $result['idempotent_replay'] = true;
+            } else {
+                $result = array_replace(
+                    [
+                        'accepted' => ! in_array((string) $idempotentCall->status, ['failed', 'cancelled'], true),
+                        'idempotent_replay' => true,
+                        'reason' => null,
+                    ],
+                    $this->serviceControlPlane->describeCall($idempotentCall->id, [
+                        'namespace' => $this->namespace($request),
+                    ]),
+                );
+            }
+
+            return ControlPlaneProtocol::json($result, ($result['accepted'] ?? false) === true ? 200 : 409);
+        }
+
         $admission = $this->serviceCallBoundary->admitFor(
             principal: $this->principal($request),
-            callerNamespace: $validated['caller_namespace'] ?? $this->namespace($request),
+            callerNamespace: $callerNamespace,
             operation: $operation,
             endpointName: $endpoint->endpoint_name,
             serviceName: $service->service_name,
@@ -717,6 +780,7 @@ class ServiceCatalogController
             );
         }
 
+        $options = $executionOptions;
         $options['service_call_id'] = $admission->call->id;
         $options['boundary_policy_outcome'] = $admission->decision->outcome->value;
 
@@ -1214,6 +1278,26 @@ class ServiceCatalogController
             ->where('namespace', $this->namespace($request))
             ->where('workflow_service_operation_id', $operation->id)
             ->where('id', trim($serviceCallId))
+            ->first();
+    }
+
+    private function findIdempotentServiceCall(
+        Request $request,
+        WorkflowServiceOperation $operation,
+        mixed $idempotencyKey,
+        string $callerNamespace,
+    ): ?WorkflowServiceCall {
+        if (! is_string($idempotencyKey) || trim($idempotencyKey) === '') {
+            return null;
+        }
+
+        return WorkflowServiceCall::query()
+            ->where('namespace', $this->namespace($request))
+            ->where('workflow_service_operation_id', $operation->id)
+            ->where('caller_namespace', $callerNamespace)
+            ->where('idempotency_key', trim($idempotencyKey))
+            ->oldest('created_at')
+            ->oldest('id')
             ->first();
     }
 

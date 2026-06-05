@@ -1194,6 +1194,7 @@ const scenarioEvidenceRequirements = {
   ],
   worker_restart_replay_does_not_reissue_call: [
     {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string', expected: 'durable service-call id recovered after replay'},
+    {fields: ['published_artifact_worker_execution', 'publishedArtifactWorkerExecution', 'published_worker_execution', 'publishedWorkerExecution'], kind: 'published_worker_execution', expected: 'published worker artifact execution evidence for the caller restart replay cell'},
     {fields: ['issued_call_ids', 'issuedCallIds', 'service_call_ids', 'serviceCallIds', 'call_ids', 'callIds'], kind: 'array_length_at_least', min: 1, expected: 'call ids observed before and after caller worker restart'},
     {fields: ['caller_history_rows', 'callerHistoryRows', 'history_rows', 'historyRows'], kind: 'array_length_at_least', min: 1, expected: 'caller history rows proving the in-flight Nexus call was recovered'},
     {fields: ['service_logs', 'serviceLogs', 'target_service_logs', 'targetServiceLogs'], kind: 'array_length_at_least', min: 1, expected: 'target service logs for the long-running Nexus call'},
@@ -1209,6 +1210,7 @@ const scenarioEvidenceRequirements = {
   ],
   caller_cancellation_propagates_to_service: [
     {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string', expected: 'durable service-call id for the cancelled call'},
+    {fields: ['published_artifact_worker_execution', 'publishedArtifactWorkerExecution', 'published_worker_execution', 'publishedWorkerExecution'], kind: 'published_worker_execution', expected: 'published worker artifact execution evidence for the caller cancellation propagation cell'},
     {fields: ['caller_history_rows', 'callerHistoryRows', 'history_rows', 'historyRows'], kind: 'array_length_at_least', min: 1, expected: 'caller history rows for the cancelled Nexus call'},
     {fields: ['service_logs', 'serviceLogs', 'target_service_logs', 'targetServiceLogs'], kind: 'array_length_at_least', min: 1, expected: 'target service logs proving cancellation was observed'},
     {fields: ['caller_cancelled_at', 'callerCancelledAt'], kind: 'non_empty_string', expected: 'caller cancellation timestamp'},
@@ -1520,6 +1522,9 @@ function isMissingEvidenceValue(value, kind) {
   if (kind === 'non_empty_object') {
     return !value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length === 0;
   }
+  if (kind === 'published_worker_execution') {
+    return !hasNonEmptyObjectValue(value);
+  }
   if (kind === 'array_length_at_least') {
     return !Array.isArray(value) || value.length === 0;
   }
@@ -1556,9 +1561,80 @@ function evidenceRequirementSatisfied(requirement, value) {
       }
 
       return (numberValue(value) ?? 0) >= Number(requirement.min);
+    case 'published_worker_execution':
+      return publishedWorkerExecutionSatisfied(value);
     default:
       return false;
   }
+}
+
+function publishedWorkerExecutionSatisfied(value) {
+  if (!hasNonEmptyObjectValue(value)) {
+    return false;
+  }
+  if (!explicitFalse(value.local_product_source_checkouts_used)
+    && !explicitFalse(value.localProductSourceCheckoutsUsed)) {
+    return false;
+  }
+
+  const entries = publishedWorkerExecutionEntries(value);
+  if (entries.length === 0) {
+    return false;
+  }
+
+  return entries.every((entry) => {
+    if (!hasNonEmptyObjectValue(entry)) {
+      return false;
+    }
+
+    const artifact = canonicalPublishedWorkerArtifact(entry.artifact ?? entry.name ?? entry.id);
+    const artifactSourceKey = artifact === 'workflow-php' ? 'workflow' : artifact;
+    const version = stringValue(entry.version ?? entry.artifact_version ?? entry.artifactVersion);
+    const source = stringValue(entry.source ?? entry.install_source ?? entry.installSource ?? entry.artifact_source ?? entry.artifactSource);
+    const status = stringValue(entry.status ?? entry.result ?? entry.outcome).toLowerCase();
+
+    return ['workflow-php', 'sdk-python'].includes(artifact)
+      && status === 'pass'
+      && isExactPublishedArtifactVersion(version)
+      && source !== ''
+      && !containsForbiddenSourceToken(source)
+      && matchesPublishedArtifactSource(artifactSourceKey, version, source)
+      && !truthy(entry.local_product_source_checkouts_used)
+      && !truthy(entry.localProductSourceCheckoutsUsed);
+  });
+}
+
+function publishedWorkerExecutionEntries(value) {
+  for (const field of [
+    'artifacts',
+    'workers',
+    'worker_artifacts',
+    'workerArtifacts',
+    'artifact_executions',
+    'artifactExecutions',
+  ]) {
+    if (Array.isArray(value[field])) {
+      return value[field];
+    }
+  }
+
+  if (stringValue(value.artifact ?? value.name ?? value.id) !== '') {
+    return [value];
+  }
+
+  return [];
+}
+
+function canonicalPublishedWorkerArtifact(value) {
+  const artifact = stringValue(value).toLowerCase().replace(/_/g, '-');
+  if (['workflow', 'workflow-php', 'php', 'durable-workflow/workflow'].includes(artifact)) {
+    return 'workflow-php';
+  }
+  if (['sdk-python', 'python-sdk', 'python', 'durable-workflow'].includes(artifact)) {
+    return 'sdk-python';
+  }
+
+  return artifact;
 }
 
 function scenarioEvidenceFinding(scenarioId, artifactVersions, failure) {

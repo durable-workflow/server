@@ -84,9 +84,153 @@ final class ServiceCallBoundary
         ?array $cancellationPolicy = null,
         ?array $retryPolicy = null,
     ): ServiceCallAdmission {
+        $request = $this->requestFor(
+            principal: $principal,
+            callerNamespace: $callerNamespace,
+            operation: $operation,
+            endpointName: $endpointName,
+            serviceName: $serviceName,
+            callerWorkflowInstanceId: $callerWorkflowInstanceId,
+            callerWorkflowRunId: $callerWorkflowRunId,
+            linkedWorkflowInstanceId: $linkedWorkflowInstanceId,
+            linkedWorkflowRunId: $linkedWorkflowRunId,
+            linkedWorkflowUpdateId: $linkedWorkflowUpdateId,
+            idempotencyKey: $idempotencyKey,
+            operationModeOverride: $operationModeOverride,
+            endpointBoundaryPolicy: $endpointBoundaryPolicy,
+            serviceBoundaryPolicy: $serviceBoundaryPolicy,
+            operationBoundaryPolicy: $operationBoundaryPolicy,
+            deadlinePolicy: $deadlinePolicy,
+            idempotencyPolicy: $idempotencyPolicy,
+            cancellationPolicy: $cancellationPolicy,
+            retryPolicy: $retryPolicy,
+        );
+        $decision = $this->decisionFor($request, $operation);
+        $call = $this->recorder->record($request, $decision);
+
+        return new ServiceCallAdmission($decision, $call, $request);
+    }
+
+    /**
+     * Authorize an idempotent replay before returning or dispatching an
+     * existing call. Replays that pass policy reuse the original audit row;
+     * denied replays are recorded so authorization failures keep the same
+     * observable 403/audit path as a fresh call.
+     */
+    public function replayRejectionFor(
+        Principal $principal,
+        ?string $callerNamespace,
+        WorkflowServiceOperation $operation,
+        string $endpointName,
+        string $serviceName,
+        ?string $callerWorkflowInstanceId = null,
+        ?string $callerWorkflowRunId = null,
+        ?string $linkedWorkflowInstanceId = null,
+        ?string $linkedWorkflowRunId = null,
+        ?string $linkedWorkflowUpdateId = null,
+        ?string $idempotencyKey = null,
+        ?string $operationModeOverride = null,
+        array $endpointBoundaryPolicy = [],
+        array $serviceBoundaryPolicy = [],
+        array $operationBoundaryPolicy = [],
+        ?array $deadlinePolicy = null,
+        ?array $idempotencyPolicy = null,
+        ?array $cancellationPolicy = null,
+        ?array $retryPolicy = null,
+    ): ?ServiceCallAdmission {
+        $request = $this->requestFor(
+            principal: $principal,
+            callerNamespace: $callerNamespace,
+            operation: $operation,
+            endpointName: $endpointName,
+            serviceName: $serviceName,
+            callerWorkflowInstanceId: $callerWorkflowInstanceId,
+            callerWorkflowRunId: $callerWorkflowRunId,
+            linkedWorkflowInstanceId: $linkedWorkflowInstanceId,
+            linkedWorkflowRunId: $linkedWorkflowRunId,
+            linkedWorkflowUpdateId: $linkedWorkflowUpdateId,
+            idempotencyKey: $idempotencyKey,
+            operationModeOverride: $operationModeOverride,
+            endpointBoundaryPolicy: $endpointBoundaryPolicy,
+            serviceBoundaryPolicy: $serviceBoundaryPolicy,
+            operationBoundaryPolicy: $operationBoundaryPolicy,
+            deadlinePolicy: $deadlinePolicy,
+            idempotencyPolicy: $idempotencyPolicy,
+            cancellationPolicy: $cancellationPolicy,
+            retryPolicy: $retryPolicy,
+        );
+        $trackedAdmission = false;
+        $decision = $this->decisionForReplay($request, $operation, $trackedAdmission);
+
+        if ($decision->isAllowed()) {
+            if ($trackedAdmission) {
+                $this->release($request);
+            }
+
+            return null;
+        }
+
+        $call = $this->recorder->record($request, $decision);
+
+        return new ServiceCallAdmission($decision, $call, $request);
+    }
+
+    /**
+     * Release a previously admitted call from the policy's in-flight
+     * counters. Dispatch surfaces call this once a handler reports
+     * back so concurrency budget does not leak.
+     */
+    public function release(ServiceBoundaryRequest $request): void
+    {
+        if ($this->policy instanceof DefaultServiceBoundaryPolicy) {
+            $this->policy->release($request);
+        }
+    }
+
+    private static function principalFromAuth(Principal $principal): ServiceCallPrincipal
+    {
+        return new ServiceCallPrincipal(
+            subject: $principal->subject(),
+            method: $principal->method(),
+            roles: $principal->roles(),
+            tenant: $principal->tenant(),
+            claims: $principal->claims(),
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $endpointBoundaryPolicy
+     * @param array<string, mixed> $serviceBoundaryPolicy
+     * @param array<string, mixed> $operationBoundaryPolicy
+     * @param array<string, mixed>|null $deadlinePolicy
+     * @param array<string, mixed>|null $idempotencyPolicy
+     * @param array<string, mixed>|null $cancellationPolicy
+     * @param array<string, mixed>|null $retryPolicy
+     */
+    private function requestFor(
+        Principal $principal,
+        ?string $callerNamespace,
+        WorkflowServiceOperation $operation,
+        string $endpointName,
+        string $serviceName,
+        ?string $callerWorkflowInstanceId = null,
+        ?string $callerWorkflowRunId = null,
+        ?string $linkedWorkflowInstanceId = null,
+        ?string $linkedWorkflowRunId = null,
+        ?string $linkedWorkflowUpdateId = null,
+        ?string $idempotencyKey = null,
+        ?string $operationModeOverride = null,
+        array $endpointBoundaryPolicy = [],
+        array $serviceBoundaryPolicy = [],
+        array $operationBoundaryPolicy = [],
+        ?array $deadlinePolicy = null,
+        ?array $idempotencyPolicy = null,
+        ?array $cancellationPolicy = null,
+        ?array $retryPolicy = null,
+    ): ServiceBoundaryRequest {
         $resolvedBindingKind = self::resolvedBindingKind($operation);
 
-        $request = new ServiceBoundaryRequest(
+        return new ServiceBoundaryRequest(
             principal: self::principalFromAuth($principal),
             callerNamespace: $callerNamespace,
             targetNamespace: (string) $operation->namespace,
@@ -112,9 +256,14 @@ final class ServiceCallBoundary
             cancellationPolicy: $cancellationPolicy,
             retryPolicy: $retryPolicy,
         );
+    }
 
-        if ($resolvedBindingKind === null) {
-            $decision = new ServiceBoundaryDecision(
+    private function decisionFor(
+        ServiceBoundaryRequest $request,
+        WorkflowServiceOperation $operation,
+    ): ServiceBoundaryDecision {
+        if ($request->resolvedBindingKind === null) {
+            return new ServiceBoundaryDecision(
                 outcome: ServiceCallOutcome::RejectedNotFound,
                 reason: 'unknown_binding_kind',
                 message: sprintf(
@@ -129,35 +278,99 @@ final class ServiceCallBoundary
                     'handler_binding_kind' => (string) $operation->handler_binding_kind,
                 ],
             );
-            $call = $this->recorder->record($request, $decision);
-
-            return new ServiceCallAdmission($decision, $call, $request);
         }
 
-        return $this->admit($request);
+        return $this->policy->evaluate($request);
+    }
+
+    private function decisionForReplay(
+        ServiceBoundaryRequest $request,
+        WorkflowServiceOperation $operation,
+        bool &$trackedAdmission,
+    ): ServiceBoundaryDecision {
+        $trackedAdmission = false;
+
+        if ($request->resolvedBindingKind === null) {
+            return $this->decisionFor($request, $operation);
+        }
+
+        if (is_callable([$this->policy, 'authorizeReplay'])) {
+            $decision = $this->policy->authorizeReplay($request);
+
+            if ($decision instanceof ServiceBoundaryDecision) {
+                return $decision;
+            }
+        }
+
+        if ($this->policy instanceof DefaultServiceBoundaryPolicy) {
+            return (new DefaultServiceBoundaryPolicy(
+                self::withoutAdmissionControls($this->defaultPolicyRules()),
+            ))->evaluate(self::requestWithoutAdmissionControls($request));
+        }
+
+        $trackedAdmission = true;
+
+        return $this->policy->evaluate($request);
     }
 
     /**
-     * Release a previously admitted call from the policy's in-flight
-     * counters. Dispatch surfaces call this once a handler reports
-     * back so concurrency budget does not leak.
+     * @return array<string, mixed>
      */
-    public function release(ServiceBoundaryRequest $request): void
+    private function defaultPolicyRules(): array
     {
-        if ($this->policy instanceof DefaultServiceBoundaryPolicy) {
-            $this->policy->release($request);
-        }
+        $property = (new \ReflectionObject($this->policy))->getProperty('rules');
+        $property->setAccessible(true);
+        $rules = $property->getValue($this->policy);
+
+        return is_array($rules) ? $rules : [];
     }
 
-    private static function principalFromAuth(Principal $principal): ServiceCallPrincipal
+    private static function requestWithoutAdmissionControls(ServiceBoundaryRequest $request): ServiceBoundaryRequest
     {
-        return new ServiceCallPrincipal(
-            subject: $principal->subject(),
-            method: $principal->method(),
-            roles: $principal->roles(),
-            tenant: $principal->tenant(),
-            claims: $principal->claims(),
+        return new ServiceBoundaryRequest(
+            principal: $request->principal,
+            callerNamespace: $request->callerNamespace,
+            targetNamespace: $request->targetNamespace,
+            endpointName: $request->endpointName,
+            serviceName: $request->serviceName,
+            operationName: $request->operationName,
+            operationMode: $request->operationMode,
+            resolvedBindingKind: $request->resolvedBindingKind,
+            resolvedTargetReference: $request->resolvedTargetReference,
+            callerWorkflowInstanceId: $request->callerWorkflowInstanceId,
+            callerWorkflowRunId: $request->callerWorkflowRunId,
+            linkedWorkflowInstanceId: $request->linkedWorkflowInstanceId,
+            linkedWorkflowRunId: $request->linkedWorkflowRunId,
+            linkedWorkflowUpdateId: $request->linkedWorkflowUpdateId,
+            idempotencyKey: $request->idempotencyKey,
+            context: $request->context,
+            endpointBoundaryPolicy: self::withoutAdmissionControls($request->endpointBoundaryPolicy),
+            serviceBoundaryPolicy: self::withoutAdmissionControls($request->serviceBoundaryPolicy),
+            operationBoundaryPolicy: self::withoutAdmissionControls($request->operationBoundaryPolicy),
+            deadlinePolicy: $request->deadlinePolicy,
+            idempotencyPolicy: $request->idempotencyPolicy,
+            cancellationPolicy: $request->cancellationPolicy,
+            retryPolicy: $request->retryPolicy,
         );
+    }
+
+    /**
+     * @param array<string, mixed> $policy
+     * @return array<string, mixed>
+     */
+    private static function withoutAdmissionControls(array $policy): array
+    {
+        foreach (['rate_limit', 'concurrency', 'concurrency_limit', 'circuit_break'] as $key) {
+            unset($policy[$key]);
+        }
+
+        foreach ($policy as $key => $value) {
+            if (is_array($value) && ! array_is_list($value)) {
+                $policy[$key] = self::withoutAdmissionControls($value);
+            }
+        }
+
+        return $policy;
     }
 
     private static function resolvedBindingKind(WorkflowServiceOperation $operation): ?string

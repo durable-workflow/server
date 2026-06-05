@@ -342,6 +342,7 @@ final class NexusContract
                 ],
                 'worker_restart_replay_does_not_reissue_call' => [
                     'service_call_id',
+                    'published_artifact_worker_execution',
                     'issued_call_ids',
                     'caller_history_rows',
                     'service_logs',
@@ -357,6 +358,7 @@ final class NexusContract
                 ],
                 'caller_cancellation_propagates_to_service' => [
                     'service_call_id',
+                    'published_artifact_worker_execution',
                     'caller_history_rows',
                     'service_logs',
                     'caller_cancelled_at',
@@ -527,6 +529,7 @@ final class NexusContract
                     'local_product_source_checkouts_used_false',
                     'source_free_published_artifact_evidence_is_explicit',
                     'shared_service_tenant_cells_attach_request_response_service_call_and_history',
+                    'replay_and_cancellation_cells_attach_published_worker_execution',
                     'history_attempt_visibility_includes_retry_attempts',
                     'authorization_refusal_does_not_disclose_endpoint_existence',
                 ],
