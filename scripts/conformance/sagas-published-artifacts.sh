@@ -1249,6 +1249,28 @@ function fail_workflow_task(array $task, \Throwable $throwable): void
     ]]);
 }
 
+function fail_protocol_workflow_task(array $task, \Throwable $throwable, string $prefix): void
+{
+    try {
+        request_json('POST', '/worker/workflow-tasks/'.$task['task_id'].'/fail', [
+            'lease_owner' => $task['lease_owner'],
+            'workflow_task_attempt' => $task['workflow_task_attempt'] ?? 1,
+            'failure' => [
+                'message' => $prefix.': '.$throwable->getMessage(),
+                'type' => $throwable::class,
+                'stack_trace' => $throwable->getTraceAsString(),
+            ],
+        ], 10, [404, 409]);
+    } catch (\Throwable $reportFailure) {
+        fwrite(STDERR, sprintf(
+            "failed to report workflow task failure for task %s: %s: %s\n",
+            (string) ($task['task_id'] ?? 'unknown'),
+            $reportFailure::class,
+            $reportFailure->getMessage()
+        ));
+    }
+}
+
 function workflow_class_for_task(array $task): string
 {
     return match ($task['workflow_type'] ?? '') {
@@ -1285,9 +1307,27 @@ function handle_workflow_task(array $task): void
         if ($step->commands === []) {
             throw new \RuntimeException('PHP workflow runner produced no worker commands for a leased workflow task');
         }
-        complete_workflow_task($task, $step->commands);
     } catch (\Throwable $throwable) {
-        fail_workflow_task($task, $throwable);
+        try {
+            fail_workflow_task($task, $throwable);
+        } catch (\Throwable $completionFailure) {
+            fail_protocol_workflow_task(
+                $task,
+                $completionFailure,
+                'terminal workflow failure command was rejected'
+            );
+        }
+        return;
+    }
+
+    try {
+        complete_workflow_task($task, $step->commands);
+    } catch (\Throwable $completionFailure) {
+        fail_protocol_workflow_task(
+            $task,
+            $completionFailure,
+            'workflow task completion failed after commands were produced'
+        );
     }
 }
 
@@ -1381,20 +1421,28 @@ request_json('POST', '/worker/register', [
 ]);
 
 while (true) {
-    $workflowPoll = request_json('POST', '/worker/workflow-tasks/poll', [
-        'worker_id' => WORKER_ID,
-        'task_queue' => PHP_QUEUE,
-    ], 6);
-    if (is_array($workflowPoll['task'] ?? null)) {
-        handle_workflow_task($workflowPoll['task']);
+    try {
+        $workflowPoll = request_json('POST', '/worker/workflow-tasks/poll', [
+            'worker_id' => WORKER_ID,
+            'task_queue' => PHP_QUEUE,
+        ], 6);
+        if (is_array($workflowPoll['task'] ?? null)) {
+            handle_workflow_task($workflowPoll['task']);
+        }
+    } catch (\Throwable $throwable) {
+        fwrite(STDERR, 'PHP saga workflow poll loop error: '.$throwable::class.': '.$throwable->getMessage()."\n");
     }
 
-    $activityPoll = request_json('POST', '/worker/activity-tasks/poll', [
-        'worker_id' => WORKER_ID,
-        'task_queue' => PHP_QUEUE,
-    ], 6);
-    if (is_array($activityPoll['task'] ?? null)) {
-        handle_activity_task($activityPoll['task']);
+    try {
+        $activityPoll = request_json('POST', '/worker/activity-tasks/poll', [
+            'worker_id' => WORKER_ID,
+            'task_queue' => PHP_QUEUE,
+        ], 6);
+        if (is_array($activityPoll['task'] ?? null)) {
+            handle_activity_task($activityPoll['task']);
+        }
+    } catch (\Throwable $throwable) {
+        fwrite(STDERR, 'PHP saga activity poll loop error: '.$throwable::class.': '.$throwable->getMessage()."\n");
     }
     usleep(100000);
 }
@@ -1910,6 +1958,68 @@ def stop_restarted_python_workers() -> None:
 atexit.register(stop_restarted_python_workers)
 
 
+def process_alive(pid: int | None) -> bool:
+    if pid is None or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def start_replacement_python_worker(log_name: str) -> subprocess.Popen[Any]:
+    global ACTIVE_PYTHON_WORKER_PID
+
+    log = open(RUN_ROOT / "logs" / log_name, "ab", buffering=0)
+    process = subprocess.Popen(
+        ["python", "-u", str(RUN_ROOT / "python-worker.py")],
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        env={**os.environ, "SAGA_SIDE_STORE": str(SIDE_STORE)},
+    )
+    ACTIVE_PYTHON_WORKER_PID = process.pid
+    RESTARTED_PYTHON_WORKERS.append(process)
+    return process
+
+
+def php_worker_running() -> bool:
+    completed = subprocess.run(
+        ["docker", "inspect", "-f", "{{.State.Running}}", PHP_WORKER_CONTAINER],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed.returncode == 0 and completed.stdout.strip() == "true"
+
+
+def ensure_python_worker_running() -> None:
+    if process_alive(ACTIVE_PYTHON_WORKER_PID):
+        return
+    start_replacement_python_worker("python-worker-auto-restart.log")
+    time.sleep(1)
+
+
+def ensure_php_worker_running() -> None:
+    if php_worker_running():
+        return
+    restart_php_worker()
+    time.sleep(1)
+
+
+def ensure_workers_for_payload(workflow_type: str, payload: dict[str, Any]) -> None:
+    runtimes = {
+        str(payload.get("forward_runtime") or ("workflow-php" if workflow_type.startswith("php.") else "sdk-python")),
+        str(payload.get("compensation_runtime") or ("workflow-php" if workflow_type.startswith("php.") else "sdk-python")),
+    }
+    if workflow_type.startswith("php.") or "workflow-php" in runtimes:
+        ensure_php_worker_running()
+    if workflow_type.startswith("python.") or "sdk-python" in runtimes:
+        ensure_python_worker_running()
+
+
 def compact_state(desc: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(desc, dict):
         return {"status": None, "is_terminal": False}
@@ -2019,6 +2129,7 @@ def activity_failed_details(history_payload: dict[str, Any], activity_type: str)
 
 
 async def start(client: Client, workflow_type: str, workflow_id: str, payload: dict[str, Any]):
+    ensure_workers_for_payload(workflow_type, payload)
     return await client.start_workflow(
         workflow_type=workflow_type,
         workflow_id=workflow_id,
@@ -2317,21 +2428,10 @@ async def wait_for_activity(client: Client, workflow_id: str, run_id: str, activ
 
 
 def restart_python_worker() -> subprocess.Popen[Any]:
-    global ACTIVE_PYTHON_WORKER_PID
-
     with contextlib.suppress(ProcessLookupError):
         os.kill(ACTIVE_PYTHON_WORKER_PID, signal.SIGTERM)
     time.sleep(1)
-    log = open(RUN_ROOT / "logs" / "python-worker-restart.log", "ab", buffering=0)
-    process = subprocess.Popen(
-        ["python", "-u", str(RUN_ROOT / "python-worker.py")],
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        env={**os.environ, "SAGA_SIDE_STORE": str(SIDE_STORE)},
-    )
-    ACTIVE_PYTHON_WORKER_PID = process.pid
-    RESTARTED_PYTHON_WORKERS.append(process)
-    return process
+    return start_replacement_python_worker("python-worker-restart.log")
 
 
 def restart_php_worker() -> None:

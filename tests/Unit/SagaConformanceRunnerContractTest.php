@@ -586,6 +586,78 @@ class SagaConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_generated_php_worker_survives_rejected_workflow_task_completion(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            'function fail_protocol_workflow_task(array $task, \Throwable $throwable, string $prefix): void',
+            $source,
+            'the PHP saga worker must be able to report workflow-task failures separately from terminal workflow failures',
+        );
+        $this->assertStringContainsString(
+            "'/worker/workflow-tasks/'.\$task['task_id'].'/fail'",
+            $source,
+            'rejected command completions must go to the workflow-task fail endpoint instead of recursively completing the task',
+        );
+        $this->assertStringContainsString(
+            "'workflow task completion failed after commands were produced'",
+            $source,
+            'command completion failures must surface with the same replay-blocking reason as official workers',
+        );
+        $this->assertStringContainsString(
+            "'terminal workflow failure command was rejected'",
+            $source,
+            'terminal compensation failure command rejections must become workflow-task evidence without killing the PHP worker',
+        );
+        $this->assertStringContainsString(
+            'PHP saga workflow poll loop error',
+            $source,
+            'one PHP workflow-task handling error must not terminate the worker before later saga scenarios run',
+        );
+        $this->assertStringContainsString(
+            'PHP saga activity poll loop error',
+            $source,
+            'one PHP activity-task handling error must not terminate the worker before later saga scenarios run',
+        );
+    }
+
+    public function test_orchestrator_restarts_dead_workers_before_dependency_scenarios(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            'def ensure_workers_for_payload(workflow_type: str, payload: dict[str, Any]) -> None:',
+            $source,
+            'the saga orchestrator must verify worker liveness before starting workflows that depend on them',
+        );
+        $this->assertStringContainsString(
+            'ensure_workers_for_payload(workflow_type, payload)',
+            $source,
+            'every scenario start must pass through the worker liveness gate',
+        );
+        $this->assertStringContainsString(
+            'def php_worker_running() -> bool:',
+            $source,
+            'the orchestrator must inspect the generated PHP worker container after restart-sensitive scenarios',
+        );
+        $this->assertStringContainsString(
+            'restart_php_worker()',
+            $source,
+            'dead PHP workers must be restarted before PHP workflows or PHP compensation activities are expected to run',
+        );
+        $this->assertStringContainsString(
+            'start_replacement_python_worker("python-worker-auto-restart.log")',
+            $source,
+            'dead Python workers must be restarted before Python workflows or Python compensation activities are expected to run',
+        );
+        $this->assertStringContainsString(
+            'str(payload.get("compensation_runtime") or ("workflow-php" if workflow_type.startswith("php.") else "sdk-python"))',
+            $source,
+            'cross-language compensation scenarios must keep the compensation runtime worker alive, not just the workflow runtime',
+        );
+    }
+
     public function test_planned_saga_failures_are_activity_failures_with_bounded_waits(): void
     {
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
