@@ -46,6 +46,26 @@ class WorkerProtocolContractTest extends TestCase
             ->assertJsonMissingPath('control_plane');
     }
 
+    public function test_compatible_older_worker_validation_errors_keep_worker_protocol_contract(): void
+    {
+        $headers = $this->workerHeaders();
+        $headers[WorkerProtocol::HEADER] = '1.9';
+
+        $this->withHeaders($headers + [
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ])->postJson('/api/worker/register', [
+            'worker_id' => 'py-worker-invalid-older-protocol',
+        ])->assertStatus(422)
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertHeaderMissing(ControlPlaneProtocol::HEADER)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('reason', 'validation_failed')
+            ->assertJsonPath('server_capabilities.workflow_task_poll_request_idempotency', true)
+            ->assertJsonPath('validation_errors.task_queue.0', 'The task queue field is required.')
+            ->assertJsonPath('validation_errors.runtime.0', 'The runtime field is required.')
+            ->assertJsonMissingPath('control_plane');
+    }
+
     public function test_external_diagnostic_worker_registration_surfaces_build_id_cohort(): void
     {
         $this->withHeaders($this->workerHeaders())

@@ -16,7 +16,7 @@ class WorkerProtocol
      * here. WorkflowPackageApiFloor asserts the installed package still
      * provides the companion protocol helpers for this version.
      */
-    public const VERSION = '1.9';
+    public const VERSION = '1.10';
 
     public const HEADER = 'X-Durable-Workflow-Protocol-Version';
 
@@ -74,6 +74,17 @@ class WorkerProtocol
                 self::splitProtocolVersion($supported)[1] ?? '0',
             ),
         ], 400);
+    }
+
+    public static function requestUsesCompatibleProtocolVersion(Request $request): bool
+    {
+        $requested = self::requestVersion($request);
+
+        return $requested !== null
+            && self::isCompatibleProtocolVersion(
+                $requested,
+                (string) config('server.worker_protocol.version', self::VERSION),
+            );
     }
 
     /**

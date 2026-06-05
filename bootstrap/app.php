@@ -32,7 +32,7 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withExceptions(function (Exceptions $exceptions) {
         $exceptions->render(function (ValidationException $exception, Request $request) {
             if (WorkerProtocol::isWorkerPlaneRequest($request)
-                && WorkerProtocol::requestVersion($request) === (string) config('server.worker_protocol.version', WorkerProtocol::VERSION)
+                && WorkerProtocol::requestUsesCompatibleProtocolVersion($request)
             ) {
                 return WorkerProtocol::json([
                     'message' => $exception->getMessage(),
@@ -68,7 +68,7 @@ return Application::configure(basePath: dirname(__DIR__))
             };
 
             if (WorkerProtocol::isWorkerPlaneRequest($request)
-                && WorkerProtocol::requestVersion($request) === (string) config('server.worker_protocol.version', WorkerProtocol::VERSION)
+                && WorkerProtocol::requestUsesCompatibleProtocolVersion($request)
             ) {
                 return WorkerProtocol::json(array_filter([
                     'message' => $message,

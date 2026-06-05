@@ -853,7 +853,7 @@ class ClusterInfoCompatibilityTest extends TestCase
 
         $response = $this->getJson('/api/cluster/info')->assertOk();
 
-        $this->assertSame('1.9', WorkerProtocol::VERSION);
+        $this->assertSame('1.10', WorkerProtocol::VERSION);
         $this->assertSame(WorkerProtocolVersion::VERSION, WorkerProtocol::VERSION);
         $this->assertSame(WorkerProtocol::VERSION, (string) config('server.worker_protocol.version'));
         $this->assertSame($expectedCommands, WorkerProtocol::supportedWorkflowTaskCommands());

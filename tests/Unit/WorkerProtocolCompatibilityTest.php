@@ -22,8 +22,8 @@ class WorkerProtocolCompatibilityTest extends TestCase
     {
         return [
             'exact match accepted' => ['worker' => '1.2', 'server' => '1.2', 'expected' => true],
-            'current published PHP worker protocol accepted' => ['worker' => '1.9', 'server' => WorkerProtocol::VERSION, 'expected' => true],
-            'previous minor accepted' => ['worker' => '1.8', 'server' => WorkerProtocol::VERSION, 'expected' => true],
+            'current published PHP worker protocol accepted' => ['worker' => '1.10', 'server' => WorkerProtocol::VERSION, 'expected' => true],
+            'previous minor accepted' => ['worker' => '1.9', 'server' => WorkerProtocol::VERSION, 'expected' => true],
             'one minor behind accepted (additive forward-compat)' => ['worker' => '1.1', 'server' => '1.2', 'expected' => true],
             'two minors behind accepted' => ['worker' => '1.0', 'server' => '1.2', 'expected' => true],
             'minor 0 against minor 0 accepted' => ['worker' => '1.0', 'server' => '1.0', 'expected' => true],

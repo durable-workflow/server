@@ -321,6 +321,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
                     'refs/tags/2.0.0-alpha.196',
                     'refs/tags/2.0.0-alpha.198',
                     'refs/tags/2.0.0-alpha.199',
+                    'refs/tags/2.0.0-alpha.200',
                     'refs/tags/2.0.0-alpha.be7ddbc37b41',
                     'refs/tags/1.0.0-alpha.1',
                 ]),
@@ -328,6 +329,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
                     '2.0.0-alpha.196=1.9',
                     '2.0.0-alpha.198=1.9',
                     '2.0.0-alpha.199=1.10',
+                    '2.0.0-alpha.200=1.10',
                 ]),
                 'GITHUB_OUTPUT' => $outputFile,
             ]);
@@ -335,11 +337,11 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
             $this->assertSame(0, $result['exitCode']);
             $outputs = file_get_contents($outputFile);
             $this->assertNotFalse($outputs);
-            $this->assertStringContainsString("tag=2.0.0-alpha.198\n", $outputs);
-            $this->assertStringContainsString("protocol=1.9\n", $outputs);
-            $this->assertStringContainsString("server_protocol=1.9\n", $outputs);
+            $this->assertStringContainsString("tag=2.0.0-alpha.200\n", $outputs);
+            $this->assertStringContainsString("protocol=1.10\n", $outputs);
+            $this->assertStringContainsString("server_protocol=1.10\n", $outputs);
             $this->assertStringContainsString(
-                'Using workflow package version: 2.0.0-alpha.198 (worker protocol 1.9, server requires 1.9)',
+                'Using workflow package version: 2.0.0-alpha.200 (worker protocol 1.10, server requires 1.10)',
                 $result['stdout'],
             );
         } finally {
@@ -351,19 +353,19 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
     {
         $result = $this->runScript('scripts/ci/select-compatible-workflow-package-ref.sh', [
             'WORKFLOW_PACKAGE_KNOWN_TAGS' => implode("\n", [
-                'refs/tags/2.0.0-alpha.199',
+                'refs/tags/2.0.0-alpha.198',
             ]),
             'WORKFLOW_PACKAGE_PROTOCOL_VERSIONS' => implode("\n", [
-                '2.0.0-alpha.199=1.10',
+                '2.0.0-alpha.198=1.9',
             ]),
         ]);
 
         $this->assertSame(1, $result['exitCode']);
         $this->assertStringContainsString(
-            'No compatible durable-workflow/workflow prerelease tag found for server worker protocol 1.9',
+            'No compatible durable-workflow/workflow prerelease tag found for server worker protocol 1.10',
             $result['stderr'],
         );
-        $this->assertStringContainsString('2.0.0-alpha.199 advertises worker protocol 1.10', $result['stderr']);
+        $this->assertStringContainsString('2.0.0-alpha.198 advertises worker protocol 1.9', $result['stderr']);
     }
 
     /**

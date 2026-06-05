@@ -121,6 +121,29 @@ class WorkerProtocolVersionCoverageTest extends TestCase
             ->assertJsonPath('server_capabilities.query_tasks', true);
     }
 
+    public function test_worker_registration_accepts_current_protocol_1_10_workers(): void
+    {
+        $response = $this->postJson('/api/worker/register', [
+            'worker_id' => 'php-protocol-110-worker',
+            'task_queue' => 'polyglot-current',
+            'runtime' => 'php',
+            'sdk_version' => 'durable-workflow/workflow 2.0.0-alpha.200',
+            'supported_workflow_types' => ['PolyglotWorkflow'],
+            'supported_activity_types' => ['PolyglotActivity'],
+            'capabilities' => ['query_tasks'],
+        ], [
+            'X-Namespace' => 'default',
+            WorkerProtocol::HEADER => '1.10',
+        ]);
+
+        $response->assertCreated()
+            ->assertHeader(WorkerProtocol::HEADER, WorkerProtocol::VERSION)
+            ->assertJsonPath('protocol_version', WorkerProtocol::VERSION)
+            ->assertJsonPath('worker_id', 'php-protocol-110-worker')
+            ->assertJsonPath('registered', true)
+            ->assertJsonPath('server_capabilities.query_tasks', true);
+    }
+
     /**
      * @param  array<string, mixed>  $body
      */
