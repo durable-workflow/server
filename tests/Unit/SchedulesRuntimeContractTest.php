@@ -419,6 +419,60 @@ class SchedulesRuntimeContractTest extends TestCase
         $this->assertNotEmpty($missingCliSourceFailures);
     }
 
+    public function test_result_gate_requires_explicit_no_local_source_evidence_for_install_pass(): void
+    {
+        $result = $this->completeSchedulesResult();
+        unset($result['local_product_source_checkouts_used']);
+        unset($result['scenario_results']['published_artifact_install_only']['observed_outputs']['local_product_source_checkouts_used']);
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+        $missingExplicitFalseFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_explicit_source_free_evidence'
+                && ($failure['scenario_id'] ?? null) === 'published_artifact_install_only',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($missingExplicitFalseFailures);
+    }
+
+    public function test_result_gate_rejects_unallowlisted_published_install_source_label(): void
+    {
+        $result = $this->completeSchedulesResult();
+        $result['artifact_sources']['server'] = 'banana';
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['server'] =
+            'banana';
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+        $invalidSourceFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'invalid_published_artifact_install_source'
+                && ($failure['scenario_id'] ?? null) === 'published_artifact_install_only'
+                && ($failure['artifact'] ?? null) === 'server',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($invalidSourceFailures);
+    }
+
+    public function test_result_gate_rejects_local_checkout_install_source_paths(): void
+    {
+        $result = $this->completeSchedulesResult();
+        $result['artifact_sources']['server'] = 'local_checkout/banana';
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['server'] =
+            'local_checkout/banana';
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+        $forbiddenSourceFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'forbidden_artifact_source'
+                && ($failure['artifact'] ?? null) === 'server',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($forbiddenSourceFailures);
+    }
+
     public function test_result_gate_rejects_placeholder_artifact_versions_embedded_in_install_channel_strings(): void
     {
         $result = $this->completeSchedulesResult();
@@ -680,6 +734,7 @@ class SchedulesRuntimeContractTest extends TestCase
                 'status' => 'pass',
                 'observed_outputs' => [
                     'artifact_sources' => $artifactSources,
+                    'local_product_source_checkouts_used' => false,
                 ],
             ],
             'cron_cadence' => ['status' => 'pass', 'observed_outputs' => $cronCadence],
@@ -712,6 +767,7 @@ class SchedulesRuntimeContractTest extends TestCase
                 'waterline' => '2.0.0-alpha.57',
             ],
             'artifact_sources' => $artifactSources,
+            'local_product_source_checkouts_used' => false,
             'topology' => [
                 'namespace' => 'schedules-conformance',
                 'task_queue' => 'schedules-shared',

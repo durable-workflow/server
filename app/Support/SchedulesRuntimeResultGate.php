@@ -12,6 +12,60 @@ final class SchedulesRuntimeResultGate
 
     public const VERSION = 1;
 
+    private const FORBIDDEN_ARTIFACT_SOURCE_TOKENS = [
+        'local_product_source_checkout',
+        'workspace_repo_as_artifact_under_test',
+        'local_checkout_artifact',
+        'local_checkout',
+        'local_source_checkout',
+        'workspace_repo',
+        'unverified_artifact_source',
+    ];
+
+    private const PUBLISHED_ARTIFACT_SOURCE_LABELS = [
+        'server' => [
+            'published_docker_image',
+            'existing_published_server_url',
+        ],
+        'cli' => [
+            'official_install_script',
+            'published_cli_release',
+            'github_release',
+        ],
+        'sdk-python' => [
+            'pypi',
+            'pypi_release',
+            'published_pypi_release',
+        ],
+        'workflow-php' => [
+            'composer_packagist',
+            'composer_release',
+            'packagist',
+            'published_packagist_release',
+        ],
+        'waterline' => [
+            'published_waterline_artifact',
+            'published_waterline_release',
+            'composer_packagist',
+            'composer_release',
+            'packagist',
+            'published_packagist_release',
+        ],
+    ];
+
+    private const CLI_RELEASE_ASSET_NAMES = [
+        'dw.phar',
+        'dw-linux-aarch64',
+        'dw-linux-x86_64',
+        'dw-macos-aarch64',
+        'dw-windows-x86_64.exe',
+        'dw.rb',
+        'install.sh',
+        'install.ps1',
+        'verify-release.sh',
+        'SHA256SUMS',
+    ];
+
     /**
      * @return array<string, mixed>
      */
@@ -560,6 +614,210 @@ final class SchedulesRuntimeResultGate
     }
 
     /**
+     * @param array<mixed> $values
+     *
+     * @return array<string, mixed>
+     */
+    private static function artifactEvidenceValue(array $values, string $artifact): array
+    {
+        $aliases = [
+            'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
+            'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
+            'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
+        ];
+
+        foreach ($aliases[$artifact] ?? [$artifact] as $key) {
+            if (array_key_exists($key, $values) && is_array($values[$key]) && $values[$key] !== []) {
+                return $values[$key];
+            }
+        }
+
+        return [];
+    }
+
+    private static function artifactSourceIsForbidden(string $source): bool
+    {
+        $normalized = strtolower(trim($source));
+        $decoded = urldecode($normalized);
+
+        foreach ([$normalized, $decoded] as $candidate) {
+            foreach (self::FORBIDDEN_ARTIFACT_SOURCE_TOKENS as $token) {
+                if (str_contains($candidate, strtolower($token))) {
+                    return true;
+                }
+            }
+
+            if (preg_match('/(^|[\/:@=?&#._-])(latest|current|head)(?:$|[\/:@?&#._-])/', $candidate) === 1
+                || self::isLocalArtifactSourcePath($candidate)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function isLocalArtifactSourcePath(string $source): bool
+    {
+        $path = str_replace('\\', '/', trim($source));
+
+        return str_starts_with($path, 'file:')
+            || preg_match('/^local(?::|\/|$)/', $path) === 1
+            || preg_match('/^~(?:[^\/]*)?(?:\/|$)/', $path) === 1
+            || preg_match('/^\$(?:home|userprofile)(?:\/|$)/', $path) === 1
+            || preg_match('/^\$\{(?:home|userprofile)\}(?:\/|$)/', $path) === 1
+            || preg_match('/^%(?:home|userprofile|homedrive|homepath)%/', $path) === 1
+            || preg_match('/^\/[^\/]+/', $path) === 1
+            || preg_match('/^[a-z]:\//', $path) === 1
+            || preg_match('/^\.\.?(?:\/|$)/', $path) === 1
+            || preg_match('/(^|[^a-z0-9])\/?workspace\/repos\//', $path) === 1
+            || preg_match('/^repos\/(?:server|workflow|waterline|cli|cloud|sample-app|sdk-python|durable-workflow\.github\.io)(?:\/|$)/', $path) === 1;
+    }
+
+    private static function matchesPublishedArtifactSource(string $artifact, string $version, string $source): bool
+    {
+        if ($version === '') {
+            return false;
+        }
+
+        if (self::publishedSourceLabelAllowed($artifact, $source)) {
+            return true;
+        }
+
+        return match ($artifact) {
+            'server' => self::matchesServerArtifactSource($version, $source),
+            'cli' => self::matchesCliArtifactSource($version, $source),
+            'sdk-python' => self::matchesPythonArtifactSource($version, $source),
+            'workflow-php' => self::matchesComposerArtifactSource('durable-workflow/workflow', $version, $source),
+            'waterline' => self::matchesComposerArtifactSource('durable-workflow/waterline', $version, $source),
+            default => false,
+        };
+    }
+
+    private static function publishedSourceLabelAllowed(string $artifact, string $source): bool
+    {
+        $normalizedSource = self::normalizeToken($source);
+        foreach (self::PUBLISHED_ARTIFACT_SOURCE_LABELS[$artifact] ?? [] as $label) {
+            if (self::normalizeToken($label) === $normalizedSource) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function matchesServerArtifactSource(string $version, string $source): bool
+    {
+        $escapedVersion = preg_quote($version, '/');
+
+        return preg_match('/^docker:\/\/durableworkflow\/server@sha256:[0-9a-f]{64}$/i', $source) === 1
+            || preg_match('/^durableworkflow\/server@sha256:[0-9a-f]{64}$/i', $source) === 1
+            || preg_match('/^docker:\/\/durableworkflow\/server:'.$escapedVersion.'@sha256:[0-9a-f]{64}$/i', $source) === 1
+            || preg_match('/^durableworkflow\/server:'.$escapedVersion.'@sha256:[0-9a-f]{64}$/i', $source) === 1
+            || $source === 'docker://durableworkflow/server:'.$version
+            || $source === 'durableworkflow/server:'.$version;
+    }
+
+    private static function matchesCliArtifactSource(string $version, string $source): bool
+    {
+        $prefix = 'https://github.com/durable-workflow/cli/releases/download/'.$version.'/';
+        if (! str_starts_with($source, $prefix)) {
+            return false;
+        }
+
+        return in_array(substr($source, strlen($prefix)), self::CLI_RELEASE_ASSET_NAMES, true);
+    }
+
+    private static function matchesComposerArtifactSource(string $packageName, string $version, string $source): bool
+    {
+        return $source === 'packagist://'.$packageName.'@'.$version
+            || $source === 'composer://'.$packageName.':'.$version
+            || $source === 'https://repo.packagist.org/p2/'.$packageName.'.json#'.$version;
+    }
+
+    private static function matchesPythonArtifactSource(string $version, string $source): bool
+    {
+        return $source === 'pypi://durable-workflow=='.$version
+            || $source === 'https://pypi.org/project/durable-workflow/'.$version.'/'
+            || (
+                (str_starts_with($source, 'https://files.pythonhosted.org/') || str_starts_with($source, 'https://pypi.io/packages/'))
+                && (str_contains($source, '/durable_workflow-'.$version) || str_contains($source, '/durable-workflow-'.$version))
+            );
+    }
+
+    /**
+     * @param array<string, mixed> $verification
+     */
+    private static function artifactSourceVerificationPasses(string $version, string $source, array $verification): bool
+    {
+        if ($verification === []) {
+            return false;
+        }
+
+        $verifiedSource = self::stringField($verification, [
+            'source',
+            'artifact_source',
+            'artifactSource',
+            'resolved_source',
+            'resolvedSource',
+        ]);
+        $verifiedVersion = self::stringField($verification, [
+            'version',
+            'artifact_version',
+            'artifactVersion',
+            'resolved_version',
+            'resolvedVersion',
+        ]);
+
+        return $verifiedSource === $source
+            && $verifiedVersion === $version
+            && self::verificationConfirmsPublished($verification);
+    }
+
+    /**
+     * @param array<string, mixed> $verification
+     */
+    private static function verificationConfirmsPublished(array $verification): bool
+    {
+        foreach ([
+            'downloadable',
+            'downloaded',
+            'installable',
+            'resolved',
+            'exists',
+            'published',
+            'verified',
+            'asset_exists',
+            'assetExists',
+            'package_exists',
+            'packageExists',
+            'manifest_resolved',
+            'manifestResolved',
+            'source_exists',
+            'sourceExists',
+        ] as $field) {
+            if (self::hasTruthyField($verification, [$field])) {
+                return true;
+            }
+        }
+
+        return in_array(strtolower(self::stringValue($verification['status'] ?? null)), [
+            'pass',
+            'passed',
+            'success',
+            'successful',
+            'resolved',
+            'downloadable',
+            'exists',
+            'found',
+            'verified',
+            'installable',
+            'asset_resolved',
+            'package_resolved',
+            'manifest_resolved',
+        ], true);
+    }
+
+    /**
      * @param array<string, mixed> $result
      * @param array<string, mixed> $contract
      * @param array<string, array<string, mixed>> $scenarioResults
@@ -597,7 +855,7 @@ final class SchedulesRuntimeResultGate
         foreach ($reportedSourceSets as $sourceSet) {
             foreach ($sourceSet['sources'] as $artifact => $source) {
                 $source = self::stringValue($source);
-                if (! in_array($source, $forbiddenSources, true)) {
+                if (! in_array($source, $forbiddenSources, true) && ! self::artifactSourceIsForbidden($source)) {
                     continue;
                 }
 
@@ -858,23 +1116,84 @@ final class SchedulesRuntimeResultGate
     private static function publishedArtifactEvidenceFailures(array $result, array $contract, array $scenarioResult): array
     {
         $outputs = self::arrayField($scenarioResult, ['observed_outputs', 'observedOutputs']) ?? [];
+        $topLevelVersions = self::artifactVersions($result);
+        $scenarioVersions = self::arrayField($outputs, [
+            'artifact_versions',
+            'artifactVersions',
+            'published_artifact_versions',
+            'publishedArtifactVersions',
+            'resolved_artifact_versions',
+            'resolvedArtifactVersions',
+        ]) ?? [];
+        $versions = array_replace($topLevelVersions, $scenarioVersions);
         $topLevelSources = self::arrayField($result, ['artifact_sources', 'artifactSources']) ?? [];
         $scenarioSources = self::arrayField($outputs, ['artifact_sources', 'artifactSources']) ?? [];
         $sources = array_replace($topLevelSources, $scenarioSources);
+        $sourceVerification = self::arrayField($outputs, [
+            'artifact_source_verification',
+            'artifactSourceVerification',
+            'published_artifact_source_verification',
+            'publishedArtifactSourceVerification',
+            'artifact_source_resolution',
+            'artifactSourceResolution',
+        ]) ?? [];
         $installChannels = self::arrayField($contract['artifact_policy'] ?? [], ['install_channels']) ?? [];
         $failures = [];
 
+        if (self::hasTruthyFieldIn([$result, $scenarioResult, $outputs], [
+            'local_product_source_checkouts_used',
+            'localProductSourceCheckoutsUsed',
+        ])) {
+            $failures[] = [
+                'code' => 'local_product_source_checkout_used',
+                'scenario_id' => 'published_artifact_install_only',
+                'field' => 'local_product_source_checkouts_used',
+            ];
+        } elseif (! self::hasExplicitFalseFieldIn([$result, $scenarioResult, $outputs], [
+            'local_product_source_checkouts_used',
+            'localProductSourceCheckoutsUsed',
+        ])) {
+            $failures[] = [
+                'code' => 'missing_explicit_source_free_evidence',
+                'scenario_id' => 'published_artifact_install_only',
+                'field' => 'local_product_source_checkouts_used',
+            ];
+        }
+
         foreach (array_keys($installChannels) as $artifact) {
-            $source = self::artifactVersionValue($sources, (string) $artifact);
-            if ($source !== '') {
+            $artifact = (string) $artifact;
+            $source = self::artifactVersionValue($sources, $artifact);
+            if ($source === '') {
+                $failures[] = [
+                    'code' => 'missing_published_artifact_install_source',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                ];
                 continue;
             }
 
-            $failures[] = [
-                'code' => 'missing_published_artifact_install_source',
-                'scenario_id' => 'published_artifact_install_only',
-                'artifact' => $artifact,
-            ];
+            if (self::artifactSourceIsForbidden($source)) {
+                $failures[] = [
+                    'code' => 'forbidden_artifact_source',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                    'source' => $source,
+                ];
+                continue;
+            }
+
+            $version = self::artifactVersionValue($versions, $artifact);
+            $verification = self::artifactEvidenceValue($sourceVerification, $artifact);
+            if (! self::matchesPublishedArtifactSource($artifact, $version, $source)
+                && ! self::artifactSourceVerificationPasses($version, $source, $verification)) {
+                $failures[] = [
+                    'code' => 'invalid_published_artifact_install_source',
+                    'scenario_id' => 'published_artifact_install_only',
+                    'artifact' => $artifact,
+                    'source' => $source,
+                    'field' => 'artifact_sources',
+                ];
+            }
         }
 
         return $failures;
@@ -1410,6 +1729,21 @@ final class SchedulesRuntimeResultGate
     }
 
     /**
+     * @param list<array<mixed>> $containers
+     * @param list<string> $fields
+     */
+    private static function hasTruthyFieldIn(array $containers, array $fields): bool
+    {
+        foreach ($containers as $container) {
+            if (self::hasTruthyField($container, $fields)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * @param array<string, mixed> $value
      * @param list<string> $fields
      */
@@ -1426,6 +1760,21 @@ final class SchedulesRuntimeResultGate
             }
 
             if (is_string($fieldValue) && strtolower(trim($fieldValue)) === 'false') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param list<array<mixed>> $containers
+     * @param list<string> $fields
+     */
+    private static function hasExplicitFalseFieldIn(array $containers, array $fields): bool
+    {
+        foreach ($containers as $container) {
+            if (self::hasExplicitFalseField($container, $fields)) {
                 return true;
             }
         }

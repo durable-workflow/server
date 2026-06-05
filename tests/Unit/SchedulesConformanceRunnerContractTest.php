@@ -182,6 +182,287 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_promotes_published_artifact_install_evidence_when_sources_are_recorded(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SERVER_VERSION' => '0.2.307',
+                    'DW_CLI_VERSION' => '0.1.77',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.85',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
+                    'DW_SERVER_ARTIFACT_SOURCE' => 'published_docker_image',
+                    'DW_CLI_ARTIFACT_SOURCE' => 'official_install_script',
+                    'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi',
+                    'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'composer_packagist',
+                    'DW_WATERLINE_ARTIFACT_SOURCE' => 'published_waterline_artifact',
+                    'DW_SCHEDULES_LOCAL_PRODUCT_SOURCE_CHECKOUTS_USED' => 'false',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $scenario = $result['scenario_results']['published_artifact_install_only'];
+            $this->assertSame('pass', $scenario['status']);
+            $this->assertSame([], $scenario['linked_findings']);
+            $this->assertFalse($result['local_product_source_checkouts_used']);
+            $this->assertSame('0.2.307', $scenario['observed_outputs']['artifacts']['server']['version']);
+            $this->assertSame('official_install_script', $scenario['observed_outputs']['artifacts']['cli']['source']);
+            $this->assertSame(
+                'composer_packagist',
+                $scenario['observed_outputs']['artifacts']['workflow-php']['source'],
+            );
+            $this->assertSame(
+                'published_waterline_artifact',
+                $scenario['observed_outputs']['artifacts']['waterline']['source'],
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_runner_requires_explicit_no_local_source_evidence_before_install_promotion(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SERVER_VERSION' => '0.2.307',
+                    'DW_CLI_VERSION' => '0.1.77',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.85',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
+                    'DW_SERVER_ARTIFACT_SOURCE' => 'published_docker_image',
+                    'DW_CLI_ARTIFACT_SOURCE' => 'official_install_script',
+                    'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi',
+                    'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'composer_packagist',
+                    'DW_WATERLINE_ARTIFACT_SOURCE' => 'published_waterline_artifact',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $scenario = $result['scenario_results']['published_artifact_install_only'];
+            $this->assertSame('not_covered', $scenario['status']);
+            $this->assertNull($result['local_product_source_checkouts_used']);
+            $this->assertNotEmpty($scenario['linked_findings']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_runner_rejects_unallowlisted_install_source_labels(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SERVER_VERSION' => '0.2.307',
+                    'DW_CLI_VERSION' => '0.1.77',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.85',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
+                    'DW_SERVER_ARTIFACT_SOURCE' => 'local_checkout/banana',
+                    'DW_CLI_ARTIFACT_SOURCE' => 'official_install_script',
+                    'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi',
+                    'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'composer_packagist',
+                    'DW_WATERLINE_ARTIFACT_SOURCE' => 'published_waterline_artifact',
+                    'DW_SCHEDULES_LOCAL_PRODUCT_SOURCE_CHECKOUTS_USED' => 'false',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $scenario = $result['scenario_results']['published_artifact_install_only'];
+            $this->assertSame('not_covered', $scenario['status']);
+            $this->assertFalse($result['local_product_source_checkouts_used']);
+            $this->assertNotEmpty($scenario['linked_findings']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_runner_revalidates_supplied_install_pass_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+        file_put_contents($resultDir.'/schedules-smoke-evidence.json', json_encode([
+            'scenario_results' => [
+                'published_artifact_install_only' => [
+                    'status' => 'pass',
+                    'observed_outputs' => [
+                        'artifact_sources' => [
+                            'server' => 'local_checkout/banana',
+                            'cli' => 'official_install_script',
+                            'sdk-python' => 'pypi',
+                            'workflow' => 'composer_packagist',
+                            'waterline' => 'published_waterline_artifact',
+                        ],
+                        'local_product_source_checkouts_used' => false,
+                    ],
+                    'linked_findings' => [],
+                ],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SERVER_VERSION' => '0.2.307',
+                    'DW_CLI_VERSION' => '0.1.77',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.85',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
+                    'DW_SERVER_ARTIFACT_SOURCE' => 'published_docker_image',
+                    'DW_CLI_ARTIFACT_SOURCE' => 'official_install_script',
+                    'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi',
+                    'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'composer_packagist',
+                    'DW_WATERLINE_ARTIFACT_SOURCE' => 'published_waterline_artifact',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $scenario = $result['scenario_results']['published_artifact_install_only'];
+            $this->assertSame('not_covered', $scenario['status']);
+            $this->assertNotEmpty($scenario['observed_outputs']['published_artifact_policy_failures']);
+            $this->assertStringContainsString(
+                'server.artifact_sources',
+                implode('; ', $scenario['observed_outputs']['published_artifact_policy_failures']),
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_runner_preserves_supplied_cadence_pass_and_fail_cells(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));

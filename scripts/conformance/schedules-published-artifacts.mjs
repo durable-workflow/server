@@ -46,6 +46,44 @@ const DEFAULT_REQUIRED_SCENARIOS = [
   'invalid_cron_refusal',
   'nonexistent_workflow_type_outcome',
 ];
+const REQUIRED_PUBLISHED_ARTIFACTS = ['server', 'cli', 'sdk-python', 'workflow-php', 'waterline'];
+const FORBIDDEN_ARTIFACT_SOURCE_TOKENS = [
+  'local_product_source_checkout',
+  'workspace_repo_as_artifact_under_test',
+  'local_checkout_artifact',
+  'local_checkout',
+  'local_source_checkout',
+  'workspace_repo',
+  'unverified_artifact_source',
+];
+const PLACEHOLDER_VERSION_PATTERN = /<[^>]+>|\$\{[^}]+}|{{[^}]+}}|(^|[^a-z0-9])(latest|current|head|unresolved|placeholder)([^a-z0-9]|$)/i;
+const ROLLING_ARTIFACT_SOURCE_PATTERN = /(^|[/:@=?&#._-])(latest|current|head)(?:$|[/:@?&#._-])/i;
+const PUBLISHED_ARTIFACT_SOURCE_LABELS = {
+  server: new Set(['published_docker_image', 'existing_published_server_url']),
+  cli: new Set(['official_install_script', 'published_cli_release', 'github_release']),
+  'sdk-python': new Set(['pypi', 'pypi_release', 'published_pypi_release']),
+  'workflow-php': new Set(['composer_packagist', 'composer_release', 'packagist', 'published_packagist_release']),
+  waterline: new Set([
+    'published_waterline_artifact',
+    'published_waterline_release',
+    'composer_packagist',
+    'composer_release',
+    'packagist',
+    'published_packagist_release',
+  ]),
+};
+const CLI_RELEASE_ASSET_NAMES = new Set([
+  'dw.phar',
+  'dw-linux-aarch64',
+  'dw-linux-x86_64',
+  'dw-macos-aarch64',
+  'dw-windows-x86_64.exe',
+  'dw.rb',
+  'install.sh',
+  'install.ps1',
+  'verify-release.sh',
+  'SHA256SUMS',
+]);
 
 const scenarioManifest = readJsonIfExists(scenarioManifestPath) ?? {};
 const requiredScenarios = Array.isArray(scenarioManifest.scenarios)
@@ -96,6 +134,29 @@ async function main() {
     const supplied = suppliedScenarioResults[scenarioId];
     if (supplied && allowedScenarioStatus(supplied.status)) {
       const normalized = normalizeScenarioResult(scenarioId, supplied);
+      if (scenarioId === 'published_artifact_install_only' && normalized.status === 'pass') {
+        const installPolicy = publishedArtifactInstallPolicy(
+          artifactVersions,
+          artifactSources,
+          smokeEvidence,
+          normalized.observed_outputs,
+        );
+        if (!installPolicy.passes) {
+          const finding = focusedCoverageFinding(scenarioId, artifactVersions, smokeEvidence);
+          finding.observed_behavior = `The supplied published-artifact install-only pass is missing required proof: ${installPolicy.failures.join('; ')}.`;
+          normalized.status = 'not_covered';
+          normalized.observed_outputs = {
+            ...normalized.observed_outputs,
+            published_artifact_policy_failures: installPolicy.failures,
+          };
+          normalized.linked_findings = [finding];
+        } else {
+          normalized.observed_outputs = {
+            ...publishedArtifactInstallOutputs(artifactVersions, artifactSources, smokeEvidence, normalized.observed_outputs),
+            ...normalized.observed_outputs,
+          };
+        }
+      }
       if (normalized.status !== 'pass' && normalized.linked_findings.length === 0) {
         normalized.linked_findings = [focusedCoverageFinding(scenarioId, artifactVersions, smokeEvidence)];
       }
@@ -113,6 +174,17 @@ async function main() {
         scenario_id: scenarioId,
         status: 'pass',
         observed_outputs: pythonSmokeOutputs(scenarioId, smokeEvidence, artifactVersions),
+        linked_findings: [],
+      };
+      findingLinks[scenarioId] = [];
+      continue;
+    }
+
+    if (publishedArtifactInstallPassesScenario(scenarioId, artifactVersions, artifactSources, smokeEvidence)) {
+      scenarioResults[scenarioId] = {
+        scenario_id: scenarioId,
+        status: 'pass',
+        observed_outputs: publishedArtifactInstallOutputs(artifactVersions, artifactSources, smokeEvidence),
         linked_findings: [],
       };
       findingLinks[scenarioId] = [];
@@ -169,6 +241,7 @@ async function main() {
     runner_blocked: false,
     artifact_versions: artifactVersions,
     artifact_sources: artifactSources,
+    local_product_source_checkouts_used: localProductSourceCheckoutsResultValue(smokeEvidence),
     scenario_results: scenarioResults,
     findings,
     finding_links: findingLinks,
@@ -252,6 +325,440 @@ function pythonSmokeOutputs(scenarioId, evidence, artifactVersions) {
     smoke_source: 'published_python_sdk_lifecycle_smoke',
     artifact_versions: artifactVersions,
   };
+}
+
+function publishedArtifactInstallPassesScenario(scenarioId, artifactVersions, artifactSources, evidence) {
+  if (scenarioId !== 'published_artifact_install_only') {
+    return false;
+  }
+
+  return publishedArtifactInstallPolicy(artifactVersions, artifactSources, evidence).passes;
+}
+
+function publishedArtifactInstallOutputs(artifactVersions, artifactSources, evidence, outputs = {}) {
+  const policy = publishedArtifactInstallPolicy(artifactVersions, artifactSources, evidence, outputs);
+  const artifactEvidence = Object.fromEntries(REQUIRED_PUBLISHED_ARTIFACTS.map((artifact) => [
+    artifact,
+    {
+      version: artifactValue(policy.artifactVersions, artifact),
+      source: artifactValue(policy.artifactSources, artifact),
+      source_verification: artifactObjectValue(policy.artifactSourceVerification, artifact),
+    },
+  ]));
+
+  return {
+    artifact_versions: policy.artifactVersions,
+    artifact_sources: policy.artifactSources,
+    artifact_source_verification: policy.artifactSourceVerification,
+    required_artifacts: REQUIRED_PUBLISHED_ARTIFACTS,
+    artifacts: artifactEvidence,
+    local_product_source_checkouts_used: policy.localProductSourceCheckoutsUsed,
+    install_channels_verified: true,
+  };
+}
+
+function publishedArtifactInstallPolicy(artifactVersions, artifactSources, evidence, outputs = {}) {
+  const installArtifactVersions = mergeObjects(
+    artifactVersions,
+    outputs.artifact_versions,
+    outputs.artifactVersions,
+    outputs.published_artifact_versions,
+    outputs.publishedArtifactVersions,
+    outputs.resolved_artifact_versions,
+    outputs.resolvedArtifactVersions,
+  );
+  const installArtifactSources = mergeObjects(
+    artifactSources,
+    outputs.artifact_sources,
+    outputs.artifactSources,
+    outputs.install_sources,
+    outputs.installSources,
+  );
+  const artifactSourceVerification = artifactSourceVerificationFrom(evidence, outputs);
+  const localProductSourceUsed = localProductSourceCheckoutsUsed(evidence, outputs);
+  const localProductSourceExplicitFalse = localProductSourceCheckoutsExplicitlyFalse(evidence, outputs);
+  const failures = [];
+
+  if (localProductSourceUsed) {
+    failures.push('local_product_source_checkouts_used=true');
+  } else if (!localProductSourceExplicitFalse) {
+    failures.push('local_product_source_checkouts_used=false missing');
+  }
+
+  for (const artifact of REQUIRED_PUBLISHED_ARTIFACTS) {
+    const version = artifactValue(installArtifactVersions, artifact);
+    const source = artifactValue(installArtifactSources, artifact);
+    const sourceVerification = artifactObjectValue(artifactSourceVerification, artifact);
+
+    if (!isConcretePublishedVersion(version)) {
+      failures.push(`${artifact}.artifact_versions missing or not exact published version`);
+    }
+    if (!isConcretePublishedSource(artifact, version, source, sourceVerification)) {
+      failures.push(`${artifact}.artifact_sources missing, local, rolling, unverified, or not published`);
+    }
+  }
+
+  return {
+    passes: failures.length === 0,
+    failures,
+    artifactVersions: installArtifactVersions,
+    artifactSources: installArtifactSources,
+    artifactSourceVerification,
+    localProductSourceCheckoutsUsed: localProductSourceUsed ? true : false,
+    localProductSourceCheckoutsExplicitlyFalse: localProductSourceExplicitFalse,
+  };
+}
+
+function artifactValue(values, artifact) {
+  if (!values || typeof values !== 'object') {
+    return '';
+  }
+
+  const aliases = {
+    'workflow-php': ['workflow-php', 'workflow_php', 'workflow'],
+    'sdk-python': ['sdk-python', 'sdk_python', 'python'],
+    waterline: ['waterline', 'waterline-ui', 'waterline_ui'],
+  };
+
+  for (const key of aliases[artifact] ?? [artifact]) {
+    const value = stringValue(values[key]);
+    if (Object.prototype.hasOwnProperty.call(values, key) && value !== '') {
+      return value;
+    }
+  }
+
+  return '';
+}
+
+function artifactObjectValue(values, artifact) {
+  if (!values || typeof values !== 'object') {
+    return {};
+  }
+
+  const aliases = {
+    'workflow-php': ['workflow-php', 'workflow_php', 'workflow'],
+    'sdk-python': ['sdk-python', 'sdk_python', 'python'],
+    waterline: ['waterline', 'waterline-ui', 'waterline_ui'],
+  };
+
+  for (const key of aliases[artifact] ?? [artifact]) {
+    if (Object.prototype.hasOwnProperty.call(values, key)) {
+      const value = objectValue(values[key]);
+      if (Object.keys(value).length > 0) {
+        return value;
+      }
+    }
+  }
+
+  return {};
+}
+
+function isConcretePublishedVersion(version) {
+  return version !== ''
+    && /^[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?$/.test(version)
+    && !PLACEHOLDER_VERSION_PATTERN.test(version.toLowerCase());
+}
+
+function isConcretePublishedSource(artifact, version, source, sourceVerification = {}) {
+  if (source === '' || source === 'not_exercised') {
+    return false;
+  }
+
+  if (artifactSourceIsForbidden(source)) {
+    return false;
+  }
+
+  return matchesPublishedArtifactSource(artifact, version, source)
+    || artifactSourceVerificationPasses(version, source, sourceVerification);
+}
+
+function matchesPublishedArtifactSource(artifact, version, source) {
+  if (version === '') {
+    return false;
+  }
+
+  if (publishedSourceLabelAllowed(artifact, source)) {
+    return true;
+  }
+
+  switch (artifact) {
+    case 'server':
+      return matchesServerArtifactSource(version, source);
+    case 'cli':
+      return matchesCliArtifactSource(version, source);
+    case 'sdk-python':
+      return matchesPythonArtifactSource(version, source);
+    case 'workflow-php':
+      return matchesComposerArtifactSource('durable-workflow/workflow', version, source);
+    case 'waterline':
+      return matchesComposerArtifactSource('durable-workflow/waterline', version, source);
+    default:
+      return false;
+  }
+}
+
+function publishedSourceLabelAllowed(artifact, source) {
+  const labels = PUBLISHED_ARTIFACT_SOURCE_LABELS[artifact];
+  return labels instanceof Set && labels.has(source);
+}
+
+function matchesServerArtifactSource(version, source) {
+  if (/^docker:\/\/durableworkflow\/server@sha256:[0-9a-f]{64}$/i.test(source)
+    || /^durableworkflow\/server@sha256:[0-9a-f]{64}$/i.test(source)
+    || new RegExp(`^docker://durableworkflow/server:${escapeRegExp(version)}@sha256:[0-9a-f]{64}$`, 'i').test(source)
+    || new RegExp(`^durableworkflow/server:${escapeRegExp(version)}@sha256:[0-9a-f]{64}$`, 'i').test(source)) {
+    return true;
+  }
+
+  return source === `docker://durableworkflow/server:${version}`
+    || source === `durableworkflow/server:${version}`;
+}
+
+function matchesCliArtifactSource(version, source) {
+  const prefix = `https://github.com/durable-workflow/cli/releases/download/${version}/`;
+  return source.startsWith(prefix) && CLI_RELEASE_ASSET_NAMES.has(source.slice(prefix.length));
+}
+
+function matchesComposerArtifactSource(packageName, version, source) {
+  return source === `packagist://${packageName}@${version}`
+    || source === `composer://${packageName}:${version}`
+    || source === `https://repo.packagist.org/p2/${packageName}.json#${version}`;
+}
+
+function matchesPythonArtifactSource(version, source) {
+  return source === `pypi://durable-workflow==${version}`
+    || source === `https://pypi.org/project/durable-workflow/${version}/`
+    || (
+      (source.startsWith('https://files.pythonhosted.org/') || source.startsWith('https://pypi.io/packages/'))
+      && (
+        source.includes(`/durable_workflow-${version}`)
+        || source.includes(`/durable-workflow-${version}`)
+      )
+    );
+}
+
+function artifactSourceVerificationPasses(version, source, verification) {
+  const record = objectValue(verification);
+  if (Object.keys(record).length === 0) {
+    return false;
+  }
+
+  const verifiedSource = stringValue(firstDefined(
+    record.source,
+    record.artifact_source,
+    record.artifactSource,
+    record.resolved_source,
+    record.resolvedSource,
+  ));
+  const verifiedVersion = stringValue(firstDefined(
+    record.version,
+    record.artifact_version,
+    record.artifactVersion,
+    record.resolved_version,
+    record.resolvedVersion,
+  ));
+
+  return verifiedSource === source
+    && verifiedVersion === version
+    && verificationConfirmsPublished(record);
+}
+
+function verificationConfirmsPublished(verification) {
+  for (const field of [
+    'downloadable',
+    'downloaded',
+    'installable',
+    'resolved',
+    'exists',
+    'published',
+    'verified',
+    'asset_exists',
+    'assetExists',
+    'package_exists',
+    'packageExists',
+    'manifest_resolved',
+    'manifestResolved',
+    'source_exists',
+    'sourceExists',
+  ]) {
+    if (truthyEvidenceFlag(verification[field])) {
+      return true;
+    }
+  }
+
+  return [
+    'pass',
+    'passed',
+    'success',
+    'successful',
+    'resolved',
+    'downloadable',
+    'exists',
+    'found',
+    'verified',
+    'installable',
+    'asset_resolved',
+    'package_resolved',
+    'manifest_resolved',
+  ].includes(stringValue(verification.status).toLowerCase());
+}
+
+function artifactSourceIsForbidden(source) {
+  const normalized = stringValue(source).toLowerCase();
+  const decoded = decodeSourceText(normalized);
+
+  return [normalized, decoded].some((candidate) => (
+    FORBIDDEN_ARTIFACT_SOURCE_TOKENS.some((token) => candidate.includes(token.toLowerCase()))
+    || ROLLING_ARTIFACT_SOURCE_PATTERN.test(candidate)
+    || isLocalArtifactSourcePath(candidate)
+  ));
+}
+
+function decodeSourceText(source) {
+  try {
+    return decodeURIComponent(source);
+  } catch {
+    return source;
+  }
+}
+
+function isLocalArtifactSourcePath(source) {
+  const pathText = source.replace(/\\/g, '/').trim();
+
+  return pathText.startsWith('file:')
+    || /^local(?::|\/|$)/.test(pathText)
+    || /^~(?:[^/]*)?(?:\/|$)/.test(pathText)
+    || /^\$(?:home|userprofile)(?:\/|$)/.test(pathText)
+    || /^\$\{(?:home|userprofile)\}(?:\/|$)/.test(pathText)
+    || /^%(?:home|userprofile|homedrive|homepath)%/.test(pathText)
+    || /^\/[^/]+/.test(pathText)
+    || /^[a-z]:\//.test(pathText)
+    || /^\.\.?(?:\/|$)/.test(pathText)
+    || /(^|[^a-z0-9])\/?workspace\/repos\//.test(pathText)
+    || /^repos\/(?:server|workflow|waterline|cli|cloud|sample-app|sdk-python|durable-workflow\.github\.io)(?:\/|$)/.test(pathText);
+}
+
+function artifactSourceVerificationFrom(...containers) {
+  const maps = [];
+
+  for (const container of containers) {
+    const value = objectValue(container);
+    maps.push(
+      value.artifact_source_verification,
+      value.artifactSourceVerification,
+      value.published_artifact_source_verification,
+      value.publishedArtifactSourceVerification,
+      value.artifact_source_resolution,
+      value.artifactSourceResolution,
+      objectValue(value.published_artifacts).artifact_source_verification,
+      objectValue(value.publishedArtifacts).artifactSourceVerification,
+    );
+  }
+
+  return mergeObjects(...maps);
+}
+
+function localProductSourceCheckoutsUsed(...containers) {
+  return localProductSourceFlagValues(...containers).some((value) => truthyEvidenceFlag(value));
+}
+
+function localProductSourceCheckoutsExplicitlyFalse(...containers) {
+  return localProductSourceFlagValues(...containers).some((value) => explicitFalse(value));
+}
+
+function localProductSourceCheckoutsResultValue(...containers) {
+  if (localProductSourceCheckoutsUsed(...containers)) {
+    return true;
+  }
+
+  if (localProductSourceCheckoutsExplicitlyFalse(...containers)) {
+    return false;
+  }
+
+  return null;
+}
+
+function localProductSourceFlagValues(...containers) {
+  const values = [];
+
+  for (const container of [...containers, localProductSourceEvidenceFromEnv()]) {
+    collectLocalProductSourceFlagValues(container, values);
+  }
+
+  return values;
+}
+
+function collectLocalProductSourceFlagValues(value, values) {
+  if (!value || typeof value !== 'object') {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectLocalProductSourceFlagValues(entry, values);
+    }
+    return;
+  }
+
+  if (Object.hasOwn(value, 'local_product_source_checkouts_used')) {
+    values.push(value.local_product_source_checkouts_used);
+  }
+  if (Object.hasOwn(value, 'localProductSourceCheckoutsUsed')) {
+    values.push(value.localProductSourceCheckoutsUsed);
+  }
+
+  for (const entry of Object.values(value)) {
+    if (entry && typeof entry === 'object') {
+      collectLocalProductSourceFlagValues(entry, values);
+    }
+  }
+}
+
+function localProductSourceEvidenceFromEnv() {
+  return {
+    local_product_source_checkouts_used: firstDefined(
+      process.env.DW_SCHEDULES_LOCAL_PRODUCT_SOURCE_CHECKOUTS_USED,
+      process.env.DW_LOCAL_PRODUCT_SOURCE_CHECKOUTS_USED,
+    ),
+  };
+}
+
+function truthyEvidenceFlag(value) {
+  if (value === true || value === 1) {
+    return true;
+  }
+
+  return ['true', '1', 'yes'].includes(stringValue(value).toLowerCase());
+}
+
+function explicitFalse(value) {
+  if (value === false || value === 0) {
+    return true;
+  }
+
+  return ['false', '0', 'no'].includes(stringValue(value).toLowerCase());
+}
+
+function firstDefined(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function mergeObjects(...values) {
+  return Object.assign({}, ...values.map(objectValue));
+}
+
+function objectValue(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function notCoveredOutputs(scenarioId, evidence) {
@@ -3542,7 +4049,7 @@ function arrayValue(value) {
 }
 
 function stringValue(value) {
-  return typeof value === 'string' ? value.trim() : '';
+  return ['string', 'number', 'boolean'].includes(typeof value) ? String(value).trim() : '';
 }
 
 function normalizeToken(value) {
