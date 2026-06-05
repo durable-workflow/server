@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -22,6 +23,9 @@ const storageSmokePath = process.env.DW_MIGRATION_STORAGE_SMOKE_JSON
   ?? path.join(resultDir, 'storage-connection-smoke.json');
 const publicArtifactsPath = process.env.DW_MIGRATION_PUBLIC_ARTIFACTS_JSON
   ?? path.join(resultDir, 'migration-public-artifacts.json');
+const migrationGuideUrl = process.env.DW_MIGRATION_GUIDE_URL
+  ?? 'https://durable-workflow.github.io/docs/2.0/migration/';
+const publicGuideAuditMode = stringValue(process.env.DW_MIGRATION_RUN_PUBLIC_GUIDE_AUDIT || 'auto').toLowerCase();
 
 const FALLBACK_REQUIRED_ARTIFACTS = [
   'server-v1',
@@ -209,7 +213,7 @@ main().catch((error) => {
 async function main() {
   fs.mkdirSync(resultDir, { recursive: true });
 
-  const evidence = readMigrationEvidence();
+  let evidence = readMigrationEvidence();
   const blockedReason = stringValue(process.env.DW_MIGRATION_BLOCKED_REASON)
     || stringValue(evidence.blocked_reason)
     || stringValue(evidence.runner_blocked_reason);
@@ -243,6 +247,16 @@ async function main() {
     ),
     ...artifactSourceMapsFromEvidence(evidence),
   ), true);
+  const publicGuideAudit = await maybeRunPublicGuideAudit(
+    evidence,
+    startedAt,
+    resolvedArtifactVersions,
+    publishedArtifactVersions,
+    artifactSources,
+  );
+  if (publicGuideAudit !== null) {
+    evidence = mergeEvidenceObjects(publicGuideAudit, evidence);
+  }
   const storageSmoke = normalizeStorageSmoke(evidence);
   const storageSmokeOnlyProductEvidence = storageSmokeProvidesProductEvidence(storageSmoke)
     && !hasSuppliedFullMigrationEvidence(evidence);
@@ -737,6 +751,534 @@ function normalizeStorageSmoke(evidence) {
     required_context_not_passing_by_itself: true,
     observed_behavior: 'No storage-connection smoke result was supplied to this migration run.',
   };
+}
+
+async function maybeRunPublicGuideAudit(
+  evidence,
+  startedAt,
+  resolvedArtifactVersions,
+  publishedArtifactVersions,
+  artifactSources,
+) {
+  if (publicGuideAuditDisabled() || hasSuppliedFullMigrationEvidence(evidence)) {
+    return null;
+  }
+
+  const forced = ['1', 'true', 'yes', 'force'].includes(publicGuideAuditMode);
+  if (!forced && !storageSmokeProvidesProductEvidence(normalizeStorageSmoke(evidence))) {
+    return null;
+  }
+
+  try {
+    const guide = await loadPublicMigrationGuide();
+    if (guide.text.trim() === '') {
+      return null;
+    }
+
+    return buildPublicGuideAuditEvidence(
+      guide,
+      startedAt,
+      resolvedArtifactVersions,
+      publishedArtifactVersions,
+      artifactSources,
+    );
+  } catch (error) {
+    if (!forced) {
+      return null;
+    }
+
+    const reason = `Public migration guide audit could not read ${migrationGuideUrl}: ${errorMessage(error)}`;
+    return {
+      migration_plan: publicGuideAuditTopLevelObservation('migration_plan', {
+        status: 'fail',
+        observed_behavior: reason,
+      }),
+      scenario_results: Object.fromEntries(
+        effectiveRequiredScenarios()
+          .filter((scenarioId) => scenarioId !== 'published_artifact_install_only')
+          .map((scenarioId) => [
+            scenarioId,
+            publicGuideAuditScenario(
+              scenarioId,
+              {
+                guide_url: migrationGuideUrl,
+                guide_audit_status: 'failed',
+                failure_reason: reason,
+              },
+              resolvedArtifactVersions,
+            ),
+          ]),
+      ),
+    };
+  }
+}
+
+function publicGuideAuditDisabled() {
+  return ['0', 'false', 'no', 'off', 'disabled'].includes(publicGuideAuditMode);
+}
+
+async function loadPublicMigrationGuide() {
+  const inline = stringValue(process.env.DW_MIGRATION_GUIDE_AUDIT_TEXT);
+  if (inline !== '') {
+    return {
+      url: 'inline:DW_MIGRATION_GUIDE_AUDIT_TEXT',
+      source: 'DW_MIGRATION_GUIDE_AUDIT_TEXT',
+      fetched_at: timestamp(),
+      fetch_duration_ms: 0,
+      text: inline,
+    };
+  }
+
+  const guideFile = stringValue(process.env.DW_MIGRATION_GUIDE_AUDIT_FILE);
+  if (guideFile !== '') {
+    const started = Date.now();
+    return {
+      url: `file:${guideFile}`,
+      source: 'DW_MIGRATION_GUIDE_AUDIT_FILE',
+      fetched_at: timestamp(),
+      fetch_duration_ms: Date.now() - started,
+      text: fs.readFileSync(guideFile, 'utf8'),
+    };
+  }
+
+  const started = Date.now();
+  const response = await fetch(migrationGuideUrl, {
+    headers: {
+      'user-agent': 'durable-workflow-migration-conformance',
+      accept: 'text/html,text/markdown,text/plain',
+    },
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!response.ok) {
+    throw new Error(`GET returned HTTP ${response.status}`);
+  }
+
+  const body = await response.text();
+  return {
+    url: migrationGuideUrl,
+    source: 'live_public_migration_guide',
+    fetched_at: timestamp(),
+    fetch_duration_ms: Date.now() - started,
+    text: body,
+  };
+}
+
+function buildPublicGuideAuditEvidence(
+  guide,
+  startedAt,
+  resolvedArtifactVersions,
+  publishedArtifactVersions,
+  artifactSources,
+) {
+  const text = htmlToText(guide.text);
+  const normalized = normalizeGuideText(text);
+  const signals = publicGuideSignals(normalized);
+  const commands = extractMigrationGuideCommands(guide.text, text);
+  const guideDigest = sha256(text);
+  const guideRevision = {
+    url: guide.url,
+    source: guide.source,
+    fetched_at: guide.fetched_at,
+    sha256: guideDigest,
+  };
+  const observedBehavior = [
+    'The public migration guide was audited after storage-connection smoke passed, but the host runner did not execute a realistic v1-to-v2 stateful upgrade shard.',
+    signals.finish_on_v1_strategy
+      ? 'The guide documents finish-on-v1 behavior; that claim still requires runtime proof with completed, in-flight, retrying, scheduled, worker, CLI, and Waterline observations.'
+      : 'The guide audit did not find an explicit finish-on-v1 migration strategy.',
+  ].join(' ');
+
+  return {
+    migration_plan: publicGuideAuditTopLevelObservation('migration_plan', {
+      guide_revision: guideRevision,
+      guide_url: guide.url,
+      guide_sha256: guideDigest,
+      guide_signals: signals,
+      commands_extracted: commands,
+      recorded_timings: {
+        guide_fetch_ms: guide.fetch_duration_ms,
+      },
+      artifact_sources: artifactSources,
+      published_artifact_versions: publishedArtifactVersions,
+      resolved_artifact_versions: resolvedArtifactVersions,
+      observed_behavior: observedBehavior,
+    }),
+    preupgrade_state_snapshot: publicGuideAuditTopLevelObservation('preupgrade_state_snapshot', {
+      expected_state_kinds: scenarioManifest?.required_matrix?.state_kinds ?? [],
+      observed_behavior: 'The guide audit did not seed completed, in-flight, retrying, scheduled, worker, history, or operator-visible v1 state.',
+    }),
+    postupgrade_state_snapshot: publicGuideAuditTopLevelObservation('postupgrade_state_snapshot', {
+      expected_state_kinds: scenarioManifest?.required_matrix?.state_kinds ?? [],
+      observed_behavior: 'The guide audit did not start a migrated v2 stack against preserved v1 state.',
+    }),
+    history_dumps: publicGuideAuditTopLevelObservation('history_dumps', {
+      observed_behavior: 'No before/after workflow history exports were produced by the public-guide audit shard.',
+    }),
+    activity_attempts: publicGuideAuditTopLevelObservation('activity_attempts', {
+      observed_behavior: 'No mid-activity retry attempt evidence was produced by the public-guide audit shard.',
+    }),
+    schedule_ticks: publicGuideAuditTopLevelObservation('schedule_ticks', {
+      observed_behavior: 'No cross-upgrade schedule tick evidence was produced by the public-guide audit shard.',
+    }),
+    worker_registration_observations: publicGuideAuditTopLevelObservation('worker_registration_observations', {
+      observed_behavior: 'No before/after worker registration projection evidence was produced by the public-guide audit shard.',
+    }),
+    cli_observations: publicGuideAuditTopLevelObservation('cli_observations', {
+      observed_behavior: 'No v2 CLI access to preupgrade workflow or schedule identifiers was exercised by the public-guide audit shard.',
+    }),
+    waterline_observations: publicGuideAuditTopLevelObservation('waterline_observations', {
+      observed_behavior: signals.waterline_shows_both
+        ? 'The guide claims Waterline shows v1 and v2 workflows side-by-side, but the host runner did not exercise the Waterline surface against migrated state.'
+        : 'The guide audit did not find complete Waterline preservation instructions, and the host runner did not exercise Waterline against migrated state.',
+    }),
+    rollback_observations: publicGuideAuditTopLevelObservation('rollback_observations', {
+      observed_behavior: signals.rollback_procedure
+        ? 'The guide documents a rollback procedure, but the host runner did not restore the pinned v1 artifact set and verify rollback observations.'
+        : 'The guide audit did not find a rollback procedure, and no rollback observations were produced.',
+    }),
+    version_skew_observations: publicGuideAuditTopLevelObservation('version_skew_observations', {
+      observed_behavior: 'No v1/v2 server, worker, CLI, SDK, or Waterline skew refusal cells were exercised by the public-guide audit shard.',
+    }),
+    scenario_results: Object.fromEntries(
+      effectiveRequiredScenarios()
+        .filter((scenarioId) => scenarioId !== 'published_artifact_install_only')
+        .map((scenarioId) => [
+          scenarioId,
+          publicGuideAuditScenario(
+            scenarioId,
+            publicGuideAuditScenarioOutputs(
+              scenarioId,
+              guideRevision,
+              guideDigest,
+              commands,
+              signals,
+              resolvedArtifactVersions,
+            ),
+            resolvedArtifactVersions,
+          ),
+        ]),
+    ),
+  };
+}
+
+function publicGuideAuditTopLevelObservation(kind, fields = {}) {
+  return {
+    status: 'fail',
+    kind,
+    source: 'public_migration_guide_audit',
+    guide_audit_only: true,
+    ...fields,
+  };
+}
+
+function publicGuideAuditScenario(scenarioId, observedOutputs, artifactVersions) {
+  const reason = stringValue(observedOutputs.failure_reason)
+    || `The public migration guide audit did not execute the ${scenarioId} migration cell against published artifacts.`;
+  return {
+    scenario_id: scenarioId,
+    status: 'not_covered',
+    observed_outputs: {
+      ...observedOutputs,
+      source: 'public_migration_guide_audit',
+      guide_audit_only: true,
+      required_fields: requiredFieldsFor(scenarioId),
+      local_product_source_checkouts_used: false,
+    },
+    linked_findings: [
+      coverageGapFinding(scenarioId, artifactVersions, {
+        guide_url: observedOutputs.guide_url ?? migrationGuideUrl,
+        observed_behavior: reason,
+        expected_behavior: 'The host migration runner executes this required v1-to-v2 migration cell against pinned published artifacts after following the public migration guide.',
+        next_acceptance_criterion: `execute the ${scenarioId} migration cell against the current published v1/v2 tuple and attach the required before/after observations`,
+      }),
+    ],
+  };
+}
+
+function publicGuideAuditScenarioOutputs(
+  scenarioId,
+  guideRevision,
+  guideDigest,
+  commands,
+  signals,
+  artifactVersions,
+) {
+  const common = {
+    guide_url: guideRevision.url,
+    migration_guide_revision: guideRevision,
+    guide_sha256: guideDigest,
+    guide_signals: signals,
+    commands_extracted: commands,
+    failure_reason: publicGuideAuditScenarioReason(scenarioId, signals),
+  };
+
+  switch (scenarioId) {
+    case 'latest_supported_v1_state_setup':
+      return {
+        ...common,
+        source_release_versions: artifactVersions,
+        seeded_workflows: 'not_executed_by_public_guide_audit',
+        seeded_schedules: 'not_executed_by_public_guide_audit',
+        seeded_worker_registrations: 'not_executed_by_public_guide_audit',
+      };
+    case 'documented_migration_steps_execute':
+      return {
+        ...common,
+        commands_executed: [],
+        exit_codes: [],
+        schema_or_storage_migration_output: 'not_executed_by_public_guide_audit',
+      };
+    case 'completed_history_preservation_and_replay':
+      return {
+        ...common,
+        preupgrade_history_export: 'not_executed_by_public_guide_audit',
+        postupgrade_history_export: 'not_executed_by_public_guide_audit',
+        replay_result: 'not_executed_by_public_guide_audit',
+        query_result: 'not_executed_by_public_guide_audit',
+      };
+    case 'in_flight_workflow_progress_preserved':
+      return {
+        ...common,
+        preupgrade_progress_marker: 'not_executed_by_public_guide_audit',
+        postupgrade_progress_marker: 'not_executed_by_public_guide_audit',
+        completion_result: 'not_executed_by_public_guide_audit',
+        history_dumps: 'not_executed_by_public_guide_audit',
+      };
+    case 'mid_activity_retry_preserved':
+      return {
+        ...common,
+        preupgrade_activity_attempt: 'not_executed_by_public_guide_audit',
+        postupgrade_activity_attempt: 'not_executed_by_public_guide_audit',
+        retry_policy: 'not_executed_by_public_guide_audit',
+        final_activity_result: 'not_executed_by_public_guide_audit',
+      };
+    case 'schedule_cross_upgrade_cadence_preserved':
+      return {
+        ...common,
+        preupgrade_schedule_spec: 'not_executed_by_public_guide_audit',
+        last_tick_before_upgrade: 'not_executed_by_public_guide_audit',
+        first_tick_after_upgrade: 'not_executed_by_public_guide_audit',
+        missed_or_duplicate_ticks: 'not_executed_by_public_guide_audit',
+      };
+    case 'worker_registration_projection_preserved':
+      return {
+        ...common,
+        preupgrade_worker_list: 'not_executed_by_public_guide_audit',
+        postupgrade_worker_list: 'not_executed_by_public_guide_audit',
+        task_queue_projection: 'not_executed_by_public_guide_audit',
+        polling_continuity: 'not_executed_by_public_guide_audit',
+      };
+    case 'waterline_operator_visibility_preserved':
+      return {
+        ...common,
+        preupgrade_waterline_snapshot: 'not_executed_by_public_guide_audit',
+        postupgrade_waterline_snapshot: 'not_executed_by_public_guide_audit',
+        run_detail_visibility: signals.waterline_shows_both ? 'documented_but_not_executed' : 'not_executed_by_public_guide_audit',
+        history_visibility: 'not_executed_by_public_guide_audit',
+      };
+    case 'cli_access_to_preupgrade_state':
+      return {
+        ...common,
+        workflow_describe_json: 'not_executed_by_public_guide_audit',
+        workflow_history_json: 'not_executed_by_public_guide_audit',
+        schedule_list_json: 'not_executed_by_public_guide_audit',
+        exit_codes: [],
+      };
+    case 'new_v2_workflow_start_after_upgrade':
+      return {
+        ...common,
+        start_request: signals.new_v2_workflow_step ? 'documented_but_not_executed' : 'not_executed_by_public_guide_audit',
+        run_id: 'not_executed_by_public_guide_audit',
+        completion_result: 'not_executed_by_public_guide_audit',
+        history_dumps: 'not_executed_by_public_guide_audit',
+      };
+    case 'rollback_contract_verified':
+      return {
+        ...common,
+        rollback_steps: signals.rollback_procedure ? commands.filter((command) => /backup|restore|composer require|queue:restart|mysql|psql/i.test(command)) : [],
+        rollback_supported_state: signals.rollback_procedure ? 'documented_but_not_executed' : 'not_documented_by_public_guide_audit',
+        postrollback_visibility: 'not_executed_by_public_guide_audit',
+        postrollback_execution_result: 'not_executed_by_public_guide_audit',
+      };
+    case 'version_skew_refusal':
+      return {
+        ...common,
+        skew_matrix: scenarioManifest?.required_matrix?.skew_cells ?? [],
+        refusal_errors: 'not_executed_by_public_guide_audit',
+        operator_visible_reason: 'not_executed_by_public_guide_audit',
+        no_partial_mutation_evidence: 'not_executed_by_public_guide_audit',
+      };
+    default:
+      return common;
+  }
+}
+
+function publicGuideAuditScenarioReason(scenarioId, signals) {
+  const prefix = 'The public migration guide was audited after storage-connection smoke passed, but the host runner did not execute';
+  const suffix = 'against the current pinned published v1/v2 artifact tuple.';
+  const guideContext = signals.finish_on_v1_strategy
+    ? ' The guide documents a finish-on-v1 strategy, so those claims need live before/after proof rather than storage-routing smoke.'
+    : ' The guide audit did not find a complete runtime upgrade strategy to validate.';
+
+  return `${prefix} ${scenarioId} ${suffix}${guideContext}`;
+}
+
+function publicGuideSignals(text) {
+  return {
+    finish_on_v1_strategy: text.includes('finish-on-v1')
+      || (text.includes('v1 workflows') && text.includes('v1 engine')),
+    v1_tables_preserved: text.includes('v1 tables') && text.includes('preserved'),
+    no_direct_data_migration: text.includes('avoids forcing a data migration')
+      || text.includes('fundamentally different storage models'),
+    v1_list_command: text.includes('workflow:v1:list'),
+    waterline_shows_both: text.includes('waterline') && text.includes('both v1 and v2'),
+    rollback_procedure: text.includes('rollback procedure') || text.includes('restore database backup'),
+    new_v2_workflow_step: text.includes('start a test workflow') || text.includes('v2 workflows start'),
+    worker_restart_step: text.includes('queue:restart') || text.includes('restart queue workers'),
+  };
+}
+
+function extractMigrationGuideCommands(value, fallbackText = '') {
+  const raw = stringValue(value);
+  const blockCommands = [
+    ...extractCommandsFromBlocks(extractHtmlCodeBlockTexts(raw)),
+    ...extractCommandsFromBlocks(extractMarkdownCodeBlockTexts(raw)),
+  ];
+
+  if (blockCommands.length > 0) {
+    return uniqueStrings(blockCommands).slice(0, 50);
+  }
+
+  const fallback = stringValue(fallbackText) || htmlToText(raw);
+
+  return uniqueStrings(extractCommandLines(fallback)).slice(0, 50);
+}
+
+function extractCommandsFromBlocks(blocks) {
+  return blocks.flatMap((block) => extractCommandLines(block));
+}
+
+function extractHtmlCodeBlockTexts(value) {
+  const blocks = [];
+  const raw = stringValue(value);
+  const prePattern = /<pre\b[^>]*>([\s\S]*?)<\/pre>/gi;
+  let match = prePattern.exec(raw);
+
+  while (match !== null) {
+    const block = htmlCodeBlockToText(match[1]);
+    if (block.trim() !== '') {
+      blocks.push(block);
+    }
+    match = prePattern.exec(raw);
+  }
+
+  if (blocks.length > 0) {
+    return blocks;
+  }
+
+  const codePattern = /<code\b(?=[^>]*class=["'][^"']*\blanguage-(?:bash|shell|sh|console|text)\b[^"']*["'])[^>]*>([\s\S]*?)<\/code>/gi;
+  match = codePattern.exec(raw);
+  while (match !== null) {
+    const block = htmlCodeBlockToText(match[1]);
+    if (block.trim() !== '') {
+      blocks.push(block);
+    }
+    match = codePattern.exec(raw);
+  }
+
+  return blocks;
+}
+
+function extractMarkdownCodeBlockTexts(value) {
+  const blocks = [];
+  const fencePattern = /```[^\n]*\n([\s\S]*?)```/g;
+  let match = fencePattern.exec(stringValue(value));
+
+  while (match !== null) {
+    const block = match[1].replace(/\r\n?/g, '\n');
+    if (block.trim() !== '') {
+      blocks.push(block);
+    }
+    match = fencePattern.exec(stringValue(value));
+  }
+
+  return blocks;
+}
+
+function extractCommandLines(text) {
+  const commands = [];
+  const lines = stringValue(text).replace(/\r\n?/g, '\n').split('\n');
+
+  for (let index = 0; index < lines.length; index += 1) {
+    let command = normalizeShellCommandLine(lines[index]);
+    if (!isMigrationGuideCommand(command)) {
+      continue;
+    }
+
+    while (/\\\s*$/.test(command) && index + 1 < lines.length) {
+      index += 1;
+      command = `${command}\n${normalizeShellCommandLine(lines[index])}`;
+    }
+
+    if (command !== '' && !commands.includes(command)) {
+      commands.push(command);
+    }
+  }
+
+  return commands;
+}
+
+function normalizeShellCommandLine(line) {
+  return decodeHtmlEntities(stringValue(line))
+    .replace(/^\s*(?:\$|#|>)\s*/, '')
+    .trim();
+}
+
+function isMigrationGuideCommand(line) {
+  const command = stringValue(line).trim();
+
+  return /^(?:composer\s+(?:require|update|install|remove|config|dump-autoload)\b|php\s+artisan\s+\S+|mysqldump\b|pg_dump\b|mysql\s+\S|psql\s+\S|tail\s+\S|sudo\s+supervisorctl\s+\S|sudo\s+systemctl\s+\S)/i.test(command);
+}
+
+function normalizeGuideText(text) {
+  return text.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function htmlToText(value) {
+  return decodeHtmlEntities(stringValue(value)
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:p|div|section|article|header|footer|main|li|h[1-6]|pre|code|tr)>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+  );
+}
+
+function htmlCodeBlockToText(value) {
+  return decodeHtmlEntities(stringValue(value)
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<span\b(?=[^>]*class=["'][^"']*\btoken-line\b[^"']*["'])[^>]*>/gi, '\n')
+    .replace(/<\/(?:div|p|li|pre|code)>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+  ).replace(/\r\n?/g, '\n');
+}
+
+function decodeHtmlEntities(value) {
+  return stringValue(value)
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/&#([0-9]+);/g, (_, code) => String.fromCodePoint(Number.parseInt(code, 10)))
+    .replace(/&quot;/gi, '"');
+}
+
+function sha256(value) {
+  return crypto.createHash('sha256').update(value).digest('hex');
 }
 
 function storageSmokeProvidesProductEvidence(storageSmoke) {

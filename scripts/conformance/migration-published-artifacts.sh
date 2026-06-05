@@ -23,6 +23,15 @@ Environment overrides:
   DW_MIGRATION_EVIDENCE_JSON         Full-result or scenario-shard JSON from the host migration runner.
   DW_MIGRATION_EVIDENCE_DIR          Directory of sorted JSON evidence shards from the host migration runner.
   DW_MIGRATION_STORAGE_SMOKE_JSON    Advisory storage-connection smoke JSON.
+  DW_MIGRATION_RUN_PUBLIC_GUIDE_AUDIT
+                                      Auto-audit the live public migration guide
+                                      when storage smoke passed but no full
+                                      migration shard exists. Defaults to auto.
+                                      Set to 0 to disable or 1 to force.
+  DW_MIGRATION_GUIDE_URL             Public migration guide URL to audit.
+                                      Defaults to the versioned 2.0 guide.
+  DW_MIGRATION_GUIDE_AUDIT_TEXT      Inline guide text fixture for the audit.
+  DW_MIGRATION_GUIDE_AUDIT_FILE      Guide text/HTML fixture path for the audit.
   DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS
                                       Resolve missing v1 artifact pins from public package registries. Defaults to 1.
   DW_MIGRATION_PUBLIC_ARTIFACTS_JSON Optional JSON fixture/cache for public artifact resolution.

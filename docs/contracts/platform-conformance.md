@@ -329,9 +329,12 @@ category emits a warning and does not block.
   `scripts/conformance/migration-published-artifacts.sh` as the executable
   handoff; the runner writes `migration-conformance-result.json` and
   `migration-conformance-record.json`, accepts host-supplied full-migration
-  evidence through `DW_MIGRATION_EVIDENCE_JSON`, and records unexecuted
-  required cells as `not_covered` with `conformance_runner_coverage_gap`
-  findings instead of treating storage-connection smoke as passing evidence.
+  evidence through `DW_MIGRATION_EVIDENCE_JSON`. When storage-connection smoke
+  is the only product evidence, the handoff audits the live public migration
+  guide, records the guide revision and extracted migration-plan observations,
+  and keeps unexecuted required cells as `not_covered` with
+  `conformance_runner_coverage_gap` findings instead of treating
+  storage-connection smoke as passing evidence.
 - Namespace runtime contract: the public suite's
   `namespace_runtime_contract` category is the load-bearing namespace
   parity gate. It requires published-artifact evidence for namespace

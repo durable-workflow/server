@@ -24,6 +24,8 @@ class MigrationConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('DW_MIGRATION_EVIDENCE_JSON', $shell);
         $this->assertStringContainsString('DW_MIGRATION_EVIDENCE_DIR', $shell);
         $this->assertStringContainsString('DW_MIGRATION_STORAGE_SMOKE_JSON', $shell);
+        $this->assertStringContainsString('DW_MIGRATION_RUN_PUBLIC_GUIDE_AUDIT', $shell);
+        $this->assertStringContainsString('DW_MIGRATION_GUIDE_AUDIT_TEXT', $shell);
         $this->assertStringContainsString('DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS', $shell);
         $this->assertStringContainsString('DW_MIGRATION_PUBLIC_ARTIFACTS_JSON', $shell);
 
@@ -44,6 +46,8 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'resolvePublicArtifactDefaults',
             'latestPackagistVersion',
             'latestDockerHubTag',
+            'maybeRunPublicGuideAudit',
+            'public_migration_guide_audit',
             'SCENARIO_FINDING_POLICIES',
             'findingForNonPassScenario',
             'scenario_statuses',
@@ -577,6 +581,176 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'skew_silence',
             $result['scenario_results']['version_skew_refusal']['linked_findings'][0]['finding_type'],
         );
+    }
+
+    public function test_runner_audits_public_guide_when_storage_smoke_is_the_only_product_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner guide-audit shard.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $guideText = <<<'GUIDE'
+Migrating to 2.0
+
+composer require durable-workflow/workflow:2.0.0-alpha.197
+php artisan migrate
+php artisan queue:restart
+php artisan workflow:v1:list
+
+Open Waterline and verify both v1 and v2 workflows are visible.
+
+Rollback procedure:
+php artisan queue:restart
+mysql -u root -p your_database < backup-v1.sql
+composer require laravel-workflow/laravel-workflow:^1.0
+
+The finish-on-v1 strategy avoids forcing a data migration at upgrade time.
+v1 workflows continue executing on the v1 engine until they complete.
+GUIDE;
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            [],
+            'dw-migration-guide-audit-',
+            [
+                'DW_MIGRATION_RUN_PUBLIC_GUIDE_AUDIT' => '1',
+                'DW_MIGRATION_GUIDE_AUDIT_TEXT' => $guideText,
+                'DW_SERVER_V1_VERSION' => $artifactVersions['server-v1'],
+                'DW_SERVER_V2_VERSION' => $artifactVersions['server-v2'],
+                'DW_SERVER_V1_ARTIFACT_SOURCE' => $artifactSources['server-v1'],
+                'DW_SERVER_V2_ARTIFACT_SOURCE' => $artifactSources['server-v2'],
+                'DW_CLI_V1_VERSION' => $artifactVersions['cli-v1'],
+                'DW_CLI_VERSION' => $artifactVersions['cli-v2'],
+                'DW_CLI_V1_ARTIFACT_SOURCE' => $artifactSources['cli-v1'],
+                'DW_CLI_ARTIFACT_SOURCE' => $artifactSources['cli-v2'],
+                'DW_WORKFLOW_PHP_V1_VERSION' => $artifactVersions['workflow-php-v1'],
+                'DW_WORKFLOW_PHP_V2_VERSION' => $artifactVersions['workflow-php-v2'],
+                'DW_WORKFLOW_PHP_V1_ARTIFACT_SOURCE' => $artifactSources['workflow-php-v1'],
+                'DW_WORKFLOW_PHP_V2_ARTIFACT_SOURCE' => $artifactSources['workflow-php-v2'],
+                'DW_PYTHON_SDK_VERSION' => $artifactVersions['sdk-python'],
+                'DW_PYTHON_SDK_ARTIFACT_SOURCE' => $artifactSources['sdk-python'],
+                'DW_WATERLINE_V1_VERSION' => $artifactVersions['waterline-v1'],
+                'DW_WATERLINE_VERSION' => $artifactVersions['waterline-v2'],
+                'DW_WATERLINE_V1_ARTIFACT_SOURCE' => $artifactSources['waterline-v1'],
+                'DW_WATERLINE_ARTIFACT_SOURCE' => $artifactSources['waterline-v2'],
+                'DW_SAMPLE_APP_V1_VERSION' => $artifactVersions['sample-app-v1'],
+                'DW_SAMPLE_APP_V1_ARTIFACT_SOURCE' => $artifactSources['sample-app-v1'],
+            ],
+            [
+                'status' => 'pass',
+                'storage_connection' => 'workflow_storage',
+            ],
+        );
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame('public_migration_guide_audit', $result['migration_plan']['source']);
+        $this->assertTrue($result['migration_plan']['guide_audit_only']);
+        $this->assertTrue($result['migration_plan']['guide_signals']['finish_on_v1_strategy']);
+        $this->assertTrue($result['migration_plan']['guide_signals']['rollback_procedure']);
+        $this->assertContains('php artisan migrate', $result['migration_plan']['commands_extracted']);
+        $this->assertSame(
+            'not_covered',
+            $result['scenario_results']['documented_migration_steps_execute']['status'],
+        );
+        $this->assertSame(
+            'public_migration_guide_audit',
+            $result['scenario_results']['documented_migration_steps_execute']['observed_outputs']['source'],
+        );
+        $this->assertStringContainsString(
+            'public migration guide was audited',
+            $result['scenario_results']['documented_migration_steps_execute']['linked_findings'][0]['observed_behavior'],
+        );
+        $this->assertSame(
+            'conformance_runner_coverage_gap',
+            $result['scenario_results']['completed_history_preservation_and_replay']['linked_findings'][0]['finding_type'],
+        );
+        $this->assertArrayNotHasKey(
+            'run_record',
+            $result['finding_links'],
+            'guide-audit observations should fill the required run-record sections while the live migration cells remain non-passing',
+        );
+    }
+
+    public function test_runner_extracts_commands_from_live_style_html_guide_blocks(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner guide-audit shard.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $guideHtml = <<<'HTML'
+<!doctype html>
+<html>
+<body>
+<article>
+<h2>Upgrade steps</h2>
+<p>Composer prerelease stability suffix for the active pre-stable 2.0 package.</p>
+<div class="language-bash codeBlockContainer_x">
+<pre tabindex="0" class="prism-code language-bash codeBlock_x"><code>
+<span class="token-line"><span class="token plain">composer require durable-workflow/workflow:2.0.0-alpha.197</span></span>
+<span class="token-line"><span class="token plain">php artisan migrate</span></span>
+<span class="token-line"><span class="token plain">php artisan queue:restart</span></span>
+</code></pre>
+</div>
+<p>Open Waterline and verify both v1 and v2 workflows are visible.</p>
+<div class="language-bash codeBlockContainer_y">
+<pre tabindex="0" class="prism-code language-bash codeBlock_y"><code>
+<span class="token-line"><span>php artisan vendor:publish \</span></span>
+<span class="token-line"><span>  --provider=&quot;Workflow\Providers\WorkflowServiceProvider&quot; \</span></span>
+<span class="token-line"><span>  --tag=migrations \</span></span>
+<span class="token-line"><span>  --force</span></span>
+</code></pre>
+</div>
+<h2>Rollback procedure</h2>
+<pre><code class="language-bash">
+<span class="token-line">mysql -u root -p your_database &lt; backup-v1.sql</span>
+<span class="token-line">composer require laravel-workflow/laravel-workflow:^1.0</span>
+</code></pre>
+<p>The finish-on-v1 strategy avoids forcing a data migration at upgrade time. v1 workflows continue executing on the v1 engine until they complete.</p>
+</article>
+</body>
+</html>
+HTML;
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            [],
+            'dw-migration-guide-html-audit-',
+            array_merge(
+                $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources),
+                [
+                    'DW_MIGRATION_RUN_PUBLIC_GUIDE_AUDIT' => '1',
+                    'DW_MIGRATION_GUIDE_AUDIT_TEXT' => $guideHtml,
+                ],
+            ),
+            [
+                'status' => 'pass',
+                'storage_connection' => 'workflow_storage',
+            ],
+        );
+
+        $commands = $result['migration_plan']['commands_extracted'];
+        $this->assertContains('composer require durable-workflow/workflow:2.0.0-alpha.197', $commands);
+        $this->assertContains('php artisan migrate', $commands);
+        $this->assertContains('php artisan queue:restart', $commands);
+        $this->assertContains('mysql -u root -p your_database < backup-v1.sql', $commands);
+        $this->assertContains('composer require laravel-workflow/laravel-workflow:^1.0', $commands);
+        $this->assertFalse(
+            in_array('Composer prerelease stability suffix for the active pre-stable 2.0 package.', $commands, true),
+            'guide prose must not be recorded as command evidence',
+        );
+
+        $vendorPublish = array_values(array_filter(
+            $commands,
+            static fn (string $command): bool => str_contains($command, 'php artisan vendor:publish'),
+        ));
+        $this->assertNotEmpty($vendorPublish);
+        $this->assertStringContainsString('--tag=migrations', $vendorPublish[0]);
     }
 
     public function test_runner_rejects_contract_placeholder_artifact_versions_before_passing(): void
@@ -1158,6 +1332,15 @@ class MigrationConformanceRunnerContractTest extends TestCase
                 $environment['DW_MIGRATION_PUBLIC_ARTIFACTS_JSON'] = $publicArtifactsPath;
             }
 
+            $baseEnvironment = [
+                'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                'DW_MIGRATION_REPO_ROOT' => $repoRoot,
+                'DW_MIGRATION_RESULT_DIR' => $resultDir,
+                'DW_MIGRATION_EVIDENCE_JSON' => $evidencePath,
+                'DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS' => '0',
+                'DW_MIGRATION_RUN_PUBLIC_GUIDE_AUDIT' => '0',
+            ];
+
             $process = proc_open(
                 [$nodeBinary, $repoRoot.'/scripts/conformance/migration-published-artifacts.mjs'],
                 [
@@ -1166,13 +1349,7 @@ class MigrationConformanceRunnerContractTest extends TestCase
                 ],
                 $pipes,
                 $repoRoot,
-                [
-                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
-                    'DW_MIGRATION_REPO_ROOT' => $repoRoot,
-                    'DW_MIGRATION_RESULT_DIR' => $resultDir,
-                    'DW_MIGRATION_EVIDENCE_JSON' => $evidencePath,
-                    'DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS' => '0',
-                ] + $environment,
+                array_merge($baseEnvironment, $environment),
             );
 
             $this->assertIsResource($process);
@@ -1277,6 +1454,38 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'waterline-v1' => 'published_waterline_v1_release',
             'waterline-v2' => 'published_waterline_release',
             'sample-app-v1' => 'published_sample_app_v1_tag',
+        ];
+    }
+
+    /**
+     * @param array<string, string> $artifactVersions
+     * @param array<string, string> $artifactSources
+     *
+     * @return array<string, string>
+     */
+    private function publicGuideAuditArtifactEnvironment(array $artifactVersions, array $artifactSources): array
+    {
+        return [
+            'DW_SERVER_V1_VERSION' => $artifactVersions['server-v1'],
+            'DW_SERVER_V2_VERSION' => $artifactVersions['server-v2'],
+            'DW_SERVER_V1_ARTIFACT_SOURCE' => $artifactSources['server-v1'],
+            'DW_SERVER_V2_ARTIFACT_SOURCE' => $artifactSources['server-v2'],
+            'DW_CLI_V1_VERSION' => $artifactVersions['cli-v1'],
+            'DW_CLI_VERSION' => $artifactVersions['cli-v2'],
+            'DW_CLI_V1_ARTIFACT_SOURCE' => $artifactSources['cli-v1'],
+            'DW_CLI_ARTIFACT_SOURCE' => $artifactSources['cli-v2'],
+            'DW_WORKFLOW_PHP_V1_VERSION' => $artifactVersions['workflow-php-v1'],
+            'DW_WORKFLOW_PHP_V2_VERSION' => $artifactVersions['workflow-php-v2'],
+            'DW_WORKFLOW_PHP_V1_ARTIFACT_SOURCE' => $artifactSources['workflow-php-v1'],
+            'DW_WORKFLOW_PHP_V2_ARTIFACT_SOURCE' => $artifactSources['workflow-php-v2'],
+            'DW_PYTHON_SDK_VERSION' => $artifactVersions['sdk-python'],
+            'DW_PYTHON_SDK_ARTIFACT_SOURCE' => $artifactSources['sdk-python'],
+            'DW_WATERLINE_V1_VERSION' => $artifactVersions['waterline-v1'],
+            'DW_WATERLINE_VERSION' => $artifactVersions['waterline-v2'],
+            'DW_WATERLINE_V1_ARTIFACT_SOURCE' => $artifactSources['waterline-v1'],
+            'DW_WATERLINE_ARTIFACT_SOURCE' => $artifactSources['waterline-v2'],
+            'DW_SAMPLE_APP_V1_VERSION' => $artifactVersions['sample-app-v1'],
+            'DW_SAMPLE_APP_V1_ARTIFACT_SOURCE' => $artifactSources['sample-app-v1'],
         ];
     }
 
