@@ -901,6 +901,39 @@ class NexusContractTest extends TestCase
         );
     }
 
+    public function test_host_runner_record_attaches_scenario_results_for_gate_ingestion(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $record = null;
+        $result = $this->runNexusEvidence(
+            $this->completeRunnerEvidence(),
+            'dw-nexus-record-scenario-results-',
+            null,
+            null,
+            $record,
+        );
+
+        $this->assertIsArray($record);
+        $this->assertSame('nexus', $record['experiment']);
+        $this->assertSame($result['scenario_results'], $record['scenario_results']);
+        $this->assertSame($result['scenario_results'], $record['scenarioResults']);
+        $this->assertSame($result['finding_links'], $record['finding_links']);
+        $this->assertSame($result['finding_links'], $record['findingLinks']);
+        $this->assertSame(
+            'pass',
+            $record['scenario_statuses']['published_artifact_install_only'],
+        );
+        $this->assertContains(
+            'result_record_and_product_finding_routing',
+            $record['reported_scenarios'],
+        );
+        $this->assertSame([], $record['non_pass_scenarios']);
+    }
+
     public function test_host_runner_promotes_dedicated_install_evidence_into_existing_legacy_install_scenario(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -933,6 +966,50 @@ class NexusContractTest extends TestCase
             'DW_NEXUS_ARTIFACT_INSTALL_EVIDENCE',
             $result['artifact_install_evidence']['supplied_install_evidence_source'],
         );
+    }
+
+    public function test_host_runner_repairs_not_covered_legacy_install_scenario_with_dedicated_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $installEvidence = $evidence['artifact_install_evidence'];
+        unset($evidence['artifact_install_evidence']);
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? null) === 'published_artifact_install_only') {
+                $scenario['status'] = 'not_covered';
+                unset($scenario['observed_outputs']['artifact_install_evidence']);
+                $scenario['linked_findings'] = [
+                    [
+                        'scenario_id' => 'published_artifact_install_only',
+                        'type' => 'conformance_runner_coverage_gap',
+                        'finding_type' => 'conformance_runner_coverage_gap',
+                        'owning_surface' => 'conformance_harness',
+                        'observed_behavior' => 'legacy runner did not attach install evidence',
+                        'expected_behavior' => 'published artifact install evidence is attached',
+                        'next_acceptance_criterion' => 'rerun Nexus install-only evidence capture',
+                    ],
+                ];
+            }
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence(
+            $evidence,
+            'dw-nexus-not-covered-install-promotion-',
+            $installEvidence,
+        );
+        $installScenario = $this->scenarioResult($result, 'published_artifact_install_only');
+
+        $this->assertSame('pass', $installScenario['status']);
+        $this->assertSame([], $installScenario['linked_findings']);
+        $this->assertSame($evidence['artifact_versions'], $installScenario['observed_outputs']['artifact_versions']);
+        $this->assertSame($evidence['artifact_sources'], $installScenario['observed_outputs']['artifact_sources']);
+        $this->assertCount(5, $installScenario['observed_outputs']['artifact_install_evidence']['artifacts']);
+        $this->assertSame([], $result['artifact_policy_failures']);
     }
 
     public function test_host_runner_repairs_empty_top_level_install_evidence_from_install_scenario(): void
@@ -1581,6 +1658,7 @@ class NexusContractTest extends TestCase
      * @param array<string, mixed> $evidence
      * @param array<string, mixed>|null $installEvidence
      * @param array<string, mixed>|null $staleResultInstallEvidence
+     * @param array<string, mixed>|null $record
      *
      * @return array<string, mixed>
      */
@@ -1589,6 +1667,7 @@ class NexusContractTest extends TestCase
         string $tempPrefix,
         ?array $installEvidence = null,
         ?array $staleResultInstallEvidence = null,
+        ?array &$record = null,
     ): array
     {
         $repoRoot = dirname(__DIR__, 2);
@@ -1643,6 +1722,9 @@ class NexusContractTest extends TestCase
 
             $resultPath = $resultDir.'/nexus-conformance-result.json';
             $this->assertFileExists($resultPath);
+            $recordPath = $resultDir.'/nexus-conformance-record.json';
+            $this->assertFileExists($recordPath);
+            $record = json_decode((string) file_get_contents($recordPath), true, 512, JSON_THROW_ON_ERROR);
 
             return json_decode((string) file_get_contents($resultPath), true, 512, JSON_THROW_ON_ERROR);
         } finally {

@@ -2166,48 +2166,47 @@ function withSyntheticInstallScenarioEvidence(
 
   return scenarioResults.map((scenario) => {
     if (scenario.scenario_id !== 'published_artifact_install_only'
-      || hasInstallScenarioArtifactEvidence(scenario)
       || ['fail', 'unsupported', 'runner_blocked'].includes(scenario.status)) {
       return scenario;
+    }
+
+    const observedOutputs = syntheticInstallObservedOutputs(
+      artifactVersions,
+      artifactSources,
+      artifactSourceVerification,
+      localProductSourceCheckoutsUsed,
+      artifactInstallEvidence,
+      scenario.observed_outputs,
+    );
+    const evidenceFailures = scenarioEvidenceFailures(
+      'published_artifact_install_only',
+      observedOutputs,
+    );
+
+    if (evidenceFailures.length > 0) {
+      return {
+        ...scenario,
+        status: evidenceFailures.some((failure) => failure.result_status === 'fail')
+          ? 'fail'
+          : 'not_covered',
+        observed_outputs: {
+          ...observedOutputs,
+          result_gate_failed: true,
+          scenario_evidence_failures: evidenceFailures,
+        },
+        linked_findings: evidenceFailures.map((failure) => (
+          scenarioEvidenceFinding('published_artifact_install_only', artifactVersions, failure)
+        )),
+      };
     }
 
     return {
       scenario_id: 'published_artifact_install_only',
       status: 'pass',
-      observed_outputs: syntheticInstallObservedOutputs(
-        artifactVersions,
-        artifactSources,
-        artifactSourceVerification,
-        localProductSourceCheckoutsUsed,
-        artifactInstallEvidence,
-      ),
+      observed_outputs: observedOutputs,
       linked_findings: [],
     };
   });
-}
-
-function hasInstallScenarioArtifactEvidence(scenario) {
-  const outputs = scenario
-    && scenario.observed_outputs
-    && typeof scenario.observed_outputs === 'object'
-    && !Array.isArray(scenario.observed_outputs)
-    ? scenario.observed_outputs
-    : {};
-
-  return [
-    'artifact_versions',
-    'artifactVersions',
-    'artifact_sources',
-    'artifactSources',
-    'artifact_source_verification',
-    'artifactSourceVerification',
-    'local_product_source_checkouts_used',
-    'localProductSourceCheckoutsUsed',
-    'install_channels_verified',
-    'installChannelsVerified',
-    'artifact_install_evidence',
-    'artifactInstallEvidence',
-  ].some((field) => Object.hasOwn(outputs, field));
 }
 
 function syntheticInstallObservedOutputs(
@@ -2216,17 +2215,40 @@ function syntheticInstallObservedOutputs(
   artifactSourceVerification,
   localProductSourceCheckoutsUsed,
   artifactInstallEvidence,
+  existingOutputs = {},
 ) {
-  return {
-    artifact_versions: artifactVersions,
-    resolved_artifact_versions: artifactVersions,
-    artifact_sources: artifactSources,
-    artifact_source_verification: artifactSourceVerification,
-    local_product_source_checkouts_used: localProductSourceCheckoutsUsed,
-    install_channels_verified: true,
-    published_install_tuple_proven: true,
-    artifact_install_evidence: artifactInstallEvidence,
-  };
+  const outputs = existingOutputs && typeof existingOutputs === 'object' && !Array.isArray(existingOutputs)
+    ? {...existingOutputs}
+    : {};
+
+  if (!hasAnyOwn(outputs, ['artifact_versions', 'artifactVersions'])) {
+    outputs.artifact_versions = artifactVersions;
+  }
+  if (!hasAnyOwn(outputs, ['resolved_artifact_versions', 'resolvedArtifactVersions'])) {
+    outputs.resolved_artifact_versions = artifactVersions;
+  }
+  if (!hasAnyOwn(outputs, ['artifact_sources', 'artifactSources', 'install_sources', 'installSources'])) {
+    outputs.artifact_sources = artifactSources;
+  }
+  if (!hasAnyOwn(outputs, [
+    'artifact_source_verification',
+    'artifactSourceVerification',
+    'published_artifact_source_verification',
+    'publishedArtifactSourceVerification',
+    'artifact_source_resolution',
+    'artifactSourceResolution',
+  ])) {
+    outputs.artifact_source_verification = artifactSourceVerification;
+  }
+  if (!hasAnyOwn(outputs, ['local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed'])) {
+    outputs.local_product_source_checkouts_used = localProductSourceCheckoutsUsed;
+  }
+
+  return withPromotedInstallEvidence(outputs, artifactInstallEvidence);
+}
+
+function hasAnyOwn(container, fields) {
+  return fields.some((field) => Object.hasOwn(container, field));
 }
 
 function withResultRecordAndRoutingScenario(scenarioResults, artifactVersions) {
@@ -3086,6 +3108,14 @@ const findingLinks = {};
 for (const scenario of scenarioResults) {
   findingLinks[scenario.scenario_id] = scenario.linked_findings;
 }
+const scenarioStatuses = {};
+const nonPassScenarios = [];
+for (const scenario of scenarioResults) {
+  scenarioStatuses[scenario.scenario_id] = scenario.status;
+  if (scenario.status !== 'pass') {
+    nonPassScenarios.push(scenario.scenario_id);
+  }
+}
 
 const pins = {
   schema: 'durable-workflow.v2.nexus-runtime.pins',
@@ -3133,12 +3163,52 @@ const result = {
 };
 
 const record = {
+  schema: 'durable-workflow.v2.nexus-runtime.record',
+  version: 1,
   experiment: 'nexus',
   outcome,
+  runner_blocked: runnerBlocked,
   runnerBlocked,
   ...(runnerBlocked ? {blockedReason: runnerBlockedReason} : {}),
-  artifactVersions: artifactVersions,
-  artifactInstallEvidence: artifactInstallEvidence,
+  artifact_versions: artifactVersions,
+  artifactVersions,
+  published_artifact_versions: artifactVersions,
+  publishedArtifactVersions: artifactVersions,
+  resolved_artifact_versions: artifactVersions,
+  resolvedArtifactVersions: artifactVersions,
+  artifact_sources: artifactSources,
+  artifactSources,
+  artifact_source_verification: artifactSourceVerification,
+  artifactSourceVerification,
+  artifact_install_evidence: artifactInstallEvidence,
+  artifactInstallEvidence,
+  artifact_policy_failures: artifactPolicyFailures,
+  artifactPolicyFailures,
+  local_product_source_checkouts_used: localProductSourceCheckoutsUsed,
+  localProductSourceCheckoutsUsed,
+  required_scenarios: requiredScenarios,
+  requiredScenarios,
+  reported_scenarios: scenarioResults.map((scenario) => scenario.scenario_id),
+  reportedScenarios: scenarioResults.map((scenario) => scenario.scenario_id),
+  scenario_statuses: scenarioStatuses,
+  scenarioStatuses,
+  non_pass_scenarios: nonPassScenarios,
+  nonPassScenarios,
+  scenario_results: scenarioResults,
+  scenarioResults,
+  finding_links: findingLinks,
+  findingLinks,
+  structured_findings: findings,
+  structuredFindings: findings,
+  finding_summaries: findings.map((finding) => {
+    if (finding && typeof finding.observed_behavior === 'string') {
+      return finding.observed_behavior;
+    }
+    if (finding && typeof finding.summary === 'string') {
+      return finding.summary;
+    }
+    return JSON.stringify(finding);
+  }),
   findings: findings.map((finding) => {
     if (finding && typeof finding.observed_behavior === 'string') {
       return finding.observed_behavior;
