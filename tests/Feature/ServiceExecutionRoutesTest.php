@@ -353,6 +353,110 @@ class ServiceExecutionRoutesTest extends TestCase
         $this->assertSame('return_existing_active', $stub->captured['options']['duplicate_start_policy']);
     }
 
+    public function test_execute_replay_returns_existing_accepted_activity_call_after_handler_issue(): void
+    {
+        [, , $operation] = $this->seedCatalog();
+        $operation->update([
+            'handler_binding_kind' => 'activity_execution',
+            'handler_target_reference' => 'Greeter.greet',
+            'handler_binding' => ['activity_type' => 'Greeter.greet'],
+        ]);
+
+        $serviceCall = WorkflowServiceCall::query()->create([
+            'workflow_service_endpoint_id' => $operation->workflow_service_endpoint_id,
+            'workflow_service_id' => $operation->workflow_service_id,
+            'workflow_service_operation_id' => $operation->id,
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+            'service_name' => 'invoicing',
+            'operation_name' => 'createinvoice',
+            'caller_namespace' => 'tenant-a',
+            'caller_workflow_instance_id' => 'caller-activity',
+            'caller_workflow_run_id' => 'run-activity',
+            'target_namespace' => 'default',
+            'status' => 'accepted',
+            'outcome' => 'accepted',
+            'operation_mode' => 'async',
+            'resolved_binding_kind' => 'activity_execution',
+            'resolved_target_reference' => 'activity-issued-1',
+            'metadata' => [
+                'activity_execution_id' => 'activity-issued-1',
+                'activity_type' => 'Greeter.greet',
+            ],
+            'idempotency_key' => 'caller-activity-nexus-op-1',
+            'accepted_at' => now(),
+        ]);
+
+        $stub = new class($serviceCall) implements ServiceControlPlane
+        {
+            public bool $executeCalled = false;
+
+            public ?array $describeCaptured = null;
+
+            public function __construct(private readonly WorkflowServiceCall $serviceCall) {}
+
+            public function execute(string $endpointName, string $serviceName, string $operationName, array $options = []): array
+            {
+                $this->executeCalled = true;
+
+                return ['accepted' => false];
+            }
+
+            public function describeCall(string $serviceCallId, array $options = []): array
+            {
+                $this->describeCaptured = [
+                    'service_call_id' => $serviceCallId,
+                    'options' => $options,
+                ];
+
+                return [
+                    'found' => true,
+                    'accepted' => true,
+                    'service_call_id' => $this->serviceCall->id,
+                    'namespace' => $this->serviceCall->namespace,
+                    'caller_namespace' => $this->serviceCall->caller_namespace,
+                    'target_namespace' => $this->serviceCall->target_namespace,
+                    'endpoint_name' => $this->serviceCall->endpoint_name,
+                    'service_name' => $this->serviceCall->service_name,
+                    'operation_name' => $this->serviceCall->operation_name,
+                    'operation_mode' => 'async',
+                    'status' => 'accepted',
+                    'outcome' => 'accepted',
+                    'resolved_binding_kind' => 'activity_execution',
+                    'resolved_target_reference' => 'activity-issued-1',
+                    'reason' => null,
+                ];
+            }
+
+            public function cancelCall(string $serviceCallId, array $options = []): array
+            {
+                return ['accepted' => false, 'service_call_id' => $serviceCallId];
+            }
+        };
+
+        $this->app->instance(ServiceControlPlane::class, $stub);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services/invoicing/operations/createinvoice/execute', [
+                'caller_namespace' => 'tenant-a',
+                'caller_workflow_instance_id' => 'caller-activity',
+                'caller_workflow_run_id' => 'run-activity',
+                'idempotency_key' => 'caller-activity-nexus-op-1',
+            ]);
+
+        $response->assertOk()
+            ->assertJsonPath('accepted', true)
+            ->assertJsonPath('idempotent_replay', true)
+            ->assertJsonPath('service_call_id', $serviceCall->id)
+            ->assertJsonPath('resolved_target_reference', 'activity-issued-1');
+
+        $this->assertSame(1, WorkflowServiceCall::query()->count());
+        $this->assertFalse($stub->executeCalled);
+        $this->assertNotNull($stub->describeCaptured);
+        $this->assertSame($serviceCall->id, $stub->describeCaptured['service_call_id']);
+        $this->assertSame('default', $stub->describeCaptured['options']['namespace']);
+    }
+
     public function test_execute_replay_returns_existing_call_after_rate_limit_quota_is_consumed(): void
     {
         $this->seedCatalog();

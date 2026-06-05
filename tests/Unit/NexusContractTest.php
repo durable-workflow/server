@@ -341,6 +341,14 @@ class NexusContractTest extends TestCase
             'worker_restart_replay_does_not_reissue_call',
             $hostRunner['runtime_shards']['workflow-php']['must_cover_scenarios'],
         );
+        $this->assertContains(
+            'worker_restart_replay_does_not_reissue_call',
+            $hostRunner['runtime_shards']['server']['must_cover_scenarios'],
+        );
+        $this->assertContains(
+            'caller_cancellation_propagates_to_service',
+            $hostRunner['runtime_shards']['server']['must_cover_scenarios'],
+        );
         $this->assertSame(
             'conformance_runner_coverage_gap',
             $hostRunner['routing_policy']['missing_required_scenario']['finding_type'],
@@ -362,6 +370,10 @@ class NexusContractTest extends TestCase
         $this->assertStringContainsString('DW_NEXUS_SKIP_SHARED_SERVICE_PROBE', $contents);
         $this->assertStringContainsString('setupSharedService', $contents);
         $this->assertStringContainsString('invokeSharedService', $contents);
+        $this->assertStringContainsString('probeWorkerRestartReplay', $contents);
+        $this->assertStringContainsString('probeCallerCancellation', $contents);
+        $this->assertStringContainsString('duplicate_call_issue_count', $contents);
+        $this->assertStringContainsString('cancellation_propagation_ms', $contents);
         $this->assertStringContainsString('caller_history_recorded: true', $contents);
         $this->assertStringContainsString('verifyGithubReleaseAsset', $contents);
         $this->assertStringContainsString('verifyPackagistPackage', $contents);
@@ -1634,6 +1646,51 @@ class NexusContractTest extends TestCase
                 array_column($scenario['linked_findings'], 'finding_type'),
             );
         }
+    }
+
+    public function test_host_runner_accepts_published_server_worker_execution_for_built_in_replay_and_cancellation_cells(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $serverWorkerExecution = [
+            'local_product_source_checkouts_used' => false,
+            'artifacts' => [
+                [
+                    'artifact' => 'server',
+                    'version' => $evidence['artifact_versions']['server'],
+                    'source' => $evidence['artifact_sources']['server'],
+                    'status' => 'pass',
+                    'execution_context' => 'published_server_image_worker_service',
+                    'local_product_source_checkout_used_as_artifact' => false,
+                ],
+            ],
+        ];
+
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if (in_array($scenario['scenario_id'], [
+                'worker_restart_replay_does_not_reissue_call',
+                'caller_cancellation_propagates_to_service',
+            ], true)) {
+                $scenario['observed_outputs']['published_artifact_worker_execution'] = $serverWorkerExecution;
+            }
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-server-worker-evidence-');
+
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertSame(
+            'pass',
+            $this->scenarioResult($result, 'worker_restart_replay_does_not_reissue_call')['status'],
+        );
+        $this->assertSame(
+            'pass',
+            $this->scenarioResult($result, 'caller_cancellation_propagates_to_service')['status'],
+        );
     }
 
     public function test_host_runner_rejects_duplicate_replay_invocation_evidence(): void

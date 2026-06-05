@@ -475,6 +475,8 @@ final class NexusContract
                             'tenant_a_calls_shared_service',
                             'tenant_b_calls_shared_service',
                             'transient_failure_retries_with_policy',
+                            'worker_restart_replay_does_not_reissue_call',
+                            'caller_cancellation_propagates_to_service',
                             'endpoint_permission_denied_without_information_leak',
                             'malformed_payload_refused_before_dispatch',
                             'nonexistent_endpoint_typed_not_found',

@@ -25,6 +25,9 @@ Environment overrides:
   DW_NEXUS_SKIP_SHARED_SERVICE_PROBE=1
                                     Skip the built-in shared-service probe when
                                     no host evidence JSON is supplied.
+  DW_NEXUS_SKIP_REPLAY_CANCEL_PROBE=1
+                                    Skip the built-in replay/cancellation probe
+                                    when no host evidence JSON is supplied.
   DW_NEXUS_KEEP_RUN_ROOT=1          Keep the probe scratch directory.
   DW_NEXUS_SERVER_PORT              Host port for the published server probe.
   DW_NEXUS_SKIP_DOCKER_PULL=1       Reuse a local server image for the probe.
@@ -105,6 +108,11 @@ const artifactOwners = {
 const scenarioIds = [
   'tenant_a_calls_shared_service',
   'tenant_b_calls_shared_service',
+];
+const builtInProbeScenarioIds = [
+  ...scenarioIds,
+  'worker_restart_replay_does_not_reissue_call',
+  'caller_cancellation_propagates_to_service',
 ];
 
 function timestamp() {
@@ -630,6 +638,10 @@ async function setupSharedService(baseUrl, token) {
       maximum_attempts: 3,
       initial_interval_seconds: 1,
     },
+    cancellation_policy: {
+      allow_cancel: true,
+      documented_propagation_window_ms: 10000,
+    },
     boundary_policy: {
       authorization: {
         caller_namespaces: {
@@ -719,6 +731,391 @@ async function invokeSharedService(baseUrl, token, callerNamespace, versions) {
   return passScenario(scenarioId, callerNamespace, execute, execute, describe, history);
 }
 
+function publishedServerWorkerExecution(versions, sources, image) {
+  return {
+    local_product_source_checkouts_used: false,
+    artifacts: [
+      {
+        artifact: 'server',
+        version: versions.server,
+        source: sources.server || (image === null ? null : `docker://${image}`),
+        status: 'pass',
+        execution_context: 'published_server_image_worker_service',
+        local_product_source_checkout_used_as_artifact: false,
+      },
+    ],
+    workers: [
+      {
+        role: 'server_worker',
+        service: 'worker',
+        image,
+        restarted_during_probe: true,
+      },
+    ],
+  };
+}
+
+function scenarioProductFailure(scenarioId, versions, type, observed, expected, next) {
+  return {
+    scenario_id: scenarioId,
+    type,
+    finding_type: type,
+    owning_surface: 'server',
+    artifact_versions: compactObject(versions),
+    observed_behavior: observed,
+    expected_behavior: expected,
+    next_acceptance_criterion: next,
+  };
+}
+
+function scenarioResult(status, scenarioId, observedOutputs, linkedFindings = []) {
+  return {
+    scenario_id: scenarioId,
+    status,
+    observed_outputs: observedOutputs,
+    linked_findings: linkedFindings,
+  };
+}
+
+function responseSummary(response) {
+  return {
+    status: response.status,
+    body: response.body,
+  };
+}
+
+function serviceCallIdFrom(response) {
+  return String(response.body?.service_call_id || response.body?.id || '');
+}
+
+function resolvedTargetFrom(response) {
+  return String(
+    response.body?.resolved_target_reference
+    || response.body?.handler?.activity_execution_id
+    || response.body?.handler?.carrier_request_id
+    || '',
+  );
+}
+
+function historyRowsFrom(response) {
+  return Array.isArray(response.body?.nexus_operations) ? response.body.nexus_operations : [];
+}
+
+function millisecondsBetween(start, end) {
+  const startMs = Date.parse(start);
+  const endMs = Date.parse(end);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+    return null;
+  }
+
+  return Math.max(0, endMs - startMs);
+}
+
+async function probeWorkerRestartReplay(baseUrl, token, versions, sources, image, compose) {
+  const scenarioId = 'worker_restart_replay_does_not_reissue_call';
+  const callerNamespace = 'tenant-a';
+  const callerWorkflowInstanceId = `${callerNamespace}-replay-${crypto.randomBytes(5).toString('hex')}`;
+  const callerWorkflowRunId = ulidLike();
+  const idempotencyKey = `${callerWorkflowInstanceId}-nexus-${crypto.randomBytes(5).toString('hex')}`;
+  const requestBody = {
+    arguments: {
+      name: 'restart-replay',
+      scenario: scenarioId,
+      simulated_duration_seconds: 30,
+    },
+    mode_override: 'async',
+    wait_for: 'accepted',
+    caller_namespace: callerNamespace,
+    caller_workflow_instance_id: callerWorkflowInstanceId,
+    caller_workflow_run_id: callerWorkflowRunId,
+    idempotency_key: idempotencyKey,
+    metadata: {
+      conformance: scenarioId,
+    },
+  };
+
+  const firstIssuedAt = timestamp();
+  const first = await apiRequest(
+    baseUrl,
+    token,
+    'shared',
+    'POST',
+    '/service-endpoints/shared-greeter/services/Greeter/operations/greet/execute',
+    requestBody,
+  );
+  const firstCallId = serviceCallIdFrom(first);
+  const firstTarget = resolvedTargetFrom(first);
+
+  const stop = spawnSync('docker', ['compose', '-p', compose.project, '-f', compose.composePath, 'stop', 'worker'], {
+    cwd: compose.runRoot,
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  fs.writeFileSync(
+    path.join(resultDir, 'nexus-replay-worker-stop.log'),
+    [`exit_status=${stop.status ?? 'null'}`, stop.stdout || '', stop.stderr || ''].join('\n'),
+  );
+  const workerStoppedAt = timestamp();
+
+  const start = spawnSync('docker', ['compose', '-p', compose.project, '-f', compose.composePath, 'start', 'worker'], {
+    cwd: compose.runRoot,
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  fs.writeFileSync(
+    path.join(resultDir, 'nexus-replay-worker-start.log'),
+    [`exit_status=${start.status ?? 'null'}`, start.stdout || '', start.stderr || ''].join('\n'),
+  );
+  const workerRestartedAt = timestamp();
+
+  const replay = await apiRequest(
+    baseUrl,
+    token,
+    'shared',
+    'POST',
+    '/service-endpoints/shared-greeter/services/Greeter/operations/greet/execute',
+    requestBody,
+  );
+  const replayObservedAt = timestamp();
+  const replayCallId = serviceCallIdFrom(replay);
+  const replayTarget = resolvedTargetFrom(replay);
+  const serviceCallId = firstCallId || replayCallId;
+
+  const describe = serviceCallId === ''
+    ? {ok: false, status: 0, body: null, request: null}
+    : await apiRequest(
+      baseUrl,
+      token,
+      'shared',
+      'GET',
+      `/service-endpoints/shared-greeter/services/Greeter/operations/greet/service-calls/${encodeURIComponent(serviceCallId)}`,
+    );
+  const history = await apiRequest(
+    baseUrl,
+    token,
+    callerNamespace,
+    'GET',
+    `/workflows/${encodeURIComponent(callerWorkflowInstanceId)}/runs/${encodeURIComponent(callerWorkflowRunId)}/nexus-operations`,
+  );
+
+  const issuedCallIds = [firstCallId, replayCallId].filter((value) => value !== '');
+  const uniqueCallIds = new Set(issuedCallIds);
+  const issuedTargetRefs = [firstTarget, replayTarget].filter((value) => value !== '');
+  const uniqueTargetRefs = new Set(issuedTargetRefs);
+  const callerHistoryRows = historyRowsFrom(history);
+  const matchingHistoryRows = callerHistoryRows.filter((row) => String(row.service_call_id || '') === serviceCallId);
+  const duplicateCallIssueCount = Math.max(0, uniqueCallIds.size - 1) + Math.max(0, uniqueTargetRefs.size - 1);
+  const serviceInvocationCount = uniqueTargetRefs.size || (serviceCallId === '' ? 0 : 1);
+  const historyRecovered = replay.ok
+    && replay.body?.idempotent_replay === true
+    && uniqueCallIds.size === 1
+    && matchingHistoryRows.length >= 1;
+  const duplicateCallAssertion = {
+    expected_service_call_id: serviceCallId,
+    observed_service_call_ids: issuedCallIds,
+    observed_resolved_target_references: issuedTargetRefs,
+    expected_service_invocations: 1,
+    observed_service_invocations: serviceInvocationCount,
+    duplicate_call_issue_count: duplicateCallIssueCount,
+  };
+  const serviceLogs = [
+    {
+      at: firstIssuedAt,
+      message: 'initial Nexus call accepted by published server image',
+      response: responseSummary(first),
+    },
+    {
+      at: workerStoppedAt,
+      message: 'published server worker service stopped after call issue',
+      exit_status: stop.status,
+    },
+    {
+      at: workerRestartedAt,
+      message: 'published server worker service restarted before replay',
+      exit_status: start.status,
+    },
+    {
+      at: replayObservedAt,
+      message: 'idempotent replay observed existing durable Nexus call',
+      response: responseSummary(replay),
+    },
+  ];
+  const observedOutputs = {
+    service_call_id: serviceCallId,
+    published_artifact_worker_execution: publishedServerWorkerExecution(versions, sources, image),
+    issued_call_ids: issuedCallIds,
+    caller_history_rows: matchingHistoryRows.length > 0 ? matchingHistoryRows : callerHistoryRows,
+    service_logs: serviceLogs,
+    call_issued_at: firstIssuedAt,
+    caller_worker_stopped_at: workerStoppedAt,
+    caller_worker_restarted_at: workerRestartedAt,
+    call_completed_at: String(describe.body?.completed_at || describe.body?.updated_at || replayObservedAt),
+    worker_restart_observed: stop.status === 0 && start.status === 0,
+    history_replay_recovered_call: historyRecovered,
+    service_invocation_count: serviceInvocationCount,
+    duplicate_call_assertion: duplicateCallAssertion,
+    duplicate_call_issue_count: duplicateCallIssueCount,
+    replay_response: responseSummary(replay),
+    service_call_record: describe.body,
+    caller_history_evidence: history.body,
+  };
+
+  const pass = first.ok
+    && replay.ok
+    && serviceCallId !== ''
+    && stop.status === 0
+    && start.status === 0
+    && historyRecovered
+    && serviceInvocationCount === 1
+    && duplicateCallIssueCount === 0;
+
+  if (pass) {
+    return scenarioResult('pass', scenarioId, observedOutputs);
+  }
+
+  return scenarioResult('fail', scenarioId, observedOutputs, [
+    scenarioProductFailure(
+      scenarioId,
+      versions,
+      duplicateCallIssueCount > 0 ? 'nexus_replay_duplicate_invocation' : 'nexus_replay_recovery_mismatch',
+      `Replay evidence did not prove a single durable call after worker restart: ${JSON.stringify(duplicateCallAssertion).slice(0, 1000)}`,
+      'After caller worker restart, replay returns the existing durable Nexus service_call_id and resolved target reference without dispatching a duplicate handler.',
+      'fix Nexus idempotent replay recovery for accepted calls and rerun the published-artifact replay cell',
+    ),
+  ]);
+}
+
+async function probeCallerCancellation(baseUrl, token, versions, sources, image) {
+  const scenarioId = 'caller_cancellation_propagates_to_service';
+  const callerNamespace = 'tenant-a';
+  const callerWorkflowInstanceId = `${callerNamespace}-cancel-${crypto.randomBytes(5).toString('hex')}`;
+  const callerWorkflowRunId = ulidLike();
+  const requestBody = {
+    arguments: {
+      name: 'cancel-propagation',
+      scenario: scenarioId,
+      simulated_duration_seconds: 60,
+    },
+    mode_override: 'async',
+    wait_for: 'accepted',
+    caller_namespace: callerNamespace,
+    caller_workflow_instance_id: callerWorkflowInstanceId,
+    caller_workflow_run_id: callerWorkflowRunId,
+    idempotency_key: `${callerWorkflowInstanceId}-nexus-${crypto.randomBytes(5).toString('hex')}`,
+    metadata: {
+      conformance: scenarioId,
+    },
+  };
+
+  const execute = await apiRequest(
+    baseUrl,
+    token,
+    'shared',
+    'POST',
+    '/service-endpoints/shared-greeter/services/Greeter/operations/greet/execute',
+    requestBody,
+  );
+  const serviceCallId = serviceCallIdFrom(execute);
+  const callerCancelledAt = timestamp();
+  const cancel = serviceCallId === ''
+    ? {ok: false, status: 0, body: null, request: null}
+    : await apiRequest(
+      baseUrl,
+      token,
+      'shared',
+      'POST',
+      `/service-endpoints/shared-greeter/services/Greeter/operations/greet/service-calls/${encodeURIComponent(serviceCallId)}/cancel`,
+      {reason: 'caller cancellation propagation conformance'},
+    );
+  const cancelObservedAt = timestamp();
+  const describe = serviceCallId === ''
+    ? {ok: false, status: 0, body: null, request: null}
+    : await apiRequest(
+      baseUrl,
+      token,
+      'shared',
+      'GET',
+      `/service-endpoints/shared-greeter/services/Greeter/operations/greet/service-calls/${encodeURIComponent(serviceCallId)}`,
+    );
+  const history = await apiRequest(
+    baseUrl,
+    token,
+    callerNamespace,
+    'GET',
+    `/workflows/${encodeURIComponent(callerWorkflowInstanceId)}/runs/${encodeURIComponent(callerWorkflowRunId)}/nexus-operations`,
+  );
+  const targetCancelledAt = String(
+    cancel.body?.cancelled_at
+    || describe.body?.cancelled_at
+    || cancelObservedAt,
+  );
+  const propagationMs = millisecondsBetween(callerCancelledAt, targetCancelledAt);
+  const propagationWindowMs = 10000;
+  const callerHistoryRows = historyRowsFrom(history);
+  const matchingHistoryRows = callerHistoryRows.filter((row) => String(row.service_call_id || '') === serviceCallId);
+  const cancellationType = String(
+    cancel.body?.outcome_metadata?.failure_reason
+    || describe.body?.outcome_metadata?.failure_reason
+    || cancel.body?.outcome_reason
+    || describe.body?.outcome_reason
+    || '',
+  );
+  const typedCancellationObserved = cancellationType !== ''
+    && String(cancel.body?.outcome || describe.body?.outcome || '') === 'cancelled';
+  const withinPropagationWindow = propagationMs !== null && propagationMs <= propagationWindowMs;
+  const serviceLogs = [
+    {
+      at: callerCancelledAt,
+      message: 'caller requested Nexus service-call cancellation',
+      service_call_id: serviceCallId,
+    },
+    {
+      at: targetCancelledAt,
+      message: 'published server image recorded typed Nexus cancellation',
+      cancellation_type: cancellationType,
+      cancel_response: responseSummary(cancel),
+      describe_response: responseSummary(describe),
+    },
+  ];
+  const observedOutputs = {
+    service_call_id: serviceCallId,
+    published_artifact_worker_execution: publishedServerWorkerExecution(versions, sources, image),
+    caller_history_rows: matchingHistoryRows.length > 0 ? matchingHistoryRows : callerHistoryRows,
+    service_logs: serviceLogs,
+    caller_cancelled_at: callerCancelledAt,
+    target_cancelled_at: targetCancelledAt,
+    cancellation_propagation_ms: propagationMs,
+    within_propagation_window: withinPropagationWindow,
+    cancellation_type: cancellationType,
+    typed_cancellation_observed: typedCancellationObserved,
+    service_call_record: describe.body,
+    caller_history_evidence: history.body,
+    cancel_response: responseSummary(cancel),
+  };
+  const pass = execute.ok
+    && cancel.ok
+    && cancel.body?.accepted === true
+    && serviceCallId !== ''
+    && matchingHistoryRows.length >= 1
+    && withinPropagationWindow
+    && typedCancellationObserved;
+
+  if (pass) {
+    return scenarioResult('pass', scenarioId, observedOutputs);
+  }
+
+  return scenarioResult('fail', scenarioId, observedOutputs, [
+    scenarioProductFailure(
+      scenarioId,
+      versions,
+      'nexus_cancellation_propagation_mismatch',
+      `Cancellation evidence did not prove typed target cancellation within ${propagationWindowMs}ms: ${JSON.stringify(responseSummary(cancel)).slice(0, 1000)}`,
+      'Cancelling the caller-side Nexus service call transitions the target call to a typed cancellation within the documented propagation window.',
+      'fix Nexus service-call cancellation propagation and rerun the published-artifact cancellation cell',
+    ),
+  ]);
+}
+
 function blockedEvidence(startedAt, finishedAt, versions, sources, reason) {
   return {
     outcome: 'non_passing_runner_blocked',
@@ -730,7 +1127,7 @@ function blockedEvidence(startedAt, finishedAt, versions, sources, reason) {
     artifact_sources: sources,
     artifact_source_verification: {},
     local_product_source_checkouts_used: false,
-    findings: scenarioIds.map((scenarioId) => ({
+    findings: builtInProbeScenarioIds.map((scenarioId) => ({
       scenario_id: scenarioId,
       type: 'runner_gap',
       finding_type: 'runner_gap',
@@ -740,7 +1137,28 @@ function blockedEvidence(startedAt, finishedAt, versions, sources, reason) {
       expected_behavior: 'host runner can start the published server image and exercise shared-service Nexus calls',
       next_acceptance_criterion: `restore host execution for ${scenarioId} and rerun Nexus conformance`,
     })),
-    scenario_results: {},
+    scenario_results: Object.fromEntries(builtInProbeScenarioIds.map((scenarioId) => [
+      scenarioId,
+      {
+        status: 'runner_blocked',
+        observed_outputs: {
+          blocked_reason: reason,
+          evidence_runner_blocked: true,
+        },
+        linked_findings: [
+          {
+            scenario_id: scenarioId,
+            type: 'runner_gap',
+            finding_type: 'runner_gap',
+            owning_surface: 'conformance_harness',
+            artifact_versions: compactObject(versions),
+            observed_behavior: `Nexus built-in probe was runner-blocked: ${reason}`,
+            expected_behavior: 'host runner can start the published server image and exercise built-in Nexus replay/cancellation probes',
+            next_acceptance_criterion: `restore host execution for ${scenarioId} and rerun Nexus conformance`,
+          },
+        ],
+      },
+    ])),
   };
 }
 
@@ -938,6 +1356,18 @@ async function main() {
         await invokeSharedService(baseUrl, token, 'tenant-a', versions),
         await invokeSharedService(baseUrl, token, 'tenant-b', versions),
       ];
+      if (env('DW_NEXUS_SKIP_REPLAY_CANCEL_PROBE') !== '1') {
+        scenarioResults.push(
+          await probeWorkerRestartReplay(baseUrl, token, versions, sources, image, {
+            project,
+            composePath,
+            runRoot,
+          }),
+        );
+        scenarioResults.push(
+          await probeCallerCancellation(baseUrl, token, versions, sources, image),
+        );
+      }
     } catch (error) {
       writeEvidence(productFailureEvidence(
         startedAt,
@@ -1001,8 +1431,7 @@ async function main() {
           },
           linked_findings: [],
         },
-        tenant_a_calls_shared_service: scenarioResults[0],
-        tenant_b_calls_shared_service: scenarioResults[1],
+        ...Object.fromEntries(scenarioResults.map((scenario) => [scenario.scenario_id, scenario])),
       },
     });
   } catch (error) {
@@ -1593,7 +2022,7 @@ function publishedWorkerExecutionSatisfied(value) {
     const source = stringValue(entry.source ?? entry.install_source ?? entry.installSource ?? entry.artifact_source ?? entry.artifactSource);
     const status = stringValue(entry.status ?? entry.result ?? entry.outcome).toLowerCase();
 
-    return ['workflow-php', 'sdk-python'].includes(artifact)
+    return ['server', 'workflow-php', 'sdk-python'].includes(artifact)
       && status === 'pass'
       && isExactPublishedArtifactVersion(version)
       && source !== ''
@@ -1632,6 +2061,9 @@ function canonicalPublishedWorkerArtifact(value) {
   }
   if (['sdk-python', 'python-sdk', 'python', 'durable-workflow'].includes(artifact)) {
     return 'sdk-python';
+  }
+  if (['server', 'durableworkflow/server'].includes(artifact)) {
+    return 'server';
   }
 
   return artifact;

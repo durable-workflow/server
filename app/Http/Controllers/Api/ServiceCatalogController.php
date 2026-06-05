@@ -726,7 +726,8 @@ class ServiceCatalogController
                 );
             }
 
-            if ((string) $idempotentCall->status === 'accepted') {
+            if ((string) $idempotentCall->status === 'accepted'
+                && ! $this->acceptedCallHasIssuedHandler($idempotentCall)) {
                 $options = $executionOptions;
                 $options['service_call_id'] = $idempotentCall->id;
                 $options['boundary_policy_outcome'] = 'accepted';
@@ -1299,6 +1300,21 @@ class ServiceCatalogController
             ->oldest('created_at')
             ->oldest('id')
             ->first();
+    }
+
+    private function acceptedCallHasIssuedHandler(WorkflowServiceCall $call): bool
+    {
+        $metadata = $this->arrayValue($call->metadata);
+
+        return match ((string) $call->resolved_binding_kind) {
+            'activity_execution' => isset($metadata['activity_execution_id'])
+                && is_string($metadata['activity_execution_id'])
+                && trim($metadata['activity_execution_id']) !== '',
+            'invocable_carrier_request' => isset($metadata['carrier_request_id'])
+                && is_string($metadata['carrier_request_id'])
+                && trim($metadata['carrier_request_id']) !== '',
+            default => false,
+        };
     }
 
     private function endpointNotFound(Request $request, string $endpointName): JsonResponse
