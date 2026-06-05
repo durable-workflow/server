@@ -71,6 +71,10 @@ class PrincipalAttributionContractTest extends TestCase
             'server_or_protocol',
             $manifest['finding_policy']['root_cause_owners']['shared_attribution_shape_failure'],
         );
+        $this->assertContains(
+            'sdk_principal_attribution_parity',
+            $manifest['artifact_policy']['required_run_record_fields'],
+        );
     }
 
     public function test_manifest_names_required_audit_scenarios(): void
@@ -592,6 +596,9 @@ class PrincipalAttributionContractTest extends TestCase
         $this->assertStringContainsString('"php_client_visibility", "workflow"', $script);
         $this->assertStringContainsString('php_operation_outputs = sdk_operation_outputs(php_operation, php_client_id, "workflow-php")', $script);
         $this->assertStringContainsString('operation_outputs=php_operation_outputs', $script);
+        $this->assertStringContainsString('sdk_principal_attribution_parity = {', $script);
+        $this->assertStringContainsString('"sdk_principal_attribution_parity": sdk_principal_attribution_parity', $script);
+        $this->assertStringContainsString('"sdkPrincipalAttributionParity": {', $script);
         $this->assertStringNotContainsString('Python SDK client operation was not exercised by this runner revision', $script);
         $this->assertStringNotContainsString('PHP client operation was not exercised by this runner revision', $script);
         $this->assertStringContainsString('waterline:principal-attribution-conformance', $script);
@@ -809,6 +816,14 @@ class PrincipalAttributionContractTest extends TestCase
                 JSON_THROW_ON_ERROR,
             );
             $this->assertTrue($record['runnerBlocked']);
+            $this->assertSame(
+                'runner_blocked',
+                $record['sdkPrincipalAttributionParity']['python_sdk_visibility']['status'],
+            );
+            $this->assertSame(
+                'runner_blocked',
+                $record['sdkPrincipalAttributionParity']['php_client_visibility']['status'],
+            );
             $recordFindings = array_column($record['findings'], null, 'scenario_id');
             foreach (array_keys($scenarioManifest['scenario_requirements']) as $scenarioId) {
                 $this->assertArrayHasKey($scenarioId, $recordFindings);
@@ -1736,6 +1751,16 @@ class PrincipalAttributionContractTest extends TestCase
             'spoofing_attempts' => ['payload_values' => ['mallory'], 'headers' => ['X-Forwarded-User']],
             'spoofing_matrix' => $this->spoofingMatrix(),
             'operator_visibility' => ['cli_history_json_principal_visible' => true],
+            'sdk_principal_attribution_parity' => [
+                'python_sdk_visibility' => [
+                    'status' => 'pass',
+                    ...$this->scenarioEvidence('python_sdk_visibility'),
+                ],
+                'php_client_visibility' => [
+                    'status' => 'pass',
+                    ...$this->scenarioEvidence('php_client_visibility'),
+                ],
+            ],
             'anonymous_observations' => [
                 'status' => 'pass',
                 'anonymous_principal' => ['type' => 'server', 'id' => 'anonymous'],

@@ -375,6 +375,30 @@ blocked_result() {
     "cli_history_json_principal_visible": null,
     "waterline": null
   },
+  "sdk_principal_attribution_parity": {
+    "python_sdk_visibility": {
+      "status": "runner_blocked",
+      "sdk_package_version": null,
+      "credential_used": null,
+      "expected_principal": null,
+      "raw_http_reference_principal": null,
+      "history_api_principal_samples": {},
+      "operation_outputs": {},
+      "recorded_principal": null,
+      "shape_matches_http": null
+    },
+    "php_client_visibility": {
+      "status": "runner_blocked",
+      "sdk_package_version": null,
+      "credential_used": null,
+      "expected_principal": null,
+      "raw_http_reference_principal": null,
+      "history_api_principal_samples": {},
+      "operation_outputs": {},
+      "recorded_principal": null,
+      "shape_matches_http": null
+    }
+  },
   "anonymous_observations": {
     "status": "runner_blocked",
     "documented_value": {"type": "server", "id": "anonymous"},
@@ -401,6 +425,30 @@ JSON
   "outcome": "error",
   "runnerBlocked": true,
   "artifactVersions": $artifact_versions_json,
+  "sdkPrincipalAttributionParity": {
+    "python_sdk_visibility": {
+      "status": "runner_blocked",
+      "sdk_package_version": null,
+      "credential_used": null,
+      "expected_principal": null,
+      "raw_http_reference_principal": null,
+      "history_api_principal_samples": {},
+      "operation_outputs": {},
+      "recorded_principal": null,
+      "shape_matches_http": null
+    },
+    "php_client_visibility": {
+      "status": "runner_blocked",
+      "sdk_package_version": null,
+      "credential_used": null,
+      "expected_principal": null,
+      "raw_http_reference_principal": null,
+      "history_api_principal_samples": {},
+      "operation_outputs": {},
+      "recorded_principal": null,
+      "shape_matches_http": null
+    }
+  },
   "findings": [
 JSON
     emit_principal_blocked_findings "$reason" "$artifact_versions_json"
@@ -2565,6 +2613,37 @@ def main() -> int:
         findings=php_failures,
     ))
 
+    sdk_principal_attribution_parity = {
+        "python_sdk_visibility": {
+            "status": "pass" if not python_failures else "fail",
+            "sdk_package_version": versions.get("sdk-python"),
+            "credential_used": {"actor": "bob", "credential_ref": "bob-token"},
+            "expected_principal": python_expected_principal,
+            "raw_http_reference_principal": python_raw_http_reference_principal,
+            "history_api_principal_samples": principal_samples(python_principals, ["WorkflowStarted", "SignalReceived"]),
+            "operation_outputs": python_operation_outputs,
+            "operation_output_sample": python_operation.get("output"),
+            "recorded_principal": python_recorded_principal,
+            "shape_matches_http": python_shape_matches_http,
+            "client_operation": python_operation,
+            "linked_findings": python_linked_findings,
+        },
+        "php_client_visibility": {
+            "status": "pass" if not php_failures else "fail",
+            "sdk_package_version": versions.get("workflow-php") or versions.get("workflow"),
+            "credential_used": {"actor": "alice", "credential_ref": "alice-token-v1"},
+            "expected_principal": php_expected_principal,
+            "raw_http_reference_principal": php_raw_http_reference_principal,
+            "history_api_principal_samples": principal_samples(php_principals, ["WorkflowStarted", "SignalReceived"]),
+            "operation_outputs": php_operation_outputs,
+            "operation_output_sample": php_operation.get("output"),
+            "recorded_principal": php_recorded_principal,
+            "shape_matches_http": php_shape_matches_http,
+            "client_operation": php_operation,
+            "linked_findings": php_linked_findings,
+        },
+    }
+
     scenario_results.append(scenario("pass" if cli_json_ok else "fail", "cli_operator_visibility", command=f"dw workflow:history {main_id} {main_run} --output=json", output_sample=cli_output[:4000], principal_visible=cli_json_ok))
     if not cli_json_ok:
         findings.append(finding("cli_operator_visibility", "cli", "CLI history output did not expose event principal", "CLI operator output shows the event principal clearly", "surface event principal in workflow:history output"))
@@ -2680,6 +2759,7 @@ def main() -> int:
         "spoofing_attempts": spoofing_attempt_catalog(["start", "signal", "cancel", "query"]),
         "spoofing_matrix": [*main_spoofing_matrix, *query_spoofing_matrix, *anonymous_spoofing_matrix],
         "operator_visibility": {"cli_history_json_principal_visible": cli_json_ok, "waterline": {"status": waterline_status, "principal_visible": waterline_principal_visible, "linked_findings": waterline_linked_findings, "result_path": str(WATERLINE_PRINCIPAL_RESULT) if WATERLINE_PRINCIPAL_RESULT is not None else None}},
+        "sdk_principal_attribution_parity": sdk_principal_attribution_parity,
         "anonymous_observations": {"status": "pass" if not anonymous_failures else "fail", "anonymous_principal": anonymous_principals.get("WorkflowStarted"), "documented_value": expected_anonymous_principal, "history_events": list(anonymous_principals), "recorded_principals": anonymous_principals, "spoofing_attempts": spoofing_attempt_catalog(["start", "signal", "cancel"]), "spoofing_matrix": anonymous_spoofing_matrix, "anonymous_auth_driver": "none"},
         "scenario_results": scenario_results,
         "findings": findings,
@@ -2690,6 +2770,10 @@ def main() -> int:
         "outcome": outcome,
         "runnerBlocked": False,
         "artifactVersions": versions,
+        "sdkPrincipalAttributionParity": {
+            "python_sdk_visibility": sdk_principal_attribution_parity["python_sdk_visibility"],
+            "php_client_visibility": sdk_principal_attribution_parity["php_client_visibility"],
+        },
         "findings": findings,
         "resultPath": str(RESULT_DIR / "principal-attribution-result.json"),
     }, indent=2, sort_keys=True) + "\n")

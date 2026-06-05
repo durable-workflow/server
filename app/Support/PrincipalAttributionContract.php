@@ -96,6 +96,7 @@ final class PrincipalAttributionContract
                     'spoofing_attempts',
                     'spoofing_matrix',
                     'operator_visibility',
+                    'sdk_principal_attribution_parity',
                     'anonymous_observations',
                 ],
             ],
