@@ -699,11 +699,13 @@ GUIDE;
 </div>
 <p>Open Waterline and verify both v1 and v2 workflows are visible.</p>
 <div class="language-bash codeBlockContainer_y">
-<pre tabindex="0" class="prism-code language-bash codeBlock_y"><code>
-<span class="token-line"><span>php artisan vendor:publish \</span></span>
-<span class="token-line"><span>  --provider=&quot;Workflow\Providers\WorkflowServiceProvider&quot; \</span></span>
-<span class="token-line"><span>  --tag=migrations \</span></span>
-<span class="token-line"><span>  --force</span></span>
+<pre tabindex="0" class="prism-code language-bash codeBlock_y"><code class="codeBlockLines_e6Vv">
+<span class="token-line" style="color:#F8F8F2"><span class="token plain">php artisan vendor:publish </span><span class="token punctuation">\</span><span class="token plain"></span><br></span>
+<span class="token-line" style="color:#F8F8F2"><span class="token plain">  --provider</span><span class="token operator">=</span><span class="token string">&quot;Workflow\Providers\WorkflowServiceProvider&quot;</span><span class="token plain"> </span><span class="token punctuation">\</span><span class="token plain"></span><br></span>
+<span class="token-line" style="color:#F8F8F2"><span class="token plain">  --tag</span><span class="token operator">=</span><span class="token plain">migrations </span><span class="token punctuation">\</span><span class="token plain"></span><br></span>
+<span class="token-line" style="color:#F8F8F2"><span class="token plain">  --force</span><br></span>
+<span class="token-line" style="color:#F8F8F2"><span class="token plain" style="display:inline-block"></span><br></span>
+<span class="token-line" style="color:#F8F8F2"><span class="token plain">php artisan migrate</span><br></span>
 </code></pre>
 </div>
 <h2>Rollback procedure</h2>
@@ -749,7 +751,16 @@ HTML;
             $commands,
             static fn (string $command): bool => str_contains($command, 'php artisan vendor:publish'),
         ));
+        $expectedVendorPublish = <<<'COMMAND'
+php artisan vendor:publish \
+  --provider="Workflow\Providers\WorkflowServiceProvider" \
+  --tag=migrations \
+  --force
+COMMAND;
+
         $this->assertNotEmpty($vendorPublish);
+        $this->assertContains($expectedVendorPublish, $commands);
+        $this->assertStringNotContainsString("\n\n", $vendorPublish[0]);
         $this->assertStringContainsString('--tag=migrations', $vendorPublish[0]);
     }
 

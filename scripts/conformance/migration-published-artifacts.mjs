@@ -1217,7 +1217,7 @@ function extractCommandLines(text) {
 
     while (/\\\s*$/.test(command) && index + 1 < lines.length) {
       index += 1;
-      command = `${command}\n${normalizeShellCommandLine(lines[index])}`;
+      command = `${command}\n${normalizeShellCommandContinuationLine(lines[index])}`;
     }
 
     if (command !== '' && !commands.includes(command)) {
@@ -1232,6 +1232,12 @@ function normalizeShellCommandLine(line) {
   return decodeHtmlEntities(stringValue(line))
     .replace(/^\s*(?:\$|#|>)\s*/, '')
     .trim();
+}
+
+function normalizeShellCommandContinuationLine(line) {
+  return decodeHtmlEntitiesPreservingWhitespace(line)
+    .replace(/^\s*(?:\$|#|>) ?/, '')
+    .trimEnd();
 }
 
 function isMigrationGuideCommand(line) {
@@ -1255,7 +1261,13 @@ function htmlToText(value) {
 }
 
 function htmlCodeBlockToText(value) {
-  return decodeHtmlEntities(stringValue(value)
+  const raw = stringValue(value);
+  const tokenLines = extractHtmlTokenLineTexts(raw);
+  if (tokenLines.length > 0) {
+    return tokenLines.join('\n');
+  }
+
+  return decodeHtmlEntities(raw
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
     .replace(/<br\s*\/?>/gi, '\n')
@@ -1265,8 +1277,43 @@ function htmlCodeBlockToText(value) {
   ).replace(/\r\n?/g, '\n');
 }
 
+function extractHtmlTokenLineTexts(value) {
+  const lines = [];
+  const raw = rawStringValue(value);
+  const tokenLinePattern = /<span\b(?=[^>]*class=["'][^"']*\btoken-line\b[^"']*["'])[^>]*>([\s\S]*?)(?=<span\b(?=[^>]*class=["'][^"']*\btoken-line\b)|<\/code>|$)/gi;
+  let match = tokenLinePattern.exec(raw);
+
+  while (match !== null) {
+    lines.push(htmlInlineCodeToText(match[1]).trimEnd());
+    match = tokenLinePattern.exec(raw);
+  }
+
+  return lines;
+}
+
+function htmlInlineCodeToText(value) {
+  return decodeHtmlEntitiesPreservingWhitespace(rawStringValue(value)
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '')
+    .replace(/<[^>]+>/g, '')
+  );
+}
+
 function decodeHtmlEntities(value) {
   return stringValue(value)
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)))
+    .replace(/&#([0-9]+);/g, (_, code) => String.fromCodePoint(Number.parseInt(code, 10)))
+    .replace(/&quot;/gi, '"');
+}
+
+function decodeHtmlEntitiesPreservingWhitespace(value) {
+  return rawStringValue(value)
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
@@ -2429,6 +2476,12 @@ function collectLocalProductSourceFlagValues(value, values) {
 function stringValue(value) {
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
     ? String(value).trim()
+    : '';
+}
+
+function rawStringValue(value) {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+    ? String(value)
     : '';
 }
 
