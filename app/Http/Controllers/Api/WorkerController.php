@@ -1563,6 +1563,7 @@ class WorkerController
             'cannot replay workflow history',
             'unsupported payload codec',
             'workflow task completion failed after commands were produced',
+            'workflow task waiting for scheduled history',
             'no workflow registered',
         ] as $needle) {
             if (str_contains($text, $needle)) {

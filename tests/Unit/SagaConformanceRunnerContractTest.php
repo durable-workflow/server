@@ -828,6 +828,32 @@ class SagaConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_generated_php_worker_reports_waiting_replay_as_workflow_task_failure(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            'use Workflow\V2\Worker\WorkflowStep;',
+            $source,
+            'the generated PHP worker must inspect package runner wait steps explicitly',
+        );
+        $this->assertStringContainsString(
+            'function fail_waiting_workflow_task(array $task, WorkflowStep $step): void',
+            $source,
+            'a package runner wait must be reported as a workflow-task outcome, not a workflow terminal failure',
+        );
+        $this->assertStringContainsString(
+            "'workflow task waiting for scheduled history'",
+            $source,
+            'waiting for a cross-runtime compensation activity must produce a typed protocol failure reason',
+        );
+        $this->assertStringContainsString(
+            "if (\$step->commands === []) {\n            fail_waiting_workflow_task(\$task, \$step);\n            return;\n        }",
+            $source,
+            'the PHP saga worker must not complete an empty command list or terminally fail the workflow while history is still open',
+        );
+    }
+
     public function test_orchestrator_restarts_dead_workers_before_dependency_scenarios(): void
     {
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');

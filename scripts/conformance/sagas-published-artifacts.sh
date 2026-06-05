@@ -971,6 +971,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Support\ActivityOptions;
 use Workflow\V2\Worker\WorkflowFiberRunner;
+use Workflow\V2\Worker\WorkflowStep;
 use Workflow\V2\Workflow;
 
 require __DIR__.'/vendor/autoload.php';
@@ -1323,6 +1324,17 @@ function fail_protocol_workflow_task(array $task, \Throwable $throwable, string 
     }
 }
 
+function fail_waiting_workflow_task(array $task, WorkflowStep $step): void
+{
+    $yielded = $step->yielded !== null ? get_debug_type($step->yielded) : 'unknown workflow yield';
+
+    fail_protocol_workflow_task(
+        $task,
+        new \RuntimeException($yielded.' has no completed history yet'),
+        'workflow task waiting for scheduled history'
+    );
+}
+
 function workflow_class_for_task(array $task): string
 {
     return match ($task['workflow_type'] ?? '') {
@@ -1357,7 +1369,8 @@ function handle_workflow_task(array $task): void
         );
         $step = $runner->step();
         if ($step->commands === []) {
-            throw new \RuntimeException('PHP workflow runner produced no worker commands for a leased workflow task');
+            fail_waiting_workflow_task($task, $step);
+            return;
         }
     } catch (\Throwable $throwable) {
         try {
