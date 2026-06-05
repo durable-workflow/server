@@ -700,12 +700,24 @@ GUIDE;
 <p>Open Waterline and verify both v1 and v2 workflows are visible.</p>
 <div class="language-bash codeBlockContainer_y">
 <pre tabindex="0" class="prism-code language-bash codeBlock_y"><code class="codeBlockLines_e6Vv">
-<span class="token-line" style="color:#F8F8F2"><span class="token plain">php artisan vendor:publish </span><span class="token punctuation">\</span><span class="token plain"></span><br></span>
-<span class="token-line" style="color:#F8F8F2"><span class="token plain">  --provider</span><span class="token operator">=</span><span class="token string">&quot;Workflow\Providers\WorkflowServiceProvider&quot;</span><span class="token plain"> </span><span class="token punctuation">\</span><span class="token plain"></span><br></span>
-<span class="token-line" style="color:#F8F8F2"><span class="token plain">  --tag</span><span class="token operator">=</span><span class="token plain">migrations </span><span class="token punctuation">\</span><span class="token plain"></span><br></span>
-<span class="token-line" style="color:#F8F8F2"><span class="token plain">  --force</span><br></span>
-<span class="token-line" style="color:#F8F8F2"><span class="token plain" style="display:inline-block"></span><br></span>
-<span class="token-line" style="color:#F8F8F2"><span class="token plain">php artisan migrate</span><br></span>
+<span class="token-line" style="color:#F8F8F2">
+  <span class="token plain">php artisan vendor:publish </span><span class="token punctuation">\</span><span class="token plain"></span><br>
+</span>
+<span class="token-line" style="color:#F8F8F2">
+  <span class="token plain">  --provider</span><span class="token operator">=</span><span class="token string">&quot;Workflow\Providers\WorkflowServiceProvider&quot;</span><span class="token plain"> </span><span class="token punctuation">\</span><span class="token plain"></span><br>
+</span>
+<span class="token-line" style="color:#F8F8F2">
+  <span class="token plain">  --tag</span><span class="token operator">=</span><span class="token plain">migrations </span><span class="token punctuation">\</span><span class="token plain"></span><br>
+</span>
+<span class="token-line" style="color:#F8F8F2">
+  <span class="token plain">  --force</span><br>
+</span>
+<span class="token-line" style="color:#F8F8F2">
+  <span class="token plain" style="display:inline-block"></span><br>
+</span>
+<span class="token-line" style="color:#F8F8F2">
+  <span class="token plain">php artisan migrate</span><br>
+</span>
 </code></pre>
 </div>
 <h2>Rollback procedure</h2>

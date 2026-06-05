@@ -1284,11 +1284,29 @@ function extractHtmlTokenLineTexts(value) {
   let match = tokenLinePattern.exec(raw);
 
   while (match !== null) {
-    lines.push(htmlInlineCodeToText(match[1]).trimEnd());
+    const line = htmlTokenLineToText(match[1]);
+    if (line !== '') {
+      lines.push(line);
+    }
     match = tokenLinePattern.exec(raw);
   }
 
   return lines;
+}
+
+function htmlTokenLineToText(value) {
+  const raw = rawStringValue(value).replace(/(^|\n)[\t ]+(?=<)/g, '$1');
+  const text = htmlInlineCodeToText(raw).replace(/\r\n?/g, '\n');
+  const fragments = text.split('\n').filter((line) => line.trim() !== '');
+
+  if (fragments.length === 0) {
+    return '';
+  }
+
+  return fragments
+    .map((line, index) => (index === 0 ? line.trimEnd() : line.trim()))
+    .join('')
+    .trimEnd();
 }
 
 function htmlInlineCodeToText(value) {
