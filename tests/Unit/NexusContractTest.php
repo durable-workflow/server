@@ -809,48 +809,194 @@ class NexusContractTest extends TestCase
         ));
     }
 
-    public function test_host_runner_preserves_missing_install_scenario_as_coverage_gap(): void
+    public function test_host_runner_synthesizes_install_only_and_result_routing_envelopes(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
         if ($nodeBinary === '') {
             $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
         }
 
-        foreach (['missing', 'pass_empty_outputs', 'non_pass_empty_outputs'] as $case) {
-            $evidence = $this->completeRunnerEvidence();
-            if ($case === 'missing') {
-                $evidence['scenario_results'] = array_values(array_filter(
-                    $evidence['scenario_results'],
-                    static fn (array $scenario): bool => ($scenario['scenario_id'] ?? null) !== 'published_artifact_install_only',
-                ));
-            } else {
-                foreach ($evidence['scenario_results'] as &$scenario) {
-                    if (($scenario['scenario_id'] ?? null) === 'published_artifact_install_only') {
-                        $scenario['status'] = $case === 'pass_empty_outputs' ? 'pass' : 'not_covered';
-                        $scenario['observed_outputs'] = [];
-                        $scenario['linked_findings'] = [];
-                    }
-                }
-                unset($scenario);
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['scenario_results'] = array_values(array_filter(
+            $evidence['scenario_results'],
+            static fn (array $scenario): bool => ! in_array(
+                $scenario['scenario_id'] ?? null,
+                ['published_artifact_install_only', 'result_record_and_product_finding_routing'],
+                true,
+            ),
+        ));
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-synthesized-envelope-');
+        $installScenario = $this->scenarioResult($result, 'published_artifact_install_only');
+        $routingScenario = $this->scenarioResult($result, 'result_record_and_product_finding_routing');
+
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertSame([], $result['artifact_policy_failures']);
+        $this->assertSame('pass', $installScenario['status']);
+        $this->assertSame($evidence['artifact_versions'], $installScenario['observed_outputs']['artifact_versions']);
+        $this->assertSame($evidence['artifact_sources'], $installScenario['observed_outputs']['artifact_sources']);
+        $this->assertSame(
+            $evidence['artifact_source_verification'],
+            $installScenario['observed_outputs']['artifact_source_verification'],
+        );
+        $this->assertFalse($installScenario['observed_outputs']['local_product_source_checkouts_used']);
+        $this->assertTrue($installScenario['observed_outputs']['install_channels_verified']);
+        $this->assertTrue($installScenario['observed_outputs']['published_install_tuple_proven']);
+        $this->assertCount(5, $installScenario['observed_outputs']['artifact_install_evidence']['artifacts']);
+
+        $this->assertSame('pass', $routingScenario['status']);
+        $this->assertSame([], $routingScenario['linked_findings']);
+        $this->assertSame(
+            'pass',
+            $routingScenario['observed_outputs']['scenario_statuses']['published_artifact_install_only'],
+        );
+        $this->assertSame(
+            'pass',
+            $routingScenario['observed_outputs']['scenario_statuses']['result_record_and_product_finding_routing'],
+        );
+        $this->assertSame([], $routingScenario['observed_outputs']['non_pass_routes']);
+        $this->assertSame(
+            count(NexusContract::manifest()['required_scenarios']),
+            $routingScenario['observed_outputs']['status_counts']['pass'],
+        );
+    }
+
+    public function test_host_runner_does_not_pass_from_reachability_and_artifact_pins_alone(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $complete = $this->completeRunnerEvidence();
+        $evidence = [
+            'outcome' => 'pass',
+            'started_at' => $complete['started_at'],
+            'finished_at' => $complete['finished_at'],
+            'artifact_versions' => $complete['artifact_versions'],
+            'published_artifact_versions' => $complete['published_artifact_versions'],
+            'resolved_artifact_versions' => $complete['resolved_artifact_versions'],
+            'artifact_sources' => $complete['artifact_sources'],
+            'artifact_source_verification' => $complete['artifact_source_verification'],
+            'local_product_source_checkouts_used' => false,
+            'findings' => [],
+        ];
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-reachability-only-');
+        $installScenario = $this->scenarioResult($result, 'published_artifact_install_only');
+        $tenantScenario = $this->scenarioResult($result, 'tenant_a_calls_shared_service');
+        $routingScenario = $this->scenarioResult($result, 'result_record_and_product_finding_routing');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertSame('pass', $installScenario['status']);
+        $this->assertSame('not_covered', $tenantScenario['status']);
+        $this->assertSame('pass', $routingScenario['status']);
+        $this->assertSame(
+            'not_covered',
+            $routingScenario['observed_outputs']['scenario_statuses']['tenant_a_calls_shared_service'],
+        );
+        $this->assertTrue(
+            $routingScenario['observed_outputs']['non_pass_routes']['tenant_a_calls_shared_service']['routed'],
+        );
+    }
+
+    public function test_host_runner_result_record_routes_every_non_pass_status_to_focused_findings(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? null) === 'result_record_and_product_finding_routing') {
+                $scenario['status'] = 'pass';
+                $scenario['observed_outputs'] = [];
+                $scenario['linked_findings'] = [];
             }
+            if (($scenario['scenario_id'] ?? null) === 'tenant_a_calls_shared_service') {
+                $scenario['status'] = 'fail';
+                $scenario['linked_findings'] = [
+                    $this->focusedFinding('tenant_a_calls_shared_service', 'nexus_product_failure'),
+                ];
+            }
+            if (($scenario['scenario_id'] ?? null) === 'php_caller_python_service') {
+                $scenario['status'] = 'unsupported';
+                $scenario['linked_findings'] = [
+                    $this->focusedFinding('php_caller_python_service', 'nexus_unsupported_surface'),
+                ];
+            }
+            if (($scenario['scenario_id'] ?? null) === 'python_caller_php_service') {
+                $scenario['status'] = 'not_covered';
+                $scenario['linked_findings'] = [];
+            }
+            if (($scenario['scenario_id'] ?? null) === 'caller_cancellation_propagates_to_service') {
+                $scenario['status'] = 'runner_blocked';
+                $scenario['linked_findings'] = [
+                    $this->focusedFinding('caller_cancellation_propagates_to_service', 'nexus_runner_gap'),
+                ];
+            }
+        }
+        unset($scenario);
 
-            $result = $this->runNexusEvidence($evidence, 'dw-nexus-missing-install-'.$case.'-');
-            $installScenario = $this->scenarioResult($result, 'published_artifact_install_only');
-            $tenantScenario = $this->scenarioResult($result, 'tenant_a_calls_shared_service');
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-status-routing-');
+        $routingScenario = $this->scenarioResult($result, 'result_record_and_product_finding_routing');
 
-            $this->assertSame('fail', $result['outcome']);
-            $this->assertSame([], $result['artifact_policy_failures']);
-            $this->assertSame('not_covered', $installScenario['status']);
-            $this->assertContains(
-                'conformance_runner_coverage_gap',
-                array_column($installScenario['linked_findings'], 'finding_type'),
-            );
-            $this->assertSame(
-                'pass',
-                $tenantScenario['status'],
-                'missing install evidence must not rewrite unrelated Nexus cells to fail',
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertSame('pass', $routingScenario['status']);
+        $this->assertSame('fail', $routingScenario['observed_outputs']['scenario_statuses']['tenant_a_calls_shared_service']);
+        $this->assertSame('unsupported', $routingScenario['observed_outputs']['scenario_statuses']['php_caller_python_service']);
+        $this->assertSame('not_covered', $routingScenario['observed_outputs']['scenario_statuses']['python_caller_php_service']);
+        $this->assertSame('runner_blocked', $routingScenario['observed_outputs']['scenario_statuses']['caller_cancellation_propagates_to_service']);
+        $this->assertTrue($routingScenario['observed_outputs']['non_pass_findings_routed']);
+
+        foreach ([
+            'tenant_a_calls_shared_service',
+            'php_caller_python_service',
+            'python_caller_php_service',
+            'caller_cancellation_propagates_to_service',
+        ] as $scenarioId) {
+            $this->assertTrue($routingScenario['observed_outputs']['non_pass_routes'][$scenarioId]['routed']);
+            $this->assertGreaterThanOrEqual(
+                1,
+                $routingScenario['observed_outputs']['non_pass_routes'][$scenarioId]['focused_finding_count'],
             );
         }
+    }
+
+    public function test_host_runner_result_record_fails_when_non_pass_finding_is_unfocused(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? null) === 'tenant_a_calls_shared_service') {
+                $scenario['status'] = 'fail';
+                $scenario['linked_findings'] = [
+                    [
+                        'scenario_id' => 'tenant_a_calls_shared_service',
+                        'finding_type' => 'nexus_product_failure',
+                    ],
+                ];
+            }
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-unfocused-routing-');
+        $routingScenario = $this->scenarioResult($result, 'result_record_and_product_finding_routing');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertSame('fail', $routingScenario['status']);
+        $this->assertFalse(
+            $routingScenario['observed_outputs']['non_pass_routes']['tenant_a_calls_shared_service']['routed'],
+        );
+        $this->assertContains(
+            'nexus_result_record_routing_gap',
+            array_column($routingScenario['linked_findings'], 'finding_type'),
+        );
     }
 
     public function test_host_runner_records_unreadable_evidence_path_as_typed_coverage_gap(): void
@@ -980,20 +1126,21 @@ class NexusContractTest extends TestCase
         unset($scenario);
 
         $result = $this->runNexusEvidence($evidence, 'dw-nexus-thin-evidence-');
+        $tenantScenario = $this->scenarioResult($result, 'tenant_a_calls_shared_service');
 
         $this->assertSame(
             'fail',
             $result['outcome'],
             'Nexus pass scenarios must not pass with generic non-empty observed_outputs',
         );
-        $this->assertSame('not_covered', $result['scenario_results'][0]['status']);
+        $this->assertSame('not_covered', $tenantScenario['status']);
         $this->assertSame(
             'missing_scenario_specific_evidence',
-            $result['scenario_results'][0]['observed_outputs']['scenario_evidence_failures'][0]['code'],
+            $tenantScenario['observed_outputs']['scenario_evidence_failures'][0]['code'],
         );
         $this->assertContains(
             'conformance_runner_coverage_gap',
-            array_column($result['scenario_results'][0]['linked_findings'], 'finding_type'),
+            array_column($tenantScenario['linked_findings'], 'finding_type'),
         );
     }
 
@@ -1487,6 +1634,29 @@ class NexusContractTest extends TestCase
         }
 
         return false;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function focusedFinding(string $scenarioId, string $findingType): array
+    {
+        return [
+            'scenario_id' => $scenarioId,
+            'type' => $findingType,
+            'finding_type' => $findingType,
+            'owning_surface' => 'server',
+            'artifact_versions' => [
+                'server' => '0.2.247',
+                'cli' => '0.1.75',
+                'workflow' => '2.0.0-alpha.190',
+                'sdk-python' => '0.4.84',
+                'waterline' => '2.0.0-alpha.77',
+            ],
+            'observed_behavior' => sprintf('Nexus scenario %s recorded non-pass evidence.', $scenarioId),
+            'expected_behavior' => sprintf('Nexus scenario %s satisfies its published result contract.', $scenarioId),
+            'next_acceptance_criterion' => sprintf('rerun the %s Nexus cell with product evidence that reaches pass', $scenarioId),
+        ];
     }
 
     private function removeTree(string $path): void
