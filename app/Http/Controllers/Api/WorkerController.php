@@ -24,6 +24,7 @@ use Illuminate\Validation\ValidationException;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
@@ -1504,6 +1505,19 @@ class WorkerController
             return $response;
         }
 
+        if ($this->workflowTaskFailureWaitsForHistory($validated['failure'])) {
+            $outcome = $this->acknowledgeWorkflowTaskWaitingForHistory($namespace, $taskId, $validated['failure']);
+
+            return WorkerProtocol::json([
+                'task_id' => $taskId,
+                'workflow_task_attempt' => (int) $validated['workflow_task_attempt'],
+                'outcome' => 'waiting_for_history',
+                'recorded' => $outcome['recorded'],
+                'reason' => $outcome['reason'],
+                'next_task_id' => null,
+            ], $this->workflowOutcomeStatus($outcome['reason']));
+        }
+
         /** @var WorkflowTaskBridge $bridge */
         $bridge = app(WorkflowTaskBridge::class);
         try {
@@ -1563,7 +1577,6 @@ class WorkerController
             'cannot replay workflow history',
             'unsupported payload codec',
             'workflow task completion failed after commands were produced',
-            'workflow task waiting for scheduled history',
             'no workflow registered',
         ] as $needle) {
             if (str_contains($text, $needle)) {
@@ -1572,6 +1585,91 @@ class WorkerController
         }
 
         return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $failure
+     */
+    private function workflowTaskFailureWaitsForHistory(array $failure): bool
+    {
+        $type = trim((string) ($failure['type'] ?? ''));
+
+        if (strcasecmp($type, 'WorkflowTaskWaitingForHistory') === 0) {
+            return true;
+        }
+
+        $message = strtolower((string) ($failure['message'] ?? ''));
+
+        return str_contains(strtolower($type).' '.$message, 'workflow task waiting for scheduled history');
+    }
+
+    /**
+     * @param  array<string, mixed>  $failure
+     * @return array{recorded: bool, reason: string|null}
+     */
+    private function acknowledgeWorkflowTaskWaitingForHistory(string $namespace, string $taskId, array $failure): array
+    {
+        return DB::transaction(function () use ($namespace, $taskId, $failure): array {
+            /** @var WorkflowTask|null $task */
+            $task = WorkflowTask::query()
+                ->lockForUpdate()
+                ->whereKey($taskId)
+                ->where('namespace', $namespace)
+                ->first();
+
+            if (! $task instanceof WorkflowTask) {
+                return ['recorded' => false, 'reason' => 'task_not_found'];
+            }
+
+            if ($task->task_type !== TaskType::Workflow) {
+                return ['recorded' => false, 'reason' => 'task_not_workflow'];
+            }
+
+            if ($task->status !== TaskStatus::Leased) {
+                return ['recorded' => false, 'reason' => 'task_not_leased'];
+            }
+
+            /** @var WorkflowRun|null $run */
+            $run = WorkflowRun::query()
+                ->lockForUpdate()
+                ->find($task->workflow_run_id);
+
+            if (! $run instanceof WorkflowRun) {
+                return ['recorded' => false, 'reason' => 'run_not_found'];
+            }
+
+            if ($run->status->isTerminal()) {
+                $task->forceFill([
+                    'status' => $run->status === RunStatus::Failed ? TaskStatus::Failed : TaskStatus::Completed,
+                    'lease_expires_at' => null,
+                ])->save();
+
+                return ['recorded' => false, 'reason' => 'run_already_closed'];
+            }
+
+            $payload = is_array($task->payload) ? $task->payload : [];
+            $payload['waiting_for_history_acknowledged'] = true;
+            $payload['waiting_for_history_message'] = (string) ($failure['message'] ?? '');
+
+            if (is_string($failure['type'] ?? null) && trim($failure['type']) !== '') {
+                $payload['waiting_for_history_failure_type'] = trim($failure['type']);
+            }
+
+            $task->forceFill([
+                'status' => TaskStatus::Completed,
+                'lease_expires_at' => null,
+                'payload' => $payload,
+            ])->save();
+
+            $run->forceFill([
+                'status' => RunStatus::Waiting,
+                'last_progress_at' => now(),
+            ])->save();
+
+            $this->projectWorkflowRun($run->id);
+
+            return ['recorded' => true, 'reason' => null];
+        });
     }
 
     /**

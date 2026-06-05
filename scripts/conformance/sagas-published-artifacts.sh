@@ -1324,15 +1324,27 @@ function fail_protocol_workflow_task(array $task, \Throwable $throwable, string 
     }
 }
 
-function fail_waiting_workflow_task(array $task, WorkflowStep $step): void
+function report_waiting_workflow_task(array $task, WorkflowStep $step): void
 {
     $yielded = $step->yielded !== null ? get_debug_type($step->yielded) : 'unknown workflow yield';
 
-    fail_protocol_workflow_task(
-        $task,
-        new \RuntimeException($yielded.' has no completed history yet'),
-        'workflow task waiting for scheduled history'
-    );
+    try {
+        request_json('POST', '/worker/workflow-tasks/'.$task['task_id'].'/fail', [
+            'lease_owner' => $task['lease_owner'],
+            'workflow_task_attempt' => $task['workflow_task_attempt'] ?? 1,
+            'failure' => [
+                'message' => 'workflow task waiting for scheduled history: '.$yielded.' has no completed history yet',
+                'type' => 'WorkflowTaskWaitingForHistory',
+            ],
+        ], 10, [404, 409]);
+    } catch (\Throwable $reportFailure) {
+        fwrite(STDERR, sprintf(
+            "failed to report waiting workflow task for task %s: %s: %s\n",
+            (string) ($task['task_id'] ?? 'unknown'),
+            $reportFailure::class,
+            $reportFailure->getMessage()
+        ));
+    }
 }
 
 function workflow_class_for_task(array $task): string
@@ -1369,7 +1381,7 @@ function handle_workflow_task(array $task): void
         );
         $step = $runner->step();
         if ($step->commands === []) {
-            fail_waiting_workflow_task($task, $step);
+            report_waiting_workflow_task($task, $step);
             return;
         }
     } catch (\Throwable $throwable) {

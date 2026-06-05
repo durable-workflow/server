@@ -2343,7 +2343,7 @@ class WorkflowWorkerProtocolTest extends TestCase
             ->assertJsonFragment(['code' => 'workflow_replay_blocked']);
     }
 
-    public function test_waiting_for_scheduled_history_workflow_task_failure_does_not_retry_immediately(): void
+    public function test_waiting_for_scheduled_history_workflow_task_failure_acknowledges_the_wait(): void
     {
         Queue::fake();
 
@@ -2386,19 +2386,87 @@ class WorkflowWorkerProtocolTest extends TestCase
         $fail->assertOk()
             ->assertJsonPath('task_id', $taskId)
             ->assertJsonPath('workflow_task_attempt', $attempt)
-            ->assertJsonPath('outcome', 'failed')
+            ->assertJsonPath('outcome', 'waiting_for_history')
             ->assertJsonPath('recorded', true)
             ->assertJsonPath('next_task_id', null);
 
         $task = WorkflowTask::query()->findOrFail($taskId);
 
-        $this->assertSame(TaskStatus::Failed, $task->status);
+        $this->assertSame(TaskStatus::Completed, $task->status);
+        $this->assertNull($task->last_error);
+        $this->assertTrue(($task->payload['waiting_for_history_acknowledged'] ?? false) === true);
         $this->assertSame(
             'workflow task waiting for scheduled history: Workflow\V2\Support\ActivityCall has no completed history yet',
-            $task->last_error,
+            $task->payload['waiting_for_history_message'] ?? null,
         );
-        $this->assertTrue(($task->payload['replay_blocked'] ?? false) === true);
-        $this->assertSame('WorkflowTaskWaitingForHistory', $task->payload['replay_blocked_failure_type'] ?? null);
+        $this->assertSame('WorkflowTaskWaitingForHistory', $task->payload['waiting_for_history_failure_type'] ?? null);
+        $this->assertFalse(($task->payload['replay_blocked'] ?? false) === true);
+        $this->assertSame('waiting', WorkflowRun::query()->findOrFail($task->workflow_run_id)->status->value);
+        $this->assertFalse(
+            WorkflowTask::query()
+                ->where('workflow_run_id', $task->workflow_run_id)
+                ->where('task_type', TaskType::Workflow->value)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                ->exists(),
+        );
+    }
+
+    public function test_waiting_for_history_failure_type_acknowledges_the_wait_without_message_phrase(): void
+    {
+        Queue::fake();
+
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', 'Default namespace');
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-external-worker-waiting-history-type',
+                'workflow_type' => 'tests.external-greeting-workflow',
+                'task_queue' => 'external-workflows',
+                'input' => ['Linus'],
+            ]);
+
+        $start->assertCreated();
+
+        $this->registerWorker('php-worker-waiting-history-type', 'external-workflows');
+
+        $poll = $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'php-worker-waiting-history-type',
+                'task_queue' => 'external-workflows',
+            ]);
+
+        $poll->assertOk();
+
+        $taskId = (string) $poll->json('task.task_id');
+        $attempt = (int) $poll->json('task.workflow_task_attempt');
+
+        $fail = $this->withHeaders($this->workerHeaders())
+            ->postJson("/api/worker/workflow-tasks/{$taskId}/fail", [
+                'lease_owner' => 'php-worker-waiting-history-type',
+                'workflow_task_attempt' => $attempt,
+                'failure' => [
+                    'message' => 'history is not ready yet',
+                    'type' => 'WorkflowTaskWaitingForHistory',
+                ],
+            ]);
+
+        $fail->assertOk()
+            ->assertJsonPath('task_id', $taskId)
+            ->assertJsonPath('workflow_task_attempt', $attempt)
+            ->assertJsonPath('outcome', 'waiting_for_history')
+            ->assertJsonPath('recorded', true)
+            ->assertJsonPath('next_task_id', null);
+
+        $task = WorkflowTask::query()->findOrFail($taskId);
+
+        $this->assertSame(TaskStatus::Completed, $task->status);
+        $this->assertNull($task->last_error);
+        $this->assertTrue(($task->payload['waiting_for_history_acknowledged'] ?? false) === true);
+        $this->assertSame('history is not ready yet', $task->payload['waiting_for_history_message'] ?? null);
+        $this->assertSame('WorkflowTaskWaitingForHistory', $task->payload['waiting_for_history_failure_type'] ?? null);
+        $this->assertFalse(($task->payload['replay_blocked'] ?? false) === true);
+        $this->assertSame('waiting', WorkflowRun::query()->findOrFail($task->workflow_run_id)->status->value);
         $this->assertFalse(
             WorkflowTask::query()
                 ->where('workflow_run_id', $task->workflow_run_id)
