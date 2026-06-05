@@ -810,6 +810,27 @@ class SagaConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_definitive_compensation_failures_do_not_retry_forever(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            "if (\$activity === 'cancel_flight' && (\$payload['cancel_flight_fail'] ?? false)) {\n        return 1;\n    }",
+            $source,
+            'PHP compensation failure visibility scenarios must make cancel_flight definitive instead of leaving workflows pending on retries',
+        );
+        $this->assertStringContainsString(
+            'elif compensation == "cancel_flight" and payload.get("cancel_flight_fail"):',
+            $source,
+            'Python typed compensation error scenarios must make cancel_flight definitive before collecting terminal evidence',
+        );
+        $this->assertStringContainsString(
+            'retry_policy = {"max_attempts": 1, "backoff_seconds": [0]}',
+            $source,
+            'definitive compensation failures must use one attempt so the runner records request and history evidence without timing out pending',
+        );
+    }
+
     private function read(string $path): string
     {
         $source = file_get_contents(dirname(__DIR__, 2).'/'.$path);

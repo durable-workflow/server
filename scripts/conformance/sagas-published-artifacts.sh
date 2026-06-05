@@ -1082,6 +1082,9 @@ function compensation_max_attempts(string $activity, array $payload): ?int
     if ($activity === 'cancel_hotel' && ($payload['cancel_hotel_fail_once'] ?? false)) {
         return 2;
     }
+    if ($activity === 'cancel_flight' && ($payload['cancel_flight_fail'] ?? false)) {
+        return 1;
+    }
 
     return null;
 }
@@ -1646,6 +1649,8 @@ class PythonBookTripWorkflow:
                 retry_policy = None
                 if compensation == "cancel_hotel" and payload.get("cancel_hotel_fail_once"):
                     retry_policy = {"max_attempts": 2, "backoff_seconds": [0]}
+                elif compensation == "cancel_flight" and payload.get("cancel_flight_fail"):
+                    retry_policy = {"max_attempts": 1, "backoff_seconds": [0]}
                 try:
                     yield ctx.schedule_activity(
                         compensation,
