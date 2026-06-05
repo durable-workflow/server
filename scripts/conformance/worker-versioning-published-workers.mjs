@@ -42,13 +42,11 @@ async function main() {
   const missing = [];
   if (!serverUrl) missing.push('DW_WV_SERVER_URL');
   if (!pythonVersion) missing.push('DW_PYTHON_SDK_VERSION');
-  if (!workflowPhpVersion) missing.push('DW_WORKFLOW_PHP_VERSION');
   if (!commandExists('python3')) missing.push('python3');
-  if (!commandExists('docker')) missing.push('docker');
 
   if (missing.length > 0) {
     writeShard(notCoveredShard(
-      `published PHP/Python worker shard prerequisites are missing: ${missing.join(', ')}`,
+      `published Python worker shard prerequisites are missing: ${missing.join(', ')}`,
       { missing_prerequisites: missing },
     ));
     return;
@@ -61,6 +59,23 @@ async function main() {
   await ensureNamespace();
 
   const python = await installPythonWorker(shardRoot);
+  const pythonReplay = await runPythonReplayShardSafely(python);
+  const pythonNoCompatible = await runPythonNoCompatibleShardSafely(python);
+  const pythonAdversarial = await runPythonAdversarialShardSafely(python);
+  writeShard(pythonScenarioShard(python, shardRoot, pythonReplay, pythonNoCompatible, pythonAdversarial));
+
+  const crossLanguageMissing = [];
+  if (!workflowPhpVersion) crossLanguageMissing.push('DW_WORKFLOW_PHP_VERSION');
+  if (!commandExists('docker')) crossLanguageMissing.push('docker');
+
+  if (crossLanguageMissing.length > 0) {
+    writeShard(notCoveredShard(
+      `published PHP/Python cross-language worker shard prerequisites are missing: ${crossLanguageMissing.join(', ')}`,
+      { missing_prerequisites: crossLanguageMissing },
+    ));
+    return;
+  }
+
   const php = installPhpWorker(shardRoot);
 
   const phpV1BuildId = `wv-php-v1-${suffix}`;
@@ -72,10 +87,6 @@ async function main() {
   const pythonV2WorkerId = `python-v2-${suffix}`;
   const pythonV1WorkerId = `python-v1-${suffix}`;
   const phpV2WorkerId = `php-v2-${suffix}`;
-
-  const pythonReplay = await runPythonReplayShardSafely(python);
-  const pythonNoCompatible = await runPythonNoCompatibleShardSafely(python);
-  const pythonAdversarial = await runPythonAdversarialShardSafely(python);
 
   runPhpWorker(php, {
     action: 'register',
@@ -286,6 +297,7 @@ async function main() {
       workflow_type: workflowType,
       workers: [
         ...pythonReplay.workers,
+        ...pythonNoCompatible.workers,
         ...pythonAdversarial.workers,
         { worker_id: phpV1WorkerId, runtime: 'php', build_id: phpV1BuildId },
         { worker_id: pythonV2WorkerId, runtime: 'python', build_id: pythonV2BuildId },
@@ -294,9 +306,6 @@ async function main() {
       ],
     },
     scenario_results: {
-      ...pythonReplay.scenario_results,
-      ...pythonNoCompatible.scenario_results,
-      ...pythonAdversarial.scenario_results,
       [CROSS_LANGUAGE_SCENARIO]: {
         scenario_id: CROSS_LANGUAGE_SCENARIO,
         status: passes ? 'pass' : 'fail',
@@ -305,9 +314,6 @@ async function main() {
       },
     },
     findings: [
-      ...pythonReplay.findings,
-      ...pythonNoCompatible.findings,
-      ...pythonAdversarial.findings,
       ...(finding ? [finding] : []),
     ],
     logs: {
@@ -316,6 +322,40 @@ async function main() {
       shard_root: shardRoot,
     },
   });
+}
+
+function pythonScenarioShard(python, shardRoot, pythonReplay, pythonNoCompatible, pythonAdversarial) {
+  return {
+    schema: SHARD_SCHEMA,
+    local_product_source_checkouts_used: false,
+    generated_at: timestamp(),
+    artifact_versions: artifactVersions(),
+    artifact_sources: artifactSources(),
+    topology: {
+      namespace,
+      task_queue: taskQueue,
+      workflow_type: workflowType,
+      workers: [
+        ...pythonReplay.workers,
+        ...pythonNoCompatible.workers,
+        ...pythonAdversarial.workers,
+      ],
+    },
+    scenario_results: {
+      ...pythonReplay.scenario_results,
+      ...pythonNoCompatible.scenario_results,
+      ...pythonAdversarial.scenario_results,
+    },
+    findings: [
+      ...pythonReplay.findings,
+      ...pythonNoCompatible.findings,
+      ...pythonAdversarial.findings,
+    ],
+    logs: {
+      python_install: python.install_log,
+      shard_root: shardRoot,
+    },
+  };
 }
 
 async function runPythonNoCompatibleShardSafely(python) {

@@ -105,6 +105,43 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_published_worker_shard_records_python_cells_before_php_cross_language_prerequisites(): void
+    {
+        $publishedWorkers = $this->read('scripts/conformance/worker-versioning-published-workers.mjs');
+
+        foreach ([
+            'const python = await installPythonWorker(shardRoot);',
+            'const pythonReplay = await runPythonReplayShardSafely(python);',
+            'const pythonNoCompatible = await runPythonNoCompatibleShardSafely(python);',
+            'const pythonAdversarial = await runPythonAdversarialShardSafely(python);',
+            'writeShard(pythonScenarioShard(python, shardRoot, pythonReplay, pythonNoCompatible, pythonAdversarial));',
+            "if (!workflowPhpVersion) crossLanguageMissing.push('DW_WORKFLOW_PHP_VERSION');",
+            "if (!commandExists('docker')) crossLanguageMissing.push('docker');",
+            'published PHP/Python cross-language worker shard prerequisites are missing',
+            'function pythonScenarioShard(python, shardRoot, pythonReplay, pythonNoCompatible, pythonAdversarial)',
+        ] as $token) {
+            $this->assertStringContainsString($token, $publishedWorkers);
+        }
+
+        $pythonEvidenceWrite = strpos($publishedWorkers, 'writeShard(pythonScenarioShard(');
+        $crossLanguagePrerequisiteGate = strpos($publishedWorkers, 'const crossLanguageMissing = [];');
+        $phpInstall = strpos($publishedWorkers, 'const php = installPhpWorker(shardRoot);');
+
+        $this->assertIsInt($pythonEvidenceWrite);
+        $this->assertIsInt($crossLanguagePrerequisiteGate);
+        $this->assertIsInt($phpInstall);
+        $this->assertLessThan(
+            $crossLanguagePrerequisiteGate,
+            $pythonEvidenceWrite,
+            'Python replay/no-compatible/adversarial evidence must be persisted before PHP/Docker prerequisites are checked.',
+        );
+        $this->assertLessThan(
+            $phpInstall,
+            $crossLanguagePrerequisiteGate,
+            'PHP installation must be scoped to the cross-language cell after Python-only evidence is recorded.',
+        );
+    }
+
     public function test_published_artifact_install_cell_requires_install_evidence(): void
     {
         $node = $this->read('scripts/conformance/worker-versioning-published-artifacts.mjs');
