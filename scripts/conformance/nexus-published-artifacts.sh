@@ -199,7 +199,7 @@ const scenarioEvidenceRequirements = {
   transient_failure_retries_with_policy: [
     {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string', expected: 'durable service-call id for the retrying call'},
     {fields: ['retry_policy', 'retryPolicy'], kind: 'non_empty_object', expected: 'recorded retry policy applied to the Nexus call'},
-    {fields: ['retry_attempts', 'retryAttempts', 'history_attempts', 'historyAttempts'], kind: 'attempts_at_least', min: 2, expected: 'visible retry attempts for the transient failure'},
+    {fields: ['retry_attempts', 'retryAttempts', 'history_attempts', 'historyAttempts', 'service_call_attempts', 'serviceCallAttempts'], kind: 'attempts_at_least', min: 2, expected: 'visible retry attempts for the transient failure'},
     {
       fields: ['history_attempt_visibility_includes_retry_attempts', 'historyAttemptVisibilityIncludesRetryAttempts'],
       kind: 'boolean_true',
@@ -291,7 +291,7 @@ const scenarioEvidenceRequirements = {
       finding_type: 'retry_attempt_visibility_gap',
       owning_surface: 'server',
     },
-    {fields: ['service_call_detail_attempts', 'serviceCallDetailAttempts'], kind: 'array_length_at_least', min: 2, expected: 'service-call detail exposes per-attempt retry entries'},
+    {fields: ['service_call_detail_attempts', 'serviceCallDetailAttempts', 'service_call_attempts', 'serviceCallAttempts'], kind: 'array_length_at_least', min: 2, expected: 'service-call detail exposes per-attempt retry entries'},
   ],
   result_record_and_product_finding_routing: [
     {fields: ['result_record_emitted', 'resultRecordEmitted'], kind: 'boolean_true', expected: 'Nexus result record was emitted for ledger recording'},

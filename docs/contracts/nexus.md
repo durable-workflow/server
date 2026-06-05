@@ -157,6 +157,9 @@ keyed by the durable service-call id (a ULID). The row carries:
 - the deadline / idempotency / cancellation / retry policies effective
   at admission time, snapped onto the row so they are stable for the
   lifetime of the call;
+- the per-attempt service-call retry record, including attempt number,
+  observed outcome, failure type, and scheduled backoff before the next
+  attempt when retry is allowed;
 - the caller principal that admitted the call (subject, method, roles,
   tenant, claims), recorded server-side from the authenticated
   request.
@@ -165,9 +168,12 @@ The retry policy follows the activity-style retry contract: maximum
 attempts, initial interval, backoff coefficient, maximum interval,
 non-retryable failure classes. The recorded retry policy on the row is
 authoritative; SDKs do not duplicate retries client-side when the
-server has already accepted the call. A caller worker that crashes
-mid-call resumes by replaying its workflow code with the same
-idempotency key and recovers the same durable service-call id.
+server has already accepted the call. Handler failures retry according
+to that policy, and every attempt is appended to the service-call
+metadata so the caller-history and detail routes expose the exact retry
+shape. A caller worker that crashes mid-call resumes by replaying its
+workflow code with the same idempotency key and recovers the same
+durable service-call id.
 
 ## Namespace ACL enforcement
 
@@ -224,11 +230,11 @@ These return every `workflow_service_calls` row whose
 `caller_workflow_instance_id` matches, ordered by `accepted_at`
 descending. Each row carries the durable service-call id, the resolved
 binding, the lifecycle status, the outcome, the linked target
-reference, the caller principal that admitted it, and the closure
-timestamps. Operators debugging a failed run answer "what
-cross-namespace calls did this workflow make and how did each one
-settle?" from this single surface — without inspecting raw transport
-logs or the per-target catalog index.
+reference, the retry policy, per-attempt retry records, the caller
+principal that admitted it, and the closure timestamps. Operators
+debugging a failed run answer "what cross-namespace calls did this
+workflow make and how did each attempt settle?" from this single surface
+— without inspecting raw transport logs or the per-target catalog index.
 
 The list is bounded by the `max_nexus_operations_per_caller` limit
 (default 200) and accepts a `limit` query parameter that may not exceed

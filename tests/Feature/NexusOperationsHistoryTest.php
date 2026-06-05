@@ -273,6 +273,64 @@ class NexusOperationsHistoryTest extends TestCase
         }
     }
 
+    public function test_caller_history_exposes_retry_attempt_visibility(): void
+    {
+        [$endpoint, $service, $operation] = $this->createCatalog('billing', 'invoicing', 'createinvoice');
+
+        $call = $this->recordCall(
+            namespace: 'billing',
+            endpoint: $endpoint,
+            service: $service,
+            operation: $operation,
+            callerNamespace: 'finance',
+            callerInstanceId: 'finance-retry-orchestrator',
+            callerRunId: (string) Str::ulid(),
+            outcome: 'completed',
+            status: 'completed',
+            retryPolicy: [
+                'max_attempts' => 3,
+                'backoff_seconds' => [1, 2],
+            ],
+            attempts: [
+                [
+                    'attempt' => 1,
+                    'status' => 'failed',
+                    'outcome' => 'handler_failed',
+                    'failure_type' => 'TransientGreetingFailure',
+                    'retry_scheduled' => true,
+                    'scheduled_backoff_seconds' => 1,
+                ],
+                [
+                    'attempt' => 2,
+                    'status' => 'failed',
+                    'outcome' => 'handler_failed',
+                    'failure_type' => 'TransientGreetingFailure',
+                    'retry_scheduled' => true,
+                    'scheduled_backoff_seconds' => 2,
+                ],
+                [
+                    'attempt' => 3,
+                    'status' => 'completed',
+                    'outcome' => 'completed',
+                    'retry_scheduled' => false,
+                ],
+            ],
+        );
+
+        $response = $this->withHeaders($this->apiHeaders('finance'))
+            ->getJson('/api/workflows/finance-retry-orchestrator/nexus-operations');
+
+        $response->assertOk()
+            ->assertJsonPath('count', 1)
+            ->assertJsonPath('nexus_operations.0.service_call_id', $call->id)
+            ->assertJsonPath('nexus_operations.0.retry_policy.max_attempts', 3)
+            ->assertJsonPath('nexus_operations.0.retry_attempt_count', 3)
+            ->assertJsonPath('nexus_operations.0.service_call_attempts.0.attempt', 1)
+            ->assertJsonPath('nexus_operations.0.service_call_attempts.0.failure_type', 'TransientGreetingFailure')
+            ->assertJsonPath('nexus_operations.0.service_call_attempts.1.scheduled_backoff_seconds', 2)
+            ->assertJsonPath('nexus_operations.0.service_call_attempts.2.outcome', 'completed');
+    }
+
     public function test_caller_history_limit_is_capped_by_configured_maximum(): void
     {
         config()->set('server.limits.max_nexus_operations_per_caller', 5);
@@ -348,6 +406,8 @@ class NexusOperationsHistoryTest extends TestCase
         string $callerRunId,
         string $outcome,
         string $status,
+        array $retryPolicy = [],
+        array $attempts = [],
     ): WorkflowServiceCall {
         return WorkflowServiceCall::query()->create([
             'namespace' => $namespace,
@@ -366,6 +426,11 @@ class NexusOperationsHistoryTest extends TestCase
             'operation_mode' => 'async',
             'resolved_binding_kind' => 'workflow_run',
             'resolved_target_reference' => 'workflows.invoice.create',
+            'retry_policy' => $retryPolicy === [] ? null : $retryPolicy,
+            'metadata' => $attempts === [] ? null : [
+                'service_call_attempts' => $attempts,
+                'retry_attempt_count' => count($attempts),
+            ],
             'caller_principal_subject' => 'svc:'.$callerNamespace,
             'caller_principal_method' => 'token',
             'accepted_at' => now(),

@@ -133,7 +133,7 @@ final class NexusContract
             ],
             'caller_history_surface' => [
                 'route' => 'GET /api/workflows/{workflowId}/runs/{runId}/nexus-operations',
-                'description' => 'Caller-indexed view of every Nexus call this workflow run scheduled. Each row carries the durable service-call id, the resolved binding, the lifecycle status, the outcome, the linked target reference, and the caller principal that admitted the call. Operators debugging a failed run answer "what cross-namespace calls did this workflow make and how did each one settle?" from this single surface.',
+                'description' => 'Caller-indexed view of every Nexus call this workflow run scheduled. Each row carries the durable service-call id, the resolved binding, the lifecycle status, the outcome, the linked target reference, the retry policy, per-attempt retry records, and the caller principal that admitted the call. Operators debugging a failed run answer "what cross-namespace calls did this workflow make and how did each attempt settle?" from this single surface.',
                 'response_fields' => [
                     'service_call_id',
                     'caller_workflow_instance_id',
@@ -155,6 +155,9 @@ final class NexusContract
                     'linked_workflow_run_id',
                     'linked_workflow_update_id',
                     'idempotency_key',
+                    'retry_policy',
+                    'service_call_attempts',
+                    'retry_attempt_count',
                     'failure_message',
                     'caller_principal_subject',
                     'caller_principal_method',

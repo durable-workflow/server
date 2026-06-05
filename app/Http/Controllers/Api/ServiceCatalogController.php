@@ -971,6 +971,9 @@ class ServiceCatalogController
             'linked_workflow_run_id' => $call->linked_workflow_run_id,
             'linked_workflow_update_id' => $call->linked_workflow_update_id,
             'idempotency_key' => $call->idempotency_key,
+            'retry_policy' => $call->retry_policy,
+            'service_call_attempts' => $this->serviceCallAttempts($call),
+            'retry_attempt_count' => count($this->serviceCallAttempts($call)),
             'failure_message' => $call->failure_message,
             'caller_principal_subject' => $call->caller_principal_subject,
             'caller_principal_method' => $call->caller_principal_method,
@@ -1418,6 +1421,8 @@ class ServiceCatalogController
             'retry_policy' => $serviceCall->retry_policy,
             'boundary_policy' => $serviceCall->boundary_policy,
             'metadata' => $serviceCall->metadata,
+            'service_call_attempts' => $this->serviceCallAttempts($serviceCall),
+            'retry_attempt_count' => count($this->serviceCallAttempts($serviceCall)),
             'accepted_at' => $serviceCall->accepted_at?->toIso8601String(),
             'started_at' => $serviceCall->started_at?->toIso8601String(),
             'completed_at' => $serviceCall->completed_at?->toIso8601String(),
@@ -1426,6 +1431,23 @@ class ServiceCatalogController
             'created_at' => $serviceCall->created_at?->toIso8601String(),
             'updated_at' => $serviceCall->updated_at?->toIso8601String(),
         ];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function serviceCallAttempts(WorkflowServiceCall $call): array
+    {
+        foreach ([
+            is_array($call->metadata) ? $call->metadata : [],
+            is_array($call->outcome_metadata) ? $call->outcome_metadata : [],
+        ] as $container) {
+            if (isset($container['service_call_attempts']) && is_array($container['service_call_attempts'])) {
+                return array_values(array_filter($container['service_call_attempts'], 'is_array'));
+            }
+        }
+
+        return [];
     }
 
     private function normalizeCatalogName(string $name): string

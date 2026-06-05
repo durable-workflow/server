@@ -360,7 +360,23 @@ class ServiceCatalogControllerTest extends TestCase
             'cancellation_policy' => ['mode' => 'allow'],
             'retry_policy' => ['max_attempts' => 5],
             'boundary_policy' => ['visibility' => 'service'],
-            'metadata' => ['ticket' => 'svc-1'],
+            'metadata' => [
+                'ticket' => 'svc-1',
+                'service_call_attempts' => [
+                    [
+                        'attempt' => 1,
+                        'outcome' => 'handler_failed',
+                        'failure_type' => 'TransientGreetingFailure',
+                        'retry_scheduled' => true,
+                        'scheduled_backoff_seconds' => 1,
+                    ],
+                    [
+                        'attempt' => 2,
+                        'outcome' => 'completed',
+                        'retry_scheduled' => false,
+                    ],
+                ],
+            ],
             'accepted_at' => now()->subMinute(),
             'started_at' => now()->subSeconds(15),
         ]);
@@ -393,6 +409,11 @@ class ServiceCatalogControllerTest extends TestCase
             ->assertJsonPath('retry_policy.max_attempts', 5)
             ->assertJsonPath('boundary_policy.visibility', 'service')
             ->assertJsonPath('metadata.ticket', 'svc-1')
+            ->assertJsonPath('retry_attempt_count', 2)
+            ->assertJsonPath('service_call_attempts.0.attempt', 1)
+            ->assertJsonPath('service_call_attempts.0.failure_type', 'TransientGreetingFailure')
+            ->assertJsonPath('service_call_attempts.0.scheduled_backoff_seconds', 1)
+            ->assertJsonPath('service_call_attempts.1.outcome', 'completed')
             ->assertJsonPath('accepted_at', $serviceCall->accepted_at?->toIso8601String())
             ->assertJsonPath('started_at', $serviceCall->started_at?->toIso8601String());
     }
