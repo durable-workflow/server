@@ -178,7 +178,7 @@ const TOPOLOGY = {
   reserved_name_refusals: [],
 };
 const RESULT_GATE_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result-gate';
-const RESULT_GATE_VERSION = 7;
+const RESULT_GATE_VERSION = 8;
 const REQUIRED_ARTIFACTS = ['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'];
 const ALLOWED_STATUSES = ['pass', 'fail', 'unsupported', 'not_covered', 'runner_blocked'];
 const ALLOWED_OUTCOMES = ['pass', 'non_passing', 'non_passing_runner_blocked', 'non_passing_with_root_cause_finding'];
@@ -604,6 +604,25 @@ function scenarioOutputs(scenarioResult) {
 
 function sectionValue(result, section) {
   return firstArrayField(result, [section, camelize(section)]);
+}
+
+function loadQueryLatencyProfiles(section) {
+  for (const field of [
+    'query_latencies',
+    'queryLatencies',
+    'query_latency_by_filter',
+    'queryLatencyByFilter',
+    'filter_latencies',
+    'filterLatencies',
+    'queries',
+  ]) {
+    const profiles = arrayValue(section, field);
+    if (profiles !== null) {
+      return profiles;
+    }
+  }
+
+  return section;
 }
 
 function scenarioEvidence(result, scenarioResult, section) {
@@ -1697,6 +1716,21 @@ function evaluateResultGate(result) {
     if (!hasNumericField(section, ['documented_bound_ms', 'documentedBoundMs'])) {
       failures.push({ code: 'missing_latency_documented_bound', scenario_id: 'indexing_latency_distribution' });
     }
+    const documentedBoundMs = numericField(section, ['documented_bound_ms', 'documentedBoundMs']);
+    if (documentedBoundMs !== null) {
+      for (const field of ['p95_ms', 'max_ms']) {
+        const latencyMs = numericField(section, [field, camelize(field)]);
+        if (latencyMs !== null && latencyMs > documentedBoundMs) {
+          failures.push({
+            code: 'latency_distribution_exceeds_documented_bound',
+            scenario_id: 'indexing_latency_distribution',
+            field,
+            actual_ms: latencyMs,
+            documented_bound_ms: documentedBoundMs,
+          });
+        }
+      }
+    }
   }
   if (scenarioStatuses.load_and_bounded_latency === 'pass') {
     const section = sectionValue(result, 'load_profile') || {};
@@ -1706,6 +1740,19 @@ function evaluateResultGate(result) {
     for (const field of ['p50_ms', 'p95_ms', 'max_ms']) {
       if (!hasNumericField(section, [field, camelize(field)])) {
         failures.push({ code: 'missing_load_latency_field', field });
+      }
+    }
+    const queryLatencies = loadQueryLatencyProfiles(section);
+    for (const queryClass of ['equality', 'range', 'bool', 'keyword_list']) {
+      const profile = arrayValue(queryLatencies, queryClass) || {};
+      if (Object.keys(profile).length === 0) {
+        failures.push({ code: 'missing_load_query_latency_class', query_class: queryClass });
+        continue;
+      }
+      for (const field of ['p50_ms', 'p95_ms', 'max_ms']) {
+        if (!hasNumericField(profile, [field, camelize(field)])) {
+          failures.push({ code: 'missing_load_query_latency_field', query_class: queryClass, field });
+        }
       }
     }
   }

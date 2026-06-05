@@ -14,7 +14,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $manifest = SearchAttributeRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.contract', $manifest['schema']);
-        $this->assertSame(7, SearchAttributeRuntimeContract::VERSION);
+        $this->assertSame(8, SearchAttributeRuntimeContract::VERSION);
         $this->assertSame(SearchAttributeRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.result', $manifest['result_schema']);
         $this->assertSame('search_attribute_runtime_contract', $manifest['fixture_category']);
@@ -91,6 +91,18 @@ class SearchAttributeRuntimeContractTest extends TestCase
             ['string', 'int', 'double', 'bool', 'datetime', 'keyword', 'keyword_list'],
             $manifest['scenario_requirements']['php_to_python_codec_round_trip']['required_value_types'],
         );
+        $this->assertSame(
+            ['p95_ms', 'max_ms'],
+            $manifest['scenario_requirements']['indexing_latency_distribution']['documented_bound_compared_fields'],
+        );
+        $this->assertSame(
+            ['equality', 'range', 'bool', 'keyword_list'],
+            $manifest['scenario_requirements']['load_and_bounded_latency']['required_query_latency_classes'],
+        );
+        $this->assertSame(
+            ['p50_ms', 'p95_ms', 'max_ms'],
+            $manifest['scenario_requirements']['load_and_bounded_latency']['required_query_latency_fields'],
+        );
 
         $this->assertContains(
             [
@@ -143,6 +155,8 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'codec_round_trips_include_encoded_payload_or_wire_value_context',
             'codec_round_trips_compare_written_or_wire_values_to_decoded_attributes',
             'load_latency_reported',
+            'indexing_latency_p95_and_max_compared_to_documented_bound',
+            'load_latency_reported_per_query_class',
             'or_not_grammar_reported',
             'query_injection_hardening_reported',
             'runner_blocked_false_for_product_evidence',
@@ -157,7 +171,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $resultGate = SearchAttributeRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SearchAttributeRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(7, SearchAttributeRuntimeResultGate::VERSION);
+        $this->assertSame(8, SearchAttributeRuntimeResultGate::VERSION);
         $this->assertSame(SearchAttributeRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SearchAttributeRuntimeContract::RESULT_SCHEMA,
@@ -187,6 +201,14 @@ class SearchAttributeRuntimeContractTest extends TestCase
         );
         $this->assertContains(
             'waterline_operator_visibility_includes_operator_surface_matrix',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'indexing_latency_p95_and_max_do_not_exceed_documented_bound',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'load_latency_reported_for_equality_range_bool_and_keyword_list_filters',
             $resultGate['pass_requires'],
         );
         $this->assertContains('runner_blocked_false_for_product_evidence', $resultGate['pass_requires']);
@@ -746,6 +768,51 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertContains(
             'missing_latency_distribution_field',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_latency_distribution_above_documented_bound(): void
+    {
+        $result = $this->completeSearchAttributeResult();
+        $result['latency_distribution']['documented_bound_ms'] = 5000;
+        $result['latency_distribution']['p95_ms'] = 5500;
+        $result['latency_distribution']['max_ms'] = 6200;
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'latency_distribution_exceeds_documented_bound',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+        $this->assertSame(
+            ['p95_ms', 'max_ms'],
+            array_column(
+                array_values(array_filter(
+                    $evaluation['gate_failures'],
+                    static fn (array $failure): bool => ($failure['code'] ?? null) === 'latency_distribution_exceeds_documented_bound',
+                )),
+                'field',
+            ),
+        );
+    }
+
+    public function test_result_gate_requires_load_latency_per_query_class(): void
+    {
+        $result = $this->completeSearchAttributeResult();
+        unset($result['load_profile']['query_latencies']['range']);
+        unset($result['load_profile']['query_latencies']['keyword_list']['p95_ms']);
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'missing_load_query_latency_class',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+        $this->assertContains(
+            'missing_load_query_latency_field',
             array_column($evaluation['gate_failures'], 'code'),
         );
     }
@@ -1521,6 +1588,32 @@ class SearchAttributeRuntimeContractTest extends TestCase
                 'p50_ms' => 14,
                 'p95_ms' => 45,
                 'max_ms' => 80,
+                'query_latencies' => [
+                    'equality' => [
+                        'query' => 'customer_id = "cust-7"',
+                        'p50_ms' => 12,
+                        'p95_ms' => 35,
+                        'max_ms' => 51,
+                    ],
+                    'range' => [
+                        'query' => 'order_total_cents > 5000 AND order_total_cents <= 10000',
+                        'p50_ms' => 16,
+                        'p95_ms' => 44,
+                        'max_ms' => 72,
+                    ],
+                    'bool' => [
+                        'query' => 'is_vip = true',
+                        'p50_ms' => 10,
+                        'p95_ms' => 31,
+                        'max_ms' => 49,
+                    ],
+                    'keyword_list' => [
+                        'query' => 'tags = "urgent"',
+                        'p50_ms' => 18,
+                        'p95_ms' => 45,
+                        'max_ms' => 80,
+                    ],
+                ],
             ],
             'waterline_operator_visibility' => $waterlineVisibility,
             'cli_surface' => [

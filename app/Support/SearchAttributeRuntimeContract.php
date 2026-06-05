@@ -16,7 +16,7 @@ final class SearchAttributeRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.contract';
 
-    public const VERSION = 7;
+    public const VERSION = 8;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result';
 
@@ -275,10 +275,25 @@ final class SearchAttributeRuntimeContract
                         'max_ms',
                     ],
                     'documented_bound_required' => true,
+                    'documented_bound_compared_fields' => [
+                        'p95_ms',
+                        'max_ms',
+                    ],
                 ],
                 'load_and_bounded_latency' => [
                     'minimum_workflow_count' => 1000,
                     'required_distribution_fields' => [
+                        'p50_ms',
+                        'p95_ms',
+                        'max_ms',
+                    ],
+                    'required_query_latency_classes' => [
+                        'equality',
+                        'range',
+                        'bool',
+                        'keyword_list',
+                    ],
+                    'required_query_latency_fields' => [
                         'p50_ms',
                         'p95_ms',
                         'max_ms',
@@ -361,6 +376,8 @@ final class SearchAttributeRuntimeContract
                     'codec_round_trips_include_encoded_payload_or_wire_value_context',
                     'codec_round_trips_compare_written_or_wire_values_to_decoded_attributes',
                     'load_latency_reported',
+                    'indexing_latency_p95_and_max_compared_to_documented_bound',
+                    'load_latency_reported_per_query_class',
                     'or_not_grammar_reported',
                     'query_injection_hardening_reported',
                     'artifact_versions_match_latest_published_set',

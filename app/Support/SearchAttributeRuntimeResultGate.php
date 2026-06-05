@@ -10,7 +10,7 @@ final class SearchAttributeRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result-gate';
 
-    public const VERSION = 7;
+    public const VERSION = 8;
 
     /**
      * @return array<string, mixed>
@@ -57,6 +57,8 @@ final class SearchAttributeRuntimeResultGate
                 'query_verdict_expected_and_actual_counts_match',
                 'query_injection_required_rejection_probes_are_reported',
                 'waterline_operator_visibility_includes_operator_surface_matrix',
+                'indexing_latency_p95_and_max_do_not_exceed_documented_bound',
+                'load_latency_reported_for_equality_range_bool_and_keyword_list_filters',
                 'each_pass_scenario_has_observed_outputs',
                 'each_pass_scenario_has_scenario_specific_evidence',
                 'each_non_pass_scenario_has_linked_findings',
@@ -1562,6 +1564,22 @@ final class SearchAttributeRuntimeResultGate
             ];
         }
 
+        $documentedBoundMs = self::numericField($section, ['documented_bound_ms', 'documentedBoundMs']);
+        if ($documentedBoundMs !== null) {
+            foreach (self::stringList($requirements['documented_bound_compared_fields'] ?? []) as $field) {
+                $latencyMs = self::numericField($section, [$field, self::camelize($field)]);
+                if ($latencyMs !== null && $latencyMs > $documentedBoundMs) {
+                    $failures[] = [
+                        'code' => 'latency_distribution_exceeds_documented_bound',
+                        'scenario_id' => $scenarioId,
+                        'field' => $field,
+                        'actual_ms' => $latencyMs,
+                        'documented_bound_ms' => $documentedBoundMs,
+                    ];
+                }
+            }
+        }
+
         return $failures;
     }
 
@@ -1743,7 +1761,54 @@ final class SearchAttributeRuntimeResultGate
             }
         }
 
+        $queryLatencies = self::loadQueryLatencyProfiles($section);
+        foreach (self::stringList($requirements['required_query_latency_classes'] ?? []) as $queryClass) {
+            $profile = self::arrayValue($queryLatencies, $queryClass) ?? [];
+            if ($profile === []) {
+                $failures[] = [
+                    'code' => 'missing_load_query_latency_class',
+                    'query_class' => $queryClass,
+                ];
+                continue;
+            }
+
+            foreach (self::stringList($requirements['required_query_latency_fields'] ?? []) as $field) {
+                if (! self::hasNumericField($profile, [$field, self::camelize($field)])) {
+                    $failures[] = [
+                        'code' => 'missing_load_query_latency_field',
+                        'query_class' => $queryClass,
+                        'field' => $field,
+                    ];
+                }
+            }
+        }
+
         return $failures;
+    }
+
+    /**
+     * @param array<mixed> $section
+     *
+     * @return array<mixed>
+     */
+    private static function loadQueryLatencyProfiles(array $section): array
+    {
+        foreach ([
+            'query_latencies',
+            'queryLatencies',
+            'query_latency_by_filter',
+            'queryLatencyByFilter',
+            'filter_latencies',
+            'filterLatencies',
+            'queries',
+        ] as $field) {
+            $profiles = self::arrayValue($section, $field);
+            if ($profiles !== null) {
+                return $profiles;
+            }
+        }
+
+        return $section;
     }
 
     /**
