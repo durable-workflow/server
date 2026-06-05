@@ -987,6 +987,8 @@ class NexusContractTest extends TestCase
             'DW_NEXUS_ARTIFACT_INSTALL_EVIDENCE',
             $result['artifact_install_evidence']['supplied_install_evidence_source'],
         );
+        $this->assertTrue($result['artifact_install_evidence']['supplied_install_evidence']);
+        $this->assertFalse($result['artifact_install_evidence']['derived_install_evidence']);
     }
 
     public function test_host_runner_repairs_not_covered_legacy_install_scenario_with_dedicated_evidence(): void
@@ -1093,7 +1095,7 @@ class NexusContractTest extends TestCase
         ));
     }
 
-    public function test_host_runner_does_not_pass_without_explicit_install_evidence(): void
+    public function test_host_runner_synthesizes_install_evidence_from_verified_published_tuple_when_explicit_install_evidence_missing(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
         if ($nodeBinary === '') {
@@ -1109,22 +1111,32 @@ class NexusContractTest extends TestCase
         }
         unset($scenario);
 
-        $result = $this->runNexusEvidence($evidence, 'dw-nexus-missing-install-evidence-');
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-synthesized-verified-install-evidence-');
         $installScenario = $this->scenarioResult($result, 'published_artifact_install_only');
 
-        $this->assertSame('fail', $result['outcome']);
-        $this->assertSame('not_covered', $installScenario['status']);
-        $this->assertTrue($this->hasArtifactPolicyFailure(
-            $result,
-            'product-artifacts',
-            'artifact_install_evidence',
-            'missing_published_artifact_install_evidence',
-            null,
-            '$.artifact_install_evidence',
-        ));
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertSame('pass', $installScenario['status']);
+        $this->assertSame([], $result['artifact_policy_failures']);
+        $this->assertTrue($result['artifact_install_evidence']['synthesized_from_published_artifact_tuple']);
+        $this->assertFalse($result['artifact_install_evidence']['supplied_install_evidence']);
+        $this->assertTrue($result['artifact_install_evidence']['derived_install_evidence']);
+        $this->assertSame('published_artifact_tuple', $result['artifact_install_evidence']['install_evidence_source']);
+        $this->assertSame('published_artifact_tuple', $result['artifact_install_evidence']['derived_install_evidence_source']);
+        $this->assertArrayNotHasKey('supplied_install_evidence_source', $result['artifact_install_evidence']);
+        $this->assertCount(5, $installScenario['observed_outputs']['artifact_install_evidence']['artifacts']);
+        $this->assertFalse(
+            $installScenario['observed_outputs']['artifact_install_evidence']['supplied_install_evidence'],
+        );
+        $this->assertTrue(
+            $installScenario['observed_outputs']['artifact_install_evidence']['derived_install_evidence'],
+        );
+        $this->assertSame(
+            $evidence['artifact_source_verification'],
+            $installScenario['observed_outputs']['artifact_source_verification'],
+        );
     }
 
-    public function test_host_runner_ignores_stale_result_dir_install_evidence_without_env(): void
+    public function test_host_runner_ignores_stale_result_dir_install_evidence_when_deriving_install_proof(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
         if ($nodeBinary === '') {
@@ -1148,14 +1160,12 @@ class NexusContractTest extends TestCase
             $staleInstallEvidence,
         );
 
-        $this->assertSame('fail', $result['outcome']);
-        $this->assertNull($result['artifact_install_evidence']);
-        $this->assertTrue($this->hasArtifactPolicyFailure(
-            $result,
-            'product-artifacts',
-            'artifact_install_evidence',
-            'missing_published_artifact_install_evidence',
-        ));
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertFalse($result['artifact_install_evidence']['supplied_install_evidence']);
+        $this->assertTrue($result['artifact_install_evidence']['derived_install_evidence']);
+        $this->assertSame('published_artifact_tuple', $result['artifact_install_evidence']['derived_install_evidence_source']);
+        $this->assertArrayNotHasKey('supplied_install_evidence_source', $result['artifact_install_evidence']);
+        $this->assertCount(5, $result['artifact_install_evidence']['artifacts']);
     }
 
     public function test_host_runner_does_not_pass_from_reachability_and_artifact_pins_alone(): void
@@ -1174,7 +1184,6 @@ class NexusContractTest extends TestCase
             'published_artifact_versions' => $complete['published_artifact_versions'],
             'resolved_artifact_versions' => $complete['resolved_artifact_versions'],
             'artifact_sources' => $complete['artifact_sources'],
-            'artifact_source_verification' => $complete['artifact_source_verification'],
             'local_product_source_checkouts_used' => false,
             'findings' => [],
         ];
@@ -1188,6 +1197,20 @@ class NexusContractTest extends TestCase
         $this->assertSame('not_covered', $installScenario['status']);
         $this->assertSame('not_covered', $tenantScenario['status']);
         $this->assertSame('pass', $routingScenario['status']);
+        $this->assertTrue($this->hasArtifactPolicyFailure(
+            $result,
+            'server',
+            'artifact_source_verification',
+            'missing_published_artifact_resolution_evidence',
+        ));
+        $this->assertTrue($this->hasArtifactPolicyFailure(
+            $result,
+            'product-artifacts',
+            'artifact_install_evidence',
+            'missing_published_artifact_install_evidence',
+            null,
+            '$.artifact_install_evidence',
+        ));
         $this->assertSame(
             'not_covered',
             $result['scenario_statuses']['published_artifact_install_only'],

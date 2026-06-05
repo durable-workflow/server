@@ -2177,6 +2177,52 @@ function artifactTupleMismatchFailuresFor(
   return failures;
 }
 
+function verifiedPublishedArtifactTupleCanProveInstallOnly(
+  artifactVersions,
+  artifactSources,
+  artifactSourceVerification,
+) {
+  return artifactMapPolicyFailuresFor(
+    artifactVersions,
+    artifactSources,
+    artifactSourceVerification,
+  ).length === 0;
+}
+
+function syntheticInstallEvidenceFromPublishedTuple(artifactVersions, artifactSources, artifactSourceVerification) {
+  return {
+    schema: 'durable-workflow.v2.nexus-runtime.install-evidence',
+    published_install_tuple_proven: true,
+    local_product_source_checkouts_used: false,
+    synthesized_from_published_artifact_tuple: true,
+    artifacts: requiredArtifacts.map((artifact) => ({
+      artifact,
+      version: artifactVersions[artifact],
+      source: artifactSources[artifact],
+      install_channel: installChannelForArtifact(artifact),
+      source_verification: artifactSourceVerification[artifact],
+      local_product_source_checkout_used_as_artifact: false,
+      status: 'pass',
+    })),
+  };
+}
+
+function installChannelForArtifact(artifact) {
+  switch (artifact) {
+    case 'server':
+      return 'docker';
+    case 'cli':
+      return 'github_release_asset';
+    case 'workflow':
+    case 'waterline':
+      return 'packagist';
+    case 'sdk-python':
+      return 'pypi';
+    default:
+      return 'published_artifact_channel';
+  }
+}
+
 function applyResultGateFailures(
   scenario,
   artifactVersions,
@@ -2790,12 +2836,16 @@ function selectArtifactInstallEvidence(candidates, artifactVersions, artifactSou
       candidate.path,
     );
     if (failures.length === 0) {
+      const suppliedInstallEvidence = candidate.supplied !== false && candidate.derived !== true;
       return {
         evidence: {
           ...candidate.evidence,
-          supplied_install_evidence: candidate.source !== 'synthesized',
-          supplied_install_evidence_source: candidate.source,
-          ...(candidate.filePath ? {supplied_install_evidence_path: candidate.filePath} : {}),
+          supplied_install_evidence: suppliedInstallEvidence,
+          derived_install_evidence: !suppliedInstallEvidence,
+          install_evidence_source: candidate.source,
+          ...(suppliedInstallEvidence ? {supplied_install_evidence_source: candidate.source} : {}),
+          ...(!suppliedInstallEvidence ? {derived_install_evidence_source: candidate.source} : {}),
+          ...(suppliedInstallEvidence && candidate.filePath ? {supplied_install_evidence_path: candidate.filePath} : {}),
         },
         failures: [],
       };
@@ -3040,6 +3090,9 @@ const scenarioInputInstallEvidence = installEvidenceFromScenarioInputs(rawScenar
 const promotionInstallEvidence = dedicatedInstallEvidenceResult.installEvidence
   || topLevelInstallEvidence
   || null;
+const hasSuppliedInstallEvidence = dedicatedInstallEvidenceResult.installEvidence !== null
+  || topLevelInstallEvidence !== null
+  || scenarioInputInstallEvidence !== null;
 const artifactVersions = normalizeArtifactMap(mergeMaps(
   artifactVersionsFromEnv(),
   evidence.artifact_versions,
@@ -3079,7 +3132,23 @@ const localProductSourceCheckoutsUsed = localProductSourceCheckoutsUsedIn(
   scenarioResults,
   dedicatedInstallEvidenceResult.installEvidence,
 );
-const localProductSourceCheckoutsExplicitlyFalse = localProductSourceCheckoutsExplicitlyFalseIn(
+const canSynthesizeInstallOnlyFromPublishedTuple = !runnerBlocked
+  && !localProductSourceCheckoutsUsed
+  && verifiedPublishedArtifactTupleCanProveInstallOnly(
+    artifactVersions,
+    artifactSources,
+    artifactSourceVerification,
+  );
+const synthesizedInstallEvidence = canSynthesizeInstallOnlyFromPublishedTuple
+  && !hasSuppliedInstallEvidence
+  ? syntheticInstallEvidenceFromPublishedTuple(
+    artifactVersions,
+    artifactSources,
+    artifactSourceVerification,
+  )
+  : null;
+const localProductSourceCheckoutsExplicitlyFalse = canSynthesizeInstallOnlyFromPublishedTuple
+  || localProductSourceCheckoutsExplicitlyFalseIn(
   evidence,
   scenarioResults,
   dedicatedInstallEvidenceResult.installEvidence,
@@ -3112,6 +3181,13 @@ let artifactInstallEvidenceSelection = runnerBlocked
       evidence: scenarioInputInstallEvidence || scenarioResultInstallEvidence,
       source: 'scenario_results.published_artifact_install_only.observed_outputs.artifact_install_evidence',
       path: '$.scenario_results.published_artifact_install_only.observed_outputs.artifact_install_evidence',
+    },
+    {
+      evidence: synthesizedInstallEvidence,
+      source: 'published_artifact_tuple',
+      supplied: false,
+      derived: true,
+      path: '$.artifact_install_evidence',
     },
   ], artifactVersions, artifactSources);
 const artifactInstallEvidence = artifactInstallEvidenceSelection.evidence;
