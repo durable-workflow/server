@@ -476,7 +476,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
-    public function test_runner_reports_source_free_proof_from_supplied_shard_without_install_promotion(): void
+    public function test_runner_derives_install_evidence_from_source_free_shard_and_published_sources(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
         if ($nodeBinary === '') {
@@ -558,10 +558,25 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             );
 
             $scenario = $result['scenario_results']['published_artifact_install_only'];
-            $this->assertSame('not_covered', $scenario['status']);
+            $installEvidence = $result['artifact_install_evidence'];
+            $scenarioInstallEvidence = $scenario['observed_outputs']['artifact_install_evidence'];
+
+            $this->assertSame('pass', $scenario['status']);
+            $this->assertSame([], $scenario['linked_findings']);
             $this->assertFalse($result['local_product_source_checkouts_used']);
+            $this->assertFalse($installEvidence['supplied_install_evidence']);
+            $this->assertTrue($installEvidence['derived_install_evidence']);
+            $this->assertFalse($scenarioInstallEvidence['supplied_install_evidence']);
+            $this->assertTrue($scenarioInstallEvidence['derived_install_evidence']);
+            $this->assertSame(
+                ['pass', 'pass', 'pass', 'pass', 'pass'],
+                array_column($installEvidence['artifacts'], 'status'),
+            );
             $this->assertFalse($publishedArtifacts['local_product_source_checkouts_used']);
-            $this->assertNotEmpty($scenario['linked_findings']);
+            $this->assertSame(
+                'published_waterline_artifact',
+                $publishedArtifacts['artifact_install_evidence']['artifact_sources']['waterline'],
+            );
         } finally {
             $this->removeDirectory($resultDir);
         }

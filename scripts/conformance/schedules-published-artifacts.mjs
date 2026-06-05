@@ -1303,28 +1303,7 @@ function derivedArtifactInstallEvidence(
 }
 
 function installLayerLocalProductSourceExplicitlyFalse(...containers) {
-  const envEvidence = localProductSourceEvidenceFromEnv();
-  if (explicitFalse(envEvidence.local_product_source_checkouts_used)) {
-    return true;
-  }
-
-  for (const container of containers) {
-    const value = objectValue(container);
-    for (const field of [
-      'artifact_install_evidence',
-      'artifactInstallEvidence',
-      'install_evidence',
-      'installEvidence',
-      'published_artifacts',
-      'publishedArtifacts',
-    ]) {
-      if (localProductSourceCheckoutsExplicitlyFalse(value[field])) {
-        return true;
-      }
-    }
-  }
-
-  return false;
+  return localProductSourceCheckoutsExplicitlyFalse(...containers);
 }
 
 function artifactSourcesWithInstallEvidence(artifactSources, artifacts) {
