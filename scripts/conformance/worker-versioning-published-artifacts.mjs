@@ -327,8 +327,15 @@ async function main() {
   await postJson(serverUrl, `/api/task-queues/${encodeURIComponent(taskQueue)}/build-ids/promote`, {
     build_id: `${buildV1}-php`,
   }, controlHeaders, [200, 201]);
+  const phpV1RolloutState = await getJson(
+    serverUrl,
+    `/api/task-queues/${encodeURIComponent(taskQueue)}/build-ids`,
+    controlHeaders,
+    [200],
+  );
+  const phpStartedWorkflowId = `wv-php-start-${suffix}`;
   const phpStarted = await startWorkflow(serverUrl, controlHeaders, {
-    workflow_id: `wv-php-start-${suffix}`,
+    workflow_id: phpStartedWorkflowId,
     workflow_type: workflowType,
     task_queue: taskQueue,
     input: ['php'],
@@ -373,8 +380,15 @@ async function main() {
   await postJson(serverUrl, `/api/task-queues/${encodeURIComponent(taskQueue)}/build-ids/promote`, {
     build_id: `${buildV1}-python`,
   }, controlHeaders, [200, 201]);
+  const pythonV1RolloutState = await getJson(
+    serverUrl,
+    `/api/task-queues/${encodeURIComponent(taskQueue)}/build-ids`,
+    controlHeaders,
+    [200],
+  );
+  const pythonStartedWorkflowId = `wv-python-start-${suffix}`;
   const pythonStarted = await startWorkflow(serverUrl, controlHeaders, {
-    workflow_id: `wv-python-start-${suffix}`,
+    workflow_id: pythonStartedWorkflowId,
     workflow_type: workflowType,
     task_queue: taskQueue,
     input: ['python'],
@@ -790,6 +804,12 @@ async function main() {
   const crossLanguageOutputs = {
     php_worker_build_id: `${buildV1}-php`,
     python_worker_build_id: `${buildV2}-python`,
+    worker_runtime_identities: [
+      { worker_id: phpV1WorkerId, runtime: 'php', language: 'php', build_id: `${buildV1}-php` },
+      { worker_id: pythonV2WorkerId, runtime: 'python', language: 'python', build_id: `${buildV2}-python` },
+      { worker_id: pythonV1WorkerId, runtime: 'python', language: 'python', build_id: `${buildV1}-python` },
+      { worker_id: phpV2WorkerId, runtime: 'php', language: 'php', build_id: `${buildV2}-php` },
+    ],
     php_worker_build_ids: {
       v1: `${buildV1}-php`,
       v2: `${buildV2}-php`,
@@ -802,6 +822,32 @@ async function main() {
     python_v1_compatible_delivery_count: pythonV1CompatibleCount,
     php_v1_to_python_v2_incompatible_delivery_count: phpToPythonIncompatibleCount,
     python_v1_to_php_v2_incompatible_delivery_count: pythonToPhpIncompatibleCount,
+    workflow_runs: {
+      php_v1_started: {
+        workflow_id: phpStartedWorkflowId,
+        run_id: phpStartedRunId,
+        started_by_runtime: 'php',
+        pinned_build_id: `${buildV1}-php`,
+        compatible_worker_runtime: 'php',
+        incompatible_worker_runtime: 'python',
+      },
+      python_v1_started: {
+        workflow_id: pythonStartedWorkflowId,
+        run_id: pythonStartedRunId,
+        started_by_runtime: 'python',
+        pinned_build_id: `${buildV1}-python`,
+        compatible_worker_runtime: 'python',
+        incompatible_worker_runtime: 'php',
+      },
+    },
+    rollout_state: {
+      after_php_v1_promotion: phpV1RolloutState,
+      after_python_v1_promotion: pythonV1RolloutState,
+      promoted_build_ids: {
+        php_started_run: `${buildV1}-php`,
+        python_started_run: `${buildV1}-python`,
+      },
+    },
     cross_language_delivery: {
       cells: [
         {
@@ -811,6 +857,8 @@ async function main() {
           compatible_worker: 'workflow-php-v1',
           compatible_delivery_count: phpV1CompatibleCount,
           incompatible_delivery_count: phpToPythonIncompatibleCount,
+          workflow_id: phpStartedWorkflowId,
+          run_id: phpStartedRunId,
           started_run_id: phpStartedRunId,
         },
         {
@@ -820,9 +868,22 @@ async function main() {
           compatible_worker: 'sdk-python-v1',
           compatible_delivery_count: pythonV1CompatibleCount,
           incompatible_delivery_count: pythonToPhpIncompatibleCount,
+          workflow_id: pythonStartedWorkflowId,
+          run_id: pythonStartedRunId,
           started_run_id: pythonStartedRunId,
         },
       ],
+    },
+    public_outcome: {
+      verification_surface: 'server worker poll outputs and task-queue build-id rollout API',
+      passed: phpToPythonIncompatibleCount === 0
+        && pythonToPhpIncompatibleCount === 0
+        && phpV1CompatibleCount > 0
+        && pythonV1CompatibleCount > 0,
+      php_v1_to_python_v2_incompatible_delivery_count: phpToPythonIncompatibleCount,
+      python_v1_to_php_v2_incompatible_delivery_count: pythonToPhpIncompatibleCount,
+      php_v1_compatible_delivery_count: phpV1CompatibleCount,
+      python_v1_compatible_delivery_count: pythonV1CompatibleCount,
     },
     worker_execution_mode: SERVER_PROTOCOL_PROBE,
     server_protocol_probe_only: true,

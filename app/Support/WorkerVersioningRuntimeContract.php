@@ -266,9 +266,13 @@ final class WorkerVersioningRuntimeContract
                     'required_fields' => [
                         'php_worker_build_id',
                         'python_worker_build_id',
+                        'worker_runtime_identities',
+                        'workflow_runs',
+                        'rollout_state',
                         'php_v1_to_python_v2_incompatible_delivery_count',
                         'python_v1_to_php_v2_incompatible_delivery_count',
                         'cross_language_delivery',
+                        'public_outcome',
                         'published_artifact_worker_execution',
                         'local_product_source_checkouts_used',
                     ],

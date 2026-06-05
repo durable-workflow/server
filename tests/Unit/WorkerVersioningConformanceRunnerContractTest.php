@@ -31,8 +31,13 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'python_v1_compatible_delivery_count',
             'php_worker_build_ids',
             'python_worker_build_ids',
+            'worker_runtime_identities',
+            'workflow_runs',
+            'rollout_state',
+            'public_outcome',
         ] as $field) {
             $this->assertStringContainsString($field, $node);
+            $this->assertStringContainsString($field, $publishedWorkers);
         }
 
         $this->assertStringContainsString(

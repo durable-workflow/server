@@ -86,6 +86,22 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             $manifest['scenario_requirements']['cross_language_php_python_pinning']['required_fields'],
         );
         $this->assertContains(
+            'workflow_runs',
+            $manifest['scenario_requirements']['cross_language_php_python_pinning']['required_fields'],
+        );
+        $this->assertContains(
+            'rollout_state',
+            $manifest['scenario_requirements']['cross_language_php_python_pinning']['required_fields'],
+        );
+        $this->assertContains(
+            'worker_runtime_identities',
+            $manifest['scenario_requirements']['cross_language_php_python_pinning']['required_fields'],
+        );
+        $this->assertContains(
+            'public_outcome',
+            $manifest['scenario_requirements']['cross_language_php_python_pinning']['required_fields'],
+        );
+        $this->assertContains(
             'local_product_source_checkouts_used',
             $manifest['scenario_requirements']['cross_language_php_python_pinning']['required_fields'],
         );
@@ -1219,6 +1235,38 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         $scenarioResults['cross_language_php_python_pinning']['observed_outputs'] += [
             'php_worker_build_id' => 'php-v1',
             'python_worker_build_id' => 'python-v2',
+            'worker_runtime_identities' => [
+                ['worker_id' => 'php-worker-v1', 'runtime' => 'php', 'language' => 'php', 'build_id' => 'php-v1'],
+                ['worker_id' => 'python-worker-v2', 'runtime' => 'python', 'language' => 'python', 'build_id' => 'python-v2'],
+                ['worker_id' => 'python-worker-v1', 'runtime' => 'python', 'language' => 'python', 'build_id' => 'python-v1'],
+                ['worker_id' => 'php-worker-v2', 'runtime' => 'php', 'language' => 'php', 'build_id' => 'php-v2'],
+            ],
+            'workflow_runs' => [
+                'php_v1_started' => [
+                    'workflow_id' => 'php-sequence',
+                    'run_id' => 'php-run-1',
+                    'started_by_runtime' => 'php',
+                    'pinned_build_id' => 'php-v1',
+                    'compatible_worker_runtime' => 'php',
+                    'incompatible_worker_runtime' => 'python',
+                ],
+                'python_v1_started' => [
+                    'workflow_id' => 'python-sequence',
+                    'run_id' => 'python-run-1',
+                    'started_by_runtime' => 'python',
+                    'pinned_build_id' => 'python-v1',
+                    'compatible_worker_runtime' => 'python',
+                    'incompatible_worker_runtime' => 'php',
+                ],
+            ],
+            'rollout_state' => [
+                'after_php_v1_promotion' => ['selected_new_start_build_id' => 'php-v1'],
+                'after_python_v1_promotion' => ['selected_new_start_build_id' => 'python-v1'],
+                'promoted_build_ids' => [
+                    'php_started_run' => 'php-v1',
+                    'python_started_run' => 'python-v1',
+                ],
+            ],
             'php_v1_to_python_v2_incompatible_delivery_count' => 0,
             'python_v1_to_php_v2_incompatible_delivery_count' => 0,
             'local_product_source_checkouts_used' => false,
@@ -1229,15 +1277,23 @@ class WorkerVersioningRuntimeContractTest extends TestCase
                         'scenario' => 'php_v1_not_delivered_to_python_v2',
                         'started_by' => 'workflow-php-v1',
                         'incompatible_worker' => 'sdk-python-v2',
+                        'workflow_id' => 'php-sequence',
+                        'run_id' => 'php-run-1',
                         'incompatible_delivery_count' => 0,
                     ],
                     [
                         'scenario' => 'python_v1_not_delivered_to_php_v2',
                         'started_by' => 'sdk-python-v1',
                         'incompatible_worker' => 'workflow-php-v2',
+                        'workflow_id' => 'python-sequence',
+                        'run_id' => 'python-run-1',
                         'incompatible_delivery_count' => 0,
                     ],
                 ],
+            ],
+            'public_outcome' => [
+                'verification_surface' => 'published worker poll outputs and task-queue build-id rollout API',
+                'passed' => true,
             ],
         ];
         $scenarioResults['adversarial_no_version_bump']['observed_outputs'] += [

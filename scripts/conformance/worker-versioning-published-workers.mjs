@@ -91,7 +91,9 @@ async function main() {
   });
 
   await promoteBuildId(phpV1BuildId);
-  const phpStarted = await startWorkflow(`wv-php-start-${suffix}`, ['php-v1']);
+  const phpV1RolloutState = await taskQueueBuildIds();
+  const phpStartedWorkflowId = `wv-php-start-${suffix}`;
+  const phpStarted = await startWorkflow(phpStartedWorkflowId, ['php-v1']);
   const phpStartedRunId = stringValue(phpStarted.run_id);
   const pythonV2ForPhpV1 = runPythonWorker(python, {
     action: 'poll',
@@ -122,7 +124,9 @@ async function main() {
   });
 
   await promoteBuildId(pythonV1BuildId);
-  const pythonStarted = await startWorkflow(`wv-python-start-${suffix}`, ['python-v1']);
+  const pythonV1RolloutState = await taskQueueBuildIds();
+  const pythonStartedWorkflowId = `wv-python-start-${suffix}`;
+  const pythonStarted = await startWorkflow(pythonStartedWorkflowId, ['python-v1']);
   const pythonStartedRunId = stringValue(pythonStarted.run_id);
   const phpV2ForPythonV1 = runPhpWorker(php, {
     action: 'poll',
@@ -143,10 +147,20 @@ async function main() {
   const pythonToPhpIncompatible = countTaskForRun(phpV2ForPythonV1, pythonStartedRunId);
   const phpCompatible = countTaskForRun(phpV1Poll, phpStartedRunId);
   const pythonCompatible = countTaskForRun(pythonV1Poll, pythonStartedRunId);
+  const passes = phpToPythonIncompatible === 0
+    && pythonToPhpIncompatible === 0
+    && phpCompatible > 0
+    && pythonCompatible > 0;
 
   const observedOutputs = {
     php_worker_build_id: phpV1BuildId,
     python_worker_build_id: pythonV2BuildId,
+    worker_runtime_identities: [
+      { worker_id: phpV1WorkerId, runtime: 'php', language: 'php', build_id: phpV1BuildId },
+      { worker_id: pythonV2WorkerId, runtime: 'python', language: 'python', build_id: pythonV2BuildId },
+      { worker_id: pythonV1WorkerId, runtime: 'python', language: 'python', build_id: pythonV1BuildId },
+      { worker_id: phpV2WorkerId, runtime: 'php', language: 'php', build_id: phpV2BuildId },
+    ],
     php_worker_build_ids: {
       v1: phpV1BuildId,
       v2: phpV2BuildId,
@@ -159,6 +173,32 @@ async function main() {
     python_v1_compatible_delivery_count: pythonCompatible,
     php_v1_to_python_v2_incompatible_delivery_count: phpToPythonIncompatible,
     python_v1_to_php_v2_incompatible_delivery_count: pythonToPhpIncompatible,
+    workflow_runs: {
+      php_v1_started: {
+        workflow_id: phpStartedWorkflowId,
+        run_id: phpStartedRunId,
+        started_by_runtime: 'php',
+        pinned_build_id: phpV1BuildId,
+        compatible_worker_runtime: 'php',
+        incompatible_worker_runtime: 'python',
+      },
+      python_v1_started: {
+        workflow_id: pythonStartedWorkflowId,
+        run_id: pythonStartedRunId,
+        started_by_runtime: 'python',
+        pinned_build_id: pythonV1BuildId,
+        compatible_worker_runtime: 'python',
+        incompatible_worker_runtime: 'php',
+      },
+    },
+    rollout_state: {
+      after_php_v1_promotion: phpV1RolloutState,
+      after_python_v1_promotion: pythonV1RolloutState,
+      promoted_build_ids: {
+        php_started_run: phpV1BuildId,
+        python_started_run: pythonV1BuildId,
+      },
+    },
     cross_language_delivery: {
       task_queue: taskQueue,
       cells: [
@@ -169,6 +209,8 @@ async function main() {
           compatible_worker: 'workflow-php-v1',
           compatible_delivery_count: phpCompatible,
           incompatible_delivery_count: phpToPythonIncompatible,
+          workflow_id: phpStartedWorkflowId,
+          run_id: phpStartedRunId,
           started_run_id: phpStartedRunId,
           compatible_worker_output: phpV1Poll,
           incompatible_worker_output: pythonV2ForPhpV1,
@@ -180,11 +222,21 @@ async function main() {
           compatible_worker: 'sdk-python-v1',
           compatible_delivery_count: pythonCompatible,
           incompatible_delivery_count: pythonToPhpIncompatible,
+          workflow_id: pythonStartedWorkflowId,
+          run_id: pythonStartedRunId,
           started_run_id: pythonStartedRunId,
           compatible_worker_output: pythonV1Poll,
           incompatible_worker_output: phpV2ForPythonV1,
         },
       ],
+    },
+    public_outcome: {
+      verification_surface: 'published worker poll outputs and task-queue build-id rollout API',
+      passed: passes,
+      php_v1_to_python_v2_incompatible_delivery_count: phpToPythonIncompatible,
+      python_v1_to_php_v2_incompatible_delivery_count: pythonToPhpIncompatible,
+      php_v1_compatible_delivery_count: phpCompatible,
+      python_v1_compatible_delivery_count: pythonCompatible,
     },
     published_artifact_worker_execution: {
       local_product_source_checkouts_used: false,
@@ -208,11 +260,6 @@ async function main() {
     local_product_source_checkouts_used: false,
     worker_execution_mode: 'published_php_python_worker_protocol_clients',
   };
-
-  const passes = phpToPythonIncompatible === 0
-    && pythonToPhpIncompatible === 0
-    && phpCompatible > 0
-    && pythonCompatible > 0;
 
   const finding = passes ? null : {
     scenario_id: CROSS_LANGUAGE_SCENARIO,
@@ -968,6 +1015,16 @@ async function promoteBuildId(buildId) {
     { build_id: buildId },
     controlHeaders(namespace),
     [200, 201],
+  );
+}
+
+async function taskQueueBuildIds() {
+  return requestJson(
+    'GET',
+    `/api/task-queues/${encodeURIComponent(taskQueue)}/build-ids`,
+    undefined,
+    controlHeaders(namespace),
+    [200],
   );
 }
 

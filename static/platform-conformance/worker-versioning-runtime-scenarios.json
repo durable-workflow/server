@@ -161,9 +161,13 @@
       "required_fields": [
         "php_worker_build_id",
         "python_worker_build_id",
+        "worker_runtime_identities",
+        "workflow_runs",
+        "rollout_state",
         "php_v1_to_python_v2_incompatible_delivery_count",
         "python_v1_to_php_v2_incompatible_delivery_count",
         "cross_language_delivery",
+        "public_outcome",
         "published_artifact_worker_execution",
         "local_product_source_checkouts_used"
       ]
@@ -422,6 +426,7 @@
       "operations": [
         "start a PHP v1 workflow while a Python v2 worker polls the same queue",
         "start a Python v1 workflow while a PHP v2 worker polls the same queue",
+        "record PHP and Python worker runtime identity, workflow IDs, run IDs, and rollout state for both directions",
         "record cross-language task delivery, result ordering, and compatibility fields"
       ],
       "pass_criteria": [
@@ -429,6 +434,9 @@
         "Python-started v1 history is not delivered to PHP v2",
         "the PHP v1 to Python v2 incompatible delivery count is recorded as zero",
         "the Python v1 to PHP v2 incompatible delivery count is recorded as zero",
+        "workflow and run identity are recorded for both PHP-started and Python-started v1 workflows",
+        "task-queue rollout state is recorded for the promoted PHP v1 and Python v1 cohorts",
+        "the public outcome used to verify pinning names the poll and rollout surfaces",
         "published workflow-php and sdk-python worker artifacts are identified with install source and version",
         "the PHP/Python worker evidence records that no local product source checkout was used",
         "both runtimes agree on build-id compatibility semantics"
