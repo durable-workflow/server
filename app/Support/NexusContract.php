@@ -234,6 +234,7 @@ final class NexusContract
                     'resolved_artifact_versions',
                     'artifact_sources',
                     'artifact_source_verification',
+                    'artifact_install_evidence',
                     'artifact_policy_failures',
                     'local_product_source_checkouts_used',
                     'started_at',
@@ -296,6 +297,7 @@ final class NexusContract
                     'artifact_source_verification',
                     'local_product_source_checkouts_used',
                     'install_channels_verified',
+                    'artifact_install_evidence',
                 ],
                 'tenant_a_calls_shared_service' => [
                     'caller_namespace',
@@ -442,6 +444,7 @@ final class NexusContract
                 ],
                 'evidence_inputs' => [
                     'DW_NEXUS_EVIDENCE_JSON' => 'Optional full host evidence document with scenario_results for the required Nexus scenarios. Missing scenarios are emitted as not_covered with focused conformance-harness findings.',
+                    'DW_NEXUS_ARTIFACT_INSTALL_EVIDENCE' => 'Optional dedicated install-evidence JSON proving every required artifact came from a published install channel and no local product source checkout was used as the artifact under test.',
                     'DW_SERVER_VERSION' => 'Exact published server artifact version.',
                     'DW_CLI_VERSION' => 'Exact published CLI artifact version.',
                     'DW_WORKFLOW_PHP_VERSION' => 'Exact published Workflow PHP artifact version.',
@@ -514,6 +517,7 @@ final class NexusContract
                     'all_required_artifact_versions_are_concrete',
                     'artifact_sources_recorded_for_every_required_artifact',
                     'artifact_source_verification_proves_each_source_resolves',
+                    'published_artifact_install_evidence_reported',
                     'install_artifact_tuple_matches_top_level_resolved_tuple',
                     'no_artifact_policy_failures',
                     'every_required_scenario_has_one_result',

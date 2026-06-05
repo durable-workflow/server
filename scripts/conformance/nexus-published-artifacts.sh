@@ -19,6 +19,9 @@ The runner writes these files to the result directory:
 Environment overrides:
   DW_NEXUS_RESULT_DIR              Result directory. Defaults to a temp dir.
   DW_NEXUS_EVIDENCE_JSON           Optional host evidence JSON with scenario_results.
+  DW_NEXUS_ARTIFACT_INSTALL_EVIDENCE
+                                    Optional dedicated install-evidence JSON. When
+                                    omitted, no result-dir evidence file is reused.
   DW_NEXUS_SKIP_SHARED_SERVICE_PROBE=1
                                     Skip the built-in shared-service probe when
                                     no host evidence JSON is supplied.
@@ -782,7 +785,41 @@ function artifactResolutionEvidence(startedAt, finishedAt, versions, sources, ve
   };
 }
 
+function artifactInstallEvidence(versions, sources, verification, localProductSourceCheckoutsUsed) {
+  return {
+    schema: 'durable-workflow.v2.nexus-runtime.install-evidence',
+    published_install_tuple_proven: true,
+    local_product_source_checkouts_used: localProductSourceCheckoutsUsed,
+    artifacts: requiredArtifacts.map((artifact) => ({
+      artifact,
+      version: versions[artifact],
+      source: sources[artifact],
+      install_channel: installChannelForArtifact(artifact),
+      source_verification: verification[artifact],
+      local_product_source_checkout_used_as_artifact: false,
+      status: 'pass',
+    })),
+  };
+}
+
+function installChannelForArtifact(artifact) {
+  switch (artifact) {
+    case 'server':
+      return 'docker';
+    case 'cli':
+      return 'github_release_asset';
+    case 'workflow':
+    case 'waterline':
+      return 'packagist';
+    case 'sdk-python':
+      return 'pypi';
+    default:
+      return 'published_artifact_channel';
+  }
+}
+
 function productFailureEvidence(startedAt, finishedAt, versions, sources, verification, reason, details = {}) {
+  const installEvidence = artifactInstallEvidence(versions, sources, verification, false);
   const scenarioResults = scenarioIds.map((scenarioId) => failureScenario(
     scenarioId,
     versions,
@@ -800,9 +837,23 @@ function productFailureEvidence(startedAt, finishedAt, versions, sources, verifi
     resolved_artifact_versions: compactObject(versions),
     artifact_sources: sources,
     artifact_source_verification: verification,
+    artifact_install_evidence: installEvidence,
     local_product_source_checkouts_used: false,
     findings: scenarioResults.flatMap((scenario) => scenario.linked_findings || []),
     scenario_results: {
+      published_artifact_install_only: {
+        status: 'pass',
+        observed_outputs: {
+          artifact_versions: compactObject(versions),
+          artifact_sources: sources,
+          artifact_source_verification: verification,
+          local_product_source_checkouts_used: false,
+          install_channels_verified: true,
+          published_install_tuple_proven: true,
+          artifact_install_evidence: installEvidence,
+        },
+        linked_findings: [],
+      },
       tenant_a_calls_shared_service: scenarioResults[0],
       tenant_b_calls_shared_service: scenarioResults[1],
     },
@@ -902,6 +953,7 @@ async function main() {
 
     const finishedAt = timestamp();
     const findings = scenarioResults.flatMap((scenario) => scenario.linked_findings || []);
+    const installEvidence = artifactInstallEvidence(versions, sources, verification, false);
 
     writeEvidence({
       outcome: scenarioResults.every((scenario) => scenario.status === 'pass') ? 'pass' : 'fail',
@@ -913,6 +965,7 @@ async function main() {
       resolved_artifact_versions: compactObject(versions),
       artifact_sources: sources,
       artifact_source_verification: verification,
+      artifact_install_evidence: installEvidence,
       local_product_source_checkouts_used: false,
       topology: {
         namespaces: ['tenant-a', 'tenant-b', 'shared'],
@@ -943,6 +996,8 @@ async function main() {
             artifact_source_verification: verification,
             local_product_source_checkouts_used: false,
             install_channels_verified: true,
+            published_install_tuple_proven: true,
+            artifact_install_evidence: installEvidence,
           },
           linked_findings: [],
         },
@@ -990,12 +1045,13 @@ NODE
   fi
 fi
 
-node - "$result_dir" "${DW_NEXUS_EVIDENCE_JSON:-}" <<'NODE'
+node - "$result_dir" "${DW_NEXUS_EVIDENCE_JSON:-}" "${DW_NEXUS_ARTIFACT_INSTALL_EVIDENCE:-}" <<'NODE'
 const fs = require('fs');
 const path = require('path');
 
 const resultDir = process.argv[2];
 const evidencePath = process.argv[3] || '';
+const dedicatedInstallEvidencePath = process.argv[4] || '';
 
 const requiredScenarios = [
   'published_artifact_install_only',
@@ -1086,6 +1142,7 @@ const scenarioEvidenceRequirements = {
     {fields: ['artifact_source_verification', 'artifactSourceVerification'], kind: 'non_empty_object', expected: 'host proof that every published artifact source resolved to a downloadable public artifact'},
     {fields: ['local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed'], kind: 'boolean_false', expected: 'explicit proof that no local product source checkout was used'},
     {fields: ['install_channels_verified', 'installChannelsVerified'], kind: 'boolean_true', expected: 'published artifact install channels were exercised successfully'},
+    {fields: ['artifact_install_evidence', 'artifactInstallEvidence', 'install_evidence', 'installEvidence'], kind: 'non_empty_object', expected: 'explicit install-only proof for every required published Nexus artifact'},
   ],
   tenant_a_calls_shared_service: [
     {fields: ['caller_namespace', 'callerNamespace'], kind: 'value_equals', value: 'tenant-a', expected: 'tenant-a is recorded as the caller namespace'},
@@ -1297,7 +1354,37 @@ function readEvidence(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
-function normalizeScenarioResult(scenarioId, input, artifactVersions) {
+function readDedicatedInstallEvidence(filePath) {
+  if (!filePath) {
+    return {installEvidence: null, findings: []};
+  }
+
+  if (!fs.existsSync(filePath)) {
+    return {
+      installEvidence: null,
+      findings: [
+        {
+          scenario_id: 'published_artifact_install_only',
+          type: 'conformance_runner_coverage_gap',
+          finding_type: 'conformance_runner_coverage_gap',
+          owning_surface: 'conformance_harness',
+          artifact_versions: artifactVersionsFromEnv(),
+          observed_behavior: `DW_NEXUS_ARTIFACT_INSTALL_EVIDENCE did not point at a readable file: ${filePath}`,
+          expected_behavior: 'host runner supplies readable published artifact install evidence or records focused uncovered cells',
+          next_acceptance_criterion: 'rerun Nexus conformance with readable install evidence for every published artifact under test',
+        },
+      ],
+    };
+  }
+
+  const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  return {
+    installEvidence: installEvidenceFrom(parsed),
+    findings: [],
+  };
+}
+
+function normalizeScenarioResult(scenarioId, input, artifactVersions, installEvidenceForPromotion = null) {
   if (!input || typeof input !== 'object') {
     return missingScenarioResult(scenarioId, artifactVersions);
   }
@@ -1314,6 +1401,13 @@ function normalizeScenarioResult(scenarioId, input, artifactVersions) {
       : {},
     linked_findings: Array.isArray(input.linked_findings) ? input.linked_findings : [],
   };
+
+  if (scenarioId === 'published_artifact_install_only') {
+    normalized.observed_outputs = withPromotedInstallEvidence(
+      normalized.observed_outputs,
+      installEvidenceForPromotion,
+    );
+  }
 
   if (status === 'pass') {
     const evidenceFailures = scenarioEvidenceFailures(scenarioId, normalized.observed_outputs);
@@ -1342,6 +1436,35 @@ function normalizeScenarioResult(scenarioId, input, artifactVersions) {
   }
 
   return normalized;
+}
+
+function withPromotedInstallEvidence(outputs, installEvidence) {
+  const promoted = outputs && typeof outputs === 'object' && !Array.isArray(outputs)
+    ? {...outputs}
+    : {};
+  if (!installEvidence || typeof installEvidence !== 'object' || Array.isArray(installEvidence)) {
+    return promoted;
+  }
+  if (installEvidenceFrom(promoted) === null) {
+    promoted.artifact_install_evidence = installEvidence;
+  }
+  if (!Object.hasOwn(promoted, 'local_product_source_checkouts_used')
+    && !Object.hasOwn(promoted, 'localProductSourceCheckoutsUsed')
+    && hasExplicitFalseLocalProductSourceFlag(installEvidence)) {
+    promoted.local_product_source_checkouts_used = false;
+  }
+  if (!Object.hasOwn(promoted, 'install_channels_verified')
+    && !Object.hasOwn(promoted, 'installChannelsVerified')
+    && installEvidenceArtifactsAllPass(installEvidence)) {
+    promoted.install_channels_verified = true;
+  }
+  if (!Object.hasOwn(promoted, 'published_install_tuple_proven')
+    && !Object.hasOwn(promoted, 'publishedInstallTupleProven')
+    && truthy(installEvidence.published_install_tuple_proven ?? installEvidence.publishedInstallTupleProven)) {
+    promoted.published_install_tuple_proven = true;
+  }
+
+  return promoted;
 }
 
 function scenarioEvidenceFailures(scenarioId, observedOutputs) {
@@ -1870,6 +1993,7 @@ function installScenarioArtifactPolicyFailuresFor(
     observedOutputs.artifact_source_resolution,
     observedOutputs.artifactSourceResolution,
   ));
+  const artifactInstallEvidence = installEvidenceFrom(observedOutputs);
 
   return [
     ...artifactMapPolicyFailuresFor(artifactVersions, artifactSources, artifactSourceVerification, {
@@ -1877,6 +2001,12 @@ function installScenarioArtifactPolicyFailuresFor(
       artifactSourcesPath: '$.scenario_results.published_artifact_install_only.observed_outputs.artifact_sources',
       artifactSourceVerificationPath: '$.scenario_results.published_artifact_install_only.observed_outputs.artifact_source_verification',
     }),
+    ...artifactInstallEvidencePolicyFailuresFor(
+      artifactInstallEvidence,
+      expectedArtifactVersions,
+      expectedArtifactSources,
+      '$.scenario_results.published_artifact_install_only.observed_outputs.artifact_install_evidence',
+    ),
     ...artifactTupleMismatchFailuresFor(
       artifactVersions,
       artifactSources,
@@ -2027,6 +2157,7 @@ function withSyntheticInstallScenarioEvidence(
   artifactSources,
   artifactSourceVerification,
   localProductSourceCheckoutsUsed,
+  artifactInstallEvidence,
   canSynthesize,
 ) {
   if (!canSynthesize) {
@@ -2048,6 +2179,7 @@ function withSyntheticInstallScenarioEvidence(
         artifactSources,
         artifactSourceVerification,
         localProductSourceCheckoutsUsed,
+        artifactInstallEvidence,
       ),
       linked_findings: [],
     };
@@ -2083,22 +2215,8 @@ function syntheticInstallObservedOutputs(
   artifactSources,
   artifactSourceVerification,
   localProductSourceCheckoutsUsed,
+  artifactInstallEvidence,
 ) {
-  const artifactInstallEvidence = {
-    schema: 'durable-workflow.v2.nexus-runtime.install-evidence',
-    published_install_tuple_proven: true,
-    local_product_source_checkouts_used: localProductSourceCheckoutsUsed,
-    artifacts: requiredArtifacts.map((artifact) => ({
-      artifact,
-      version: artifactVersions[artifact],
-      source: artifactSources[artifact],
-      install_channel: installChannelForArtifact(artifact),
-      source_verification: artifactSourceVerification[artifact],
-      local_product_source_checkout_used_as_artifact: false,
-      status: 'pass',
-    })),
-  };
-
   return {
     artifact_versions: artifactVersions,
     resolved_artifact_versions: artifactVersions,
@@ -2109,22 +2227,6 @@ function syntheticInstallObservedOutputs(
     published_install_tuple_proven: true,
     artifact_install_evidence: artifactInstallEvidence,
   };
-}
-
-function installChannelForArtifact(artifact) {
-  switch (artifact) {
-    case 'server':
-      return 'docker';
-    case 'cli':
-      return 'github_release_asset';
-    case 'workflow':
-    case 'waterline':
-      return 'packagist';
-    case 'sdk-python':
-      return 'pypi';
-    default:
-      return 'published_artifact_channel';
-  }
 }
 
 function withResultRecordAndRoutingScenario(scenarioResults, artifactVersions) {
@@ -2236,11 +2338,13 @@ function artifactPolicyFinding(scenarioId, artifactVersions, failure) {
   const valueDetail = value === '' ? '' : `; observed ${field}=${value}`;
   const path = stringValue(failure.path);
   const pathDetail = path === '' ? '' : ` at ${path}`;
-  const nextCriterion = field === 'artifact_sources'
+  const nextCriterion = field.startsWith('artifact_install_evidence')
+    ? `record passing published install evidence for ${artifact}, then rerun the ${scenarioId} Nexus cell`
+    : (field === 'artifact_sources'
     ? `record a published install source for ${artifact}, then rerun the ${scenarioId} Nexus cell`
     : (field === 'artifact_source_verification'
       ? `record host proof that ${artifact} source resolves to a downloadable published artifact, then rerun the ${scenarioId} Nexus cell`
-      : `publish or record a concrete ${artifact} artifact version, then rerun the ${scenarioId} Nexus cell`);
+      : `publish or record a concrete ${artifact} artifact version, then rerun the ${scenarioId} Nexus cell`));
 
   return {
     scenario_id: scenarioId,
@@ -2401,6 +2505,10 @@ function localProductSourceCheckoutsUsedIn(...containers) {
   return localProductSourceFlagValues(...containers).some((value) => truthy(value));
 }
 
+function localProductSourceCheckoutsExplicitlyFalseIn(...containers) {
+  return localProductSourceCheckoutsUsedFlagValues(...containers).some((value) => explicitFalse(value));
+}
+
 function localProductSourceFlagValues(...containers) {
   const values = [];
   for (const container of containers) {
@@ -2427,12 +2535,362 @@ function collectLocalProductSourceFlagValues(value, values) {
   if (Object.hasOwn(value, 'localProductSourceCheckoutsUsed')) {
     values.push(value.localProductSourceCheckoutsUsed);
   }
+  if (Object.hasOwn(value, 'local_product_source_checkout_used_as_artifact')) {
+    values.push(value.local_product_source_checkout_used_as_artifact);
+  }
+  if (Object.hasOwn(value, 'localProductSourceCheckoutUsedAsArtifact')) {
+    values.push(value.localProductSourceCheckoutUsedAsArtifact);
+  }
 
   for (const entry of Object.values(value)) {
     if (entry && typeof entry === 'object') {
       collectLocalProductSourceFlagValues(entry, values);
     }
   }
+}
+
+function hasExplicitFalseLocalProductSourceFlag(container) {
+  if (!container || typeof container !== 'object' || Array.isArray(container)) {
+    return false;
+  }
+
+  return explicitFalse(container.local_product_source_checkouts_used)
+    || explicitFalse(container.localProductSourceCheckoutsUsed);
+}
+
+function localProductSourceCheckoutsUsedFlagValues(...containers) {
+  const values = [];
+  for (const container of containers) {
+    collectLocalProductSourceCheckoutsUsedFlagValues(container, values);
+  }
+  return values;
+}
+
+function collectLocalProductSourceCheckoutsUsedFlagValues(value, values) {
+  if (!value || typeof value !== 'object') {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectLocalProductSourceCheckoutsUsedFlagValues(entry, values);
+    }
+    return;
+  }
+
+  if (Object.hasOwn(value, 'local_product_source_checkouts_used')) {
+    values.push(value.local_product_source_checkouts_used);
+  }
+  if (Object.hasOwn(value, 'localProductSourceCheckoutsUsed')) {
+    values.push(value.localProductSourceCheckoutsUsed);
+  }
+
+  for (const entry of Object.values(value)) {
+    if (entry && typeof entry === 'object') {
+      collectLocalProductSourceCheckoutsUsedFlagValues(entry, values);
+    }
+  }
+}
+
+function installEvidenceFrom(container) {
+  if (!container || typeof container !== 'object' || Array.isArray(container)) {
+    return null;
+  }
+
+  for (const field of [
+    'artifact_install_evidence',
+    'artifactInstallEvidence',
+    'install_evidence',
+    'installEvidence',
+  ]) {
+    if (container[field] && typeof container[field] === 'object' && !Array.isArray(container[field])) {
+      return container[field];
+    }
+  }
+
+  if (looksLikeInstallEvidence(container)) {
+    return container;
+  }
+
+  return null;
+}
+
+function installEvidenceFromScenarioInputs(scenarioInputs) {
+  const scenario = scenarioInputs instanceof Map
+    ? scenarioInputs.get('published_artifact_install_only')
+    : null;
+  const outputs = scenario
+    && scenario.observed_outputs
+    && typeof scenario.observed_outputs === 'object'
+    && !Array.isArray(scenario.observed_outputs)
+    ? scenario.observed_outputs
+    : {};
+
+  return installEvidenceFrom(outputs);
+}
+
+function installEvidenceFromScenarioResults(scenarioResults) {
+  const scenario = scenarioResults.find((item) => item.scenario_id === 'published_artifact_install_only');
+  const outputs = scenario
+    && scenario.observed_outputs
+    && typeof scenario.observed_outputs === 'object'
+    && !Array.isArray(scenario.observed_outputs)
+    ? scenario.observed_outputs
+    : {};
+
+  return installEvidenceFrom(outputs);
+}
+
+function looksLikeInstallEvidence(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && (
+      Array.isArray(value.artifacts)
+      || (value.artifacts && typeof value.artifacts === 'object')
+      || stringValue(value.schema).includes('install-evidence')
+    );
+}
+
+function installEvidenceArtifactsAllPass(installEvidence) {
+  const artifacts = installEvidence && installEvidence.artifacts;
+  if (Array.isArray(artifacts)) {
+    return artifacts.length > 0 && artifacts.every((entry) => (
+      stringValue(entry && (entry.status ?? entry.result ?? entry.outcome)).toLowerCase() === 'pass'
+    ));
+  }
+  if (artifacts && typeof artifacts === 'object') {
+    const entries = Object.values(artifacts);
+    return entries.length > 0 && entries.every((entry) => (
+      stringValue(entry && (entry.status ?? entry.result ?? entry.outcome)).toLowerCase() === 'pass'
+    ));
+  }
+
+  return false;
+}
+
+function selectArtifactInstallEvidence(candidates, artifactVersions, artifactSources) {
+  const supplied = candidates.filter((candidate) => (
+    candidate.evidence && typeof candidate.evidence === 'object' && !Array.isArray(candidate.evidence)
+  ));
+  if (supplied.length === 0) {
+    return {
+      evidence: null,
+      failures: artifactInstallEvidencePolicyFailuresFor(
+        null,
+        artifactVersions,
+        artifactSources,
+        '$.artifact_install_evidence',
+      ),
+    };
+  }
+
+  let firstFailures = null;
+  for (const candidate of supplied) {
+    const failures = artifactInstallEvidencePolicyFailuresFor(
+      candidate.evidence,
+      artifactVersions,
+      artifactSources,
+      candidate.path,
+    );
+    if (failures.length === 0) {
+      return {
+        evidence: {
+          ...candidate.evidence,
+          supplied_install_evidence: candidate.source !== 'synthesized',
+          supplied_install_evidence_source: candidate.source,
+          ...(candidate.filePath ? {supplied_install_evidence_path: candidate.filePath} : {}),
+        },
+        failures: [],
+      };
+    }
+    if (firstFailures === null) {
+      firstFailures = failures;
+    }
+  }
+
+  return {
+    evidence: supplied[0].evidence,
+    failures: firstFailures || [],
+  };
+}
+
+function artifactInstallEvidencePolicyFailuresFor(
+  installEvidence,
+  artifactVersions,
+  artifactSources,
+  pathPrefix,
+) {
+  const failures = [];
+  if (!installEvidence || typeof installEvidence !== 'object' || Array.isArray(installEvidence)) {
+    return [{
+      artifact: 'product-artifacts',
+      field: 'artifact_install_evidence',
+      code: 'missing_published_artifact_install_evidence',
+      path: pathPrefix,
+    }];
+  }
+
+  if (!hasExplicitFalseLocalProductSourceFlag(installEvidence)) {
+    failures.push({
+      artifact: 'product-artifacts',
+      field: 'artifact_install_evidence.local_product_source_checkouts_used',
+      code: 'local_product_source_checkouts_used_must_be_false',
+      value: installEvidence.local_product_source_checkouts_used
+        ?? installEvidence.localProductSourceCheckoutsUsed
+        ?? null,
+      path: pathPrefix,
+    });
+  }
+
+  for (const artifact of requiredArtifacts) {
+    const entry = artifactInstallEntry(installEvidence, artifact);
+    if (entry === null) {
+      failures.push({
+        artifact,
+        field: 'artifact_install_evidence.artifacts',
+        code: 'missing_published_artifact_install_evidence_artifact',
+        path: `${pathPrefix}.artifacts`,
+      });
+      continue;
+    }
+
+    const status = stringValue(entry.status ?? entry.result ?? entry.outcome).toLowerCase();
+    if (status !== 'pass') {
+      failures.push({
+        artifact,
+        field: 'artifact_install_evidence.artifacts.status',
+        code: 'published_artifact_install_evidence_not_pass',
+        value: status,
+        path: `${pathPrefix}.artifacts`,
+      });
+    }
+
+    const version = stringValue(evidenceLookup(entry, [
+      'version',
+      'resolved_version',
+      'resolvedVersion',
+      'artifact_version',
+      'artifactVersion',
+    ]).value);
+    const expectedVersion = stringValue(artifactVersions[artifact]);
+    if (version === '') {
+      failures.push({
+        artifact,
+        field: 'artifact_install_evidence.artifacts.version',
+        code: 'missing_published_artifact_install_evidence_version',
+        path: `${pathPrefix}.artifacts`,
+      });
+    } else if (isPlaceholderArtifactVersion(version)) {
+      failures.push({
+        artifact,
+        field: 'artifact_install_evidence.artifacts.version',
+        code: 'placeholder_published_artifact_install_evidence_version',
+        value: version,
+        path: `${pathPrefix}.artifacts`,
+      });
+    } else if (!isExactPublishedArtifactVersion(version)) {
+      failures.push({
+        artifact,
+        field: 'artifact_install_evidence.artifacts.version',
+        code: 'invalid_published_artifact_install_evidence_version',
+        value: version,
+        path: `${pathPrefix}.artifacts`,
+      });
+    } else if (expectedVersion !== '' && version !== expectedVersion) {
+      failures.push({
+        artifact,
+        field: 'artifact_install_evidence.artifacts.version',
+        code: 'published_artifact_install_evidence_version_mismatch',
+        value: version,
+        expected_value: expectedVersion,
+        path: `${pathPrefix}.artifacts`,
+      });
+    }
+
+    const source = stringValue(evidenceLookup(entry, [
+      'source',
+      'install_source',
+      'installSource',
+      'artifact_source',
+      'artifactSource',
+    ]).value);
+    const expectedSource = stringValue(artifactSources[artifact]);
+    if (source === '') {
+      failures.push({
+        artifact,
+        field: 'artifact_install_evidence.artifacts.source',
+        code: 'missing_published_artifact_install_evidence_source',
+        path: `${pathPrefix}.artifacts`,
+      });
+    } else if (containsForbiddenSourceToken(source)) {
+      failures.push({
+        artifact,
+        field: 'artifact_install_evidence.artifacts.source',
+        code: 'forbidden_published_artifact_install_evidence_source',
+        value: source,
+        path: `${pathPrefix}.artifacts`,
+      });
+    } else if (!matchesPublishedArtifactSource(artifact, version, source)) {
+      failures.push({
+        artifact,
+        field: 'artifact_install_evidence.artifacts.source',
+        code: 'invalid_published_artifact_install_evidence_source',
+        value: source,
+        path: `${pathPrefix}.artifacts`,
+      });
+    } else if (expectedSource !== '' && source !== expectedSource) {
+      failures.push({
+        artifact,
+        field: 'artifact_install_evidence.artifacts.source',
+        code: 'published_artifact_install_evidence_source_mismatch',
+        value: source,
+        expected_value: expectedSource,
+        path: `${pathPrefix}.artifacts`,
+      });
+    }
+
+    if (localProductSourceCheckoutsUsedIn(entry)) {
+      failures.push({
+        artifact,
+        field: 'artifact_install_evidence.artifacts.local_product_source_checkouts_used',
+        code: 'local_product_source_checkouts_used_must_be_false',
+        value: true,
+        path: `${pathPrefix}.artifacts`,
+      });
+    }
+  }
+
+  return failures;
+}
+
+function artifactInstallEntry(installEvidence, artifact) {
+  const artifacts = installEvidence && installEvidence.artifacts;
+  const names = [artifact, ...(artifactAliases[artifact] || [])];
+
+  if (Array.isArray(artifacts)) {
+    for (const entry of artifacts) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        continue;
+      }
+      const entryName = stringValue(entry.artifact ?? entry.name ?? entry.id ?? entry.package);
+      if (names.includes(entryName)) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  if (artifacts && typeof artifacts === 'object') {
+    for (const name of names) {
+      if (artifacts[name] && typeof artifacts[name] === 'object' && !Array.isArray(artifacts[name])) {
+        return {
+          artifact: name,
+          ...artifacts[name],
+        };
+      }
+    }
+  }
+
+  return null;
 }
 
 function truthy(value) {
@@ -2476,7 +2934,14 @@ fs.mkdirSync(resultDir, {recursive: true});
 
 const startedAt = timestamp();
 const evidence = readEvidence(evidencePath);
+const dedicatedInstallEvidenceResult = readDedicatedInstallEvidence(dedicatedInstallEvidencePath);
 const finishedAt = timestamp();
+const topLevelInstallEvidence = installEvidenceFrom(evidence);
+const rawScenarioInputs = byScenarioId(evidence.scenario_results);
+const scenarioInputInstallEvidence = installEvidenceFromScenarioInputs(rawScenarioInputs);
+const promotionInstallEvidence = dedicatedInstallEvidenceResult.installEvidence
+  || topLevelInstallEvidence
+  || null;
 const artifactVersions = normalizeArtifactMap(mergeMaps(
   artifactVersionsFromEnv(),
   evidence.artifact_versions,
@@ -2504,17 +2969,23 @@ const artifactSourceVerification = normalizeArtifactEvidenceMap(mergeMaps(
 
 const runnerBlocked = runnerBlockedIn(evidence);
 const runnerBlockedReason = runnerBlockedReasonFrom(evidence);
-const scenarioInputs = byScenarioId(evidence.scenario_results);
 let scenarioResults = runnerBlocked
   ? requiredScenarios.map((scenarioId) => (
     runnerBlockedScenarioResult(scenarioId, artifactVersions, runnerBlockedReason)
   ))
   : requiredScenarios.map((scenarioId) => (
-    normalizeScenarioResult(scenarioId, scenarioInputs.get(scenarioId), artifactVersions)
+    normalizeScenarioResult(scenarioId, rawScenarioInputs.get(scenarioId), artifactVersions, promotionInstallEvidence)
   ));
-const localProductSourceCheckoutsUsed = localProductSourceCheckoutsUsedIn(evidence, scenarioResults);
-const localProductSourceCheckoutsExplicitlyFalse = explicitFalse(evidence.local_product_source_checkouts_used)
-  || explicitFalse(evidence.localProductSourceCheckoutsUsed);
+const localProductSourceCheckoutsUsed = localProductSourceCheckoutsUsedIn(
+  evidence,
+  scenarioResults,
+  dedicatedInstallEvidenceResult.installEvidence,
+);
+const localProductSourceCheckoutsExplicitlyFalse = localProductSourceCheckoutsExplicitlyFalseIn(
+  evidence,
+  scenarioResults,
+  dedicatedInstallEvidenceResult.installEvidence,
+);
 const topLevelArtifactPolicyFailures = runnerBlocked
   ? []
   : artifactPolicyFailuresFor(
@@ -2524,6 +2995,29 @@ const topLevelArtifactPolicyFailures = runnerBlocked
     localProductSourceCheckoutsUsed,
     localProductSourceCheckoutsExplicitlyFalse,
   );
+const scenarioResultInstallEvidence = installEvidenceFromScenarioResults(scenarioResults);
+let artifactInstallEvidenceSelection = runnerBlocked
+  ? {evidence: null, failures: []}
+  : selectArtifactInstallEvidence([
+    {
+      evidence: dedicatedInstallEvidenceResult.installEvidence,
+      source: 'DW_NEXUS_ARTIFACT_INSTALL_EVIDENCE',
+      filePath: dedicatedInstallEvidencePath || null,
+      path: '$.artifact_install_evidence',
+    },
+    {
+      evidence: topLevelInstallEvidence,
+      source: 'DW_NEXUS_EVIDENCE_JSON.artifact_install_evidence',
+      path: '$.artifact_install_evidence',
+    },
+    {
+      evidence: scenarioInputInstallEvidence || scenarioResultInstallEvidence,
+      source: 'scenario_results.published_artifact_install_only.observed_outputs.artifact_install_evidence',
+      path: '$.scenario_results.published_artifact_install_only.observed_outputs.artifact_install_evidence',
+    },
+  ], artifactVersions, artifactSources);
+const artifactInstallEvidence = artifactInstallEvidenceSelection.evidence;
+const artifactInstallEvidencePolicyFailures = artifactInstallEvidenceSelection.failures;
 if (!runnerBlocked) {
   scenarioResults = withSyntheticInstallScenarioEvidence(
     scenarioResults,
@@ -2531,7 +3025,11 @@ if (!runnerBlocked) {
     artifactSources,
     artifactSourceVerification,
     localProductSourceCheckoutsUsed,
-    topLevelArtifactPolicyFailures.length === 0 && localProductSourceCheckoutsUsed === false,
+    artifactInstallEvidence,
+    topLevelArtifactPolicyFailures.length === 0
+      && artifactInstallEvidencePolicyFailures.length === 0
+      && artifactInstallEvidence !== null
+      && localProductSourceCheckoutsUsed === false,
   );
 }
 const installScenarioArtifactPolicyFailures = runnerBlocked
@@ -2543,6 +3041,7 @@ const installScenarioArtifactPolicyFailures = runnerBlocked
   );
 const artifactPolicyFailures = [
   ...topLevelArtifactPolicyFailures,
+  ...artifactInstallEvidencePolicyFailures,
   ...installScenarioArtifactPolicyFailures,
 ];
 if (!runnerBlocked) {
@@ -2552,6 +3051,7 @@ if (!runnerBlocked) {
       artifactVersions,
       [
         ...topLevelArtifactPolicyFailures,
+        ...artifactInstallEvidencePolicyFailures,
         ...(scenario.scenario_id === 'published_artifact_install_only'
           ? installScenarioArtifactPolicyFailures
           : []),
@@ -2565,6 +3065,9 @@ if (!runnerBlocked) {
 
 const findings = [];
 for (const finding of Array.isArray(evidence.findings) ? evidence.findings : []) {
+  findings.push(finding);
+}
+for (const finding of dedicatedInstallEvidenceResult.findings) {
   findings.push(finding);
 }
 for (const scenario of scenarioResults) {
@@ -2590,6 +3093,7 @@ const pins = {
   artifact_versions: artifactVersions,
   artifact_sources: artifactSources,
   artifact_source_verification: artifactSourceVerification,
+  artifact_install_evidence: artifactInstallEvidence,
   local_product_source_checkouts_used: localProductSourceCheckoutsUsed,
   evidence_path: evidencePath || null,
 };
@@ -2610,6 +3114,7 @@ const result = {
   resolved_artifact_versions: artifactVersions,
   artifact_sources: artifactSources,
   artifact_source_verification: artifactSourceVerification,
+  artifact_install_evidence: artifactInstallEvidence,
   artifact_policy_failures: artifactPolicyFailures,
   local_product_source_checkouts_used: localProductSourceCheckoutsUsed,
   topology: {
@@ -2633,6 +3138,7 @@ const record = {
   runnerBlocked,
   ...(runnerBlocked ? {blockedReason: runnerBlockedReason} : {}),
   artifactVersions: artifactVersions,
+  artifactInstallEvidence: artifactInstallEvidence,
   findings: findings.map((finding) => {
     if (finding && typeof finding.observed_behavior === 'string') {
       return finding.observed_behavior;
