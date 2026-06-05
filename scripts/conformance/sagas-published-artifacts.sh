@@ -1195,13 +1195,57 @@ function fail_activity_task(array $task, string $message, string $type = 'SagaAc
     ], 10, [409]);
 }
 
+function terminal_failure_throwable(\Throwable $throwable): \Throwable
+{
+    $cursor = $throwable;
+    $fallback = $throwable->getPrevious() instanceof \Throwable ? $throwable->getPrevious() : $throwable;
+
+    while ($cursor instanceof \Throwable) {
+        if ($cursor instanceof \Workflow\V2\Exceptions\RestoredWorkflowException) {
+            return $cursor;
+        }
+
+        $next = $cursor->getPrevious();
+        if (! $next instanceof \Throwable) {
+            break;
+        }
+        $cursor = $next;
+    }
+
+    return $fallback;
+}
+
+function terminal_exception_payload(\Throwable $throwable): array
+{
+    $visible = terminal_failure_throwable($throwable);
+
+    if ($visible instanceof \Workflow\V2\Exceptions\RestoredWorkflowException) {
+        $payload = $visible->failurePayload();
+
+        return [
+            'class' => is_string($payload['class'] ?? null) ? $payload['class'] : $visible::class,
+            'type' => is_string($payload['type'] ?? null) ? $payload['type'] : $visible::class,
+            'message' => $visible->getMessage(),
+        ];
+    }
+
+    return [
+        'class' => $visible::class,
+        'type' => $visible::class,
+        'message' => $visible->getMessage(),
+    ];
+}
+
 function fail_workflow_task(array $task, \Throwable $throwable): void
 {
+    $exception = terminal_exception_payload($throwable);
+
     complete_workflow_task($task, [[
         'type' => 'fail_workflow',
         'message' => $throwable->getMessage(),
-        'exception_type' => $throwable::class,
-        'exception' => ['class' => $throwable::class, 'message' => $throwable->getMessage()],
+        'exception_class' => is_string($exception['class'] ?? null) ? $exception['class'] : $throwable::class,
+        'exception_type' => is_string($exception['type'] ?? null) ? $exception['type'] : $throwable::class,
+        'exception' => $exception,
     ]]);
 }
 

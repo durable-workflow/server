@@ -1623,6 +1623,12 @@ class WorkerProtocolSuccessContractTest extends TestCase
                     'type' => 'fail_workflow',
                     'message' => 'compensation failed for unknown: activity failed',
                     'exception_class' => 'RuntimeException',
+                    'exception_type' => 'RuntimeException',
+                    'exception' => [
+                        'class' => 'RuntimeException',
+                        'type' => 'TypedCompensationError',
+                        'message' => 'cancel_flight typed compensation failure',
+                    ],
                 ],
             ],
         ], $this->workerProtocolHeaders());
@@ -1635,8 +1641,10 @@ class WorkerProtocolSuccessContractTest extends TestCase
         $state->assertOk()
             ->assertJsonPath('status', 'failed')
             ->assertJsonPath('is_terminal', true)
-            ->assertJsonPath('error', 'compensation failed for unknown: activity failed')
-            ->assertJsonPath('failure.message', 'compensation failed for unknown: activity failed')
+            ->assertJsonPath('error', 'cancel_flight typed compensation failure')
+            ->assertJsonPath('failure.message', 'cancel_flight typed compensation failure')
+            ->assertJsonPath('failure.exception.type', 'TypedCompensationError')
+            ->assertJsonPath('failure.exception.message', 'cancel_flight typed compensation failure')
             ->assertJsonPath('failure.activity_failures.0.activity_type', 'cancel_flight')
             ->assertJsonPath('failure.activity_failures.0.message', 'cancel_flight typed compensation failure')
             ->assertJsonPath('failure.failures.0.message', 'cancel_flight typed compensation failure')

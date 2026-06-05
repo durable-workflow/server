@@ -906,6 +906,7 @@ class WorkerController
             'commands.*.update_id' => ['nullable', 'string'],
             'commands.*.exception_class' => ['nullable', 'string'],
             'commands.*.exception_type' => ['nullable', 'string'],
+            'commands.*.exception' => ['nullable', 'array'],
             'commands.*.change_id' => ['nullable', 'string'],
             'commands.*.version' => ['nullable', 'integer'],
             'commands.*.min_supported' => ['nullable', 'integer'],
@@ -958,6 +959,7 @@ class WorkerController
             is_string($namespace) ? $namespace : null,
         );
 
+        $commands = $this->promoteWorkflowFailureExceptionPayload($commands);
         $commands = WorkflowCommandNormalizer::normalize($commands);
 
         /** @var WorkflowTaskBridge $bridge */
@@ -1152,6 +1154,11 @@ class WorkerController
                     'non_retryable is only supported for fail_workflow and fail_update commands.';
             }
 
+            if ($this->hasCommandValue($command, 'exception') && $type !== 'fail_workflow') {
+                $errors["commands.{$index}.exception"][] =
+                    'exception is only supported for fail_workflow commands.';
+            }
+
             if ($type === 'schedule_activity') {
                 $this->validateActivityTimeoutEnvelope($command, $index, $errors);
             }
@@ -1172,6 +1179,38 @@ class WorkerController
     private function hasCommandValue(array $command, string $field): bool
     {
         return array_key_exists($field, $command) && $command[$field] !== null;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $commands
+     * @return list<array<string, mixed>>
+     */
+    private function promoteWorkflowFailureExceptionPayload(array $commands): array
+    {
+        foreach ($commands as $index => $command) {
+            if (($command['type'] ?? null) !== 'fail_workflow') {
+                continue;
+            }
+
+            $exception = is_array($command['exception'] ?? null) ? $command['exception'] : null;
+            if ($exception === null) {
+                continue;
+            }
+
+            if (is_string($exception['message'] ?? null) && trim($exception['message']) !== '') {
+                $commands[$index]['message'] = trim($exception['message']);
+            }
+
+            if (is_string($exception['class'] ?? null) && trim($exception['class']) !== '') {
+                $commands[$index]['exception_class'] = trim($exception['class']);
+            }
+
+            if (is_string($exception['type'] ?? null) && trim($exception['type']) !== '') {
+                $commands[$index]['exception_type'] = trim($exception['type']);
+            }
+        }
+
+        return $commands;
     }
 
     /**

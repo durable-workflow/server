@@ -1152,10 +1152,30 @@ class WorkflowController
                 'exception_type' => $this->nonEmptyString($failure['exception_type'] ?? null),
                 'exception_class' => $this->nonEmptyString($failure['exception_class'] ?? null),
                 'message' => $this->nonEmptyString($failure['message'] ?? null),
+                'exception_payload' => $this->compactExceptionPayload($failure['exception_payload'] ?? null),
                 'event_sequence' => $failure['event_sequence'] ?? null,
                 'history_authority' => $this->nonEmptyString($failure['history_authority'] ?? null),
             ]);
         }, $failures));
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function compactExceptionPayload(mixed $exception): ?array
+    {
+        if (! is_array($exception)) {
+            return null;
+        }
+
+        $payload = $this->withoutNullOrEmptyArrays([
+            'type' => $this->nonEmptyString($exception['type'] ?? null),
+            'class' => $this->nonEmptyString($exception['__constructor'] ?? null)
+                ?? $this->nonEmptyString($exception['class'] ?? null),
+            'message' => $this->nonEmptyString($exception['message'] ?? null),
+        ]);
+
+        return $payload === [] ? null : $payload;
     }
 
     /**
@@ -1220,12 +1240,13 @@ class WorkflowController
             : [];
 
         $payload = $this->withoutNullOrEmptyArrays([
-            'type' => $this->nonEmptyString($failure['exception_type'] ?? null)
-                ?? $this->nonEmptyString($exception['type'] ?? null),
-            'class' => $this->nonEmptyString($failure['exception_class'] ?? null)
-                ?? $this->nonEmptyString($exception['__constructor'] ?? null),
-            'message' => $this->nonEmptyString($failure['message'] ?? null)
-                ?? $this->nonEmptyString($exception['message'] ?? null),
+            'type' => $this->nonEmptyString($exception['type'] ?? null)
+                ?? $this->nonEmptyString($failure['exception_type'] ?? null),
+            'class' => $this->nonEmptyString($exception['class'] ?? null)
+                ?? $this->nonEmptyString($exception['__constructor'] ?? null)
+                ?? $this->nonEmptyString($failure['exception_class'] ?? null),
+            'message' => $this->nonEmptyString($exception['message'] ?? null)
+                ?? $this->nonEmptyString($failure['message'] ?? null),
         ]);
 
         return $payload === [] ? null : $payload;
