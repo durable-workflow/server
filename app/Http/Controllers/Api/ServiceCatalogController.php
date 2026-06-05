@@ -800,7 +800,15 @@ class ServiceCatalogController
 
         $status = ($result['accepted'] ?? false) === true ? 200 : 409;
 
-        return ControlPlaneProtocol::json($result, $status);
+        $serviceCall = $admission->call->refresh();
+
+        return ControlPlaneProtocol::json(
+            array_replace(
+                $this->serializeServiceCall($serviceCall, $endpoint, $service, $operation),
+                $result,
+            ),
+            $status,
+        );
     }
 
     public function serviceCallCancel(
@@ -852,7 +860,15 @@ class ServiceCatalogController
 
         $status = ($result['accepted'] ?? false) === true ? 200 : 409;
 
-        return ControlPlaneProtocol::json($result, $status);
+        $serviceCall->refresh();
+
+        return ControlPlaneProtocol::json(
+            array_replace(
+                $this->serializeServiceCall($serviceCall, $endpoint, $service, $operation),
+                $result,
+            ),
+            $status,
+        );
     }
 
     public function serviceCallShow(

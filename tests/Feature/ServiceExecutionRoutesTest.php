@@ -122,9 +122,14 @@ class ServiceExecutionRoutesTest extends TestCase
                 'target_workflow_run_id' => 'run-target-1',
             ]);
 
+        $recordedCall = WorkflowServiceCall::query()->firstOrFail();
+
         $response->assertOk()
             ->assertJsonPath('accepted', true)
+            ->assertJsonPath('id', $recordedCall->id)
             ->assertJsonPath('service_call_id', '01JEXECUTECALL000000000000')
+            ->assertJsonPath('caller_namespace', 'default')
+            ->assertJsonPath('outcome', 'accepted')
             ->assertJsonPath('linked_workflow_instance_id', 'invoice-1')
             ->assertJsonPath('resolved_binding_kind', 'workflow_run');
 
@@ -902,9 +907,11 @@ class ServiceExecutionRoutesTest extends TestCase
             'resolved_target_reference' => 'workflows.invoice.create',
         ]);
 
-        $stub = new class implements ServiceControlPlane
+        $stub = new class($serviceCall) implements ServiceControlPlane
         {
             public ?array $captured = null;
+
+            public function __construct(private readonly WorkflowServiceCall $serviceCall) {}
 
             public function execute(string $endpointName, string $serviceName, string $operationName, array $options = []): array
             {
@@ -922,6 +929,17 @@ class ServiceExecutionRoutesTest extends TestCase
                     'service_call_id' => $serviceCallId,
                     'options' => $options,
                 ];
+
+                $this->serviceCall->forceFill([
+                    'status' => 'cancelled',
+                    'outcome' => 'cancelled',
+                    'outcome_category' => 'handler',
+                    'outcome_reason' => 'cancelled_by_request',
+                    'outcome_metadata' => [
+                        'failure_reason' => 'cancellation',
+                    ],
+                    'cancelled_at' => now(),
+                ])->save();
 
                 return [
                     'accepted' => true,
@@ -950,7 +968,9 @@ class ServiceExecutionRoutesTest extends TestCase
         $response->assertOk()
             ->assertJsonPath('accepted', true)
             ->assertJsonPath('service_call_id', $serviceCall->id)
-            ->assertJsonPath('status', 'cancelled');
+            ->assertJsonPath('status', 'cancelled')
+            ->assertJsonPath('outcome_metadata.failure_reason', 'cancellation')
+            ->assertJsonPath('outcome_reason', 'cancelled_by_request');
 
         $this->assertNotNull($stub->captured);
         $this->assertSame($serviceCall->id, $stub->captured['service_call_id']);
