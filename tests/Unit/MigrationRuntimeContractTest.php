@@ -96,6 +96,32 @@ class MigrationRuntimeContractTest extends TestCase
             'command_timings',
             $manifest['scenario_requirements']['documented_migration_steps_execute']['required_fields'],
         );
+        $this->assertContains(
+            'public_operator_signal',
+            $manifest['scenario_requirements']['rollback_contract_verified']['required_fields'],
+        );
+        $this->assertContains(
+            'request_response_evidence',
+            $manifest['scenario_requirements']['version_skew_refusal']['required_fields'],
+        );
+        $this->assertContains(
+            'cli_skew_observations',
+            $manifest['scenario_requirements']['version_skew_refusal']['required_fields'],
+        );
+        $this->assertContains(
+            'worker_skew_observations',
+            $manifest['scenario_requirements']['version_skew_refusal']['required_fields'],
+        );
+        $this->assertNotEmpty(array_filter(
+            $manifest['required_matrix']['skew_cells'],
+            static fn (array $cell): bool => ($cell['server'] ?? null) === 'server-v2'
+                && ($cell['client'] ?? null) === 'cli-v1',
+        ));
+        $this->assertNotEmpty(array_filter(
+            $manifest['required_matrix']['skew_cells'],
+            static fn (array $cell): bool => ($cell['server'] ?? null) === 'server-v1'
+                && ($cell['worker'] ?? null) === 'workflow-php-v2',
+        ));
     }
 
     public function test_manifest_publishes_host_runner_handoff_and_result_gate(): void
@@ -185,6 +211,22 @@ class MigrationRuntimeContractTest extends TestCase
         $this->assertContains(
             'migration_guide_command_timings_are_recorded',
             $manifest['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertContains(
+            'rollback_public_operator_signal_recorded',
+            $manifest['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertContains(
+            'cli_and_worker_skew_request_response_evidence_recorded',
+            $manifest['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertContains(
+            'rollback_public_operator_signal_is_recorded',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'cli_and_worker_skew_request_response_evidence_is_recorded',
+            $resultGate['pass_requires'],
         );
         $this->assertSame(
             'scripts/conformance/migration-published-artifacts.sh',
@@ -456,6 +498,49 @@ class MigrationRuntimeContractTest extends TestCase
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertContains('commands_executed', $missingFields);
         $this->assertContains('command_timings', $missingFields);
+    }
+
+    public function test_result_gate_requires_explicit_rollback_and_skew_observations_before_passing(): void
+    {
+        $result = $this->completeMigrationResult();
+        $result['scenario_results']['rollback_contract_verified']['observed_outputs'] = [
+            'rollback_steps' => ['php artisan queue:restart'],
+            'rollback_supported_state' => ['documented_behavior_verified' => true],
+            'postrollback_visibility' => ['status' => 'checked'],
+            'postrollback_execution_result' => ['status' => 'checked'],
+        ];
+        $result['scenario_results']['version_skew_refusal']['observed_outputs'] = [
+            'skew_matrix' => [
+                'cli-v1-to-server-v2' => ['server' => 'server-v2', 'client' => 'cli-v1'],
+            ],
+            'refusal_errors' => 'refused loudly',
+            'operator_visible_reason' => 'version mismatch',
+            'no_partial_mutation_evidence' => true,
+        ];
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+
+        $rollbackMissingFields = $this->missingScenarioRequiredFields($evaluation, 'rollback_contract_verified');
+        $this->assertContains('public_operator_signal', $rollbackMissingFields);
+        $this->assertContains('rollback_supported_state.supported_refused_or_irreversible', $rollbackMissingFields);
+
+        $skewMissingFields = $this->missingScenarioRequiredFields($evaluation, 'version_skew_refusal');
+        foreach ([
+            'cli_skew_observations',
+            'worker_skew_observations',
+            'request_response_evidence',
+            'no_partial_mutation_evidence',
+            'cli_skew_observations.cli-v1-to-server-v2',
+            'cli_skew_observations.cli-v2-to-server-v1',
+            'worker_skew_observations.worker-v1-to-server-v2',
+            'worker_skew_observations.worker-v2-to-server-v1',
+            'request_response_evidence.cli-v1-to-server-v2',
+            'request_response_evidence.worker-v2-to-server-v1',
+        ] as $field) {
+            $this->assertContains($field, $skewMissingFields);
+        }
     }
 
     public function test_result_gate_rejects_not_covered_placeholder_required_evidence(): void
@@ -831,6 +916,82 @@ class MigrationRuntimeContractTest extends TestCase
                 'workflow_storage_tables_created' => true,
             ],
         ];
+        $scenarioResults['rollback_contract_verified']['observed_outputs'] = [
+            'rollback_steps' => [
+                'php artisan down',
+                'mysql app < backup-before-v2.sql',
+                'composer require laravel-workflow/laravel-workflow:1.7.4 laravel-workflow/waterline:1.4.2',
+                'php artisan queue:restart',
+            ],
+            'rollback_supported_state' => [
+                'classification' => 'refused',
+                'state_after_v2_writes' => 'irreversible without restoring the pre-upgrade database backup',
+            ],
+            'public_operator_signal' => [
+                'source' => 'https://durable-workflow.github.io/docs/2.0/migration/',
+                'message' => 'Rollback after v2 writes is refused unless the operator restores the pre-upgrade database backup first.',
+            ],
+            'postrollback_visibility' => [
+                'workflow_describe_exit_code' => 2,
+                'stderr' => 'Refusing rollback without a pre-upgrade database restore.',
+            ],
+            'postrollback_execution_result' => [
+                'status' => 'refused',
+                'exit_code' => 2,
+                'operator_visible_reason' => 'pre-upgrade backup restore required before v1 workers are restarted',
+            ],
+        ];
+        $scenarioResults['version_skew_refusal']['observed_outputs'] = [
+            'skew_matrix' => [
+                'cli-v1-to-server-v2' => ['server' => 'server-v2', 'client' => 'cli-v1'],
+                'cli-v2-to-server-v1' => ['server' => 'server-v1', 'client' => 'cli-v2'],
+                'worker-v1-to-server-v2' => ['server' => 'server-v2', 'worker' => 'workflow-php-v1'],
+                'worker-v2-to-server-v1' => ['server' => 'server-v1', 'worker' => 'workflow-php-v2'],
+            ],
+            'cli_skew_observations' => [
+                'cli-v1-to-server-v2' => [
+                    'command' => 'dw workflow:list --server http://server-v2',
+                    'exit_code' => 2,
+                    'stderr' => 'Unsupported server generation for this CLI.',
+                ],
+                'cli-v2-to-server-v1' => [
+                    'command' => 'dw workflow:list --server http://server-v1',
+                    'exit_code' => 2,
+                    'stderr' => 'Server API is older than the CLI compatibility window.',
+                ],
+            ],
+            'worker_skew_observations' => [
+                'worker-v1-to-server-v2' => [
+                    'request' => 'POST /api/worker/register',
+                    'status' => 409,
+                    'body' => ['error' => 'worker_version_unsupported'],
+                ],
+                'worker-v2-to-server-v1' => [
+                    'request' => 'POST /api/worker/register',
+                    'status' => 409,
+                    'body' => ['error' => 'server_version_unsupported'],
+                ],
+            ],
+            'refusal_errors' => [
+                'worker_version_unsupported',
+                'server_version_unsupported',
+                'cli_server_generation_mismatch',
+            ],
+            'operator_visible_reason' => [
+                'message' => 'Upgrade the CLI or worker to the server generation before submitting workflow operations.',
+            ],
+            'request_response_evidence' => [
+                'cli-v1-to-server-v2' => ['request' => 'dw workflow:list', 'response' => ['exit_code' => 2]],
+                'cli-v2-to-server-v1' => ['request' => 'dw workflow:list', 'response' => ['exit_code' => 2]],
+                'worker-v1-to-server-v2' => ['request' => 'POST /api/worker/register', 'response' => ['status' => 409]],
+                'worker-v2-to-server-v1' => ['request' => 'POST /api/worker/register', 'response' => ['status' => 409]],
+            ],
+            'no_partial_mutation_evidence' => [
+                'workflow_count_before' => 3,
+                'workflow_count_after' => 3,
+                'worker_registration_count_after' => 0,
+            ],
+        ];
 
         return [
             'schema' => MigrationRuntimeContract::RESULT_SCHEMA,
@@ -858,8 +1019,8 @@ class MigrationRuntimeContractTest extends TestCase
             'worker_registration_observations' => ['projection_preserved' => true],
             'cli_observations' => ['preupgrade_state_readable' => true],
             'waterline_observations' => ['preupgrade_state_visible' => true],
-            'rollback_observations' => ['documented_behavior_verified' => true],
-            'version_skew_observations' => ['refused_loudly' => true],
+            'rollback_observations' => $scenarioResults['rollback_contract_verified']['observed_outputs'],
+            'version_skew_observations' => $scenarioResults['version_skew_refusal']['observed_outputs'],
             'storage_connection_smoke' => ['passed' => true],
             'scenario_results' => $scenarioResults,
         ];

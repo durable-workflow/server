@@ -316,6 +316,11 @@ category emits a warning and does not block.
   completed-history replay, in-flight progress, mid-activity retry state,
   schedule cadence, worker registration projection, CLI and Waterline
   visibility, new v2 starts, rollback behavior, and version-skew refusal.
+  Rollback evidence must classify the documented post-migration behavior as
+  supported, refused, or irreversible and include the exact public
+  operator-visible signal. Version-skew evidence must include old/new CLI and
+  worker request/response captures, operator diagnostics, and no-partial-state
+  mutation observations for refused cells.
   Its result gate records the storage-connection smoke as useful context
   but keeps that smoke-only result non-passing until every required upgrade
   scenario has evidence or a linked root-cause finding, and until every

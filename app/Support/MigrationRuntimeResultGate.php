@@ -76,6 +76,8 @@ final class MigrationRuntimeResultGate
                 'cli_and_waterline_operator_surfaces_cover_preupgrade_state',
                 'new_v2_starts_are_verified_after_upgrade',
                 'rollback_contract_or_documented_no_rollback_is_verified',
+                'rollback_public_operator_signal_is_recorded',
+                'cli_and_worker_skew_request_response_evidence_is_recorded',
                 'version_skew_refuses_loudly_without_partial_mutation',
                 'storage_connection_smoke_is_recorded_but_not_counted_as_complete',
                 'each_pass_scenario_has_observed_outputs',
@@ -349,8 +351,66 @@ final class MigrationRuntimeResultGate
                     'command_timings',
                 ],
             ),
+            'rollback_contract_verified' => [
+                ...self::missingArrayEvidenceFields(
+                    $scenarioResult,
+                    $observedOutputs,
+                    [
+                        'rollback_steps',
+                    ],
+                ),
+                ...self::missingRollbackClassificationFields($scenarioResult, $observedOutputs),
+            ],
+            'version_skew_refusal' => [
+                ...self::missingArrayEvidenceFields(
+                    $scenarioResult,
+                    $observedOutputs,
+                    [
+                        'skew_matrix',
+                        'refusal_errors',
+                        'request_response_evidence',
+                        'no_partial_mutation_evidence',
+                    ],
+                ),
+                ...self::missingEvidenceItemsForField($scenarioResult, $observedOutputs, 'cli_skew_observations', [
+                    'cli-v1-to-server-v2',
+                    'cli-v2-to-server-v1',
+                ]),
+                ...self::missingEvidenceItemsForField($scenarioResult, $observedOutputs, 'worker_skew_observations', [
+                    'worker-v1-to-server-v2',
+                    'worker-v2-to-server-v1',
+                ]),
+                ...self::missingEvidenceItemsForField($scenarioResult, $observedOutputs, 'request_response_evidence', [
+                    'cli-v1-to-server-v2',
+                    'cli-v2-to-server-v1',
+                    'worker-v1-to-server-v2',
+                    'worker-v2-to-server-v1',
+                ]),
+            ],
             default => [],
         };
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     * @param array<string, mixed> $observedOutputs
+     *
+     * @return list<string>
+     */
+    private static function missingRollbackClassificationFields(
+        array $scenarioResult,
+        array $observedOutputs,
+    ): array {
+        $value = self::fieldValue($observedOutputs, 'rollback_supported_state');
+        if (self::isEmptyEvidence($value)) {
+            $value = self::fieldValue($scenarioResult, 'rollback_supported_state');
+        }
+
+        if (self::hasEvidenceToken($value, ['supported', 'refused', 'irreversible', 'unsupported'])) {
+            return [];
+        }
+
+        return ['rollback_supported_state.supported_refused_or_irreversible'];
     }
 
     /**
@@ -1280,6 +1340,43 @@ final class MigrationRuntimeResultGate
             }
 
             if (self::hasEvidenceItem($entry, $item)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param list<string> $tokens
+     */
+    private static function hasEvidenceToken(mixed $value, array $tokens): bool
+    {
+        if (is_string($value) || is_numeric($value)) {
+            $text = (string) $value;
+            foreach ($tokens as $token) {
+                if ($token !== '' && preg_match('/\b'.preg_quote($token, '/').'\b/i', $text) === 1) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        if (! is_array($value) || self::isEmptyEvidence($value)) {
+            return false;
+        }
+
+        foreach ($value as $key => $entry) {
+            if (
+                is_string($key)
+                && ! self::isEmptyEvidence($entry)
+                && self::hasEvidenceToken($key, $tokens)
+            ) {
+                return true;
+            }
+
+            if (self::hasEvidenceToken($entry, $tokens)) {
                 return true;
             }
         }

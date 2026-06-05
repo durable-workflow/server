@@ -785,9 +785,45 @@ function scenarioSpecificMissingRequiredFields(scenarioId, scenario, observedOut
     case 'documented_migration_steps_execute':
       return ['commands_executed', 'exit_codes', 'command_timings']
         .filter((field) => !hasNonEmptyArrayField(observedOutputs, field) && !hasNonEmptyArrayField(scenario, field));
+    case 'rollback_contract_verified':
+      return [
+        ...['rollback_steps']
+          .filter((field) => !hasNonEmptyArrayField(observedOutputs, field) && !hasNonEmptyArrayField(scenario, field)),
+        ...missingRollbackClassificationFields(scenario, observedOutputs),
+      ];
+    case 'version_skew_refusal':
+      return [
+        ...['skew_matrix', 'refusal_errors', 'request_response_evidence', 'no_partial_mutation_evidence']
+          .filter((field) => !hasNonEmptyArrayField(observedOutputs, field) && !hasNonEmptyArrayField(scenario, field)),
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'cli_skew_observations', [
+          'cli-v1-to-server-v2',
+          'cli-v2-to-server-v1',
+        ]),
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'worker_skew_observations', [
+          'worker-v1-to-server-v2',
+          'worker-v2-to-server-v1',
+        ]),
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'request_response_evidence', [
+          'cli-v1-to-server-v2',
+          'cli-v2-to-server-v1',
+          'worker-v1-to-server-v2',
+          'worker-v2-to-server-v1',
+        ]),
+      ];
     default:
       return [];
   }
+}
+
+function missingRollbackClassificationFields(scenario, observedOutputs) {
+  let value = fieldValue(observedOutputs, 'rollback_supported_state');
+  if (isEmptyEvidence(value)) {
+    value = fieldValue(scenario, 'rollback_supported_state');
+  }
+
+  return evidenceContainsAnyToken(value, ['supported', 'refused', 'irreversible', 'unsupported'])
+    ? []
+    : ['rollback_supported_state.supported_refused_or_irreversible'];
 }
 
 function missingEvidenceItemsForField(scenario, observedOutputs, field, items) {
@@ -2594,6 +2630,37 @@ function evidenceContainsItem(value, item) {
   }
 
   return false;
+}
+
+function evidenceContainsAnyToken(value, tokens) {
+  if (typeof value === 'string' || typeof value === 'number') {
+    const text = String(value);
+    return tokens.some((token) => {
+      if (stringValue(token) === '') {
+        return false;
+      }
+      return new RegExp(`\\b${escapeRegex(token)}\\b`, 'i').test(text);
+    });
+  }
+
+  if (!value || typeof value !== 'object' || isEmptyEvidence(value)) {
+    return false;
+  }
+
+  for (const [key, entry] of Object.entries(value)) {
+    if (!isEmptyEvidence(entry) && evidenceContainsAnyToken(key, tokens)) {
+      return true;
+    }
+    if (evidenceContainsAnyToken(entry, tokens)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function escapeRegex(value) {
+  return stringValue(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function fieldAliases(field) {

@@ -194,6 +194,16 @@ final class MigrationRuntimeContract
                 'skew_cells' => [
                     [
                         'server' => 'server-v1',
+                        'client' => 'cli-v2',
+                        'scenario' => 'version_skew_refusal',
+                    ],
+                    [
+                        'server' => 'server-v2',
+                        'client' => 'cli-v1',
+                        'scenario' => 'version_skew_refusal',
+                    ],
+                    [
+                        'server' => 'server-v1',
                         'worker' => 'workflow-php-v2',
                         'scenario' => 'version_skew_refusal',
                     ],
@@ -244,6 +254,8 @@ final class MigrationRuntimeContract
                     'cli_and_waterline_preupgrade_state_visibility_reported',
                     'new_v2_workflow_start_reported',
                     'rollback_or_documented_no_rollback_reported',
+                    'rollback_public_operator_signal_recorded',
+                    'cli_and_worker_skew_request_response_evidence_recorded',
                     'version_skew_refusal_reported',
                     'storage_connection_smoke_is_recorded_but_not_counted_as_complete',
                     'run_timestamps_outcome_and_findings_are_recorded',
@@ -484,6 +496,7 @@ final class MigrationRuntimeContract
                 'required_fields' => [
                     'rollback_steps',
                     'rollback_supported_state',
+                    'public_operator_signal',
                     'postrollback_visibility',
                     'postrollback_execution_result',
                 ],
@@ -491,8 +504,11 @@ final class MigrationRuntimeContract
             'version_skew_refusal' => [
                 'required_fields' => [
                     'skew_matrix',
+                    'cli_skew_observations',
+                    'worker_skew_observations',
                     'refusal_errors',
                     'operator_visible_reason',
+                    'request_response_evidence',
                     'no_partial_mutation_evidence',
                 ],
             ],
