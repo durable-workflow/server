@@ -35,8 +35,10 @@ Environment overrides:
   DW_MIGRATION_RESOLVE_PUBLIC_ARTIFACTS
                                       Resolve missing v1 artifact pins from public package registries. Defaults to 1.
   DW_MIGRATION_PUBLIC_ARTIFACTS_JSON Optional JSON fixture/cache for public artifact resolution.
-  DW_SERVER_V1_VERSION               Exact latest supported v1 server artifact version.
-  DW_SERVER_V1_ARTIFACT_SOURCE       Published source for the v1 server artifact.
+  DW_SERVER_V1_VERSION               Exact latest supported v1 server runtime version.
+                                      When no standalone v1 image is published,
+                                      this is the embedded v1 runtime package.
+  DW_SERVER_V1_ARTIFACT_SOURCE       Published source for the v1 server runtime.
   DW_SERVER_VERSION                  Exact target v2 server artifact version.
   DW_SERVER_ARTIFACT_SOURCE          Published source for the v2 server artifact.
   DW_CLI_V1_VERSION                  Exact latest supported v1 CLI artifact version.

@@ -841,11 +841,11 @@ class MigrationRuntimeContractTest extends TestCase
     private function artifactVersions(): array
     {
         return [
-            'server-v1' => '1.3.9',
+            'server-v1' => '1.0.76',
             'server-v2' => '0.2.203',
             'cli-v1' => '0.1.44',
             'cli-v2' => '0.1.70',
-            'workflow-php-v1' => '1.7.4',
+            'workflow-php-v1' => '1.0.76',
             'workflow-php-v2' => '2.0.0-alpha.185',
             'sdk-python' => '0.4.83',
             'waterline-v1' => '1.4.2',
@@ -860,7 +860,7 @@ class MigrationRuntimeContractTest extends TestCase
     private function artifactSources(): array
     {
         return [
-            'server-v1' => 'published_docker_image',
+            'server-v1' => 'packagist:laravel-workflow/laravel-workflow:1.0.76:embedded-v1-server-runtime',
             'server-v2' => 'published_docker_image',
             'cli-v1' => 'official_v1_install_script',
             'cli-v2' => 'official_install_script',

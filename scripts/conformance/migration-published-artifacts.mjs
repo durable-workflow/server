@@ -2133,6 +2133,8 @@ async function resolvePublicArtifactDefaults() {
     }
   }
 
+  pinV1ServerBaselineFromWorkflowRuntime(resolution);
+
   if (stringValue(resolution.artifact_versions['cli-v1']) === '') {
     try {
       const cliV1 = await latestGithubReleaseVersion('durable-workflow/cli', /^v?0\.1\./, ['install.sh']);
@@ -2208,6 +2210,41 @@ async function resolvePublicArtifactDefaults() {
   }
 
   return resolution;
+}
+
+function pinV1ServerBaselineFromWorkflowRuntime(resolution) {
+  if (stringValue(resolution.artifact_versions['server-v1']) !== '') {
+    return;
+  }
+
+  const workflowV1 = stringValue(resolution.artifact_versions['workflow-php-v1']);
+  if (workflowV1 === '') {
+    return;
+  }
+
+  const workflowSource = stringValue(resolution.artifact_sources['workflow-php-v1'])
+    || `packagist:laravel-workflow/laravel-workflow:${workflowV1}`;
+  const standaloneServerImage = objectValue(resolution.observations['server-v1']);
+
+  resolution.artifact_versions['server-v1'] = workflowV1;
+  resolution.artifact_sources['server-v1'] =
+    `${workflowSource}:embedded-v1-server-runtime`;
+  resolution.observations['server-v1'] = {
+    status: 'resolved',
+    channel: 'packagist',
+    package: 'laravel-workflow/laravel-workflow',
+    version: workflowV1,
+    runtime: 'embedded-v1-server-runtime',
+    baseline_source: 'workflow-php-v1',
+    standalone_server_image: Object.keys(standaloneServerImage).length === 0
+      ? {
+          status: 'not_part_of_public_v1_contract',
+          channel: 'docker_hub',
+          repository: 'durableworkflow/server',
+          expected_tag_family: '1.x',
+        }
+      : standaloneServerImage,
+  };
 }
 
 function mergePublicArtifactResolution(target, source) {

@@ -60,7 +60,7 @@ final class MigrationRuntimeContract
                     '{{ version }}',
                 ],
                 'install_channels' => [
-                    'server-v1' => 'latest supported v1 server image or release artifact pinned by exact tag or digest',
+                    'server-v1' => 'latest supported v1 server runtime pinned from a public channel; use the standalone durableworkflow/server v1 image when published, otherwise use the embedded Laravel Workflow v1 runtime package release',
                     'server-v2' => 'Docker image durableworkflow/server:<exact patch version or digest with DW_SERVER_VERSION>',
                     'cli-v1' => 'latest supported v1 dw CLI release asset or install path after downloadability check',
                     'cli-v2' => 'official dw GitHub release install.sh asset for the target v2 train after downloadability check',

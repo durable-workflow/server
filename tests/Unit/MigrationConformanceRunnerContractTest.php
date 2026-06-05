@@ -54,6 +54,8 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'latestDockerHubTag',
             'latestGithubReleaseVersion',
             'latestGithubBranchCommit',
+            'pinV1ServerBaselineFromWorkflowRuntime',
+            'embedded-v1-server-runtime',
             'maybeRunPublicGuideAudit',
             'public_migration_guide_audit',
             'SCENARIO_FINDING_POLICIES',
@@ -314,7 +316,7 @@ class MigrationConformanceRunnerContractTest extends TestCase
         ));
     }
 
-    public function test_runner_resolves_latest_v1_workflow_artifact_from_public_metadata(): void
+    public function test_runner_resolves_latest_v1_server_baseline_from_supported_v1_runtime(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
         if ($nodeBinary === '') {
@@ -424,8 +426,24 @@ class MigrationConformanceRunnerContractTest extends TestCase
                 $result['artifact_sources']['workflow-php-v1'],
             );
             $this->assertSame(
-                'missing',
+                '1.0.76',
+                $result['published_artifact_versions']['server-v1'],
+            );
+            $this->assertSame(
+                'packagist:laravel-workflow/laravel-workflow:1.0.76:embedded-v1-server-runtime',
+                $result['artifact_sources']['server-v1'],
+            );
+            $this->assertSame(
+                'resolved',
                 $result['public_artifact_resolution']['observations']['server-v1']['status'],
+            );
+            $this->assertSame(
+                'embedded-v1-server-runtime',
+                $result['public_artifact_resolution']['observations']['server-v1']['runtime'],
+            );
+            $this->assertSame(
+                'missing',
+                $result['public_artifact_resolution']['observations']['server-v1']['standalone_server_image']['status'],
             );
             $this->assertSame(
                 $result['public_artifact_resolution'],
@@ -449,10 +467,10 @@ class MigrationConformanceRunnerContractTest extends TestCase
                     "public metadata should satisfy the {$artifact} install channel",
                 );
             }
-            $this->assertContains(
+            $this->assertNotContains(
                 'server-v1',
                 array_column($result['artifact_prerequisite_failures'], 'artifact'),
-                'a missing published v1 server artifact remains a focused install-channel failure',
+                'the supported embedded v1 runtime should satisfy the v1 server baseline when no standalone image is published',
             );
         } finally {
             $this->removeTree($tempRoot);
@@ -1639,11 +1657,11 @@ COMMAND;
     private function artifactVersions(): array
     {
         return [
-            'server-v1' => '1.3.9',
+            'server-v1' => '1.0.76',
             'server-v2' => '0.2.203',
             'cli-v1' => '0.1.44',
             'cli-v2' => '0.1.70',
-            'workflow-php-v1' => '1.7.4',
+            'workflow-php-v1' => '1.0.76',
             'workflow-php-v2' => '2.0.0-alpha.185',
             'sdk-python' => '0.4.83',
             'waterline-v1' => '1.4.2',
@@ -1658,7 +1676,7 @@ COMMAND;
     private function artifactSources(): array
     {
         return [
-            'server-v1' => 'published_docker_image',
+            'server-v1' => 'packagist:laravel-workflow/laravel-workflow:1.0.76:embedded-v1-server-runtime',
             'server-v2' => 'published_docker_image',
             'cli-v1' => 'official_v1_install_script',
             'cli-v2' => 'official_install_script',
