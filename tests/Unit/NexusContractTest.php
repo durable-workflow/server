@@ -334,6 +334,14 @@ class NexusContractTest extends TestCase
         $this->assertStringContainsString('runner_blocked: runnerBlocked', $contents);
         $this->assertStringContainsString('runnerBlocked,', $contents);
         $this->assertStringContainsString('conformance_runner_coverage_gap', $contents);
+        $this->assertStringContainsString('DW_NEXUS_SKIP_SHARED_SERVICE_PROBE', $contents);
+        $this->assertStringContainsString('setupSharedService', $contents);
+        $this->assertStringContainsString('invokeSharedService', $contents);
+        $this->assertStringContainsString('caller_history_recorded: true', $contents);
+        $this->assertStringContainsString('verifyGithubReleaseAsset', $contents);
+        $this->assertStringContainsString('verifyPackagistPackage', $contents);
+        $this->assertStringContainsString('verifyPypiPackage', $contents);
+        $this->assertStringNotContainsString('version_pin_recorded', $contents);
     }
 
     public function test_host_runner_allows_pass_when_all_artifacts_are_pinned_and_source_free(): void
@@ -919,6 +927,25 @@ class NexusContractTest extends TestCase
         );
     }
 
+    public function test_host_runner_without_server_image_keeps_missing_cells_uncovered(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $result = $this->runNexusWithoutEvidence('dw-nexus-no-image-');
+        $tenantScenario = $this->scenarioResult($result, 'tenant_a_calls_shared_service');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertSame('not_covered', $tenantScenario['status']);
+        $this->assertContains(
+            'conformance_runner_coverage_gap',
+            array_column($tenantScenario['linked_findings'], 'finding_type'),
+        );
+    }
+
     public function test_host_runner_result_record_routes_every_non_pass_status_to_focused_findings(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -1436,6 +1463,51 @@ class NexusContractTest extends TestCase
                 [
                     'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
                     'DW_NEXUS_EVIDENCE_JSON' => $evidencePath,
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, ($stdout === false ? '' : $stdout).($stderr === false ? '' : $stderr));
+
+            $resultPath = $resultDir.'/nexus-conformance-result.json';
+            $this->assertFileExists($resultPath);
+
+            return json_decode((string) file_get_contents($resultPath), true, 512, JSON_THROW_ON_ERROR);
+        } finally {
+            $this->removeTree($tempRoot);
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function runNexusWithoutEvidence(string $tempPrefix): array
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $tempRoot = sys_get_temp_dir().'/'.$tempPrefix.bin2hex(random_bytes(6));
+        $resultDir = $tempRoot.'/result';
+
+        try {
+            mkdir($resultDir, 0777, true);
+
+            $process = proc_open(
+                [$repoRoot.'/scripts/conformance/nexus-published-artifacts.sh', '--result-dir', $resultDir],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SERVER_IMAGE' => '',
+                    'DW_SERVER_VERSION' => '',
                 ],
             );
 

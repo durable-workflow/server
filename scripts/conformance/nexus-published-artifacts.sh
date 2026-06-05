@@ -19,6 +19,13 @@ The runner writes these files to the result directory:
 Environment overrides:
   DW_NEXUS_RESULT_DIR              Result directory. Defaults to a temp dir.
   DW_NEXUS_EVIDENCE_JSON           Optional host evidence JSON with scenario_results.
+  DW_NEXUS_SKIP_SHARED_SERVICE_PROBE=1
+                                    Skip the built-in shared-service probe when
+                                    no host evidence JSON is supplied.
+  DW_NEXUS_KEEP_RUN_ROOT=1          Keep the probe scratch directory.
+  DW_NEXUS_SERVER_PORT              Host port for the published server probe.
+  DW_NEXUS_SKIP_DOCKER_PULL=1       Reuse a local server image for the probe.
+  DW_SERVER_IMAGE                   Exact published server image/tag/digest.
   DW_SERVER_VERSION                Exact published server artifact version.
   DW_CLI_VERSION                   Exact published CLI version.
   DW_WORKFLOW_PHP_VERSION          Exact published Workflow PHP package version.
@@ -70,6 +77,918 @@ if [[ -z "$result_dir" ]]; then
   result_dir="$(mktemp -d "${TMPDIR:-/tmp}/dw-nexus.XXXXXX")"
 fi
 mkdir -p "$result_dir"
+
+if [[ -z "${DW_NEXUS_EVIDENCE_JSON:-}" && "${DW_NEXUS_SKIP_SHARED_SERVICE_PROBE:-0}" != "1" ]]; then
+  generated_evidence_path="$result_dir/shared-service-evidence.json"
+
+  if node - "$result_dir" "$generated_evidence_path" <<'NODE'
+const fs = require('fs');
+const os = require('os');
+const net = require('net');
+const path = require('path');
+const crypto = require('crypto');
+const {spawnSync} = require('child_process');
+
+const resultDir = process.argv[2];
+const evidencePath = process.argv[3];
+const requiredArtifacts = ['server', 'cli', 'workflow', 'sdk-python', 'waterline'];
+const artifactOwners = {
+  server: 'server',
+  cli: 'cli',
+  workflow: 'workflow',
+  'sdk-python': 'sdk-python',
+  waterline: 'waterline',
+};
+const scenarioIds = [
+  'tenant_a_calls_shared_service',
+  'tenant_b_calls_shared_service',
+];
+
+function timestamp() {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function env(name) {
+  const value = process.env[name];
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+}
+
+function randomToken(prefix) {
+  return `${prefix}-${crypto.randomBytes(12).toString('hex')}`;
+}
+
+function ulidLike() {
+  return `01${crypto.randomBytes(12).toString('hex').toUpperCase()}`.slice(0, 26);
+}
+
+function exactServerVersionFrom(image) {
+  const withoutDigest = image.split('@', 1)[0];
+  const last = withoutDigest.split('/').pop() || '';
+  const tag = last.includes(':') ? last.split(':').pop() : '';
+  return /^\d+\.\d+\.\d+$/.test(tag) ? tag : null;
+}
+
+function serverImage() {
+  const explicit = env('DW_SERVER_IMAGE');
+  if (explicit !== null) {
+    return explicit.replace(/^docker:\/\//, '');
+  }
+
+  const source = env('DW_SERVER_ARTIFACT_SOURCE');
+  if (source !== null && /^(docker:\/\/)?durableworkflow\/server[:@]/.test(source)) {
+    return source.replace(/^docker:\/\//, '');
+  }
+
+  const version = env('DW_SERVER_VERSION');
+  return version === null ? null : `durableworkflow/server:${version}`;
+}
+
+function artifactVersions(image) {
+  return {
+    server: env('DW_SERVER_VERSION') || (image === null ? null : exactServerVersionFrom(image)),
+    cli: env('DW_CLI_VERSION'),
+    workflow: env('DW_WORKFLOW_PHP_VERSION') || env('DW_WORKFLOW_VERSION'),
+    'sdk-python': env('DW_PYTHON_SDK_VERSION') || env('DW_SDK_PYTHON_VERSION'),
+    waterline: env('DW_WATERLINE_VERSION'),
+  };
+}
+
+function compactObject(object) {
+  return Object.fromEntries(Object.entries(object).filter(([, value]) => value !== null && value !== undefined && value !== ''));
+}
+
+function artifactSources(versions, image) {
+  return compactObject({
+    server: env('DW_SERVER_ARTIFACT_SOURCE')
+      || (image === null ? null : `docker://${image}`),
+    cli: env('DW_CLI_ARTIFACT_SOURCE')
+      || (versions.cli ? `https://github.com/durable-workflow/cli/releases/download/${versions.cli}/install.sh` : null),
+    workflow: env('DW_WORKFLOW_ARTIFACT_SOURCE')
+      || env('DW_WORKFLOW_PHP_ARTIFACT_SOURCE')
+      || (versions.workflow ? `packagist://durable-workflow/workflow@${versions.workflow}` : null),
+    'sdk-python': env('DW_PYTHON_SDK_ARTIFACT_SOURCE')
+      || (versions['sdk-python'] ? `pypi://durable-workflow==${versions['sdk-python']}` : null),
+    waterline: env('DW_WATERLINE_ARTIFACT_SOURCE')
+      || (versions.waterline ? `packagist://durable-workflow/waterline@${versions.waterline}` : null),
+  });
+}
+
+async function httpDownloadable(url) {
+  const headers = {'User-Agent': 'durable-workflow-nexus-conformance'};
+  for (const method of ['HEAD', 'GET']) {
+    const requestHeaders = {...headers};
+    if (method === 'GET') {
+      requestHeaders.Range = 'bytes=0-0';
+    }
+    try {
+      const response = await fetch(url, {
+        method,
+        headers: requestHeaders,
+        redirect: 'follow',
+      });
+      if (response.status >= 200 && response.status < 400) {
+        return true;
+      }
+    } catch {
+      if (method === 'GET') {
+        return false;
+      }
+    }
+  }
+
+  return false;
+}
+
+async function fetchJson(url) {
+  const response = await fetch(url, {
+    headers: {'User-Agent': 'durable-workflow-nexus-conformance'},
+    redirect: 'follow',
+  });
+  if (!response.ok) {
+    throw new Error(`${url} returned HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+async function verifyGithubReleaseAsset(version, source) {
+  if (!await httpDownloadable(source)) {
+    throw new Error(`CLI release asset is not downloadable: ${source}`);
+  }
+
+  return {
+    version,
+    source,
+    status: 'asset_resolved',
+    downloadable: true,
+    asset_exists: true,
+    verified_at: timestamp(),
+  };
+}
+
+async function verifyPackagistPackage(packageName, version, source) {
+  const metadataUrl = `https://repo.packagist.org/p2/${packageName}.json`;
+  const payload = await fetchJson(metadataUrl);
+  const versions = Array.isArray(payload.packages?.[packageName])
+    ? payload.packages[packageName]
+    : [];
+  if (!versions.some((entry) => String(entry.version || '') === version)) {
+    throw new Error(`Packagist package ${packageName} does not publish ${version}`);
+  }
+
+  return {
+    version,
+    source,
+    status: 'package_resolved',
+    package_exists: true,
+    manifest_resolved: true,
+    metadata_url: `${metadataUrl}#${version}`,
+    verified_at: timestamp(),
+  };
+}
+
+async function verifyPypiPackage(version, source) {
+  const metadataUrl = `https://pypi.org/pypi/durable-workflow/${encodeURIComponent(version)}/json`;
+  const payload = await fetchJson(metadataUrl);
+  if (String(payload.info?.version || '') !== version) {
+    throw new Error(`PyPI durable-workflow metadata resolved ${payload.info?.version || '<missing>'}, expected ${version}`);
+  }
+
+  return {
+    version,
+    source,
+    status: 'package_resolved',
+    package_exists: true,
+    manifest_resolved: true,
+    metadata_url: metadataUrl,
+    verified_at: timestamp(),
+  };
+}
+
+async function verifyPublishedArtifactSource(artifact, version, source, serverDigest) {
+  switch (artifact) {
+    case 'server':
+      if (!serverDigest || !/@sha256:[0-9a-f]{64}$/i.test(serverDigest)) {
+        throw new Error('server image digest was not resolved after pull');
+      }
+      return {
+        version,
+        source,
+        status: 'image_manifest_resolved',
+        downloadable: true,
+        manifest_resolved: true,
+        image_digest: serverDigest,
+        verified_at: timestamp(),
+      };
+    case 'cli':
+      return verifyGithubReleaseAsset(version, source);
+    case 'workflow':
+      return verifyPackagistPackage('durable-workflow/workflow', version, source);
+    case 'sdk-python':
+      return verifyPypiPackage(version, source);
+    case 'waterline':
+      return verifyPackagistPackage('durable-workflow/waterline', version, source);
+    default:
+      throw new Error(`unsupported artifact ${artifact}`);
+  }
+}
+
+async function artifactSourceVerification(versions, sources, serverDigest) {
+  const verification = {};
+  const failures = [];
+  for (const artifact of requiredArtifacts) {
+    if (!versions[artifact] || !sources[artifact]) {
+      failures.push({
+        artifact,
+        reason: `missing ${artifact} version or source`,
+      });
+      continue;
+    }
+    try {
+      verification[artifact] = await verifyPublishedArtifactSource(
+        artifact,
+        versions[artifact],
+        sources[artifact],
+        serverDigest,
+      );
+    } catch (error) {
+      verification[artifact] = {
+        version: versions[artifact],
+        source: sources[artifact],
+        status: 'resolution_failed',
+        downloadable: false,
+        error: `${error.name}: ${error.message}`,
+        verified_at: timestamp(),
+      };
+      failures.push({
+        artifact,
+        reason: `${error.name}: ${error.message}`,
+      });
+    }
+  }
+
+  return {verification, failures};
+}
+
+function commandAvailable(command, args = ['--version']) {
+  const result = spawnSync(command, args, {encoding: 'utf8'});
+  return result.status === 0;
+}
+
+function runLogged(command, args, logPath, options = {}) {
+  const result = spawnSync(command, args, {
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+    ...options,
+  });
+  fs.writeFileSync(
+    logPath,
+    [
+      `$ ${command} ${args.join(' ')}`,
+      `exit_status=${result.status ?? 'null'}`,
+      result.stdout || '',
+      result.stderr || '',
+    ].join('\n'),
+  );
+
+  if (result.status !== 0) {
+    throw new Error(`${command} ${args.join(' ')} failed; see ${logPath}`);
+  }
+
+  return result.stdout || '';
+}
+
+function freePort() {
+  const requested = env('DW_NEXUS_SERVER_PORT');
+  if (requested !== null) {
+    return Promise.resolve(Number(requested));
+  }
+
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address !== null ? address.port : 0;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+function composeYaml(image, port, token) {
+  const escapedImage = JSON.stringify(image);
+  const escapedToken = JSON.stringify(token);
+  return `
+services:
+  bootstrap:
+    image: ${escapedImage}
+    command: ["server-bootstrap"]
+    environment: &server_environment
+      APP_ENV: local
+      APP_DEBUG: "false"
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: durable_workflow
+      DB_USERNAME: workflow
+      DB_PASSWORD: workflow
+      REDIS_HOST: redis
+      QUEUE_CONNECTION: redis
+      CACHE_STORE: redis
+      DW_AUTH_DRIVER: token
+      DW_AUTH_TOKEN: ${escapedToken}
+      DW_AUTH_BACKWARD_COMPATIBLE: "true"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+  server:
+    image: ${escapedImage}
+    ports:
+      - "127.0.0.1:${port}:8080"
+    environment:
+      <<: *server_environment
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: server_http_node
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+  worker:
+    image: ${escapedImage}
+    command: php artisan queue:work --sleep=1 --tries=3 --max-time=3600
+    environment:
+      <<: *server_environment
+      DW_SERVER_TOPOLOGY_SHAPE: standalone_server
+      DW_SERVER_PROCESS_CLASS: worker_node
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      server:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: durable_workflow
+      MYSQL_USER: workflow
+      MYSQL_PASSWORD: workflow
+      MYSQL_ROOT_PASSWORD: root
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+volumes:
+  mysql_data:
+  redis_data:
+`;
+}
+
+async function waitForReady(baseUrl, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = '';
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${baseUrl}/api/ready`);
+      if (response.ok) {
+        return;
+      }
+      lastError = `${response.status} ${await response.text().catch(() => '')}`.trim();
+    } catch (error) {
+      lastError = `${error.name}: ${error.message}`;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Error(`server did not become ready: ${lastError}`);
+}
+
+async function apiRequest(baseUrl, token, namespace, method, apiPath, body = null) {
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    'X-Durable-Workflow-Control-Plane-Version': '2',
+    'X-Namespace': namespace,
+    Accept: 'application/json',
+  };
+  const init = {method, headers};
+  if (body !== null) {
+    headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(body);
+  }
+
+  const response = await fetch(`${baseUrl}/api${apiPath}`, init);
+  const rawBody = await response.text();
+  let parsed = null;
+  try {
+    parsed = rawBody === '' ? null : JSON.parse(rawBody);
+  } catch {
+    parsed = {raw_body: rawBody};
+  }
+
+  return {
+    request: {method, path: `/api${apiPath}`, namespace, body},
+    status: response.status,
+    ok: response.ok,
+    body: parsed,
+    raw_body: rawBody,
+  };
+}
+
+function productFinding(scenarioId, versions, observed, expected, next, type = 'shared_service_tenant_invocation_failed') {
+  return {
+    scenario_id: scenarioId,
+    type,
+    finding_type: type,
+    owning_surface: 'server',
+    artifact_versions: compactObject(versions),
+    observed_behavior: observed,
+    expected_behavior: expected,
+    next_acceptance_criterion: next,
+  };
+}
+
+function failureScenario(scenarioId, versions, reason, evidence = {}) {
+  return {
+    scenario_id: scenarioId,
+    status: 'fail',
+    observed_outputs: {
+      caller_namespace: scenarioId === 'tenant_a_calls_shared_service' ? 'tenant-a' : 'tenant-b',
+      target_namespace: 'shared',
+      endpoint_name: 'shared-greeter',
+      service_name: 'Greeter',
+      operation_name: 'greet',
+      error_shape: evidence,
+      failure_reason: reason,
+    },
+    linked_findings: [
+      productFinding(
+        scenarioId,
+        versions,
+        `${scenarioId} failed: ${reason}. Observed ${JSON.stringify(evidence).slice(0, 1000)}`,
+        'tenant-a and tenant-b can invoke shared:Greeter.greet through the published Nexus service-call surface and inspect request, response, durable service-call, and caller-history evidence.',
+        `fix the shared-service Nexus invocation path for ${scenarioId} and rerun the published-artifact Nexus conformance probe`,
+      ),
+    ],
+  };
+}
+
+function passScenario(scenarioId, callerNamespace, request, response, serviceCallRecord, callerHistory) {
+  const serviceCallId = response.body && response.body.service_call_id
+    ? String(response.body.service_call_id)
+    : String(serviceCallRecord.body?.service_call_id || serviceCallRecord.body?.id || '');
+
+  return {
+    scenario_id: scenarioId,
+    status: 'pass',
+    observed_outputs: {
+      caller_namespace: callerNamespace,
+      target_namespace: 'shared',
+      endpoint_name: 'shared-greeter',
+      service_name: 'Greeter',
+      operation_name: 'greet',
+      service_call_id: serviceCallId,
+      workflow_result: String(response.body?.status || response.body?.outcome || 'accepted'),
+      request: request.request,
+      response: {
+        status: response.status,
+        body: response.body,
+      },
+      service_call_record: serviceCallRecord.body,
+      caller_history_evidence: callerHistory.body,
+      caller_history_recorded: true,
+    },
+    linked_findings: [],
+  };
+}
+
+async function ensureNamespace(baseUrl, token, namespace) {
+  const response = await apiRequest(baseUrl, token, 'default', 'POST', '/namespaces', {
+    name: namespace,
+    description: `Nexus conformance namespace ${namespace}`,
+  });
+  if (![200, 201, 409].includes(response.status)) {
+    throw new Error(`namespace ${namespace} create failed: ${JSON.stringify(response.body)}`);
+  }
+  return response;
+}
+
+async function setupSharedService(baseUrl, token) {
+  const endpoint = await apiRequest(baseUrl, token, 'shared', 'POST', '/service-endpoints', {
+    endpoint_name: 'shared-greeter',
+    description: 'Nexus conformance shared Greeter endpoint',
+    metadata: {conformance: 'nexus-shared-service'},
+  });
+  if (![200, 201, 409].includes(endpoint.status)) {
+    throw new Error(`endpoint create failed: ${JSON.stringify(endpoint.body)}`);
+  }
+
+  const service = await apiRequest(baseUrl, token, 'shared', 'POST', '/service-endpoints/shared-greeter/services', {
+    service_name: 'Greeter',
+    description: 'Shared Greeter service for Nexus conformance',
+    metadata: {conformance: 'nexus-shared-service'},
+  });
+  if (![200, 201, 409].includes(service.status)) {
+    throw new Error(`service create failed: ${JSON.stringify(service.body)}`);
+  }
+
+  const operation = await apiRequest(baseUrl, token, 'shared', 'POST', '/service-endpoints/shared-greeter/services/Greeter/operations', {
+    operation_name: 'greet',
+    description: 'Return a greeting for the supplied name',
+    operation_mode: 'async',
+    handler_binding_kind: 'activity_execution',
+    handler_target_reference: 'Greeter.greet',
+    handler_binding: {
+      activity_type: 'Greeter.greet',
+    },
+    retry_policy: {
+      maximum_attempts: 3,
+      initial_interval_seconds: 1,
+    },
+    boundary_policy: {
+      authorization: {
+        caller_namespaces: {
+          allow: ['tenant-a', 'tenant-b'],
+        },
+      },
+    },
+    metadata: {conformance: 'nexus-shared-service'},
+  });
+  if (![200, 201, 409].includes(operation.status)) {
+    throw new Error(`operation create failed: ${JSON.stringify(operation.body)}`);
+  }
+
+  return {endpoint, service, operation};
+}
+
+async function invokeSharedService(baseUrl, token, callerNamespace, versions) {
+  const scenarioId = callerNamespace === 'tenant-a'
+    ? 'tenant_a_calls_shared_service'
+    : 'tenant_b_calls_shared_service';
+  const callerWorkflowInstanceId = `${callerNamespace}-call-greeter`;
+  const callerWorkflowRunId = ulidLike();
+  const requestBody = {
+    arguments: {
+      name: 'world',
+      caller_namespace: callerNamespace,
+    },
+    mode_override: 'async',
+    wait_for: 'accepted',
+    caller_namespace: callerNamespace,
+    caller_workflow_instance_id: callerWorkflowInstanceId,
+    caller_workflow_run_id: callerWorkflowRunId,
+    idempotency_key: `${callerNamespace}-${crypto.randomBytes(6).toString('hex')}`,
+    metadata: {
+      conformance: 'nexus-shared-service',
+      expected_greeting: 'hello, world',
+    },
+  };
+  const execute = await apiRequest(
+    baseUrl,
+    token,
+    'shared',
+    'POST',
+    '/service-endpoints/shared-greeter/services/Greeter/operations/greet/execute',
+    requestBody,
+  );
+
+  if (!execute.ok || execute.body?.accepted !== true || !execute.body?.service_call_id) {
+    return failureScenario(scenarioId, versions, 'execute returned a non-accepted response', {
+      request: execute.request,
+      status: execute.status,
+      body: execute.body,
+    });
+  }
+
+  const serviceCallId = String(execute.body.service_call_id);
+  const describe = await apiRequest(
+    baseUrl,
+    token,
+    'shared',
+    'GET',
+    `/service-endpoints/shared-greeter/services/Greeter/operations/greet/service-calls/${encodeURIComponent(serviceCallId)}`,
+  );
+  const history = await apiRequest(
+    baseUrl,
+    token,
+    callerNamespace,
+    'GET',
+    `/workflows/${encodeURIComponent(callerWorkflowInstanceId)}/runs/${encodeURIComponent(callerWorkflowRunId)}/nexus-operations`,
+  );
+  const historyRows = Array.isArray(history.body?.nexus_operations) ? history.body.nexus_operations : [];
+  const historyContainsCall = historyRows.some((row) => String(row.service_call_id || '') === serviceCallId);
+
+  if (!describe.ok || describe.body?.found !== true) {
+    return failureScenario(scenarioId, versions, 'service-call describe did not return the durable call', {
+      execute: {status: execute.status, body: execute.body},
+      describe: {status: describe.status, body: describe.body},
+    });
+  }
+  if (!history.ok || !historyContainsCall) {
+    return failureScenario(scenarioId, versions, 'caller-history evidence did not include the durable call', {
+      execute: {status: execute.status, body: execute.body},
+      history: {status: history.status, body: history.body},
+    });
+  }
+
+  return passScenario(scenarioId, callerNamespace, execute, execute, describe, history);
+}
+
+function blockedEvidence(startedAt, finishedAt, versions, sources, reason) {
+  return {
+    outcome: 'non_passing_runner_blocked',
+    runner_blocked: true,
+    blocked_reason: reason,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    artifact_versions: compactObject(versions),
+    artifact_sources: sources,
+    artifact_source_verification: {},
+    local_product_source_checkouts_used: false,
+    findings: scenarioIds.map((scenarioId) => ({
+      scenario_id: scenarioId,
+      type: 'runner_gap',
+      finding_type: 'runner_gap',
+      owning_surface: 'conformance_harness',
+      artifact_versions: compactObject(versions),
+      observed_behavior: `Nexus shared-service probe was runner-blocked: ${reason}`,
+      expected_behavior: 'host runner can start the published server image and exercise shared-service Nexus calls',
+      next_acceptance_criterion: `restore host execution for ${scenarioId} and rerun Nexus conformance`,
+    })),
+    scenario_results: {},
+  };
+}
+
+function artifactResolutionEvidence(startedAt, finishedAt, versions, sources, verification, failures) {
+  const findings = failures.map((failure) => ({
+    scenario_id: 'published_artifact_install_only',
+    type: 'missing_or_invalid_published_nexus_artifact',
+    finding_type: 'missing_or_invalid_published_nexus_artifact',
+    owning_surface: artifactOwners[failure.artifact] || 'conformance_harness',
+    artifact_versions: compactObject(versions),
+    observed_behavior: `${failure.artifact} published artifact source did not resolve: ${failure.reason}`,
+    expected_behavior: 'every required Nexus artifact source resolves to a downloadable public artifact before shared-service proof is recorded',
+    next_acceptance_criterion: `resolve the ${failure.artifact} published artifact source and rerun the Nexus shared-service probe`,
+  }));
+
+  return {
+    outcome: 'fail',
+    runner_blocked: false,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    artifact_versions: compactObject(versions),
+    published_artifact_versions: compactObject(versions),
+    resolved_artifact_versions: compactObject(versions),
+    artifact_sources: sources,
+    artifact_source_verification: verification,
+    local_product_source_checkouts_used: false,
+    findings,
+    scenario_results: {
+      published_artifact_install_only: {
+        status: 'not_covered',
+        observed_outputs: {
+          artifact_versions: compactObject(versions),
+          artifact_sources: sources,
+          artifact_source_verification: verification,
+          local_product_source_checkouts_used: false,
+          install_channels_verified: false,
+          resolution_failures: failures,
+        },
+        linked_findings: findings,
+      },
+    },
+  };
+}
+
+function productFailureEvidence(startedAt, finishedAt, versions, sources, verification, reason, details = {}) {
+  const scenarioResults = scenarioIds.map((scenarioId) => failureScenario(
+    scenarioId,
+    versions,
+    reason,
+    details,
+  ));
+
+  return {
+    outcome: 'fail',
+    runner_blocked: false,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    artifact_versions: compactObject(versions),
+    published_artifact_versions: compactObject(versions),
+    resolved_artifact_versions: compactObject(versions),
+    artifact_sources: sources,
+    artifact_source_verification: verification,
+    local_product_source_checkouts_used: false,
+    findings: scenarioResults.flatMap((scenario) => scenario.linked_findings || []),
+    scenario_results: {
+      tenant_a_calls_shared_service: scenarioResults[0],
+      tenant_b_calls_shared_service: scenarioResults[1],
+    },
+  };
+}
+
+async function main() {
+  fs.mkdirSync(resultDir, {recursive: true});
+  const startedAt = timestamp();
+  const image = serverImage();
+  const versions = artifactVersions(image);
+  const sources = artifactSources(versions, image);
+
+  const writeEvidence = (evidence) => {
+    fs.writeFileSync(evidencePath, JSON.stringify(evidence, null, 2) + '\n');
+  };
+
+  if (image === null) {
+    process.exitCode = 3;
+    return;
+  }
+  if (!commandAvailable('docker')) {
+    writeEvidence(blockedEvidence(startedAt, timestamp(), versions, sources, 'required command not found: docker'));
+    return;
+  }
+  if (!commandAvailable('docker', ['compose', 'version'])) {
+    writeEvidence(blockedEvidence(startedAt, timestamp(), versions, sources, 'required command not available: docker compose'));
+    return;
+  }
+
+  const runRoot = env('DW_NEXUS_RUN_ROOT') || fs.mkdtempSync(path.join(os.tmpdir(), 'dw-nexus-shared-service.'));
+  fs.mkdirSync(runRoot, {recursive: true});
+  const port = await freePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const token = randomToken('nexus-token');
+  const project = `dw-nexus-${crypto.randomBytes(5).toString('hex')}`;
+  const composePath = path.join(runRoot, 'compose.yml');
+  fs.writeFileSync(composePath, composeYaml(image, port, token));
+
+  let serverDigest = '';
+  try {
+    if (env('DW_NEXUS_SKIP_DOCKER_PULL') !== '1') {
+      runLogged('docker', ['pull', image], path.join(resultDir, 'nexus-shared-service-docker-pull.log'));
+    }
+
+    serverDigest = runLogged(
+      'docker',
+      ['image', 'inspect', '--format', '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}', image],
+      path.join(resultDir, 'nexus-shared-service-image-inspect.log'),
+    ).trim();
+
+    const {verification, failures} = await artifactSourceVerification(versions, sources, serverDigest);
+    if (failures.length > 0) {
+      writeEvidence(artifactResolutionEvidence(
+        startedAt,
+        timestamp(),
+        versions,
+        sources,
+        verification,
+        failures,
+      ));
+      return;
+    }
+
+    runLogged(
+      'docker',
+      ['compose', '-p', project, '-f', composePath, 'up', '-d', '--wait'],
+      path.join(resultDir, 'nexus-shared-service-compose-up.log'),
+      {cwd: runRoot},
+    );
+    await waitForReady(baseUrl, 120000);
+
+    let namespaceResponses = [];
+    let registration = null;
+    let scenarioResults = [];
+    try {
+      for (const namespace of ['tenant-a', 'tenant-b', 'shared']) {
+        namespaceResponses.push(await ensureNamespace(baseUrl, token, namespace));
+      }
+      registration = await setupSharedService(baseUrl, token);
+      scenarioResults = [
+        await invokeSharedService(baseUrl, token, 'tenant-a', versions),
+        await invokeSharedService(baseUrl, token, 'tenant-b', versions),
+      ];
+    } catch (error) {
+      writeEvidence(productFailureEvidence(
+        startedAt,
+        timestamp(),
+        versions,
+        sources,
+        verification,
+        `shared-service setup or invocation failed: ${error.name}: ${error.message}`,
+        {namespace_responses: namespaceResponses, setup_error: `${error.name}: ${error.message}`},
+      ));
+      return;
+    }
+
+    const finishedAt = timestamp();
+    const findings = scenarioResults.flatMap((scenario) => scenario.linked_findings || []);
+
+    writeEvidence({
+      outcome: scenarioResults.every((scenario) => scenario.status === 'pass') ? 'pass' : 'fail',
+      runner_blocked: false,
+      started_at: startedAt,
+      finished_at: finishedAt,
+      artifact_versions: compactObject(versions),
+      published_artifact_versions: compactObject(versions),
+      resolved_artifact_versions: compactObject(versions),
+      artifact_sources: sources,
+      artifact_source_verification: verification,
+      local_product_source_checkouts_used: false,
+      topology: {
+        namespaces: ['tenant-a', 'tenant-b', 'shared'],
+        endpoint: 'shared:shared-greeter',
+        service: 'Greeter',
+        operation: 'greet',
+      },
+      setup_evidence: {
+        server_url: baseUrl,
+        namespace_requests: namespaceResponses.map((response) => ({
+          request: response.request,
+          status: response.status,
+          body: response.body,
+        })),
+        registration: {
+          endpoint: {status: registration.endpoint.status, body: registration.endpoint.body},
+          service: {status: registration.service.status, body: registration.service.body},
+          operation: {status: registration.operation.status, body: registration.operation.body},
+        },
+      },
+      findings,
+      scenario_results: {
+        published_artifact_install_only: {
+          status: 'pass',
+          observed_outputs: {
+            artifact_versions: compactObject(versions),
+            artifact_sources: sources,
+            artifact_source_verification: verification,
+            local_product_source_checkouts_used: false,
+            install_channels_verified: true,
+          },
+          linked_findings: [],
+        },
+        tenant_a_calls_shared_service: scenarioResults[0],
+        tenant_b_calls_shared_service: scenarioResults[1],
+      },
+    });
+  } catch (error) {
+    writeEvidence(blockedEvidence(
+      startedAt,
+      timestamp(),
+      versions,
+      sources,
+      `${error.name}: ${error.message}`,
+    ));
+  } finally {
+    const down = spawnSync('docker', ['compose', '-p', project, '-f', composePath, 'down', '-v'], {
+      cwd: runRoot,
+      encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    fs.writeFileSync(
+      path.join(resultDir, 'nexus-shared-service-compose-down.log'),
+      [`exit_status=${down.status ?? 'null'}`, down.stdout || '', down.stderr || ''].join('\n'),
+    );
+    if (env('DW_NEXUS_KEEP_RUN_ROOT') !== '1') {
+      fs.rmSync(runRoot, {recursive: true, force: true});
+    }
+  }
+}
+
+main().catch((error) => {
+  fs.writeFileSync(evidencePath, JSON.stringify({
+    runner_blocked: true,
+    blocked_reason: `${error.name}: ${error.message}`,
+    findings: [],
+    scenario_results: {},
+  }, null, 2) + '\n');
+});
+NODE
+  then
+    export DW_NEXUS_EVIDENCE_JSON="$generated_evidence_path"
+  elif [[ -f "$generated_evidence_path" ]]; then
+    export DW_NEXUS_EVIDENCE_JSON="$generated_evidence_path"
+  fi
+fi
 
 node - "$result_dir" "${DW_NEXUS_EVIDENCE_JSON:-}" <<'NODE'
 const fs = require('fs');
@@ -1059,6 +1978,10 @@ function applyResultGateFailures(
   localProductSourceCheckoutsUsed,
   localProductSourceCheckoutsExplicitlyFalse,
 ) {
+  if (scenario.status !== 'pass') {
+    return scenario;
+  }
+
   const linkedFindings = Array.isArray(scenario.linked_findings) ? [...scenario.linked_findings] : [];
   const resultGateFindings = [];
 
