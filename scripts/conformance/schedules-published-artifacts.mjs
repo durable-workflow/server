@@ -1078,15 +1078,33 @@ function envString(...names) {
 }
 
 function buildArtifactInstallEvidence(artifactVersions, artifactSources, evidence = {}, outputs = {}) {
-  const supplied = artifactInstallEvidenceFrom(evidence, outputs);
+  const suppliedEvidence = artifactInstallEvidenceFrom(evidence, outputs);
+  const suppliedEvidenceObjectPresent = Object.keys(suppliedEvidence).length > 0;
+  const suppliedEvidenceIsDerived = suppliedEvidenceObjectPresent
+    && truthyEvidenceFlag(suppliedEvidence.derived_install_evidence)
+    && explicitFalse(suppliedEvidence.supplied_install_evidence);
+  const suppliedEvidencePresent = suppliedEvidenceObjectPresent && !suppliedEvidenceIsDerived;
+  const artifactSourceVerification = artifactSourceVerificationFrom(evidence, outputs, suppliedEvidence);
+  const derivedEvidence = suppliedEvidenceIsDerived
+    ? suppliedEvidence
+    : (suppliedEvidencePresent
+      ? {}
+      : derivedArtifactInstallEvidence(
+        artifactVersions,
+        artifactSources,
+        artifactSourceVerification,
+        evidence,
+        outputs,
+      ));
+  const derivedEvidencePresent = Object.keys(derivedEvidence).length > 0;
+  const supplied = suppliedEvidencePresent ? suppliedEvidence : derivedEvidence;
   const suppliedEntries = artifactInstallEntriesByArtifact(supplied);
-  const artifactSourceVerification = artifactSourceVerificationFrom(evidence, outputs, supplied);
   const localProductSourceUsed = localProductSourceCheckoutsUsed(evidence, outputs, supplied);
   const installEvidenceLocalProductSourceUsed = truthyEvidenceFlag(supplied.local_product_source_checkouts_used)
     || truthyEvidenceFlag(supplied.localProductSourceCheckoutsUsed);
   const installEvidenceLocalProductSourceExplicitFalse = explicitFalse(supplied.local_product_source_checkouts_used)
     || explicitFalse(supplied.localProductSourceCheckoutsUsed);
-  const evidenceSupplied = Object.keys(supplied).length > 0;
+  const evidenceSupplied = suppliedEvidencePresent || derivedEvidencePresent;
   const policyFailures = [];
   const missingArtifactVersions = [];
   const missingArtifactSources = [];
@@ -1203,7 +1221,8 @@ function buildArtifactInstallEvidence(artifactVersions, artifactSources, evidenc
   return {
     schema: stringValue(supplied.schema) || ARTIFACT_INSTALL_SCHEMA,
     generated_at: timestamp(),
-    supplied_install_evidence: evidenceSupplied,
+    supplied_install_evidence: suppliedEvidencePresent,
+    derived_install_evidence: derivedEvidencePresent,
     supplied_install_evidence_path: stringValue(supplied.source_path) || null,
     supplied_local_product_source_checkouts_explicit_false: installEvidenceLocalProductSourceExplicitFalse,
     resolved_artifact_versions: artifactVersions,
@@ -1226,6 +1245,73 @@ function buildArtifactInstallEvidence(artifactVersions, artifactSources, evidenc
     policy_failures: policyFailures,
     published_install_tuple_proven: publishedInstallTupleProven,
   };
+}
+
+function derivedArtifactInstallEvidence(
+  artifactVersions,
+  artifactSources,
+  artifactSourceVerification,
+  ...installEvidenceContainers
+) {
+  if (!installLayerLocalProductSourceExplicitlyFalse(...installEvidenceContainers)) {
+    return {};
+  }
+
+  const artifacts = [];
+  for (const artifact of REQUIRED_PUBLISHED_ARTIFACTS) {
+    const version = artifactValue(artifactVersions, artifact);
+    const source = artifactValue(artifactSources, artifact);
+    const sourceVerification = artifactObjectValue(artifactSourceVerification, artifact);
+
+    if (!isConcretePublishedVersion(version)
+      || !isConcretePublishedSource(artifact, version, source, sourceVerification)) {
+      return {};
+    }
+
+    artifacts.push({
+      artifact,
+      version,
+      source,
+      status: 'pass',
+      install_channel: installChannelFor(artifact),
+      source_verification: sourceVerification,
+      local_product_source_checkouts_used: false,
+      detail: 'Published artifact source and explicit source-free install evidence satisfied policy.',
+    });
+  }
+
+  return {
+    schema: ARTIFACT_INSTALL_SCHEMA,
+    generated_at: timestamp(),
+    derived_from: 'published_artifact_source_manifest',
+    local_product_source_checkouts_used: false,
+    artifacts,
+  };
+}
+
+function installLayerLocalProductSourceExplicitlyFalse(...containers) {
+  const envEvidence = localProductSourceEvidenceFromEnv();
+  if (explicitFalse(envEvidence.local_product_source_checkouts_used)) {
+    return true;
+  }
+
+  for (const container of containers) {
+    const value = objectValue(container);
+    for (const field of [
+      'artifact_install_evidence',
+      'artifactInstallEvidence',
+      'install_evidence',
+      'installEvidence',
+      'published_artifacts',
+      'publishedArtifacts',
+    ]) {
+      if (localProductSourceCheckoutsExplicitlyFalse(value[field])) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 function artifactSourcesWithInstallEvidence(artifactSources, artifacts) {
