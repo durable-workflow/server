@@ -172,7 +172,8 @@
         "source_release_versions",
         "seeded_workflows",
         "seeded_schedules",
-        "seeded_worker_registrations"
+        "seeded_worker_registrations",
+        "queryable_history"
       ]
     },
     "documented_migration_steps_execute": {
@@ -180,6 +181,7 @@
         "migration_guide_revision",
         "commands_executed",
         "exit_codes",
+        "command_timings",
         "schema_or_storage_migration_output"
       ]
     },
@@ -620,6 +622,8 @@
       "declared_outcome_matches_evaluated_status",
       "artifact_source_recorded_for_each_install_channel",
       "artifact_prerequisite_failures_are_linked_when_artifacts_are_missing",
+      "realistic_preupgrade_state_cells_are_recorded",
+      "migration_guide_command_timings_are_recorded",
       "local_product_source_checkouts_used_explicitly_false",
       "runner_blocked_false_for_product_evidence",
       "findings_linked_for_non_pass_scenarios"

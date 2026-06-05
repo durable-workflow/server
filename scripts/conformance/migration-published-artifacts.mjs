@@ -71,6 +71,16 @@ const REQUIRED_TOP_LEVEL_FIELDS = [
   'version_skew_observations',
   'storage_connection_smoke',
 ];
+const OBSERVED_STATE_ENTRY_FIELDS = [
+  'observed_states',
+  'observedStates',
+  'observed_state_entries',
+  'observedStateEntries',
+  'state_entries',
+  'stateEntries',
+  'states',
+];
+const STATE_ENTRY_KIND_FIELDS = ['state_kind', 'stateKind', 'kind', 'type', 'name', 'scenario'];
 const FALLBACK_PLACEHOLDER_VERSION_EXAMPLES = [
   'latest',
   'current',
@@ -737,7 +747,49 @@ function missingRequiredFieldsForScenario(scenarioId, scenario, observedOutputs)
     }
   }
 
-  return missing;
+  return uniqueStrings([
+    ...missing,
+    ...scenarioSpecificMissingRequiredFields(scenarioId, scenario, observedOutputs),
+  ]);
+}
+
+function scenarioSpecificMissingRequiredFields(scenarioId, scenario, observedOutputs) {
+  switch (scenarioId) {
+    case 'latest_supported_v1_state_setup':
+      return [
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'seeded_workflows', [
+          'completed_workflow',
+          'running_workflow_waiting_on_signal',
+          'workflow_with_activity',
+          'workflow_mid_activity_retry',
+        ]),
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'seeded_schedules', [
+          'active_schedule',
+        ]),
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'seeded_worker_registrations', [
+          'registered_workers',
+        ]),
+        ...missingEvidenceItemsForField(scenario, observedOutputs, 'queryable_history', [
+          'queryable_history',
+        ]),
+      ];
+    case 'documented_migration_steps_execute':
+      return ['commands_executed', 'exit_codes', 'command_timings']
+        .filter((field) => !hasNonEmptyArrayField(observedOutputs, field) && !hasNonEmptyArrayField(scenario, field));
+    default:
+      return [];
+  }
+}
+
+function missingEvidenceItemsForField(scenario, observedOutputs, field, items) {
+  let value = fieldValue(observedOutputs, field);
+  if (isEmptyEvidence(value)) {
+    value = fieldValue(scenario, field);
+  }
+
+  return items
+    .filter((item) => !evidenceContainsItem(value, item))
+    .map((item) => `${field}.${item}`);
 }
 
 function normalizeStorageSmoke(evidence) {
@@ -1020,12 +1072,14 @@ function publicGuideAuditScenarioOutputs(
         seeded_workflows: 'not_executed_by_public_guide_audit',
         seeded_schedules: 'not_executed_by_public_guide_audit',
         seeded_worker_registrations: 'not_executed_by_public_guide_audit',
+        queryable_history: 'not_executed_by_public_guide_audit',
       };
     case 'documented_migration_steps_execute':
       return {
         ...common,
         commands_executed: [],
         exit_codes: [],
+        command_timings: [],
         schema_or_storage_migration_output: 'not_executed_by_public_guide_audit',
       };
     case 'completed_history_preservation_and_replay':
@@ -1471,6 +1525,10 @@ function resultPasses(result) {
         return false;
       }
     }
+
+    if (missingRequiredFieldsForScenario(scenarioId, scenarios[scenarioId], observedOutputs).length > 0) {
+      return false;
+    }
   }
 
   for (const field of REQUIRED_TOP_LEVEL_FIELDS) {
@@ -1481,7 +1539,112 @@ function resultPasses(result) {
 
   return artifactMapComplete(result.published_artifact_versions, false)
     && artifactMapComplete(result.resolved_artifact_versions, false)
-    && artifactMapComplete(result.artifact_sources, true);
+    && artifactMapComplete(result.artifact_sources, true)
+    && stateSnapshotsComplete(result);
+}
+
+function stateSnapshotsComplete(result) {
+  const requiredStateKinds = arrayOfStrings(scenarioManifest?.required_matrix?.state_kinds);
+  if (requiredStateKinds.length === 0) {
+    return true;
+  }
+
+  for (const field of ['preupgrade_state_snapshot', 'postupgrade_state_snapshot']) {
+    const snapshot = fieldValue(result, field);
+    if (isEmptyEvidence(snapshot)) {
+      continue;
+    }
+
+    const stateKinds = observedStateKindsForSnapshot(snapshot);
+    for (const stateKind of requiredStateKinds) {
+      if (!stateKinds.has(stateKind)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+function observedStateKindsForSnapshot(snapshot) {
+  const observed = new Set();
+
+  collectStateKindList(fieldValue(snapshot, 'state_kinds'), observed);
+  collectStateKindList(fieldValue(snapshot, 'stateKinds'), observed);
+  collectObservedStateEntries(snapshot, observed);
+
+  for (const field of OBSERVED_STATE_ENTRY_FIELDS) {
+    collectObservedStateEntries(fieldValue(snapshot, field), observed);
+  }
+
+  return observed;
+}
+
+function collectStateKindList(value, observed) {
+  if (!value || typeof value !== 'object') {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectObservedStateEntryKind(entry, observed);
+    }
+    return;
+  }
+
+  for (const [key, entry] of Object.entries(objectValue(value))) {
+    if (key !== '' && !isEmptyEvidence(entry)) {
+      observed.add(key);
+    }
+
+    collectObservedStateEntryKind(entry, observed);
+  }
+}
+
+function collectObservedStateEntries(value, observed) {
+  if (!value || typeof value !== 'object') {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectObservedStateEntryKind(entry, observed);
+    }
+    return;
+  }
+
+  for (const [key, entry] of Object.entries(objectValue(value))) {
+    if (key !== '' && !isEmptyEvidence(entry)) {
+      observed.add(key);
+    }
+
+    collectObservedStateEntryKind(entry, observed);
+  }
+}
+
+function collectObservedStateEntryKind(entry, observed) {
+  const kind = stateKindString(entry);
+  if (kind !== '') {
+    observed.add(kind);
+    return;
+  }
+
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return;
+  }
+
+  for (const field of STATE_ENTRY_KIND_FIELDS) {
+    const fieldKind = stateKindString(entry[field]);
+    if (fieldKind !== '') {
+      observed.add(fieldKind);
+    }
+  }
+}
+
+function stateKindString(value) {
+  return typeof value === 'string' || typeof value === 'number'
+    ? String(value).trim()
+    : '';
 }
 
 function artifactMapComplete(map, sourceMap) {
@@ -2321,6 +2484,57 @@ function hasField(container, field) {
       return true;
     }
   }
+  return false;
+}
+
+function hasNonEmptyArrayField(container, field) {
+  const object = objectValue(container);
+  for (const alias of fieldAliases(field)) {
+    if (object[alias] && typeof object[alias] === 'object' && !isEmptyEvidence(object[alias])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function evidenceContainsItem(value, item) {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const object = objectValue(value);
+  for (const alias of fieldAliases(item)) {
+    if (Object.hasOwn(object, alias) && !isEmptyEvidence(object[alias])) {
+      return true;
+    }
+  }
+
+  for (const field of ['state_kinds', 'stateKinds', 'kinds', 'items']) {
+    if (evidenceContainsItem(object[field], item)) {
+      return true;
+    }
+  }
+
+  for (const entry of Array.isArray(value) ? value : Object.values(object)) {
+    if (stringValue(entry) === item) {
+      return true;
+    }
+
+    if (!entry || typeof entry !== 'object') {
+      continue;
+    }
+
+    for (const field of ['id', 'kind', 'type', 'state_kind', 'stateKind', 'name', 'scenario']) {
+      if (stringValue(entry[field]) === item && !isEmptyEvidence(entry)) {
+        return true;
+      }
+    }
+
+    if (evidenceContainsItem(entry, item)) {
+      return true;
+    }
+  }
+
   return false;
 }
 

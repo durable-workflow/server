@@ -303,6 +303,106 @@ final class MigrationRuntimeResultGate
             }
         }
 
+        array_push(
+            $missing,
+            ...self::missingScenarioSpecificRequiredFields($scenarioId, $scenarioResult, $observedOutputs),
+        );
+
+        return array_values(array_unique($missing));
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     * @param array<string, mixed> $observedOutputs
+     *
+     * @return list<string>
+     */
+    private static function missingScenarioSpecificRequiredFields(
+        string $scenarioId,
+        array $scenarioResult,
+        array $observedOutputs,
+    ): array {
+        return match ($scenarioId) {
+            'latest_supported_v1_state_setup' => [
+                ...self::missingEvidenceItemsForField($scenarioResult, $observedOutputs, 'seeded_workflows', [
+                    'completed_workflow',
+                    'running_workflow_waiting_on_signal',
+                    'workflow_with_activity',
+                    'workflow_mid_activity_retry',
+                ]),
+                ...self::missingEvidenceItemsForField($scenarioResult, $observedOutputs, 'seeded_schedules', [
+                    'active_schedule',
+                ]),
+                ...self::missingEvidenceItemsForField($scenarioResult, $observedOutputs, 'seeded_worker_registrations', [
+                    'registered_workers',
+                ]),
+                ...self::missingEvidenceItemsForField($scenarioResult, $observedOutputs, 'queryable_history', [
+                    'queryable_history',
+                ]),
+            ],
+            'documented_migration_steps_execute' => self::missingArrayEvidenceFields(
+                $scenarioResult,
+                $observedOutputs,
+                [
+                    'commands_executed',
+                    'exit_codes',
+                    'command_timings',
+                ],
+            ),
+            default => [],
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     * @param array<string, mixed> $observedOutputs
+     * @param list<string> $items
+     *
+     * @return list<string>
+     */
+    private static function missingEvidenceItemsForField(
+        array $scenarioResult,
+        array $observedOutputs,
+        string $field,
+        array $items,
+    ): array {
+        $value = self::fieldValue($observedOutputs, $field);
+        if (self::isEmptyEvidence($value)) {
+            $value = self::fieldValue($scenarioResult, $field);
+        }
+
+        $missing = [];
+        foreach ($items as $item) {
+            if (! self::hasEvidenceItem($value, $item)) {
+                $missing[] = $field . '.' . $item;
+            }
+        }
+
+        return $missing;
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     * @param array<string, mixed> $observedOutputs
+     * @param list<string> $fields
+     *
+     * @return list<string>
+     */
+    private static function missingArrayEvidenceFields(
+        array $scenarioResult,
+        array $observedOutputs,
+        array $fields,
+    ): array {
+        $missing = [];
+        foreach ($fields as $field) {
+            if (
+                ! self::hasNonEmptyArrayEvidence($observedOutputs, $field)
+                && ! self::hasNonEmptyArrayEvidence($scenarioResult, $field)
+            ) {
+                $missing[] = $field;
+            }
+        }
+
         return $missing;
     }
 
@@ -369,7 +469,147 @@ final class MigrationRuntimeResultGate
             ];
         }
 
+        array_push($failures, ...self::stateSnapshotFailures($result, $contract));
+
         return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function stateSnapshotFailures(array $result, array $contract): array
+    {
+        $failures = [];
+        $requiredStateKinds = self::stringList($contract['required_matrix']['state_kinds'] ?? []);
+
+        foreach (['preupgrade_state_snapshot', 'postupgrade_state_snapshot'] as $field) {
+            $snapshot = self::fieldValue($result, $field);
+            if (! is_array($snapshot) || self::isEmptyEvidence($snapshot)) {
+                continue;
+            }
+
+            $stateKinds = self::observedStateKindsForSnapshot($snapshot);
+            foreach ($requiredStateKinds as $stateKind) {
+                if (isset($stateKinds[$stateKind])) {
+                    continue;
+                }
+
+                $failures[] = [
+                    'code' => 'missing_run_record_state_kind',
+                    'field' => $field,
+                    'state_kind' => $stateKind,
+                ];
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<mixed> $snapshot
+     *
+     * @return array<string, true>
+     */
+    private static function observedStateKindsForSnapshot(array $snapshot): array
+    {
+        $observed = [];
+
+        foreach (['state_kinds', 'stateKinds'] as $field) {
+            if (isset($snapshot[$field]) && is_array($snapshot[$field])) {
+                self::collectStateKindList($snapshot[$field], $observed);
+            }
+        }
+
+        self::collectObservedStateEntries($snapshot, $observed);
+
+        foreach ([
+            'observed_states',
+            'observedStates',
+            'observed_state_entries',
+            'observedStateEntries',
+            'state_entries',
+            'stateEntries',
+            'states',
+        ] as $field) {
+            if (isset($snapshot[$field]) && is_array($snapshot[$field])) {
+                self::collectObservedStateEntries($snapshot[$field], $observed);
+            }
+        }
+
+        return $observed;
+    }
+
+    /**
+     * @param array<mixed> $stateKinds
+     * @param array<string, true> $observed
+     */
+    private static function collectStateKindList(array $stateKinds, array &$observed): void
+    {
+        $isList = array_is_list($stateKinds);
+
+        foreach ($stateKinds as $key => $entry) {
+            if ($isList) {
+                self::collectObservedStateEntryKind($entry, $observed);
+
+                continue;
+            }
+
+            if (is_string($key) && $key !== '' && ! self::isEmptyEvidence($entry)) {
+                $observed[$key] = true;
+            }
+
+            self::collectObservedStateEntryKind($entry, $observed);
+        }
+    }
+
+    /**
+     * @param array<mixed> $entries
+     * @param array<string, true> $observed
+     */
+    private static function collectObservedStateEntries(array $entries, array &$observed): void
+    {
+        $isList = array_is_list($entries);
+
+        foreach ($entries as $key => $entry) {
+            if ($isList) {
+                self::collectObservedStateEntryKind($entry, $observed);
+
+                continue;
+            }
+
+            if (is_string($key) && $key !== '' && ! self::isEmptyEvidence($entry)) {
+                $observed[$key] = true;
+            }
+
+            self::collectObservedStateEntryKind($entry, $observed);
+        }
+    }
+
+    /**
+     * @param array<string, true> $observed
+     */
+    private static function collectObservedStateEntryKind(mixed $entry, array &$observed): void
+    {
+        $kind = self::stringValue($entry);
+        if ($kind !== '') {
+            $observed[$kind] = true;
+
+            return;
+        }
+
+        if (! is_array($entry)) {
+            return;
+        }
+
+        foreach (['state_kind', 'stateKind', 'kind', 'type', 'name', 'scenario'] as $field) {
+            $kind = self::stringValue($entry[$field] ?? null);
+            if ($kind !== '') {
+                $observed[$kind] = true;
+            }
+        }
     }
 
     /**
@@ -963,6 +1203,65 @@ final class MigrationRuntimeResultGate
     {
         foreach ($keys as $key) {
             if (array_key_exists($key, $array) && ! self::isEmptyEvidence($array[$key])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $array
+     */
+    private static function hasNonEmptyArrayEvidence(array $array, string $field): bool
+    {
+        foreach (self::fieldAliases($field) as $alias) {
+            if (
+                array_key_exists($alias, $array)
+                && is_array($array[$alias])
+                && ! self::isEmptyEvidence($array[$alias])
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function hasEvidenceItem(mixed $value, string $item): bool
+    {
+        if (! is_array($value)) {
+            return false;
+        }
+
+        foreach (self::fieldAliases($item) as $alias) {
+            if (array_key_exists($alias, $value) && ! self::isEmptyEvidence($value[$alias])) {
+                return true;
+            }
+        }
+
+        foreach (['state_kinds', 'stateKinds', 'kinds', 'items'] as $field) {
+            if (isset($value[$field]) && self::hasEvidenceItem($value[$field], $item)) {
+                return true;
+            }
+        }
+
+        foreach ($value as $entry) {
+            if (self::stringValue($entry) === $item) {
+                return true;
+            }
+
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            foreach (['id', 'kind', 'type', 'state_kind', 'stateKind', 'name', 'scenario'] as $field) {
+                if (self::stringValue($entry[$field] ?? null) === $item && ! self::isEmptyEvidence($entry)) {
+                    return true;
+                }
+            }
+
+            if (self::hasEvidenceItem($entry, $item)) {
                 return true;
             }
         }

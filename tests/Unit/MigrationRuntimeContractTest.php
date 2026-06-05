@@ -88,6 +88,14 @@ class MigrationRuntimeContractTest extends TestCase
             'non_passing',
             $manifest['coverage_gate']['storage_connection_smoke_only_outcome'],
         );
+        $this->assertContains(
+            'queryable_history',
+            $manifest['scenario_requirements']['latest_supported_v1_state_setup']['required_fields'],
+        );
+        $this->assertContains(
+            'command_timings',
+            $manifest['scenario_requirements']['documented_migration_steps_execute']['required_fields'],
+        );
     }
 
     public function test_manifest_publishes_host_runner_handoff_and_result_gate(): void
@@ -169,6 +177,14 @@ class MigrationRuntimeContractTest extends TestCase
         $this->assertContains(
             'artifact_prerequisite_failures_are_linked_when_artifacts_are_missing',
             $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'realistic_preupgrade_state_cells_are_recorded',
+            $manifest['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertContains(
+            'migration_guide_command_timings_are_recorded',
+            $manifest['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertSame(
             'scripts/conformance/migration-published-artifacts.sh',
@@ -329,6 +345,81 @@ class MigrationRuntimeContractTest extends TestCase
         ] as $field) {
             $this->assertContains($field, $missingFields);
         }
+    }
+
+    public function test_result_gate_requires_realistic_v1_state_cells_before_passing(): void
+    {
+        $result = $this->completeMigrationResult();
+        $result['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_workflows'] = [
+            'completed_workflow' => ['workflow_id' => 'migration-completed'],
+        ];
+        $result['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_schedules'] = [];
+        $result['preupgrade_state_snapshot']['state_kinds'] = [
+            'completed_history',
+            'in_flight_workflow',
+        ];
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+        $missingFields = $this->missingScenarioRequiredFields($evaluation, 'latest_supported_v1_state_setup');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        foreach ([
+            'seeded_workflows.running_workflow_waiting_on_signal',
+            'seeded_workflows.workflow_with_activity',
+            'seeded_workflows.workflow_mid_activity_retry',
+            'seeded_schedules.active_schedule',
+        ] as $field) {
+            $this->assertContains($field, $missingFields);
+        }
+        $this->assertNotEmpty(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_run_record_state_kind'
+                && ($failure['field'] ?? null) === 'preupgrade_state_snapshot'
+                && ($failure['state_kind'] ?? null) === 'retrying_activity',
+        ));
+    }
+
+    public function test_result_gate_rejects_expected_state_kind_snapshots_without_observed_state(): void
+    {
+        $result = $this->completeMigrationResult();
+        $expectedStateKinds = MigrationRuntimeContract::manifest()['required_matrix']['state_kinds'];
+        $result['preupgrade_state_snapshot'] = [
+            'status' => 'pass',
+            'expected_state_kinds' => $expectedStateKinds,
+            'observed_behavior' => 'runner listed the expected state matrix without observed v1 state evidence',
+        ];
+        $result['postupgrade_state_snapshot'] = [
+            'status' => 'pass',
+            'expected_state_kinds' => $expectedStateKinds,
+            'observed_behavior' => 'runner listed the expected state matrix without observed v2 state evidence',
+        ];
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        foreach (['preupgrade_state_snapshot', 'postupgrade_state_snapshot'] as $field) {
+            $this->assertNotEmpty(array_filter(
+                $evaluation['gate_failures'],
+                static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_run_record_state_kind'
+                    && ($failure['field'] ?? null) === $field
+                    && ($failure['state_kind'] ?? null) === 'completed_history',
+            ));
+        }
+    }
+
+    public function test_result_gate_requires_timed_migration_guide_commands_before_passing(): void
+    {
+        $result = $this->completeMigrationResult();
+        $result['scenario_results']['documented_migration_steps_execute']['observed_outputs']['commands_executed'] =
+            'php artisan migrate';
+        $result['scenario_results']['documented_migration_steps_execute']['observed_outputs']['command_timings'] = [];
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+        $missingFields = $this->missingScenarioRequiredFields($evaluation, 'documented_migration_steps_execute');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('commands_executed', $missingFields);
+        $this->assertContains('command_timings', $missingFields);
     }
 
     public function test_result_gate_rejects_not_covered_placeholder_required_evidence(): void
@@ -635,6 +726,76 @@ class MigrationRuntimeContractTest extends TestCase
             ];
         }
 
+        $scenarioResults['latest_supported_v1_state_setup']['observed_outputs'] = [
+            'source_release_versions' => $this->artifactVersions(),
+            'seeded_workflows' => [
+                'completed_workflow' => [
+                    'workflow_id' => 'migration-completed',
+                    'status' => 'completed',
+                    'history_event_count' => 8,
+                ],
+                'running_workflow_waiting_on_signal' => [
+                    'workflow_id' => 'migration-awaiting-signal',
+                    'status' => 'running',
+                    'signal_name' => 'approve',
+                ],
+                'workflow_with_activity' => [
+                    'workflow_id' => 'migration-activity',
+                    'activity_type' => 'migration_sample_activity',
+                    'activity_completed' => true,
+                ],
+                'workflow_mid_activity_retry' => [
+                    'workflow_id' => 'migration-retrying-activity',
+                    'attempt' => 2,
+                    'next_retry_at' => '2026-05-31T22:42:00Z',
+                ],
+            ],
+            'seeded_schedules' => [
+                'active_schedule' => [
+                    'schedule_id' => 'migration-cross-upgrade-schedule',
+                    'next_fire_at' => '2026-05-31T22:45:00Z',
+                ],
+            ],
+            'seeded_worker_registrations' => [
+                'registered_workers' => [
+                    [
+                        'worker_id' => 'migration-v1-worker',
+                        'task_queue' => 'migration-v1',
+                    ],
+                ],
+            ],
+            'queryable_history' => [
+                'queryable_history' => [
+                    'workflow_ids' => [
+                        'migration-completed',
+                        'migration-awaiting-signal',
+                    ],
+                    'history_exported' => true,
+                ],
+            ],
+        ];
+        $scenarioResults['documented_migration_steps_execute']['observed_outputs'] = [
+            'migration_guide_revision' => [
+                'url' => 'https://durable-workflow.github.io/docs/2.0/migration/',
+                'sha256' => 'migration-guide-sha',
+            ],
+            'commands_executed' => [
+                'composer require durable-workflow/workflow:2.0.0-alpha.185',
+                'php artisan migrate',
+                'php artisan queue:restart',
+            ],
+            'exit_codes' => [0, 0, 0],
+            'command_timings' => [
+                'composer require durable-workflow/workflow:2.0.0-alpha.185' => 1280,
+                'php artisan migrate' => 430,
+                'php artisan queue:restart' => 95,
+            ],
+            'schema_or_storage_migration_output' => [
+                'migrations_ran' => true,
+                'workflow_storage_tables_created' => true,
+            ],
+        ];
+
         return [
             'schema' => MigrationRuntimeContract::RESULT_SCHEMA,
             'outcome' => 'pass',
@@ -648,9 +809,19 @@ class MigrationRuntimeContractTest extends TestCase
             'local_product_source_checkouts_used' => false,
             'findings' => [],
             'finding_links' => [],
-            'migration_plan' => ['guide_revision' => 'docs/2.0/migration'],
-            'preupgrade_state_snapshot' => ['state_kinds' => MigrationRuntimeContract::manifest()['required_matrix']['state_kinds']],
-            'postupgrade_state_snapshot' => ['state_kinds' => MigrationRuntimeContract::manifest()['required_matrix']['state_kinds']],
+            'migration_plan' => [
+                'guide_revision' => 'docs/2.0/migration',
+                'commands_executed' => $scenarioResults['documented_migration_steps_execute']['observed_outputs']['commands_executed'],
+                'command_timings' => $scenarioResults['documented_migration_steps_execute']['observed_outputs']['command_timings'],
+            ],
+            'preupgrade_state_snapshot' => [
+                'state_kinds' => MigrationRuntimeContract::manifest()['required_matrix']['state_kinds'],
+                'workflow_ids' => ['migration-completed', 'migration-awaiting-signal', 'migration-retrying-activity'],
+            ],
+            'postupgrade_state_snapshot' => [
+                'state_kinds' => MigrationRuntimeContract::manifest()['required_matrix']['state_kinds'],
+                'workflow_ids' => ['migration-completed', 'migration-awaiting-signal', 'migration-retrying-activity'],
+            ],
             'history_dumps' => ['completed' => true, 'running' => true],
             'activity_attempts' => ['retry_preserved' => true],
             'schedule_ticks' => ['cadence_preserved' => true],

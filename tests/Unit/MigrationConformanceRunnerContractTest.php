@@ -936,6 +936,66 @@ COMMAND;
         $this->assertArrayHasKey('latest_supported_v1_state_setup', $result['finding_links']);
     }
 
+    public function test_runner_downgrades_supplied_pass_scenario_without_realistic_v1_state_cells(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner realistic-state gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_workflows'] =
+            'seeded_workflows-observed';
+        $evidence['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['queryable_history'] =
+            'queryable_history-observed';
+
+        $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-shallow-state-');
+        $scenario = $result['scenario_results']['latest_supported_v1_state_setup'];
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame('not_covered', $scenario['status']);
+        foreach ([
+            'seeded_workflows.completed_workflow',
+            'seeded_workflows.running_workflow_waiting_on_signal',
+            'seeded_workflows.workflow_with_activity',
+            'seeded_workflows.workflow_mid_activity_retry',
+            'queryable_history.queryable_history',
+        ] as $field) {
+            $this->assertContains($field, $scenario['observed_outputs']['missing_required_fields']);
+        }
+    }
+
+    public function test_runner_keeps_expected_state_kind_snapshots_non_passing(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner state snapshot gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $expectedStateKinds = MigrationRuntimeContract::manifest()['required_matrix']['state_kinds'];
+        $evidence['preupgrade_state_snapshot'] = [
+            'status' => 'pass',
+            'expected_state_kinds' => $expectedStateKinds,
+            'observed_behavior' => 'runner listed the expected state matrix without observed v1 state evidence',
+        ];
+        $evidence['postupgrade_state_snapshot'] = [
+            'status' => 'pass',
+            'expected_state_kinds' => $expectedStateKinds,
+            'observed_behavior' => 'runner listed the expected state matrix without observed v2 state evidence',
+        ];
+
+        $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-expected-state-kinds-');
+
+        $this->assertSame(
+            'non_passing',
+            $result['outcome'],
+            'expected_state_kinds alone must not allow the migration runner to emit pass',
+        );
+        $this->assertSame($expectedStateKinds, $result['preupgrade_state_snapshot']['expected_state_kinds']);
+        $this->assertSame($expectedStateKinds, $result['postupgrade_state_snapshot']['expected_state_kinds']);
+    }
+
     public function test_runner_records_run_record_findings_for_missing_top_level_sections(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -1467,6 +1527,76 @@ COMMAND;
             ];
         }
 
+        $scenarioResults['latest_supported_v1_state_setup']['observed_outputs'] = [
+            'source_release_versions' => $this->artifactVersions(),
+            'seeded_workflows' => [
+                'completed_workflow' => [
+                    'workflow_id' => 'migration-completed',
+                    'status' => 'completed',
+                    'history_event_count' => 8,
+                ],
+                'running_workflow_waiting_on_signal' => [
+                    'workflow_id' => 'migration-awaiting-signal',
+                    'status' => 'running',
+                    'signal_name' => 'approve',
+                ],
+                'workflow_with_activity' => [
+                    'workflow_id' => 'migration-activity',
+                    'activity_type' => 'migration_sample_activity',
+                    'activity_completed' => true,
+                ],
+                'workflow_mid_activity_retry' => [
+                    'workflow_id' => 'migration-retrying-activity',
+                    'attempt' => 2,
+                    'next_retry_at' => '2026-05-31T22:42:00Z',
+                ],
+            ],
+            'seeded_schedules' => [
+                'active_schedule' => [
+                    'schedule_id' => 'migration-cross-upgrade-schedule',
+                    'next_fire_at' => '2026-05-31T22:45:00Z',
+                ],
+            ],
+            'seeded_worker_registrations' => [
+                'registered_workers' => [
+                    [
+                        'worker_id' => 'migration-v1-worker',
+                        'task_queue' => 'migration-v1',
+                    ],
+                ],
+            ],
+            'queryable_history' => [
+                'queryable_history' => [
+                    'workflow_ids' => [
+                        'migration-completed',
+                        'migration-awaiting-signal',
+                    ],
+                    'history_exported' => true,
+                ],
+            ],
+        ];
+        $scenarioResults['documented_migration_steps_execute']['observed_outputs'] = [
+            'migration_guide_revision' => [
+                'url' => 'https://durable-workflow.github.io/docs/2.0/migration/',
+                'sha256' => 'migration-guide-sha',
+            ],
+            'commands_executed' => [
+                'composer require durable-workflow/workflow:2.0.0-alpha.185',
+                'php artisan migrate',
+                'php artisan queue:restart',
+            ],
+            'exit_codes' => [0, 0, 0],
+            'command_timings' => [
+                'composer require durable-workflow/workflow:2.0.0-alpha.185' => 1280,
+                'php artisan migrate' => 430,
+                'php artisan queue:restart' => 95,
+            ],
+            'schema_or_storage_migration_output' => [
+                'migrations_ran' => true,
+                'workflow_storage_tables_created' => true,
+            ],
+        ];
+
         return [
             'outcome' => 'pass',
             'started_at' => '2026-05-31T22:39:36Z',
@@ -1477,9 +1607,19 @@ COMMAND;
             'local_product_source_checkouts_used' => false,
             'findings' => [],
             'finding_links' => [],
-            'migration_plan' => ['guide_revision' => 'docs/2.0/migration'],
-            'preupgrade_state_snapshot' => ['state_kinds' => MigrationRuntimeContract::manifest()['required_matrix']['state_kinds']],
-            'postupgrade_state_snapshot' => ['state_kinds' => MigrationRuntimeContract::manifest()['required_matrix']['state_kinds']],
+            'migration_plan' => [
+                'guide_revision' => 'docs/2.0/migration',
+                'commands_executed' => $scenarioResults['documented_migration_steps_execute']['observed_outputs']['commands_executed'],
+                'command_timings' => $scenarioResults['documented_migration_steps_execute']['observed_outputs']['command_timings'],
+            ],
+            'preupgrade_state_snapshot' => [
+                'state_kinds' => MigrationRuntimeContract::manifest()['required_matrix']['state_kinds'],
+                'workflow_ids' => ['migration-completed', 'migration-awaiting-signal', 'migration-retrying-activity'],
+            ],
+            'postupgrade_state_snapshot' => [
+                'state_kinds' => MigrationRuntimeContract::manifest()['required_matrix']['state_kinds'],
+                'workflow_ids' => ['migration-completed', 'migration-awaiting-signal', 'migration-retrying-activity'],
+            ],
             'history_dumps' => ['completed' => true, 'running' => true],
             'activity_attempts' => ['retry_preserved' => true],
             'schedule_ticks' => ['cadence_preserved' => true],
