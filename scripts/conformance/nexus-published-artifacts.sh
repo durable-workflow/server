@@ -3192,6 +3192,23 @@ for (const scenario of scenarioResults) {
     nonPassScenarios.push(scenario.scenario_id);
   }
 }
+const routingScenario = scenarioResults.find((scenario) => (
+  scenario.scenario_id === resultRoutingScenarioId
+));
+const routingObservedOutputs = routingScenario
+  && routingScenario.observed_outputs
+  && typeof routingScenario.observed_outputs === 'object'
+  && !Array.isArray(routingScenario.observed_outputs)
+  ? routingScenario.observed_outputs
+  : {};
+const nonPassRoutes = routingObservedOutputs.non_pass_routes
+  && typeof routingObservedOutputs.non_pass_routes === 'object'
+  && !Array.isArray(routingObservedOutputs.non_pass_routes)
+  ? routingObservedOutputs.non_pass_routes
+  : {};
+const unroutedNonPassScenarios = Array.isArray(routingObservedOutputs.unrouted_non_pass_scenarios)
+  ? routingObservedOutputs.unrouted_non_pass_scenarios
+  : [];
 
 const pins = {
   schema: 'durable-workflow.v2.nexus-runtime.pins',
@@ -3223,6 +3240,14 @@ const result = {
   artifact_install_evidence: artifactInstallEvidence,
   artifact_policy_failures: artifactPolicyFailures,
   local_product_source_checkouts_used: localProductSourceCheckoutsUsed,
+  required_scenarios: requiredScenarios,
+  reported_scenarios: scenarioResults.map((scenario) => scenario.scenario_id),
+  scenario_statuses: scenarioStatuses,
+  scenario_status_values: [...allowedStatuses],
+  non_passing_status_values: [...routedNonPassStatuses],
+  non_pass_scenarios: nonPassScenarios,
+  non_pass_routes: nonPassRoutes,
+  unrouted_non_pass_scenarios: unroutedNonPassScenarios,
   topology: {
     namespaces: ['tenant-a', 'tenant-b', 'shared', 'denied'],
     endpoint: 'shared:Greeter',
@@ -3268,8 +3293,16 @@ const record = {
   reportedScenarios: scenarioResults.map((scenario) => scenario.scenario_id),
   scenario_statuses: scenarioStatuses,
   scenarioStatuses,
+  scenario_status_values: [...allowedStatuses],
+  scenarioStatusValues: [...allowedStatuses],
+  non_passing_status_values: [...routedNonPassStatuses],
+  nonPassingStatusValues: [...routedNonPassStatuses],
   non_pass_scenarios: nonPassScenarios,
   nonPassScenarios,
+  non_pass_routes: nonPassRoutes,
+  nonPassRoutes,
+  unrouted_non_pass_scenarios: unroutedNonPassScenarios,
+  unroutedNonPassScenarios,
   scenario_results: scenarioResults,
   scenarioResults,
   finding_links: findingLinks,

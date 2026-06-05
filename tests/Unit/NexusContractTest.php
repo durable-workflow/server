@@ -937,13 +937,22 @@ class NexusContractTest extends TestCase
         $this->assertSame($result['finding_links'], $record['findingLinks']);
         $this->assertSame(
             'pass',
+            $result['scenario_statuses']['published_artifact_install_only'],
+        );
+        $this->assertSame(
+            'pass',
             $record['scenario_statuses']['published_artifact_install_only'],
         );
+        $this->assertSame($result['scenario_statuses'], $record['scenario_statuses']);
+        $this->assertContains('runner_blocked', $result['scenario_status_values']);
+        $this->assertContains('not_covered', $result['non_passing_status_values']);
         $this->assertContains(
             'result_record_and_product_finding_routing',
             $record['reported_scenarios'],
         );
         $this->assertSame([], $record['non_pass_scenarios']);
+        $this->assertSame([], $result['non_pass_scenarios']);
+        $this->assertSame([], $result['non_pass_routes']);
     }
 
     public function test_host_runner_promotes_dedicated_install_evidence_into_existing_legacy_install_scenario(): void
@@ -1181,8 +1190,18 @@ class NexusContractTest extends TestCase
         $this->assertSame('pass', $routingScenario['status']);
         $this->assertSame(
             'not_covered',
+            $result['scenario_statuses']['published_artifact_install_only'],
+        );
+        $this->assertSame(
+            'not_covered',
+            $result['scenario_statuses']['tenant_a_calls_shared_service'],
+        );
+        $this->assertContains('tenant_a_calls_shared_service', $result['non_pass_scenarios']);
+        $this->assertSame(
+            'not_covered',
             $routingScenario['observed_outputs']['scenario_statuses']['tenant_a_calls_shared_service'],
         );
+        $this->assertTrue($result['non_pass_routes']['tenant_a_calls_shared_service']['routed']);
         $this->assertTrue(
             $routingScenario['observed_outputs']['non_pass_routes']['tenant_a_calls_shared_service']['routed'],
         );
@@ -1256,6 +1275,14 @@ class NexusContractTest extends TestCase
         $this->assertSame('not_covered', $routingScenario['observed_outputs']['scenario_statuses']['python_caller_php_service']);
         $this->assertSame('runner_blocked', $routingScenario['observed_outputs']['scenario_statuses']['caller_cancellation_propagates_to_service']);
         $this->assertTrue($routingScenario['observed_outputs']['non_pass_findings_routed']);
+        $this->assertSame(
+            $routingScenario['observed_outputs']['scenario_statuses'],
+            $result['scenario_statuses'],
+        );
+        $this->assertSame(
+            $routingScenario['observed_outputs']['non_pass_routes'],
+            $result['non_pass_routes'],
+        );
 
         foreach ([
             'tenant_a_calls_shared_service',
