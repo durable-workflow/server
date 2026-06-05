@@ -34,6 +34,12 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'migration-conformance-result.json',
             'migration-conformance-record.json',
             'durable-workflow.v2.migration-runtime.result',
+            'experiment: \'migration\'',
+            'runnerBlocked',
+            'artifactVersions',
+            'artifactSources',
+            'resultPath',
+            'artifactPath',
             'scenario_results',
             'published_artifact_versions',
             'resolved_artifact_versions',
@@ -1141,6 +1147,18 @@ COMMAND;
             );
             $this->assertSame($evidence['history_dumps'], $result['history_dumps']);
             $this->assertSame($evidence['artifact_sources'], $record['artifact_sources']);
+            $this->assertSame('migration', $record['experiment']);
+            $this->assertFalse($record['runnerBlocked']);
+            $this->assertSame($evidence['resolved_artifact_versions'], $record['artifactVersions']);
+            $this->assertSame($evidence['published_artifact_versions'], $record['publishedArtifactVersions']);
+            $this->assertSame($evidence['resolved_artifact_versions'], $record['resolvedArtifactVersions']);
+            $this->assertSame($evidence['artifact_sources'], $record['artifactSources']);
+            $this->assertFalse($record['localProductSourceCheckoutsUsed']);
+            $this->assertSame($record['scenario_statuses'], $record['scenarioStatuses']);
+            $this->assertSame($record['non_pass_scenarios'], $record['nonPassScenarios']);
+            $this->assertSame($record['finding_links'], $record['findingLinks']);
+            $this->assertSame($resultDir.'/migration-conformance-result.json', $record['resultPath']);
+            $this->assertSame($resultDir.'/migration-published-artifacts.json', $record['artifactPath']);
             $this->assertSame($evidence['migration_plan'], $record['migration_plan']);
             $this->assertSame($evidence['preupgrade_state_snapshot'], $record['preupgrade_state_snapshot']);
             $this->assertSame($evidence['rollback_observations'], $record['rollback_observations']);

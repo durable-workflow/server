@@ -1651,22 +1651,35 @@ function writeArtifacts(
 
 function writeResult(result) {
   const scenarioResults = objectValue(result.scenario_results);
+  const resultPath = path.join(resultDir, 'migration-conformance-result.json');
+  const artifactPath = path.join(resultDir, 'migration-published-artifacts.json');
   writeJson('migration-conformance-result.json', result);
   writeJson('migration-conformance-record.json', {
     schema: RECORD_SCHEMA,
     version: 1,
+    experiment: 'migration',
     generated_at: result.generated_at,
     started_at: result.started_at,
     finished_at: result.finished_at,
     outcome: result.outcome,
     runner_blocked: result.runner_blocked,
+    runnerBlocked: result.runner_blocked === true,
     artifact_versions: result.artifact_versions,
+    artifactVersions: result.artifact_versions,
     published_artifact_versions: result.published_artifact_versions,
+    publishedArtifactVersions: result.published_artifact_versions,
     resolved_artifact_versions: result.resolved_artifact_versions,
+    resolvedArtifactVersions: result.resolved_artifact_versions,
     artifact_sources: result.artifact_sources,
+    artifactSources: result.artifact_sources,
     public_artifact_resolution: result.public_artifact_resolution ?? {},
+    publicArtifactResolution: result.public_artifact_resolution ?? {},
     artifact_prerequisite_failures: result.artifact_prerequisite_failures,
+    artifactPrerequisiteFailures: result.artifact_prerequisite_failures,
     local_product_source_checkouts_used: result.local_product_source_checkouts_used,
+    localProductSourceCheckoutsUsed: result.local_product_source_checkouts_used === true,
+    resultPath,
+    artifactPath,
     result_file: 'migration-conformance-result.json',
     artifact_file: 'migration-published-artifacts.json',
     required_scenarios: effectiveRequiredScenarios(),
@@ -1674,10 +1687,17 @@ function writeResult(result) {
     scenario_statuses: Object.fromEntries(
       Object.entries(scenarioResults).map(([scenarioId, scenario]) => [scenarioId, scenario?.status ?? null]),
     ),
+    scenarioStatuses: Object.fromEntries(
+      Object.entries(scenarioResults).map(([scenarioId, scenario]) => [scenarioId, scenario?.status ?? null]),
+    ),
     non_pass_scenarios: Object.entries(scenarioResults)
       .filter(([, scenario]) => scenario?.status !== 'pass')
       .map(([scenarioId]) => scenarioId),
+    nonPassScenarios: Object.entries(scenarioResults)
+      .filter(([, scenario]) => scenario?.status !== 'pass')
+      .map(([scenarioId]) => scenarioId),
     finding_links: result.finding_links,
+    findingLinks: result.finding_links,
     findings: result.findings,
     migration_plan: result.migration_plan,
     preupgrade_state_snapshot: result.preupgrade_state_snapshot,
