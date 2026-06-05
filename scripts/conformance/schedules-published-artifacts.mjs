@@ -3942,19 +3942,7 @@ async function startPublishedComposeServices({
 
   await execLogged(
     'docker',
-    [...baseArgs, 'up', '-d', 'mysql', 'redis'],
-    path.join(resultDir, `${logPrefix}-compose-dependencies-up.log`),
-    env,
-  );
-  await execLogged(
-    'docker',
-    [...baseArgs, 'run', '--rm', 'bootstrap'],
-    path.join(resultDir, `${logPrefix}-bootstrap.log`),
-    env,
-  );
-  await execLogged(
-    'docker',
-    [...baseArgs, 'up', '-d', '--no-deps', ...services],
+    [...baseArgs, 'up', '-d', ...services],
     path.join(resultDir, `${logPrefix}-compose-up.log`),
     env,
   );

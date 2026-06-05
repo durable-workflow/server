@@ -1529,14 +1529,15 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
-    public function test_runner_bootstraps_published_compose_before_starting_schedule_shards(): void
+    public function test_runner_uses_published_compose_dependency_graph_for_schedule_shards(): void
     {
         $repoRoot = dirname(__DIR__, 2);
         $source = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
 
         $this->assertStringContainsString('async function startPublishedComposeServices', $source);
-        $this->assertStringContainsString("'run', '--rm', 'bootstrap'", $source);
-        $this->assertStringContainsString("'up', '-d', '--no-deps', ...services", $source);
+        $this->assertStringContainsString("'up', '-d', ...services", $source);
+        $this->assertStringNotContainsString("'run', '--rm', 'bootstrap'", $source);
+        $this->assertStringNotContainsString("'--no-deps'", $source);
         $this->assertGreaterThanOrEqual(
             3,
             substr_count($source, "markArtifactSource(artifactSources, 'server'"),
