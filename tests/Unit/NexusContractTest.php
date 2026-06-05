@@ -223,6 +223,22 @@ class NexusContractTest extends TestCase
             $manifest['scenario_evidence_requirements']['tenant_b_calls_shared_service'],
         );
         $this->assertContains(
+            'duplicate_call_assertion',
+            $manifest['scenario_evidence_requirements']['worker_restart_replay_does_not_reissue_call'],
+        );
+        $this->assertContains(
+            'service_invocation_count',
+            $manifest['scenario_evidence_requirements']['worker_restart_replay_does_not_reissue_call'],
+        );
+        $this->assertContains(
+            'caller_history_rows',
+            $manifest['scenario_evidence_requirements']['caller_cancellation_propagates_to_service'],
+        );
+        $this->assertContains(
+            'within_propagation_window',
+            $manifest['scenario_evidence_requirements']['caller_cancellation_propagates_to_service'],
+        );
+        $this->assertContains(
             'authorization_refusal_disclosed_endpoint_existence',
             $manifest['scenario_evidence_requirements']['endpoint_permission_denied_without_information_leak'],
         );
@@ -1181,6 +1197,116 @@ class NexusContractTest extends TestCase
         }
     }
 
+    public function test_host_runner_requires_replay_and_cancellation_timing_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        foreach ([
+            'worker_restart_replay_does_not_reissue_call' => [
+                'caller_history_rows',
+                'service_logs',
+                'caller_worker_restarted_at',
+                'duplicate_call_assertion',
+            ],
+            'caller_cancellation_propagates_to_service' => [
+                'caller_history_rows',
+                'service_logs',
+                'cancellation_propagation_ms',
+                'within_propagation_window',
+            ],
+        ] as $scenarioId => $missingFields) {
+            $evidence = $this->completeRunnerEvidence();
+            foreach ($evidence['scenario_results'] as &$scenario) {
+                if (($scenario['scenario_id'] ?? null) === $scenarioId) {
+                    foreach ($missingFields as $field) {
+                        unset($scenario['observed_outputs'][$field]);
+                    }
+                }
+            }
+            unset($scenario);
+
+            $result = $this->runNexusEvidence($evidence, 'dw-nexus-replay-cancel-evidence-');
+            $scenario = $this->scenarioResult($result, $scenarioId);
+
+            $this->assertSame('fail', $result['outcome']);
+            $this->assertSame('not_covered', $scenario['status']);
+            $this->assertSame(
+                $missingFields[0],
+                $scenario['observed_outputs']['scenario_evidence_failures'][0]['field'],
+            );
+            $this->assertContains(
+                'conformance_runner_coverage_gap',
+                array_column($scenario['linked_findings'], 'finding_type'),
+            );
+        }
+    }
+
+    public function test_host_runner_rejects_duplicate_replay_invocation_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if ($scenario['scenario_id'] === 'worker_restart_replay_does_not_reissue_call') {
+                $scenario['observed_outputs']['service_invocation_count'] = 2;
+                $scenario['observed_outputs']['duplicate_call_issue_count'] = 1;
+                $scenario['observed_outputs']['duplicate_call_assertion']['observed_service_invocations'] = 2;
+                $scenario['observed_outputs']['duplicate_call_assertion']['duplicate_call_issue_count'] = 1;
+            }
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-duplicate-replay-');
+        $scenario = $this->scenarioResult($result, 'worker_restart_replay_does_not_reissue_call');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertSame(
+            'invalid_scenario_specific_evidence',
+            $scenario['observed_outputs']['scenario_evidence_failures'][0]['code'],
+        );
+        $this->assertContains(
+            'nexus_scenario_evidence_mismatch',
+            array_column($scenario['linked_findings'], 'finding_type'),
+        );
+    }
+
+    public function test_host_runner_rejects_cancellation_outside_propagation_window(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if ($scenario['scenario_id'] === 'caller_cancellation_propagates_to_service') {
+                $scenario['observed_outputs']['within_propagation_window'] = false;
+            }
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-cancel-window-');
+        $scenario = $this->scenarioResult($result, 'caller_cancellation_propagates_to_service');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertSame(
+            'invalid_scenario_specific_evidence',
+            $scenario['observed_outputs']['scenario_evidence_failures'][0]['code'],
+        );
+        $this->assertContains(
+            'nexus_scenario_evidence_mismatch',
+            array_column($scenario['linked_findings'], 'finding_type'),
+        );
+    }
+
     public function test_host_runner_rejects_pass_when_retry_attempt_visibility_is_false(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -1445,13 +1571,62 @@ class NexusContractTest extends TestCase
                 'typed_error_preserved' => true,
             ],
             'worker_restart_replay_does_not_reissue_call' => $base + [
+                'issued_call_ids' => ['svc-'.$scenarioId],
+                'caller_history_rows' => [
+                    [
+                        'service_call_id' => 'svc-'.$scenarioId,
+                        'status' => 'started',
+                        'outcome' => 'accepted',
+                    ],
+                    [
+                        'service_call_id' => 'svc-'.$scenarioId,
+                        'status' => 'completed',
+                        'outcome' => 'completed',
+                    ],
+                ],
+                'service_logs' => [
+                    [
+                        'at' => '2026-06-02T12:00:02Z',
+                        'message' => 'Greeter.greet accepted svc-'.$scenarioId,
+                    ],
+                    [
+                        'at' => '2026-06-02T12:00:35Z',
+                        'message' => 'Greeter.greet completed svc-'.$scenarioId,
+                    ],
+                ],
+                'call_issued_at' => '2026-06-02T12:00:01Z',
+                'caller_worker_stopped_at' => '2026-06-02T12:00:04Z',
+                'caller_worker_restarted_at' => '2026-06-02T12:00:12Z',
+                'call_completed_at' => '2026-06-02T12:00:35Z',
                 'worker_restart_observed' => true,
                 'history_replay_recovered_call' => true,
+                'service_invocation_count' => 1,
+                'duplicate_call_assertion' => [
+                    'expected_service_invocations' => 1,
+                    'observed_service_invocations' => 1,
+                    'duplicate_call_issue_count' => 0,
+                ],
                 'duplicate_call_issue_count' => 0,
             ],
             'caller_cancellation_propagates_to_service' => $base + [
+                'caller_history_rows' => [
+                    [
+                        'service_call_id' => 'svc-'.$scenarioId,
+                        'status' => 'cancelled',
+                        'outcome' => 'cancelled',
+                    ],
+                ],
+                'service_logs' => [
+                    [
+                        'at' => '2026-06-02T12:01:03Z',
+                        'message' => 'Greeter.greet observed NexusCancellation for svc-'.$scenarioId,
+                    ],
+                ],
                 'caller_cancelled_at' => '2026-06-02T12:01:00Z',
                 'target_cancelled_at' => '2026-06-02T12:01:03Z',
+                'cancellation_propagation_ms' => 3000,
+                'within_propagation_window' => true,
+                'cancellation_type' => 'NexusCancellation',
                 'typed_cancellation_observed' => true,
             ],
             'php_caller_python_service' => $base + [

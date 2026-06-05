@@ -63,6 +63,12 @@ The authoritative machine-readable contract is published from
   request, response, service-call record, or caller-history evidence used
   to prove that `tenant-a` and `tenant-b` reached the same shared
   `Greeter.greet` endpoint,
+  when replay evidence omits call ids, caller-history rows, target
+  service logs, restart timing, a single-invocation count, or a
+  duplicate-call assertion, when cancellation evidence omits
+  caller-history rows, target service logs, cancellation timing, the
+  measured propagation duration, documented-window confirmation, or the
+  typed cancellation observed by the service,
   when retry-attempt visibility or authorization non-disclosure evidence
   contradicts the Nexus contract, when the source-free evidence field is
   omitted, or when the evidence reports local product source checkouts as
