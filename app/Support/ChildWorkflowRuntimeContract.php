@@ -16,7 +16,7 @@ final class ChildWorkflowRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.child-workflow-runtime.contract';
 
-    public const VERSION = 7;
+    public const VERSION = 9;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.child-workflow-runtime.result';
 
@@ -169,6 +169,7 @@ final class ChildWorkflowRuntimeContract
                 'published_artifact_install_only' => [
                     'required_behavior' => 'all_artifacts_resolved_from_published_channels',
                     'evidence' => [
+                        'artifact_install_evidence',
                         'server_image',
                         'cli_release',
                         'workflow_php_package',
@@ -266,6 +267,7 @@ final class ChildWorkflowRuntimeContract
             'host_runner_contract' => [
                 'status' => 'required_for_passing_child_workflows_conformance',
                 'result_schema' => self::RESULT_SCHEMA,
+                'published_artifact_runner' => 'scripts/conformance/child-workflows-published-artifacts.sh',
                 'must_probe_runtime_published_surfaces' => true,
                 'must_emit_result_for_every_required_scenario' => true,
                 'smoke_summary_only_outcome' => 'non_passing',

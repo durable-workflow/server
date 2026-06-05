@@ -248,9 +248,12 @@ category emits a warning and does not block.
   fan-out concurrency evidence, namespace behavior, published artifact
   versions including Waterline, run timestamps and outcome, the coverage
   gate that keeps a Python-only smoke subset non-passing, and a
-  result-gate evaluator that rejects incomplete, placeholder, or
-  finding-free non-pass scenario records. A child-workflow result whose
-  scenario matrix is green but whose declared outcome is non-passing
+  source-free runner at
+  `scripts/conformance/child-workflows-published-artifacts.sh` that emits
+  one result per required scenario. The result-gate evaluator rejects
+  incomplete, placeholder, or finding-free non-pass scenario records. A
+  child-workflow result whose scenario matrix is green but whose declared
+  outcome is non-passing
   remains non-passing; every declared outcome alias (`outcome`, `status`,
   `verdict`) and the evaluated gate status must agree before rollup can
   count the evidence as passing.

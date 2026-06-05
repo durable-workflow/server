@@ -246,6 +246,10 @@ class ChildWorkflowRuntimeContractTest extends TestCase
 
         $this->assertSame('required_for_passing_child_workflows_conformance', $hostRunner['status']);
         $this->assertSame(ChildWorkflowRuntimeContract::RESULT_SCHEMA, $hostRunner['result_schema']);
+        $this->assertSame(
+            'scripts/conformance/child-workflows-published-artifacts.sh',
+            $hostRunner['published_artifact_runner'],
+        );
         $this->assertTrue($hostRunner['must_probe_runtime_published_surfaces']);
         $this->assertTrue($hostRunner['must_emit_result_for_every_required_scenario']);
         $this->assertSame('non_passing', $hostRunner['smoke_summary_only_outcome']);
@@ -303,6 +307,125 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             ],
             $hostRunner['routing_policy']['missing_required_scenario'],
         );
+    }
+
+    public function test_published_artifact_runner_routes_every_unexecuted_child_workflow_cell(): void
+    {
+        $source = $this->read('scripts/conformance/child-workflows-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            'Usage: child-workflows-published-artifacts.sh [--result-dir DIR|--result-dir=DIR] [--keep-run-root[=1|true]]',
+            $source,
+            'host runners must be able to pass the same result-dir and keep-run-root flags used by the other conformance scripts',
+        );
+        $this->assertStringContainsString('child-workflows-result.json', $source);
+        $this->assertStringContainsString('child-workflows-record.json', $source);
+        $this->assertStringContainsString('DW_CHILD_WORKFLOWS_SCENARIO_MANIFEST', $source);
+        $this->assertStringContainsString('DW_CHILD_WORKFLOWS_ARTIFACT_INSTALL_EVIDENCE', $source);
+
+        foreach ([
+            'DW_SERVER_VERSION',
+            'DW_CLI_VERSION',
+            'DW_PYTHON_SDK_VERSION',
+            'DW_WORKFLOW_PHP_VERSION',
+            'DW_WATERLINE_VERSION',
+        ] as $envName) {
+            $this->assertStringContainsString($envName, $source);
+        }
+
+        foreach (ChildWorkflowRuntimeContract::manifest()['required_scenarios'] as $scenarioId) {
+            $this->assertStringContainsString(
+                $scenarioId,
+                $source,
+                "the published-artifact runner must know how to route scenario $scenarioId",
+            );
+        }
+
+        foreach ([
+            'not_covered',
+            'conformance_runner_coverage_gap',
+            'user_visible_reproduction_steps',
+            'extend the host runner to execute this scenario against published artifacts',
+            'artifact_install_evidence',
+            'artifact_install_evidence missing',
+            'install_evidence_pass',
+            'not_exercised',
+            'FORBIDDEN_INSTALL_SOURCE_TOKENS',
+        ] as $token) {
+            $this->assertStringContainsString($token, $source);
+        }
+
+        $this->assertStringContainsString(
+            '"outcome": "error" if runner_blocked else "fail"',
+            $source,
+            'coverage gaps must record a non-runner-blocked fail; only missing host prerequisites may become runner-blocked',
+        );
+    }
+
+    public function test_published_artifact_runner_does_not_pass_install_cell_without_install_evidence(): void
+    {
+        if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
+            || trim((string) shell_exec('command -v python3 2>/dev/null')) === '') {
+            $this->markTestSkipped('bash and python3 are required to exercise the child-workflows runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = $repoRoot . '/storage/framework/child-workflows-' . bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($resultDir, 0777, true));
+
+        try {
+            $env = [
+                'DW_SERVER_VERSION' => '9.9.9',
+                'DW_CLI_VERSION' => '9.9.9',
+                'DW_PYTHON_SDK_VERSION' => '9.9.9',
+                'DW_WORKFLOW_PHP_VERSION' => '9.9.9',
+                'DW_WATERLINE_VERSION' => '9.9.9',
+            ];
+            $envPrefix = implode(' ', array_map(
+                static fn (string $name, string $value): string => $name . '=' . escapeshellarg($value),
+                array_keys($env),
+                array_values($env),
+            ));
+            $command = sprintf(
+                '%s bash %s --result-dir %s >/dev/null 2>&1',
+                $envPrefix,
+                escapeshellarg($repoRoot . '/scripts/conformance/child-workflows-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+            $this->assertSame(1, $exitCode);
+
+            $result = json_decode(
+                file_get_contents($resultDir . '/child-workflows-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $installScenario = null;
+            foreach ($result['scenario_results'] ?? [] as $scenario) {
+                if (($scenario['scenario_id'] ?? null) === 'published_artifact_install_only') {
+                    $installScenario = $scenario;
+                    break;
+                }
+            }
+
+            $this->assertIsArray($installScenario);
+            $this->assertSame('not_covered', $installScenario['status']);
+            $this->assertContains(
+                'artifact_install_evidence missing',
+                $installScenario['observed_outputs']['artifact_install_failures'] ?? [],
+            );
+        } finally {
+            foreach (glob($resultDir . '/*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($resultDir)) {
+                rmdir($resultDir);
+            }
+        }
     }
 
     public function test_manifest_publishes_an_enforceable_result_gate(): void
@@ -663,7 +786,7 @@ class ChildWorkflowRuntimeContractTest extends TestCase
         $this->assertContains('missing_namespace_behavior_field', $failureCodes);
     }
 
-    public function test_result_gate_requires_published_artifact_install_evidence(): void
+    public function test_result_gate_requires_published_artifact_install_section_fields(): void
     {
         $result = $this->completeChildWorkflowResult();
         unset($result['published_artifact_install']);
@@ -682,6 +805,56 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             'sdk_python_package',
             'waterline_artifact',
         ], array_column($installFailures, 'field'));
+    }
+
+    public function test_result_gate_requires_published_artifact_install_evidence(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        unset(
+            $result['artifact_install_evidence'],
+            $result['published_artifact_install']['artifact_install_evidence'],
+            $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_install_evidence']
+        );
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'missing_published_artifact_install_evidence',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_non_passing_published_artifact_install_evidence(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        $result['artifact_install_evidence']['artifacts'][1]['status'] = 'not_covered';
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $installFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'published_artifact_install_evidence_not_pass',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertCount(1, $installFailures);
+        $this->assertSame('cli', $installFailures[0]['artifact']);
+    }
+
+    public function test_result_gate_rejects_generic_published_artifact_install_sources(): void
+    {
+        $result = $this->completeChildWorkflowResult();
+        $result['artifact_install_evidence']['artifacts'][0]['source'] = 'docker';
+
+        $evaluation = ChildWorkflowRuntimeResultGate::evaluate($result);
+        $sourceFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'invalid_published_artifact_install_evidence_source',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertCount(1, $sourceFailures);
+        $this->assertSame('server', $sourceFailures[0]['artifact']);
     }
 
     public function test_result_gate_accepts_a_complete_passing_matrix(): void
@@ -793,6 +966,45 @@ class ChildWorkflowRuntimeContractTest extends TestCase
                 ],
             ];
         }
+        $artifactInstallEvidence = [
+            'schema' => 'durable-workflow.v2.child-workflow-runtime.artifact-install-evidence',
+            'generated_at' => '2026-05-20T05:00:30Z',
+            'local_product_source_checkouts_used' => false,
+            'artifacts' => [
+                [
+                    'artifact' => 'server',
+                    'version' => '0.2.144',
+                    'source' => 'docker://durableworkflow/server:0.2.144',
+                    'status' => 'pass',
+                ],
+                [
+                    'artifact' => 'cli',
+                    'version' => '0.1.45',
+                    'source' => 'https://github.com/durable-workflow/cli/releases/download/v0.1.45/dw-linux-amd64',
+                    'status' => 'pass',
+                ],
+                [
+                    'artifact' => 'workflow-php',
+                    'version' => '2.0.0-alpha.164',
+                    'source' => 'packagist:durable-workflow/workflow:2.0.0-alpha.164',
+                    'status' => 'pass',
+                ],
+                [
+                    'artifact' => 'sdk-python',
+                    'version' => '0.4.60',
+                    'source' => 'pypi:durable-workflow==0.4.60',
+                    'status' => 'pass',
+                ],
+                [
+                    'artifact' => 'waterline',
+                    'version' => '2.0.0-alpha.54',
+                    'source' => 'packagist:durable-workflow/waterline:2.0.0-alpha.54',
+                    'status' => 'pass',
+                ],
+            ],
+        ];
+        $scenarioResults['published_artifact_install_only']['observed_outputs']['artifact_install_evidence'] =
+            $artifactInstallEvidence;
 
         return [
             'schema' => ChildWorkflowRuntimeContract::RESULT_SCHEMA,
@@ -807,12 +1019,22 @@ class ChildWorkflowRuntimeContractTest extends TestCase
                 'workflow' => '2.0.0-alpha.164',
                 'waterline' => '2.0.0-alpha.54',
             ],
+            'artifact_sources' => [
+                'server' => 'docker://durableworkflow/server:0.2.144',
+                'cli' => 'https://github.com/durable-workflow/cli/releases/download/v0.1.45/dw-linux-amd64',
+                'sdk-python' => 'pypi:durable-workflow==0.4.60',
+                'workflow' => 'packagist:durable-workflow/workflow:2.0.0-alpha.164',
+                'workflow-php' => 'packagist:durable-workflow/workflow:2.0.0-alpha.164',
+                'waterline' => 'packagist:durable-workflow/waterline:2.0.0-alpha.54',
+            ],
+            'artifact_install_evidence' => $artifactInstallEvidence,
             'published_artifact_install' => [
                 'server_image' => 'durableworkflow/server:0.2.144',
                 'cli_release' => 'dw 0.1.45',
                 'workflow_php_package' => 'durable-workflow/workflow 2.0.0-alpha.164',
                 'sdk_python_package' => 'durable-workflow 0.4.60',
                 'waterline_artifact' => 'waterline 2.0.0-alpha.54',
+                'artifact_install_evidence' => $artifactInstallEvidence,
             ],
             'runtime_matrix' => [
                 'runtimes' => ['workflow-php', 'sdk-python'],
@@ -949,5 +1171,10 @@ class ChildWorkflowRuntimeContractTest extends TestCase
             'finding_links' => [],
             'scenario_results' => $scenarioResults,
         ];
+    }
+
+    private function read(string $path): string
+    {
+        return file_get_contents(dirname(__DIR__, 2) . '/' . $path) ?: '';
     }
 }
