@@ -432,6 +432,9 @@ async function runPythonNoCompatibleShard(python) {
   const incompatiblePollStatuses = incompatiblePolls
     .map((poll) => stringValue(poll.poll_status) || stringValue(poll.response?.poll_status))
     .filter(Boolean);
+  const incompatibleWorkerPollErrorCount = incompatiblePollStatuses
+    .filter((pollStatus) => isGenericPollErrorStatus(pollStatus))
+    .length;
   const operatorVisibleSignal = stringValue(firstExplicitNoCompatibleSignal(
     ...incompatiblePollStatuses,
     workflowVisibility.compatibility_status,
@@ -457,6 +460,7 @@ async function runPythonNoCompatibleShard(python) {
     deregister_response: deregisterResponse,
     incompatible_worker_poll_attempts: incompatiblePolls.length,
     incompatible_worker_poll_statuses: incompatiblePollStatuses,
+    incompatible_worker_poll_error_count: incompatibleWorkerPollErrorCount,
     incompatible_worker_polls: incompatiblePolls,
     workflow_visibility: workflowVisibility,
     worker_execution_mode: 'published_python_worker_protocol_client',
@@ -466,6 +470,7 @@ async function runPythonNoCompatibleShard(python) {
   const passes = runId !== ''
     && compatibleWorkerDeregistered
     && incompatibleWorkerTaskCount === 0
+    && incompatibleWorkerPollErrorCount === 0
     && isExplicitNoCompatibleSignal(operatorVisibleSignal)
     && (
       pendingOrTypedError === 'pending'
@@ -477,10 +482,13 @@ async function runPythonNoCompatibleShard(python) {
     artifact_versions: artifactVersions(),
     observed_behavior: incompatibleWorkerTaskCount > 0
       ? 'A published Python v2 worker received a task for a v1-pinned run after the v1-compatible worker was deregistered.'
-      : 'Published Python no-compatible-worker evidence did not prove the v1 worker was deregistered and paired with an explicit public signal.',
+      : incompatibleWorkerPollErrorCount > 0
+        ? 'Published Python no-compatible-worker evidence included generic raw poll errors, so the incompatible worker poll could not prove zero task delivery.'
+        : 'Published Python no-compatible-worker evidence did not prove the v1 worker was deregistered and paired with an explicit public signal.',
     expected_behavior: 'A v1-pinned workflow with no compatible registered worker remains unclaimed by v2 workers and exposes a typed no-compatible-worker or compatibility-blocked signal.',
     next_acceptance_criterion: 'rerun the published worker-versioning shard and record incompatible_worker_task_count equal to zero plus an explicit no-compatible-worker or compatibility-blocked signal from the published Python worker poll',
     incompatible_worker_task_count: incompatibleWorkerTaskCount,
+    incompatible_worker_poll_error_count: incompatibleWorkerPollErrorCount,
     compatible_worker_deregistered: compatibleWorkerDeregistered,
     operator_visible_signal: operatorVisibleSignal,
     v1_pinned_run_id: runId,
@@ -996,6 +1004,12 @@ function writeWorkerInput(input) {
   const workerRoot = path.join(runRoot, 'published-php-python-worker-shard', 'inputs');
   fs.mkdirSync(workerRoot, { recursive: true });
   const inputPath = path.join(workerRoot, `${input.worker_id}-${input.action}.json`);
+  const pollTimeoutSeconds = Math.max(1, numberValue(
+    process.env.DW_WV_WORKER_POLL_CLIENT_TIMEOUT_SECONDS
+      ?? process.env.DW_WV_WORKER_POLL_TIMEOUT
+      ?? process.env.DW_WORKER_POLL_TIMEOUT,
+  ) ?? 2);
+
   writeJson(inputPath, {
     server_url: serverUrl,
     token,
@@ -1009,6 +1023,7 @@ function writeWorkerInput(input) {
     fail: false,
     failure_message: 'published worker task failed',
     failure_type: 'RuntimeError',
+    poll_timeout_seconds: pollTimeoutSeconds,
     result: [],
     ...input,
   });
@@ -1390,6 +1405,10 @@ function isExplicitNoCompatibleSignal(value) {
   ].some((token) => normalized.includes(token));
 }
 
+function isGenericPollErrorStatus(value) {
+  return stringValue(value).toLowerCase() === 'poll_error';
+}
+
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -1465,7 +1484,7 @@ async def main():
             task = await client.poll_workflow_task(
                 worker_id=payload["worker_id"],
                 task_queue=payload["task_queue"],
-                timeout=2.0,
+                timeout=float(payload.get("poll_timeout_seconds") or 2.0),
             )
             if task and payload.get("complete"):
                 await client.complete_workflow_task(
@@ -1495,18 +1514,29 @@ async def main():
                 "build_id": payload["build_id"],
                 "poll_request_id": f"{payload['worker_id']}-{time.time_ns()}",
             }
-            response = await client._request(
-                "POST",
-                "/worker/workflow-tasks/poll",
-                worker=True,
-                json=body,
-                timeout=2.0,
-            )
+            try:
+                response = await client._request(
+                    "POST",
+                    "/worker/workflow-tasks/poll",
+                    worker=True,
+                    json=body,
+                    timeout=float(payload.get("poll_timeout_seconds") or 2.0),
+                )
+                poll_status = (response or {}).get("poll_status")
+                error = None
+                error_type = None
+            except Exception as exc:
+                response = None
+                poll_status = "poll_timeout" if exc.__class__.__name__ == "TimeoutException" else "poll_error"
+                error = str(exc)
+                error_type = exc.__class__.__name__
             result = {
                 "action": "raw_poll",
                 "response": response,
                 "task": (response or {}).get("task"),
-                "poll_status": (response or {}).get("poll_status"),
+                "poll_status": poll_status,
+                "error": error,
+                "error_type": error_type,
             }
         else:
             raise RuntimeError(f"unknown action: {payload['action']}")

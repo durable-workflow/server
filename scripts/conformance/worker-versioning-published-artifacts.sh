@@ -39,6 +39,10 @@ Environment overrides:
                               When unset, this runner attempts to generate a Python
                               replay/cache shard and a PHP/Python cross-language shard
                               from published PyPI and Packagist artifacts.
+  DW_WV_WORKER_POLL_CLIENT_TIMEOUT_SECONDS
+                              Client-side timeout for published-worker shard polls.
+                              Defaults to DW_WV_WORKER_POLL_TIMEOUT,
+                              DW_WORKER_POLL_TIMEOUT, then 2 seconds.
   DW_WV_SKIP_PUBLISHED_WORKER_SHARD=1
                               Skip automatic published PHP/Python worker shard generation.
 USAGE

@@ -1590,6 +1590,16 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
     outputs.poll_attempts,
     outputs.pollAttempts,
   );
+  const pollStatuses = pollStatusValuesFromOutputs(outputs);
+  const observedPollErrorCount = pollStatuses
+    .filter((pollStatus) => isGenericPollErrorStatus(pollStatus))
+    .length;
+  const rawIncompatibleWorkerPollErrorCount = firstDefined(
+    outputs.incompatible_worker_poll_error_count,
+    outputs.incompatibleWorkerPollErrorCount,
+    outputs.poll_error_count,
+    outputs.pollErrorCount,
+  );
   const rawCompatibleWorkerDeregistered = firstDefined(
     outputs.compatible_worker_deregistered,
     outputs.compatibleWorkerDeregistered,
@@ -1608,6 +1618,7 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
     outputs.typedError,
     outputs.poll_status,
     outputs.pollStatus,
+    ...pollStatuses,
     outputs.compatibility_status,
     outputs.compatibilityStatus,
   );
@@ -1621,12 +1632,18 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
     firstExplicitNoCompatibleSignal(
       outputs.poll_status,
       outputs.pollStatus,
+      ...pollStatuses,
       outputs.compatibility_status,
       outputs.compatibilityStatus,
     ),
   );
   const incompatibleWorkerTaskCount = numberValue(rawIncompatibleWorkerTaskCount);
   const incompatibleWorkerPollAttempts = numberValue(rawIncompatibleWorkerPollAttempts);
+  const reportedPollErrorCount = numberValue(rawIncompatibleWorkerPollErrorCount);
+  const incompatibleWorkerPollErrorCount = Math.max(
+    reportedPollErrorCount ?? 0,
+    observedPollErrorCount,
+  );
   const compatibleWorkerDeregistered = truthyEvidenceFlag(rawCompatibleWorkerDeregistered);
   const operatorVisibleSignal = stringValue(rawOperatorVisibleSignal);
   const pendingOrTypedError = stringValue(rawPendingOrTypedError);
@@ -1641,6 +1658,9 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
   }
   if (rawIncompatibleWorkerPollAttempts !== undefined) {
     normalizedOutputs.incompatible_worker_poll_attempts = incompatibleWorkerPollAttempts;
+  }
+  if (rawIncompatibleWorkerPollErrorCount !== undefined || observedPollErrorCount > 0) {
+    normalizedOutputs.incompatible_worker_poll_error_count = incompatibleWorkerPollErrorCount;
   }
   if (rawCompatibleWorkerDeregistered !== undefined) {
     normalizedOutputs.compatible_worker_deregistered = compatibleWorkerDeregistered;
@@ -1657,6 +1677,7 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
     worker_executed: workerExecuted,
     incompatible_worker_task_count: incompatibleWorkerTaskCount,
     incompatible_worker_poll_attempts: incompatibleWorkerPollAttempts,
+    incompatible_worker_poll_error_count: incompatibleWorkerPollErrorCount,
     compatible_worker_deregistered: compatibleWorkerDeregistered,
     operator_visible_signal: operatorVisibleSignal,
     pending_or_typed_error: pendingOrTypedError,
@@ -1664,6 +1685,7 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
       && incompatibleWorkerTaskCount === 0
       && incompatibleWorkerPollAttempts !== null
       && incompatibleWorkerPollAttempts > 0
+      && incompatibleWorkerPollErrorCount === 0
       && compatibleWorkerDeregistered
       && isExplicitNoCompatibleSignal(operatorVisibleSignal)
       && (
@@ -2014,6 +2036,10 @@ function objectValue(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
+function arrayValue(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 function firstObjectValue(...values) {
   for (const value of values) {
     const object = objectValue(value);
@@ -2228,6 +2254,37 @@ function numberValue(value) {
   }
 
   return Number.isFinite(Number(value)) ? Number(value) : null;
+}
+
+function pollStatusValuesFromOutputs(outputs) {
+  const pollStatuses = [
+    outputs.poll_status,
+    outputs.pollStatus,
+    ...arrayValue(outputs.incompatible_worker_poll_statuses),
+    ...arrayValue(outputs.incompatibleWorkerPollStatuses),
+  ];
+
+  for (const poll of [
+    ...arrayValue(outputs.incompatible_worker_polls),
+    ...arrayValue(outputs.incompatibleWorkerPolls),
+  ]) {
+    if (!poll || typeof poll !== 'object' || Array.isArray(poll)) {
+      continue;
+    }
+
+    pollStatuses.push(
+      poll.poll_status,
+      poll.pollStatus,
+      poll.response?.poll_status,
+      poll.response?.pollStatus,
+    );
+  }
+
+  return pollStatuses.map((pollStatus) => stringValue(pollStatus)).filter(Boolean);
+}
+
+function isGenericPollErrorStatus(value) {
+  return stringValue(value).toLowerCase() === 'poll_error';
 }
 
 function isExplicitNoCompatibleSignal(value) {
