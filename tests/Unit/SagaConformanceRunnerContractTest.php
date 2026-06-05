@@ -267,6 +267,132 @@ class SagaConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_php_dependent_saga_scenarios_restart_stopped_php_worker(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            'PHP_WORKER_RESTART_OBSERVATIONS: list[dict[str, Any]] = []',
+            $source,
+            'the saga runner must retain PHP worker restarts as conformance evidence',
+        );
+        $this->assertStringContainsString(
+            'def ensure_php_worker_running(reason: str) -> None:',
+            $source,
+            'PHP-dependent scenarios must verify the PHP worker before relying on it for terminal state',
+        );
+        $this->assertStringContainsString(
+            'PHP_WORKER_ID = "php-sagas-worker"',
+            $source,
+            'the runner must check the durable worker registration, not only the Docker container name',
+        );
+        $this->assertStringContainsString(
+            'control_plane_get(f"/workers/{PHP_WORKER_ID}", timeout=5)',
+            $source,
+            'PHP worker readiness must use the public worker-management control plane surface',
+        );
+        $this->assertStringContainsString(
+            "\"X-Durable-Workflow-Protocol-Version\": \"1.7\",\n            \"X-Durable-Workflow-Control-Plane-Version\": \"2\",",
+            $source,
+            'PHP worker readiness must include the control-plane version required by worker-management routes',
+        );
+        $this->assertStringContainsString(
+            "function send_worker_heartbeat(): array",
+            $source,
+            'the generated PHP worker must refresh its worker-management liveness after registration',
+        );
+        $this->assertStringContainsString(
+            "request_json('POST', '/worker/heartbeat', worker_status_payload(), 10, [404])",
+            $source,
+            'the generated PHP worker must call the public worker heartbeat endpoint',
+        );
+        $this->assertStringContainsString(
+            'maybe_send_worker_heartbeat($nextHeartbeatAt, $heartbeatEverySeconds);',
+            $source,
+            'the generated PHP worker must emit heartbeats during its long-poll loop',
+        );
+        $this->assertStringContainsString(
+            "'process_started_at' => WORKER_STARTED_AT",
+            $source,
+            'PHP worker heartbeats must include process identity so restarted workers are distinguishable',
+        );
+        $this->assertStringContainsString(
+            'if "php.book-trip" not in workflow_types:',
+            $source,
+            'the PHP worker must advertise the saga workflow type before PHP scenarios begin',
+        );
+        $this->assertStringContainsString(
+            'for activity in ["reserve_flight", "reserve_hotel", "charge_card", "cancel_hotel", "cancel_flight"]:',
+            $source,
+            'the PHP worker must advertise forward and compensation handlers before cross-runtime scenarios rely on it',
+        );
+        $this->assertStringContainsString(
+            'wait_for_php_worker_registration(reason)',
+            $source,
+            'a running PHP worker container is not enough; it must be registered and active',
+        );
+        $this->assertStringContainsString(
+            'missing.append("fresh_heartbeat")',
+            $source,
+            'PHP worker restarts must wait for a heartbeat from the replacement process instead of accepting a stale registration',
+        );
+        $this->assertStringContainsString(
+            'wait_for_php_worker_registration(reason, not_before=restarted_at)',
+            $source,
+            'the normal PHP worker restart path must require a post-restart registration heartbeat',
+        );
+        $this->assertStringContainsString(
+            'wait_for_php_worker_registration("mid_compensation_worker_restart", not_before=restarted_at)',
+            $source,
+            'the mid-compensation PHP restart must also require a post-restart registration heartbeat before resuming assertions',
+        );
+        $this->assertStringContainsString(
+            'restart_php_worker(reason)',
+            $source,
+            'a stopped PHP worker must be restarted instead of leaving workflows stuck pending',
+        );
+        $this->assertStringContainsString(
+            'capture_php_worker_logs(reason)',
+            $source,
+            'PHP worker replacement must preserve the stopped container logs as request/history-adjacent evidence',
+        );
+        $this->assertStringContainsString(
+            'php_worker_required: bool = False',
+            $source,
+            'terminal waits must be able to monitor PHP worker liveness for PHP-dependent scenarios',
+        );
+        $this->assertStringContainsString(
+            'ensure_php_worker_running(wait_label or workflow_id)',
+            $source,
+            'PHP worker liveness must be checked during terminal waits, not only before workflow start',
+        );
+        $this->assertStringContainsString(
+            'ensure_php_worker_running(f"{workflow_type} payload worker startup")',
+            $source,
+            'generic payload worker checks must use the same registration-aware PHP readiness gate',
+        );
+        $this->assertStringNotContainsString(
+            'def ensure_php_worker_running() -> None:',
+            $source,
+            'the merged runner must not leave a no-argument PHP readiness helper shadowed by the registration-aware helper',
+        );
+        $this->assertStringContainsString(
+            'php_worker_required = uses_php_worker(language, payload)',
+            $source,
+            'scenario topology must drive PHP worker liveness checks for PHP workflows and PHP-routed activities',
+        );
+        $this->assertStringContainsString(
+            '"php_worker_restart_observations": PHP_WORKER_RESTART_OBSERVATIONS',
+            $source,
+            'the completed saga report must expose PHP worker restarts in machine-readable evidence',
+        );
+        $this->assertStringContainsString(
+            '"php_worker_ready_observations": PHP_WORKER_READY_OBSERVATIONS',
+            $source,
+            'the completed saga report must expose active PHP worker registration checks as machine-readable evidence',
+        );
+    }
+
     public function test_after_forward_charge_card_scenarios_use_after_forward_expectations(): void
     {
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');

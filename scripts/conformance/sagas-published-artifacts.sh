@@ -982,6 +982,8 @@ const PROTOCOL_VERSION = '1.7';
 const PHP_QUEUE = 'sagas-php';
 const PYTHON_QUEUE = 'sagas-python';
 const WORKER_ID = 'php-sagas-worker';
+define('WORKER_STARTED_AT', gmdate('c'));
+define('WORKER_STARTED_EPOCH', time());
 
 #[Type('php.book-trip')]
 final class PhpBookTripWorkflow extends Workflow
@@ -1127,6 +1129,53 @@ function request_json(string $method, string $path, ?array $body = null, int $ti
     }
     $decoded = $response === false || $response === '' ? [] : json_decode($response, true, flags: JSON_THROW_ON_ERROR);
     return is_array($decoded) ? $decoded : [];
+}
+
+function worker_status_payload(): array
+{
+    return [
+        'worker_id' => WORKER_ID,
+        'task_slots' => [
+            'workflow_available' => 1,
+            'activity_available' => 1,
+            'session_available' => 0,
+        ],
+        'process_metrics' => [
+            'memory_bytes' => memory_get_usage(true),
+            'process_uptime_seconds' => max(0, time() - (int) WORKER_STARTED_EPOCH),
+            'process_id' => getmypid() ?: 0,
+            'host' => gethostname() ?: 'unknown',
+            'process_started_at' => WORKER_STARTED_AT,
+        ],
+    ];
+}
+
+function worker_heartbeat_interval_seconds(array $response): int
+{
+    $advertised = max(10, (int) ($response['heartbeat_interval_seconds'] ?? 60));
+
+    return max(5, min(10, intdiv($advertised, 2)));
+}
+
+function send_worker_heartbeat(): array
+{
+    return request_json('POST', '/worker/heartbeat', worker_status_payload(), 10, [404]);
+}
+
+function maybe_send_worker_heartbeat(int &$nextHeartbeatAt, int &$heartbeatEverySeconds): void
+{
+    if (time() < $nextHeartbeatAt) {
+        return;
+    }
+
+    try {
+        $heartbeat = send_worker_heartbeat();
+        $heartbeatEverySeconds = worker_heartbeat_interval_seconds($heartbeat);
+    } catch (\Throwable $throwable) {
+        fwrite(STDERR, 'PHP saga worker heartbeat failed: '.$throwable::class.': '.$throwable->getMessage()."\n");
+    }
+
+    $nextHeartbeatAt = time() + $heartbeatEverySeconds;
 }
 
 function envelope(mixed $value, ?string $codec = null): array
@@ -1399,8 +1448,7 @@ function handle_activity_task(array $task): void
     complete_activity_task($task, ['activity' => $activityType, 'runtime' => 'workflow-php'], $codec);
 }
 
-request_json('POST', '/worker/register', [
-    'worker_id' => WORKER_ID,
+$registration = request_json('POST', '/worker/register', array_merge(worker_status_payload(), [
     'task_queue' => PHP_QUEUE,
     'runtime' => 'php',
     'sdk_version' => 'durable-workflow-php/published-artifact',
@@ -1418,9 +1466,13 @@ request_json('POST', '/worker/register', [
     ],
     'max_concurrent_workflow_tasks' => 1,
     'max_concurrent_activity_tasks' => 1,
-]);
+]));
+$heartbeatEverySeconds = worker_heartbeat_interval_seconds($registration);
+$nextHeartbeatAt = time() + $heartbeatEverySeconds;
 
 while (true) {
+    maybe_send_worker_heartbeat($nextHeartbeatAt, $heartbeatEverySeconds);
+
     try {
         $workflowPoll = request_json('POST', '/worker/workflow-tasks/poll', [
             'worker_id' => WORKER_ID,
@@ -1433,6 +1485,8 @@ while (true) {
         fwrite(STDERR, 'PHP saga workflow poll loop error: '.$throwable::class.': '.$throwable->getMessage()."\n");
     }
 
+    maybe_send_worker_heartbeat($nextHeartbeatAt, $heartbeatEverySeconds);
+
     try {
         $activityPoll = request_json('POST', '/worker/activity-tasks/poll', [
             'worker_id' => WORKER_ID,
@@ -1444,6 +1498,8 @@ while (true) {
     } catch (\Throwable $throwable) {
         fwrite(STDERR, 'PHP saga activity poll loop error: '.$throwable::class.': '.$throwable->getMessage()."\n");
     }
+
+    maybe_send_worker_heartbeat($nextHeartbeatAt, $heartbeatEverySeconds);
     usleep(100000);
 }
 PHP
@@ -1667,8 +1723,11 @@ SIDE_STORE = Path(os.environ["SAGA_SIDE_STORE"])
 PYTHON_WORKER_PID = int(os.environ["PYTHON_WORKER_PID"])
 SERVER_URL = os.environ.get("DW_SAGAS_SERVER_URL", "http://127.0.0.1:8080").rstrip("/")
 PHP_WORKER_CONTAINER = os.environ.get("DW_SAGAS_PHP_WORKER_CONTAINER", "dw-sagas-php-worker")
+PHP_WORKER_ID = "php-sagas-worker"
 ACTIVE_PYTHON_WORKER_PID = PYTHON_WORKER_PID
 RESTARTED_PYTHON_WORKERS: list[subprocess.Popen[Any]] = []
+PHP_WORKER_RESTART_OBSERVATIONS: list[dict[str, Any]] = []
+PHP_WORKER_READY_OBSERVATIONS: list[dict[str, Any]] = []
 TERMINAL_STATUSES = {"completed", "failed", "terminated", "canceled", "cancelled"}
 WAIT_RESULT_TIMEOUT_SECONDS = float(os.environ.get("DW_SAGAS_WAIT_RESULT_TIMEOUT", "45"))
 WAIT_FOR_ACTIVITY_TIMEOUT_SECONDS = float(os.environ.get("DW_SAGAS_WAIT_FOR_ACTIVITY_TIMEOUT", "45"))
@@ -1985,27 +2044,10 @@ def start_replacement_python_worker(log_name: str) -> subprocess.Popen[Any]:
     return process
 
 
-def php_worker_running() -> bool:
-    completed = subprocess.run(
-        ["docker", "inspect", "-f", "{{.State.Running}}", PHP_WORKER_CONTAINER],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return completed.returncode == 0 and completed.stdout.strip() == "true"
-
-
 def ensure_python_worker_running() -> None:
     if process_alive(ACTIVE_PYTHON_WORKER_PID):
         return
     start_replacement_python_worker("python-worker-auto-restart.log")
-    time.sleep(1)
-
-
-def ensure_php_worker_running() -> None:
-    if php_worker_running():
-        return
-    restart_php_worker()
     time.sleep(1)
 
 
@@ -2015,7 +2057,7 @@ def ensure_workers_for_payload(workflow_type: str, payload: dict[str, Any]) -> N
         str(payload.get("compensation_runtime") or ("workflow-php" if workflow_type.startswith("php.") else "sdk-python")),
     }
     if workflow_type.startswith("php.") or "workflow-php" in runtimes:
-        ensure_php_worker_running()
+        ensure_php_worker_running(f"{workflow_type} payload worker startup")
     if workflow_type.startswith("python.") or "sdk-python" in runtimes:
         ensure_python_worker_running()
 
@@ -2033,11 +2075,23 @@ def compact_state(desc: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-async def wait_result(client: Client, workflow_id: str, failures: list[str], timeout: float | None = None) -> dict[str, Any]:
+async def wait_result(
+    client: Client,
+    workflow_id: str,
+    failures: list[str],
+    timeout: float | None = None,
+    *,
+    php_worker_required: bool = False,
+    wait_label: str | None = None,
+) -> dict[str, Any]:
     timeout = WAIT_RESULT_TIMEOUT_SECONDS if timeout is None else timeout
     deadline = time.monotonic() + timeout
     last_desc: dict[str, Any] | None = None
+    next_php_worker_probe = 0.0
     while time.monotonic() < deadline:
+        if php_worker_required and time.monotonic() >= next_php_worker_probe:
+            ensure_php_worker_running(wait_label or workflow_id)
+            next_php_worker_probe = time.monotonic() + 2.0
         try:
             desc = await client._request("GET", f"/workflows/{workflow_id}")
         except Exception as exc:
@@ -2147,6 +2201,14 @@ def base_payload(scenario_id: str) -> dict[str, Any]:
         "scenario_id": scenario_id,
         "order_id": scenario_id,
     }
+
+
+def uses_php_worker(language: str, payload: dict[str, Any]) -> bool:
+    return (
+        language == "php"
+        or payload.get("forward_runtime") == "workflow-php"
+        or payload.get("compensation_runtime") == "workflow-php"
+    )
 
 
 def scenario_status(failures: list[str]) -> str:
@@ -2318,6 +2380,87 @@ def http_snapshot(label: str, path: str, timeout: float = 15.0) -> dict[str, Any
         }
 
 
+def control_plane_get(path: str, timeout: float = 10.0) -> dict[str, Any]:
+    request = urllib.request.Request(
+        f"{SERVER_URL}/api{path}",
+        headers={
+            "Accept": "application/json",
+            "Authorization": "Bearer sagas-token",
+            "X-Namespace": "default",
+            "X-Durable-Workflow-Protocol-Version": "1.7",
+            "X-Durable-Workflow-Control-Plane-Version": "2",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def parse_observed_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or value == "":
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def observed_at_or_after(value: Any, threshold: datetime | None) -> bool:
+    if threshold is None:
+        return True
+    observed = parse_observed_time(value)
+    return observed is not None and observed >= threshold
+
+
+def php_worker_registration_snapshot(not_before: datetime | None = None) -> dict[str, Any]:
+    try:
+        body = control_plane_get(f"/workers/{PHP_WORKER_ID}", timeout=5)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        return {
+            "ready": False,
+            "http_status": exc.code,
+            "error": parse_json_stdout(raw),
+        }
+    except Exception as exc:
+        return {
+            "ready": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    workflow_types = body.get("supported_workflow_types")
+    activity_types = body.get("supported_activity_types")
+    if not isinstance(workflow_types, list):
+        workflow_types = []
+    if not isinstance(activity_types, list):
+        activity_types = []
+
+    missing = []
+    if body.get("worker_id") != PHP_WORKER_ID:
+        missing.append("worker_id")
+    if body.get("task_queue") != PHP_QUEUE:
+        missing.append("task_queue")
+    if body.get("status") != "active":
+        missing.append("active_status")
+    if not observed_at_or_after(body.get("last_heartbeat_at"), not_before):
+        missing.append("fresh_heartbeat")
+    if "php.book-trip" not in workflow_types:
+        missing.append("php.book-trip")
+    for activity in ["reserve_flight", "reserve_hotel", "charge_card", "cancel_hotel", "cancel_flight"]:
+        if activity not in activity_types:
+            missing.append(activity)
+
+    return {
+        "ready": missing == [],
+        "missing": missing,
+        "worker_id": body.get("worker_id"),
+        "task_queue": body.get("task_queue"),
+        "status": body.get("status"),
+        "supported_workflow_types": workflow_types,
+        "supported_activity_types": activity_types,
+        "last_heartbeat_at": body.get("last_heartbeat_at"),
+    }
+
+
 def waterline_not_exercised_snapshot() -> dict[str, Any]:
     return {
         "label": "durable-workflow/waterline package",
@@ -2373,8 +2516,17 @@ async def run_basic_scenario(
     workflow_type = f"{language}.book-trip"
     row_id = row_scenario_id or scenario_id
     workflow_id = f"sagas-{language}-{row_id}"
+    php_worker_required = uses_php_worker(language, payload)
+    if php_worker_required:
+        ensure_php_worker_running(f"{language} {scenario_id}")
     handle = await start(client, workflow_type, workflow_id, payload)
-    output = await wait_result(client, workflow_id, failures)
+    output = await wait_result(
+        client,
+        workflow_id,
+        failures,
+        php_worker_required=php_worker_required,
+        wait_label=f"{language} {scenario_id}",
+    )
     state = await terminal_state(client, workflow_id)
     history_payload = await history(client, workflow_id, handle.run_id)
     rows = side_rows(row_id)
@@ -2434,7 +2586,43 @@ def restart_python_worker() -> subprocess.Popen[Any]:
     return start_replacement_python_worker("python-worker-restart.log")
 
 
-def restart_php_worker() -> None:
+def php_worker_container_running() -> bool:
+    completed = subprocess.run(
+        ["docker", "inspect", "-f", "{{.State.Running}}", PHP_WORKER_CONTAINER],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed.returncode == 0 and completed.stdout.strip() == "true"
+
+
+def capture_php_worker_logs(label: str) -> None:
+    safe_label = "".join(char if char.isalnum() or char in "-_" else "-" for char in label)[:80] or "php-worker"
+    log_path = RUN_ROOT / "logs" / f"php-worker-{safe_label}.log"
+    try:
+        with log_path.open("ab", buffering=0) as log:
+            subprocess.run(
+                ["docker", "logs", PHP_WORKER_CONTAINER],
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                timeout=10,
+                check=False,
+            )
+    except Exception as exc:
+        with log_path.open("ab", buffering=0) as log:
+            log.write(f"php worker log capture failed: {type(exc).__name__}: {exc}\n".encode("utf-8"))
+
+
+def restart_php_worker(reason: str = "restart_requested") -> datetime:
+    capture_php_worker_logs(reason)
+    restarted_at = datetime.now(timezone.utc).replace(microsecond=0)
+    PHP_WORKER_RESTART_OBSERVATIONS.append(
+        {
+            "at": restarted_at.isoformat().replace("+00:00", "Z"),
+            "reason": reason,
+            "container": PHP_WORKER_CONTAINER,
+        }
+    )
     subprocess.run(["docker", "rm", "-f", PHP_WORKER_CONTAINER], check=False)
     subprocess.run(
         [
@@ -2461,6 +2649,53 @@ def restart_php_worker() -> None:
         ],
         check=True,
     )
+    return restarted_at
+
+
+def wait_for_php_worker_registration(
+    reason: str,
+    timeout: float = 20.0,
+    not_before: datetime | None = None,
+) -> None:
+    deadline = time.monotonic() + timeout
+    last_snapshot: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        last_snapshot = php_worker_registration_snapshot(not_before)
+        if last_snapshot.get("ready"):
+            PHP_WORKER_READY_OBSERVATIONS.append(
+                {
+                    "at": ts(),
+                    "reason": reason,
+                    "worker_id": last_snapshot.get("worker_id"),
+                    "task_queue": last_snapshot.get("task_queue"),
+                    "last_heartbeat_at": last_snapshot.get("last_heartbeat_at"),
+                }
+            )
+            return
+        time.sleep(0.5)
+
+    capture_php_worker_logs(f"{reason}-registration-timeout")
+    raise RuntimeError(
+        f"PHP saga worker {PHP_WORKER_ID} did not register active capabilities before {reason}; "
+        f"last_registration_snapshot={last_snapshot}"
+    )
+
+
+def ensure_php_worker_running(reason: str) -> None:
+    if php_worker_container_running():
+        wait_for_php_worker_registration(reason)
+        return
+
+    restarted_at = restart_php_worker(reason)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if php_worker_container_running():
+            wait_for_php_worker_registration(reason, not_before=restarted_at)
+            return
+        time.sleep(0.5)
+
+    capture_php_worker_logs(f"{reason}-restart-failed")
+    raise RuntimeError(f"PHP saga worker container {PHP_WORKER_CONTAINER} did not stay running before {reason}")
 
 
 async def run_retry_idempotence(client: Client, language: str) -> dict[str, Any]:
@@ -2510,8 +2745,17 @@ async def run_compensation_failure(client: Client, language: str) -> dict[str, A
     workflow_type = f"{language}.book-trip"
     workflow_id = f"sagas-{language}-{scenario_id}"
     failures: list[str] = []
+    php_worker_required = uses_php_worker(language, payload)
+    if php_worker_required:
+        ensure_php_worker_running(f"{language} compensation_failure_visibility")
     handle = await start(client, workflow_type, workflow_id, payload)
-    output = await wait_result(client, workflow_id, failures)
+    output = await wait_result(
+        client,
+        workflow_id,
+        failures,
+        php_worker_required=php_worker_required,
+        wait_label=f"{language} compensation_failure_visibility",
+    )
     state = await terminal_state(client, workflow_id)
     history_payload = await history(client, workflow_id, handle.run_id)
     visible = json.dumps(output, sort_keys=True) + json.dumps(state, sort_keys=True)
@@ -2547,6 +2791,9 @@ async def run_recovery(client: Client, language: str) -> dict[str, Any]:
     workflow_type = f"{language}.book-trip"
     workflow_id = f"sagas-{language}-{scenario_id}"
     failures: list[str] = []
+    php_worker_required = uses_php_worker(language, payload)
+    if php_worker_required:
+        ensure_php_worker_running(f"{language} mid_compensation_worker_restart")
     handle = await start(client, workflow_type, workflow_id, payload)
     observed_pause = await wait_for_activity(client, workflow_id, handle.run_id, "pause_after_refund")
     restart_state = await terminal_state(client, workflow_id)
@@ -2558,8 +2805,15 @@ async def run_recovery(client: Client, language: str) -> dict[str, Any]:
         if language == "python":
             restart_python_worker()
         else:
-            restart_php_worker()
-    output = await wait_result(client, workflow_id, failures)
+            restarted_at = restart_php_worker("mid_compensation_worker_restart")
+            wait_for_php_worker_registration("mid_compensation_worker_restart", not_before=restarted_at)
+    output = await wait_result(
+        client,
+        workflow_id,
+        failures,
+        php_worker_required=php_worker_required,
+        wait_label=f"{language} mid_compensation_worker_restart",
+    )
     rows = side_rows(scenario_id)
     actual_forward = steps_for(rows, "forward")
     compensation = steps_for(rows, "compensation")
@@ -2967,6 +3221,8 @@ async def main() -> None:
         "book_trip_inputs": basic_payloads,
         "side_store_deltas": all_side_rows(),
         "history_dumps": report_history_dumps(results),
+        "php_worker_restart_observations": PHP_WORKER_RESTART_OBSERVATIONS,
+        "php_worker_ready_observations": PHP_WORKER_READY_OBSERVATIONS,
         "worker_restart_observations": [
             result
             for result in results
