@@ -134,6 +134,10 @@ and caller-history attempt visibility. If the host reaches the handoff but
 has not covered a required cell, the result records that cell as
 `not_covered` with a focused conformance-runner finding and
 `runnerBlocked=false` instead of emitting another runner-blocked ledger row.
+The two shared-service tenant cells require the concrete invocation
+request, invocation response, durable service-call record, and
+caller-history record for each caller namespace before they can count as
+covered.
 The handoff cannot emit `pass` unless every required artifact version is
 concrete and pinned and the evidence shows no local product source checkout
 usage through the published channel for each artifact. It also requires

@@ -207,6 +207,22 @@ class NexusContractTest extends TestCase
             $manifest['scenario_evidence_requirements']['caller_history_attempt_visibility'],
         );
         $this->assertContains(
+            'request',
+            $manifest['scenario_evidence_requirements']['tenant_a_calls_shared_service'],
+        );
+        $this->assertContains(
+            'response',
+            $manifest['scenario_evidence_requirements']['tenant_a_calls_shared_service'],
+        );
+        $this->assertContains(
+            'service_call_record',
+            $manifest['scenario_evidence_requirements']['tenant_b_calls_shared_service'],
+        );
+        $this->assertContains(
+            'caller_history_evidence',
+            $manifest['scenario_evidence_requirements']['tenant_b_calls_shared_service'],
+        );
+        $this->assertContains(
             'authorization_refusal_disclosed_endpoint_existence',
             $manifest['scenario_evidence_requirements']['endpoint_permission_denied_without_information_leak'],
         );
@@ -264,6 +280,10 @@ class NexusContractTest extends TestCase
         );
         $this->assertContains(
             'local_product_source_checkouts_used_false',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'shared_service_tenant_cells_attach_request_response_service_call_and_history',
             $manifest['result_gate']['pass_requires'],
         );
 
@@ -977,6 +997,43 @@ class NexusContractTest extends TestCase
         );
     }
 
+    public function test_host_runner_requires_shared_service_invocation_evidence_for_each_tenant(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        foreach ([
+            'tenant_a_calls_shared_service' => ['request', 'response'],
+            'tenant_b_calls_shared_service' => ['service_call_record', 'caller_history_evidence'],
+        ] as $scenarioId => $missingFields) {
+            $evidence = $this->completeRunnerEvidence();
+            foreach ($evidence['scenario_results'] as &$scenario) {
+                if (($scenario['scenario_id'] ?? null) === $scenarioId) {
+                    foreach ($missingFields as $field) {
+                        unset($scenario['observed_outputs'][$field]);
+                    }
+                }
+            }
+            unset($scenario);
+
+            $result = $this->runNexusEvidence($evidence, 'dw-nexus-shared-service-evidence-');
+            $scenario = $this->scenarioResult($result, $scenarioId);
+
+            $this->assertSame('fail', $result['outcome']);
+            $this->assertSame('not_covered', $scenario['status']);
+            $this->assertSame(
+                $missingFields[0],
+                $scenario['observed_outputs']['scenario_evidence_failures'][0]['field'],
+            );
+            $this->assertContains(
+                'conformance_runner_coverage_gap',
+                array_column($scenario['linked_findings'], 'finding_type'),
+            );
+        }
+    }
+
     public function test_host_runner_rejects_pass_when_retry_attempt_visibility_is_false(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -1202,13 +1259,27 @@ class NexusContractTest extends TestCase
             'tenant_a_calls_shared_service' => $base + [
                 'caller_namespace' => 'tenant-a',
                 'target_namespace' => 'shared',
+                'endpoint_name' => 'shared-greeter',
+                'service_name' => 'Greeter',
+                'operation_name' => 'greet',
                 'workflow_result' => 'hello, tenant-a',
+                'request' => $this->sharedServiceRequestEvidence('tenant-a', 'svc-'.$scenarioId),
+                'response' => $this->sharedServiceResponseEvidence('tenant-a', 'svc-'.$scenarioId),
+                'service_call_record' => $this->sharedServiceCallRecord('tenant-a', 'svc-'.$scenarioId),
+                'caller_history_evidence' => $this->sharedServiceCallerHistoryEvidence('tenant-a', 'svc-'.$scenarioId),
                 'caller_history_recorded' => true,
             ],
             'tenant_b_calls_shared_service' => $base + [
                 'caller_namespace' => 'tenant-b',
                 'target_namespace' => 'shared',
+                'endpoint_name' => 'shared-greeter',
+                'service_name' => 'Greeter',
+                'operation_name' => 'greet',
                 'workflow_result' => 'hello, tenant-b',
+                'request' => $this->sharedServiceRequestEvidence('tenant-b', 'svc-'.$scenarioId),
+                'response' => $this->sharedServiceResponseEvidence('tenant-b', 'svc-'.$scenarioId),
+                'service_call_record' => $this->sharedServiceCallRecord('tenant-b', 'svc-'.$scenarioId),
+                'caller_history_evidence' => $this->sharedServiceCallerHistoryEvidence('tenant-b', 'svc-'.$scenarioId),
                 'caller_history_recorded' => true,
             ],
             'transient_failure_retries_with_policy' => $base + [
@@ -1285,6 +1356,75 @@ class NexusContractTest extends TestCase
             ],
             default => $base,
         };
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function sharedServiceRequestEvidence(string $callerNamespace, string $serviceCallId): array
+    {
+        return [
+            'method' => 'POST',
+            'path' => '/api/service-endpoints/shared-greeter/services/Greeter/operations/greet/execute',
+            'caller_namespace' => $callerNamespace,
+            'target_namespace' => 'shared',
+            'endpoint_name' => 'shared-greeter',
+            'service_name' => 'Greeter',
+            'operation_name' => 'greet',
+            'idempotency_key' => $serviceCallId.'-idem',
+            'payload' => ['name' => 'world'],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function sharedServiceResponseEvidence(string $callerNamespace, string $serviceCallId): array
+    {
+        return [
+            'status' => 200,
+            'service_call_id' => $serviceCallId,
+            'workflow_result' => 'hello, '.$callerNamespace,
+            'body' => ['result' => 'hello, '.$callerNamespace],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function sharedServiceCallRecord(string $callerNamespace, string $serviceCallId): array
+    {
+        return [
+            'id' => $serviceCallId,
+            'caller_namespace' => $callerNamespace,
+            'target_namespace' => 'shared',
+            'endpoint_name' => 'shared-greeter',
+            'service_name' => 'Greeter',
+            'operation_name' => 'greet',
+            'status' => 'completed',
+            'outcome' => 'completed',
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function sharedServiceCallerHistoryEvidence(string $callerNamespace, string $serviceCallId): array
+    {
+        return [
+            'route' => '/api/workflows/caller-'.$callerNamespace.'/runs/run-'.$callerNamespace.'/nexus-operations',
+            'caller_namespace' => $callerNamespace,
+            'contains_service_call_id' => $serviceCallId,
+            'nexus_operation' => [
+                'service_call_id' => $serviceCallId,
+                'target_namespace' => 'shared',
+                'endpoint_name' => 'shared-greeter',
+                'service_name' => 'Greeter',
+                'operation_name' => 'greet',
+                'status' => 'completed',
+                'outcome' => 'completed',
+            ],
+        ];
     }
 
     /**

@@ -59,6 +59,10 @@ The authoritative machine-readable contract is published from
   does not prove that each exact source resolved to a downloadable public
   asset, package, or image manifest,
   when pass scenarios omit their advertised scenario-specific evidence,
+  when the shared-service tenant invocation cells omit the concrete
+  request, response, service-call record, or caller-history evidence used
+  to prove that `tenant-a` and `tenant-b` reached the same shared
+  `Greeter.greet` endpoint,
   when retry-attempt visibility or authorization non-disclosure evidence
   contradicts the Nexus contract, when the source-free evidence field is
   omitted, or when the evidence reports local product source checkouts as
