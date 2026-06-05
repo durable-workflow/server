@@ -1950,6 +1950,80 @@ async function resolvePublicArtifactDefaults() {
     }
   }
 
+  if (stringValue(resolution.artifact_versions['cli-v1']) === '') {
+    try {
+      const cliV1 = await latestGithubReleaseVersion('durable-workflow/cli', /^v?0\.1\./, ['install.sh']);
+      if (cliV1 !== '') {
+        resolution.artifact_versions['cli-v1'] = cliV1;
+        resolution.artifact_sources['cli-v1'] = `github_release:durable-workflow/cli:${cliV1}:install.sh`;
+        resolution.observations['cli-v1'] = {
+          status: 'resolved',
+          channel: 'github_release',
+          repository: 'durable-workflow/cli',
+          version: cliV1,
+          required_assets: ['install.sh'],
+        };
+      }
+    } catch (error) {
+      resolution.observations['cli-v1'] = {
+        status: 'resolution_error',
+        channel: 'github_release',
+        repository: 'durable-workflow/cli',
+        error: errorMessage(error),
+      };
+    }
+  }
+
+  if (stringValue(resolution.artifact_versions['waterline-v1']) === '') {
+    try {
+      const waterlineV1 = await latestPackagistVersion('laravel-workflow/waterline', /^v?1\./);
+      if (waterlineV1 !== '') {
+        resolution.artifact_versions['waterline-v1'] = waterlineV1;
+        resolution.artifact_sources['waterline-v1'] =
+          `packagist:laravel-workflow/waterline:${waterlineV1}`;
+        resolution.observations['waterline-v1'] = {
+          status: 'resolved',
+          channel: 'packagist',
+          package: 'laravel-workflow/waterline',
+          version: waterlineV1,
+        };
+      }
+    } catch (error) {
+      resolution.observations['waterline-v1'] = {
+        status: 'resolution_error',
+        channel: 'packagist',
+        package: 'laravel-workflow/waterline',
+        error: errorMessage(error),
+      };
+    }
+  }
+
+  if (stringValue(resolution.artifact_versions['sample-app-v1']) === '') {
+    try {
+      const sampleAppV1 = await latestGithubBranchCommit('durable-workflow/sample-app', 'Laravel-12');
+      if (sampleAppV1 !== '') {
+        resolution.artifact_versions['sample-app-v1'] = sampleAppV1;
+        resolution.artifact_sources['sample-app-v1'] =
+          `github_branch:durable-workflow/sample-app:Laravel-12@${sampleAppV1}`;
+        resolution.observations['sample-app-v1'] = {
+          status: 'resolved',
+          channel: 'github_branch',
+          repository: 'durable-workflow/sample-app',
+          branch: 'Laravel-12',
+          commit: sampleAppV1,
+        };
+      }
+    } catch (error) {
+      resolution.observations['sample-app-v1'] = {
+        status: 'resolution_error',
+        channel: 'github_branch',
+        repository: 'durable-workflow/sample-app',
+        branch: 'Laravel-12',
+        error: errorMessage(error),
+      };
+    }
+  }
+
   return resolution;
 }
 
@@ -2004,7 +2078,46 @@ async function latestDockerHubTag(repository, tagPattern) {
   return tags.sort(compareVersionStrings).pop() ?? '';
 }
 
+async function latestGithubReleaseVersion(repository, tagPattern, requiredAssets = []) {
+  let next = `https://api.github.com/repos/${repository}/releases?per_page=100`;
+  const tags = [];
+  let pages = 0;
+
+  while (next && pages < 10) {
+    pages += 1;
+    const { value: releases, headers } = await fetchJsonWithHeaders(next);
+    for (const release of arrayValue(releases)) {
+      const tag = stringValue(release?.tag_name);
+      if (tag === '' || !tagPattern.test(tag) || isPrereleaseVersion(tag) || truthy(release?.draft)) {
+        continue;
+      }
+
+      const assetNames = arrayValue(release?.assets)
+        .map((asset) => stringValue(asset?.name))
+        .filter(Boolean);
+      const hasRequiredAssets = arrayOfStrings(requiredAssets)
+        .every((assetName) => assetNames.includes(assetName));
+      if (hasRequiredAssets) {
+        tags.push(tag);
+      }
+    }
+    next = githubNextLink(stringValue(headers.link)) || '';
+  }
+
+  return tags.sort(compareVersionStrings).pop() ?? '';
+}
+
+async function latestGithubBranchCommit(repository, branch) {
+  const metadata = await fetchJson(`https://api.github.com/repos/${repository}/commits/${branch}`);
+  return stringValue(metadata?.sha);
+}
+
 async function fetchJson(url) {
+  const { value } = await fetchJsonWithHeaders(url);
+  return value;
+}
+
+async function fetchJsonWithHeaders(url) {
   const response = await fetch(url, {
     headers: {
       'user-agent': 'durable-workflow-migration-conformance',
@@ -2015,7 +2128,21 @@ async function fetchJson(url) {
   if (!response.ok) {
     throw new Error(`GET ${url} returned HTTP ${response.status}`);
   }
-  return response.json();
+  return {
+    value: await response.json(),
+    headers: Object.fromEntries(response.headers.entries()),
+  };
+}
+
+function githubNextLink(linkHeader) {
+  const parts = stringValue(linkHeader).split(',');
+  for (const part of parts) {
+    const match = part.match(/<([^>]+)>;\s*rel="next"/i);
+    if (match) {
+      return match[1];
+    }
+  }
+  return '';
 }
 
 function isPrereleaseVersion(version) {

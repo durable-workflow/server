@@ -46,6 +46,8 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'resolvePublicArtifactDefaults',
             'latestPackagistVersion',
             'latestDockerHubTag',
+            'latestGithubReleaseVersion',
+            'latestGithubBranchCommit',
             'maybeRunPublicGuideAudit',
             'public_migration_guide_audit',
             'SCENARIO_FINDING_POLICIES',
@@ -325,10 +327,16 @@ class MigrationConformanceRunnerContractTest extends TestCase
                 json_encode([
                     'artifact_versions' => [
                         'workflow-php-v1' => '1.0.76',
+                        'cli-v1' => '0.1.44',
+                        'waterline-v1' => '1.0.16',
+                        'sample-app-v1' => 'e769ac5f4147498c652445f517ae724d73afa4de',
                     ],
                     'artifact_sources' => [
                         'workflow-php-v1' => 'packagist:laravel-workflow/laravel-workflow:1.0.76',
                         'server-v1' => 'docker_hub:durableworkflow/server:no_v1_release_tag_found',
+                        'cli-v1' => 'github_release:durable-workflow/cli:0.1.44:install.sh',
+                        'waterline-v1' => 'packagist:laravel-workflow/waterline:1.0.16',
+                        'sample-app-v1' => 'github_branch:durable-workflow/sample-app:Laravel-12@e769ac5f4147498c652445f517ae724d73afa4de',
                     ],
                     'observations' => [
                         'workflow-php-v1' => [
@@ -338,6 +346,18 @@ class MigrationConformanceRunnerContractTest extends TestCase
                         'server-v1' => [
                             'status' => 'missing',
                             'channel' => 'docker_hub',
+                        ],
+                        'cli-v1' => [
+                            'status' => 'resolved',
+                            'channel' => 'github_release',
+                        ],
+                        'waterline-v1' => [
+                            'status' => 'resolved',
+                            'channel' => 'packagist',
+                        ],
+                        'sample-app-v1' => [
+                            'status' => 'resolved',
+                            'channel' => 'github_branch',
                         ],
                     ],
                 ], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
@@ -410,6 +430,19 @@ class MigrationConformanceRunnerContractTest extends TestCase
                 array_column($result['artifact_prerequisite_failures'], 'artifact'),
                 'public metadata should satisfy the latest supported v1 workflow install channel',
             );
+            $this->assertSame('0.1.44', $result['published_artifact_versions']['cli-v1']);
+            $this->assertSame('1.0.16', $result['published_artifact_versions']['waterline-v1']);
+            $this->assertSame(
+                'e769ac5f4147498c652445f517ae724d73afa4de',
+                $result['published_artifact_versions']['sample-app-v1'],
+            );
+            foreach (['cli-v1', 'waterline-v1', 'sample-app-v1'] as $artifact) {
+                $this->assertNotContains(
+                    $artifact,
+                    array_column($result['artifact_prerequisite_failures'], 'artifact'),
+                    "public metadata should satisfy the {$artifact} install channel",
+                );
+            }
             $this->assertContains(
                 'server-v1',
                 array_column($result['artifact_prerequisite_failures'], 'artifact'),
