@@ -986,6 +986,133 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_promotes_supplied_cross_language_schedule_cells(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+
+        $pythonCreatedPhp = [
+            'scenario' => 'python_created_php_workflow',
+            'schedule_creator' => 'sdk-python',
+            'workflow_runtime' => 'workflow-php',
+            'schedule_id' => 'python-created-php-schedule',
+            'schedule_visible_in_cli' => true,
+            'workflow_completed' => true,
+            'workflow_id' => 'python-created-php-workflow',
+            'run_id' => 'run-php',
+        ];
+        $phpCreatedPython = [
+            'scenario' => 'php_created_python_workflow',
+            'schedule_creator' => 'workflow-php-sdk',
+            'workflow_runtime' => 'sdk-python',
+            'schedule_id' => 'php-created-python-schedule',
+            'schedule_visible_in_cli' => true,
+            'workflow_completed' => true,
+            'workflow_id' => 'php-created-python-workflow',
+            'run_id' => 'run-python',
+        ];
+
+        file_put_contents($resultDir.'/cross-language-evidence.json', json_encode([
+            'schema' => 'durable-workflow.v2.schedules-runtime.cross-language-evidence',
+            'scenario_results' => [
+                'python_created_php_workflow' => [
+                    'scenario_id' => 'python_created_php_workflow',
+                    'status' => 'pass',
+                    'observed_outputs' => $pythonCreatedPhp,
+                    'linked_findings' => [],
+                ],
+                'php_created_python_workflow' => [
+                    'scenario_id' => 'php_created_python_workflow',
+                    'status' => 'pass',
+                    'observed_outputs' => $phpCreatedPython,
+                    'linked_findings' => [],
+                ],
+            ],
+            'cross_language_matrix' => [
+                'cross_language_cells' => [$pythonCreatedPhp, $phpCreatedPython],
+            ],
+            'runtime_matrix' => [
+                'runtimes' => ['workflow-php', 'sdk-python'],
+                'client_paths' => ['cli', 'sdk-python', 'workflow-php-sdk'],
+                'schedule_types' => ['fixed_rate_interval'],
+                'cross_language_cells' => [
+                    [
+                        'scenario' => 'python_created_php_workflow',
+                        'schedule_creator' => 'sdk-python',
+                        'workflow_runtime' => 'workflow-php',
+                    ],
+                    [
+                        'scenario' => 'php_created_python_workflow',
+                        'schedule_creator' => 'workflow-php-sdk',
+                        'workflow_runtime' => 'sdk-python',
+                    ],
+                ],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SCHEDULES_CROSS_LANGUAGE_EVIDENCE' => $resultDir.'/cross-language-evidence.json',
+                    'DW_SERVER_VERSION' => '0.2.312',
+                    'DW_CLI_VERSION' => '0.1.77',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.85',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.197',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('pass', $result['scenario_results']['python_created_php_workflow']['status']);
+            $this->assertSame('pass', $result['scenario_results']['php_created_python_workflow']['status']);
+            $this->assertTrue(
+                $result['scenario_results']['python_created_php_workflow']['observed_outputs']['schedule_visible_in_cli'],
+            );
+            $this->assertTrue(
+                $result['scenario_results']['php_created_python_workflow']['observed_outputs']['workflow_completed'],
+            );
+            $this->assertSame(
+                [$pythonCreatedPhp, $phpCreatedPython],
+                $result['cross_language_matrix']['cross_language_cells'],
+            );
+            $this->assertContains('workflow-php-sdk', $result['runtime_matrix']['client_paths']);
+            $this->assertContains('sdk-python', $result['runtime_matrix']['runtimes']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_runner_bootstraps_published_compose_before_starting_schedule_shards(): void
     {
         $repoRoot = dirname(__DIR__, 2);

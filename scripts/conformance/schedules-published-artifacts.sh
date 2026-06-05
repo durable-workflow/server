@@ -41,6 +41,11 @@ Environment overrides:
                                     Optional JSON from a focused missed-fire and
                                     restart-survival shard. Scenario results in
                                     this file are merged into the output.
+  DW_SCHEDULES_CROSS_LANGUAGE_EVIDENCE
+                                    Optional JSON from a focused PHP/Python
+                                    cross-language schedule dispatch shard.
+                                    Scenario results in this file are merged
+                                    into the output.
   DW_SCHEDULES_RUN_CADENCE_SHARD    Set to 0 to skip the automatic Docker-backed
                                     cadence shard. Defaults to auto in this shell
                                     handoff: run it when Docker Compose and a
@@ -54,6 +59,10 @@ Environment overrides:
   DW_SCHEDULES_RUN_CLI_SURFACE_SHARD
                                     Set to 0 to skip the automatic official-CLI
                                     schedule lifecycle shard. Defaults to auto.
+  DW_SCHEDULES_RUN_CROSS_LANGUAGE_SHARD
+                                    Set to 0 to skip the automatic published
+                                    PHP/Python cross-language schedule shard.
+                                    Defaults to auto.
   DW_SCHEDULES_CLI_EXECUTABLE       Existing official dw executable to use instead
                                     of installing via the release install script.
   DW_SCHEDULES_SERVER_URL           Existing published server URL to probe instead
@@ -73,6 +82,10 @@ Environment overrides:
   DW_SCHEDULES_RESTART_FIRE_DEADLINE_SECONDS
                                     Restart survival fire deadline. Minimum/default
                                     is 90.
+  DW_SCHEDULES_CROSS_LANGUAGE_TIMEOUT_SECONDS
+                                    Overall wait for Python-created/PHP-worker
+                                    and PHP-created/Python-worker scheduled fires.
+                                    Defaults to 150.
 USAGE
 }
 
@@ -158,5 +171,6 @@ export DW_SCHEDULES_RUN_CADENCE_SHARD="${DW_SCHEDULES_RUN_CADENCE_SHARD:-auto}"
 export DW_SCHEDULES_RUN_OPERATOR_CONTROLS_SHARD="${DW_SCHEDULES_RUN_OPERATOR_CONTROLS_SHARD:-auto}"
 export DW_SCHEDULES_RUN_MISSED_RESTART_SHARD="${DW_SCHEDULES_RUN_MISSED_RESTART_SHARD:-auto}"
 export DW_SCHEDULES_RUN_CLI_SURFACE_SHARD="${DW_SCHEDULES_RUN_CLI_SURFACE_SHARD:-auto}"
+export DW_SCHEDULES_RUN_CROSS_LANGUAGE_SHARD="${DW_SCHEDULES_RUN_CROSS_LANGUAGE_SHARD:-auto}"
 
 node "$script_dir/schedules-published-artifacts.mjs"

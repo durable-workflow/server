@@ -28,6 +28,8 @@ const operatorControlsEvidencePath = process.env.DW_SCHEDULES_OPERATOR_CONTROLS_
   ?? path.join(resultDir, 'schedules-operator-controls-evidence.json');
 const missedRestartEvidencePath = process.env.DW_SCHEDULES_MISSED_RESTART_EVIDENCE
   ?? path.join(resultDir, 'schedules-missed-restart-evidence.json');
+const crossLanguageEvidencePath = process.env.DW_SCHEDULES_CROSS_LANGUAGE_EVIDENCE
+  ?? path.join(resultDir, 'schedules-cross-language-evidence.json');
 
 const DEFAULT_REQUIRED_SCENARIOS = [
   'published_artifact_install_only',
@@ -122,6 +124,10 @@ async function main() {
   const cliSurfaceEvidence = await maybeRunCliSurfaceShard(startedAt, artifactVersions, artifactSources);
   if (cliSurfaceEvidence !== null) {
     evidenceInputs.push(cliSurfaceEvidence);
+  }
+  const crossLanguageEvidence = await maybeRunCrossLanguageShard(startedAt, artifactVersions, artifactSources);
+  if (crossLanguageEvidence !== null) {
+    evidenceInputs.push(crossLanguageEvidence);
   }
   const smokeEvidence = mergeEvidence(...evidenceInputs);
   const finishedAt = timestamp();
@@ -906,6 +912,7 @@ function readEvidenceInputs() {
     operatorControlsEvidencePath,
     missedRestartEvidencePath,
     cliEvidencePath,
+    crossLanguageEvidencePath,
   ].filter((value, index, values) => stringValue(value) !== '' && values.indexOf(value) === index);
 
   return paths
@@ -3760,6 +3767,1041 @@ function cliSurfaceBlockedEvidence(reason, startedAt, artifactVersions, artifact
       },
     },
   };
+}
+
+async function maybeRunCrossLanguageShard(startedAt, artifactVersions, artifactSources) {
+  const mode = stringValue(process.env.DW_SCHEDULES_RUN_CROSS_LANGUAGE_SHARD).toLowerCase();
+  if (!['1', 'true', 'yes', 'auto'].includes(mode)) {
+    return null;
+  }
+
+  if (readJsonIfExists(crossLanguageEvidencePath) !== null) {
+    return null;
+  }
+
+  const explicit = mode !== 'auto';
+  const serverUrl = stringValue(process.env.DW_SCHEDULES_SERVER_URL);
+  const dockerAvailable = await commandSucceeds('docker', ['--version']);
+  const composeAvailable = dockerAvailable && await commandSucceeds('docker', ['compose', 'version']);
+  const serverImage = resolveServerImage(artifactVersions);
+  const pythonVersion = stringValue(artifactVersions['sdk-python']);
+  const workflowPhpVersion = stringValue(artifactVersions['workflow-php'] ?? artifactVersions.workflow);
+  const configuredCli = stringValue(process.env.DW_SCHEDULES_CLI_EXECUTABLE ?? process.env.DW_CLI_EXECUTABLE);
+  const cliVersion = stringValue(artifactVersions.cli);
+  const missing = [];
+
+  if (!await commandSucceeds('python3', ['--version'])) {
+    missing.push('python3');
+  }
+  if (pythonVersion === '') {
+    missing.push('DW_PYTHON_SDK_VERSION');
+  }
+  if (!dockerAvailable) {
+    missing.push('docker');
+  }
+  if (workflowPhpVersion === '') {
+    missing.push('DW_WORKFLOW_PHP_VERSION');
+  }
+  if (configuredCli === '' && cliVersion === '') {
+    missing.push('DW_CLI_VERSION or DW_SCHEDULES_CLI_EXECUTABLE');
+  }
+  if (serverUrl === '' && (!dockerAvailable || !composeAvailable || serverImage === '')) {
+    if (dockerAvailable && !composeAvailable) {
+      missing.push('docker compose');
+    }
+    if (serverImage === '') {
+      missing.push('DW_SERVER_VERSION or DW_SERVER_IMAGE');
+    }
+  }
+
+  if (missing.length > 0) {
+    if (!explicit) {
+      return null;
+    }
+
+    return crossLanguageBlockedEvidence(
+      `Cross-language schedules shard prerequisites are missing: ${missing.join(', ')}.`,
+      startedAt,
+      artifactVersions,
+      artifactSources,
+    );
+  }
+
+  try {
+    return await runCrossLanguageShard({
+      startedAt,
+      artifactVersions,
+      artifactSources,
+      serverImage,
+      existingServerUrl: serverUrl,
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return crossLanguageBlockedEvidence(reason, startedAt, artifactVersions, artifactSources);
+  }
+}
+
+async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSources, serverImage, existingServerUrl }) {
+  const crossStartedAt = timestamp();
+  const runId = `schedules-cross-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const namespace = sanitizeDockerName(`${stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance'}-${runId}`).slice(0, 96);
+  const taskQueue = stringValue(process.env.DW_SCHEDULES_TASK_QUEUE) || `schedules-cross-language-${runId}`;
+  const token = stringValue(process.env.DW_SCHEDULES_AUTH_TOKEN) || 'dev-token';
+  const serverPort = positiveInt(process.env.DW_SCHEDULES_SERVER_PORT, 0) || await freePort();
+  const serverUrl = existingServerUrl || `http://127.0.0.1:${serverPort}`;
+  const composeProject = sanitizeDockerName(runId);
+  const overlayPath = path.join(resultDir, 'schedules-cross-language-compose.override.yml');
+  const composeFiles = [
+    '-f',
+    path.join(repoRoot, 'docker-compose.published.yml'),
+    '-f',
+    overlayPath,
+  ];
+  const shardRoot = path.join(resultDir, 'schedules-cross-language-shard');
+  const interval = stringValue(process.env.DW_SCHEDULES_CROSS_LANGUAGE_INTERVAL) || 'PT30S';
+  const timeoutSeconds = positiveInt(process.env.DW_SCHEDULES_CROSS_LANGUAGE_TIMEOUT_SECONDS, 150);
+  const schedulerTickSeconds = positiveInt(process.env.DW_SCHEDULES_CROSS_LANGUAGE_SCHEDULER_TICK_SECONDS, 2);
+  const phpWorkflowType = 'SchedulesConformancePhpWorkflow';
+  const pythonWorkflowType = 'SchedulesConformancePythonWorkflow';
+  const pythonCreatedPhpScheduleId = `${runId}-python-created-php`;
+  const phpCreatedPythonScheduleId = `${runId}-php-created-python`;
+  const phpWorkerId = `${runId}-php-worker`;
+  const pythonWorkerId = `${runId}-python-worker`;
+  let composeStarted = false;
+  let cliPath = '';
+
+  fs.rmSync(shardRoot, { recursive: true, force: true });
+  fs.mkdirSync(shardRoot, { recursive: true });
+  markArtifactSource(artifactSources, 'server', existingServerUrl === '' ? 'published_docker_image' : 'existing_published_server_url');
+
+  if (existingServerUrl === '') {
+    writeSchedulerOverlay(overlayPath, schedulerTickSeconds);
+    await execLogged(
+      'docker',
+      ['image', 'pull', serverImage],
+      path.join(resultDir, 'schedules-cross-language-docker-pull.log'),
+    );
+    await startPublishedComposeServices({
+      composeProject,
+      composeFiles,
+      serverPort,
+      serverImage,
+      token,
+      artifactVersions,
+      logPrefix: 'schedules-cross-language',
+      services: ['server', 'scheduler'],
+    });
+    composeStarted = true;
+  }
+
+  try {
+    await waitForServerReady(serverUrl, 120);
+    await ensureNamespace(serverUrl, token, namespace);
+
+    cliPath = await resolvePublishedCli(artifactVersions, artifactSources);
+    const python = await installSchedulesPythonArtifact(shardRoot, artifactVersions, artifactSources);
+    const php = await installSchedulesPhpArtifact(shardRoot, artifactVersions, artifactSources);
+
+    const phpRegistration = await runSchedulesPhpWorker(php, {
+      action: 'register',
+      server_url: serverUrl,
+      token,
+      namespace,
+      task_queue: taskQueue,
+      worker_id: phpWorkerId,
+      workflow_type: phpWorkflowType,
+      runtime: 'workflow-php',
+      sdk_version: artifactValue(artifactVersions, 'workflow-php'),
+    });
+    const pythonRegistration = await runSchedulesPythonWorker(python, {
+      action: 'register',
+      server_url: serverUrl,
+      token,
+      namespace,
+      task_queue: taskQueue,
+      worker_id: pythonWorkerId,
+      workflow_type: pythonWorkflowType,
+      runtime: 'sdk-python',
+      sdk_version: artifactValue(artifactVersions, 'sdk-python'),
+    });
+
+    const pythonCreate = await runSchedulesPythonWorker(python, {
+      action: 'create_schedule',
+      server_url: serverUrl,
+      token,
+      namespace,
+      task_queue: taskQueue,
+      schedule_id: pythonCreatedPhpScheduleId,
+      workflow_type: phpWorkflowType,
+      interval,
+      input: {
+        scenario: 'python_created_php_workflow',
+        schedule_creator: 'sdk-python',
+        workflow_runtime: 'workflow-php',
+      },
+    });
+    const phpCreate = await runSchedulesPhpWorker(php, {
+      action: 'create_schedule',
+      server_url: serverUrl,
+      token,
+      namespace,
+      task_queue: taskQueue,
+      schedule_id: phpCreatedPythonScheduleId,
+      workflow_type: pythonWorkflowType,
+      interval,
+      input: {
+        scenario: 'php_created_python_workflow',
+        schedule_creator: 'workflow-php-sdk',
+        workflow_runtime: 'sdk-python',
+      },
+    });
+
+    const context = { serverUrl, namespace, token };
+    const cliList = await runDwJson(cliPath, ['schedules', 'list', '--json'], context);
+    const completion = await waitForCrossLanguageCompletions({
+      serverUrl,
+      token,
+      namespace,
+      taskQueue,
+      timeoutSeconds,
+      python,
+      php,
+      phpWorkerId,
+      pythonWorkerId,
+      phpWorkflowType,
+      pythonWorkflowType,
+      pythonCreatedPhpScheduleId,
+      phpCreatedPythonScheduleId,
+    });
+
+    await bestEffortDeleteSchedule(serverUrl, token, namespace, pythonCreatedPhpScheduleId);
+    await bestEffortDeleteSchedule(serverUrl, token, namespace, phpCreatedPythonScheduleId);
+
+    const evidence = crossLanguageEvidenceFromObservations({
+      startedAt: crossStartedAt,
+      finishedAt: timestamp(),
+      artifactVersions,
+      artifactSources,
+      namespace,
+      taskQueue,
+      runId,
+      cliPath,
+      cliList,
+      pythonCreate,
+      phpCreate,
+      phpRegistration,
+      pythonRegistration,
+      phpCompletion: completion.php,
+      pythonCompletion: completion.python,
+      schedules: {
+        pythonCreatedPhp: pythonCreatedPhpScheduleId,
+        phpCreatedPython: phpCreatedPythonScheduleId,
+      },
+      workers: {
+        php: phpWorkerId,
+        python: pythonWorkerId,
+      },
+    });
+    writeJson(crossLanguageEvidencePath, evidence);
+
+    return evidence;
+  } finally {
+    writeJson(path.join(resultDir, 'schedules-cross-language-run-metadata.json'), {
+      schema: 'durable-workflow.v2.schedules-runtime.cross-language-run-metadata',
+      started_at: startedAt,
+      cross_language_started_at: crossStartedAt,
+      finished_at: timestamp(),
+      server_url: serverUrl,
+      namespace,
+      task_queue: taskQueue,
+      server_image: existingServerUrl === '' ? serverImage : null,
+      compose_project: existingServerUrl === '' ? composeProject : null,
+      cli_executable: cliPath || null,
+      published_artifact_versions: artifactVersions,
+      artifact_sources: artifactSources,
+      local_product_source_checkouts_used: false,
+    });
+
+    if (composeStarted) {
+      await collectCrossLanguageComposeLogs(composeProject, composeFiles);
+      await execFile('docker', ['compose', '-p', composeProject, ...composeFiles, 'down', '-v'], {
+        env: composeEnv(serverPort, serverImage, token, artifactVersions),
+        maxBuffer: 1024 * 1024 * 8,
+      }).catch(() => {});
+    }
+  }
+}
+
+async function installSchedulesPythonArtifact(shardRoot, artifactVersions, artifactSources) {
+  const pythonRoot = path.join(shardRoot, 'python');
+  const venv = path.join(pythonRoot, 'venv');
+  const pythonVersion = artifactValue(artifactVersions, 'sdk-python');
+  const scriptPath = path.join(pythonRoot, 'schedules_worker.py');
+  fs.mkdirSync(pythonRoot, { recursive: true });
+  writeText(scriptPath, schedulesPythonWorkerScript());
+
+  await execLogged('python3', ['-m', 'venv', venv], path.join(resultDir, 'schedules-cross-language-python-venv.log'));
+  const pythonBin = path.join(venv, 'bin', 'python');
+  await execLogged(pythonBin, ['-m', 'pip', 'install', '--upgrade', 'pip'], path.join(resultDir, 'schedules-cross-language-python-pip-upgrade.log'));
+  await execLogged(
+    pythonBin,
+    ['-m', 'pip', 'install', `durable-workflow==${pythonVersion}`],
+    path.join(resultDir, 'schedules-cross-language-python-install.log'),
+  );
+  markArtifactSource(artifactSources, 'sdk-python', 'pypi');
+
+  return { pythonRoot, pythonBin, scriptPath };
+}
+
+async function installSchedulesPhpArtifact(shardRoot, artifactVersions, artifactSources) {
+  const phpRoot = path.join(shardRoot, 'php');
+  const workflowPhpVersion = artifactValue(artifactVersions, 'workflow-php');
+  const scriptPath = path.join(phpRoot, 'schedules_worker.php');
+  fs.mkdirSync(phpRoot, { recursive: true });
+  writeText(scriptPath, schedulesPhpWorkerScript());
+  await execLogged(
+    'docker',
+    [
+      'run',
+      '--rm',
+      '--network',
+      'host',
+      '-v',
+      `${phpRoot}:/app`,
+      '-w',
+      '/app',
+      'composer:2',
+      'require',
+      '--no-interaction',
+      '--no-progress',
+      `durable-workflow/workflow:${workflowPhpVersion}`,
+    ],
+    path.join(resultDir, 'schedules-cross-language-php-install.log'),
+  );
+  markArtifactSource(artifactSources, 'workflow-php', 'composer_packagist');
+
+  return { phpRoot, scriptPath };
+}
+
+async function runSchedulesPythonWorker(python, input) {
+  const { inputPath, outputPath } = writeSchedulesWorkerInput(python.pythonRoot, input);
+  const logPath = path.join(resultDir, `schedules-cross-language-python-${safeLogName(input.worker_id ?? input.action)}-${input.action}.log`);
+  const result = await execCommandCapture(python.pythonBin, [python.scriptPath, inputPath, outputPath], {
+    timeout: positiveInt(input.timeout_ms, 30000),
+    maxBuffer: 1024 * 1024 * 4,
+  });
+  writeText(logPath, `${result.stdout}${result.stderr}`);
+  if (result.exit_code !== 0) {
+    throw new Error(`published Python schedules worker action ${input.action} failed; see ${path.basename(logPath)}`);
+  }
+
+  const output = readJsonIfExists(outputPath);
+  if (!output || typeof output !== 'object') {
+    throw new Error(`published Python schedules worker action ${input.action} did not write JSON output`);
+  }
+
+  return output;
+}
+
+async function runSchedulesPhpWorker(php, input) {
+  const { inputPath, outputPath } = writeSchedulesWorkerInput(php.phpRoot, input);
+  const containerInput = `/app/${path.relative(php.phpRoot, inputPath)}`;
+  const containerOutput = `/app/${path.relative(php.phpRoot, outputPath)}`;
+  const logPath = path.join(resultDir, `schedules-cross-language-php-${safeLogName(input.worker_id ?? input.action)}-${input.action}.log`);
+  const result = await execCommandCapture('docker', [
+    'run',
+    '--rm',
+    '--network',
+    'host',
+    '-v',
+    `${php.phpRoot}:/app`,
+    '-w',
+    '/app',
+    '--entrypoint',
+    'php',
+    'composer:2',
+    '/app/schedules_worker.php',
+    containerInput,
+    containerOutput,
+  ], {
+    timeout: positiveInt(input.timeout_ms, 30000),
+    maxBuffer: 1024 * 1024 * 4,
+  });
+  writeText(logPath, `${result.stdout}${result.stderr}`);
+  if (result.exit_code !== 0) {
+    throw new Error(`published PHP schedules worker action ${input.action} failed; see ${path.basename(logPath)}`);
+  }
+
+  const output = readJsonIfExists(outputPath);
+  if (!output || typeof output !== 'object') {
+    throw new Error(`published PHP schedules worker action ${input.action} did not write JSON output`);
+  }
+
+  return output;
+}
+
+function writeSchedulesWorkerInput(root, input) {
+  const inputRoot = path.join(root, 'inputs');
+  const outputRoot = path.join(root, 'outputs');
+  fs.mkdirSync(inputRoot, { recursive: true });
+  fs.mkdirSync(outputRoot, { recursive: true });
+  const basename = `${safeLogName(input.worker_id ?? input.schedule_id ?? input.action)}-${input.action}-${Date.now().toString(36)}.json`;
+  const inputPath = path.join(inputRoot, basename);
+  const outputPath = path.join(outputRoot, basename);
+  writeJson(inputPath, {
+    interval: 'PT30S',
+    supported_activity_types: [],
+    complete_result: {},
+    ...input,
+  });
+
+  return { inputPath, outputPath };
+}
+
+async function waitForCrossLanguageCompletions({
+  serverUrl,
+  token,
+  namespace,
+  taskQueue,
+  timeoutSeconds,
+  python,
+  php,
+  phpWorkerId,
+  pythonWorkerId,
+  phpWorkflowType,
+  pythonWorkflowType,
+  pythonCreatedPhpScheduleId,
+  phpCreatedPythonScheduleId,
+}) {
+  const deadline = Date.now() + timeoutSeconds * 1000;
+  let phpCompletion = null;
+  let pythonCompletion = null;
+  let phpAttempts = 0;
+  let pythonAttempts = 0;
+  let lastPhpPoll = null;
+  let lastPythonPoll = null;
+
+  while (Date.now() < deadline && (!phpCompletion?.workflow_completed || !pythonCompletion?.workflow_completed)) {
+    if (!phpCompletion?.workflow_completed) {
+      phpAttempts += 1;
+      lastPhpPoll = await runSchedulesPhpWorker(php, {
+        action: 'poll_complete',
+        server_url: serverUrl,
+        token,
+        namespace,
+        task_queue: taskQueue,
+        worker_id: phpWorkerId,
+        workflow_type: phpWorkflowType,
+        runtime: 'workflow-php',
+        schedule_id: pythonCreatedPhpScheduleId,
+        timeout_ms: 15000,
+        complete_result: {
+          scenario: 'python_created_php_workflow',
+          schedule_creator: 'sdk-python',
+          workflow_runtime: 'workflow-php',
+        },
+      });
+      phpCompletion = await workflowCompletionFromPoll({
+        poll: lastPhpPoll,
+        serverUrl,
+        token,
+        namespace,
+        scheduleId: pythonCreatedPhpScheduleId,
+        scheduleCreator: 'sdk-python',
+        workflowRuntime: 'workflow-php',
+        scenario: 'python_created_php_workflow',
+        workerId: phpWorkerId,
+        attempts: phpAttempts,
+      });
+    }
+
+    if (!pythonCompletion?.workflow_completed) {
+      pythonAttempts += 1;
+      lastPythonPoll = await runSchedulesPythonWorker(python, {
+        action: 'poll_complete',
+        server_url: serverUrl,
+        token,
+        namespace,
+        task_queue: taskQueue,
+        worker_id: pythonWorkerId,
+        workflow_type: pythonWorkflowType,
+        runtime: 'sdk-python',
+        schedule_id: phpCreatedPythonScheduleId,
+        timeout_ms: 15000,
+        complete_result: {
+          scenario: 'php_created_python_workflow',
+          schedule_creator: 'workflow-php-sdk',
+          workflow_runtime: 'sdk-python',
+        },
+      });
+      pythonCompletion = await workflowCompletionFromPoll({
+        poll: lastPythonPoll,
+        serverUrl,
+        token,
+        namespace,
+        scheduleId: phpCreatedPythonScheduleId,
+        scheduleCreator: 'workflow-php-sdk',
+        workflowRuntime: 'sdk-python',
+        scenario: 'php_created_python_workflow',
+        workerId: pythonWorkerId,
+        attempts: pythonAttempts,
+      });
+    }
+
+    if (phpCompletion?.workflow_completed && pythonCompletion?.workflow_completed) {
+      break;
+    }
+
+    await sleep(1500);
+  }
+
+  return {
+    php: phpCompletion ?? missingCrossLanguageCompletion({
+      scenario: 'python_created_php_workflow',
+      scheduleId: pythonCreatedPhpScheduleId,
+      scheduleCreator: 'sdk-python',
+      workflowRuntime: 'workflow-php',
+      workerId: phpWorkerId,
+      attempts: phpAttempts,
+      lastPoll: lastPhpPoll,
+    }),
+    python: pythonCompletion ?? missingCrossLanguageCompletion({
+      scenario: 'php_created_python_workflow',
+      scheduleId: phpCreatedPythonScheduleId,
+      scheduleCreator: 'workflow-php-sdk',
+      workflowRuntime: 'sdk-python',
+      workerId: pythonWorkerId,
+      attempts: pythonAttempts,
+      lastPoll: lastPythonPoll,
+    }),
+  };
+}
+
+async function workflowCompletionFromPoll({
+  poll,
+  serverUrl,
+  token,
+  namespace,
+  scheduleId,
+  scheduleCreator,
+  workflowRuntime,
+  scenario,
+  workerId,
+  attempts,
+}) {
+  const task = poll?.task && typeof poll.task === 'object' ? poll.task : null;
+  const workflowId = stringValue(task?.workflow_id ?? task?.workflowId);
+  const runId = stringValue(task?.run_id ?? task?.runId);
+  let workflowRun = {};
+
+  if (workflowId !== '' && runId !== '') {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      workflowRun = await apiRequest(serverUrl, token, namespace, 'GET', `/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}`).catch((error) => ({
+        error: error instanceof Error ? error.message : String(error),
+      }));
+      if (workflowStatusIsCompleted(workflowRun)) {
+        break;
+      }
+      await sleep(500);
+    }
+  }
+
+  return {
+    scenario,
+    schedule_id: scheduleId,
+    schedule_creator: scheduleCreator,
+    workflow_runtime: workflowRuntime,
+    worker_id: workerId,
+    schedule_visible_in_cli: false,
+    workflow_completed: workflowStatusIsCompleted(workflowRun),
+    workflow_id: workflowId,
+    run_id: runId,
+    scheduled_fire_observed: task !== null,
+    poll_attempts: attempts,
+    worker_poll: poll ?? null,
+    workflow_run: workflowRun,
+  };
+}
+
+function missingCrossLanguageCompletion({
+  scenario,
+  scheduleId,
+  scheduleCreator,
+  workflowRuntime,
+  workerId,
+  attempts,
+  lastPoll,
+}) {
+  return {
+    scenario,
+    schedule_id: scheduleId,
+    schedule_creator: scheduleCreator,
+    workflow_runtime: workflowRuntime,
+    worker_id: workerId,
+    schedule_visible_in_cli: false,
+    workflow_completed: false,
+    workflow_id: '',
+    run_id: '',
+    scheduled_fire_observed: false,
+    poll_attempts: attempts,
+    worker_poll: lastPoll ?? null,
+    workflow_run: {},
+  };
+}
+
+function workflowStatusIsCompleted(value) {
+  const status = stringValue(value?.run_status ?? value?.status ?? value?.status_bucket ?? value?.statusBucket);
+  return status === 'completed';
+}
+
+function crossLanguageEvidenceFromObservations({
+  startedAt,
+  finishedAt,
+  artifactVersions,
+  artifactSources,
+  namespace,
+  taskQueue,
+  runId,
+  cliPath,
+  cliList,
+  pythonCreate,
+  phpCreate,
+  phpRegistration,
+  pythonRegistration,
+  phpCompletion,
+  pythonCompletion,
+  schedules,
+  workers,
+}) {
+  const cliSchedules = cliList?.parsed_json?.schedules ?? [];
+  const pythonCreatedVisible = scheduleListContains(cliList?.parsed_json, schedules.pythonCreatedPhp);
+  const phpCreatedVisible = scheduleListContains(cliList?.parsed_json, schedules.phpCreatedPython);
+  const pythonCreatedPhp = {
+    ...phpCompletion,
+    schedule_visible_in_cli: pythonCreatedVisible,
+    cli_list_command: cliList,
+    schedule_create_response: pythonCreate,
+    worker_registration: phpRegistration,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+  };
+  const phpCreatedPython = {
+    ...pythonCompletion,
+    schedule_visible_in_cli: phpCreatedVisible,
+    cli_list_command: cliList,
+    schedule_create_response: phpCreate,
+    worker_registration: pythonRegistration,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+  };
+  const cells = [pythonCreatedPhp, phpCreatedPython];
+  const scenarioResults = {};
+  const findings = [];
+
+  for (const cell of cells) {
+    const status = cell.schedule_visible_in_cli && cell.workflow_completed ? 'pass' : 'fail';
+    const linkedFindings = status === 'pass' ? [] : [crossLanguageFinding(cell, artifactVersions)];
+    findings.push(...linkedFindings);
+    scenarioResults[cell.scenario] = {
+      scenario_id: cell.scenario,
+      status,
+      observed_outputs: cell,
+      linked_findings: linkedFindings,
+    };
+  }
+
+  return {
+    schema: 'durable-workflow.v2.schedules-runtime.cross-language-evidence',
+    started_at: startedAt,
+    finished_at: finishedAt,
+    generated_at: finishedAt,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    local_product_source_checkouts_used: false,
+    scenario_results: scenarioResults,
+    findings,
+    topology: {
+      namespace,
+      task_queue: taskQueue,
+      run_id: runId,
+      worker_execution_mode: 'published_php_python_worker_protocol_clients',
+      worker_ids: workers,
+      schedules_created: [schedules.pythonCreatedPhp, schedules.phpCreatedPython],
+      cli_executable: cliPath,
+    },
+    runtime_matrix: {
+      runtimes: ['workflow-php', 'sdk-python'],
+      client_paths: ['cli', 'sdk-python', 'workflow-php-sdk'],
+      schedule_types: ['fixed_rate_interval'],
+      cross_language_cells: [
+        {
+          scenario: 'python_created_php_workflow',
+          schedule_creator: 'sdk-python',
+          workflow_runtime: 'workflow-php',
+        },
+        {
+          scenario: 'php_created_python_workflow',
+          schedule_creator: 'workflow-php-sdk',
+          workflow_runtime: 'sdk-python',
+        },
+      ],
+    },
+    cross_language_matrix: {
+      cross_language_cells: cells,
+    },
+    client_surfaces: {
+      cli: {
+        list_observed: pythonCreatedVisible && phpCreatedVisible,
+        command_outputs: {
+          list: cliList,
+        },
+        observed_schedule_ids: Array.isArray(cliSchedules)
+          ? cliSchedules.map((schedule) => scheduleIdField(schedule)).filter(Boolean)
+          : [],
+      },
+      'sdk-python': {
+        create_or_observe: stringValue(pythonCreate?.schedule_id) === schedules.pythonCreatedPhp,
+        list_observed: pythonCreatedVisible,
+        control_observed: true,
+      },
+      'workflow-php-sdk': {
+        create_or_observe: stringValue(phpCreate?.schedule_id) === schedules.phpCreatedPython,
+        list_observed: phpCreatedVisible,
+        control_observed: true,
+      },
+    },
+  };
+}
+
+function crossLanguageFinding(cell, artifactVersions) {
+  const reasons = [];
+  if (!cell.schedule_visible_in_cli) {
+    reasons.push('schedule was not visible through dw schedules list');
+  }
+  if (!cell.scheduled_fire_observed) {
+    reasons.push('target worker did not receive a scheduled workflow task');
+  }
+  if (cell.scheduled_fire_observed && !cell.workflow_completed) {
+    reasons.push('target worker received a scheduled workflow task but the workflow did not reach completed status');
+  }
+
+  return {
+    finding_id: `schedules-${cell.scenario}-cross-language-dispatch`,
+    scenario_id: cell.scenario,
+    finding_type: 'schedule_cross_language_dispatch_gap',
+    owning_surface: cell.schedule_visible_in_cli ? 'server' : 'cli',
+    execution_scope: 'cross-language-schedule-worker-shard',
+    artifact_versions: artifactVersions,
+    observed_behavior: reasons.join('; ') || 'Cross-language schedule dispatch did not satisfy the published-artifact contract.',
+    expected_behavior: 'Schedules created by Python and PHP-facing clients are visible through the CLI and dispatch scheduled fires to the opposite runtime worker on the shared task queue.',
+    next_acceptance_criterion: 'rerun schedules conformance and record schedule_visible_in_cli=true plus workflow_completed=true for both Python-created/PHP-worker and PHP-created/Python-worker cells',
+    schedule_creator: cell.schedule_creator,
+    workflow_runtime: cell.workflow_runtime,
+    schedule_id: cell.schedule_id,
+    workflow_id: cell.workflow_id,
+    run_id: cell.run_id,
+  };
+}
+
+function crossLanguageBlockedEvidence(reason, startedAt, artifactVersions, artifactSources) {
+  const finishedAt = timestamp();
+  const findings = [
+    {
+      finding_id: 'schedules-python-created-php-workflow-runner-blocked',
+      scenario_id: 'python_created_php_workflow',
+      finding_type: 'conformance_runner_blocked',
+      owning_surface: 'conformance_harness',
+      execution_scope: 'cross-language-schedule-worker-shard',
+      artifact_versions: artifactVersions,
+      observed_behavior: reason,
+      expected_behavior: 'The schedules conformance host can install published Python and PHP workflow artifacts and execute Python-created/PHP-worker schedule dispatch.',
+      next_acceptance_criterion: 'restore the missing host capability and rerun schedules conformance',
+    },
+    {
+      finding_id: 'schedules-php-created-python-workflow-runner-blocked',
+      scenario_id: 'php_created_python_workflow',
+      finding_type: 'conformance_runner_blocked',
+      owning_surface: 'conformance_harness',
+      execution_scope: 'cross-language-schedule-worker-shard',
+      artifact_versions: artifactVersions,
+      observed_behavior: reason,
+      expected_behavior: 'The schedules conformance host can install published PHP workflow and Python SDK artifacts and execute PHP-created/Python-worker schedule dispatch.',
+      next_acceptance_criterion: 'restore the missing host capability and rerun schedules conformance',
+    },
+  ];
+
+  return {
+    schema: 'durable-workflow.v2.schedules-runtime.cross-language-evidence',
+    started_at: startedAt,
+    finished_at: finishedAt,
+    generated_at: finishedAt,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    local_product_source_checkouts_used: false,
+    scenario_results: {
+      python_created_php_workflow: {
+        scenario_id: 'python_created_php_workflow',
+        status: 'runner_blocked',
+        observed_outputs: {
+          blocked_reason: reason,
+          schedule_creator: 'sdk-python',
+          workflow_runtime: 'workflow-php',
+          schedule_visible_in_cli: false,
+          workflow_completed: false,
+        },
+        linked_findings: [findings[0]],
+      },
+      php_created_python_workflow: {
+        scenario_id: 'php_created_python_workflow',
+        status: 'runner_blocked',
+        observed_outputs: {
+          blocked_reason: reason,
+          schedule_creator: 'workflow-php-sdk',
+          workflow_runtime: 'sdk-python',
+          schedule_visible_in_cli: false,
+          workflow_completed: false,
+        },
+        linked_findings: [findings[1]],
+      },
+    },
+    findings,
+    cross_language_matrix: {
+      cross_language_cells: [
+        {
+          schedule_creator: 'sdk-python',
+          workflow_runtime: 'workflow-php',
+          schedule_visible_in_cli: false,
+          workflow_completed: false,
+          blocked_reason: reason,
+        },
+        {
+          schedule_creator: 'workflow-php-sdk',
+          workflow_runtime: 'sdk-python',
+          schedule_visible_in_cli: false,
+          workflow_completed: false,
+          blocked_reason: reason,
+        },
+      ],
+    },
+  };
+}
+
+async function collectCrossLanguageComposeLogs(composeProject, composeFiles) {
+  for (const service of ['server', 'scheduler', 'bootstrap', 'mysql', 'redis']) {
+    const logPath = path.join(resultDir, `schedules-cross-language-${service}.log`);
+    await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'logs', service],
+      logPath,
+    ).catch(() => {});
+  }
+}
+
+function safeLogName(value) {
+  return stringValue(value).replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 96) || 'action';
+}
+
+function schedulesPythonWorkerScript() {
+  return String.raw`import asyncio
+import json
+import os
+import sys
+import time
+
+from durable_workflow import Client, ScheduleAction, ScheduleSpec
+
+
+def process_metrics():
+    return {
+        "process_id": os.getpid(),
+        "host": "schedules-cross-language-python-shard",
+        "process_started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "process_uptime_seconds": 1,
+    }
+
+
+async def main():
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    output_path = sys.argv[2]
+
+    async with Client(
+        payload["server_url"],
+        token=payload["token"],
+        namespace=payload["namespace"],
+        timeout=8.0,
+    ) as client:
+        if payload["action"] == "register":
+            response = await client.register_worker(
+                worker_id=payload["worker_id"],
+                task_queue=payload["task_queue"],
+                supported_workflow_types=[payload["workflow_type"]],
+                workflow_definition_fingerprints={
+                    payload["workflow_type"]: f"schedules-conformance:{payload['workflow_type']}:python"
+                },
+                supported_activity_types=payload.get("supported_activity_types") or [],
+                max_concurrent_workflow_tasks=10,
+                max_concurrent_activity_tasks=10,
+                runtime="python",
+                sdk_version=payload.get("sdk_version") or "published",
+                task_slots={"workflow_available": 10, "activity_available": 10},
+                process_metrics=process_metrics(),
+            )
+            result = {"action": "register", "response": response, "task": None}
+        elif payload["action"] == "create_schedule":
+            handle = await client.create_schedule(
+                schedule_id=payload["schedule_id"],
+                spec=ScheduleSpec(intervals=[{"every": payload.get("interval") or "PT30S"}], timezone="UTC"),
+                action=ScheduleAction(
+                    workflow_type=payload["workflow_type"],
+                    task_queue=payload["task_queue"],
+                    input=[payload.get("input") or {}],
+                ),
+                overlap_policy="allow_all",
+                jitter_seconds=0,
+                max_runs=1,
+            )
+            result = {"action": "create_schedule", "schedule_id": handle.schedule_id}
+        elif payload["action"] == "poll_complete":
+            task = await client.poll_workflow_task(
+                worker_id=payload["worker_id"],
+                task_queue=payload["task_queue"],
+                timeout=3.0,
+            )
+            complete_response = None
+            if task:
+                complete_response = await client.complete_workflow_task(
+                    task_id=task["task_id"],
+                    lease_owner=task["lease_owner"],
+                    workflow_task_attempt=int(task.get("workflow_task_attempt") or 1),
+                    commands=[
+                        {
+                            "type": "complete_workflow",
+                            "result": json.dumps({
+                                **(payload.get("complete_result") or {}),
+                                "worker_id": payload["worker_id"],
+                                "workflow_type": payload["workflow_type"],
+                                "runtime": "sdk-python",
+                            }),
+                        }
+                    ],
+                )
+            result = {"action": "poll_complete", "task": task, "complete_response": complete_response}
+        else:
+            raise RuntimeError(f"unknown action: {payload['action']}")
+
+    with open(output_path, "w", encoding="utf-8") as handle:
+        json.dump(result, handle, indent=2)
+        handle.write("\n")
+
+
+asyncio.run(main())
+`;
+}
+
+function schedulesPhpWorkerScript() {
+  return String.raw`<?php
+
+declare(strict_types=1);
+
+require __DIR__.'/vendor/autoload.php';
+
+use Illuminate\Http\Client\Factory as HttpFactory;
+use Workflow\V2\Client\ControlPlaneClient;
+use Workflow\V2\Worker\WorkerProtocolClient;
+
+$payload = json_decode((string) file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
+$outputPath = $argv[2];
+$http = new HttpFactory();
+
+if ($payload['action'] === 'create_schedule') {
+    $client = new ControlPlaneClient(
+        $http,
+        $payload['server_url'],
+        $payload['token'],
+        $payload['namespace'],
+        defaultRequestTimeoutSeconds: 8,
+    );
+    $response = $client->createSchedule(
+        (string) $payload['schedule_id'],
+        [
+            'intervals' => [['every' => (string) ($payload['interval'] ?? 'PT30S')]],
+            'timezone' => 'UTC',
+        ],
+        [
+            'workflow_type' => (string) $payload['workflow_type'],
+            'task_queue' => (string) $payload['task_queue'],
+            'input' => [$payload['input'] ?? []],
+        ],
+        [
+            'overlap_policy' => 'allow_all',
+            'jitter_seconds' => 0,
+            'max_runs' => 1,
+        ],
+    );
+    $result = ['action' => 'create_schedule', 'schedule_id' => $response['schedule_id'] ?? $payload['schedule_id'], 'response' => $response];
+} else {
+    $client = new WorkerProtocolClient(
+        $http,
+        $payload['server_url'],
+        $payload['token'],
+        $payload['namespace'],
+        defaultRequestTimeoutSeconds: 8,
+    );
+
+    if ($payload['action'] === 'register') {
+        $response = $client->registerWorker(
+            workerId: (string) $payload['worker_id'],
+            taskQueue: (string) $payload['task_queue'],
+            supportedWorkflowTypes: [(string) $payload['workflow_type']],
+            supportedActivityTypes: $payload['supported_activity_types'] ?? [],
+            sdkVersion: (string) ($payload['sdk_version'] ?? 'published'),
+            maxConcurrentWorkflowTasks: 10,
+            maxConcurrentActivityTasks: 10,
+            workflowDefinitionFingerprints: [
+                (string) $payload['workflow_type'] => 'schedules-conformance:'.(string) $payload['workflow_type'].':php',
+            ],
+        );
+        $result = ['action' => 'register', 'response' => $response, 'task' => null];
+    } elseif ($payload['action'] === 'poll_complete') {
+        $tasks = $client->pollWorkflowTasks(
+            queue: (string) $payload['task_queue'],
+            timeoutSeconds: 3,
+            workerId: (string) $payload['worker_id'],
+            pollRequestId: (string) $payload['worker_id'].'-'.bin2hex(random_bytes(8)),
+            historyPageSize: 100,
+        );
+        $task = $tasks[0] ?? null;
+        $completeResponse = null;
+
+        if (is_array($task)) {
+            $completeResult = array_merge(
+                is_array($payload['complete_result'] ?? null) ? $payload['complete_result'] : [],
+                [
+                    'worker_id' => (string) $payload['worker_id'],
+                    'workflow_type' => (string) $payload['workflow_type'],
+                    'runtime' => 'workflow-php',
+                ],
+            );
+            $completeResponse = $client->completeWorkflowTask(
+                (string) $task['task_id'],
+                [[
+                    'type' => 'complete_workflow',
+                    'result' => json_encode($completeResult, JSON_THROW_ON_ERROR),
+                ]],
+                isset($task['lease_owner']) ? (string) $task['lease_owner'] : null,
+                isset($task['workflow_task_attempt']) ? (int) $task['workflow_task_attempt'] : null,
+            );
+        }
+
+        $result = ['action' => 'poll_complete', 'task' => $task, 'complete_response' => $completeResponse];
+    } else {
+        throw new RuntimeException('unknown action: '.(string) $payload['action']);
+    }
+}
+
+file_put_contents($outputPath, json_encode($result, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR).PHP_EOL);
+`;
 }
 
 function parseJsonOutput(stdout) {
