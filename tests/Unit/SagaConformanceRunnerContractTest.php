@@ -256,9 +256,74 @@ class SagaConformanceRunnerContractTest extends TestCase
             'the replacement Python worker must be retained until orchestrator cleanup',
         );
         $this->assertStringContainsString(
+            'PYTHON_WORKER_ID = "python-sagas-worker"',
+            $source,
+            'the runner must check the durable Python worker registration, not only the process id',
+        );
+        $this->assertStringContainsString(
+            'def wait_for_python_worker_registration(',
+            $source,
+            'Python restarts must wait for a registered active worker before later scenarios run',
+        );
+        $this->assertStringContainsString(
+            'control_plane_get(f"/workers/{PYTHON_WORKER_ID}", timeout=5)',
+            $source,
+            'Python worker readiness must use the public worker-management control plane surface',
+        );
+        $this->assertStringContainsString(
+            'if "python.book-trip" not in workflow_types:',
+            $source,
+            'the Python worker must advertise the saga workflow type before Python scenarios begin',
+        );
+        $this->assertStringContainsString(
+            'SAGA_ACTIVITY_TYPES = [',
+            $source,
+            'worker readiness checks must share the full saga activity surface',
+        );
+        $this->assertStringContainsString(
+            'if not process_alive(ACTIVE_PYTHON_WORKER_PID):',
+            $source,
+            'a stale Python worker registration must not be accepted after the process dies',
+        );
+        $this->assertStringContainsString(
+            'missing.append("process_alive")',
+            $source,
+            'Python readiness evidence must name a dead replacement process explicitly',
+        );
+        $this->assertStringContainsString(
+            'wait_for_python_worker_registration("mid_compensation_worker_restart", not_before=restarted_at)',
+            $source,
+            'the mid-compensation Python restart must require a post-restart registration heartbeat before later scenarios run',
+        );
+        $this->assertStringContainsString(
+            "os.kill(ACTIVE_PYTHON_WORKER_PID, signal.SIGTERM)",
+            $source,
+            'an alive but unregistered Python worker must be replaced instead of leaving later scenarios pending',
+        );
+        $this->assertStringContainsString(
+            'python_worker_required: bool = False',
+            $source,
+            'terminal waits must be able to monitor Python worker liveness for Python-dependent scenarios',
+        );
+        $this->assertStringContainsString(
+            'ensure_python_worker_running(wait_label or workflow_id)',
+            $source,
+            'Python worker liveness must be checked during terminal waits, not only before workflow start',
+        );
+        $this->assertStringContainsString(
             'atexit.register(stop_restarted_python_workers)',
             $source,
             'replacement Python workers must be cleaned up when the orchestrator exits',
+        );
+        $this->assertStringContainsString(
+            '"python_worker_restart_observations": PYTHON_WORKER_RESTART_OBSERVATIONS',
+            $source,
+            'the completed saga report must expose Python worker restarts in machine-readable evidence',
+        );
+        $this->assertStringContainsString(
+            '"python_worker_ready_observations": PYTHON_WORKER_READY_OBSERVATIONS',
+            $source,
+            'the completed saga report must expose active Python worker registration checks as machine-readable evidence',
         );
         $this->assertStringNotContainsString(
             "if restarted is not None:\n        restarted.terminate()",
@@ -322,9 +387,19 @@ class SagaConformanceRunnerContractTest extends TestCase
             'the PHP worker must advertise the saga workflow type before PHP scenarios begin',
         );
         $this->assertStringContainsString(
-            'for activity in ["reserve_flight", "reserve_hotel", "charge_card", "cancel_hotel", "cancel_flight"]:',
+            'for activity in SAGA_ACTIVITY_TYPES:',
             $source,
-            'the PHP worker must advertise forward and compensation handlers before cross-runtime scenarios rely on it',
+            'the PHP worker must advertise the complete forward, compensation, marker, and failure handler set before scenarios rely on it',
+        );
+        $this->assertStringContainsString(
+            '"refund_card",',
+            $source,
+            'readiness checks must cover the first cross-language compensation activity',
+        );
+        $this->assertStringContainsString(
+            '"saga_planned_failure",',
+            $source,
+            'readiness checks must cover the planned failure activity that enters compensation',
         );
         $this->assertStringContainsString(
             'wait_for_php_worker_registration(reason)',
@@ -350,6 +425,11 @@ class SagaConformanceRunnerContractTest extends TestCase
             'restart_php_worker(reason)',
             $source,
             'a stopped PHP worker must be restarted instead of leaving workflows stuck pending',
+        );
+        $this->assertStringContainsString(
+            'restart_php_worker(f"{reason}-stale-registration")',
+            $source,
+            'a running PHP container with stale or incomplete registration must be replaced before waiting for terminal state',
         );
         $this->assertStringContainsString(
             'capture_php_worker_logs(reason)',
@@ -763,12 +843,12 @@ class SagaConformanceRunnerContractTest extends TestCase
             'every scenario start must pass through the worker liveness gate',
         );
         $this->assertStringContainsString(
-            'def php_worker_running() -> bool:',
+            'def php_worker_container_running() -> bool:',
             $source,
             'the orchestrator must inspect the generated PHP worker container after restart-sensitive scenarios',
         );
         $this->assertStringContainsString(
-            'restart_php_worker()',
+            'restart_php_worker(reason)',
             $source,
             'dead PHP workers must be restarted before PHP workflows or PHP compensation activities are expected to run',
         );

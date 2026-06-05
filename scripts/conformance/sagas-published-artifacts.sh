@@ -1729,10 +1729,24 @@ PYTHON_WORKER_PID = int(os.environ["PYTHON_WORKER_PID"])
 SERVER_URL = os.environ.get("DW_SAGAS_SERVER_URL", "http://127.0.0.1:8080").rstrip("/")
 PHP_WORKER_CONTAINER = os.environ.get("DW_SAGAS_PHP_WORKER_CONTAINER", "dw-sagas-php-worker")
 PHP_WORKER_ID = "php-sagas-worker"
+PYTHON_WORKER_ID = "python-sagas-worker"
 ACTIVE_PYTHON_WORKER_PID = PYTHON_WORKER_PID
 RESTARTED_PYTHON_WORKERS: list[subprocess.Popen[Any]] = []
 PHP_WORKER_RESTART_OBSERVATIONS: list[dict[str, Any]] = []
 PHP_WORKER_READY_OBSERVATIONS: list[dict[str, Any]] = []
+PYTHON_WORKER_RESTART_OBSERVATIONS: list[dict[str, Any]] = []
+PYTHON_WORKER_READY_OBSERVATIONS: list[dict[str, Any]] = []
+SAGA_ACTIVITY_TYPES = [
+    "reserve_flight",
+    "reserve_hotel",
+    "charge_card",
+    "send_confirmation",
+    "cancel_flight",
+    "cancel_hotel",
+    "refund_card",
+    "pause_after_refund",
+    "saga_planned_failure",
+]
 TERMINAL_STATUSES = {"completed", "failed", "terminated", "canceled", "cancelled"}
 WAIT_RESULT_TIMEOUT_SECONDS = float(os.environ.get("DW_SAGAS_WAIT_RESULT_TIMEOUT", "45"))
 WAIT_FOR_ACTIVITY_TIMEOUT_SECONDS = float(os.environ.get("DW_SAGAS_WAIT_FOR_ACTIVITY_TIMEOUT", "45"))
@@ -2049,11 +2063,108 @@ def start_replacement_python_worker(log_name: str) -> subprocess.Popen[Any]:
     return process
 
 
-def ensure_python_worker_running() -> None:
+def python_worker_registration_snapshot(not_before: datetime | None = None) -> dict[str, Any]:
+    try:
+        body = control_plane_get(f"/workers/{PYTHON_WORKER_ID}", timeout=5)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        return {
+            "ready": False,
+            "http_status": exc.code,
+            "error": parse_json_stdout(raw),
+        }
+    except Exception as exc:
+        return {
+            "ready": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    workflow_types = body.get("supported_workflow_types")
+    activity_types = body.get("supported_activity_types")
+    if not isinstance(workflow_types, list):
+        workflow_types = []
+    if not isinstance(activity_types, list):
+        activity_types = []
+
+    missing = []
+    if body.get("worker_id") != PYTHON_WORKER_ID:
+        missing.append("worker_id")
+    if body.get("task_queue") != PYTHON_QUEUE:
+        missing.append("task_queue")
+    if body.get("status") != "active":
+        missing.append("active_status")
+    if not observed_at_or_after(body.get("last_heartbeat_at"), not_before):
+        missing.append("fresh_heartbeat")
+    if "python.book-trip" not in workflow_types:
+        missing.append("python.book-trip")
+    if not process_alive(ACTIVE_PYTHON_WORKER_PID):
+        missing.append("process_alive")
+    for activity in SAGA_ACTIVITY_TYPES:
+        if activity not in activity_types:
+            missing.append(activity)
+
+    return {
+        "ready": missing == [],
+        "missing": missing,
+        "worker_id": body.get("worker_id"),
+        "task_queue": body.get("task_queue"),
+        "status": body.get("status"),
+        "supported_workflow_types": workflow_types,
+        "supported_activity_types": activity_types,
+        "last_heartbeat_at": body.get("last_heartbeat_at"),
+        "process_alive": process_alive(ACTIVE_PYTHON_WORKER_PID),
+        "process_id": ACTIVE_PYTHON_WORKER_PID,
+    }
+
+
+def wait_for_python_worker_registration(
+    reason: str,
+    timeout: float = 20.0,
+    not_before: datetime | None = None,
+) -> None:
+    deadline = time.monotonic() + timeout
+    last_snapshot: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        last_snapshot = python_worker_registration_snapshot(not_before)
+        if last_snapshot.get("ready"):
+            PYTHON_WORKER_READY_OBSERVATIONS.append(
+                {
+                    "at": ts(),
+                    "reason": reason,
+                    "worker_id": last_snapshot.get("worker_id"),
+                    "task_queue": last_snapshot.get("task_queue"),
+                    "last_heartbeat_at": last_snapshot.get("last_heartbeat_at"),
+                    "process_id": last_snapshot.get("process_id"),
+                }
+            )
+            return
+        time.sleep(0.5)
+
+    raise RuntimeError(
+        f"Python saga worker {PYTHON_WORKER_ID} did not register active capabilities before {reason}; "
+        f"last_registration_snapshot={last_snapshot}"
+    )
+
+
+def ensure_python_worker_running(reason: str) -> None:
     if process_alive(ACTIVE_PYTHON_WORKER_PID):
-        return
+        try:
+            wait_for_python_worker_registration(reason)
+            return
+        except RuntimeError:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(ACTIVE_PYTHON_WORKER_PID, signal.SIGTERM)
+            time.sleep(1)
+    restarted_at = datetime.now(timezone.utc).replace(microsecond=0)
     start_replacement_python_worker("python-worker-auto-restart.log")
-    time.sleep(1)
+    PYTHON_WORKER_RESTART_OBSERVATIONS.append(
+        {
+            "at": restarted_at.isoformat().replace("+00:00", "Z"),
+            "reason": reason,
+            "process_id": ACTIVE_PYTHON_WORKER_PID,
+        }
+    )
+    wait_for_python_worker_registration(reason, not_before=restarted_at)
 
 
 def ensure_workers_for_payload(workflow_type: str, payload: dict[str, Any]) -> None:
@@ -2064,7 +2175,7 @@ def ensure_workers_for_payload(workflow_type: str, payload: dict[str, Any]) -> N
     if workflow_type.startswith("php.") or "workflow-php" in runtimes:
         ensure_php_worker_running(f"{workflow_type} payload worker startup")
     if workflow_type.startswith("python.") or "sdk-python" in runtimes:
-        ensure_python_worker_running()
+        ensure_python_worker_running(f"{workflow_type} payload worker startup")
 
 
 def compact_state(desc: dict[str, Any] | None) -> dict[str, Any]:
@@ -2087,16 +2198,21 @@ async def wait_result(
     timeout: float | None = None,
     *,
     php_worker_required: bool = False,
+    python_worker_required: bool = False,
     wait_label: str | None = None,
 ) -> dict[str, Any]:
     timeout = WAIT_RESULT_TIMEOUT_SECONDS if timeout is None else timeout
     deadline = time.monotonic() + timeout
     last_desc: dict[str, Any] | None = None
     next_php_worker_probe = 0.0
+    next_python_worker_probe = 0.0
     while time.monotonic() < deadline:
         if php_worker_required and time.monotonic() >= next_php_worker_probe:
             ensure_php_worker_running(wait_label or workflow_id)
             next_php_worker_probe = time.monotonic() + 2.0
+        if python_worker_required and time.monotonic() >= next_python_worker_probe:
+            ensure_python_worker_running(wait_label or workflow_id)
+            next_python_worker_probe = time.monotonic() + 2.0
         try:
             desc = await client._request("GET", f"/workflows/{workflow_id}")
         except Exception as exc:
@@ -2213,6 +2329,14 @@ def uses_php_worker(language: str, payload: dict[str, Any]) -> bool:
         language == "php"
         or payload.get("forward_runtime") == "workflow-php"
         or payload.get("compensation_runtime") == "workflow-php"
+    )
+
+
+def uses_python_worker(language: str, payload: dict[str, Any]) -> bool:
+    return (
+        language == "python"
+        or payload.get("forward_runtime") == "sdk-python"
+        or payload.get("compensation_runtime") == "sdk-python"
     )
 
 
@@ -2450,7 +2574,7 @@ def php_worker_registration_snapshot(not_before: datetime | None = None) -> dict
         missing.append("fresh_heartbeat")
     if "php.book-trip" not in workflow_types:
         missing.append("php.book-trip")
-    for activity in ["reserve_flight", "reserve_hotel", "charge_card", "cancel_hotel", "cancel_flight"]:
+    for activity in SAGA_ACTIVITY_TYPES:
         if activity not in activity_types:
             missing.append(activity)
 
@@ -2522,14 +2646,18 @@ async def run_basic_scenario(
     row_id = row_scenario_id or scenario_id
     workflow_id = f"sagas-{language}-{row_id}"
     php_worker_required = uses_php_worker(language, payload)
+    python_worker_required = uses_python_worker(language, payload)
     if php_worker_required:
         ensure_php_worker_running(f"{language} {scenario_id}")
+    if python_worker_required:
+        ensure_python_worker_running(f"{language} {scenario_id}")
     handle = await start(client, workflow_type, workflow_id, payload)
     output = await wait_result(
         client,
         workflow_id,
         failures,
         php_worker_required=php_worker_required,
+        python_worker_required=python_worker_required,
         wait_label=f"{language} {scenario_id}",
     )
     state = await terminal_state(client, workflow_id)
@@ -2585,10 +2713,20 @@ async def wait_for_activity(client: Client, workflow_id: str, run_id: str, activ
 
 
 def restart_python_worker() -> subprocess.Popen[Any]:
+    restarted_at = datetime.now(timezone.utc).replace(microsecond=0)
     with contextlib.suppress(ProcessLookupError):
         os.kill(ACTIVE_PYTHON_WORKER_PID, signal.SIGTERM)
     time.sleep(1)
-    return start_replacement_python_worker("python-worker-restart.log")
+    process = start_replacement_python_worker("python-worker-restart.log")
+    PYTHON_WORKER_RESTART_OBSERVATIONS.append(
+        {
+            "at": restarted_at.isoformat().replace("+00:00", "Z"),
+            "reason": "mid_compensation_worker_restart",
+            "process_id": process.pid,
+        }
+    )
+    wait_for_python_worker_registration("mid_compensation_worker_restart", not_before=restarted_at)
+    return process
 
 
 def php_worker_container_running() -> bool:
@@ -2688,8 +2826,13 @@ def wait_for_php_worker_registration(
 
 def ensure_php_worker_running(reason: str) -> None:
     if php_worker_container_running():
-        wait_for_php_worker_registration(reason)
-        return
+        try:
+            wait_for_php_worker_registration(reason)
+            return
+        except RuntimeError:
+            restarted_at = restart_php_worker(f"{reason}-stale-registration")
+            wait_for_php_worker_registration(reason, not_before=restarted_at)
+            return
 
     restarted_at = restart_php_worker(reason)
     deadline = time.monotonic() + 10
@@ -2751,14 +2894,18 @@ async def run_compensation_failure(client: Client, language: str) -> dict[str, A
     workflow_id = f"sagas-{language}-{scenario_id}"
     failures: list[str] = []
     php_worker_required = uses_php_worker(language, payload)
+    python_worker_required = uses_python_worker(language, payload)
     if php_worker_required:
         ensure_php_worker_running(f"{language} compensation_failure_visibility")
+    if python_worker_required:
+        ensure_python_worker_running(f"{language} compensation_failure_visibility")
     handle = await start(client, workflow_type, workflow_id, payload)
     output = await wait_result(
         client,
         workflow_id,
         failures,
         php_worker_required=php_worker_required,
+        python_worker_required=python_worker_required,
         wait_label=f"{language} compensation_failure_visibility",
     )
     state = await terminal_state(client, workflow_id)
@@ -2797,8 +2944,11 @@ async def run_recovery(client: Client, language: str) -> dict[str, Any]:
     workflow_id = f"sagas-{language}-{scenario_id}"
     failures: list[str] = []
     php_worker_required = uses_php_worker(language, payload)
+    python_worker_required = uses_python_worker(language, payload)
     if php_worker_required:
         ensure_php_worker_running(f"{language} mid_compensation_worker_restart")
+    if python_worker_required:
+        ensure_python_worker_running(f"{language} mid_compensation_worker_restart")
     handle = await start(client, workflow_type, workflow_id, payload)
     observed_pause = await wait_for_activity(client, workflow_id, handle.run_id, "pause_after_refund")
     restart_state = await terminal_state(client, workflow_id)
@@ -2817,6 +2967,7 @@ async def run_recovery(client: Client, language: str) -> dict[str, Any]:
         workflow_id,
         failures,
         php_worker_required=php_worker_required,
+        python_worker_required=python_worker_required,
         wait_label=f"{language} mid_compensation_worker_restart",
     )
     rows = side_rows(scenario_id)
@@ -2898,6 +3049,7 @@ async def run_operator_visibility(client: Client) -> dict[str, Any]:
     }
     workflow_id = f"sagas-python-{scenario_id}"
     failures: list[str] = []
+    ensure_python_worker_running("operator_visible_mid_compensation_status")
     handle = await start(client, "python.book-trip", workflow_id, payload)
     observed_pause = await wait_for_activity(client, workflow_id, handle.run_id, "pause_after_refund")
     control_plane_state = await terminal_state(client, workflow_id)
@@ -2965,8 +3117,15 @@ async def run_typed_error(client: Client) -> dict[str, Any]:
     }
     failures: list[str] = []
     workflow_id = f"sagas-python-{scenario_id}"
+    ensure_python_worker_running("typed_compensation_error_round_trip")
     handle = await start(client, "python.book-trip", workflow_id, payload)
-    output = await wait_result(client, workflow_id, failures)
+    output = await wait_result(
+        client,
+        workflow_id,
+        failures,
+        python_worker_required=True,
+        wait_label="typed_compensation_error_round_trip",
+    )
     state = await terminal_state(client, workflow_id)
     history_payload = await history(client, workflow_id, handle.run_id)
     failure_details = activity_failed_details(history_payload, "cancel_flight")
@@ -3228,6 +3387,8 @@ async def main() -> None:
         "history_dumps": report_history_dumps(results),
         "php_worker_restart_observations": PHP_WORKER_RESTART_OBSERVATIONS,
         "php_worker_ready_observations": PHP_WORKER_READY_OBSERVATIONS,
+        "python_worker_restart_observations": PYTHON_WORKER_RESTART_OBSERVATIONS,
+        "python_worker_ready_observations": PYTHON_WORKER_READY_OBSERVATIONS,
         "worker_restart_observations": [
             result
             for result in results
