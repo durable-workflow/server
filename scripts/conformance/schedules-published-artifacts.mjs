@@ -1396,6 +1396,7 @@ function cadenceEvidenceFromObservations({
     generated_at: finishedAt,
     artifact_versions: artifactVersions,
     artifact_sources: artifactSources,
+    local_product_source_checkouts_used: false,
     scenario_results: scenarioResults,
     findings,
     cadence_observations: {
@@ -2306,6 +2307,7 @@ function operatorControlsEvidenceFromObservations({
     generated_at: finishedAt,
     artifact_versions: artifactVersions,
     artifact_sources: artifactSources,
+    local_product_source_checkouts_used: false,
     scenario_results: scenarioResults,
     findings,
     operator_controls: {
@@ -2932,6 +2934,7 @@ function missedRestartEvidenceFromObservations({
     generated_at: finishedAt,
     artifact_versions: artifactVersions,
     artifact_sources: artifactSources,
+    local_product_source_checkouts_used: false,
     scenario_results: scenarioResults,
     findings,
     missed_fire_policy: missedFire,
@@ -3603,6 +3606,7 @@ function cliSurfaceEvidenceFromOperations({
     generated_at: finishedAt,
     artifact_versions: artifactVersions,
     artifact_sources: artifactSources,
+    local_product_source_checkouts_used: false,
     scenario_results: {
       cli_schedule_surface: {
         scenario_id: 'cli_schedule_surface',
