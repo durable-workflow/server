@@ -277,7 +277,15 @@ async function main() {
     [200, 404],
   );
   await sleep(1200);
-  const noCompatiblePoll = await pollWorkflowTask(serverUrl, workerHeaders, v2WorkerId, taskQueue, buildV2);
+  const noCompatiblePolls = [];
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const poll = await pollWorkflowTask(serverUrl, workerHeaders, v2WorkerId, taskQueue, buildV2);
+    noCompatiblePolls.push(poll);
+
+    if (countTasksForRun([poll], noCompatibleRunId) > 0 || isExplicitNoCompatibleSignal(poll.poll_status)) {
+      break;
+    }
+  }
   const noCompatibleShow = noCompatibleWorkflowId
     ? await getJson(
       serverUrl,
@@ -286,15 +294,19 @@ async function main() {
       [200],
     )
     : {};
+  const noCompatiblePollStatuses = noCompatiblePolls
+    .map((poll) => stringValue(poll.poll_status))
+    .filter(Boolean);
   const noCompatibleSignal = stringValue(firstExplicitNoCompatibleSignal(
-    noCompatiblePoll.poll_status,
+    ...noCompatiblePollStatuses,
     noCompatibleShow.compatibility_status,
   ))
     || 'pending';
   const noCompatiblePendingOrTypedError = isExplicitNoCompatibleSignal(noCompatibleSignal)
     ? noCompatibleSignal
     : 'pending';
-  const noCompatibleIncompatibleCount = countTasksForRun([noCompatiblePoll], noCompatibleRunId);
+  const noCompatibleIncompatibleCount = countTasksForRun(noCompatiblePolls, noCompatibleRunId);
+  const noCompatibleWorkerDeregistered = numberValue(v1Delete.__http_status) === 200;
 
   const phpV1WorkerId = `php-cross-v1-${suffix}`;
   const pythonV2WorkerId = `python-cross-v2-${suffix}`;
@@ -724,6 +736,10 @@ async function main() {
     operator_visible_signal_explicit: isExplicitNoCompatibleSignal(noCompatibleSignal),
     pending_or_typed_error: noCompatiblePendingOrTypedError,
     incompatible_worker_task_count: noCompatibleIncompatibleCount,
+    incompatible_worker_poll_attempts: noCompatiblePolls.length,
+    incompatible_worker_poll_statuses: noCompatiblePollStatuses,
+    incompatible_worker_polls: noCompatiblePolls,
+    compatible_worker_deregistered: noCompatibleWorkerDeregistered,
     worker_execution_mode: SERVER_PROTOCOL_PROBE,
     published_server_protocol_probe: true,
     published_server_artifact: publishedServerArtifactEvidence(artifactVersions, artifactSources),
@@ -1261,6 +1277,7 @@ function publishedServerArtifactEvidence(artifactVersions, artifactSources) {
 
 function noCompatibleServerProtocolProbePasses(outputs, artifactVersions, artifactSources) {
   const incompatibleWorkerTaskCount = numberValue(outputs.incompatible_worker_task_count);
+  const incompatibleWorkerPollAttempts = numberValue(outputs.incompatible_worker_poll_attempts);
   const operatorVisibleSignal = stringValue(outputs.operator_visible_signal);
   const pendingOrTypedError = stringValue(outputs.pending_or_typed_error);
   const serverVersion = stringValue(artifactVersions.server);
@@ -1270,6 +1287,9 @@ function noCompatibleServerProtocolProbePasses(outputs, artifactVersions, artifa
     && truthyEvidenceFlag(outputs.published_server_protocol_probe)
     && explicitFalse(outputs.local_product_source_checkouts_used)
     && incompatibleWorkerTaskCount === 0
+    && incompatibleWorkerPollAttempts !== null
+    && incompatibleWorkerPollAttempts > 0
+    && truthyEvidenceFlag(outputs.compatible_worker_deregistered)
     && isExplicitNoCompatibleSignal(operatorVisibleSignal)
     && (
       pendingOrTypedError === 'pending'
@@ -1562,6 +1582,22 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
     outputs.v2_worker_task_count_for_v1_run,
     outputs.v2WorkerTaskCountForV1Run,
   );
+  const rawIncompatibleWorkerPollAttempts = firstDefined(
+    outputs.incompatible_worker_poll_attempts,
+    outputs.incompatibleWorkerPollAttempts,
+    outputs.incompatible_poll_attempts,
+    outputs.incompatiblePollAttempts,
+    outputs.poll_attempts,
+    outputs.pollAttempts,
+  );
+  const rawCompatibleWorkerDeregistered = firstDefined(
+    outputs.compatible_worker_deregistered,
+    outputs.compatibleWorkerDeregistered,
+    outputs.compatible_worker_stopped,
+    outputs.compatibleWorkerStopped,
+    outputs.compatible_cohort_stopped,
+    outputs.compatibleCohortStopped,
+  );
   const rawOperatorVisibleSignal = firstExplicitNoCompatibleSignal(
     outputs.operator_visible_signal,
     outputs.operatorVisibleSignal,
@@ -1590,6 +1626,8 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
     ),
   );
   const incompatibleWorkerTaskCount = numberValue(rawIncompatibleWorkerTaskCount);
+  const incompatibleWorkerPollAttempts = numberValue(rawIncompatibleWorkerPollAttempts);
+  const compatibleWorkerDeregistered = truthyEvidenceFlag(rawCompatibleWorkerDeregistered);
   const operatorVisibleSignal = stringValue(rawOperatorVisibleSignal);
   const pendingOrTypedError = stringValue(rawPendingOrTypedError);
   const workerExecuted = publishedWorkerScenarioPasses(
@@ -1600,6 +1638,12 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
   const normalizedOutputs = { ...outputs };
   if (rawIncompatibleWorkerTaskCount !== undefined) {
     normalizedOutputs.incompatible_worker_task_count = incompatibleWorkerTaskCount;
+  }
+  if (rawIncompatibleWorkerPollAttempts !== undefined) {
+    normalizedOutputs.incompatible_worker_poll_attempts = incompatibleWorkerPollAttempts;
+  }
+  if (rawCompatibleWorkerDeregistered !== undefined) {
+    normalizedOutputs.compatible_worker_deregistered = compatibleWorkerDeregistered;
   }
   if (rawOperatorVisibleSignal !== undefined) {
     normalizedOutputs.operator_visible_signal = operatorVisibleSignal;
@@ -1612,10 +1656,15 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
     outputs: normalizedOutputs,
     worker_executed: workerExecuted,
     incompatible_worker_task_count: incompatibleWorkerTaskCount,
+    incompatible_worker_poll_attempts: incompatibleWorkerPollAttempts,
+    compatible_worker_deregistered: compatibleWorkerDeregistered,
     operator_visible_signal: operatorVisibleSignal,
     pending_or_typed_error: pendingOrTypedError,
     passes: workerExecuted
       && incompatibleWorkerTaskCount === 0
+      && incompatibleWorkerPollAttempts !== null
+      && incompatibleWorkerPollAttempts > 0
+      && compatibleWorkerDeregistered
       && isExplicitNoCompatibleSignal(operatorVisibleSignal)
       && (
         pendingOrTypedError === 'pending'

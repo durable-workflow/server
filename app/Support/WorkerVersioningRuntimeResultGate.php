@@ -71,6 +71,8 @@ final class WorkerVersioningRuntimeResultGate
                 'each_pass_scenario_has_observed_outputs',
                 'each_pass_scenario_has_scenario_specific_evidence',
                 'compatible_replay_counts_prove_zero_incompatible_delivery',
+                'no_compatible_worker_compatible_cohort_stopped',
+                'no_compatible_worker_incompatible_cohort_polled',
                 'no_compatible_worker_has_zero_incompatible_delivery',
                 'no_compatible_worker_signal_is_explicit',
                 'cross_language_php_python_counts_prove_zero_incompatible_delivery',
@@ -1172,6 +1174,19 @@ final class WorkerVersioningRuntimeResultGate
                     'incompatible_worker_task_count',
                 ),
             );
+            self::requirePositiveCount(
+                $failures,
+                $noCompatible,
+                'no_compatible_worker_behavior',
+                'incompatible_worker_poll_attempts',
+                'incompatible_worker_poll_attempts_not_positive',
+            );
+            self::requireTruthyField(
+                $failures,
+                $noCompatible,
+                'no_compatible_worker_behavior',
+                'compatible_worker_deregistered',
+            );
 
             $operatorSignal = self::stringField($noCompatible, [
                 ...self::evidenceFieldAliases('no_compatible_worker_behavior', 'operator_visible_signal'),
@@ -1802,7 +1817,7 @@ final class WorkerVersioningRuntimeResultGate
         string $field,
         string $code,
     ): void {
-        $aliases = [$field, self::camelize($field)];
+        $aliases = self::evidenceFieldAliases($scenarioId, $field);
         if (! self::fieldExists($evidence, $aliases)) {
             return;
         }
@@ -1837,7 +1852,7 @@ final class WorkerVersioningRuntimeResultGate
      */
     private static function requireTruthyField(array &$failures, array $evidence, string $scenarioId, string $field): void
     {
-        $aliases = [$field, self::camelize($field)];
+        $aliases = self::evidenceFieldAliases($scenarioId, $field);
         if (! self::fieldExists($evidence, $aliases) || self::truthyField($evidence, $aliases)) {
             return;
         }
@@ -1936,6 +1951,20 @@ final class WorkerVersioningRuntimeResultGate
                     'incompatibleDeliveryCount',
                     'v2_worker_task_count_for_v1_run',
                     'v2WorkerTaskCountForV1Run',
+                ],
+                'incompatible_worker_poll_attempts' => [
+                    ...$aliases,
+                    'incompatible_poll_attempts',
+                    'incompatiblePollAttempts',
+                    'poll_attempts',
+                    'pollAttempts',
+                ],
+                'compatible_worker_deregistered' => [
+                    ...$aliases,
+                    'compatible_worker_stopped',
+                    'compatibleWorkerStopped',
+                    'compatible_cohort_stopped',
+                    'compatibleCohortStopped',
                 ],
                 'operator_visible_signal' => [
                     ...$aliases,

@@ -110,6 +110,14 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             $manifest['scenario_requirements']['no_compatible_worker_behavior']['required_fields'],
         );
         $this->assertContains(
+            'incompatible_worker_poll_attempts',
+            $manifest['scenario_requirements']['no_compatible_worker_behavior']['required_fields'],
+        );
+        $this->assertContains(
+            'compatible_worker_deregistered',
+            $manifest['scenario_requirements']['no_compatible_worker_behavior']['required_fields'],
+        );
+        $this->assertContains(
             'local_product_source_checkouts_used',
             $manifest['scenario_requirements']['no_compatible_worker_behavior']['required_fields'],
         );
@@ -199,11 +207,27 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertContains(
+            'no_compatible_worker_compatible_cohort_stopped',
+            $manifest['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertContains(
+            'no_compatible_worker_incompatible_cohort_polled',
+            $manifest['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertContains(
             'no_compatible_worker_signal_is_explicit',
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertContains(
             'no_compatible_worker_has_zero_incompatible_delivery',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'no_compatible_worker_compatible_cohort_stopped',
+            $manifest['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'no_compatible_worker_incompatible_cohort_polled',
             $manifest['result_gate']['pass_requires'],
         );
         $this->assertContains(
@@ -464,6 +488,24 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         $this->assertContains('no_compatible_worker_pending_or_typed_error_not_explicit', $failureCodes);
     }
 
+    public function test_result_gate_rejects_no_compatible_worker_without_stopped_cohort_and_polling_proof(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['scenario_results']['no_compatible_worker_behavior']['observed_outputs'][
+            'incompatible_worker_poll_attempts'
+        ] = 0;
+        $result['scenario_results']['no_compatible_worker_behavior']['observed_outputs'][
+            'compatible_worker_deregistered'
+        ] = false;
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('incompatible_worker_poll_attempts_not_positive', $failureCodes);
+        $this->assertContains('scenario_field_must_be_true', $failureCodes);
+    }
+
     public function test_result_gate_accepts_no_compatible_alias_fields_and_public_diagnostic_text(): void
     {
         $result = $this->completeWorkerVersioningResult();
@@ -482,6 +524,8 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'publicDiagnostic' => 'No compatible worker is currently available',
             'pendingState' => 'pending',
             'incompatibleTaskCount' => 0,
+            'pollAttempts' => 2,
+            'compatibleCohortStopped' => true,
         ];
 
         $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
@@ -1223,6 +1267,8 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'operator_visible_signal' => 'no_compatible_worker',
             'pending_or_typed_error' => 'pending',
             'incompatible_worker_task_count' => 0,
+            'incompatible_worker_poll_attempts' => 2,
+            'compatible_worker_deregistered' => true,
             'local_product_source_checkouts_used' => false,
             'published_artifact_worker_execution' => $pythonPublishedWorkerExecution,
         ];

@@ -233,6 +233,21 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'the no-compatible cell may pass only when the incompatible worker receives zero tasks',
         );
         $this->assertStringContainsString(
+            'incompatibleWorkerPollAttempts > 0',
+            $node,
+            'the no-compatible cell may pass only after the incompatible cohort actually polls',
+        );
+        $this->assertStringContainsString(
+            'compatibleWorkerDeregistered',
+            $node,
+            'the no-compatible cell must prove the compatible cohort was stopped',
+        );
+        $this->assertStringContainsString(
+            'for (let attempt = 1; attempt <= 3; attempt += 1)',
+            $node,
+            'the server protocol probe should not prove no-compatible behavior from one lucky empty poll',
+        );
+        $this->assertStringContainsString(
             'isExplicitNoCompatibleSignal(publishedNoCompatibleSignal)',
             $node,
             'the no-compatible cell may pass only when zero incompatible delivery is paired with an explicit diagnostic',
@@ -370,6 +385,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
                     'observedOutputs' => [
                         'localProductSourceCheckoutsUsed' => false,
                         'incompatibleWorkerTaskCount' => 0,
+                        'incompatibleWorkerPollAttempts' => 3,
+                        'compatibleWorkerDeregistered' => true,
                         'operatorVisibleSignal' => 'no_compatible_worker',
                         'pendingOrTypedError' => 'pending',
                         'publishedArtifactWorkerExecution' => [
@@ -395,6 +412,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertSame('no_compatible_worker', $result['operator_visible_signal']);
         $this->assertSame('pending', $result['pending_or_typed_error']);
         $this->assertSame(0, $result['outputs']['incompatible_worker_task_count']);
+        $this->assertSame(3, $result['outputs']['incompatible_worker_poll_attempts']);
+        $this->assertTrue($result['outputs']['compatible_worker_deregistered']);
         $this->assertSame('no_compatible_worker', $result['outputs']['operator_visible_signal']);
         $this->assertSame('pending', $result['outputs']['pending_or_typed_error']);
     }
@@ -418,6 +437,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             ],
             'noCompatibleWorker' => [
                 'incompatibleWorkerTaskCount' => 0,
+                'incompatibleWorkerPollAttempts' => 2,
+                'compatibleWorkerDeregistered' => true,
                 'operatorVisibleSignal' => 'no_compatible_worker',
                 'pendingOrTypedError' => 'pending',
             ],
@@ -429,6 +450,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertSame('no_compatible_worker', $result['operator_visible_signal']);
         $this->assertSame('pending', $result['pending_or_typed_error']);
         $this->assertSame(0, $result['outputs']['incompatible_worker_task_count']);
+        $this->assertSame(2, $result['outputs']['incompatible_worker_poll_attempts']);
+        $this->assertTrue($result['outputs']['compatible_worker_deregistered']);
         $this->assertSame('no_compatible_worker', $result['outputs']['operator_visible_signal']);
     }
 
@@ -452,6 +475,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             ],
             'noCompatibleWorkerDiagnostics' => [
                 'incompatibleTaskCount' => 0,
+                'pollAttempts' => 2,
+                'compatibleCohortStopped' => true,
                 'publicDiagnostic' => 'No compatible worker is currently available',
                 'pendingState' => 'pending',
             ],
@@ -466,6 +491,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         );
         $this->assertSame('pending', $result['pending_or_typed_error']);
         $this->assertSame(0, $result['outputs']['incompatible_worker_task_count']);
+        $this->assertSame(2, $result['outputs']['incompatible_worker_poll_attempts']);
+        $this->assertTrue($result['outputs']['compatible_worker_deregistered']);
     }
 
     public function test_no_compatible_published_shard_prefers_explicit_compatibility_signal_over_empty_poll(): void
@@ -480,6 +507,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
                     'observed_outputs' => [
                         'local_product_source_checkouts_used' => false,
                         'incompatible_worker_task_count' => 0,
+                        'incompatible_worker_poll_attempts' => 3,
+                        'compatible_worker_deregistered' => true,
                         'poll_status' => 'empty',
                         'compatibility_status' => 'no_compatible_worker',
                         'published_artifact_worker_execution' => [
@@ -504,6 +533,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertSame(0, $result['incompatible_worker_task_count']);
         $this->assertSame('no_compatible_worker', $result['operator_visible_signal']);
         $this->assertSame('no_compatible_worker', $result['pending_or_typed_error']);
+        $this->assertSame(3, $result['outputs']['incompatible_worker_poll_attempts']);
+        $this->assertTrue($result['outputs']['compatible_worker_deregistered']);
         $this->assertSame('no_compatible_worker', $result['outputs']['operator_visible_signal']);
         $this->assertSame('no_compatible_worker', $result['outputs']['pending_or_typed_error']);
     }
@@ -525,6 +556,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             ],
             'noCompatibleWorker' => [
                 'incompatibleWorkerTaskCount' => 0,
+                'incompatibleWorkerPollAttempts' => 2,
+                'compatibleWorkerDeregistered' => true,
                 'operatorVisibleSignal' => 'no_compatible_worker',
                 'pendingOrTypedError' => 'pending',
             ],
@@ -538,6 +571,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertTrue($result['worker_executed']);
         $this->assertTrue($result['passes']);
         $this->assertSame(0, $result['incompatible_worker_task_count']);
+        $this->assertSame(2, $result['incompatible_worker_poll_attempts']);
+        $this->assertTrue($result['compatible_worker_deregistered']);
         $this->assertSame('no_compatible_worker', $result['operator_visible_signal']);
         $this->assertSame('pending', $result['pending_or_typed_error']);
     }

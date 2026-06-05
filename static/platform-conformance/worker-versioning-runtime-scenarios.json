@@ -145,6 +145,8 @@
         "operator_visible_signal",
         "pending_or_typed_error",
         "incompatible_worker_task_count",
+        "incompatible_worker_poll_attempts",
+        "compatible_worker_deregistered",
         "published_artifact_worker_execution",
         "local_product_source_checkouts_used"
       ]
