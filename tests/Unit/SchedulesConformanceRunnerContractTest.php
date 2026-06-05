@@ -810,6 +810,72 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_cadence_shard_records_readiness_candidate_failure(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SCHEDULES_RUN_CADENCE_SHARD' => '1',
+                    'DW_SCHEDULES_SERVER_URL' => 'http://127.0.0.1:1',
+                    'DW_SCHEDULES_SERVER_READY_TIMEOUT_SECONDS' => '1',
+                    'DW_SERVER_VERSION' => '0.2.343',
+                    'DW_CLI_VERSION' => '0.1.77',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.85',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.200',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $cronOutputs = $result['scenario_results']['cron_cadence']['observed_outputs'];
+            $fixedOutputs = $result['scenario_results']['fixed_rate_cadence']['observed_outputs'];
+
+            $this->assertSame('fail', $result['scenario_results']['cron_cadence']['status']);
+            $this->assertSame('fail', $result['scenario_results']['fixed_rate_cadence']['status']);
+            $this->assertStringContainsString(
+                'published server did not become ready; tried http://127.0.0.1:1/api/ready',
+                $cronOutputs['failure_reason'],
+            );
+            $this->assertSame($cronOutputs['failure_reason'], $fixedOutputs['failure_reason']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_runner_rejects_unallowlisted_install_source_labels(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -1623,12 +1689,18 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         );
     }
 
-    public function test_runner_readiness_timeout_reports_last_probe_observation(): void
+    public function test_runner_readiness_timeout_reports_candidate_probe_observations(): void
     {
         $repoRoot = dirname(__DIR__, 2);
         $source = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
 
-        $this->assertStringContainsString('last observation:', $source);
+        $this->assertStringContainsString('async function waitForReachableServerUrl', $source);
+        $this->assertStringContainsString('const observations = new Map();', $source);
+        $this->assertStringContainsString('const observation = await probeServerReady(candidate);', $source);
+        $this->assertStringContainsString('observations.set(candidate, observation.detail);', $source);
+        $this->assertStringContainsString('${candidate}/api/ready => ${observations.get(candidate)', $source);
+        $this->assertStringContainsString('published server did not become ready; tried ${details}', $source);
+        $this->assertStringContainsString('function networkErrorDetail', $source);
         $this->assertStringContainsString('compactLogText(text)', $source);
         $this->assertStringContainsString('<empty response body>', $source);
         $this->assertStringContainsString('compose diagnostics:', $source);

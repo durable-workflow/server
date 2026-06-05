@@ -76,6 +76,13 @@ Environment overrides:
   DW_SERVER_IMAGE                   Exact published server image/tag/digest to test.
   DW_SCHEDULES_SERVER_PORT          Host port for the published server. Defaults
                                     to a free port.
+  DW_SCHEDULES_SERVER_HOST          Optional host/IP to try when a Docker-published
+                                    server port is not reachable on loopback.
+  DW_SCHEDULES_DOCKER_HOST_GATEWAY  Optional Docker host gateway address for
+                                    containerized conformance runners.
+  DW_SCHEDULES_SERVER_READY_TIMEOUT_SECONDS
+                                    Server readiness timeout per shard. Defaults
+                                    to 120.
   DW_SCHEDULES_COMPOSE_WAIT_TIMEOUT_SECONDS
                                     Docker Compose --wait timeout for published
                                     stack startup. Defaults to 180.

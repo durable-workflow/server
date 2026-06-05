@@ -1536,8 +1536,9 @@ async function runCadenceShard({ startedAt, artifactVersions, artifactSources, s
   const schedulerTickSeconds = positiveInt(process.env.DW_SCHEDULES_SCHEDULER_TICK_SECONDS, 5);
   const driftToleranceMs = positiveInt(process.env.DW_SCHEDULES_CADENCE_DRIFT_TOLERANCE_MS, 20000);
   const intervalToleranceMs = positiveInt(process.env.DW_SCHEDULES_CADENCE_INTERVAL_TOLERANCE_MS, 15000);
+  const readinessTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_SERVER_READY_TIMEOUT_SECONDS, 120);
   const serverPort = positiveInt(process.env.DW_SCHEDULES_SERVER_PORT, 0) || await freePort();
-  const serverUrl = existingServerUrl || `http://127.0.0.1:${serverPort}`;
+  let serverUrl = existingServerUrl || `http://127.0.0.1:${serverPort}`;
   const composeProject = sanitizeDockerName(runId);
   const overlayPath = path.join(resultDir, 'schedules-cadence-compose.override.yml');
   const cadenceEvidencePath = path.join(resultDir, 'schedules-cadence-evidence.json');
@@ -1571,7 +1572,16 @@ async function runCadenceShard({ startedAt, artifactVersions, artifactSources, s
   }
 
   try {
-    await waitForServerReady(serverUrl, 120);
+    serverUrl = await waitForReachableServerUrl({
+      preferredUrl: serverUrl,
+      timeoutSeconds: readinessTimeoutSeconds,
+      composeProject: composeStarted ? composeProject : '',
+      composeFiles,
+      serverPort,
+      serverImage,
+      token,
+      artifactVersions,
+    });
     await ensureNamespace(serverUrl, token, namespace);
 
     const cronScheduleId = `${runId}-cron`;
@@ -2030,8 +2040,9 @@ async function runOperatorControlsShard({ startedAt, artifactVersions, artifactS
   const namespace = sanitizeDockerName(`${stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance'}-${runId}`).slice(0, 96);
   const taskQueue = stringValue(process.env.DW_SCHEDULES_TASK_QUEUE) || 'schedules-operator-controls';
   const token = stringValue(process.env.DW_SCHEDULES_AUTH_TOKEN) || 'dev-token';
+  const readinessTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_SERVER_READY_TIMEOUT_SECONDS, 120);
   const serverPort = positiveInt(process.env.DW_SCHEDULES_SERVER_PORT, 0) || await freePort();
-  const serverUrl = existingServerUrl || `http://127.0.0.1:${serverPort}`;
+  let serverUrl = existingServerUrl || `http://127.0.0.1:${serverPort}`;
   const composeProject = sanitizeDockerName(runId);
   const schedulerTickSeconds = positiveInt(process.env.DW_SCHEDULES_SCHEDULER_TICK_SECONDS, 5);
   const firstFireTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_OPERATOR_FIRST_FIRE_TIMEOUT_SECONDS, 140);
@@ -2070,7 +2081,16 @@ async function runOperatorControlsShard({ startedAt, artifactVersions, artifactS
   }
 
   try {
-    await waitForServerReady(serverUrl, 120);
+    serverUrl = await waitForReachableServerUrl({
+      preferredUrl: serverUrl,
+      timeoutSeconds: readinessTimeoutSeconds,
+      composeProject: composeStarted ? composeProject : '',
+      composeFiles,
+      serverPort,
+      serverImage,
+      token,
+      artifactVersions,
+    });
     await ensureNamespace(serverUrl, token, namespace);
 
     const cronScheduleId = `${runId}-cron`;
@@ -3014,8 +3034,9 @@ async function runMissedRestartShard({ startedAt, artifactVersions, artifactSour
   const namespace = sanitizeDockerName(`${stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance'}-${runId}`).slice(0, 96);
   const taskQueue = stringValue(process.env.DW_SCHEDULES_TASK_QUEUE) || 'schedules-missed-restart';
   const token = stringValue(process.env.DW_SCHEDULES_AUTH_TOKEN) || 'dev-token';
+  const readinessTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_SERVER_READY_TIMEOUT_SECONDS, 120);
   const serverPort = positiveInt(process.env.DW_SCHEDULES_SERVER_PORT, 0) || await freePort();
-  const serverUrl = `http://127.0.0.1:${serverPort}`;
+  let serverUrl = `http://127.0.0.1:${serverPort}`;
   const composeProject = sanitizeDockerName(runId);
   const schedulerTickSeconds = positiveInt(process.env.DW_SCHEDULES_SCHEDULER_TICK_SECONDS, 5);
   const missedDowntimeSeconds = Math.max(120, positiveInt(process.env.DW_SCHEDULES_MISSED_FIRE_DOWNTIME_SECONDS, 125));
@@ -3061,7 +3082,16 @@ async function runMissedRestartShard({ startedAt, artifactVersions, artifactSour
   );
 
   try {
-    await waitForServerReady(serverUrl, 120);
+    serverUrl = await waitForReachableServerUrl({
+      preferredUrl: serverUrl,
+      timeoutSeconds: readinessTimeoutSeconds,
+      composeProject,
+      composeFiles,
+      serverPort,
+      serverImage,
+      token,
+      artifactVersions,
+    });
     await ensureNamespace(serverUrl, token, namespace);
 
     const missedScheduleId = `${runId}-missed`;
@@ -3129,7 +3159,7 @@ async function runMissedRestartShard({ startedAt, artifactVersions, artifactSour
       path.join(resultDir, 'schedules-missed-restart-server-restart.log'),
       env,
     );
-    await waitForServerReady(serverUrl, 120);
+    await waitForServerReady(serverUrl, readinessTimeoutSeconds);
     const serverRestartReadyAt = timestamp();
     const postRestartList = await listSchedules(serverUrl, token, namespace);
     const postRestartDescription = await describeSchedule(serverUrl, token, namespace, restartScheduleId);
@@ -3751,8 +3781,9 @@ async function runCliSurfaceShard({ startedAt, artifactVersions, artifactSources
   const namespace = sanitizeDockerName(`${stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance'}-${runId}`).slice(0, 96);
   const taskQueue = stringValue(process.env.DW_SCHEDULES_TASK_QUEUE) || 'schedules-cli-surface';
   const token = stringValue(process.env.DW_SCHEDULES_AUTH_TOKEN) || 'dev-token';
+  const readinessTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_SERVER_READY_TIMEOUT_SECONDS, 120);
   const serverPort = positiveInt(process.env.DW_SCHEDULES_SERVER_PORT, 0) || await freePort();
-  const serverUrl = existingServerUrl || `http://127.0.0.1:${serverPort}`;
+  let serverUrl = existingServerUrl || `http://127.0.0.1:${serverPort}`;
   const composeProject = sanitizeDockerName(runId);
   const composeFiles = ['-f', path.join(repoRoot, 'docker-compose.published.yml')];
   let composeStarted = false;
@@ -3779,7 +3810,16 @@ async function runCliSurfaceShard({ startedAt, artifactVersions, artifactSources
   }
 
   try {
-    await waitForServerReady(serverUrl, 120);
+    serverUrl = await waitForReachableServerUrl({
+      preferredUrl: serverUrl,
+      timeoutSeconds: readinessTimeoutSeconds,
+      composeProject: composeStarted ? composeProject : '',
+      composeFiles,
+      serverPort,
+      serverImage,
+      token,
+      artifactVersions,
+    });
     await ensureNamespace(serverUrl, token, namespace);
     cliPath = await resolvePublishedCli(artifactVersions, artifactSources);
 
@@ -4327,8 +4367,9 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
   const namespace = sanitizeDockerName(`${stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance'}-${runId}`).slice(0, 96);
   const taskQueue = stringValue(process.env.DW_SCHEDULES_TASK_QUEUE) || `schedules-cross-language-${runId}`;
   const token = stringValue(process.env.DW_SCHEDULES_AUTH_TOKEN) || 'dev-token';
+  const readinessTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_SERVER_READY_TIMEOUT_SECONDS, 120);
   const serverPort = positiveInt(process.env.DW_SCHEDULES_SERVER_PORT, 0) || await freePort();
-  const serverUrl = existingServerUrl || `http://127.0.0.1:${serverPort}`;
+  let serverUrl = existingServerUrl || `http://127.0.0.1:${serverPort}`;
   const composeProject = sanitizeDockerName(runId);
   const overlayPath = path.join(resultDir, 'schedules-cross-language-compose.override.yml');
   const composeFiles = [
@@ -4374,7 +4415,16 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
   }
 
   try {
-    await waitForServerReady(serverUrl, 120);
+    serverUrl = await waitForReachableServerUrl({
+      preferredUrl: serverUrl,
+      timeoutSeconds: readinessTimeoutSeconds,
+      composeProject: composeStarted ? composeProject : '',
+      composeFiles,
+      serverPort,
+      serverImage,
+      token,
+      artifactVersions,
+    });
     await ensureNamespace(serverUrl, token, namespace);
 
     cliPath = await resolvePublishedCli(artifactVersions, artifactSources);
@@ -5392,27 +5442,247 @@ async function apiRequestResult(serverUrl, token, namespace, method, pathAndQuer
   };
 }
 
-async function waitForServerReady(serverUrl, timeoutSeconds) {
+async function waitForReachableServerUrl({
+  preferredUrl,
+  timeoutSeconds,
+  composeProject = '',
+  composeFiles = [],
+  serverPort = 0,
+  serverImage = '',
+  token = '',
+  artifactVersions = {},
+}) {
+  const candidates = await serverUrlCandidates({
+    preferredUrl,
+    composeProject,
+    composeFiles,
+    serverPort,
+    serverImage,
+    token,
+    artifactVersions,
+  });
   const deadline = Date.now() + timeoutSeconds * 1000;
-  const readyUrl = `${serverUrl.replace(/\/+$/, '')}/api/ready`;
-  let lastObservation = 'no readiness probe completed';
+  const observations = new Map();
 
   while (Date.now() < deadline) {
-    try {
-      const response = await fetch(readyUrl);
-      if (response.ok) {
-        return;
+    for (const candidate of candidates) {
+      const observation = await probeServerReady(candidate);
+      observations.set(candidate, observation.detail);
+      if (observation.ready) {
+        return candidate;
       }
-      const text = await response.text().catch(() => '');
-      lastObservation = `HTTP ${response.status}: ${compactLogText(text)}`;
-    } catch (error) {
-      lastObservation = error instanceof Error ? error.message : String(error);
     }
 
     await sleep(1000);
   }
 
-  throw new Error(`published server did not become ready at ${readyUrl}; last observation: ${lastObservation}`);
+  const details = candidates
+    .map((candidate) => `${candidate}/api/ready => ${observations.get(candidate) ?? 'not probed'}`)
+    .join('; ');
+
+  throw new Error(`published server did not become ready; tried ${details}`);
+}
+
+async function waitForServerReady(serverUrl, timeoutSeconds) {
+  await waitForReachableServerUrl({
+    preferredUrl: serverUrl,
+    timeoutSeconds,
+  });
+}
+
+async function serverUrlCandidates({
+  preferredUrl,
+  composeProject,
+  composeFiles,
+  serverPort,
+  serverImage,
+  token,
+  artifactVersions,
+}) {
+  const urls = [];
+  const addUrl = (value) => {
+    const normalized = normalizeServerUrl(value);
+    if (normalized !== '' && !urls.includes(normalized)) {
+      urls.push(normalized);
+    }
+  };
+
+  addUrl(preferredUrl);
+
+  if (composeProject === '') {
+    return urls;
+  }
+
+  const composePort = composeProject !== ''
+    ? await publishedComposeServerPort({
+      composeProject,
+      composeFiles,
+      serverPort,
+      serverImage,
+      token,
+      artifactVersions,
+    })
+    : null;
+  const publishedPort = composePort?.port || serverPort;
+  const explicitHost = stringValue(process.env.DW_SCHEDULES_SERVER_HOST);
+
+  if (explicitHost !== '' && publishedPort > 0) {
+    addUrl(serverUrlForHostPort(explicitHost, publishedPort));
+  }
+
+  if (composePort && composePort.host !== '' && !isWildcardHost(composePort.host)) {
+    addUrl(serverUrlForHostPort(composePort.host, composePort.port));
+  }
+
+  for (const host of dockerHostGatewayCandidates()) {
+    if (publishedPort > 0) {
+      addUrl(serverUrlForHostPort(host, publishedPort));
+    }
+  }
+
+  return urls;
+}
+
+async function publishedComposeServerPort({
+  composeProject,
+  composeFiles,
+  serverPort,
+  serverImage,
+  token,
+  artifactVersions,
+}) {
+  try {
+    const result = await execFile(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'port', 'server', '8080'],
+      {
+        env: composeEnv(serverPort, serverImage, token, artifactVersions),
+        maxBuffer: 1024 * 1024,
+      },
+    );
+    return parseHostPort(String(result.stdout ?? '').trim().split(/\r?\n/)[0] ?? '');
+  } catch {
+    return null;
+  }
+}
+
+function dockerHostGatewayCandidates() {
+  const candidates = [
+    '127.0.0.1',
+    'localhost',
+    stringValue(process.env.DW_SCHEDULES_DOCKER_HOST_GATEWAY),
+    stringValue(process.env.DOCKER_HOST_GATEWAY),
+    stringValue(process.env.HOST_DOCKER_INTERNAL),
+    'host.docker.internal',
+    'gateway.docker.internal',
+    defaultRouteGateway(),
+  ];
+
+  return candidates.filter((value, index, values) => value !== '' && values.indexOf(value) === index);
+}
+
+function parseHostPort(value) {
+  const normalized = stringValue(value).trim();
+  if (normalized === '') {
+    return null;
+  }
+
+  const bracketed = normalized.match(/^\[([^\]]+)]:(\d+)$/);
+  if (bracketed) {
+    return { host: bracketed[1], port: Number.parseInt(bracketed[2], 10) };
+  }
+
+  const lastColon = normalized.lastIndexOf(':');
+  if (lastColon <= 0) {
+    return null;
+  }
+
+  const host = normalized.slice(0, lastColon);
+  const port = Number.parseInt(normalized.slice(lastColon + 1), 10);
+  if (!Number.isFinite(port) || port <= 0) {
+    return null;
+  }
+
+  return { host, port };
+}
+
+function isWildcardHost(host) {
+  return ['0.0.0.0', '::', '[::]', '*'].includes(stringValue(host).trim());
+}
+
+function serverUrlForHostPort(host, port) {
+  const normalizedHost = stringValue(host).trim();
+  if (normalizedHost === '' || !Number.isFinite(port) || port <= 0) {
+    return '';
+  }
+
+  const safeHost = normalizedHost.includes(':') && !normalizedHost.startsWith('[')
+    ? `[${normalizedHost}]`
+    : normalizedHost;
+
+  return `http://${safeHost}:${port}`;
+}
+
+function normalizeServerUrl(value) {
+  return stringValue(value).replace(/\/+$/, '');
+}
+
+function defaultRouteGateway() {
+  try {
+    const routes = fs.readFileSync('/proc/net/route', 'utf8').trim().split(/\r?\n/).slice(1);
+    for (const route of routes) {
+      const fields = route.trim().split(/\s+/);
+      if (fields[1] !== '00000000') {
+        continue;
+      }
+
+      const gateway = fields[2];
+      if (!/^[0-9A-Fa-f]{8}$/.test(gateway)) {
+        continue;
+      }
+
+      return [6, 4, 2, 0]
+        .map((index) => Number.parseInt(gateway.slice(index, index + 2), 16))
+        .join('.');
+    }
+  } catch {
+    return '';
+  }
+
+  return '';
+}
+
+async function probeServerReady(serverUrl) {
+  const readyUrl = `${serverUrl.replace(/\/+$/, '')}/api/ready`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+
+  try {
+    const response = await fetch(readyUrl, { signal: controller.signal });
+    if (response.ok) {
+      return { ready: true, detail: 'HTTP 200' };
+    }
+    const text = await response.text().catch(() => '');
+    return { ready: false, detail: `HTTP ${response.status}: ${compactLogText(text)}` };
+  } catch (error) {
+    return { ready: false, detail: networkErrorDetail(error) };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function networkErrorDetail(error) {
+  const parts = [error instanceof Error ? error.message : String(error)];
+  const cause = error && typeof error === 'object' ? error.cause : null;
+  if (cause && typeof cause === 'object') {
+    for (const key of ['code', 'errno', 'syscall', 'address', 'port']) {
+      if (Object.prototype.hasOwnProperty.call(cause, key)) {
+        parts.push(`${key}=${String(cause[key])}`);
+      }
+    }
+  }
+
+  return parts.filter(Boolean).join(' ');
 }
 
 function compactLogText(value, limit = 1000) {
