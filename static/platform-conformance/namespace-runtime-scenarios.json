@@ -124,7 +124,8 @@
         "detail_namespace_identity",
         "unscoped_view_authority",
         "api_captures",
-        "operator_surface_matrix"
+        "operator_surface_matrix",
+        "waterline_shard_execution"
       ]
     },
     "nexus_explicit_cross_namespace_invocation": {

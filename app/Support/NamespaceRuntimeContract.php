@@ -255,6 +255,7 @@ final class NamespaceRuntimeContract
                         'unscoped_view_authority',
                         'api_captures',
                         'operator_surface_matrix',
+                        'waterline_shard_execution',
                     ],
                 ],
                 'search_attribute_schema_and_value_query_isolation' => [
@@ -306,6 +307,7 @@ final class NamespaceRuntimeContract
                     'workflow_php_namespace_shard_execution_recorded',
                     'schedule_namespace_isolation_reported',
                     'waterline_operator_visibility_reported',
+                    'waterline_namespace_shard_execution_recorded',
                     'waterline_operator_surface_verdicts_reported',
                     'search_attribute_value_query_isolation_reported',
                     'namespace_lifecycle_cleanup_reported',

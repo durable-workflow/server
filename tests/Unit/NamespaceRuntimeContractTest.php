@@ -154,6 +154,7 @@ class NamespaceRuntimeContractTest extends TestCase
             'workflow_php_namespace_shard_execution_recorded',
             'schedule_namespace_isolation_reported',
             'waterline_operator_visibility_reported',
+            'waterline_namespace_shard_execution_recorded',
             'waterline_operator_surface_verdicts_reported',
             'search_attribute_value_query_isolation_reported',
             'namespace_lifecycle_cleanup_reported',
@@ -178,7 +179,7 @@ class NamespaceRuntimeContractTest extends TestCase
             $manifest['scenario_requirements']['schedule_namespace_isolation']['evidence'],
         );
         $this->assertSame(
-            ['tenant_a_scoped_views', 'tenant_b_scoped_views', 'detail_namespace_identity', 'unscoped_view_authority', 'api_captures', 'operator_surface_matrix'],
+            ['tenant_a_scoped_views', 'tenant_b_scoped_views', 'detail_namespace_identity', 'unscoped_view_authority', 'api_captures', 'operator_surface_matrix', 'waterline_shard_execution'],
             $manifest['scenario_requirements']['waterline_operator_namespace_visibility']['evidence'],
         );
         $this->assertSame(
@@ -281,6 +282,10 @@ class NamespaceRuntimeContractTest extends TestCase
         );
         $this->assertContains(
             'workflow_php_worker_pass_requires_published_shard_execution',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'waterline_operator_pass_requires_published_shard_execution',
             $resultGate['pass_requires'],
         );
         $this->assertContains(
@@ -406,6 +411,7 @@ class NamespaceRuntimeContractTest extends TestCase
         $result = $this->completeNamespaceResult();
         unset(
             $result['php_worker_behavior']['workflow_php_shard_execution'],
+            $result['waterline_operator_visibility']['waterline_shard_execution'],
             $result['waterline_operator_visibility']['api_captures'],
             $result['sdk_namespace_selection']['cross_namespace_lookup_denied'],
             $result['schedule_namespace_isolation']['cross_namespace_schedule_mutation_denied'],
@@ -442,6 +448,13 @@ class NamespaceRuntimeContractTest extends TestCase
         );
         $this->assertContains(
             ['waterline_operator_namespace_visibility', 'api_captures'],
+            array_map(
+                static fn (array $failure): array => [$failure['scenario_id'] ?? null, $failure['field'] ?? null],
+                $missingEvidence,
+            ),
+        );
+        $this->assertContains(
+            ['waterline_operator_namespace_visibility', 'waterline_shard_execution'],
             array_map(
                 static fn (array $failure): array => [$failure['scenario_id'] ?? null, $failure['field'] ?? null],
                 $missingEvidence,
@@ -622,6 +635,37 @@ class NamespaceRuntimeContractTest extends TestCase
                 $unscoped['gate_failures'],
             ),
         );
+    }
+
+    public function test_result_gate_rejects_waterline_pass_without_published_shard_execution(): void
+    {
+        $result = $this->completeNamespaceResult();
+        unset($result['waterline_operator_visibility']['waterline_shard_execution']);
+
+        $evaluation = NamespaceRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('missing_scenario_specific_evidence', $failureCodes);
+        $this->assertContains('missing_waterline_shard_execution', $failureCodes);
+    }
+
+    public function test_result_gate_rejects_waterline_pass_with_stale_shard_artifact_versions(): void
+    {
+        $result = $this->completeNamespaceResult();
+        $result['waterline_operator_visibility']['waterline_shard_execution']['artifact_versions']['waterline'] =
+            '2.0.0-alpha.56';
+
+        $evaluation = NamespaceRuntimeResultGate::evaluate($result);
+        $versionMismatches = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'waterline_shard_artifact_version_mismatch',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame('waterline', $versionMismatches[0]['artifact'] ?? null);
+        $this->assertSame('2.0.0-alpha.57', $versionMismatches[0]['expected_version'] ?? null);
+        $this->assertSame('2.0.0-alpha.56', $versionMismatches[0]['actual_version'] ?? null);
     }
 
     public function test_result_gate_rejects_placeholder_artifact_versions(): void
@@ -863,6 +907,7 @@ class NamespaceRuntimeContractTest extends TestCase
                         'operator_api_cluster_authority' => true,
                     ],
                 ],
+                'waterline_shard_execution' => $this->waterlineShardExecution(),
             ],
             'search_attribute_value_query_isolation' => [
                 'schema_isolation' => true,
@@ -986,6 +1031,40 @@ class NamespaceRuntimeContractTest extends TestCase
                 'php_worker_task_queue_namespace_isolation' => 'pass',
             ],
             'report_path' => 'artifacts/workflow-php-namespace-shard.json',
+            'scenario_status' => 'pass',
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function waterlineShardExecution(): array
+    {
+        return [
+            'status' => 'executed',
+            'required' => true,
+            'shard_command' => 'waterline:namespace-conformance',
+            'scope' => 'waterline-operator-namespace-shard',
+            'coverage_scope' => 'waterline-operator-namespace-shard',
+            'artifact' => 'durable-workflow/waterline',
+            'artifact_version' => '2.0.0-alpha.57',
+            'artifact_versions' => [
+                'server' => '0.2.153',
+                'cli' => '0.1.53',
+                'workflow-php' => '2.0.0-alpha.166',
+                'sdk-python' => '0.4.64',
+                'waterline' => '2.0.0-alpha.57',
+            ],
+            'required_scenarios' => [
+                'waterline_operator_namespace_visibility',
+            ],
+            'covered_scenarios' => [
+                'waterline_operator_namespace_visibility',
+            ],
+            'scenario_statuses' => [
+                'waterline_operator_namespace_visibility' => 'pass',
+            ],
+            'report_path' => 'artifacts/waterline-namespace-shard.json',
             'scenario_status' => 'pass',
         ];
     }

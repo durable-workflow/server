@@ -1612,14 +1612,18 @@ def workflow_php_execution_record(path: str | None, payload: dict[str, Any] | No
 
 def waterline_execution_record(path: str | None, payload: dict[str, Any] | None, item: dict[str, Any] | None, error: dict[str, Any] | None, pins: dict[str, Any]) -> dict[str, Any]:
     status = "executed" if item is not None and error is None else ("not_supplied" if not path else "missing")
+    scenario_status = str(item.get("status") or "") if item is not None else ""
     record: dict[str, Any] = {
         "status": status,
-        "required": False,
+        "required": True,
         "shard_command": "waterline:namespace-conformance",
         "scope": "waterline-operator-namespace-shard",
         "artifact": "durable-workflow/waterline",
         "artifact_version": pins["waterline"],
         "report_path": path,
+        "required_scenarios": ["waterline_operator_namespace_visibility"],
+        "covered_scenarios": ["waterline_operator_namespace_visibility"] if item is not None else [],
+        "scenario_statuses": {"waterline_operator_namespace_visibility": scenario_status} if scenario_status else {},
     }
     if payload is not None:
         record["coverage_scope"] = payload.get("coverage_scope")
@@ -2247,7 +2251,7 @@ def main() -> int:
             **waterline_artifact,
             "version": pins["waterline"],
             "source": pins["artifact_sources"]["waterline"],
-            "status": waterline_artifact.get("status", "resolved"),
+            "status": "executed" if waterline_execution["status"] == "executed" else waterline_artifact.get("status", "resolved"),
             "shard_command": "waterline:namespace-conformance",
             "namespace_shard_status": waterline_execution["status"],
             "namespace_shard_execution": waterline_execution,

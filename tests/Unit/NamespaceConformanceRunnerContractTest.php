@@ -136,6 +136,11 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('composer:2 php artisan waterline:namespace-conformance', $source);
         $this->assertStringContainsString('--output /result/waterline-namespace-result.json', $source);
         $this->assertStringContainsString('DW_NAMESPACES_WATERLINE_RESULT="$waterline_result_path"', $source);
+        $this->assertStringContainsString('"required": True', $source);
+        $this->assertStringContainsString('"required_scenarios": ["waterline_operator_namespace_visibility"]', $source);
+        $this->assertStringContainsString('"scenario_statuses": {"waterline_operator_namespace_visibility": scenario_status}', $source);
+        $this->assertStringContainsString('"status": "executed" if waterline_execution["status"] == "executed"', $source);
+        $this->assertStringContainsString('"waterline_shard_execution": waterline_execution', $source);
         $this->assertStringContainsString('write_waterline_setup_failure', $source);
         $this->assertStringContainsString('Waterline namespace shard could not run in the published-artifact harness', $source);
     }

@@ -153,6 +153,12 @@ final class NamespaceRuntimeResultGate
                 'unscoped_view_authority' => ['unscoped_view_authority', 'unscopedViewAuthority'],
                 'api_captures' => ['api_captures', 'apiCaptures'],
                 'operator_surface_matrix' => ['operator_surface_matrix', 'operatorSurfaceMatrix'],
+                'waterline_shard_execution' => [
+                    'waterline_shard_execution',
+                    'waterlineShardExecution',
+                    'waterline_execution',
+                    'waterlineExecution',
+                ],
             ],
         ],
         'search_attribute_schema_and_value_query_isolation' => [
@@ -247,6 +253,7 @@ final class NamespaceRuntimeResultGate
                 'each_pass_scenario_has_scenario_specific_evidence',
                 'each_pass_scenario_has_concrete_named_evidence_fields',
                 'workflow_php_worker_pass_requires_published_shard_execution',
+                'waterline_operator_pass_requires_published_shard_execution',
                 'waterline_operator_visibility_has_scoped_surface_verdicts',
                 'each_non_pass_scenario_has_linked_findings',
                 'run_timestamps_outcome_and_finding_links_are_recorded',
@@ -1007,6 +1014,7 @@ final class NamespaceRuntimeResultGate
                         $scenarioResults['waterline_operator_namespace_visibility'],
                         'waterline_operator_visibility',
                     ) ?? [],
+                    self::artifactVersions($result),
                 ),
             );
         }
@@ -1248,17 +1256,19 @@ final class NamespaceRuntimeResultGate
      *
      * @return array<int, array<string, mixed>>
      */
-    private static function waterlineEvidenceFailures(array $section): array
+    private static function waterlineEvidenceFailures(array $section, array $publishedVersions): array
     {
+        $failures = self::waterlineShardEvidenceFailures($section, $publishedVersions);
         $matrix = self::firstArrayField($section, ['operator_surface_matrix', 'operatorSurfaceMatrix']);
         if ($matrix === null) {
-            return [[
+            $failures[] = [
                 'code' => 'missing_waterline_operator_surface_matrix',
                 'scenario_id' => 'waterline_operator_namespace_visibility',
-            ]];
+            ];
+
+            return $failures;
         }
 
-        $failures = [];
         foreach ([
             'tenant_a' => 'tenant-a',
             'tenant_b' => 'tenant-b',
@@ -1338,6 +1348,167 @@ final class NamespaceRuntimeResultGate
                     'code' => 'waterline_unscoped_authority_verdict_failed',
                     'scenario_id' => 'waterline_operator_namespace_visibility',
                     'field' => $field,
+                ];
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $section
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function waterlineShardEvidenceFailures(array $section, array $publishedVersions): array
+    {
+        $execution = self::firstArrayField($section, [
+            'waterline_shard_execution',
+            'waterlineShardExecution',
+            'waterline_execution',
+            'waterlineExecution',
+        ]);
+
+        if ($execution === null) {
+            return [[
+                'code' => 'missing_waterline_shard_execution',
+                'scenario_id' => 'waterline_operator_namespace_visibility',
+            ]];
+        }
+
+        $failures = [];
+        $status = self::stringValue($execution['status'] ?? null);
+        if ($status !== 'executed') {
+            $failures[] = [
+                'code' => 'waterline_shard_not_executed',
+                'scenario_id' => 'waterline_operator_namespace_visibility',
+                'status' => $status,
+            ];
+        }
+
+        if (($execution['required'] ?? null) !== true) {
+            $failures[] = [
+                'code' => 'waterline_shard_not_marked_required',
+                'scenario_id' => 'waterline_operator_namespace_visibility',
+            ];
+        }
+
+        $scope = self::stringValue($execution['scope'] ?? $execution['coverage_scope'] ?? $execution['coverageScope'] ?? null);
+        if ($scope !== 'waterline-operator-namespace-shard') {
+            $failures[] = [
+                'code' => 'waterline_shard_scope_mismatch',
+                'scenario_id' => 'waterline_operator_namespace_visibility',
+                'expected_scope' => 'waterline-operator-namespace-shard',
+                'actual_scope' => $scope,
+            ];
+        }
+
+        $command = self::stringValue($execution['shard_command'] ?? $execution['shardCommand'] ?? null);
+        if ($command !== 'waterline:namespace-conformance') {
+            $failures[] = [
+                'code' => 'waterline_shard_command_mismatch',
+                'scenario_id' => 'waterline_operator_namespace_visibility',
+                'expected_command' => 'waterline:namespace-conformance',
+                'actual_command' => $command,
+            ];
+        }
+
+        if (self::stringValue($execution['report_path'] ?? $execution['reportPath'] ?? null) === '') {
+            $failures[] = [
+                'code' => 'missing_waterline_shard_report_path',
+                'scenario_id' => 'waterline_operator_namespace_visibility',
+            ];
+        }
+
+        array_push(
+            $failures,
+            ...self::waterlineShardArtifactVersionFailures($execution, $publishedVersions),
+            ...self::waterlineShardScenarioStatusFailures($execution),
+        );
+
+        return $failures;
+    }
+
+    /**
+     * @param array<mixed> $execution
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function waterlineShardScenarioStatusFailures(array $execution): array
+    {
+        $coveredScenarios = self::stringList(
+            $execution['covered_scenarios']
+                ?? $execution['coveredScenarios']
+                ?? []
+        );
+        $scenarioStatuses = self::arrayValue($execution, 'scenario_statuses')
+            ?? self::arrayValue($execution, 'scenarioStatuses')
+            ?? [];
+        $scenarioId = 'waterline_operator_namespace_visibility';
+        $failures = [];
+
+        if (! in_array($scenarioId, $coveredScenarios, true)) {
+            $failures[] = [
+                'code' => 'waterline_shard_missing_required_scenario',
+                'scenario_id' => $scenarioId,
+                'missing_scenario_id' => $scenarioId,
+            ];
+        }
+
+        $status = self::stringValue($scenarioStatuses[$scenarioId] ?? $execution['scenario_status'] ?? null);
+        if ($status !== 'pass') {
+            $failures[] = [
+                'code' => 'waterline_shard_required_scenario_not_passed',
+                'scenario_id' => $scenarioId,
+                'required_scenario_id' => $scenarioId,
+                'status' => $status,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<mixed> $execution
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function waterlineShardArtifactVersionFailures(array $execution, array $publishedVersions): array
+    {
+        $reportedVersions = self::arrayValue($execution, 'artifact_versions')
+            ?? self::arrayValue($execution, 'artifactVersions')
+            ?? self::arrayValue($execution, 'published_artifact_versions')
+            ?? self::arrayValue($execution, 'publishedArtifactVersions')
+            ?? [];
+
+        if ($reportedVersions === []) {
+            return [[
+                'code' => 'missing_waterline_shard_artifact_versions',
+                'scenario_id' => 'waterline_operator_namespace_visibility',
+            ]];
+        }
+
+        $failures = [];
+        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
+            $expected = self::artifactVersionValue($publishedVersions, $artifact);
+            $actual = self::artifactVersionValue($reportedVersions, $artifact);
+            if ($actual === '') {
+                $failures[] = [
+                    'code' => 'missing_waterline_shard_artifact_version',
+                    'scenario_id' => 'waterline_operator_namespace_visibility',
+                    'artifact' => $artifact,
+                    'expected_version' => $expected,
+                ];
+                continue;
+            }
+
+            if ($expected !== '' && $actual !== $expected) {
+                $failures[] = [
+                    'code' => 'waterline_shard_artifact_version_mismatch',
+                    'scenario_id' => 'waterline_operator_namespace_visibility',
+                    'artifact' => $artifact,
+                    'expected_version' => $expected,
+                    'actual_version' => $actual,
                 ];
             }
         }
