@@ -1672,6 +1672,105 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_promotes_supplied_adversarial_nonexistent_workflow_type_cell(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+
+        $observedOutcome = [
+            'scenario_id' => 'nonexistent_workflow_type_outcome',
+            'behavior' => 'accepted_pending_worker',
+            'allowed_behaviors' => ['refused_at_create', 'fails_at_fire_time', 'accepted_pending_worker'],
+            'schedule_id' => 'missing-type-schedule',
+            'workflow_type' => 'schedules.nonexistent.workflow',
+            'task_queue' => 'schedules-unregistered',
+            'operator_visible_signal' => [
+                'surface' => 'GET /api/workflows/missing-type-workflow/runs/run-1',
+                'workflow_status' => 'running',
+                'task_queue' => 'schedules-unregistered',
+                'no_worker_registered_by_probe' => true,
+            ],
+        ];
+
+        file_put_contents($resultDir.'/adversarial-evidence.json', json_encode([
+            'schema' => 'durable-workflow.v2.schedules-runtime.adversarial-evidence',
+            'scenario_results' => [
+                'nonexistent_workflow_type_outcome' => [
+                    'scenario_id' => 'nonexistent_workflow_type_outcome',
+                    'status' => 'pass',
+                    'observed_outputs' => $observedOutcome,
+                    'linked_findings' => [],
+                ],
+            ],
+            'adversarial_outcomes' => [
+                'nonexistent_workflow_type_outcome' => $observedOutcome,
+            ],
+            'runtime_matrix' => [
+                'runtimes' => ['server-scheduler'],
+                'client_paths' => ['server-http-api'],
+                'schedule_types' => ['fixed_rate_interval'],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SCHEDULES_ADVERSARIAL_EVIDENCE' => $resultDir.'/adversarial-evidence.json',
+                    'DW_SERVER_VERSION' => '0.2.348',
+                    'DW_CLI_VERSION' => '0.1.77',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.85',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.200',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.83',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $scenario = $result['scenario_results']['nonexistent_workflow_type_outcome'];
+            $this->assertSame('pass', $scenario['status']);
+            $this->assertSame('accepted_pending_worker', $scenario['observed_outputs']['behavior']);
+            $this->assertTrue($scenario['observed_outputs']['operator_visible_signal']['no_worker_registered_by_probe']);
+            $this->assertSame(
+                $observedOutcome,
+                $result['adversarial_outcomes']['nonexistent_workflow_type_outcome'],
+            );
+            $this->assertContains('server-http-api', $result['runtime_matrix']['client_paths']);
+            $this->assertContains('server-scheduler', $result['runtime_matrix']['runtimes']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_runner_uses_published_compose_dependency_graph_for_schedule_shards(): void
     {
         $repoRoot = dirname(__DIR__, 2);

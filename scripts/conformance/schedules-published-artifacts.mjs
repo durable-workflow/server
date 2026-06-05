@@ -31,6 +31,8 @@ const missedRestartEvidencePath = process.env.DW_SCHEDULES_MISSED_RESTART_EVIDEN
   ?? path.join(resultDir, 'schedules-missed-restart-evidence.json');
 const crossLanguageEvidencePath = process.env.DW_SCHEDULES_CROSS_LANGUAGE_EVIDENCE
   ?? path.join(resultDir, 'schedules-cross-language-evidence.json');
+const adversarialEvidencePath = process.env.DW_SCHEDULES_ADVERSARIAL_EVIDENCE
+  ?? path.join(resultDir, 'schedules-adversarial-evidence.json');
 const configuredArtifactInstallEvidencePath = process.env.DW_SCHEDULES_ARTIFACT_INSTALL_EVIDENCE;
 const hasConfiguredArtifactInstallEvidencePath =
   configuredArtifactInstallEvidencePath !== undefined
@@ -139,6 +141,10 @@ async function main() {
   const crossLanguageEvidence = await maybeRunCrossLanguageShard(startedAt, artifactVersions, artifactSources);
   if (crossLanguageEvidence !== null) {
     evidenceInputs.push(crossLanguageEvidence);
+  }
+  const adversarialEvidence = await maybeRunAdversarialShard(startedAt, artifactVersions, artifactSources);
+  if (adversarialEvidence !== null) {
+    evidenceInputs.push(adversarialEvidence);
   }
   const smokeEvidence = mergeEvidence(...evidenceInputs);
   const artifactInstallEvidence = buildArtifactInstallEvidence(artifactVersions, artifactSources, smokeEvidence);
@@ -1393,6 +1399,7 @@ function readEvidenceInputs() {
     missedRestartEvidencePath,
     cliEvidencePath,
     crossLanguageEvidencePath,
+    adversarialEvidencePath,
   ].filter((value, index, values) => stringValue(value) !== '' && values.indexOf(value) === index);
 
   return paths
@@ -3575,6 +3582,820 @@ function blockedMissedRestartObservation(scenarioId, reason, artifactVersions, a
     blocked_reason: reason,
     verdict: 'runner_blocked',
   };
+}
+
+async function maybeRunAdversarialShard(startedAt, artifactVersions, artifactSources) {
+  const mode = stringValue(process.env.DW_SCHEDULES_RUN_ADVERSARIAL_SHARD).toLowerCase();
+  if (!['1', 'true', 'yes', 'auto'].includes(mode)) {
+    return null;
+  }
+
+  if (readJsonIfExists(adversarialEvidencePath) !== null) {
+    return null;
+  }
+
+  const explicit = mode !== 'auto';
+  const serverUrl = stringValue(process.env.DW_SCHEDULES_SERVER_URL);
+  const dockerAvailable = await commandSucceeds('docker', ['--version']);
+  const composeAvailable = dockerAvailable && await commandSucceeds('docker', ['compose', 'version']);
+  const serverImage = resolveServerImage(artifactVersions);
+
+  if (serverUrl === '' && (!dockerAvailable || !composeAvailable || serverImage === '')) {
+    if (!explicit) {
+      return null;
+    }
+
+    const missing = [
+      !dockerAvailable ? 'docker' : null,
+      dockerAvailable && !composeAvailable ? 'docker compose' : null,
+      serverImage === '' ? 'DW_SERVER_VERSION or DW_SERVER_IMAGE' : null,
+    ].filter(Boolean).join(', ');
+
+    return adversarialBlockedEvidence(
+      `Adversarial schedule-input shard could not start because ${missing} is unavailable.`,
+      startedAt,
+      artifactVersions,
+      artifactSources,
+    );
+  }
+
+  try {
+    return await runAdversarialShard({
+      startedAt,
+      artifactVersions,
+      artifactSources,
+      serverImage,
+      existingServerUrl: serverUrl,
+    });
+  } catch (error) {
+    const reason = failureReasonWithShardLogs(error, 'schedules-adversarial');
+    return adversarialFailureEvidence(reason, startedAt, artifactVersions, artifactSources);
+  }
+}
+
+async function runAdversarialShard({ startedAt, artifactVersions, artifactSources, serverImage, existingServerUrl }) {
+  const shardStartedAt = timestamp();
+  const runId = `schedules-adversarial-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const namespace = sanitizeDockerName(`${stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance'}-${runId}`).slice(0, 96);
+  const taskQueue = stringValue(process.env.DW_SCHEDULES_ADVERSARIAL_TASK_QUEUE)
+    || `schedules-unregistered-${runId}`;
+  const workflowType = stringValue(process.env.DW_SCHEDULES_ADVERSARIAL_WORKFLOW_TYPE)
+    || `schedules.nonexistent.${runId}`;
+  const token = stringValue(process.env.DW_SCHEDULES_AUTH_TOKEN) || 'dev-token';
+  const readinessTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_SERVER_READY_TIMEOUT_SECONDS, 120);
+  const schedulerTickSeconds = positiveInt(process.env.DW_SCHEDULES_SCHEDULER_TICK_SECONDS, 5);
+  const pollSeconds = positiveInt(process.env.DW_SCHEDULES_ADVERSARIAL_POLL_SECONDS, 3);
+  const fireTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_ADVERSARIAL_FIRE_TIMEOUT_SECONDS, 90);
+  const pendingObservationSeconds = positiveInt(process.env.DW_SCHEDULES_ADVERSARIAL_PENDING_OBSERVATION_SECONDS, 10);
+  const interval = stringValue(process.env.DW_SCHEDULES_ADVERSARIAL_INTERVAL) || 'PT10S';
+  const serverPort = positiveInt(process.env.DW_SCHEDULES_SERVER_PORT, 0) || await freePort();
+  let serverUrl = existingServerUrl || `http://127.0.0.1:${serverPort}`;
+  const composeProject = sanitizeDockerName(runId);
+  const overlayPath = path.join(resultDir, 'schedules-adversarial-compose.override.yml');
+  const composeFiles = [
+    '-f',
+    path.join(repoRoot, 'docker-compose.published.yml'),
+    '-f',
+    overlayPath,
+  ];
+  let composeStarted = false;
+  const schedulesCreated = [];
+
+  markArtifactSource(artifactSources, 'server', existingServerUrl === '' ? 'published_docker_image' : 'existing_published_server_url');
+
+  if (existingServerUrl === '') {
+    writeSchedulerOverlay(overlayPath, schedulerTickSeconds);
+    await execLogged(
+      'docker',
+      ['image', 'pull', serverImage],
+      path.join(resultDir, 'schedules-adversarial-docker-pull.log'),
+    );
+    composeStarted = true;
+    await startPublishedComposeServices({
+      composeProject,
+      composeFiles,
+      serverPort,
+      serverImage,
+      token,
+      artifactVersions,
+      logPrefix: 'schedules-adversarial',
+    });
+  }
+
+  try {
+    serverUrl = await waitForReachableServerUrl({
+      preferredUrl: serverUrl,
+      timeoutSeconds: readinessTimeoutSeconds,
+      composeProject: composeStarted ? composeProject : '',
+      composeFiles,
+      serverPort,
+      serverImage,
+      token,
+      artifactVersions,
+    });
+    await ensureNamespace(serverUrl, token, namespace);
+
+    const scheduleId = `${runId}-missing-type`;
+    const createRequest = {
+      schedule_id: scheduleId,
+      spec: { intervals: [{ every: interval }], timezone: 'UTC' },
+      action: {
+        workflow_type: workflowType,
+        task_queue: taskQueue,
+        input: [{ schedule_id: scheduleId, workflow_type: workflowType }],
+      },
+      overlap_policy: 'allow_all',
+      jitter_seconds: 0,
+      max_runs: 1,
+    };
+    const createResponse = await apiRequestResult(
+      serverUrl,
+      token,
+      namespace,
+      'POST',
+      '/schedules',
+      createRequest,
+    );
+
+    let observation;
+    if (!createResponse.ok) {
+      const describeAfterRefusal = await safeApiRequestResult(
+        serverUrl,
+        token,
+        namespace,
+        'GET',
+        `/schedules/${encodeURIComponent(scheduleId)}`,
+      );
+      const listAfterRefusal = await safeApiRequestResult(serverUrl, token, namespace, 'GET', '/schedules');
+      observation = refusedAtCreateObservation({
+        scheduleId,
+        workflowType,
+        taskQueue,
+        namespace,
+        interval,
+        createRequest,
+        createResponse,
+        describeAfterRefusal,
+        listAfterRefusal,
+        artifactVersions,
+        artifactSources,
+      });
+    } else {
+      schedulesCreated.push(scheduleId);
+      observation = await observeNonexistentWorkflowTypeFire({
+        serverUrl,
+        token,
+        namespace,
+        scheduleId,
+        workflowType,
+        taskQueue,
+        interval,
+        createRequest,
+        createResponse,
+        fireTimeoutSeconds,
+        pendingObservationSeconds,
+        pollSeconds,
+        artifactVersions,
+        artifactSources,
+      });
+      await bestEffortDeleteSchedule(serverUrl, token, namespace, scheduleId);
+    }
+
+    const evidence = adversarialEvidenceFromObservation({
+      startedAt: shardStartedAt,
+      finishedAt: timestamp(),
+      observation,
+      artifactVersions,
+      artifactSources,
+      namespace,
+      taskQueue,
+      schedulesCreated,
+    });
+    writeJson(adversarialEvidencePath, evidence);
+
+    return evidence;
+  } finally {
+    if (composeStarted) {
+      await collectAdversarialComposeLogs(composeProject, composeFiles);
+      await execFile('docker', ['compose', '-p', composeProject, ...composeFiles, 'down', '-v'], {
+        env: composeEnv(serverPort, serverImage, token, artifactVersions),
+        maxBuffer: 1024 * 1024 * 8,
+      }).catch(() => {});
+    }
+
+    writeJson(path.join(resultDir, 'schedules-adversarial-run-metadata.json'), {
+      schema: 'durable-workflow.v2.schedules-runtime.adversarial-run-metadata',
+      started_at: startedAt,
+      adversarial_started_at: shardStartedAt,
+      finished_at: timestamp(),
+      server_url: serverUrl,
+      namespace,
+      task_queue: taskQueue,
+      server_image: existingServerUrl === '' ? serverImage : null,
+      compose_project: existingServerUrl === '' ? composeProject : null,
+      published_artifact_versions: artifactVersions,
+      artifact_sources: artifactSources,
+      local_product_source_checkouts_used: false,
+      schedules_created: schedulesCreated,
+    });
+  }
+}
+
+function refusedAtCreateObservation({
+  scheduleId,
+  workflowType,
+  taskQueue,
+  namespace,
+  interval,
+  createRequest,
+  createResponse,
+  describeAfterRefusal,
+  listAfterRefusal,
+  artifactVersions,
+  artifactSources,
+}) {
+  const persisted = describeAfterRefusal.ok || scheduleListContains(listAfterRefusal.parsed, scheduleId);
+  const operatorSignalVisible = createResponse.status >= 400
+    && (Object.keys(objectValue(createResponse.parsed)).length > 0 || stringValue(createResponse.text) !== '');
+  const failures = [];
+
+  if (persisted) {
+    failures.push('schedule was persisted even though create returned a refusal response');
+  }
+  if (!operatorSignalVisible) {
+    failures.push('create-time refusal did not expose an operator-visible response body');
+  }
+
+  return {
+    scenario_id: 'nonexistent_workflow_type_outcome',
+    behavior: 'refused_at_create',
+    allowed_behaviors: ['refused_at_create', 'fails_at_fire_time', 'accepted_pending_worker'],
+    namespace,
+    schedule_id: scheduleId,
+    workflow_type: workflowType,
+    task_queue: taskQueue,
+    interval,
+    request: createRequest,
+    create_response: publicResponseSnapshot(createResponse),
+    describe_after_refusal: publicResponseSnapshot(describeAfterRefusal),
+    list_after_refusal: publicResponseSnapshot(listAfterRefusal),
+    persisted,
+    operator_visible_signal: {
+      surface: 'POST /api/schedules',
+      http_status: createResponse.status,
+      body: createResponse.parsed,
+    },
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    failures,
+    verdict: failures.length === 0 ? 'pass' : 'fail',
+  };
+}
+
+async function observeNonexistentWorkflowTypeFire({
+  serverUrl,
+  token,
+  namespace,
+  scheduleId,
+  workflowType,
+  taskQueue,
+  interval,
+  createRequest,
+  createResponse,
+  fireTimeoutSeconds,
+  pendingObservationSeconds,
+  pollSeconds,
+  artifactVersions,
+  artifactSources,
+}) {
+  const fireWindowStartedAt = timestamp();
+  const deadlineMs = Date.now() + fireTimeoutSeconds * 1000;
+  let latestHistory = { events: [] };
+  let latestDescription = {};
+  let latestWorkflowList = {};
+
+  while (Date.now() < deadlineMs) {
+    latestHistory = await safeScheduleHistory(serverUrl, token, namespace, scheduleId);
+    const skippedEvents = scheduleSkippedEvents(latestHistory.events ?? []);
+    if (skippedEvents.length > 0) {
+      latestDescription = await safeApiRequestResult(
+        serverUrl,
+        token,
+        namespace,
+        'GET',
+        `/schedules/${encodeURIComponent(scheduleId)}`,
+      );
+      return fireTimeSkippedObservation({
+        scheduleId,
+        workflowType,
+        taskQueue,
+        namespace,
+        interval,
+        createRequest,
+        createResponse,
+        fireWindowStartedAt,
+        fireWindowFinishedAt: timestamp(),
+        triggerSkippedEvent: skippedEvents[0],
+        latestHistory,
+        latestDescription,
+        artifactVersions,
+        artifactSources,
+      });
+    }
+
+    const triggeredEvents = scheduleTriggeredEvents(latestHistory.events ?? []);
+    if (triggeredEvents.length > 0) {
+      await sleep(pendingObservationSeconds * 1000);
+      latestDescription = await safeApiRequestResult(
+        serverUrl,
+        token,
+        namespace,
+        'GET',
+        `/schedules/${encodeURIComponent(scheduleId)}`,
+      );
+      latestWorkflowList = await safeApiRequestResult(
+        serverUrl,
+        token,
+        namespace,
+        'GET',
+        `/workflows?${new URLSearchParams({ workflow_type: workflowType, page_size: '10' }).toString()}`,
+      );
+      const workflowRun = await workflowRunForScheduleEvent(
+        serverUrl,
+        token,
+        namespace,
+        normalizeScheduleEvent(triggeredEvents[0]),
+      );
+
+      return triggeredWorkflowObservation({
+        scheduleId,
+        workflowType,
+        taskQueue,
+        namespace,
+        interval,
+        createRequest,
+        createResponse,
+        fireWindowStartedAt,
+        fireWindowFinishedAt: timestamp(),
+        triggerEvent: triggeredEvents[0],
+        latestHistory,
+        latestDescription,
+        latestWorkflowList,
+        workflowRun,
+        artifactVersions,
+        artifactSources,
+      });
+    }
+
+    await sleep(pollSeconds * 1000);
+  }
+
+  latestDescription = await safeApiRequestResult(
+    serverUrl,
+    token,
+    namespace,
+    'GET',
+    `/schedules/${encodeURIComponent(scheduleId)}`,
+  );
+  latestWorkflowList = await safeApiRequestResult(
+    serverUrl,
+    token,
+    namespace,
+    'GET',
+    `/workflows?${new URLSearchParams({ workflow_type: workflowType, page_size: '10' }).toString()}`,
+  );
+
+  return ambiguousNonexistentWorkflowObservation({
+    scheduleId,
+    workflowType,
+    taskQueue,
+    namespace,
+    interval,
+    createRequest,
+    createResponse,
+    fireWindowStartedAt,
+    fireWindowFinishedAt: timestamp(),
+    latestHistory,
+    latestDescription,
+    latestWorkflowList,
+    reason: `no ScheduleTriggered or ScheduleTriggerSkipped event was visible within ${fireTimeoutSeconds}s`,
+    artifactVersions,
+    artifactSources,
+  });
+}
+
+function fireTimeSkippedObservation({
+  scheduleId,
+  workflowType,
+  taskQueue,
+  namespace,
+  interval,
+  createRequest,
+  createResponse,
+  fireWindowStartedAt,
+  fireWindowFinishedAt,
+  triggerSkippedEvent,
+  latestHistory,
+  latestDescription,
+  artifactVersions,
+  artifactSources,
+}) {
+  const normalizedEvent = normalizeScheduleEvent(triggerSkippedEvent);
+  const reason = stringValue(normalizedEvent?.payload?.reason);
+  const failures = reason === '' ? ['ScheduleTriggerSkipped event did not expose a reason'] : [];
+
+  return {
+    scenario_id: 'nonexistent_workflow_type_outcome',
+    behavior: 'fails_at_fire_time',
+    allowed_behaviors: ['refused_at_create', 'fails_at_fire_time', 'accepted_pending_worker'],
+    namespace,
+    schedule_id: scheduleId,
+    workflow_type: workflowType,
+    task_queue: taskQueue,
+    interval,
+    request: createRequest,
+    create_response: publicResponseSnapshot(createResponse),
+    fire_window: { started_at: fireWindowStartedAt, finished_at: fireWindowFinishedAt },
+    trigger_skipped_event: normalizedEvent,
+    latest_history: latestHistory,
+    latest_description: publicResponseSnapshot(latestDescription),
+    operator_visible_signal: {
+      surface: `GET /api/schedules/${scheduleId}/history`,
+      event_type: 'ScheduleTriggerSkipped',
+      reason,
+      event: normalizedEvent,
+    },
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    failures,
+    verdict: failures.length === 0 ? 'pass' : 'fail',
+  };
+}
+
+function triggeredWorkflowObservation({
+  scheduleId,
+  workflowType,
+  taskQueue,
+  namespace,
+  interval,
+  createRequest,
+  createResponse,
+  fireWindowStartedAt,
+  fireWindowFinishedAt,
+  triggerEvent,
+  latestHistory,
+  latestDescription,
+  latestWorkflowList,
+  workflowRun,
+  artifactVersions,
+  artifactSources,
+}) {
+  const normalizedEvent = normalizeScheduleEvent(triggerEvent);
+  const workflowRunResponse = workflowRun.response;
+  const runDetail = objectValue(workflowRunResponse.parsed);
+  const failedAtFireTime = workflowRunResponse.ok && workflowRunFailed(runDetail);
+  const pendingWorker = workflowRunResponse.ok && workflowRunPending(runDetail);
+  const failures = [];
+  let behavior = 'silent_or_ambiguous';
+  let operatorVisibleSignal = {
+    surface: `GET /api/schedules/${scheduleId}/history`,
+    event_type: 'ScheduleTriggered',
+    event: normalizedEvent,
+  };
+
+  if (failedAtFireTime) {
+    behavior = 'fails_at_fire_time';
+    operatorVisibleSignal = {
+      surface: `GET /api/workflows/${workflowRun.workflow_id}/runs/${workflowRun.run_id}`,
+      workflow_status: stringValue(runDetail.status),
+      error: runDetail.error ?? runDetail.failure ?? runDetail.failures ?? null,
+      run: runDetail,
+    };
+  } else if (pendingWorker) {
+    behavior = 'accepted_pending_worker';
+    operatorVisibleSignal = {
+      surface: `GET /api/workflows/${workflowRun.workflow_id}/runs/${workflowRun.run_id}`,
+      workflow_status: stringValue(runDetail.status),
+      task_queue: stringValue(runDetail.task_queue),
+      wait_kind: stringValue(runDetail.wait_kind),
+      wait_reason: stringValue(runDetail.wait_reason),
+      compatibility_status: stringValue(runDetail.compatibility_status),
+      compatibility_supported_in_fleet: runDetail.compatibility_supported_in_fleet ?? null,
+      compatibility_fleet_reason: stringValue(runDetail.compatibility_fleet_reason),
+      no_worker_registered_by_probe: true,
+      run: runDetail,
+    };
+  } else if (!workflowRun.workflow_id || !workflowRun.run_id) {
+    failures.push('ScheduleTriggered did not include workflow_instance_id and workflow_run_id');
+  } else if (!workflowRunResponse.ok) {
+    failures.push(`workflow run detail was not visible through public API; status=${workflowRunResponse.status}`);
+  } else {
+    failures.push('workflow run detail was visible but did not expose failed or pending-worker state');
+  }
+
+  return {
+    scenario_id: 'nonexistent_workflow_type_outcome',
+    behavior,
+    allowed_behaviors: ['refused_at_create', 'fails_at_fire_time', 'accepted_pending_worker'],
+    namespace,
+    schedule_id: scheduleId,
+    workflow_type: workflowType,
+    task_queue: taskQueue,
+    interval,
+    request: createRequest,
+    create_response: publicResponseSnapshot(createResponse),
+    fire_window: { started_at: fireWindowStartedAt, finished_at: fireWindowFinishedAt },
+    trigger_event: normalizedEvent,
+    latest_history: latestHistory,
+    latest_description: publicResponseSnapshot(latestDescription),
+    workflow_list: publicResponseSnapshot(latestWorkflowList),
+    workflow_run: {
+      workflow_id: workflowRun.workflow_id,
+      run_id: workflowRun.run_id,
+      response: publicResponseSnapshot(workflowRunResponse),
+    },
+    operator_visible_signal: operatorVisibleSignal,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    failures,
+    verdict: failures.length === 0 ? 'pass' : 'fail',
+  };
+}
+
+function ambiguousNonexistentWorkflowObservation({
+  scheduleId,
+  workflowType,
+  taskQueue,
+  namespace,
+  interval,
+  createRequest,
+  createResponse,
+  fireWindowStartedAt,
+  fireWindowFinishedAt,
+  latestHistory,
+  latestDescription,
+  latestWorkflowList,
+  reason,
+  artifactVersions,
+  artifactSources,
+}) {
+  return {
+    scenario_id: 'nonexistent_workflow_type_outcome',
+    behavior: 'silent_or_ambiguous',
+    allowed_behaviors: ['refused_at_create', 'fails_at_fire_time', 'accepted_pending_worker'],
+    namespace,
+    schedule_id: scheduleId,
+    workflow_type: workflowType,
+    task_queue: taskQueue,
+    interval,
+    request: createRequest,
+    create_response: publicResponseSnapshot(createResponse),
+    fire_window: { started_at: fireWindowStartedAt, finished_at: fireWindowFinishedAt },
+    latest_history: latestHistory,
+    latest_description: publicResponseSnapshot(latestDescription),
+    workflow_list: publicResponseSnapshot(latestWorkflowList),
+    operator_visible_signal: null,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    failures: [reason],
+    failure_reason: reason,
+    verdict: 'fail',
+  };
+}
+
+async function workflowRunForScheduleEvent(serverUrl, token, namespace, event) {
+  const workflowId = stringValue(event?.workflow_instance_id ?? event?.payload?.workflow_instance_id);
+  const runId = stringValue(event?.workflow_run_id ?? event?.payload?.workflow_run_id);
+
+  if (workflowId === '' || runId === '') {
+    return {
+      workflow_id: workflowId,
+      run_id: runId,
+      response: {
+        ok: false,
+        status: 0,
+        parsed: { reason: 'schedule_event_missing_workflow_run_identity' },
+        text: 'schedule event did not include workflow identity',
+      },
+    };
+  }
+
+  return {
+    workflow_id: workflowId,
+    run_id: runId,
+    response: await safeApiRequestResult(
+      serverUrl,
+      token,
+      namespace,
+      'GET',
+      `/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}`,
+    ),
+  };
+}
+
+function adversarialEvidenceFromObservation({
+  startedAt,
+  finishedAt,
+  observation,
+  artifactVersions,
+  artifactSources,
+  namespace,
+  taskQueue,
+  schedulesCreated,
+}) {
+  const status = observation.verdict === 'pass'
+    ? 'pass'
+    : (observation.verdict === 'runner_blocked' ? 'runner_blocked' : 'fail');
+  const linkedFindings = status === 'pass' ? [] : [adversarialFinding(observation)];
+
+  return {
+    schema: 'durable-workflow.v2.schedules-runtime.adversarial-evidence',
+    started_at: startedAt,
+    finished_at: finishedAt,
+    generated_at: finishedAt,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    local_product_source_checkouts_used: false,
+    scenario_results: {
+      nonexistent_workflow_type_outcome: {
+        scenario_id: 'nonexistent_workflow_type_outcome',
+        status,
+        observed_outputs: observation,
+        linked_findings: linkedFindings,
+      },
+    },
+    findings: linkedFindings,
+    adversarial_outcomes: {
+      nonexistent_workflow_type_outcome: observation,
+    },
+    topology: {
+      namespace,
+      task_queue: taskQueue,
+      worker_execution_mode: 'no_worker_registered_for_target_workflow_type',
+      schedules_created: schedulesCreated,
+    },
+    runtime_matrix: {
+      runtimes: ['server-scheduler'],
+      client_paths: ['server-http-api'],
+      schedule_types: ['fixed_rate_interval'],
+    },
+  };
+}
+
+function adversarialFinding(observation) {
+  const runnerBlocked = observation.verdict === 'runner_blocked';
+  const configured = coverageGapFindings.nonexistent_workflow_type_outcome ?? {};
+  const observed = arrayValue(observation.failures).join('; ')
+    || stringValue(observation.failure_reason)
+    || `Observed behavior ${stringValue(observation.behavior) || '<missing>'} for a schedule targeting an unregistered workflow type.`;
+
+  return {
+    finding_id: runnerBlocked
+      ? 'schedules-adversarial-runner-blocked-nonexistent-workflow-type'
+      : 'schedules-nonexistent-workflow-type-outcome',
+    scenario_id: 'nonexistent_workflow_type_outcome',
+    finding_type: runnerBlocked
+      ? 'conformance_runner_blocked'
+      : 'schedule_nonexistent_workflow_type_outcome_gap',
+    owning_surface: runnerBlocked ? 'conformance_harness' : 'server',
+    execution_scope: stringValue(configured.scope) || 'adversarial-schedule-input-shard',
+    artifact_versions: observation.artifact_versions ?? {},
+    observed_behavior: observed,
+    expected_behavior: runnerBlocked
+      ? 'The schedules conformance host can run the adversarial schedule-input shard against published artifacts.'
+      : (stringValue(configured.expected_behavior)
+        || 'A schedule targeting a non-existent workflow type produces a documented operator-visible create-time, fire-time, or pending-worker outcome.'),
+    next_acceptance_criterion: runnerBlocked
+      ? 'restore the missing host capability and rerun schedules conformance'
+      : (arrayValue(configured.acceptance).join('; ')
+        || 'create or attempt to create a schedule targeting an unregistered workflow type and record the operator-visible outcome'),
+    request: observation.request ?? null,
+    create_response: observation.create_response ?? null,
+    schedule_id: observation.schedule_id ?? null,
+    workflow_type: observation.workflow_type ?? null,
+    task_queue: observation.task_queue ?? null,
+    fire_window: observation.fire_window ?? null,
+    observed_operator_state: observation.operator_visible_signal ?? {
+      latest_history: observation.latest_history ?? null,
+      latest_description: observation.latest_description ?? null,
+      workflow_list: observation.workflow_list ?? null,
+    },
+  };
+}
+
+function adversarialFailureEvidence(reason, startedAt, artifactVersions, artifactSources) {
+  const finishedAt = timestamp();
+  return adversarialEvidenceFromObservation({
+    startedAt,
+    finishedAt,
+    observation: {
+      scenario_id: 'nonexistent_workflow_type_outcome',
+      behavior: 'silent_or_ambiguous',
+      allowed_behaviors: ['refused_at_create', 'fails_at_fire_time', 'accepted_pending_worker'],
+      artifact_versions: artifactVersions,
+      artifact_sources: artifactSources,
+      failures: [reason],
+      failure_reason: reason,
+      verdict: 'fail',
+    },
+    artifactVersions,
+    artifactSources,
+    namespace: stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance',
+    taskQueue: stringValue(process.env.DW_SCHEDULES_ADVERSARIAL_TASK_QUEUE) || 'schedules-unregistered',
+    schedulesCreated: [],
+  });
+}
+
+function adversarialBlockedEvidence(reason, startedAt, artifactVersions, artifactSources) {
+  const finishedAt = timestamp();
+  return adversarialEvidenceFromObservation({
+    startedAt,
+    finishedAt,
+    observation: {
+      scenario_id: 'nonexistent_workflow_type_outcome',
+      behavior: 'runner_blocked',
+      allowed_behaviors: ['refused_at_create', 'fails_at_fire_time', 'accepted_pending_worker'],
+      artifact_versions: artifactVersions,
+      artifact_sources: artifactSources,
+      failures: [reason],
+      blocked_reason: reason,
+      verdict: 'runner_blocked',
+    },
+    artifactVersions,
+    artifactSources,
+    namespace: stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance',
+    taskQueue: stringValue(process.env.DW_SCHEDULES_ADVERSARIAL_TASK_QUEUE) || 'schedules-unregistered',
+    schedulesCreated: [],
+  });
+}
+
+function scheduleSkippedEvents(events) {
+  return arrayValue(events)
+    .filter((event) => stringValue(event.event_type ?? event.eventType) === 'ScheduleTriggerSkipped')
+    .sort((left, right) => eventRecordedMs(left) - eventRecordedMs(right));
+}
+
+async function safeScheduleHistory(serverUrl, token, namespace, scheduleId) {
+  try {
+    return await scheduleHistory(serverUrl, token, namespace, scheduleId);
+  } catch (error) {
+    return {
+      events: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function safeApiRequestResult(serverUrl, token, namespace, method, pathAndQuery, body = null) {
+  try {
+    return await apiRequestResult(serverUrl, token, namespace, method, pathAndQuery, body);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      status: 0,
+      parsed: {
+        message: reason,
+        reason: 'request_failed',
+      },
+      text: reason,
+    };
+  }
+}
+
+function publicResponseSnapshot(response) {
+  return {
+    ok: response.ok === true,
+    status: Number.isInteger(response.status) ? response.status : 0,
+    body: response.parsed ?? {},
+    raw_body: stringValue(response.text).slice(0, 2000),
+  };
+}
+
+function workflowRunFailed(runDetail) {
+  const status = stringValue(runDetail.status).toLowerCase();
+  return status === 'failed'
+    || (runDetail.is_terminal === true && (runDetail.failure !== undefined || runDetail.error !== undefined));
+}
+
+function workflowRunPending(runDetail) {
+  const status = stringValue(runDetail.status).toLowerCase();
+  if (status === '' || workflowRunFailed(runDetail)) {
+    return false;
+  }
+
+  return runDetail.is_terminal !== true;
+}
+
+async function collectAdversarialComposeLogs(composeProject, composeFiles) {
+  for (const service of ['server', 'scheduler', 'bootstrap', 'mysql', 'redis']) {
+    const logPath = path.join(resultDir, `schedules-adversarial-${service}.log`);
+    await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'logs', service],
+      logPath,
+    ).catch(() => {});
+  }
 }
 
 function inferMissedFirePolicy(catchupFireCount, postResumeNormalFireObserved) {

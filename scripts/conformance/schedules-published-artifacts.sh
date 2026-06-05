@@ -46,6 +46,9 @@ Environment overrides:
                                     cross-language schedule dispatch shard.
                                     Scenario results in this file are merged
                                     into the output.
+  DW_SCHEDULES_ADVERSARIAL_EVIDENCE Optional JSON from a focused adversarial
+                                    schedule-input shard. Scenario results in
+                                    this file are merged into the output.
   DW_SCHEDULES_ARTIFACT_INSTALL_EVIDENCE
                                     Optional JSON proving each artifact was
                                     installed from a published channel. Defaults
@@ -69,6 +72,15 @@ Environment overrides:
                                     Set to 0 to skip the automatic published
                                     PHP/Python cross-language schedule shard.
                                     Defaults to auto.
+  DW_SCHEDULES_RUN_ADVERSARIAL_SHARD
+                                    Set to 0 to skip the automatic adversarial
+                                    unregistered workflow-type schedule shard.
+                                    Defaults to auto.
+  DW_SCHEDULES_ADVERSARIAL_INTERVAL Fixed-rate interval for the unregistered
+                                    workflow-type probe. Defaults to PT10S.
+  DW_SCHEDULES_ADVERSARIAL_FIRE_TIMEOUT_SECONDS
+                                    Wait for first scheduled fire or skip event.
+                                    Defaults to 90.
   DW_SCHEDULES_CLI_EXECUTABLE       Existing official dw executable to use instead
                                     of installing via the release install script.
   DW_SCHEDULES_SERVER_URL           Existing published server URL to probe instead
@@ -188,5 +200,6 @@ export DW_SCHEDULES_RUN_OPERATOR_CONTROLS_SHARD="${DW_SCHEDULES_RUN_OPERATOR_CON
 export DW_SCHEDULES_RUN_MISSED_RESTART_SHARD="${DW_SCHEDULES_RUN_MISSED_RESTART_SHARD:-auto}"
 export DW_SCHEDULES_RUN_CLI_SURFACE_SHARD="${DW_SCHEDULES_RUN_CLI_SURFACE_SHARD:-auto}"
 export DW_SCHEDULES_RUN_CROSS_LANGUAGE_SHARD="${DW_SCHEDULES_RUN_CROSS_LANGUAGE_SHARD:-auto}"
+export DW_SCHEDULES_RUN_ADVERSARIAL_SHARD="${DW_SCHEDULES_RUN_ADVERSARIAL_SHARD:-auto}"
 
 node "$script_dir/schedules-published-artifacts.mjs"
