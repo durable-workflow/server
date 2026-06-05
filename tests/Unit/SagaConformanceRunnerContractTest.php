@@ -514,51 +514,74 @@ class SagaConformanceRunnerContractTest extends TestCase
         );
     }
 
-    public function test_operator_visibility_does_not_probe_unbooted_waterline_routes(): void
+    public function test_operator_visibility_boots_and_probes_published_waterline_app(): void
     {
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
-        $unbootedWaterlineRoute = '/waterline/'.'api/instances';
-        $oldEndpointProbeFinding = 'Waterline run-detail visibility endpoint '.'was unavailable';
 
         $this->assertStringContainsString(
-            'def waterline_not_exercised_snapshot()',
+            'composer create-project --no-interaction --no-progress laravel/laravel .',
             $source,
-            'the saga runner must represent Waterline as an explicit unexercised surface unless it boots Waterline',
+            'the saga runner must create a real Laravel host app for the published Waterline package',
         );
         $this->assertStringContainsString(
-            '"status": "not_exercised"',
+            'durable-workflow/waterline:$waterline_version',
             $source,
-            'Waterline visibility must be reported as an unsupported coverage surface, not a server route failure',
+            'the Waterline host app must install the published Waterline package version under test',
         );
         $this->assertStringContainsString(
-            'no Waterline route is probed on the server-only image',
+            'WATERLINE_ENGINE_SOURCE: v2',
             $source,
-            'the saga runner evidence must explain that no Waterline app is present in this topology',
+            'the generated Waterline host app must be pinned to the v2 operator bridge',
         );
         $this->assertStringContainsString(
-            'status = scenario_status(failures)',
+            '- "$run_root/waterline-app:/app"',
             $source,
-            'a Waterline-only observer gap must not make otherwise passing saga product behavior non-passing',
+            'the compose topology must boot the generated host app, not only install the package',
         );
         $this->assertStringContainsString(
+            '- server-db:/app/database',
+            $source,
+            'Waterline must connect to the same saga run database as the published server',
+        );
+        $this->assertStringContainsString(
+            'wait_for_waterline_ready',
+            $source,
+            'the runner must prove the Waterline app is reachable before scenario evidence is counted',
+        );
+        $this->assertStringContainsString(
+            'def waterline_operator_evidence(workflow_id: str, run_id: str) -> dict[str, Any]:',
+            $source,
+            'the orchestrator must collect Waterline operator evidence for the selected saga run',
+        );
+        $this->assertStringContainsString(
+            '"/waterline/api/instances/{encoded_workflow_id}/runs/{encoded_run_id}?history_limit=all"',
+            $source,
+            'Waterline selected-run detail must be captured for the paused compensation workflow',
+        );
+        $this->assertStringContainsString(
+            'GET /waterline/api/flows/running',
+            $source,
+            'Waterline list evidence must be captured alongside selected-run detail evidence',
+        );
+        $this->assertStringContainsString(
+            '"waterline_operator_evidence": waterline_evidence',
+            $source,
+            'operator_visible_mid_compensation_status must emit the Waterline evidence object as a required scenario field',
+        );
+        $this->assertStringContainsString(
+            'Waterline current compensation marker expected pause_after_refund',
+            $source,
+            'the scenario must fail when Waterline cannot expose the current compensation marker',
+        );
+        $this->assertStringNotContainsString(
+            'waterline_not_exercised_snapshot',
+            $source,
+            'the saga runner must not keep reporting Waterline as an unexercised server-only gap',
+        );
+        $this->assertStringNotContainsString(
             '"routed_operator_surface_findings": routed_findings',
             $source,
-            'Waterline observer gaps must stay routed in the scenario evidence for separate coverage work',
-        );
-        $this->assertStringNotContainsString(
-            'status = "unsupported" if unsupported_findings and not failures else scenario_status(failures)',
-            $source,
-            'the server-only Waterline topology gap must not force operator visibility to unsupported when server and CLI evidence passed',
-        );
-        $this->assertStringNotContainsString(
-            $unbootedWaterlineRoute,
-            $source,
-            'the server-only saga runner must not probe Waterline routes that it does not start or register',
-        );
-        $this->assertStringNotContainsString(
-            $oldEndpointProbeFinding,
-            $source,
-            'Waterline coverage gaps must be recorded as topology support findings instead of failed endpoint probes',
+            'Waterline observer failures must no longer be routed away as a passing product scenario',
         );
     }
 
@@ -567,14 +590,14 @@ class SagaConformanceRunnerContractTest extends TestCase
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
 
         $this->assertStringContainsString(
-            "\"durable-workflow/workflow:\$workflow_version\" \\\n    \"durable-workflow/waterline:\$waterline_version\"",
+            "'durable-workflow/workflow:\$workflow_version' \\\n    'durable-workflow/waterline:\$waterline_version'",
             $source,
-            'the Waterline install check must root-pin the matching alpha workflow artifact instead of leaving it as a transitive unstable dependency',
+            'the Waterline host app install must root-pin the matching alpha workflow artifact instead of leaving it as a transitive unstable dependency',
         );
         $this->assertStringNotContainsString(
             "composer require --no-interaction --no-progress \"durable-workflow/waterline:\$waterline_version\"",
             $source,
-            'the Waterline install check must not require Waterline alone in a fresh Composer root',
+            'the Waterline host app install must not require Waterline alone in a fresh Composer root',
         );
     }
 

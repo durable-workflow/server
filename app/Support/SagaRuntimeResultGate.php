@@ -72,6 +72,7 @@ final class SagaRuntimeResultGate
                 'required_php_and_python_activity_runtimes_are_reported',
                 'cross_language_compensation_cells_are_reported',
                 'reverse_compensation_retry_failure_restart_visibility_and_typed_error_sections_are_reported',
+                'waterline_operator_visibility_evidence_is_reported',
                 'each_pass_scenario_has_scenario_specific_evidence',
                 'each_non_pass_scenario_has_linked_findings',
                 'run_timestamps_outcome_and_findings_are_recorded',

@@ -89,16 +89,16 @@ class SagaRuntimeContractTest extends TestCase
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertContains(
-            'operator_visibility_surfaces_reported_or_routed_to_surface_coverage_findings',
+            'operator_visibility_surfaces_reported_including_waterline',
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertSame(
-            'passing_product_behavior_with_separate_coverage_finding',
-            $manifest['coverage_gate']['routed_operator_surface_gap_outcome'],
+            'non_passing_waterline_finding_required',
+            $manifest['coverage_gate']['waterline_operator_visibility_gap_outcome'],
         );
         $this->assertSame(
-            'pass_when_server_and_cli_visibility_pass',
-            $manifest['host_runner_contract']['routing_policy']['routed_waterline_operator_visibility_gap']['scenario_status'],
+            'fail',
+            $manifest['host_runner_contract']['routing_policy']['waterline_operator_visibility_failure']['scenario_status'],
         );
     }
 
@@ -164,9 +164,9 @@ class SagaRuntimeContractTest extends TestCase
             $scenarioManifest['host_runner_contract']['required_execution_scopes'],
         );
         $this->assertSame(
-            $manifest['host_runner_contract']['routing_policy']['routed_waterline_operator_visibility_gap'],
-            $scenarioManifest['host_runner_contract']['routing_policy']['routed_waterline_operator_visibility_gap'],
-            'public saga scenario manifest must advertise the same Waterline operator gap routing as cluster info',
+            $manifest['host_runner_contract']['routing_policy']['waterline_operator_visibility_failure'],
+            $scenarioManifest['host_runner_contract']['routing_policy']['waterline_operator_visibility_failure'],
+            'public saga scenario manifest must advertise the same Waterline operator failure routing as cluster info',
         );
 
         $this->assertContains('worker_restart_observations', $scenarioManifest['common_result_evidence']);
@@ -673,7 +673,23 @@ class SagaRuntimeContractTest extends TestCase
                     'completed_compensations' => ['refund_card'],
                     'pending_compensations' => ['cancel_hotel', 'cancel_flight'],
                     'failed_compensations' => [],
-                    'operator_visibility_snapshots' => ['cli' => ['workflow_show' => ['ok' => true]]],
+                    'operator_visibility_snapshots' => [
+                        'cli' => ['workflow_show' => ['ok' => true]],
+                        'waterline' => ['ok' => true, 'current_compensation_marker' => 'pause_after_refund'],
+                    ],
+                    'waterline_operator_evidence' => [
+                        'ok' => true,
+                        'workflow_id' => 'sagas-python-operator_visible_mid_compensation_status',
+                        'run_id' => 'run-operator-visible-mid-compensation-status',
+                        'observed_workflow_id' => 'sagas-python-operator_visible_mid_compensation_status',
+                        'observed_run_id' => 'run-operator-visible-mid-compensation-status',
+                        'visible_status' => 'running',
+                        'current_compensation_marker' => 'pause_after_refund',
+                        'captures' => [
+                            'selected_run_detail' => ['ok' => true],
+                            'running_list' => ['ok' => true],
+                        ],
+                    ],
                 ],
             ],
         ];

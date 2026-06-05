@@ -257,7 +257,8 @@
         "completed_compensations",
         "pending_compensations",
         "failed_compensations",
-        "operator_visibility_snapshots"
+        "operator_visibility_snapshots",
+        "waterline_operator_evidence"
       ],
       "expected_behavior": "operators can tell which forward steps completed and which compensations are running, completed, pending, or failed"
     }
@@ -547,12 +548,12 @@
       "operations": [
         "pause or observe a saga while compensation is in progress",
         "capture completed forward steps, running compensation, pending compensations, completed compensations, and failed compensations",
-        "capture public operator visibility snapshots or routed observer-surface findings"
+        "capture public server, CLI, and Waterline operator visibility snapshots"
       ],
       "pass_criteria": [
         "operators can distinguish completed forward effects from compensation progress",
-        "running, pending, completed, and failed compensation states are observable or routed to a surface coverage finding",
-        "the visibility evidence is linked to public server, CLI, or Waterline surfaces"
+        "running, pending, completed, and failed compensation states are observable through public operator surfaces",
+        "the visibility evidence includes Waterline selected-run detail or list evidence for the paused workflow run"
       ]
     }
   ],
@@ -594,8 +595,8 @@
         "scenario_status": "unsupported",
         "finding_source": "saga_runtime_contract.finding_policy"
       },
-      "routed_waterline_operator_visibility_gap": {
-        "scenario_status": "pass_when_server_and_cli_visibility_pass",
+      "waterline_operator_visibility_failure": {
+        "scenario_status": "fail",
         "finding_source": "saga_runtime_contract.finding_policy",
         "owner": "waterline"
       },

@@ -73,10 +73,9 @@ release artifact, Python SDK, PHP workflow runtime, and Waterline package
 install. Saga evidence records the PHP package under the runtime key
 `workflow-php` and the platform release key `workflow` so both the runtime
 contract and release coverage compare the same published artifact. The
-server-only runner does not boot a Waterline app or probe
-Waterline routes; Waterline operator visibility remains an explicit
-unsupported surface until a host topology runs Waterline against the saga
-run database. The script emits
+runner also creates a disposable Laravel host app from published packages,
+boots Waterline against the shared saga run database, and captures Waterline
+selected-run/list evidence while the saga is paused mid-compensation. The script emits
 `durable-workflow.v2.saga-runtime-conformance.result` evidence with every
 required saga scenario reported as `pass`, `fail`, `unsupported`,
 `not_covered`, or `runner_blocked`; a partial or runner-blocked run is
@@ -264,7 +263,7 @@ category emits a warning and does not block.
   worker-restart replay, cross-language compensation, typed compensation
   error, and operator visibility evidence. A result with
   `runner_blocked=true`, an incomplete release asset handoff, a smoke-only
-  subset, a missing Waterline visibility finding, or any non-pass scenario
+  subset, missing Waterline selected-run/list visibility evidence, or any non-pass scenario
   without a root-cause finding is non-passing and cannot be counted as
   saga product evidence.
 - Skew-refusal matrix contract: `GET /api/cluster/info` re-exports

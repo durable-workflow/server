@@ -28,6 +28,11 @@ Environment overrides:
   DW_SAGAS_SERVER_BIND_HOST     Docker host interface for the server port. Defaults to 0.0.0.0.
   DW_SAGAS_SERVER_CONNECT_HOST  First host/address to probe. Defaults to 127.0.0.1.
   DW_SAGAS_SERVER_URL           Exact server URL to use; disables automatic endpoint probing.
+  DW_SAGAS_WATERLINE_PORT       Host port for the published Waterline app. Defaults to a free port.
+  DW_SAGAS_WATERLINE_BIND_HOST  Docker host interface for the Waterline port. Defaults to server bind host.
+  DW_SAGAS_WATERLINE_CONNECT_HOST
+                                First host/address to probe. Defaults to server connect host.
+  DW_SAGAS_WATERLINE_URL        Exact Waterline URL to use; disables automatic endpoint probing.
 USAGE
 }
 
@@ -235,7 +240,8 @@ scenario_required_fields() {
         "completed_compensations" \
         "pending_compensations" \
         "failed_compensations" \
-        "operator_visibility_snapshots"
+        "operator_visibility_snapshots" \
+        "waterline_operator_evidence"
       ;;
   esac
 }
@@ -507,6 +513,11 @@ server_bind_host="${DW_SAGAS_SERVER_BIND_HOST:-0.0.0.0}"
 server_connect_host="${DW_SAGAS_SERVER_CONNECT_HOST:-127.0.0.1}"
 server_port="${DW_SAGAS_SERVER_PORT:-$(choose_free_port "$server_bind_host")}"
 server_url_candidates=()
+waterline_url_override="${DW_SAGAS_WATERLINE_URL:-}"
+waterline_bind_host="${DW_SAGAS_WATERLINE_BIND_HOST:-$server_bind_host}"
+waterline_connect_host="${DW_SAGAS_WATERLINE_CONNECT_HOST:-$server_connect_host}"
+waterline_port="${DW_SAGAS_WATERLINE_PORT:-$(choose_free_port "$waterline_bind_host")}"
+waterline_url_candidates=()
 
 add_server_url_candidate() {
   local candidate="$1"
@@ -554,6 +565,51 @@ build_server_url_candidates
 server_base_url="${server_url_candidates[0]}"
 server_api_url="${server_base_url%/}/api"
 
+add_waterline_url_candidate() {
+  local candidate="$1"
+  local existing
+
+  [[ -n "$candidate" ]] || return
+  for existing in "${waterline_url_candidates[@]}"; do
+    if [[ "$existing" == "$candidate" ]]; then
+      return
+    fi
+  done
+  waterline_url_candidates+=("$candidate")
+}
+
+build_waterline_url_candidates() {
+  local gateway
+
+  if [[ -n "$waterline_url_override" ]]; then
+    add_waterline_url_candidate "${waterline_url_override%/}"
+    return
+  fi
+
+  add_waterline_url_candidate "http://${waterline_connect_host}:${waterline_port}"
+  add_waterline_url_candidate "http://127.0.0.1:${waterline_port}"
+  add_waterline_url_candidate "http://localhost:${waterline_port}"
+
+  if [[ "$waterline_bind_host" != "0.0.0.0" && "$waterline_bind_host" != "127.0.0.1" && "$waterline_bind_host" != "localhost" ]]; then
+    add_waterline_url_candidate "http://${waterline_bind_host}:${waterline_port}"
+  fi
+
+  gateway="$(default_route_gateway)"
+  if [[ -n "$gateway" ]]; then
+    add_waterline_url_candidate "http://${gateway}:${waterline_port}"
+  fi
+
+  gateway="$(docker_bridge_gateway)"
+  if [[ -n "$gateway" && "$gateway" != "<no value>" ]]; then
+    add_waterline_url_candidate "http://${gateway}:${waterline_port}"
+  fi
+
+  add_waterline_url_candidate "http://host.docker.internal:${waterline_port}"
+}
+
+build_waterline_url_candidates
+waterline_base_url="${waterline_url_candidates[0]}"
+
 wait_for_server_ready() {
   local attempt
   local candidate
@@ -580,6 +636,27 @@ wait_for_server_ready() {
   return 1
 }
 
+wait_for_waterline_ready() {
+  local attempt
+  local candidate
+
+  for attempt in $(seq 1 90); do
+    for candidate in "${waterline_url_candidates[@]}"; do
+      if curl -fsS \
+        -H "Accept: application/json" \
+        -H "X-Durable-Workflow-Control-Plane-Version: 2" \
+        "$candidate/waterline/api/v2/health" >/dev/null 2>&1; then
+        waterline_base_url="${candidate%/}"
+        export DW_SAGAS_WATERLINE_URL="$waterline_base_url"
+        return 0
+      fi
+    done
+    sleep 1
+  done
+
+  return 1
+}
+
 update_run_metadata_server_url() {
   python3 - "$result_dir/run-metadata.json" "$server_base_url" <<'PY'
 from __future__ import annotations
@@ -591,6 +668,22 @@ from pathlib import Path
 path = Path(sys.argv[1])
 metadata = json.loads(path.read_text(encoding="utf-8"))
 metadata["server_url"] = sys.argv[2]
+path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  cp "$result_dir/run-metadata.json" "$run_root/run-metadata.json"
+}
+
+update_run_metadata_waterline_url() {
+  python3 - "$result_dir/run-metadata.json" "$waterline_base_url" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+metadata = json.loads(path.read_text(encoding="utf-8"))
+metadata["waterline_url"] = sys.argv[2]
 path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
   cp "$result_dir/run-metadata.json" "$run_root/run-metadata.json"
@@ -861,7 +954,7 @@ python3 -m venv "$run_root/.venv"
 python -m pip install --upgrade pip
 python -m pip install "durable-workflow==$python_version" httpx
 
-mkdir -p "$run_root/php-worker" "$run_root/cli/bin" "$run_root/waterline" "$run_root/logs"
+mkdir -p "$run_root/php-worker" "$run_root/cli/bin" "$run_root/waterline-app" "$run_root/logs"
 docker run --rm -v "$run_root/php-worker:/app" composer:2 \
   composer require --no-interaction --no-progress "durable-workflow/workflow:$workflow_version"
 if ! curl -fsSL --retry 3 -o "$run_root/cli/install.sh" "$cli_installer_url"; then
@@ -879,12 +972,17 @@ if [[ ! -x "$run_root/cli/bin/dw" ]]; then
   blocked_result "official CLI installer did not create an executable dw binary for release $cli_version" "$started_at"
   exit 1
 fi
-docker run --rm -v "$run_root/waterline:/app" composer:2 \
+if ! docker run --rm -v "$run_root/waterline-app:/app" composer:2 sh -lc "
+  composer create-project --no-interaction --no-progress laravel/laravel . &&
   composer require --no-interaction --no-progress \
-    "durable-workflow/workflow:$workflow_version" \
-    "durable-workflow/waterline:$waterline_version"
+    'durable-workflow/workflow:$workflow_version' \
+    'durable-workflow/waterline:$waterline_version'
+" > "$result_dir/waterline-install.log" 2>&1; then
+  blocked_result "published Waterline app install failed for durable-workflow/waterline $waterline_version with workflow $workflow_version; see waterline-install.log" "$started_at"
+  exit 1
+fi
 
-python3 - "$run_root/pins.json" "$result_dir/server-image-digest.txt" "$result_dir/run-metadata.json" "$saga_suite_version" "$server_base_url" <<'PY'
+python3 - "$run_root/pins.json" "$result_dir/server-image-digest.txt" "$result_dir/run-metadata.json" "$saga_suite_version" "$server_base_url" "$waterline_base_url" <<'PY'
 from __future__ import annotations
 
 import json
@@ -912,6 +1010,7 @@ metadata = {
     "server_image": pins["server_image"],
     "server_image_digest": Path(sys.argv[2]).read_text().strip(),
     "server_url": sys.argv[5],
+    "waterline_url": sys.argv[6],
     "local_product_source_checkouts_used": False,
 }
 Path(sys.argv[3]).write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
@@ -953,6 +1052,32 @@ services:
       DW_SERVER_TOPOLOGY_SHAPE: standalone_server
       DW_SERVER_PROCESS_CLASS: worker_node
     volumes:
+      - server-db:/app/database
+    depends_on:
+      server:
+        condition: service_healthy
+
+  waterline:
+    image: composer:2
+    working_dir: /app
+    command: ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8090"]
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "false"
+      APP_KEY: "base64:UTyp33UhGolgzCK5CJmT+hNHcA+dJyp3+oINtX+VoPI="
+      APP_URL: "http://localhost:${waterline_port}"
+      DB_CONNECTION: sqlite
+      DB_DATABASE: /app/database/database.sqlite
+      QUEUE_CONNECTION: sync
+      CACHE_STORE: array
+      SESSION_DRIVER: array
+      WATERLINE_ALLOW_UNAUTHENTICATED: "true"
+      WATERLINE_ENGINE_SOURCE: v2
+      WATERLINE_NAMESPACE: default
+    ports:
+      - "${waterline_bind_host}:${waterline_port}:8090"
+    volumes:
+      - "$run_root/waterline-app:/app"
       - server-db:/app/database
     depends_on:
       server:
@@ -1738,6 +1863,7 @@ import signal
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter
 from datetime import datetime, timezone
@@ -1752,6 +1878,7 @@ RESULT_DIR = Path(os.environ["RESULT_DIR"])
 SIDE_STORE = Path(os.environ["SAGA_SIDE_STORE"])
 PYTHON_WORKER_PID = int(os.environ["PYTHON_WORKER_PID"])
 SERVER_URL = os.environ.get("DW_SAGAS_SERVER_URL", "http://127.0.0.1:8080").rstrip("/")
+WATERLINE_URL = os.environ.get("DW_SAGAS_WATERLINE_URL", "").rstrip("/")
 PHP_WORKER_CONTAINER = os.environ.get("DW_SAGAS_PHP_WORKER_CONTAINER", "dw-sagas-php-worker")
 PHP_WORKER_ID = "php-sagas-worker"
 PYTHON_WORKER_ID = "python-sagas-worker"
@@ -1848,6 +1975,7 @@ SCENARIO_REQUIRED_FIELDS = {
         "pending_compensations",
         "failed_compensations",
         "operator_visibility_snapshots",
+        "waterline_operator_evidence",
     ],
 }
 SCENARIO_EXPECTED_BEHAVIOR = {
@@ -2534,6 +2662,174 @@ def http_snapshot(label: str, path: str, timeout: float = 15.0) -> dict[str, Any
         }
 
 
+def waterline_api_snapshot(label: str, path: str, timeout: float = 20.0) -> dict[str, Any]:
+    if not WATERLINE_URL:
+        return {
+            "label": label,
+            "ok": False,
+            "path": path,
+            "error": "DW_SAGAS_WATERLINE_URL was not resolved",
+        }
+
+    request = urllib.request.Request(
+        f"{WATERLINE_URL}{path}",
+        headers={
+            "Accept": "application/json",
+            "X-Durable-Workflow-Control-Plane-Version": "2",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8")
+            return {
+                "label": label,
+                "ok": 200 <= response.status < 300,
+                "path": path,
+                "http_status": response.status,
+                "body": parse_json_stdout(body),
+            }
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return {
+            "label": label,
+            "ok": False,
+            "path": path,
+            "http_status": exc.code,
+            "body": parse_json_stdout(body),
+        }
+    except Exception as exc:
+        return {
+            "label": label,
+            "ok": False,
+            "path": path,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def string_field(payload: Any, *fields: str) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    for field in fields:
+        value = payload.get(field)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def waterline_list_item(body: Any, workflow_id: str, run_id: str) -> dict[str, Any] | None:
+    data = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(data, list):
+        return None
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        item_workflow_id = string_field(item, "workflow_instance_id", "instance_id")
+        item_run_id = string_field(item, "run_id", "selected_run_id", "id")
+        if item_workflow_id == workflow_id and item_run_id == run_id:
+            return item
+    return None
+
+
+def waterline_activity_statuses(detail: Any) -> list[dict[str, Any]]:
+    activities = detail.get("activities") if isinstance(detail, dict) else None
+    if not isinstance(activities, list):
+        return []
+    statuses: list[dict[str, Any]] = []
+    for activity in activities:
+        if not isinstance(activity, dict):
+            continue
+        attempts = activity.get("attempts")
+        statuses.append(
+            {
+                "type": activity.get("type"),
+                "status": activity.get("status"),
+                "row_status": activity.get("row_status"),
+                "history_authority": activity.get("history_authority"),
+                "attempt_statuses": [
+                    attempt.get("status")
+                    for attempt in attempts
+                    if isinstance(attempt, dict)
+                ]
+                if isinstance(attempts, list)
+                else [],
+            }
+        )
+    return statuses
+
+
+def waterline_current_compensation_marker(activity_statuses: list[dict[str, Any]]) -> str | None:
+    compensation_types = {"refund_card", "cancel_hotel", "cancel_flight"}
+    for activity in activity_statuses:
+        if activity.get("type") == "pause_after_refund" and activity.get("status") in {"pending", "running", "completed"}:
+            return "pause_after_refund"
+    for status in ("running", "pending"):
+        for activity in activity_statuses:
+            if activity.get("type") in compensation_types and activity.get("status") == status:
+                return str(activity["type"])
+    for activity in reversed(activity_statuses):
+        if activity.get("type") in compensation_types and activity.get("status") == "completed":
+            return str(activity["type"])
+    return None
+
+
+def waterline_operator_evidence(workflow_id: str, run_id: str) -> dict[str, Any]:
+    encoded_workflow_id = urllib.parse.quote(workflow_id, safe="")
+    encoded_run_id = urllib.parse.quote(run_id, safe="")
+    detail_path = f"/waterline/api/instances/{encoded_workflow_id}/runs/{encoded_run_id}?history_limit=all"
+
+    health = waterline_api_snapshot("GET /waterline/api/v2/health", "/waterline/api/v2/health")
+    running_list = waterline_api_snapshot("GET /waterline/api/flows/running", "/waterline/api/flows/running")
+    selected_run_detail = waterline_api_snapshot("GET /waterline/api/instances/{workflowId}/runs/{runId}", detail_path)
+
+    detail_body = selected_run_detail.get("body")
+    list_body = running_list.get("body")
+    list_item = waterline_list_item(list_body, workflow_id, run_id)
+    activity_statuses = waterline_activity_statuses(detail_body)
+    current_marker = waterline_current_compensation_marker(activity_statuses)
+    visible_status = string_field(detail_body, "status", "status_bucket")
+    visible_status_bucket = string_field(detail_body, "status_bucket")
+    detail_workflow_id = string_field(detail_body, "workflow_instance_id", "instance_id")
+    detail_run_id = string_field(detail_body, "run_id", "selected_run_id", "id")
+
+    missing = []
+    if not health.get("ok"):
+        missing.append("health")
+    if not running_list.get("ok"):
+        missing.append("running_list")
+    if not selected_run_detail.get("ok"):
+        missing.append("selected_run_detail")
+    if detail_workflow_id != workflow_id:
+        missing.append("selected_run_workflow_id")
+    if detail_run_id != run_id:
+        missing.append("selected_run_run_id")
+    if list_item is None:
+        missing.append("running_list_item")
+    if visible_status is None:
+        missing.append("visible_status")
+    if current_marker is None:
+        missing.append("current_compensation_marker")
+
+    return {
+        "surface": "waterline",
+        "ok": missing == [],
+        "workflow_id": workflow_id,
+        "run_id": run_id,
+        "observed_workflow_id": detail_workflow_id,
+        "observed_run_id": detail_run_id,
+        "visible_status": visible_status,
+        "visible_status_bucket": visible_status_bucket,
+        "current_compensation_marker": current_marker,
+        "activity_statuses": activity_statuses,
+        "list_item": list_item,
+        "missing": missing,
+        "captures": {
+            "health": health,
+            "running_list": running_list,
+            "selected_run_detail": selected_run_detail,
+        },
+    }
+
+
 def control_plane_get(path: str, timeout: float = 10.0) -> dict[str, Any]:
     request = urllib.request.Request(
         f"{SERVER_URL}/api{path}",
@@ -2615,21 +2911,6 @@ def php_worker_registration_snapshot(not_before: datetime | None = None) -> dict
     }
 
 
-def waterline_not_exercised_snapshot() -> dict[str, Any]:
-    return {
-        "label": "durable-workflow/waterline package",
-        "ok": False,
-        "status": "not_exercised",
-        "surface": "waterline",
-        "reason": (
-            "The published-artifact sagas topology installs durable-workflow/waterline "
-            "for artifact completeness but does not boot a Laravel Waterline app; "
-            "no Waterline route is probed on the server-only image."
-        ),
-        "required_topology": "Boot Waterline against the saga run database to exercise Waterline operator visibility.",
-    }
-
-
 async def operator_snapshots(client: Client, workflow_id: str, run_id: str) -> dict[str, Any]:
     control_plane = {
         "workflow": await control_plane_snapshot(client, "GET /api/workflows/{workflowId}", f"/workflows/{workflow_id}"),
@@ -2655,7 +2936,11 @@ async def operator_snapshots(client: Client, workflow_id: str, run_id: str) -> d
             ["workflow:history-export", workflow_id, run_id],
         ),
     }
-    return {"control_plane": control_plane, "cli": cli, "waterline": waterline_not_exercised_snapshot()}
+    return {
+        "control_plane": control_plane,
+        "cli": cli,
+        "waterline": waterline_operator_evidence(workflow_id, run_id),
+    }
 
 
 async def run_basic_scenario(
@@ -3083,6 +3368,7 @@ async def run_operator_visibility(client: Client) -> dict[str, Any]:
     rows = side_rows(scenario_id)
     completed_forward = steps_for(rows, "forward")
     completed_compensation = steps_for(rows, "compensation")
+    waterline_evidence = snapshots["waterline"]
     visible = json.dumps(snapshots, sort_keys=True)
     for token in ["charge_card", "refund_card"]:
         if token not in visible:
@@ -3092,39 +3378,39 @@ async def run_operator_visibility(client: Client) -> dict[str, Any]:
     for label, snapshot in snapshots["cli"].items():
         if not snapshot.get("ok"):
             failures.append(f"CLI {label} visibility snapshot failed: {snapshot}")
-    routed_findings = [
-        finding(
-            (
-                "Waterline operator visibility was not exercised because the "
-                "published-artifact sagas topology does not boot a Waterline app "
-                "against the run database"
-            ),
-            "waterline_operator_visibility",
-            scenario_id=scenario_id,
-            observed_behavior="Waterline was install-verified but not booted in the server-only saga topology",
-            next_acceptance_criterion="run saga operator visibility with a published Waterline app or keep this unsupported surface routed to Waterline coverage",
+    operator_findings: list[dict[str, Any]] = []
+    if not waterline_evidence.get("ok"):
+        failures.append(f"Waterline operator visibility snapshot failed: {waterline_evidence.get('missing')}")
+        operator_findings.append(
+            finding(
+                "Waterline operator visibility did not expose the paused mid-compensation saga run",
+                "waterline_operator_visibility",
+                scenario_id=scenario_id,
+                observed_behavior=json.dumps(waterline_evidence, sort_keys=True),
+                next_acceptance_criterion="boot the published Waterline app against the saga run database and capture selected-run detail plus list evidence for the paused compensation run",
+            )
         )
-    ]
+    if waterline_evidence.get("observed_workflow_id") != workflow_id or waterline_evidence.get("observed_run_id") != handle.run_id:
+        failures.append(
+            "Waterline operator visibility did not identify the same workflow id/run id selected by the saga runner"
+        )
+    if waterline_evidence.get("current_compensation_marker") != "pause_after_refund":
+        failures.append(
+            f"Waterline current compensation marker expected pause_after_refund, got {waterline_evidence.get('current_compensation_marker')!r}"
+        )
     status = scenario_status(failures)
     return {
         "scenario_id": scenario_id,
         "status": status,
         "failures": failures,
-        "findings": routed_findings,
+        "findings": operator_findings,
         "completed_forward_steps": completed_forward,
         "running_compensation_step": "pause_after_refund" if observed_pause else None,
         "completed_compensations": completed_compensation,
         "pending_compensations": ["cancel_hotel", "cancel_flight"] if observed_pause else [],
         "failed_compensations": [],
         "operator_visibility_snapshots": snapshots,
-        "unsupported_operator_surfaces": [
-            {
-                "surface": "waterline",
-                "reason": snapshots["waterline"]["reason"],
-                "required_topology": snapshots["waterline"]["required_topology"],
-            }
-        ],
-        "routed_operator_surface_findings": routed_findings,
+        "waterline_operator_evidence": waterline_evidence,
         "control_plane_state": control_plane_state,
         "workflow_status": control_plane_state,
         "history_dump": history_payload,
@@ -3390,6 +3676,7 @@ async def main() -> None:
             "server_image": metadata["server_image"],
             "server_image_digest": metadata["server_image_digest"],
             "server_url": metadata.get("server_url"),
+            "waterline_url": metadata.get("waterline_url"),
         },
         "runtime_matrix": {
             "workflow_runtimes": ["workflow-php", "sdk-python"],
@@ -3405,7 +3692,7 @@ async def main() -> None:
             "php_worker": "composer:2 container with durable-workflow/workflow package",
             "python_worker": "venv with durable-workflow PyPI package",
             "cli": "official GitHub release installer and standalone dw binary",
-            "waterline": "Composer package resolved and install-verified only; this server-only topology does not boot a Waterline app, so Waterline operator visibility is routed as separate surface coverage rather than probed through server routes",
+            "waterline": f"generated Laravel host app with durable-workflow/waterline package exposed at {metadata.get('waterline_url')} against the shared saga run database",
         },
         "book_trip_inputs": basic_payloads,
         "side_store_deltas": all_side_rows(),
@@ -3465,12 +3752,17 @@ export RESULT_DIR="$result_dir"
 export STARTED_AT="$started_at"
 export DW_SAGAS_SERVER_URL="$server_base_url"
 export DW_SAGAS_SERVER_API_URL="$server_api_url"
+export DW_SAGAS_WATERLINE_URL="$waterline_base_url"
 export DW_SAGAS_PHP_WORKER_CONTAINER="$php_worker_container"
 
 printf '%s\n' "$server_base_url" > "$result_dir/server-url.txt"
 printf '%s\n' "${server_url_candidates[@]}" > "$result_dir/server-url-candidates.txt"
+printf '%s\n' "$waterline_base_url" > "$result_dir/waterline-url.txt"
+printf '%s\n' "${waterline_url_candidates[@]}" > "$result_dir/waterline-url-candidates.txt"
 cp "$result_dir/server-url.txt" "$run_root/server-url.txt"
 cp "$result_dir/server-url-candidates.txt" "$run_root/server-url-candidates.txt"
+cp "$result_dir/waterline-url.txt" "$run_root/waterline-url.txt"
+cp "$result_dir/waterline-url-candidates.txt" "$run_root/waterline-url-candidates.txt"
 
 docker compose -f "$run_root/compose.yml" run --rm server server-bootstrap
 docker compose -f "$run_root/compose.yml" up -d --wait
@@ -3485,6 +3777,17 @@ fi
 printf '%s\n' "$server_base_url" > "$result_dir/server-url.txt"
 cp "$result_dir/server-url.txt" "$run_root/server-url.txt"
 update_run_metadata_server_url
+
+if ! wait_for_waterline_ready; then
+  docker compose -f "$run_root/compose.yml" ps > "$result_dir/docker-compose-ps.log" 2>&1 || true
+  docker compose -f "$run_root/compose.yml" logs waterline > "$result_dir/waterline.log" 2>&1 || true
+  blocked_result "published Waterline app was installed but did not become reachable against the saga run database at any candidate endpoint listed in waterline-url-candidates.txt; see waterline.log" "$started_at"
+  exit 1
+fi
+
+printf '%s\n' "$waterline_base_url" > "$result_dir/waterline-url.txt"
+cp "$result_dir/waterline-url.txt" "$run_root/waterline-url.txt"
+update_run_metadata_waterline_url
 
 server_queue_worker_cid="$(docker compose -f "$run_root/compose.yml" ps -q server-queue-worker)"
 server_queue_worker_running="$(docker inspect -f '{{.State.Running}}' "$server_queue_worker_cid" 2>/dev/null || true)"
@@ -3518,6 +3821,7 @@ cp "$run_root/logs/"* "$result_dir/" 2>/dev/null || true
 docker logs "$php_worker_container" > "$result_dir/php-worker.log" 2>&1 || true
 docker compose -f "$run_root/compose.yml" logs server > "$result_dir/server.log" 2>&1 || true
 docker compose -f "$run_root/compose.yml" logs server-queue-worker > "$result_dir/server-queue-worker.log" 2>&1 || true
+docker compose -f "$run_root/compose.yml" logs waterline > "$result_dir/waterline.log" 2>&1 || true
 
 if [[ ! -f "$result_dir/sagas-result.json" ]]; then
   blocked_result "saga conformance orchestrator exited without producing sagas-result.json; see orchestrate.log" "$started_at"

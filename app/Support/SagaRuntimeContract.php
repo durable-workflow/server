@@ -196,7 +196,7 @@ final class SagaRuntimeContract
                     'compensation_failure_terminal_shape_reported',
                     'worker_restart_resume_point_and_duplicate_counts_reported',
                     'typed_compensation_error_shape_reported',
-                    'operator_visibility_surfaces_reported_or_routed_to_surface_coverage_findings',
+                    'operator_visibility_surfaces_reported_including_waterline',
                     'run_timestamps_outcome_and_findings_are_recorded',
                     'declared_outcome_matches_evaluated_status',
                     'artifact_source_recorded_for_each_install_channel',
@@ -208,7 +208,7 @@ final class SagaRuntimeContract
                 'uncovered_required_scenario_outcome' => 'non_passing',
                 'smoke_subset_outcome' => 'non_passing',
                 'unsupported_public_surface_outcome' => 'non_passing_with_root_cause_finding',
-                'routed_operator_surface_gap_outcome' => 'passing_product_behavior_with_separate_coverage_finding',
+                'waterline_operator_visibility_gap_outcome' => 'non_passing_waterline_finding_required',
                 'runner_blocked_outcome' => 'non_passing_runner_blocked',
             ],
             'host_runner_contract' => [
@@ -256,8 +256,8 @@ final class SagaRuntimeContract
                         'scenario_status' => 'unsupported',
                         'finding_source' => 'saga_runtime_contract.finding_policy',
                     ],
-                    'routed_waterline_operator_visibility_gap' => [
-                        'scenario_status' => 'pass_when_server_and_cli_visibility_pass',
+                    'waterline_operator_visibility_failure' => [
+                        'scenario_status' => 'fail',
                         'finding_source' => 'saga_runtime_contract.finding_policy',
                         'owner' => 'waterline',
                     ],
@@ -414,6 +414,7 @@ final class SagaRuntimeContract
                     'pending_compensations',
                     'failed_compensations',
                     'operator_visibility_snapshots',
+                    'waterline_operator_evidence',
                 ],
                 'expected_behavior' => 'operators can tell which forward steps completed and which compensations are running, completed, pending, or failed',
             ],
