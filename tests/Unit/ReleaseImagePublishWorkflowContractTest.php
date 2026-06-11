@@ -186,6 +186,45 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertLessThan($evidenceOffset, $promoteOffset);
     }
 
+    public function test_release_workflow_records_docs_audit_evidence_after_image_publish(): void
+    {
+        $workflow = $this->read('.github/workflows/release.yml');
+        $auditor = $this->read('scripts/ci/check-docs-release-audit.sh');
+
+        foreach ([
+            'Verify live docs release audit after public images',
+            "if: \${{ steps.build.outcome == 'success' }}",
+            'DOCS_RELEASE_AUDIT_ARTIFACT: server',
+            'DOCS_RELEASE_AUDIT_VERSION: ${{ steps.release_publish.outputs.tag || github.event.inputs.tag || github.ref_name }}',
+            'DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json',
+            'scripts/ci/check-docs-release-audit.sh',
+            'docs-release-audit-evidence.json',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $workflow);
+        }
+
+        $this->assertStringContainsString('contents: read', $workflow);
+        $this->assertStringNotContainsString('contents: write', $workflow);
+        $this->assertStringContainsString('durable-workflow.release.docs-release-audit-evidence', $auditor);
+        $this->assertStringContainsString("schema: 'durable-workflow.docs.refresh-request'", $auditor);
+        $this->assertStringContainsString("repository: 'durable-workflow.github.io'", $auditor);
+        $this->assertStringContainsString("refresh_command: 'npm run refresh:public-artifact-versions'", $auditor);
+        $this->assertStringContainsString('observed_artifact_versions: versions', $auditor);
+
+        $buildOffset = strpos($workflow, 'Build and push exact image tags');
+        $writeEvidenceOffset = strpos($workflow, 'Write release image publish evidence');
+        $docsAuditOffset = strpos($workflow, 'Verify live docs release audit after public images');
+        $uploadOffset = strpos($workflow, 'Upload release image publish evidence');
+
+        $this->assertIsInt($buildOffset);
+        $this->assertIsInt($writeEvidenceOffset);
+        $this->assertIsInt($docsAuditOffset);
+        $this->assertIsInt($uploadOffset);
+        $this->assertLessThan($writeEvidenceOffset, $buildOffset);
+        $this->assertLessThan($docsAuditOffset, $writeEvidenceOffset);
+        $this->assertLessThan($uploadOffset, $docsAuditOffset);
+    }
+
     public function test_release_guard_rejects_pull_request_publish_context(): void
     {
         $result = $this->runGuard([

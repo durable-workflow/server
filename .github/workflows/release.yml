@@ -144,10 +144,20 @@ jobs:
           WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
         run: scripts/ci/write-release-image-publish-evidence.sh
 
+      - name: Verify live docs release audit after public images
+        if: ${{ steps.build.outcome == 'success' }}
+        env:
+          DOCS_RELEASE_AUDIT_ARTIFACT: server
+          DOCS_RELEASE_AUDIT_VERSION: ${{ steps.release_publish.outputs.tag || github.event.inputs.tag || github.ref_name }}
+          DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json
+        run: scripts/ci/check-docs-release-audit.sh
+
       - name: Upload release image publish evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: release-image-publish-evidence
-          path: release-image-publish-evidence.json
+          path: |
+            release-image-publish-evidence.json
+            docs-release-audit-evidence.json
           if-no-files-found: error
