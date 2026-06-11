@@ -178,7 +178,15 @@ const TOPOLOGY = {
   reserved_name_refusals: [],
 };
 const RESULT_GATE_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result-gate';
-const RESULT_GATE_VERSION = 8;
+const RESULT_GATE_VERSION = 9;
+const REQUIRED_QUERIES = {
+  equality: 'customer_id = "cust-7"',
+  range: 'order_total_cents > 5000 AND order_total_cents <= 10000',
+  bool: 'is_vip = true',
+  or: 'customer_id = "cust-2" OR customer_id = "cust-8"',
+  not: 'priority_tier IN ("gold","platinum") AND NOT is_vip',
+  keyword_list: 'tags = "urgent"',
+};
 const REQUIRED_ARTIFACTS = ['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'];
 const ALLOWED_STATUSES = ['pass', 'fail', 'unsupported', 'not_covered', 'runner_blocked'];
 const ALLOWED_OUTCOMES = ['pass', 'non_passing', 'non_passing_runner_blocked', 'non_passing_with_root_cause_finding'];
@@ -446,6 +454,17 @@ function hasAnyField(value, fields) {
     return false;
   }
   return fields.some((field) => Object.prototype.hasOwnProperty.call(value, field));
+}
+
+function hasNonPlaceholderField(value, fields) {
+  if (!isObject(value)) {
+    return false;
+  }
+  return fields.some((field) => (
+    Object.prototype.hasOwnProperty.call(value, field)
+    && nonEmptyValue(value[field])
+    && !(typeof value[field] === 'string' && isPlaceholderEvidence(value[field]))
+  ));
 }
 
 function hasTruthyField(value, fields) {
@@ -921,21 +940,70 @@ function probeEvidenceMatches(evidence, requiredProbe) {
   return false;
 }
 
-function injectionRejectionsCoverProbe(rejections, probe) {
+function exactProbeEvidenceMatches(evidence, requiredProbe) {
+  const normalizedEvidence = stringValue(evidence).replace(/\s+/g, ' ').trim();
+  const normalizedProbe = stringValue(requiredProbe).replace(/\s+/g, ' ').trim();
+  return normalizedEvidence !== '' && normalizedEvidence === normalizedProbe;
+}
+
+function injectionRejectionForProbe(rejections, probe) {
   for (const [key, rejection] of Object.entries(rejections || {})) {
-    if (probeEvidenceMatches(key, probe) || probeEvidenceMatches(rejection, probe)) {
-      return true;
-    }
-    if (!isObject(rejection)) {
+    const keyMatches = probeEvidenceMatches(key, probe);
+    if (isObject(rejection)) {
+      if (keyMatches) {
+        return rejection;
+      }
+      for (const field of ['probe', 'probe_name', 'probeName', 'case', 'class', 'kind', 'input', 'query', 'rejected_input', 'rejectedInput']) {
+        if (probeEvidenceMatches(rejection[field], probe)) {
+          return rejection;
+        }
+      }
       continue;
     }
-    for (const field of ['probe', 'probe_name', 'probeName', 'case', 'class', 'kind', 'input', 'query', 'rejected_input', 'rejectedInput']) {
-      if (probeEvidenceMatches(rejection[field], probe)) {
-        return true;
-      }
+
+    if (keyMatches || probeEvidenceMatches(rejection, probe)) {
+      return { rejected_input: typeof key === 'string' ? key : stringValue(rejection) };
     }
   }
-  return false;
+  return null;
+}
+
+function injectionRejectionDiagnosticFailures(rejection, probe) {
+  const failures = [];
+  const statusCode = numericField(rejection, [
+    'status_code',
+    'statusCode',
+    'http_status',
+    'httpStatus',
+    'response_status',
+    'responseStatus',
+  ]);
+  if (statusCode === null) {
+    failures.push({ code: 'missing_injection_rejection_field', probe, field: 'status_code' });
+  } else if (statusCode >= 200 && statusCode < 300) {
+    failures.push({ code: 'injection_rejection_status_succeeded', probe, status_code: statusCode });
+  }
+  if (!hasNonPlaceholderField(rejection, [
+    'response_body',
+    'responseBody',
+    'body',
+    'response',
+    'error_body',
+    'errorBody',
+  ])) {
+    failures.push({ code: 'missing_injection_rejection_field', probe, field: 'response_body' });
+  }
+  return failures;
+}
+
+function queryVerdictText(verdict) {
+  for (const field of ['query', 'query_string', 'queryString', 'input', 'probe']) {
+    const value = stringValue(verdict[field]);
+    if (value !== '') {
+      return value;
+    }
+  }
+  return '';
 }
 
 function coverageGapFindingFor(scenarioId, reason, versions) {
@@ -1071,16 +1139,8 @@ function workerVisibilityEvidenceFailures(scenarioId, scenarioResult, expectedRu
 
 function cliSurfaceEvidenceFailures(section) {
   const failures = [];
-  const requiredQueries = {
-    equality: 'customer_id = "cust-7"',
-    range: 'order_total_cents > 5000 AND order_total_cents <= 10000',
-    bool: 'is_vip = true',
-    or: 'customer_id = "cust-2" OR customer_id = "cust-8"',
-    not: 'priority_tier IN ("gold","platinum") AND NOT is_vip',
-    keyword_list: 'tags = "urgent"',
-  };
   const queries = firstArrayField(section, ['workflow_list_queries', 'workflowListQueries', 'queries', 'workflow_list_query', 'workflowListQuery']) || {};
-  for (const [queryClass, query] of Object.entries(requiredQueries)) {
+  for (const [queryClass, query] of Object.entries(REQUIRED_QUERIES)) {
     const entry = cliEntryForKey(queries, queryClass, query);
     if (entry === null) {
       failures.push({ code: 'missing_cli_query_evidence', scenario_id: 'cli_query_and_error_surface', query_class: queryClass, query });
@@ -1271,11 +1331,22 @@ function codecRoundTripEvidenceFailures(result, scenarioResult, scenarioId, dire
 function queryVerdictFailures(section) {
   const queries = arrayValue(section, 'queries') || section;
   const failures = [];
-  for (const queryClass of ['equality', 'range', 'bool', 'or', 'not', 'keyword_list']) {
+  for (const [queryClass, requiredQuery] of Object.entries(REQUIRED_QUERIES)) {
     const verdict = arrayValue(queries, queryClass) || {};
     if (!nonEmptyValue(verdict)) {
       failures.push({ code: 'missing_query_verdict', query_class: queryClass });
       continue;
+    }
+    const queryText = queryVerdictText(verdict);
+    if (queryText === '') {
+      failures.push({ code: 'missing_query_verdict_query', query_class: queryClass, query: requiredQuery });
+    } else if (!exactProbeEvidenceMatches(queryText, requiredQuery)) {
+      failures.push({
+        code: 'query_verdict_query_mismatch',
+        query_class: queryClass,
+        expected_query: requiredQuery,
+        actual_query: queryText,
+      });
     }
     failures.push(...queryCountFailures(verdict, queryClass, ''));
   }
@@ -1770,9 +1841,12 @@ function evaluateResultGate(result) {
       failures.push({ code: 'missing_injection_rejection_inputs' });
     }
     for (const probe of ['OR 1=1', 'embedded SQL comment', 'shell metacharacters']) {
-      if (!injectionRejectionsCoverProbe(rejections, probe)) {
+      const rejection = injectionRejectionForProbe(rejections, probe);
+      if (rejection === null) {
         failures.push({ code: 'missing_required_injection_rejection_probe', probe });
+        continue;
       }
+      failures.push(...injectionRejectionDiagnosticFailures(rejection, probe));
     }
     const partialExecution = boolField(section, ['partial_execution_observed', 'partialExecutionObserved']);
     if (partialExecution === null) {

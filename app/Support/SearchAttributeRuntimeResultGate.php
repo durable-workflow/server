@@ -10,7 +10,7 @@ final class SearchAttributeRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result-gate';
 
-    public const VERSION = 8;
+    public const VERSION = 9;
 
     /**
      * @return array<string, mixed>
@@ -54,8 +54,8 @@ final class SearchAttributeRuntimeResultGate
                 'cli_waterline_codec_load_grammar_and_injection_sections_are_reported',
                 'codec_round_trips_include_encoded_payload_or_wire_value_context',
                 'codec_round_trips_compare_written_or_wire_values_to_decoded_attributes',
-                'query_verdict_expected_and_actual_counts_match',
-                'query_injection_required_rejection_probes_are_reported',
+                'query_verdict_exact_query_expected_and_actual_counts_match',
+                'query_injection_required_rejection_probes_status_and_response_are_reported',
                 'waterline_operator_visibility_includes_operator_surface_matrix',
                 'indexing_latency_p95_and_max_do_not_exceed_documented_bound',
                 'load_latency_reported_for_equality_range_bool_and_keyword_list_filters',
@@ -893,7 +893,13 @@ final class SearchAttributeRuntimeResultGate
         if (self::isPassScenario($scenarioResults, 'equality_range_bool_query_behavior')
             || self::isPassScenario($scenarioResults, 'or_not_query_grammar')
             || self::isPassScenario($scenarioResults, 'keyword_list_membership')) {
-            array_push($failures, ...self::queryVerdictFailures(self::sectionValue($result, 'query_verdicts') ?? []));
+            array_push(
+                $failures,
+                ...self::queryVerdictFailures(
+                    self::sectionValue($result, 'query_verdicts') ?? [],
+                    $contract,
+                ),
+            );
         }
 
         if (self::isPassScenario($scenarioResults, 'query_injection_hardening')) {
@@ -1816,19 +1822,25 @@ final class SearchAttributeRuntimeResultGate
      *
      * @return array<int, array<string, mixed>>
      */
-    private static function queryVerdictFailures(array $section): array
+    private static function queryVerdictFailures(array $section, array $contract): array
     {
         $queries = self::arrayValue($section, 'queries') ?? $section;
+        $requirements = self::arrayValue(
+            self::arrayValue($contract['scenario_requirements'] ?? [], 'cli_query_and_error_surface') ?? [],
+            'required_queries',
+        ) ?? [
+            'equality' => 'customer_id = "cust-7"',
+            'range' => 'order_total_cents > 5000 AND order_total_cents <= 10000',
+            'bool' => 'is_vip = true',
+            'or' => 'customer_id = "cust-2" OR customer_id = "cust-8"',
+            'not' => 'priority_tier IN ("gold","platinum") AND NOT is_vip',
+            'keyword_list' => 'tags = "urgent"',
+        ];
         $failures = [];
 
-        foreach ([
-            'equality',
-            'range',
-            'bool',
-            'or',
-            'not',
-            'keyword_list',
-        ] as $queryClass) {
+        foreach ($requirements as $queryClass => $requiredQuery) {
+            $queryClass = (string) $queryClass;
+            $requiredQuery = (string) $requiredQuery;
             $verdict = self::arrayValue($queries, $queryClass) ?? [];
             if ($verdict === []) {
                 $failures[] = [
@@ -1836,6 +1848,22 @@ final class SearchAttributeRuntimeResultGate
                     'query_class' => $queryClass,
                 ];
                 continue;
+            }
+
+            $queryText = self::queryVerdictText($verdict);
+            if ($queryText === '') {
+                $failures[] = [
+                    'code' => 'missing_query_verdict_query',
+                    'query_class' => $queryClass,
+                    'query' => $requiredQuery,
+                ];
+            } elseif (! self::exactProbeEvidenceMatches($queryText, $requiredQuery)) {
+                $failures[] = [
+                    'code' => 'query_verdict_query_mismatch',
+                    'query_class' => $queryClass,
+                    'expected_query' => $requiredQuery,
+                    'actual_query' => $queryText,
+                ];
             }
 
             foreach (['expected_count', 'actual_count'] as $field) {
@@ -1861,6 +1889,21 @@ final class SearchAttributeRuntimeResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<mixed> $verdict
+     */
+    private static function queryVerdictText(array $verdict): string
+    {
+        foreach (['query', 'query_string', 'queryString', 'input', 'probe'] as $field) {
+            $value = self::stringValue($verdict[$field] ?? null);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
     }
 
     /**
@@ -1895,14 +1938,20 @@ final class SearchAttributeRuntimeResultGate
 
         $requirements = self::arrayValue($contract['scenario_requirements'] ?? [], 'query_injection_hardening') ?? [];
         foreach (self::stringList($requirements['required_rejections'] ?? []) as $probe) {
-            if (self::injectionRejectionsCoverProbe($rejections, $probe)) {
+            $rejection = self::injectionRejectionForProbe($rejections, $probe);
+            if ($rejection === null) {
+                $failures[] = [
+                    'code' => 'missing_required_injection_rejection_probe',
+                    'probe' => $probe,
+                ];
+
                 continue;
             }
 
-            $failures[] = [
-                'code' => 'missing_required_injection_rejection_probe',
-                'probe' => $probe,
-            ];
+            array_push(
+                $failures,
+                ...self::injectionRejectionDiagnosticFailures($rejection, $probe, $requirements),
+            );
         }
 
         $partialExecution = self::boolField($section, ['partial_execution_observed', 'partialExecutionObserved']);
@@ -1913,6 +1962,106 @@ final class SearchAttributeRuntimeResultGate
         } elseif ($partialExecution) {
             $failures[] = [
                 'code' => 'query_injection_partially_executed',
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<mixed> $rejections
+     * @return array<mixed>|null
+     */
+    private static function injectionRejectionForProbe(array $rejections, string $requiredProbe): ?array
+    {
+        foreach ($rejections as $key => $rejection) {
+            $keyMatches = is_string($key) && self::probeEvidenceMatches($key, $requiredProbe);
+            if (is_array($rejection)) {
+                if ($keyMatches) {
+                    return $rejection;
+                }
+
+                foreach ([
+                    'probe',
+                    'probe_name',
+                    'probeName',
+                    'case',
+                    'class',
+                    'kind',
+                    'input',
+                    'query',
+                    'rejected_input',
+                    'rejectedInput',
+                ] as $field) {
+                    if (self::probeEvidenceMatches(self::stringValue($rejection[$field] ?? null), $requiredProbe)) {
+                        return $rejection;
+                    }
+                }
+
+                continue;
+            }
+
+            if ($keyMatches || self::probeEvidenceMatches(self::stringValue($rejection), $requiredProbe)) {
+                return ['rejected_input' => is_string($key) ? $key : self::stringValue($rejection)];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<mixed> $rejection
+     * @param array<mixed> $requirements
+     * @return array<int, array<string, mixed>>
+     */
+    private static function injectionRejectionDiagnosticFailures(
+        array $rejection,
+        string $probe,
+        array $requirements,
+    ): array {
+        $failures = [];
+        $requiredFields = self::stringList($requirements['required_rejection_fields'] ?? [
+            'status_code',
+            'response_body',
+        ]);
+
+        if (in_array('status_code', $requiredFields, true)) {
+            $statusCode = self::numericField($rejection, [
+                'status_code',
+                'statusCode',
+                'http_status',
+                'httpStatus',
+                'response_status',
+                'responseStatus',
+            ]);
+            if ($statusCode === null) {
+                $failures[] = [
+                    'code' => 'missing_injection_rejection_field',
+                    'probe' => $probe,
+                    'field' => 'status_code',
+                ];
+            } elseif ($statusCode >= 200 && $statusCode < 300) {
+                $failures[] = [
+                    'code' => 'injection_rejection_status_succeeded',
+                    'probe' => $probe,
+                    'status_code' => $statusCode,
+                ];
+            }
+        }
+
+        if (in_array('response_body', $requiredFields, true)
+            && ! self::hasNonPlaceholderField($rejection, [
+                'response_body',
+                'responseBody',
+                'body',
+                'response',
+                'error_body',
+                'errorBody',
+            ])) {
+            $failures[] = [
+                'code' => 'missing_injection_rejection_field',
+                'probe' => $probe,
+                'field' => 'response_body',
             ];
         }
 
@@ -2690,44 +2839,22 @@ final class SearchAttributeRuntimeResultGate
     }
 
     /**
-     * @param array<mixed> $rejections
+     * @param array<mixed> $value
+     * @param list<string> $fields
      */
-    private static function injectionRejectionsCoverProbe(array $rejections, string $requiredProbe): bool
+    private static function hasNonPlaceholderField(array $value, array $fields): bool
     {
-        $requiredProbe = self::normalizeProbeLabel($requiredProbe);
-        if ($requiredProbe === '') {
-            return true;
-        }
-
-        foreach ($rejections as $key => $rejection) {
-            if (is_string($key) && self::probeEvidenceMatches($key, $requiredProbe)) {
-                return true;
-            }
-
-            if (self::probeEvidenceMatches(self::stringValue($rejection), $requiredProbe)) {
-                return true;
-            }
-
-            if (! is_array($rejection)) {
+        foreach ($fields as $field) {
+            if (! array_key_exists($field, $value) || ! self::nonEmptyValue($value[$field])) {
                 continue;
             }
 
-            foreach ([
-                'probe',
-                'probe_name',
-                'probeName',
-                'case',
-                'class',
-                'kind',
-                'input',
-                'query',
-                'rejected_input',
-                'rejectedInput',
-            ] as $field) {
-                if (self::probeEvidenceMatches(self::stringValue($rejection[$field] ?? null), $requiredProbe)) {
-                    return true;
-                }
+            $fieldValue = $value[$field];
+            if (is_string($fieldValue) && self::isPlaceholderEvidence($fieldValue)) {
+                continue;
             }
+
+            return true;
         }
 
         return false;

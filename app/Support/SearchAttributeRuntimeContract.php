@@ -16,7 +16,7 @@ final class SearchAttributeRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.contract';
 
-    public const VERSION = 8;
+    public const VERSION = 9;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result';
 
@@ -305,6 +305,10 @@ final class SearchAttributeRuntimeContract
                         'embedded SQL comment',
                         'shell metacharacters',
                     ],
+                    'required_rejection_fields' => [
+                        'status_code',
+                        'response_body',
+                    ],
                     'partial_execution_allowed' => false,
                 ],
                 'waterline_operator_visibility' => [
@@ -378,8 +382,8 @@ final class SearchAttributeRuntimeContract
                     'load_latency_reported',
                     'indexing_latency_p95_and_max_compared_to_documented_bound',
                     'load_latency_reported_per_query_class',
-                    'or_not_grammar_reported',
-                    'query_injection_hardening_reported',
+                    'or_not_grammar_reported_with_exact_query_counts',
+                    'query_injection_hardening_reported_with_status_and_response_body',
                     'artifact_versions_match_latest_published_set',
                     'run_timestamps_outcome_and_finding_links_are_recorded',
                     'declared_outcome_matches_evaluated_status',

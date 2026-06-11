@@ -134,6 +134,28 @@ class WorkflowSearchAttributeVisibilityQueryTest extends TestCase
             ->assertJsonPath('errors.query.0', 'Visibility query predicates must use: Field = literal.');
     }
 
+    public function test_workflow_list_query_rejects_embedded_sql_comment_input(): void
+    {
+        $response = $this->getJson(
+            '/api/workflows?'.http_build_query(['query' => 'customer_id = "cust-7" -- embedded SQL comment']),
+            $this->apiHeaders(),
+        );
+
+        $response->assertStatus(422)
+            ->assertJsonPath('errors.query.0', 'Visibility query literal ["cust-7" -- embedded SQL comment] is not valid.');
+    }
+
+    public function test_workflow_list_query_rejects_shell_metacharacter_input(): void
+    {
+        $response = $this->getJson(
+            '/api/workflows?'.http_build_query(['query' => 'customer_id = "cust-7"; rm -rf /']),
+            $this->apiHeaders(),
+        );
+
+        $response->assertStatus(422)
+            ->assertJsonPath('errors.query.0', 'Visibility query literal ["cust-7"; rm -rf /] is not valid.');
+    }
+
     public function test_workflow_list_query_rejects_search_attribute_literal_type_mismatch(): void
     {
         $response = $this->getJson(

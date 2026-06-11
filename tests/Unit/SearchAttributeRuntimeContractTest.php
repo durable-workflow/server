@@ -14,7 +14,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $manifest = SearchAttributeRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.contract', $manifest['schema']);
-        $this->assertSame(8, SearchAttributeRuntimeContract::VERSION);
+        $this->assertSame(9, SearchAttributeRuntimeContract::VERSION);
         $this->assertSame(SearchAttributeRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.result', $manifest['result_schema']);
         $this->assertSame('search_attribute_runtime_contract', $manifest['fixture_category']);
@@ -157,8 +157,8 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'load_latency_reported',
             'indexing_latency_p95_and_max_compared_to_documented_bound',
             'load_latency_reported_per_query_class',
-            'or_not_grammar_reported',
-            'query_injection_hardening_reported',
+            'or_not_grammar_reported_with_exact_query_counts',
+            'query_injection_hardening_reported_with_status_and_response_body',
             'runner_blocked_false_for_product_evidence',
             'findings_linked_for_non_pass_scenarios',
         ] as $requirement) {
@@ -171,7 +171,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $resultGate = SearchAttributeRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SearchAttributeRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(8, SearchAttributeRuntimeResultGate::VERSION);
+        $this->assertSame(9, SearchAttributeRuntimeResultGate::VERSION);
         $this->assertSame(SearchAttributeRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SearchAttributeRuntimeContract::RESULT_SCHEMA,
@@ -194,9 +194,12 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'codec_round_trips_compare_written_or_wire_values_to_decoded_attributes',
             $resultGate['pass_requires'],
         );
-        $this->assertContains('query_verdict_expected_and_actual_counts_match', $resultGate['pass_requires']);
         $this->assertContains(
-            'query_injection_required_rejection_probes_are_reported',
+            'query_verdict_exact_query_expected_and_actual_counts_match',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'query_injection_required_rejection_probes_status_and_response_are_reported',
             $resultGate['pass_requires'],
         );
         $this->assertContains(
@@ -1115,6 +1118,42 @@ class SearchAttributeRuntimeContractTest extends TestCase
         );
     }
 
+    public function test_result_gate_requires_exact_query_text_on_query_verdicts(): void
+    {
+        $result = $this->completeSearchAttributeResult();
+        unset($result['query_verdicts']['or']['query']);
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+        $matchingFailures = array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_query_verdict_query'
+                && ($failure['query_class'] ?? null) === 'or'
+                && ($failure['query'] ?? null) === 'customer_id = "cust-2" OR customer_id = "cust-8"',
+        );
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($matchingFailures);
+    }
+
+    public function test_result_gate_requires_injection_rejection_status_and_response_body(): void
+    {
+        $result = $this->completeSearchAttributeResult();
+        unset(
+            $result['adversarial_queries']['rejections']['tautology']['status_code'],
+            $result['adversarial_queries']['rejections']['tautology']['response_body'],
+        );
+
+        $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
+        $matchingFailures = array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'missing_injection_rejection_field'
+                && ($failure['probe'] ?? null) === 'OR 1=1',
+        );
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame(['status_code', 'response_body'], array_values(array_column($matchingFailures, 'field')));
+    }
+
     public function test_result_gate_accepts_a_complete_passing_matrix(): void
     {
         $evaluation = SearchAttributeRuntimeResultGate::evaluate($this->completeSearchAttributeResult());
@@ -1556,12 +1595,36 @@ class SearchAttributeRuntimeContractTest extends TestCase
                 ],
             ],
             'query_verdicts' => [
-                'equality' => ['expected_count' => 1, 'actual_count' => 1],
-                'range' => ['expected_count' => 4, 'actual_count' => 4],
-                'bool' => ['expected_count' => 5, 'actual_count' => 5],
-                'or' => ['expected_count' => 2, 'actual_count' => 2],
-                'not' => ['expected_count' => 3, 'actual_count' => 3],
-                'keyword_list' => ['expected_count' => 3, 'actual_count' => 3],
+                'equality' => [
+                    'query' => 'customer_id = "cust-7"',
+                    'expected_count' => 1,
+                    'actual_count' => 1,
+                ],
+                'range' => [
+                    'query' => 'order_total_cents > 5000 AND order_total_cents <= 10000',
+                    'expected_count' => 4,
+                    'actual_count' => 4,
+                ],
+                'bool' => [
+                    'query' => 'is_vip = true',
+                    'expected_count' => 5,
+                    'actual_count' => 5,
+                ],
+                'or' => [
+                    'query' => 'customer_id = "cust-2" OR customer_id = "cust-8"',
+                    'expected_count' => 2,
+                    'actual_count' => 2,
+                ],
+                'not' => [
+                    'query' => 'priority_tier IN ("gold","platinum") AND NOT is_vip',
+                    'expected_count' => 3,
+                    'actual_count' => 3,
+                ],
+                'keyword_list' => [
+                    'query' => 'tags = "urgent"',
+                    'expected_count' => 3,
+                    'actual_count' => 3,
+                ],
             ],
             'type_safety_errors' => [
                 'wrong_literal' => [
@@ -1651,9 +1714,33 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'adversarial_queries' => [
                 'injection_rejected' => true,
                 'rejections' => [
-                    'customer_id = "x" OR 1=1',
-                    'customer_id = "x" -- embedded SQL comment',
-                    'customer_id = "x"; rm -rf /',
+                    'tautology' => [
+                        'query' => 'customer_id = "x" OR 1=1',
+                        'status_code' => 422,
+                        'response_body' => [
+                            'errors' => [
+                                'query' => ['Visibility query predicates must use: Field = literal.'],
+                            ],
+                        ],
+                    ],
+                    'sql_comment' => [
+                        'query' => 'customer_id = "x" -- embedded SQL comment',
+                        'status_code' => 422,
+                        'response_body' => [
+                            'errors' => [
+                                'query' => ['Visibility query literal ["x" -- embedded SQL comment] is not valid.'],
+                            ],
+                        ],
+                    ],
+                    'shell_metacharacters' => [
+                        'query' => 'customer_id = "x"; rm -rf /',
+                        'status_code' => 422,
+                        'response_body' => [
+                            'errors' => [
+                                'query' => ['Visibility query literal ["x"; rm -rf /] is not valid.'],
+                            ],
+                        ],
+                    ],
                 ],
                 'partial_execution_observed' => false,
             ],
