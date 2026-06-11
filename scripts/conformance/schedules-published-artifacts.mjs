@@ -112,6 +112,7 @@ const requiredScenarios = Array.isArray(scenarioManifest.scenarios)
   ? scenarioManifest.scenarios.map((scenario) => scenario.id).filter(Boolean)
   : DEFAULT_REQUIRED_SCENARIOS;
 const coverageGapFindings = scenarioManifest.host_runner_contract?.coverage_gap_findings ?? {};
+let publishedCliInstallPromise = null;
 
 if (isMainModule()) {
   Promise.resolve().then(main).catch((error) => {
@@ -129,29 +130,18 @@ async function main() {
   const artifactVersions = artifactVersionsFromEnv();
   let artifactSources = artifactSourcesFromEnv(artifactVersions);
   const evidenceInputs = readEvidenceInputs();
-  const cadenceEvidence = await maybeRunCadenceShard(startedAt, artifactVersions, artifactSources);
-  if (cadenceEvidence !== null) {
-    evidenceInputs.push(cadenceEvidence);
-  }
-  const operatorControlsEvidence = await maybeRunOperatorControlsShard(startedAt, artifactVersions, artifactSources);
-  if (operatorControlsEvidence !== null) {
-    evidenceInputs.push(operatorControlsEvidence);
-  }
-  const missedRestartEvidence = await maybeRunMissedRestartShard(startedAt, artifactVersions, artifactSources);
-  if (missedRestartEvidence !== null) {
-    evidenceInputs.push(missedRestartEvidence);
-  }
-  const cliSurfaceEvidence = await maybeRunCliSurfaceShard(startedAt, artifactVersions, artifactSources);
-  if (cliSurfaceEvidence !== null) {
-    evidenceInputs.push(cliSurfaceEvidence);
-  }
-  const crossLanguageEvidence = await maybeRunCrossLanguageShard(startedAt, artifactVersions, artifactSources);
-  if (crossLanguageEvidence !== null) {
-    evidenceInputs.push(crossLanguageEvidence);
-  }
-  const adversarialEvidence = await maybeRunAdversarialShard(startedAt, artifactVersions, artifactSources);
-  if (adversarialEvidence !== null) {
-    evidenceInputs.push(adversarialEvidence);
+  const shardEvidence = await runEvidenceShardTasks([
+    { name: 'cadence', run: () => maybeRunCadenceShard(startedAt, artifactVersions, artifactSources) },
+    { name: 'operator-controls', run: () => maybeRunOperatorControlsShard(startedAt, artifactVersions, artifactSources) },
+    { name: 'missed-restart', run: () => maybeRunMissedRestartShard(startedAt, artifactVersions, artifactSources) },
+    { name: 'cli-surface', run: () => maybeRunCliSurfaceShard(startedAt, artifactVersions, artifactSources) },
+    { name: 'cross-language', run: () => maybeRunCrossLanguageShard(startedAt, artifactVersions, artifactSources) },
+    { name: 'adversarial', run: () => maybeRunAdversarialShard(startedAt, artifactVersions, artifactSources) },
+  ]);
+  for (const evidence of shardEvidence) {
+    if (evidence !== null) {
+      evidenceInputs.push(evidence);
+    }
   }
   const smokeEvidence = mergeEvidence(...evidenceInputs);
   const artifactInstallEvidence = buildArtifactInstallEvidence(artifactVersions, artifactSources, smokeEvidence);
@@ -326,6 +316,42 @@ async function main() {
 
   writePublishedArtifacts(artifactVersions, artifactSources, smokeEvidence, artifactInstallEvidence);
   writeResult(result);
+}
+
+async function runEvidenceShardTasks(shards) {
+  const workerCount = shardConcurrencyLimit(shards.length);
+  const results = new Array(shards.length).fill(null);
+  let nextIndex = 0;
+
+  async function runWorker() {
+    while (nextIndex < shards.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await shards[index].run();
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, runWorker));
+
+  return results;
+}
+
+function shardConcurrencyLimit(shardCount) {
+  if (shardCount <= 1) {
+    return Math.max(1, shardCount);
+  }
+
+  const configured = positiveInt(process.env.DW_SCHEDULES_SHARD_CONCURRENCY, 0);
+  if (configured > 0) {
+    return Math.min(configured, shardCount);
+  }
+
+  const existingServerUrl = stringValue(process.env.DW_SCHEDULES_SERVER_URL);
+  const fixedServerPort = positiveInt(process.env.DW_SCHEDULES_SERVER_PORT, 0);
+
+  return existingServerUrl === '' && fixedServerPort > 0
+    ? 1
+    : Math.min(2, shardCount);
 }
 
 function normalizeScenarioResult(scenarioId, supplied) {
@@ -4823,6 +4849,14 @@ async function resolvePublishedCli(artifactVersions, artifactSources) {
     return configuredCli;
   }
 
+  if (publishedCliInstallPromise === null) {
+    publishedCliInstallPromise = installPublishedCliArtifact(artifactVersions, artifactSources);
+  }
+
+  return await publishedCliInstallPromise;
+}
+
+async function installPublishedCliArtifact(artifactVersions, artifactSources) {
   const cliVersion = stringValue(artifactVersions.cli);
   if (cliVersion === '') {
     throw new Error('DW_CLI_VERSION is required to install the official CLI artifact.');

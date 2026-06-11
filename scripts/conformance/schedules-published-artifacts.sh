@@ -76,6 +76,9 @@ Environment overrides:
                                     Set to 0 to skip the automatic adversarial
                                     unregistered workflow-type schedule shard.
                                     Defaults to auto.
+  DW_SCHEDULES_SHARD_CONCURRENCY    Maximum automatic shard concurrency.
+                                    Defaults to 2, or 1 when using a fixed
+                                    Docker-published server port.
   DW_SCHEDULES_ADVERSARIAL_INTERVAL Fixed-rate interval for the unregistered
                                     workflow-type probe. Defaults to PT10S.
   DW_SCHEDULES_ADVERSARIAL_FIRE_TIMEOUT_SECONDS

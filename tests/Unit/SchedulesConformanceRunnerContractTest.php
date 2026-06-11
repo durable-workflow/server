@@ -1812,6 +1812,21 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_uses_bounded_concurrency_for_long_published_artifact_shards(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $source = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
+        $shell = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.sh');
+
+        $this->assertStringContainsString('async function runEvidenceShardTasks', $source);
+        $this->assertStringContainsString('Promise.all(Array.from({ length: workerCount }, runWorker))', $source);
+        $this->assertStringContainsString('DW_SCHEDULES_SHARD_CONCURRENCY', $source);
+        $this->assertStringContainsString('fixedServerPort > 0', $source);
+        $this->assertStringContainsString('publishedCliInstallPromise', $source);
+        $this->assertStringContainsString('async function installPublishedCliArtifact', $source);
+        $this->assertStringContainsString('DW_SCHEDULES_SHARD_CONCURRENCY', $shell);
+    }
+
     public function test_runner_uses_published_compose_dependency_graph_for_schedule_shards(): void
     {
         $repoRoot = dirname(__DIR__, 2);
