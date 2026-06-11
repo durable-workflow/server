@@ -286,20 +286,28 @@ async function main() {
       break;
     }
   }
-  const noCompatibleShow = noCompatibleWorkflowId
-    ? await getJson(
+  const noCompatibleVisibility = noCompatibleWorkflowId
+    ? await waitForNoCompatibleVisibility(
       serverUrl,
-      `/api/workflows/${encodeURIComponent(noCompatibleWorkflowId)}/runs/${encodeURIComponent(noCompatibleRunId)}`,
+      noCompatibleWorkflowId,
+      noCompatibleRunId,
       controlHeaders,
-      [200],
     )
-    : {};
+    : { latest: {}, samples: [] };
+  const noCompatibleShow = noCompatibleVisibility.latest;
   const noCompatiblePollStatuses = noCompatiblePolls
     .map((poll) => stringValue(poll.poll_status))
     .filter(Boolean);
   const noCompatibleSignal = stringValue(firstExplicitNoCompatibleSignal(
     ...noCompatiblePollStatuses,
     noCompatibleShow.compatibility_status,
+    noCompatibleShow.compatibilityStatus,
+    noCompatibleShow.compatibility_fleet_reason,
+    noCompatibleShow.compatibilityFleetReason,
+    ...noCompatibleVisibility.samples.map((sample) => sample.compatibility_status),
+    ...noCompatibleVisibility.samples.map((sample) => sample.compatibilityStatus),
+    ...noCompatibleVisibility.samples.map((sample) => sample.compatibility_fleet_reason),
+    ...noCompatibleVisibility.samples.map((sample) => sample.compatibilityFleetReason),
   ))
     || 'pending';
   const noCompatiblePendingOrTypedError = isExplicitNoCompatibleSignal(noCompatibleSignal)
@@ -747,6 +755,7 @@ async function main() {
     local_product_source_checkouts_used: false,
     deregister_response: v1Delete,
     workflow_visibility: noCompatibleShow,
+    workflow_visibility_samples: noCompatibleVisibility.samples,
   };
   const noCompatiblePublishedEvidence = noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidence);
   const publishedNoCompatibleOutputs = noCompatiblePublishedEvidence.outputs;
@@ -1180,6 +1189,37 @@ async function pollWorkflowTask(serverUrl, headers, workerId, taskQueue, buildId
   };
 }
 
+async function waitForNoCompatibleVisibility(serverUrl, workflowId, runId, headers) {
+  const samples = [];
+
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    const sample = await getJson(
+      serverUrl,
+      `/api/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}`,
+      headers,
+      [200],
+    );
+    samples.push(sample);
+
+    const signal = firstExplicitNoCompatibleSignal(
+      sample.compatibility_status,
+      sample.compatibilityStatus,
+      sample.compatibility_fleet_reason,
+      sample.compatibilityFleetReason,
+    );
+    if (isExplicitNoCompatibleSignal(signal)) {
+      break;
+    }
+
+    await sleep(500);
+  }
+
+  return {
+    latest: samples[samples.length - 1] ?? {},
+    samples,
+  };
+}
+
 async function completeWorkflow(serverUrl, headers, task, result) {
   return postJson(serverUrl, `/api/worker/workflow-tasks/${encodeURIComponent(task.task_id)}/complete`, {
     lease_owner: task.lease_owner,
@@ -1591,6 +1631,7 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
     outputs.pollAttempts,
   );
   const pollStatuses = pollStatusValuesFromOutputs(outputs);
+  const workflowVisibilitySignals = workflowVisibilitySignalValuesFromOutputs(outputs);
   const observedPollErrorCount = pollStatuses
     .filter((pollStatus) => isGenericPollErrorStatus(pollStatus))
     .length;
@@ -1621,6 +1662,9 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
     ...pollStatuses,
     outputs.compatibility_status,
     outputs.compatibilityStatus,
+    outputs.compatibility_fleet_reason,
+    outputs.compatibilityFleetReason,
+    ...workflowVisibilitySignals,
   );
   const rawPendingOrTypedError = firstDefined(
     outputs.pending_or_typed_error,
@@ -1635,6 +1679,9 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
       ...pollStatuses,
       outputs.compatibility_status,
       outputs.compatibilityStatus,
+      outputs.compatibility_fleet_reason,
+      outputs.compatibilityFleetReason,
+      ...workflowVisibilitySignals,
     ),
   );
   const incompatibleWorkerTaskCount = numberValue(rawIncompatibleWorkerTaskCount);
@@ -2315,6 +2362,37 @@ function pollStatusValuesFromOutputs(outputs) {
   }
 
   return pollStatuses.map((pollStatus) => stringValue(pollStatus)).filter(Boolean);
+}
+
+function workflowVisibilitySignalValuesFromOutputs(outputs) {
+  const values = [
+    outputs.workflow_visibility?.compatibility_status,
+    outputs.workflow_visibility?.compatibilityStatus,
+    outputs.workflow_visibility?.compatibility_fleet_reason,
+    outputs.workflow_visibility?.compatibilityFleetReason,
+    outputs.workflowVisibility?.compatibility_status,
+    outputs.workflowVisibility?.compatibilityStatus,
+    outputs.workflowVisibility?.compatibility_fleet_reason,
+    outputs.workflowVisibility?.compatibilityFleetReason,
+  ];
+
+  for (const sample of [
+    ...arrayValue(outputs.workflow_visibility_samples),
+    ...arrayValue(outputs.workflowVisibilitySamples),
+  ]) {
+    if (!sample || typeof sample !== 'object' || Array.isArray(sample)) {
+      continue;
+    }
+
+    values.push(
+      sample.compatibility_status,
+      sample.compatibilityStatus,
+      sample.compatibility_fleet_reason,
+      sample.compatibilityFleetReason,
+    );
+  }
+
+  return values.map((value) => stringValue(value)).filter(Boolean);
 }
 
 function isGenericPollErrorStatus(value) {

@@ -420,15 +420,10 @@ async function runPythonNoCompatibleShard(python) {
       break;
     }
   }
-  const workflowVisibility = runId === ''
-    ? {}
-    : await requestJson(
-      'GET',
-      `/api/workflows/${encodeURIComponent(noCompatibleWorkflowId)}/runs/${encodeURIComponent(runId)}`,
-      undefined,
-      controlHeaders(namespace),
-      [200],
-    );
+  const workflowVisibilityResult = runId === ''
+    ? { latest: {}, samples: [] }
+    : await waitForNoCompatibleVisibility(noCompatibleWorkflowId, runId);
+  const workflowVisibility = workflowVisibilityResult.latest;
   const incompatiblePollStatuses = incompatiblePolls
     .map((poll) => stringValue(poll.poll_status) || stringValue(poll.response?.poll_status))
     .filter(Boolean);
@@ -438,6 +433,13 @@ async function runPythonNoCompatibleShard(python) {
   const operatorVisibleSignal = stringValue(firstExplicitNoCompatibleSignal(
     ...incompatiblePollStatuses,
     workflowVisibility.compatibility_status,
+    workflowVisibility.compatibilityStatus,
+    workflowVisibility.compatibility_fleet_reason,
+    workflowVisibility.compatibilityFleetReason,
+    ...workflowVisibilityResult.samples.map((sample) => sample.compatibility_status),
+    ...workflowVisibilityResult.samples.map((sample) => sample.compatibilityStatus),
+    ...workflowVisibilityResult.samples.map((sample) => sample.compatibility_fleet_reason),
+    ...workflowVisibilityResult.samples.map((sample) => sample.compatibilityFleetReason),
   ));
   const pendingOrTypedError = isExplicitNoCompatibleSignal(operatorVisibleSignal)
     ? operatorVisibleSignal
@@ -463,6 +465,7 @@ async function runPythonNoCompatibleShard(python) {
     incompatible_worker_poll_error_count: incompatibleWorkerPollErrorCount,
     incompatible_worker_polls: incompatiblePolls,
     workflow_visibility: workflowVisibility,
+    workflow_visibility_samples: workflowVisibilityResult.samples,
     worker_execution_mode: 'published_python_worker_protocol_client',
     published_artifact_worker_execution: workerExecution,
     local_product_source_checkouts_used: false,
@@ -1098,6 +1101,38 @@ async function startWorkflow(workflowId, input) {
   );
 }
 
+async function waitForNoCompatibleVisibility(workflowId, runId) {
+  const samples = [];
+
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    const sample = await requestJson(
+      'GET',
+      `/api/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}`,
+      undefined,
+      controlHeaders(namespace),
+      [200],
+    );
+    samples.push(sample);
+
+    const signal = firstExplicitNoCompatibleSignal(
+      sample.compatibility_status,
+      sample.compatibilityStatus,
+      sample.compatibility_fleet_reason,
+      sample.compatibilityFleetReason,
+    );
+    if (isExplicitNoCompatibleSignal(signal)) {
+      break;
+    }
+
+    await sleep(500);
+  }
+
+  return {
+    latest: samples[samples.length - 1] ?? {},
+    samples,
+  };
+}
+
 async function requestJson(method, pathName, body, headers, expectedStatuses) {
   const response = await fetch(`${serverUrl}${pathName}`, {
     method,
@@ -1427,6 +1462,8 @@ import json
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
 
 from durable_workflow import Client
 from durable_workflow.errors import ServerError
@@ -1514,24 +1551,66 @@ async def main():
                 "build_id": payload["build_id"],
                 "poll_request_id": f"{payload['worker_id']}-{time.time_ns()}",
             }
+            request = urllib.request.Request(
+                f"{payload['server_url'].rstrip('/')}/api/worker/workflow-tasks/poll",
+                data=json.dumps(body).encode("utf-8"),
+                method="POST",
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {payload['token']}",
+                    "X-Namespace": payload["namespace"],
+                    "X-Durable-Workflow-Protocol-Version": "1.8",
+                },
+            )
+            poll_status = None
             try:
-                response = await client._request(
-                    "POST",
-                    "/worker/workflow-tasks/poll",
-                    worker=True,
-                    json=body,
+                with urllib.request.urlopen(
+                    request,
                     timeout=float(payload.get("poll_timeout_seconds") or 2.0),
-                )
-                poll_status = (response or {}).get("poll_status")
+                ) as handle:
+                    http_status = handle.status
+                    response_text = handle.read().decode("utf-8")
                 error = None
                 error_type = None
-            except Exception as exc:
-                response = None
-                poll_status = "poll_timeout" if exc.__class__.__name__ == "TimeoutException" else "poll_error"
+            except urllib.error.HTTPError as exc:
+                http_status = exc.code
+                response_text = exc.read().decode("utf-8")
                 error = str(exc)
                 error_type = exc.__class__.__name__
+            except Exception as exc:
+                http_status = None
+                response_text = ""
+                poll_status = "poll_timeout" if exc.__class__.__name__ in ("TimeoutException", "TimeoutError", "timeout") else "poll_error"
+                error = str(exc)
+                error_type = exc.__class__.__name__
+            else:
+                poll_status = None
+
+            if response_text:
+                try:
+                    response = json.loads(response_text)
+                except json.JSONDecodeError:
+                    response = {"raw_body": response_text}
+            else:
+                response = None
+
+            if isinstance(response, dict):
+                poll_status = response.get("poll_status") or response.get("reason") or poll_status
+                if error is None and http_status is not None and http_status >= 400:
+                    error = response.get("reason") or response.get("error")
+                    error_type = "HTTPError"
+            if (
+                http_status is not None
+                and http_status >= 400
+                and poll_status not in ("no_compatible_worker", "compatibility_blocked", "compatibility_unsupported")
+            ):
+                poll_status = "poll_error"
+
             result = {
                 "action": "raw_poll",
+                "request": body,
+                "http_status": http_status,
                 "response": response,
                 "task": (response or {}).get("task"),
                 "poll_status": poll_status,
