@@ -444,9 +444,19 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
     "malformed_signal_and_query_payloads": [
         "invalid_signal_arguments",
         "invalid_query_arguments",
+        "invalid_signal_arguments.status_code",
+        "invalid_signal_arguments.reason",
+        "invalid_query_arguments.status_code",
+        "invalid_query_arguments.reason",
         "invalid_signal_arguments_context",
         "invalid_query_arguments_context",
+        "signal_handler_invocation_count_after_invalid_payload",
+        "query_state_mutation_count_after_invalid_payload",
         "post_error_valid_query_result",
+        "cli_invalid_signal_arguments_sample",
+        "cli_invalid_query_arguments_sample",
+        "sdk_python_invalid_signal_arguments_sample",
+        "sdk_python_invalid_query_arguments_sample",
     ],
     "waterline_operator_visibility": [
         "artifact_versions",
@@ -634,6 +644,26 @@ def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
             and query_status is not None
             and 200 <= query_status <= 499
             and (query_status < 400 or required_evidence_satisfied("query_result_or_error.reason", query_reason))
+        )
+
+    if scenario == "malformed_signal_and_query_payloads":
+        return (
+            all(
+                required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
+                for evidence_key in SCENARIO_REQUIRED_EVIDENCE[scenario]
+            )
+            and status_code_in_range(observed, "invalid_signal_arguments.status_code", 422, 422)
+            and status_code_in_range(observed, "invalid_query_arguments.status_code", 422, 422)
+            and evidence_lookup(observed, "invalid_signal_arguments.reason") == "invalid_signal_arguments"
+            and evidence_lookup(observed, "invalid_query_arguments.reason") == "invalid_query_arguments"
+            and integer_value(evidence_lookup(
+                observed,
+                "signal_handler_invocation_count_after_invalid_payload",
+            )) == 0
+            and integer_value(evidence_lookup(
+                observed,
+                "query_state_mutation_count_after_invalid_payload",
+            )) == 0
         )
 
     return all(
@@ -942,6 +972,7 @@ scenario_routes = {
             "send malformed signal and query payloads",
             "capture stable validation or decoding errors with argument context",
             "prove malformed attempts do not mutate workflow state",
+            "record public CLI and Python SDK error samples for malformed signal and query calls",
         ],
     },
     "waterline_operator_visibility": {

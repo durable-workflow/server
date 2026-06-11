@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 12;
+    public const VERSION = 13;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -1146,6 +1146,17 @@ final class SignalQueryRuntimeResultGate
                     ...self::terminalRunReasonFailures($result, $scenarioResult, $scenarioId),
                 );
             }
+
+            if ($scenarioId === 'malformed_signal_and_query_payloads') {
+                array_push(
+                    $failures,
+                    ...self::statusCodeFailures($result, $scenarioResult, $scenarioId, [
+                        'invalid_signal_arguments.status_code' => [422, 422],
+                        'invalid_query_arguments.status_code' => [422, 422],
+                    ]),
+                    ...self::malformedPayloadReasonFailures($result, $scenarioResult, $scenarioId),
+                );
+            }
         }
 
         return $failures;
@@ -1282,6 +1293,64 @@ final class SignalQueryRuntimeResultGate
                 'code' => 'missing_terminal_query_reason',
                 'scenario_id' => $scenarioId,
                 'status_code' => $queryStatus,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function malformedPayloadReasonFailures(
+        array $result,
+        array $scenarioResult,
+        string $scenarioId,
+    ): array {
+        $failures = [];
+
+        foreach ([
+            'invalid_signal_arguments.reason' => 'invalid_signal_arguments',
+            'invalid_query_arguments.reason' => 'invalid_query_arguments',
+        ] as $evidenceKey => $expectedReason) {
+            $actualReason = self::stringValue(
+                self::evidenceValue($result, $scenarioResult, $scenarioId, $evidenceKey),
+            );
+
+            if ($actualReason === $expectedReason) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'unexpected_malformed_payload_reason',
+                'scenario_id' => $scenarioId,
+                'evidence_key' => $evidenceKey,
+                'expected_reason' => $expectedReason,
+                'actual_reason' => $actualReason,
+            ];
+        }
+
+        foreach ([
+            'signal_handler_invocation_count_after_invalid_payload',
+            'query_state_mutation_count_after_invalid_payload',
+        ] as $evidenceKey) {
+            $actualCount = self::integerValue(
+                self::evidenceValue($result, $scenarioResult, $scenarioId, $evidenceKey),
+            );
+
+            if ($actualCount === 0) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'malformed_payload_side_effect_observed',
+                'scenario_id' => $scenarioId,
+                'evidence_key' => $evidenceKey,
+                'expected_count' => 0,
+                'actual_count' => $actualCount,
             ];
         }
 

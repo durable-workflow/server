@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(11, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(12, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -187,18 +187,23 @@ class SignalQueryRuntimeContractTest extends TestCase
             'missing_workflow_query',
             $requirements['unknown_signal_and_query_errors']['required_errors'],
         );
-        $this->assertContains(
+        foreach ([
+            'invalid_signal_arguments.status_code',
+            'invalid_signal_arguments.reason',
+            'invalid_query_arguments.status_code',
+            'invalid_query_arguments.reason',
             'invalid_signal_arguments_context',
-            $requirements['malformed_signal_and_query_payloads']['evidence'],
-        );
-        $this->assertContains(
             'invalid_query_arguments_context',
-            $requirements['malformed_signal_and_query_payloads']['evidence'],
-        );
-        $this->assertContains(
+            'signal_handler_invocation_count_after_invalid_payload',
+            'query_state_mutation_count_after_invalid_payload',
             'post_error_valid_query_result',
-            $requirements['malformed_signal_and_query_payloads']['evidence'],
-        );
+            'cli_invalid_signal_arguments_sample',
+            'cli_invalid_query_arguments_sample',
+            'sdk_python_invalid_signal_arguments_sample',
+            'sdk_python_invalid_query_arguments_sample',
+        ] as $field) {
+            $this->assertContains($field, $requirements['malformed_signal_and_query_payloads']['evidence']);
+        }
         $this->assertContains(
             'public_query_surfaces',
             $requirements['completed_run_signal_and_query']['evidence'],
@@ -252,7 +257,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(12, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(13, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -413,6 +418,26 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'run_status_after_operations',
             ],
             $hostRunner['evidence_shards']['completed_run_handling']['required_evidence_fields'],
+        );
+        $this->assertSame(
+            [
+                'invalid_signal_arguments',
+                'invalid_query_arguments',
+                'invalid_signal_arguments.status_code',
+                'invalid_signal_arguments.reason',
+                'invalid_query_arguments.status_code',
+                'invalid_query_arguments.reason',
+                'invalid_signal_arguments_context',
+                'invalid_query_arguments_context',
+                'signal_handler_invocation_count_after_invalid_payload',
+                'query_state_mutation_count_after_invalid_payload',
+                'post_error_valid_query_result',
+                'cli_invalid_signal_arguments_sample',
+                'cli_invalid_query_arguments_sample',
+                'sdk_python_invalid_signal_arguments_sample',
+                'sdk_python_invalid_query_arguments_sample',
+            ],
+            $hostRunner['evidence_shards']['malformed_payload_errors']['required_evidence_fields'],
         );
         $this->assertSame(
             [
@@ -585,6 +610,24 @@ class SignalQueryRuntimeContractTest extends TestCase
 
         $this->assertSame('not_covered', $result['scenario_results']['php_worker_cli_and_sdk_baseline']['status']);
         $this->assertContains('signal_query_php_worker_mirror_uncovered', array_column($result['findings'], 'type'));
+        $this->assertSame('non_passing', $result['outcome']);
+    }
+
+    public function test_host_runner_does_not_pass_malformed_payload_evidence_without_public_samples(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        unset(
+            $evidence['scenario_results']['malformed_signal_and_query_payloads']['observed_outputs']
+                ['cli_invalid_signal_arguments_sample']
+        );
+
+        $result = $this->runSignalQueryHostRunner($evidence);
+
+        $this->assertSame('not_covered', $result['scenario_results']['malformed_signal_and_query_payloads']['status']);
+        $this->assertContains(
+            'signal_query_adversarial_error_shapes_uncovered',
+            array_column($result['findings'], 'type'),
+        );
         $this->assertSame('non_passing', $result['outcome']);
     }
 
@@ -1068,6 +1111,22 @@ class SignalQueryRuntimeContractTest extends TestCase
                 ['invalid_query_arguments_context']
         );
         unset(
+            $result['scenario_results']['malformed_signal_and_query_payloads']['observed_outputs']
+                ['signal_handler_invocation_count_after_invalid_payload']
+        );
+        unset(
+            $result['adversarial_errors']['malformed_signal_and_query_payloads']
+                ['signal_handler_invocation_count_after_invalid_payload']
+        );
+        unset(
+            $result['scenario_results']['malformed_signal_and_query_payloads']['observed_outputs']
+                ['sdk_python_invalid_query_arguments_sample']
+        );
+        unset(
+            $result['adversarial_errors']['malformed_signal_and_query_payloads']
+                ['sdk_python_invalid_query_arguments_sample']
+        );
+        unset(
             $result['scenario_results']['waterline_operator_visibility']['observed_outputs']
                 ['observer_state']['paths']['selected_run_query_template']
         );
@@ -1138,6 +1197,22 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertContains(
             [
                 'code' => 'missing_required_pass_evidence',
+                'scenario_id' => 'malformed_signal_and_query_payloads',
+                'evidence_key' => 'signal_handler_invocation_count_after_invalid_payload',
+            ],
+            $missingEvidence,
+        );
+        $this->assertContains(
+            [
+                'code' => 'missing_required_pass_evidence',
+                'scenario_id' => 'malformed_signal_and_query_payloads',
+                'evidence_key' => 'sdk_python_invalid_query_arguments_sample',
+            ],
+            $missingEvidence,
+        );
+        $this->assertContains(
+            [
+                'code' => 'missing_required_pass_evidence',
                 'scenario_id' => 'waterline_operator_visibility',
                 'evidence_key' => 'observer_state.paths.selected_run_query_template',
             ],
@@ -1195,6 +1270,37 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertContains(
             'unexpected_ordered_signal_history_order',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_malformed_payloads_without_documented_status_reason_or_integrity(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $observed = &$result['scenario_results']['malformed_signal_and_query_payloads']['observed_outputs'];
+        $section = &$result['adversarial_errors']['malformed_signal_and_query_payloads'];
+
+        $observed['invalid_signal_arguments']['status_code'] = 500;
+        $section['invalid_signal_arguments']['status_code'] = 500;
+        $observed['invalid_query_arguments']['reason'] = 'server_error';
+        $section['invalid_query_arguments']['reason'] = 'server_error';
+        $observed['query_state_mutation_count_after_invalid_payload'] = 1;
+        $section['query_state_mutation_count_after_invalid_payload'] = 1;
+        unset($observed, $section);
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'unexpected_status_code',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+        $this->assertContains(
+            'unexpected_malformed_payload_reason',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+        $this->assertContains(
+            'malformed_payload_side_effect_observed',
             array_column($evaluation['gate_failures'], 'code'),
         );
     }
@@ -1649,8 +1755,14 @@ class SignalQueryRuntimeContractTest extends TestCase
             'rejected_unknown_query' => ['reason' => 'rejected_unknown_query'],
         ];
         $scenarioResults['malformed_signal_and_query_payloads']['observed_outputs'] = [
-            'invalid_signal_arguments' => ['reason' => 'invalid_signal_arguments'],
-            'invalid_query_arguments' => ['reason' => 'invalid_query_arguments'],
+            'invalid_signal_arguments' => [
+                'status_code' => 422,
+                'reason' => 'invalid_signal_arguments',
+            ],
+            'invalid_query_arguments' => [
+                'status_code' => 422,
+                'reason' => 'invalid_query_arguments',
+            ],
             'invalid_signal_arguments_context' => [
                 'workflow_id' => 'wf-invalid-signal-payload',
                 'signal_name' => 'advance',
@@ -1661,7 +1773,33 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'query_name' => 'current',
                 'field' => 'input.0',
             ],
+            'signal_handler_invocation_count_after_invalid_payload' => 0,
+            'query_state_mutation_count_after_invalid_payload' => 0,
             'post_error_valid_query_result' => 8,
+            'cli_invalid_signal_arguments_sample' => [
+                'command' => 'dw workflow:signal wf-invalid-signal-payload increment --input=["bad"] --output=json',
+                'exit_code' => 2,
+                'status_code' => 422,
+                'reason' => 'invalid_signal_arguments',
+            ],
+            'cli_invalid_query_arguments_sample' => [
+                'command' => 'dw workflow:query wf-invalid-query-payload current --input=["bad"] --output=json',
+                'exit_code' => 2,
+                'status_code' => 422,
+                'reason' => 'invalid_query_arguments',
+            ],
+            'sdk_python_invalid_signal_arguments_sample' => [
+                'client' => 'sdk-python',
+                'exception' => 'SignalFailed',
+                'status_code' => 422,
+                'reason' => 'invalid_signal_arguments',
+            ],
+            'sdk_python_invalid_query_arguments_sample' => [
+                'client' => 'sdk-python',
+                'exception' => 'QueryFailed',
+                'status_code' => 422,
+                'reason' => 'invalid_query_arguments',
+            ],
         ];
         $scenarioResults['waterline_operator_visibility']['observed_outputs'] = [
             'artifact_versions' => [

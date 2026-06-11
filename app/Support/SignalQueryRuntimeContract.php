@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 11;
+    public const VERSION = 12;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -287,9 +287,19 @@ final class SignalQueryRuntimeContract
                         'invalid_query_arguments',
                     ],
                     'evidence' => [
+                        'invalid_signal_arguments.status_code',
+                        'invalid_signal_arguments.reason',
+                        'invalid_query_arguments.status_code',
+                        'invalid_query_arguments.reason',
                         'invalid_signal_arguments_context',
                         'invalid_query_arguments_context',
+                        'signal_handler_invocation_count_after_invalid_payload',
+                        'query_state_mutation_count_after_invalid_payload',
                         'post_error_valid_query_result',
+                        'cli_invalid_signal_arguments_sample',
+                        'cli_invalid_query_arguments_sample',
+                        'sdk_python_invalid_signal_arguments_sample',
+                        'sdk_python_invalid_query_arguments_sample',
                     ],
                     'history_integrity' => 'no_handler_invocation_or_state_corruption',
                 ],
@@ -512,9 +522,19 @@ final class SignalQueryRuntimeContract
                         'required_evidence_fields' => [
                             'invalid_signal_arguments',
                             'invalid_query_arguments',
+                            'invalid_signal_arguments.status_code',
+                            'invalid_signal_arguments.reason',
+                            'invalid_query_arguments.status_code',
+                            'invalid_query_arguments.reason',
                             'invalid_signal_arguments_context',
                             'invalid_query_arguments_context',
+                            'signal_handler_invocation_count_after_invalid_payload',
+                            'query_state_mutation_count_after_invalid_payload',
                             'post_error_valid_query_result',
+                            'cli_invalid_signal_arguments_sample',
+                            'cli_invalid_query_arguments_sample',
+                            'sdk_python_invalid_signal_arguments_sample',
+                            'sdk_python_invalid_query_arguments_sample',
                         ],
                         'finding_type_when_missing' => 'signal_query_adversarial_error_shapes_uncovered',
                         'owning_surface' => 'server, workflow, sdk-python, cli',
