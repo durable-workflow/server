@@ -17,6 +17,8 @@ use App\Support\NamespaceRuntimeContract;
 use App\Support\NamespaceRuntimeResultGate;
 use App\Support\PrincipalAttributionContract;
 use App\Support\PrincipalAttributionResultGate;
+use App\Support\PrereleaseReadinessContract;
+use App\Support\PrereleaseReadinessResultGate;
 use App\Support\PythonSdkParityContract;
 use App\Support\SagaRuntimeContract;
 use App\Support\SagaRuntimeResultGate;
@@ -681,6 +683,67 @@ class ClusterInfoTest extends TestCase
         $this->assertContains(
             'storage_connection_smoke_is_recorded_but_not_counted_as_complete',
             $contract['coverage_gate']['passing_outcome_requires'],
+        );
+    }
+
+    public function test_it_publishes_the_prerelease_readiness_conformance_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('capabilities.prerelease_readiness_contract', true)
+            ->assertJsonPath('prerelease_readiness_contract.schema', PrereleaseReadinessContract::SCHEMA)
+            ->assertJsonPath('prerelease_readiness_contract.version', PrereleaseReadinessContract::VERSION)
+            ->assertJsonPath(
+                'prerelease_readiness_contract.fixture_category',
+                'prerelease_readiness_contract',
+            )
+            ->assertJsonPath(
+                'prerelease_readiness_contract.scenario_manifest.source_path',
+                'static/platform-conformance/prerelease-readiness-scenarios.json',
+            )
+            ->assertJsonPath(
+                'prerelease_readiness_contract.scenario_manifest.suite_version',
+                PlatformConformanceSuite::VERSION,
+            );
+
+        $contract = $response->json('prerelease_readiness_contract');
+        $this->assertIsArray($contract);
+
+        foreach (['server', 'cli', 'sdk-python', 'workflow', 'waterline', 'sample-app', 'public-docs'] as $artifact) {
+            $this->assertContains($artifact, $contract['required_matrix']['ecosystem_artifacts']);
+            $this->assertArrayHasKey($artifact, $contract['artifact_policy']['install_channels']);
+        }
+
+        foreach ([
+            'core_feature_completeness',
+            'migration_readiness',
+            'public_api_stability',
+            'documentation_accuracy',
+            'configuration_understandability',
+            'cross_component_compatibility',
+        ] as $category) {
+            $this->assertContains($category, $contract['required_matrix']['readiness_categories']);
+        }
+
+        $this->assertContains('quickstart_local_server_hosted_completion', $contract['required_scenarios']);
+        $this->assertContains('quickstart_laravel_branch_completion', $contract['required_scenarios']);
+        $this->assertContains('focused_finding_routing', $contract['required_scenarios']);
+        $this->assertSame(
+            'non_passing',
+            $contract['coverage_gate']['installability_smoke_only_outcome'],
+        );
+        $this->assertSame(
+            'required_for_passing_prerelease_readiness_conformance',
+            $contract['host_runner_contract']['status'],
+        );
+        $this->assertTrue($contract['host_runner_contract']['must_link_focused_findings_for_every_non_pass_scenario']);
+        $this->assertSame(
+            'conformance_runner_coverage_gap',
+            $contract['host_runner_contract']['routing_policy']['missing_required_scenario']['finding_type'],
+        );
+        $this->assertSame(
+            PrereleaseReadinessResultGate::SCHEMA,
+            $contract['result_gate']['schema'],
         );
     }
 

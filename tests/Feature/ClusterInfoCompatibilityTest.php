@@ -13,6 +13,8 @@ use App\Support\MigrationRuntimeContract;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\PrincipalAttributionContract;
 use App\Support\PrincipalAttributionResultGate;
+use App\Support\PrereleaseReadinessContract;
+use App\Support\PrereleaseReadinessResultGate;
 use App\Support\SagaRuntimeContract;
 use App\Support\SearchAttributeRuntimeContract;
 use App\Support\ServerTopology;
@@ -70,6 +72,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'skew_refusal_matrix_contract',
                     'worker_versioning_runtime_contract',
                     'migration_runtime_contract',
+                    'prerelease_readiness_contract',
                     'payload_codecs',
                     'response_compression',
                 ],
@@ -344,6 +347,24 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'result_gate',
                     'finding_policy',
                 ],
+                'prerelease_readiness_contract' => [
+                    'schema',
+                    'version',
+                    'result_schema',
+                    'result_version',
+                    'fixture_category',
+                    'platform_conformance_suite_authority',
+                    'scenario_manifest',
+                    'artifact_policy',
+                    'scenario_statuses',
+                    'required_matrix',
+                    'required_scenarios',
+                    'scenario_requirements',
+                    'coverage_gate',
+                    'host_runner_contract',
+                    'result_gate',
+                    'finding_policy',
+                ],
                 'namespace_runtime_contract' => [
                     'schema',
                     'version',
@@ -481,6 +502,20 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath(
                 'migration_runtime_contract.platform_conformance_suite_authority',
                 PlatformConformanceSuite::SCHEMA,
+            )
+            ->assertJsonPath('prerelease_readiness_contract.schema', PrereleaseReadinessContract::SCHEMA)
+            ->assertJsonPath('prerelease_readiness_contract.version', PrereleaseReadinessContract::VERSION)
+            ->assertJsonPath(
+                'prerelease_readiness_contract.platform_conformance_suite_authority',
+                PlatformConformanceSuite::SCHEMA,
+            )
+            ->assertJsonPath(
+                'prerelease_readiness_contract.result_gate.schema',
+                PrereleaseReadinessResultGate::SCHEMA,
+            )
+            ->assertJsonPath(
+                'prerelease_readiness_contract.scenario_manifest.source_path',
+                'static/platform-conformance/prerelease-readiness-scenarios.json',
             )
             ->assertJsonPath('namespace_runtime_contract.schema', NamespaceRuntimeContract::SCHEMA)
             ->assertJsonPath('namespace_runtime_contract.version', NamespaceRuntimeContract::VERSION)

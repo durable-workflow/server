@@ -17,6 +17,7 @@ use App\Support\MigrationRuntimeContract;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NexusContract;
 use App\Support\PrincipalAttributionContract;
+use App\Support\PrereleaseReadinessContract;
 use App\Support\PythonSdkParityContract;
 use App\Support\ReplayVerificationContract;
 use App\Support\SagaRuntimeContract;
@@ -142,6 +143,7 @@ class HealthController
             'heartbeat_runtime_contract' => true,
             'principal_attribution_contract' => true,
             'python_sdk_parity_contract' => true,
+            'prerelease_readiness_contract' => true,
             'skew_refusal_matrix_contract' => true,
             'worker_versioning_runtime_contract' => true,
             'migration_runtime_contract' => true,
@@ -195,6 +197,7 @@ class HealthController
             'heartbeat_runtime_contract' => HeartbeatRuntimeContract::manifest(),
             'principal_attribution_contract' => PrincipalAttributionContract::manifest(),
             'python_sdk_parity_contract' => PythonSdkParityContract::manifest(),
+            'prerelease_readiness_contract' => PrereleaseReadinessContract::manifest(),
             'skew_refusal_matrix_contract' => SkewRefusalMatrixContract::manifest(),
             'worker_versioning_runtime_contract' => WorkerVersioningRuntimeContract::manifest(),
             'migration_runtime_contract' => MigrationRuntimeContract::manifest(),

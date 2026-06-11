@@ -38,6 +38,7 @@ categories and runtime contracts:
 | `skew_refusal_matrix_contract` (server side) | `GET /api/cluster/info`'s `skew_refusal_matrix_contract` manifest, the public scenario manifest at `static/platform-conformance/skew-refusal-matrix-scenarios.json`, and `scripts/conformance/skew-published-artifacts.sh`, which is the host-runner handoff for the CLI/Python/PHP worker/Waterline skew matrix, worker registration skew classifications, Waterline render classifications, and request/response evidence requirements | stable |
 | `worker_versioning_runtime_contract` (server side) | `GET /api/cluster/info`'s `worker_versioning_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/worker-versioning-runtime-scenarios.json`, `scripts/conformance/worker-versioning-published-artifacts.sh`, worker registration/build-id rollout APIs, workflow start pinning, compatible polling, history/visibility pin surfaces, and CLI/Waterline operator visibility | stable |
 | `migration_runtime_contract` (server side) | `GET /api/cluster/info`'s `migration_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/migration-runtime-scenarios.json`, and the host-runner handoff requirements for full published-artifact v1-to-v2 upgrade evidence | stable |
+| `prerelease_readiness_contract` (server side handoff) | `GET /api/cluster/info`'s `prerelease_readiness_contract` manifest and the public scenario manifest at `static/platform-conformance/prerelease-readiness-scenarios.json`, which define the full published-artifact 2.0 readiness matrix for installability, Workflow and Waterline feature completeness, migration, API stability, configuration, documentation, quickstart completion, and cross-component coupling | stable |
 | `namespace_runtime_contract` (server side) | the public scenario manifest at `static/platform-conformance/namespace-runtime-scenarios.json`, `GET /api/cluster/info`'s `namespace_runtime_contract` manifest, `scripts/conformance/namespaces-published-artifacts.sh`, plus namespace, workflow, worker, schedule, search-attribute, Nexus, and operator routes documented in the protocol catalog | stable |
 | `nexus_runtime_contract` (server side handoff) | `GET /api/cluster/info`'s `nexus_contract.host_runner_contract`, `docs/contracts/nexus.md`, and `scripts/conformance/nexus-published-artifacts.sh`, which is the host-runner handoff for published-artifact Nexus retry, replay, cancellation, cross-language, authorization, and history evidence | stable |
 | `failure_repair_actionability` | `docs/contracts/external-task-result.md`, `docs/contracts/replay-verification.md`, plus the artifact objects published from `GET /api/cluster/info`'s `worker_protocol.external_task_result_contract.fixtures` | stable |
@@ -157,6 +158,19 @@ worker evidence remains non-passing because the SDK result gate requires the
 official CLI start/result path, cold first-user setup, control and worker
 protocol traces, a no-PHP-assumption audit, and the complete capability
 table before rollup can count the Python parity result as passing.
+
+The server repo also exposes a prerelease readiness handoff under
+`GET /api/cluster/info` as `prerelease_readiness_contract`. That contract
+mirrors the public prerelease readiness scenario manifest and requires the
+host runner to report every required cell as `pass`, `fail`, `unsupported`,
+`not_covered`, or `runner_blocked` with focused findings for every non-pass
+cell. Installability smoke, docs route discovery, or quickstart discovery
+alone remain non-passing. A passing result requires separate Workflow and
+Waterline GO verdicts, published artifact versions and sources for the full
+ecosystem tuple, versioned prerelease docs URLs, stable 1.x as the default
+docs line, completed local-server and Laravel quickstart branches, and
+recorded migration, API-stability, configuration, documentation, and
+cross-component observations.
 
 ## Release gate
 
