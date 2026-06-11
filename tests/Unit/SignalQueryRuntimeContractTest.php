@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(12, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(13, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -320,7 +320,13 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertTrue($hostRunner['must_execute_against_published_artifacts']);
         $this->assertTrue($hostRunner['must_record_runner_blocked_false_for_product_evidence']);
         $this->assertTrue($hostRunner['must_emit_focused_findings_for_uncovered_cells']);
-        $this->assertSame(['bash', 'python3'], $hostRunner['required_host_commands']);
+        $this->assertSame(['bash', 'python3', 'docker', 'sh'], $hostRunner['required_host_commands']);
+        $this->assertContains(
+            'DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE',
+            $hostRunner['adversarial_probe_overrides'],
+        );
+        $this->assertContains('DW_SIGNALS_QUERIES_CLI_BIN', $hostRunner['adversarial_probe_overrides']);
+        $this->assertContains('DW_SIGNALS_QUERIES_PYTHON', $hostRunner['adversarial_probe_overrides']);
 
         foreach ($hostRunner['required_execution_scopes'] as $scope) {
             $this->assertContains($scope, $hostRunner['required_execution_scopes']);
@@ -513,9 +519,10 @@ class SignalQueryRuntimeContractTest extends TestCase
             'ten_signal_ordered_delivery_total' => 55,
         ]);
 
-        $this->assertSame('pass', $result['scenario_results']['published_artifact_install_only']['status']);
+        $this->assertSame('not_covered', $result['scenario_results']['published_artifact_install_only']['status']);
         $this->assertSame('not_covered', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
         $this->assertSame('not_covered', $result['scenario_results']['ordered_signal_delivery']['status']);
+        $this->assertContains('signal_query_published_artifact_install_uncovered', array_column($result['findings'], 'type'));
         $this->assertContains('signal_query_python_smoke_uncovered', array_column($result['findings'], 'type'));
         $this->assertContains('signal_query_ordered_delivery_uncovered', array_column($result['findings'], 'type'));
     }
@@ -549,7 +556,7 @@ class SignalQueryRuntimeContractTest extends TestCase
             'history_signal_order' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         ]);
 
-        $this->assertSame('pass', $result['scenario_results']['published_artifact_install_only']['status']);
+        $this->assertSame('not_covered', $result['scenario_results']['published_artifact_install_only']['status']);
         $this->assertSame('pass', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
         $this->assertSame('pass', $result['scenario_results']['ordered_signal_delivery']['status']);
         $this->assertSame('not_covered', $result['scenario_results']['dedup_contract_observation']['status']);
@@ -557,6 +564,7 @@ class SignalQueryRuntimeContractTest extends TestCase
             [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             $result['scenario_results']['ordered_signal_delivery']['observed_outputs']['history_signal_order'],
         );
+        $this->assertContains('signal_query_published_artifact_install_uncovered', array_column($result['findings'], 'type'));
         $this->assertContains('signal_query_dedup_contract_uncovered', array_column($result['findings'], 'type'));
     }
 
@@ -570,6 +578,90 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertSame([], $result['findings']);
         $this->assertSame('pass', $evaluation['status']);
         $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_host_runner_does_not_promote_probe_only_adversarial_evidence_to_install_pass(): void
+    {
+        $complete = $this->completeSignalQueryResultForCurrentHostRunner();
+        $probeEvidence = [
+            'artifact_versions' => $this->currentHostRunnerArtifactVersions(),
+            'scenario_results' => [
+                'unknown_signal_and_query_errors' => $complete['scenario_results']['unknown_signal_and_query_errors'],
+                'malformed_signal_and_query_payloads' => $complete['scenario_results']['malformed_signal_and_query_payloads'],
+            ],
+        ];
+
+        $result = $this->runSignalQueryHostRunner($probeEvidence);
+
+        $this->assertSame('not_covered', $result['scenario_results']['published_artifact_install_only']['status']);
+        $this->assertSame('pass', $result['scenario_results']['unknown_signal_and_query_errors']['status']);
+        $this->assertSame('pass', $result['scenario_results']['malformed_signal_and_query_payloads']['status']);
+        $this->assertContains('signal_query_published_artifact_install_uncovered', array_column($result['findings'], 'type'));
+    }
+
+    public function test_probe_merge_preserves_sources_only_external_install_evidence(): void
+    {
+        $complete = $this->completeSignalQueryResultForCurrentHostRunner();
+        $sources = [
+            'server' => 'published_docker_image',
+            'cli' => 'published_cli_release',
+            'sdk-python' => 'published_pypi_package',
+            'workflow-php' => 'published_composer_package',
+            'waterline' => 'published_waterline_artifact',
+        ];
+        $externalEvidence = [
+            'artifact_sources' => $sources,
+            'scenario_results' => [
+                'published_artifact_install_only' => [
+                    'scenario_id' => 'published_artifact_install_only',
+                    'status' => 'pass',
+                    'observed_outputs' => [
+                        'artifact_sources' => $sources,
+                    ],
+                ],
+            ],
+        ];
+        $probeEvidence = [
+            'artifact_versions' => $this->currentHostRunnerArtifactVersions(),
+            'scenario_results' => [
+                'unknown_signal_and_query_errors' => $complete['scenario_results']['unknown_signal_and_query_errors'],
+                'malformed_signal_and_query_payloads' => $complete['scenario_results']['malformed_signal_and_query_payloads'],
+            ],
+        ];
+
+        $result = $this->runProbeEvidenceMerge($externalEvidence, $probeEvidence);
+
+        $this->assertSame($externalEvidence, $result['base']);
+        $this->assertArrayHasKey('artifact_versions', $result['merged']);
+        $this->assertArrayHasKey('unknown_signal_and_query_errors', $result['merged']['scenario_results']);
+        $this->assertArrayHasKey('malformed_signal_and_query_payloads', $result['merged']['scenario_results']);
+        $this->assertArrayNotHasKey('artifact_versions', $result['base']);
+        $this->assertArrayNotHasKey(
+            'published_artifact_versions',
+            $result['base']['scenario_results']['published_artifact_install_only']['observed_outputs'],
+        );
+        $this->assertArrayNotHasKey('unknown_signal_and_query_errors', $result['base']['scenario_results']);
+        $this->assertArrayNotHasKey('malformed_signal_and_query_payloads', $result['base']['scenario_results']);
+    }
+
+    public function test_host_runner_accepts_flat_explicit_install_evidence(): void
+    {
+        $result = $this->runSignalQueryHostRunner([
+            'published_artifact_versions' => $this->currentHostRunnerArtifactVersions(),
+            'artifact_sources' => [
+                'server' => 'published_docker_image',
+                'cli' => 'published_cli_release',
+                'sdk-python' => 'published_pypi_package',
+                'workflow-php' => 'published_composer_package',
+                'waterline' => 'published_waterline_artifact',
+            ],
+        ]);
+
+        $this->assertSame('pass', $result['scenario_results']['published_artifact_install_only']['status']);
+        $this->assertSame(
+            'published_composer_package',
+            $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['workflow-php'],
+        );
     }
 
     public function test_host_runner_imports_fractional_second_replay_timing_evidence_as_passing_conformance(): void
@@ -1515,6 +1607,7 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'DW_PYTHON_SDK_VERSION=0.4.84',
                 'DW_WORKFLOW_PHP_VERSION=2.0.0-alpha.187',
                 'DW_WATERLINE_VERSION=2.0.0-alpha.69',
+                'DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE=0',
                 'DW_SIGNALS_QUERIES_SMOKE_EVIDENCE=' . escapeshellarg($smokePath),
                 escapeshellarg($root . '/scripts/conformance/signals-queries-published-artifacts.sh'),
                 '--result-dir',
@@ -1561,6 +1654,76 @@ class SignalQueryRuntimeContractTest extends TestCase
         }
 
         rmdir($directory);
+    }
+
+    /**
+     * @param array<string, mixed> $base
+     * @param array<string, mixed> $probe
+     *
+     * @return array<string, mixed>
+     */
+    private function runProbeEvidenceMerge(array $base, array $probe): array
+    {
+        $payload = json_encode(
+            [
+                'base' => $base,
+                'probe' => $probe,
+            ],
+            JSON_THROW_ON_ERROR,
+        );
+        $process = proc_open(
+            ['python3', '-c', $this->probeEvidenceMergeScript()],
+            [
+                0 => ['pipe', 'r'],
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+        );
+
+        if (! is_resource($process)) {
+            $this->fail('Unable to start python3 for probe evidence merge test.');
+        }
+
+        fwrite($pipes[0], $payload);
+        fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, (string) $stderr);
+
+        return json_decode((string) $stdout, true, 512, JSON_THROW_ON_ERROR);
+    }
+
+    private function probeEvidenceMergeScript(): string
+    {
+        $source = (string) file_get_contents(
+            dirname(__DIR__, 2) . '/scripts/conformance/signals-queries-published-artifacts.sh',
+        );
+        $start = strpos($source, "\ndef merge_probe_evidence(");
+        $end = $start === false ? false : strpos($source, "\n\nMISSING = object()", $start);
+
+        if ($start === false || $end === false) {
+            $this->fail('Unable to extract merge_probe_evidence from host runner.');
+        }
+
+        $function = substr($source, $start + 1, $end - $start - 1);
+
+        return implode("\n", [
+            'from __future__ import annotations',
+            'import json',
+            'import sys',
+            'from typing import Any',
+            $function,
+            'payload = json.loads(sys.stdin.read())',
+            'base = payload["base"]',
+            'merged = merge_probe_evidence(base, payload["probe"])',
+            'print(json.dumps({"base": base, "merged": merged}))',
+            '',
+        ]);
     }
 
     /**

@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 12;
+    public const VERSION = 13;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -365,6 +365,17 @@ final class SignalQueryRuntimeContract
                 'required_host_commands' => [
                     'bash',
                     'python3',
+                    'docker',
+                    'sh',
+                ],
+                'adversarial_probe_overrides' => [
+                    'DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE',
+                    'DW_SIGNALS_QUERIES_SERVER_URL',
+                    'DW_SIGNALS_QUERIES_AUTH_TOKEN',
+                    'DW_SIGNALS_QUERIES_NAMESPACE',
+                    'DW_SIGNALS_QUERIES_CLI_BIN',
+                    'DW_SIGNALS_QUERIES_PYTHON',
+                    'DW_SIGNALS_QUERIES_KEEP_RUN_ROOT',
                 ],
                 'required_execution_scopes' => [
                     'published_artifact_install',
@@ -386,6 +397,7 @@ final class SignalQueryRuntimeContract
                         ],
                         'current_evidence_fields' => [
                             'published_artifact_versions',
+                            'artifact_sources',
                             'external_smoke_evidence',
                         ],
                         'finding_type_when_missing' => 'signal_query_published_artifact_install_uncovered',

@@ -23,6 +23,13 @@ Environment overrides:
   DW_SIGNALS_QUERIES_RESULT_DIR             Result directory when --result-dir is omitted.
   DW_SIGNALS_QUERIES_EVIDENCE               Optional JSON evidence from a real matrix run.
   DW_SIGNALS_QUERIES_SMOKE_EVIDENCE         Deprecated alias for DW_SIGNALS_QUERIES_EVIDENCE.
+  DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE  Set to 0 to skip the live malformed/unknown error shard.
+  DW_SIGNALS_QUERIES_SERVER_URL             Reuse an already-running published server for the adversarial shard.
+  DW_SIGNALS_QUERIES_AUTH_TOKEN             Bearer token for the adversarial shard. Defaults to dev-token.
+  DW_SIGNALS_QUERIES_NAMESPACE              Namespace for the adversarial shard. Defaults to default.
+  DW_SIGNALS_QUERIES_CLI_BIN                Optional explicit published dw binary path.
+  DW_SIGNALS_QUERIES_PYTHON                 Optional Python executable with the published SDK installed.
+  DW_SIGNALS_QUERIES_KEEP_RUN_ROOT          Set to 1 to keep the adversarial shard scratch directory.
 USAGE
 }
 
@@ -66,9 +73,12 @@ timestamp() {
 }
 
 started_at="$(timestamp)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/../.." && pwd)"
 
 RESULT_DIR="$result_dir" \
 STARTED_AT="$started_at" \
+REPO_ROOT="$repo_root" \
 DW_SERVER_VERSION="${DW_SERVER_VERSION:-unresolved}" \
 DW_CLI_VERSION="${DW_CLI_VERSION:-unresolved}" \
 DW_PYTHON_SDK_VERSION="${DW_PYTHON_SDK_VERSION:-unresolved}" \
@@ -82,6 +92,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -93,6 +113,851 @@ def now() -> str:
 
 def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def env_text(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def env_flag(name: str, default: bool) -> bool:
+    value = env_text(name)
+    if value is None:
+        return default
+    return value.lower() not in {"0", "false", "no", "off"}
+
+
+def log_line(log_file: Path, message: str) -> None:
+    with log_file.open("a", encoding="utf-8") as handle:
+        handle.write(f"{now()} {message}\n")
+
+
+def free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def url_join(base_url: str, path: str) -> str:
+    return base_url.rstrip("/") + "/" + path.lstrip("/")
+
+
+def api_path(*parts: str) -> str:
+    return "/api/" + "/".join(urllib.parse.quote(part, safe="._:-") for part in parts)
+
+
+def http_json(
+    base_url: str,
+    path: str,
+    *,
+    method: str = "GET",
+    body: Any = None,
+    token: str,
+    namespace: str,
+    worker: bool = False,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    data = None
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "X-Namespace": namespace,
+    }
+    if worker:
+        headers["X-Durable-Workflow-Protocol-Version"] = "1.10"
+    else:
+        headers["X-Durable-Workflow-Control-Plane-Version"] = "2"
+
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+
+    request = urllib.request.Request(
+        url_join(base_url, path),
+        data=data,
+        headers=headers,
+        method=method,
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+            return {
+                "status_code": response.status,
+                "body": json.loads(raw) if raw.strip() else {},
+            }
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            body_value = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError:
+            body_value = {"raw": raw}
+        return {
+            "status_code": exc.code,
+            "body": body_value,
+        }
+
+
+def response_sample(response: dict[str, Any]) -> dict[str, Any]:
+    body = response.get("body")
+    if not isinstance(body, dict):
+        body = {}
+
+    sample: dict[str, Any] = {
+        "status_code": response.get("status_code"),
+        "reason": body.get("reason"),
+    }
+
+    for key in (
+        "message",
+        "rejection_reason",
+        "outcome",
+        "command_status",
+        "validation_errors",
+        "errors",
+        "workflow_id",
+        "run_id",
+        "signal_name",
+        "query_name",
+    ):
+        if key in body:
+            sample[key] = body[key]
+
+    return sample
+
+
+def command_contract() -> dict[str, Any]:
+    int_parameter = {
+        "name": "amount",
+        "position": 0,
+        "required": True,
+        "variadic": False,
+        "default_available": False,
+        "default": None,
+        "type": "int",
+        "allows_null": False,
+    }
+    minimum_parameter = dict(int_parameter)
+    minimum_parameter["name"] = "minimum"
+
+    return {
+        "queries": ["count-at-least", "state"],
+        "query_contracts": [
+            {"name": "state", "parameters": []},
+            {"name": "count-at-least", "parameters": [minimum_parameter]},
+        ],
+        "signals": ["increment"],
+        "signal_contracts": [
+            {"name": "increment", "parameters": [int_parameter]},
+        ],
+        "updates": [],
+        "update_contracts": [],
+    }
+
+
+def command_available(command_name: str) -> bool:
+    return shutil.which(command_name) is not None
+
+
+def run_command(
+    command: list[str],
+    *,
+    log_file: Path,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+    timeout: float = 120.0,
+) -> subprocess.CompletedProcess[str]:
+    log_line(log_file, "run " + " ".join(command))
+    completed = subprocess.run(
+        command,
+        cwd=str(cwd) if cwd is not None else None,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+    if completed.stdout:
+        log_line(log_file, "stdout " + completed.stdout.strip())
+    if completed.stderr:
+        log_line(log_file, "stderr " + completed.stderr.strip())
+    return completed
+
+
+def wait_for_ready(base_url: str, log_file: Path, timeout_seconds: float = 90.0) -> None:
+    deadline = time.time() + timeout_seconds
+    last_error = ""
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url_join(base_url, "/api/ready"), timeout=5) as response:
+                if 200 <= response.status < 300:
+                    return
+        except Exception as exc:  # noqa: BLE001 - diagnostic best effort for conformance logs.
+            last_error = f"{type(exc).__name__}: {exc}"
+        time.sleep(1)
+    raise RuntimeError(f"published server did not become ready: {last_error}")
+
+
+def start_published_server(run_root: Path, log_file: Path) -> tuple[str, list[list[str]]]:
+    if not command_available("docker"):
+        raise RuntimeError("docker is required to start the published server")
+
+    compose = Path(os.environ.get("REPO_ROOT", os.getcwd())) / "docker-compose.published.yml"
+    if not compose.is_file():
+        raise RuntimeError(f"published compose file not found: {compose}")
+
+    server_version = artifact_version_value(artifact_versions, "server")
+    if is_placeholder_version(server_version):
+        raise RuntimeError("DW_SERVER_VERSION must be a concrete published server version")
+
+    port = int(env_text("DW_SIGNALS_QUERIES_SERVER_PORT") or free_port())
+    token = env_text("DW_SIGNALS_QUERIES_AUTH_TOKEN") or env_text("DURABLE_WORKFLOW_AUTH_TOKEN") or "dev-token"
+    project = "dw-signals-queries-" + run_root.name.lower().replace(".", "-").replace("_", "-")
+    env = os.environ.copy()
+    env.update(
+        {
+            "SERVER_PORT": str(port),
+            "DW_SERVER_TAG": server_version,
+            "DW_SERVER_IMAGE": env_text("DW_SERVER_IMAGE") or f"durableworkflow/server:{server_version}",
+            "DW_AUTH_TOKEN": token,
+            "DW_AUTH_BACKWARD_COMPATIBLE": "true",
+        }
+    )
+
+    commands = [
+        ["docker", "compose", "-p", project, "-f", str(compose), "down", "-v"],
+        ["docker", "compose", "-p", project, "-f", str(compose), "up", "-d", "--wait", "server"],
+    ]
+
+    run_command(commands[0], log_file=log_file, env=env, timeout=120)
+    up = run_command(commands[1], log_file=log_file, env=env, timeout=240)
+    if up.returncode != 0:
+        raise RuntimeError("docker compose failed to start the published server")
+
+    base_url = f"http://127.0.0.1:{port}"
+    wait_for_ready(base_url, log_file)
+    return base_url, [["docker", "compose", "-p", project, "-f", str(compose), "down", "-v"]]
+
+
+def install_cli(run_root: Path, log_file: Path) -> str:
+    explicit = env_text("DW_SIGNALS_QUERIES_CLI_BIN") or env_text("DW_CLI_BIN")
+    if explicit:
+        if Path(explicit).is_file() and os.access(explicit, os.X_OK):
+            return explicit
+        raise RuntimeError(f"configured CLI binary is not executable: {explicit}")
+
+    cli_version = artifact_version_value(artifact_versions, "cli")
+    if is_placeholder_version(cli_version):
+        raise RuntimeError("DW_CLI_VERSION must be concrete to install the public CLI")
+
+    cli_root = run_root / "cli"
+    bin_dir = cli_root / "bin"
+    cli_root.mkdir(parents=True, exist_ok=True)
+    bin_dir.mkdir(parents=True, exist_ok=True)
+
+    tags = [cli_version]
+    if not cli_version.startswith("v"):
+        tags.append(f"v{cli_version}")
+
+    installer = cli_root / "install.sh"
+    errors: list[str] = []
+    for tag in tags:
+        url = f"https://github.com/durable-workflow/cli/releases/download/{tag}/install.sh"
+        try:
+            with urllib.request.urlopen(url, timeout=30) as response:
+                installer.write_bytes(response.read())
+            break
+        except Exception as exc:  # noqa: BLE001 - try both public tag spellings.
+            errors.append(f"{url}: {type(exc).__name__}: {exc}")
+    else:
+        raise RuntimeError("official CLI installer is not downloadable: " + "; ".join(errors))
+
+    installer.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "VERSION": cli_version,
+            "DURABLE_WORKFLOW_INSTALL_DIR": str(bin_dir),
+            "DURABLE_WORKFLOW_INSTALL_VERIFY_ATTESTATIONS": "0",
+        }
+    )
+    install = run_command(["sh", str(installer)], log_file=log_file, env=env, timeout=180)
+    if install.returncode != 0:
+        raise RuntimeError("official CLI installer failed")
+
+    binary = bin_dir / "dw"
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        raise RuntimeError("official CLI installer did not create an executable dw binary")
+
+    return str(binary)
+
+
+def cli_json_sample(
+    cli_bin: str,
+    base_url: str,
+    token: str,
+    namespace: str,
+    command: list[str],
+    log_file: Path,
+) -> dict[str, Any]:
+    env = os.environ.copy()
+    env.update(
+        {
+            "DURABLE_WORKFLOW_SERVER_URL": base_url,
+            "DURABLE_WORKFLOW_AUTH_TOKEN": token,
+            "DURABLE_WORKFLOW_NAMESPACE": namespace,
+            "DURABLE_WORKFLOW_TLS_VERIFY": "false",
+        }
+    )
+    completed = run_command([cli_bin, *command], log_file=log_file, env=env, timeout=60)
+    output = completed.stdout.strip()
+    decoded: dict[str, Any] = {}
+    if output:
+        try:
+            decoded = json.loads(output)
+        except json.JSONDecodeError:
+            decoded = {"raw_stdout": output}
+
+    return {
+        "command": "dw " + " ".join(command),
+        "exit_code": completed.returncode,
+        "status_code": decoded.get("status_code"),
+        "reason": decoded.get("reason"),
+        "validation_errors": decoded.get("validation_errors"),
+        "server_response": decoded.get("server_response"),
+        "output": decoded,
+    }
+
+
+def ensure_python_sdk(run_root: Path, log_file: Path) -> str:
+    explicit = env_text("DW_SIGNALS_QUERIES_PYTHON")
+    if explicit:
+        return explicit
+
+    sdk_version = artifact_version_value(artifact_versions, "sdk-python")
+    if is_placeholder_version(sdk_version):
+        raise RuntimeError("DW_PYTHON_SDK_VERSION must be concrete to install the public Python SDK")
+
+    venv_dir = run_root / "python-sdk"
+    create = run_command([sys.executable, "-m", "venv", str(venv_dir)], log_file=log_file, timeout=120)
+    if create.returncode != 0:
+        raise RuntimeError("could not create Python SDK virtual environment")
+
+    python_bin = venv_dir / "bin" / "python"
+    pip = run_command([str(python_bin), "-m", "pip", "install", "--upgrade", "pip"], log_file=log_file, timeout=180)
+    if pip.returncode != 0:
+        raise RuntimeError("could not upgrade pip in Python SDK virtual environment")
+
+    install = run_command(
+        [str(python_bin), "-m", "pip", "install", f"durable-workflow=={sdk_version}"],
+        log_file=log_file,
+        timeout=240,
+    )
+    if install.returncode != 0:
+        raise RuntimeError("could not install the public Python SDK artifact")
+
+    return str(python_bin)
+
+
+def sdk_error_sample(
+    python_bin: str,
+    base_url: str,
+    token: str,
+    namespace: str,
+    workflow_id: str,
+    operation: str,
+    name: str,
+    log_file: Path,
+) -> dict[str, Any]:
+    code = r'''
+import asyncio
+import json
+import sys
+
+from durable_workflow import Client, QueryFailed, SignalFailed
+
+base_url, token, namespace, workflow_id, operation, name = sys.argv[1:7]
+
+async def main():
+    async with Client(base_url, token=token, namespace=namespace, timeout=15.0) as client:
+        try:
+            if operation == "signal":
+                await client.signal_workflow(workflow_id, name, args=["bad"])
+            else:
+                await client.query_workflow(workflow_id, name, args=["bad"])
+        except (SignalFailed, QueryFailed) as exc:
+            print(json.dumps({
+                "client": "sdk-python",
+                "exception": type(exc).__name__,
+                "status_code": getattr(exc, "status", None),
+                "reason": getattr(exc, "reason", None),
+                "validation_errors": getattr(exc, "validation_errors", None),
+                "body": getattr(exc, "body", None),
+            }, sort_keys=True))
+            return 0
+
+    print(json.dumps({
+        "client": "sdk-python",
+        "exception": None,
+        "reason": "no_exception",
+    }, sort_keys=True))
+    return 1
+
+raise SystemExit(asyncio.run(main()))
+'''
+    completed = run_command(
+        [python_bin, "-c", code, base_url, token, namespace, workflow_id, operation, name],
+        log_file=log_file,
+        timeout=60,
+    )
+    output = completed.stdout.strip()
+    try:
+        sample = json.loads(output) if output else {}
+    except json.JSONDecodeError:
+        sample = {"raw_stdout": output}
+    sample.setdefault("client", "sdk-python")
+    sample.setdefault("exit_code", completed.returncode)
+    return sample
+
+
+def count_signal_received(events_response: dict[str, Any], signal_name: str) -> int:
+    body = events_response.get("body")
+    if not isinstance(body, dict):
+        return 0
+    events = body.get("events")
+    if not isinstance(events, list):
+        return 0
+
+    count = 0
+    for event in events:
+        if not isinstance(event, dict) or event.get("event_type") != "SignalReceived":
+            continue
+        payload = event.get("payload")
+        if isinstance(payload, dict) and payload.get("signal_name") == signal_name:
+            count += 1
+    return count
+
+
+def answer_next_query_task(
+    base_url: str,
+    token: str,
+    namespace: str,
+    worker_id: str,
+    task_queue: str,
+    result: Any,
+    log_file: Path,
+    holder: dict[str, Any],
+) -> None:
+    try:
+        poll = http_json(
+            base_url,
+            api_path("worker", "query-tasks", "poll"),
+            method="POST",
+            body={
+                "worker_id": worker_id,
+                "task_queue": task_queue,
+                "poll_request_id": f"adversarial-{int(time.time() * 1000)}",
+            },
+            token=token,
+            namespace=namespace,
+            worker=True,
+            timeout=45,
+        )
+        holder["poll"] = poll
+        task = poll.get("body", {}).get("task") if isinstance(poll.get("body"), dict) else None
+        if not isinstance(task, dict):
+            holder["error"] = "query task poll returned no task"
+            return
+
+        complete = http_json(
+            base_url,
+            api_path("worker", "query-tasks", str(task["query_task_id"]), "complete"),
+            method="POST",
+            body={
+                "lease_owner": worker_id,
+                "query_task_attempt": task["query_task_attempt"],
+                "result": result,
+            },
+            token=token,
+            namespace=namespace,
+            worker=True,
+            timeout=15,
+        )
+        holder["complete"] = complete
+    except Exception as exc:  # noqa: BLE001 - captured into conformance evidence.
+        holder["error"] = f"{type(exc).__name__}: {exc}"
+
+
+def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not env_flag("DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE", True):
+        return None, {"skipped": "disabled_by_env"}
+
+    run_root = Path(
+        env_text("DW_SIGNALS_QUERIES_RUN_ROOT")
+        or tempfile.mkdtemp(prefix="dw-signals-queries-adversarial.", dir=str(result_dir))
+    )
+    run_root.mkdir(parents=True, exist_ok=True)
+    log_file = result_dir / "signals-queries-adversarial-probe.log"
+    cleanup_commands: list[list[str]] = []
+
+    namespace = (
+        env_text("DW_SIGNALS_QUERIES_NAMESPACE")
+        or env_text("DURABLE_WORKFLOW_NAMESPACE")
+        or "default"
+    )
+    token = (
+        env_text("DW_SIGNALS_QUERIES_AUTH_TOKEN")
+        or env_text("DURABLE_WORKFLOW_AUTH_TOKEN")
+        or env_text("DW_AUTH_TOKEN")
+        or "dev-token"
+    )
+    base_url = env_text("DW_SIGNALS_QUERIES_SERVER_URL") or env_text("DURABLE_WORKFLOW_SERVER_URL")
+    if (base_url is None or base_url.strip() == "") and current_evidence is not None:
+        for evidence_key in ("server_base_url", "server_url", "base_url"):
+            candidate = evidence_lookup(current_evidence, evidence_key)
+            if isinstance(candidate, str) and candidate.strip() != "":
+                base_url = candidate.strip()
+                break
+
+    try:
+        if not isinstance(base_url, str) or base_url.strip() == "":
+            base_url, cleanup_commands = start_published_server(run_root, log_file)
+        else:
+            base_url = base_url.rstrip("/")
+            wait_for_ready(base_url, log_file, timeout_seconds=30)
+
+        cli_bin = install_cli(run_root, log_file)
+        python_bin = ensure_python_sdk(run_root, log_file)
+
+        workflow_id = "wf-sq-adversarial-" + hashlib.sha1(str(time.time()).encode("utf-8")).hexdigest()[:10]
+        task_queue = "signals-queries-adversarial"
+        worker_id = "signals-queries-adversarial-worker"
+        workflow_type = "conformance.counter"
+
+        register = http_json(
+            base_url,
+            api_path("worker", "register"),
+            method="POST",
+            body={
+                "worker_id": worker_id,
+                "task_queue": task_queue,
+                "runtime": "external",
+                "sdk_version": "signals-queries-adversarial-probe",
+                "supported_workflow_types": [workflow_type],
+                "capabilities": ["query_tasks"],
+                "workflow_command_contracts": {
+                    workflow_type: command_contract(),
+                },
+            },
+            token=token,
+            namespace=namespace,
+            worker=True,
+            timeout=30,
+        )
+        if int(register["status_code"]) >= 400:
+            raise RuntimeError(f"worker registration failed: {register}")
+
+        start = http_json(
+            base_url,
+            api_path("workflows"),
+            method="POST",
+            body={
+                "workflow_id": workflow_id,
+                "workflow_type": workflow_type,
+                "task_queue": task_queue,
+            },
+            token=token,
+            namespace=namespace,
+            timeout=30,
+        )
+        if int(start["status_code"]) >= 400:
+            raise RuntimeError(f"workflow start failed: {start}")
+        run_id = str(start["body"]["run_id"])
+
+        invalid_signal = http_json(
+            base_url,
+            api_path("workflows", workflow_id, "signal", "increment"),
+            method="POST",
+            body={"input": {"amount": "bad"}},
+            token=token,
+            namespace=namespace,
+            timeout=30,
+        )
+        invalid_query = http_json(
+            base_url,
+            api_path("workflows", workflow_id, "query", "count-at-least"),
+            method="POST",
+            body={"input": {"minimum": "bad"}},
+            token=token,
+            namespace=namespace,
+            timeout=30,
+        )
+        unknown_signal = http_json(
+            base_url,
+            api_path("workflows", workflow_id, "signal", "missing"),
+            method="POST",
+            body={},
+            token=token,
+            namespace=namespace,
+            timeout=30,
+        )
+        query_not_found = http_json(
+            base_url,
+            api_path("workflows", workflow_id, "query", "missing"),
+            method="POST",
+            body={},
+            token=token,
+            namespace=namespace,
+            timeout=30,
+        )
+        missing_workflow_signal = http_json(
+            base_url,
+            api_path("workflows", workflow_id + "-missing", "signal", "increment"),
+            method="POST",
+            body={},
+            token=token,
+            namespace=namespace,
+            timeout=30,
+        )
+        missing_workflow_query = http_json(
+            base_url,
+            api_path("workflows", workflow_id + "-missing", "query", "state"),
+            method="POST",
+            body={},
+            token=token,
+            namespace=namespace,
+            timeout=30,
+        )
+
+        cli_invalid_signal = cli_json_sample(
+            cli_bin,
+            base_url,
+            token,
+            namespace,
+            [
+                "workflow:signal",
+                workflow_id,
+                "increment",
+                "--input",
+                '["bad"]',
+                "--output=json",
+            ],
+            log_file,
+        )
+        cli_invalid_query = cli_json_sample(
+            cli_bin,
+            base_url,
+            token,
+            namespace,
+            [
+                "workflow:query",
+                workflow_id,
+                "count-at-least",
+                "--input",
+                '["bad"]',
+                "--output=json",
+            ],
+            log_file,
+        )
+        sdk_invalid_signal = sdk_error_sample(
+            python_bin,
+            base_url,
+            token,
+            namespace,
+            workflow_id,
+            "signal",
+            "increment",
+            log_file,
+        )
+        sdk_invalid_query = sdk_error_sample(
+            python_bin,
+            base_url,
+            token,
+            namespace,
+            workflow_id,
+            "query",
+            "count-at-least",
+            log_file,
+        )
+
+        history = http_json(
+            base_url,
+            api_path("workflows", workflow_id, "runs", run_id, "history") + "?page_size=1000",
+            method="GET",
+            token=token,
+            namespace=namespace,
+            timeout=30,
+        )
+        signal_count = count_signal_received(history, "increment")
+
+        holder: dict[str, Any] = {}
+        responder = threading.Thread(
+            target=answer_next_query_task,
+            args=(base_url, token, namespace, worker_id, task_queue, 0, log_file, holder),
+            daemon=True,
+        )
+        responder.start()
+        time.sleep(0.2)
+        post_error_query = http_json(
+            base_url,
+            api_path("workflows", workflow_id, "query", "state"),
+            method="POST",
+            body={},
+            token=token,
+            namespace=namespace,
+            timeout=45,
+        )
+        responder.join(timeout=10)
+        if responder.is_alive() or holder.get("error"):
+            raise RuntimeError(f"query responder failed: {holder.get('error', 'timeout')}")
+
+        post_error_result = (
+            post_error_query.get("body", {}).get("result")
+            if isinstance(post_error_query.get("body"), dict)
+            else None
+        )
+        query_state_mutations = 0 if post_error_result == 0 else 1
+
+        versions = {
+            "server": artifact_version_value(artifact_versions, "server"),
+            "cli": artifact_version_value(artifact_versions, "cli"),
+            "sdk-python": artifact_version_value(artifact_versions, "sdk-python"),
+            "workflow-php": artifact_version_value(artifact_versions, "workflow-php"),
+            "waterline": artifact_version_value(artifact_versions, "waterline"),
+        }
+        sources = {
+            "server": "published_docker_image" if cleanup_commands else "published_server_endpoint",
+            "cli": "published_cli_release",
+            "sdk-python": "published_pypi_package",
+            "workflow-php": "published_composer_package",
+            "waterline": "published_waterline_artifact",
+        }
+
+        malformed_outputs = {
+            "invalid_signal_arguments": response_sample(invalid_signal),
+            "invalid_query_arguments": response_sample(invalid_query),
+            "invalid_signal_arguments_context": {
+                "workflow_id": workflow_id,
+                "run_id": run_id,
+                "signal_name": "increment",
+                "field": "amount",
+                "artifact_versions": versions,
+                "artifact_sources": sources,
+            },
+            "invalid_query_arguments_context": {
+                "workflow_id": workflow_id,
+                "run_id": run_id,
+                "query_name": "count-at-least",
+                "field": "minimum",
+                "artifact_versions": versions,
+                "artifact_sources": sources,
+            },
+            "signal_handler_invocation_count_after_invalid_payload": signal_count,
+            "query_state_mutation_count_after_invalid_payload": query_state_mutations,
+            "post_error_valid_query_result": post_error_result,
+            "cli_invalid_signal_arguments_sample": cli_invalid_signal,
+            "cli_invalid_query_arguments_sample": cli_invalid_query,
+            "sdk_python_invalid_signal_arguments_sample": sdk_invalid_signal,
+            "sdk_python_invalid_query_arguments_sample": sdk_invalid_query,
+            "published_artifact_versions": versions,
+            "artifact_sources": sources,
+        }
+        unknown_outputs = {
+            "unknown_signal": response_sample(unknown_signal),
+            "missing_workflow_signal": response_sample(missing_workflow_signal),
+            "missing_workflow_query": response_sample(missing_workflow_query),
+            "query_not_found": response_sample(query_not_found),
+            "rejected_unknown_query": response_sample(query_not_found),
+            "published_artifact_versions": versions,
+            "artifact_sources": sources,
+        }
+
+        evidence = {
+            "artifact_versions": versions,
+            "scenario_results": {
+                "unknown_signal_and_query_errors": {
+                    "status": "pass",
+                    "observed_outputs": unknown_outputs,
+                },
+                "malformed_signal_and_query_payloads": {
+                    "status": "pass",
+                    "observed_outputs": malformed_outputs,
+                },
+            },
+        }
+        descriptor = {
+            "file": log_file.name,
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "server_base_url": base_url,
+            "generated_scenarios": [
+                "unknown_signal_and_query_errors",
+                "malformed_signal_and_query_payloads",
+            ],
+        }
+        return evidence, descriptor
+    except Exception as exc:  # noqa: BLE001 - failed probe becomes uncovered evidence.
+        log_line(log_file, f"adversarial probe failed: {type(exc).__name__}: {exc}")
+        return None, {
+            "file": log_file.name,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+    finally:
+        for command in cleanup_commands:
+            run_command(command, log_file=log_file, timeout=120)
+        if not env_flag("DW_SIGNALS_QUERIES_KEEP_RUN_ROOT", False):
+            shutil.rmtree(run_root, ignore_errors=True)
+
+
+def merge_probe_evidence(base: Any, probe: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(base, dict):
+        return dict(probe)
+
+    merged = dict(base)
+    for field in ("artifact_versions", "artifactVersions", "published_artifact_versions", "publishedArtifactVersions"):
+        if field not in merged and field in probe:
+            merged[field] = probe[field]
+
+    probe_results = probe.get("scenario_results")
+    if not isinstance(probe_results, dict):
+        return merged
+
+    existing = merged.get("scenario_results")
+    if isinstance(existing, dict):
+        existing = dict(existing)
+        existing.update(probe_results)
+        merged["scenario_results"] = existing
+    elif isinstance(existing, list):
+        existing = list(existing)
+        for scenario_id, scenario_result in probe_results.items():
+            item = dict(scenario_result)
+            item.setdefault("scenario_id", scenario_id)
+            replaced = False
+            for index, existing_item in enumerate(existing):
+                if not isinstance(existing_item, dict):
+                    continue
+                existing_scenario = (
+                    existing_item.get("scenario_id")
+                    or existing_item.get("scenario")
+                    or existing_item.get("id")
+                )
+                if existing_scenario != scenario_id:
+                    continue
+                existing[index] = item
+                replaced = True
+                break
+            if replaced:
+                continue
+            existing.append(item)
+        merged["scenario_results"] = existing
+    else:
+        merged["scenario_results"] = probe_results
+
+    return merged
 
 
 MISSING = object()
@@ -233,9 +1098,10 @@ def is_placeholder_version(version: str) -> bool:
 
 
 def artifact_versions_pinned() -> bool:
-    required = ("server", "cli", "sdk-python", "workflow-php", "waterline")
-    return all(not is_placeholder_version(str(artifact_versions.get(artifact, ""))) for artifact in required)
+    return all(not is_placeholder_version(str(artifact_versions.get(artifact, ""))) for artifact in REQUIRED_INSTALL_ARTIFACTS)
 
+
+REQUIRED_INSTALL_ARTIFACTS = ("server", "cli", "sdk-python", "workflow-php", "waterline")
 
 ARTIFACT_VERSION_ALIASES: dict[str, list[str]] = {
     "workflow-php": ["workflow-php", "workflow_php", "workflow"],
@@ -254,6 +1120,17 @@ ARTIFACT_VERSION_FIELDS = (
 def artifact_version_value(versions: dict[str, Any], artifact: str) -> str:
     for key in ARTIFACT_VERSION_ALIASES.get(artifact, [artifact]):
         value = versions.get(key)
+        if value is None:
+            continue
+        normalized = str(value).strip()
+        if normalized:
+            return normalized
+    return ""
+
+
+def artifact_source_value(sources: dict[str, Any], artifact: str) -> str:
+    for key in ARTIFACT_VERSION_ALIASES.get(artifact, [artifact]):
+        value = sources.get(key)
         if value is None:
             continue
         normalized = str(value).strip()
@@ -297,7 +1174,7 @@ def declared_artifact_version_maps(value: Any) -> list[dict[str, Any]]:
 
 def artifact_version_mismatches(versions: dict[str, Any]) -> dict[str, dict[str, str]]:
     mismatched: dict[str, dict[str, str]] = {}
-    for artifact in ("server", "cli", "sdk-python", "workflow-php", "waterline"):
+    for artifact in REQUIRED_INSTALL_ARTIFACTS:
         expected = artifact_version_value(artifact_versions, artifact)
         actual = artifact_version_value(versions, artifact)
         if expected and actual and expected != actual:
@@ -305,16 +1182,24 @@ def artifact_version_mismatches(versions: dict[str, Any]) -> dict[str, dict[str,
     return mismatched
 
 
-def smoke_artifact_version_mismatches() -> dict[str, dict[str, str]]:
+def evidence_artifact_version_mismatches(value: Any) -> dict[str, dict[str, str]]:
     mismatched: dict[str, dict[str, str]] = {}
-    for versions in declared_artifact_version_maps(smoke_evidence):
+    for versions in declared_artifact_version_maps(value):
         for artifact, mismatch in artifact_version_mismatches(versions).items():
             mismatched.setdefault(artifact, mismatch)
     return mismatched
 
 
+def smoke_artifact_version_mismatches() -> dict[str, dict[str, str]]:
+    return evidence_artifact_version_mismatches(smoke_evidence)
+
+
+def evidence_matches_current_tuple(value: Any) -> bool:
+    return evidence_artifact_version_mismatches(value) == {}
+
+
 def smoke_evidence_matches_current_tuple() -> bool:
-    return smoke_artifact_version_mismatches() == {}
+    return evidence_matches_current_tuple(smoke_evidence)
 
 
 def candidate_artifact_versions(candidate: dict[str, Any], observed: dict[str, Any]) -> dict[str, Any]:
@@ -552,6 +1437,40 @@ def status_code_in_range(observed: dict[str, Any], key: str, minimum: int, maxim
     return status is not None and minimum <= status <= maximum
 
 
+def artifact_sources_from_outputs(observed: dict[str, Any]) -> dict[str, Any]:
+    for field in ARTIFACT_SOURCE_FIELDS:
+        sources = observed.get(field)
+        if isinstance(sources, dict):
+            return sources
+
+    return {}
+
+
+def install_outputs_cover_required_artifacts(observed: dict[str, Any]) -> bool:
+    versions = declared_artifact_versions(observed)
+    sources = artifact_sources_from_outputs(observed)
+    if not versions or not sources:
+        return False
+    if not any(
+        isinstance(observed.get(field), dict) and observed.get(field)
+        for field in ("published_artifact_versions", "publishedArtifactVersions")
+    ):
+        return False
+
+    if evidence_source_policy_violations({"artifact_sources": sources}):
+        return False
+
+    for artifact in REQUIRED_INSTALL_ARTIFACTS:
+        version = artifact_version_value(versions, artifact)
+        source = artifact_source_value(sources, artifact)
+        if version == "" or is_placeholder_version(version):
+            return False
+        if source == "" or is_forbidden_artifact_source(source):
+            return False
+
+    return True
+
+
 def timestamp_seconds(value: Any) -> float | None:
     if not isinstance(value, str) or value.strip() == "":
         return None
@@ -578,8 +1497,8 @@ def timestamps_in_order(observed: dict[str, Any], orders: list[tuple[str, str, s
 
 
 def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
-    if scenario == "published_artifact_install_only" and not artifact_versions_pinned():
-        return False
+    if scenario == "published_artifact_install_only":
+        return artifact_versions_pinned() and install_outputs_cover_required_artifacts(observed)
 
     if scenario == "ordered_signal_delivery":
         rapid_inputs = evidence_lookup(observed, "rapid_increment_inputs")
@@ -656,6 +1575,34 @@ def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
             and status_code_in_range(observed, "invalid_query_arguments.status_code", 422, 422)
             and evidence_lookup(observed, "invalid_signal_arguments.reason") == "invalid_signal_arguments"
             and evidence_lookup(observed, "invalid_query_arguments.reason") == "invalid_query_arguments"
+            and status_code_in_range(observed, "cli_invalid_signal_arguments_sample.status_code", 422, 422)
+            and status_code_in_range(observed, "cli_invalid_query_arguments_sample.status_code", 422, 422)
+            and evidence_lookup(
+                observed,
+                "cli_invalid_signal_arguments_sample.reason",
+            ) == "invalid_signal_arguments"
+            and evidence_lookup(
+                observed,
+                "cli_invalid_query_arguments_sample.reason",
+            ) == "invalid_query_arguments"
+            and status_code_in_range(observed, "sdk_python_invalid_signal_arguments_sample.status_code", 422, 422)
+            and status_code_in_range(observed, "sdk_python_invalid_query_arguments_sample.status_code", 422, 422)
+            and evidence_lookup(
+                observed,
+                "sdk_python_invalid_signal_arguments_sample.reason",
+            ) == "invalid_signal_arguments"
+            and evidence_lookup(
+                observed,
+                "sdk_python_invalid_query_arguments_sample.reason",
+            ) == "invalid_query_arguments"
+            and evidence_lookup(
+                observed,
+                "sdk_python_invalid_signal_arguments_sample.exception",
+            ) == "SignalFailed"
+            and evidence_lookup(
+                observed,
+                "sdk_python_invalid_query_arguments_sample.exception",
+            ) == "QueryFailed"
             and integer_value(evidence_lookup(
                 observed,
                 "signal_handler_invocation_count_after_invalid_payload",
@@ -689,17 +1636,17 @@ def scenario_result_items(raw: Any) -> list[dict[str, Any]]:
     return []
 
 
-def scenario_evidence_candidate(scenario: str) -> dict[str, Any] | None:
-    if not isinstance(smoke_evidence, dict):
+def scenario_evidence_candidate_from(evidence: Any, scenario: str) -> dict[str, Any] | None:
+    if not isinstance(evidence, dict):
         return None
 
     for field in ("scenario_results", "scenarioResults"):
-        for item in scenario_result_items(smoke_evidence.get(field)):
+        for item in scenario_result_items(evidence.get(field)):
             candidate_scenario = item.get("scenario_id") or item.get("scenario") or item.get("id")
             if candidate_scenario == scenario:
                 return item
 
-    direct = smoke_evidence.get(scenario)
+    direct = evidence.get(scenario)
     if isinstance(direct, dict):
         return direct
 
@@ -709,7 +1656,7 @@ def scenario_evidence_candidate(scenario: str) -> dict[str, Any] | None:
         "adversarial_errors",
         "waterline_observer_comparison",
     ):
-        section_value = smoke_evidence.get(section)
+        section_value = evidence.get(section)
         if not isinstance(section_value, dict):
             continue
 
@@ -723,6 +1670,10 @@ def scenario_evidence_candidate(scenario: str) -> dict[str, Any] | None:
                 return item
 
     return None
+
+
+def scenario_evidence_candidate(scenario: str) -> dict[str, Any] | None:
+    return scenario_evidence_candidate_from(smoke_evidence, scenario)
 
 
 def scenario_status(candidate: dict[str, Any]) -> str:
@@ -757,6 +1708,40 @@ def scenario_observed_outputs(candidate: dict[str, Any]) -> dict[str, Any]:
         for key, value in candidate.items()
         if key not in metadata_fields
     }
+
+
+def explicit_install_observed_outputs(evidence: Any) -> dict[str, Any]:
+    candidate = scenario_evidence_candidate_from(evidence, "published_artifact_install_only")
+    if candidate is not None:
+        return scenario_observed_outputs(candidate)
+
+    if not isinstance(evidence, dict):
+        return {}
+
+    outputs: dict[str, Any] = {}
+    for field in ARTIFACT_VERSION_FIELDS:
+        versions = evidence.get(field)
+        if isinstance(versions, dict):
+            outputs["published_artifact_versions"] = versions
+            break
+
+    for field in ARTIFACT_SOURCE_FIELDS:
+        sources = evidence.get(field)
+        if isinstance(sources, dict):
+            outputs["artifact_sources"] = sources
+            break
+
+    for field in (
+        "artifact_install_evidence",
+        "artifactInstallEvidence",
+        "artifact_source_verification",
+        "artifactSourceVerification",
+    ):
+        install_evidence = evidence.get(field)
+        if isinstance(install_evidence, dict):
+            outputs[field] = install_evidence
+
+    return outputs
 
 
 def scenario_linked_findings(candidate: dict[str, Any]) -> list[Any]:
@@ -824,6 +1809,7 @@ smoke_path = os.environ.get("DW_SIGNALS_QUERIES_EVIDENCE", "") or os.environ.get
     "",
 )
 smoke_evidence: Any = None
+external_smoke_evidence: Any = None
 smoke_descriptor: dict[str, Any] | None = None
 if smoke_path:
     candidate = Path(smoke_path)
@@ -835,8 +1821,20 @@ if smoke_path:
         }
         try:
             smoke_evidence = json.loads(raw.decode("utf-8"))
+            external_smoke_evidence = smoke_evidence
         except Exception as exc:
             smoke_descriptor["decode_error"] = f"{type(exc).__name__}: {exc}"
+
+probe_evidence, probe_descriptor = run_adversarial_probe(result_dir, smoke_evidence)
+if probe_evidence is not None:
+    smoke_evidence = merge_probe_evidence(smoke_evidence, probe_evidence)
+    if smoke_descriptor is None:
+        smoke_descriptor = {}
+    smoke_descriptor["adversarial_probe"] = probe_descriptor
+elif probe_descriptor is not None:
+    if smoke_descriptor is None:
+        smoke_descriptor = {}
+    smoke_descriptor["adversarial_probe"] = probe_descriptor
 
 required_scenarios = [
     "published_artifact_install_only",
@@ -992,11 +1990,23 @@ smoke_tuple_matches = smoke_evidence_matches_current_tuple()
 smoke_tuple_mismatches = smoke_artifact_version_mismatches()
 smoke_source_policy_violations = evidence_source_policy_violations(smoke_evidence)
 smoke_source_policy_ok = smoke_source_policy_violations == []
+external_smoke_attached = external_smoke_evidence is not None
+external_smoke_tuple_matches = evidence_matches_current_tuple(external_smoke_evidence)
+external_smoke_source_policy_violations = evidence_source_policy_violations(external_smoke_evidence)
+external_smoke_source_policy_ok = external_smoke_source_policy_violations == []
+install_evidence_outputs = explicit_install_observed_outputs(external_smoke_evidence)
 if smoke_descriptor is not None and smoke_tuple_mismatches:
     smoke_descriptor["artifact_version_mismatches"] = smoke_tuple_mismatches
 if smoke_descriptor is not None and smoke_source_policy_violations:
     smoke_descriptor["artifact_source_policy_violations"] = smoke_source_policy_violations
-install_evidence_pass = smoke_attached and smoke_tuple_matches and smoke_source_policy_ok and artifact_versions_pinned()
+if smoke_descriptor is not None and external_smoke_source_policy_violations:
+    smoke_descriptor["external_artifact_source_policy_violations"] = external_smoke_source_policy_violations
+install_evidence_pass = (
+    external_smoke_attached
+    and external_smoke_tuple_matches
+    and external_smoke_source_policy_ok
+    and has_required_evidence("published_artifact_install_only", install_evidence_outputs)
+)
 python_smoke_pass = smoke_attached and smoke_tuple_matches and smoke_source_policy_ok and exact_python_smoke_present()
 ordered_delivery_pass = smoke_attached and smoke_tuple_matches and smoke_source_policy_ok and exact_ordered_delivery_smoke_present()
 scenario_results: dict[str, dict[str, Any]] = {}
@@ -1013,17 +2023,19 @@ for scenario in required_scenarios:
         status = str(result["status"])
     elif install_evidence_pass and scenario == "published_artifact_install_only":
         status = "pass"
-        observed = {
-            "published_artifact_versions": artifact_versions,
-            "artifact_sources": {
+        observed = dict(install_evidence_outputs)
+        observed.setdefault("published_artifact_versions", artifact_versions)
+        observed.setdefault(
+            "artifact_sources",
+            {
                 "server": "published_docker_image",
                 "cli": "published_cli_release",
                 "sdk-python": "published_pypi_package",
                 "workflow-php": "published_composer_package",
                 "waterline": "published_waterline_artifact",
             },
-            "external_smoke_evidence": smoke_descriptor,
-        }
+        )
+        observed["external_smoke_evidence"] = smoke_descriptor
         result = {
             "scenario_id": scenario,
             "status": status,
