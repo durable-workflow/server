@@ -87,6 +87,19 @@ mapped_protocol_version() {
     '
 }
 
+mapped_tag_commit() {
+    tag="$1"
+
+    if [ -z "${WORKFLOW_PACKAGE_TAG_COMMITS:-}" ]; then
+        return 0
+    fi
+
+    printf '%s\n' "$WORKFLOW_PACKAGE_TAG_COMMITS" | awk -v tag="$tag" '
+        BEGIN { FS = "[=[:space:]]+" }
+        $1 == tag && $2 != "" { print $2; exit }
+    '
+}
+
 ensure_git_workdir() {
     if [ -n "$tmp_dir" ]; then
         return
@@ -95,6 +108,21 @@ ensure_git_workdir() {
     tmp_dir="$(mktemp -d)"
     git -C "$tmp_dir" init -q
     git -C "$tmp_dir" remote add origin "$workflow_source"
+}
+
+ensure_tag_fetched() {
+    tag="$1"
+
+    ensure_git_workdir
+
+    if git -C "$tmp_dir" rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1; then
+        return
+    fi
+
+    if ! git -C "$tmp_dir" fetch -q --depth=1 origin "refs/tags/${tag}:refs/tags/${tag}" 2>/tmp/workflow-package-fetch.err; then
+        error_detail="$(cat /tmp/workflow-package-fetch.err 2>/dev/null || true)"
+        fail "Workflow package tag unavailable" "Cannot fetch durable-workflow/workflow tag ${tag} from ${workflow_source}. ${error_detail}"
+    fi
 }
 
 fetch_protocol_version() {
@@ -106,12 +134,7 @@ fetch_protocol_version() {
         return
     fi
 
-    ensure_git_workdir
-
-    if ! git -C "$tmp_dir" fetch -q --depth=1 origin "refs/tags/${tag}:refs/tags/${tag}" 2>/tmp/workflow-package-fetch.err; then
-        error_detail="$(cat /tmp/workflow-package-fetch.err 2>/dev/null || true)"
-        fail "Workflow package tag unavailable" "Cannot fetch durable-workflow/workflow tag ${tag} from ${workflow_source}. ${error_detail}"
-    fi
+    ensure_tag_fetched "$tag"
 
     if ! source_file="$(git -C "$tmp_dir" show "${tag}:${workflow_protocol_file}" 2>/tmp/workflow-package-protocol.err)"; then
         error_detail="$(cat /tmp/workflow-package-protocol.err 2>/dev/null || true)"
@@ -125,6 +148,25 @@ fetch_protocol_version() {
     fi
 
     printf '%s\n' "$version"
+}
+
+fetch_tag_commit() {
+    tag="$1"
+    mapped="$(mapped_tag_commit "$tag")"
+
+    if [ -n "$mapped" ]; then
+        printf '%s\n' "$mapped"
+        return
+    fi
+
+    ensure_tag_fetched "$tag"
+
+    if ! commit="$(git -C "$tmp_dir" rev-parse "${tag}^{commit}" 2>/tmp/workflow-package-commit.err)"; then
+        error_detail="$(cat /tmp/workflow-package-commit.err 2>/dev/null || true)"
+        fail "Workflow package commit unavailable" "Cannot resolve commit for durable-workflow/workflow tag ${tag}. ${error_detail}"
+    fi
+
+    printf '%s\n' "$commit"
 }
 
 if [ ! -f "$server_protocol_file" ]; then
@@ -167,8 +209,11 @@ if [ -z "$selected_tag" ]; then
     fail "Compatible workflow package unavailable" "No compatible durable-workflow/workflow prerelease tag found for server worker protocol ${server_protocol}. Checked: ${checked}."
 fi
 
+selected_commit="$(fetch_tag_commit "$selected_tag")"
+
 write_output "tag" "$selected_tag"
 write_output "protocol" "$selected_protocol"
 write_output "server_protocol" "$server_protocol"
+write_output "commit" "$selected_commit"
 
-printf 'Using workflow package version: %s (worker protocol %s, server requires %s)\n' "$selected_tag" "$selected_protocol" "$server_protocol"
+printf 'Using workflow package version: %s (worker protocol %s, server requires %s) at commit %s\n' "$selected_tag" "$selected_protocol" "$server_protocol" "$selected_commit"

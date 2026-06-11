@@ -239,10 +239,12 @@ The long-running `server`, `worker`, and `scheduler` services each pin
 `DW_SERVER_TOPOLOGY_SHAPE` and `DW_SERVER_PROCESS_CLASS` so
 `GET /api/cluster/info` reports the role class you actually launched during
 local split-role testing.
-The image build fetches the `durable-workflow/workflow` `2.0.0-alpha.200`
-package source by default so `docker compose up --build` works from a clean checkout. Override
-`WORKFLOW_PACKAGE_SOURCE` or `WORKFLOW_PACKAGE_REF` if you need a different
-package remote or ref during image builds.
+The local compose files pass `WORKFLOW_PACKAGE_REF=2.0.0-alpha.202`, matching
+the Dockerfile fallback, so `docker compose up --build` works from a clean
+checkout with Composer metadata aligned to the embedded workflow package.
+Override `WORKFLOW_PACKAGE_SOURCE`, `WORKFLOW_PACKAGE_REF`, or
+`WORKFLOW_PACKAGE_COMMIT` if you need a different package remote, tag, or
+commit guard during image builds.
 
 ### Using the CLI
 
@@ -1124,11 +1126,13 @@ docker run --rm -p 8080:8080 \
   durable-workflow-server
 ```
 
-The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.200` tag
-into the build and satisfies the app's Composer path repository from that source. Use
-`--build-arg WORKFLOW_PACKAGE_SOURCE=...` and
-`--build-arg WORKFLOW_PACKAGE_REF=...` to point the image build at another
-remote or ref when needed.
+The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.202` tag
+into the build by default and refreshes the Composer package metadata from that
+source before installing production dependencies. Use
+`--build-arg WORKFLOW_PACKAGE_SOURCE=...`,
+`--build-arg WORKFLOW_PACKAGE_REF=...`, and
+`--build-arg WORKFLOW_PACKAGE_COMMIT=...` to point the image build at another
+remote or ref, and optionally require the resolved commit to match.
 
 The production image defaults to `DB_CONNECTION=sqlite`,
 `DB_DATABASE=/app/database/database.sqlite`, `QUEUE_CONNECTION=database`, and

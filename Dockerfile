@@ -16,7 +16,7 @@ WORKDIR /app
 
 # ── Workflow package source ──────────────────────────────────────────
 #
-# This stage resolves the laravel-workflow/laravel-workflow package source.
+# This stage resolves the durable-workflow/workflow package source.
 #
 # Default: clones from git. Set WORKFLOW_PACKAGE_COMMIT to a full SHA to
 # verify the resolved commit matches (build fails on mismatch).
@@ -33,7 +33,7 @@ WORKDIR /app
 FROM composer:2 AS workflow-source
 
 ARG WORKFLOW_PACKAGE_SOURCE=https://github.com/durable-workflow/workflow.git
-ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.200
+ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.202
 ARG WORKFLOW_PACKAGE_COMMIT=
 
 RUN git clone --depth 1 --branch "${WORKFLOW_PACKAGE_REF}" "${WORKFLOW_PACKAGE_SOURCE}" /workflow \
@@ -50,18 +50,29 @@ RUN git clone --depth 1 --branch "${WORKFLOW_PACKAGE_REF}" "${WORKFLOW_PACKAGE_S
 # ── Dependencies ──────────────────────────────────────────────────────
 FROM base AS vendor
 
+ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.202
+ARG WORKFLOW_PACKAGE_COMMIT=
+
 COPY --from=workflow-source /workflow /workflow
 COPY composer.json composer.lock ./
-RUN composer install --no-dev --no-scripts --no-autoloader --prefer-dist
+COPY scripts/ci/prepare-release-workflow-composer-metadata.php scripts/ci/prepare-release-workflow-composer-metadata.php
+RUN php scripts/ci/prepare-release-workflow-composer-metadata.php \
+    && composer update durable-workflow/workflow --no-dev --no-scripts --no-autoloader --prefer-dist --no-interaction --no-progress \
+    && cp composer.json /tmp/release-composer.json \
+    && cp composer.lock /tmp/release-composer.lock
 
 COPY . .
-RUN composer dump-autoload --optimize
+RUN cp /tmp/release-composer.json composer.json \
+    && cp /tmp/release-composer.lock composer.lock \
+    && rm -f /tmp/release-composer.json /tmp/release-composer.lock \
+    && composer dump-autoload --optimize
 
 # ── Production image ─────────────────────────────────────────────────
 FROM base AS production
 
 ARG WORKFLOW_PACKAGE_SOURCE=https://github.com/durable-workflow/workflow.git
-ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.200
+ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.202
+ARG WORKFLOW_PACKAGE_COMMIT=
 
 COPY --from=vendor /app /app
 COPY --from=workflow-source /workflow/.package-provenance /app/.package-provenance
@@ -88,7 +99,8 @@ RUN php artisan route:cache \
 LABEL org.opencontainers.image.title="Durable Workflow Server" \
       org.opencontainers.image.description="Standalone Durable Workflow server" \
       dev.durable-workflow.package.source="${WORKFLOW_PACKAGE_SOURCE}" \
-      dev.durable-workflow.package.ref="${WORKFLOW_PACKAGE_REF}"
+      dev.durable-workflow.package.ref="${WORKFLOW_PACKAGE_REF}" \
+      dev.durable-workflow.package.commit="${WORKFLOW_PACKAGE_COMMIT}"
 
 EXPOSE 8080
 

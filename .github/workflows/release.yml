@@ -82,6 +82,9 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+            dev.durable-workflow.workflow.package=durable-workflow/workflow
+            dev.durable-workflow.workflow.version=${{ steps.workflow.outputs.tag }}
+            dev.durable-workflow.workflow.commit=${{ steps.workflow.outputs.commit }}
 
       - name: Build and push exact image tags
         id: build
@@ -97,6 +100,7 @@ jobs:
           provenance: false
           build-args: |
             WORKFLOW_PACKAGE_REF=${{ steps.workflow.outputs.tag }}
+            WORKFLOW_PACKAGE_COMMIT=${{ steps.workflow.outputs.commit }}
 
       - name: Resolve rolling image aliases
         id: rolling
@@ -136,6 +140,8 @@ jobs:
           RELEASE_COMMIT: ${{ github.sha }}
           RELEASE_RUN_ID: ${{ github.run_id }}
           RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.tag }}
+          WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
         run: scripts/ci/write-release-image-publish-evidence.sh
 
       - name: Upload release image publish evidence

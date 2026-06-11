@@ -17,6 +17,10 @@ image_digest="${IMAGE_DIGEST:-}"
 release_commit="${RELEASE_COMMIT:-}"
 run_id="${RELEASE_RUN_ID:-}"
 run_attempt="${RELEASE_RUN_ATTEMPT:-}"
+workflow_package_name="${WORKFLOW_PACKAGE_NAME:-durable-workflow/workflow}"
+workflow_package_source="${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}"
+workflow_package_ref="${WORKFLOW_PACKAGE_REF:-}"
+workflow_package_commit="${WORKFLOW_PACKAGE_COMMIT:-}"
 reason=""
 
 json_escape() {
@@ -56,6 +60,18 @@ write_string_array() {
         done
     fi
     printf ']'
+}
+
+write_artifact_versions() {
+    printf '{"server": '
+    json_string "${dockerhub_image}:${release_tag}"
+
+    if [ -n "$workflow_package_ref" ]; then
+        printf ', "workflow-php": '
+        json_string "${workflow_package_name}:${workflow_package_ref}"
+    fi
+
+    printf '}'
 }
 
 status="$rolling_status"
@@ -108,7 +124,13 @@ fi
     printf '  "commit": '; json_string_or_null "$release_commit"; printf ',\n'
     printf '  "run_id": '; json_string_or_null "$run_id"; printf ',\n'
     printf '  "run_attempt": '; json_string_or_null "$run_attempt"; printf ',\n'
-    printf '  "artifact_versions": {"server": '; json_string "${dockerhub_image}:${release_tag}"; printf '},\n'
+    printf '  "artifact_versions": '; write_artifact_versions; printf ',\n'
+    printf '  "workflow_package": {\n'
+    printf '    "name": '; json_string "$workflow_package_name"; printf ',\n'
+    printf '    "source": '; json_string_or_null "$workflow_package_source"; printf ',\n'
+    printf '    "version": '; json_string_or_null "$workflow_package_ref"; printf ',\n'
+    printf '    "commit": '; json_string_or_null "$workflow_package_commit"; printf '\n'
+    printf '  },\n'
     printf '  "exact_refs": '; write_string_array "$exact_refs"; printf ',\n'
     printf '  "digest": '; json_string_or_null "$image_digest"; printf ',\n'
     printf '  "rolling": {\n'

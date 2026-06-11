@@ -6,7 +6,7 @@ x-server-build: &server-build
   context: .
   args:
     WORKFLOW_PACKAGE_SOURCE: ${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}
-    WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.200}
+    WORKFLOW_PACKAGE_REF: ${WORKFLOW_PACKAGE_REF:-2.0.0-alpha.202}
     WORKFLOW_PACKAGE_COMMIT: ${WORKFLOW_PACKAGE_COMMIT:-}
 
 x-server-environment: &server-environment
