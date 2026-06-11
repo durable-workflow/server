@@ -198,6 +198,12 @@ class HeartbeatRuntimeContractTest extends TestCase
         );
         $this->assertContains('runner_blocked_false_for_product_evidence', $resultGate['pass_requires']);
         $this->assertContains('artifact_sources_are_recognized_published_channels', $resultGate['pass_requires']);
+        $this->assertContains('stale_worker_routing_reports_zero_claims', $resultGate['pass_requires']);
+        $this->assertContains(
+            'adversarial_heartbeat_rejections_are_4xx_typed_and_not_persisted',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains('cross_namespace_isolation_reports_zero_leaks', $resultGate['pass_requires']);
         $this->assertTrue($resultGate['artifact_version_policy']['requires_recognized_published_artifact_sources']);
         $this->assertContains('smoke_only_results_remain_non_passing', $resultGate['pass_requires']);
         $this->assertSame('non_passing', $resultGate['smoke_subset_outcome']);
@@ -262,6 +268,75 @@ class HeartbeatRuntimeContractTest extends TestCase
         $this->assertSame([], $evaluation['missing_scenarios']);
         $this->assertSame([], $evaluation['non_pass_scenarios']);
         $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_result_gate_rejects_literal_observed_runtime_evidence(): void
+    {
+        $result = $this->completeHeartbeatResult();
+        foreach ($result['scenario_results'] as $scenarioId => $scenarioResult) {
+            foreach (array_keys($scenarioResult['observed_outputs']) as $field) {
+                $result['scenario_results'][$scenarioId]['observed_outputs'][$field] = 'observed';
+            }
+        }
+        $result['local_product_source_checkouts_used'] = false;
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['local_product_source_checkouts_used'] = false;
+        foreach (['php_sdk_heartbeat_loop', 'python_sdk_heartbeat_loop', 'rust_sdk_heartbeat_loop'] as $scenarioId) {
+            $result['scenario_results'][$scenarioId]['observed_outputs']['local_product_source_checkouts_used'] = false;
+        }
+
+        $evaluation = HeartbeatRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('sdk_heartbeat_loop_missing_successive_timestamps', $failureCodes);
+        $this->assertContains('stale_worker_routing_claims_not_zero', $failureCodes);
+        $this->assertContains('heartbeat_rejection_status_not_4xx', $failureCodes);
+        $this->assertContains('cross_namespace_worker_leak_count_not_zero', $failureCodes);
+    }
+
+    public function test_result_gate_rejects_stale_worker_routing_claims_after_stale(): void
+    {
+        $result = $this->completeHeartbeatResult();
+        $result['scenario_results']['stale_worker_routing_exclusion']['observed_outputs']['stale_worker_claim_count'] = 2;
+
+        $evaluation = HeartbeatRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'stale_worker_routing_claims_not_zero'
+                && ($failure['value'] ?? null) === 2,
+        ));
+    }
+
+    public function test_result_gate_rejects_successful_or_untyped_heartbeat_rejections(): void
+    {
+        $result = $this->completeHeartbeatResult();
+        $result['scenario_results']['malformed_heartbeat_rejection']['observed_outputs']['status'] = 200;
+        $result['scenario_results']['malformed_heartbeat_rejection']['observed_outputs']['typed_error'] = 'observed';
+        $result['scenario_results']['unregistered_heartbeat_rejection']['observed_outputs']['persisted'] = true;
+
+        $evaluation = HeartbeatRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('heartbeat_rejection_status_not_4xx', $failureCodes);
+        $this->assertContains('heartbeat_rejection_missing_typed_error', $failureCodes);
+        $this->assertContains('heartbeat_rejection_persisted', $failureCodes);
+    }
+
+    public function test_result_gate_rejects_cross_namespace_worker_leakage(): void
+    {
+        $result = $this->completeHeartbeatResult();
+        $result['scenario_results']['cross_namespace_isolation']['observed_outputs']['leak_count'] = 1;
+        $result['scenario_results']['cross_namespace_isolation']['observed_outputs']['worker_list_b'][] = 'tenant-a-php-worker';
+
+        $evaluation = HeartbeatRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('cross_namespace_worker_leak_count_not_zero', $failureCodes);
+        $this->assertContains('cross_namespace_worker_ids_overlap', $failureCodes);
     }
 
     public function test_result_gate_rejects_unstructured_sdk_heartbeat_worker_execution_claims(): void
@@ -428,12 +503,98 @@ class HeartbeatRuntimeContractTest extends TestCase
         $scenarioResults['published_artifact_install_only']['observed_outputs']['artifact_sources'] = $sources;
         $scenarioResults['published_artifact_install_only']['observed_outputs']['resolved_artifact_versions'] = $versions;
         $scenarioResults['published_artifact_install_only']['observed_outputs']['local_product_source_checkouts_used'] = false;
+        $scenarioResults['php_sdk_heartbeat_loop']['observed_outputs'] = array_replace(
+            $scenarioResults['php_sdk_heartbeat_loop']['observed_outputs'],
+            $this->sdkLoopOutputs('workflow-php', 'php-worker'),
+        );
+        $scenarioResults['python_sdk_heartbeat_loop']['observed_outputs'] = array_replace(
+            $scenarioResults['python_sdk_heartbeat_loop']['observed_outputs'],
+            $this->sdkLoopOutputs('sdk-python', 'python-worker'),
+        );
+        $scenarioResults['rust_sdk_heartbeat_loop']['observed_outputs'] = array_replace(
+            $scenarioResults['rust_sdk_heartbeat_loop']['observed_outputs'],
+            $this->sdkLoopOutputs('sdk-rust', 'rust-worker'),
+        );
         $scenarioResults['php_sdk_heartbeat_loop']['observed_outputs']['published_artifact_worker_execution'] =
             $this->publishedWorkerExecution('workflow-php', $versions['workflow'], $sources['workflow']);
         $scenarioResults['python_sdk_heartbeat_loop']['observed_outputs']['published_artifact_worker_execution'] =
             $this->publishedWorkerExecution('sdk-python', $versions['sdk-python'], $sources['sdk-python']);
         $scenarioResults['rust_sdk_heartbeat_loop']['observed_outputs']['published_artifact_worker_execution'] =
             $this->publishedWorkerExecution('sdk-rust', $versions['sdk-rust'], $sources['sdk-rust']);
+        $scenarioResults['heartbeat_wire_shape_uniformity']['observed_outputs'] = [
+            'runtime_records' => [
+                'workflow-php' => ['worker_id', 'task_queue', 'runtime', 'task_slots', 'process_metrics'],
+                'sdk-python' => ['worker_id', 'task_queue', 'runtime', 'task_slots', 'process_metrics'],
+                'sdk-rust' => ['worker_id', 'task_queue', 'runtime', 'task_slots', 'process_metrics'],
+            ],
+            'common_field_set' => [
+                'worker_id',
+                'namespace',
+                'task_queue',
+                'runtime',
+                'task_slots',
+                'process_metrics',
+                'last_heartbeat_at',
+            ],
+            'language_specific_field_diff' => [],
+            'server_records' => [
+                ['worker_id' => 'php-worker', 'runtime' => 'workflow-php'],
+                ['worker_id' => 'python-worker', 'runtime' => 'sdk-python'],
+                ['worker_id' => 'rust-worker', 'runtime' => 'sdk-rust'],
+            ],
+        ];
+        $scenarioResults['cadence_drift_window']['observed_outputs'] = [
+            'heartbeat_timestamps' => [
+                'php-worker' => ['2026-06-05T16:00:00Z', '2026-06-05T16:01:00Z', '2026-06-05T16:02:01Z'],
+                'python-worker' => ['2026-06-05T16:00:03Z', '2026-06-05T16:01:02Z', '2026-06-05T16:02:02Z'],
+                'rust-worker' => ['2026-06-05T16:00:05Z', '2026-06-05T16:01:04Z', '2026-06-05T16:02:04Z'],
+            ],
+            'inter_arrival_seconds' => [
+                'php-worker' => [60, 61],
+                'python-worker' => [59, 60],
+                'rust-worker' => [59, 60],
+            ],
+            'nominal_interval_seconds' => 60,
+            'tolerance_percent' => 20,
+        ];
+        $scenarioResults['stale_worker_transition_timing']['observed_outputs'] = [
+            'stopped_worker_id' => 'python-worker',
+            'stop_timestamp' => '2026-06-05T16:03:00Z',
+            'stale_after_seconds' => 60,
+            'probe_grace_seconds' => 10,
+            'disappeared_from_default_list_at' => '2026-06-05T16:04:03Z',
+            'stale_list_entry' => ['worker_id' => 'python-worker', 'status' => 'stale'],
+        ];
+        $scenarioResults['stale_worker_routing_exclusion']['observed_outputs'] = [
+            'stale_worker_id' => 'python-worker',
+            'start_or_query_request' => ['task_queue' => 'hb-shared', 'query' => 'status'],
+            'routing_result' => ['admitted' => false, 'reason' => 'stale_worker_excluded'],
+            'stale_worker_claim_count' => 0,
+        ];
+        $scenarioResults['waterline_worker_status_visibility']['observed_outputs'] = [
+            'surface_snapshot' => ['view' => 'Waterline Worker Status', 'workers' => 3],
+            'stale_worker_render' => ['worker_id' => 'python-worker', 'status' => 'stale'],
+            'task_slots_render' => ['workflow_available' => 2, 'activity_available' => 4],
+            'process_metrics_render' => ['cpu_percent' => 13.5, 'memory_bytes' => 104857600],
+        ];
+        $scenarioResults['malformed_heartbeat_rejection']['observed_outputs'] = [
+            'request' => ['worker_id' => '', 'task_queue' => 'hb-shared'],
+            'status' => 422,
+            'typed_error' => 'validation_error',
+            'persisted' => false,
+        ];
+        $scenarioResults['unregistered_heartbeat_rejection']['observed_outputs'] = [
+            'request' => ['worker_id' => 'missing-worker', 'task_queue' => 'hb-shared'],
+            'status' => 404,
+            'typed_error' => 'worker_not_registered',
+            'persisted' => false,
+        ];
+        $scenarioResults['cross_namespace_isolation']['observed_outputs'] = [
+            'namespaces' => ['heartbeats-conformance', 'heartbeats-conformance-other'],
+            'worker_list_a' => ['tenant-a-php-worker', 'tenant-a-python-worker'],
+            'worker_list_b' => ['tenant-b-rust-worker'],
+            'leak_count' => 0,
+        ];
 
         return [
             'schema' => HeartbeatRuntimeContract::RESULT_SCHEMA,
@@ -494,6 +655,36 @@ class HeartbeatRuntimeContractTest extends TestCase
         }
 
         return $outputs;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function sdkLoopOutputs(string $runtime, string $workerId): array
+    {
+        return [
+            'runtime' => $runtime,
+            'worker_id' => $workerId,
+            'registered_types' => [
+                'workflows' => ['HeartbeatWorkflow'],
+                'activities' => ['HeartbeatActivity'],
+            ],
+            'heartbeat_timestamps' => [
+                '2026-06-05T16:00:00Z',
+                '2026-06-05T16:01:00Z',
+                '2026-06-05T16:02:00Z',
+            ],
+            'task_slots' => [
+                'workflow_available' => 2,
+                'activity_available' => 4,
+            ],
+            'process_metrics' => [
+                'cpu_percent' => 12.5,
+                'memory_bytes' => 104857600,
+                'process_uptime_seconds' => 180,
+            ],
+            'local_product_source_checkouts_used' => false,
+        ];
     }
 
     /**

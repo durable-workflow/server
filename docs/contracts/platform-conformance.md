@@ -33,6 +33,7 @@ categories and runtime contracts:
 | `schedules_runtime_contract` (server side) | `GET /api/cluster/info`'s `schedules_runtime_contract` manifest, the schedule control-plane routes, scheduler tick entrypoint, schedule history, CLI/SDK/PHP client surfaces, and cross-language dispatch behavior | stable |
 | `child_workflow_runtime_contract` (server side) | `GET /api/cluster/info`'s `child_workflow_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/child-workflow-runtime-scenarios.json`, plus the child scheduling, completion, failure, cancellation, replay, fan-out, and namespace behavior recorded by the worker protocol and history surfaces | stable |
 | `saga_runtime_contract` (server side) | `GET /api/cluster/info`'s `saga_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/saga-runtime-scenarios.json`, and `scripts/conformance/sagas-published-artifacts.sh`, which is the host-runner handoff for published-artifact saga compensation evidence | stable |
+| `heartbeat_runtime_contract` (server side handoff) | `GET /api/cluster/info`'s `heartbeat_runtime_contract` manifest and the public scenario manifest at `static/platform-conformance/heartbeat-runtime-scenarios.json`, which define the host-runner handoff for SDK heartbeat loops, stale-worker transitions, stale routing exclusion, API/CLI/Waterline operator visibility, adversarial heartbeat refusal, and cross-namespace isolation | stable |
 | `principal_attribution_contract` (server side) | `GET /api/cluster/info`'s `principal_attribution_contract` manifest, the public scenario manifest at `static/platform-conformance/principal-attribution-scenarios.json`, and `scripts/conformance/principal-attribution-published-artifacts.sh`, which is the host-runner handoff for source-free principal attribution evidence | stable |
 | `python_sdk_published_artifact_parity` (host-runner handoff) | `GET /api/cluster/info`'s `python_sdk_parity_contract` manifest and `scripts/conformance/python-published-artifacts.sh`, which is the source-free host-runner handoff for the official CLI install/start/result path, cold first-user setup, Python worker restart evidence, protocol traces, no-PHP audit, and the complete Python capability table accepted by `durable_workflow.python_conformance` | stable |
 | `skew_refusal_matrix_contract` (server side) | `GET /api/cluster/info`'s `skew_refusal_matrix_contract` manifest, the public scenario manifest at `static/platform-conformance/skew-refusal-matrix-scenarios.json`, and `scripts/conformance/skew-published-artifacts.sh`, which is the host-runner handoff for the CLI/Python/PHP worker/Waterline skew matrix, worker registration skew classifications, Waterline render classifications, and request/response evidence requirements | stable |
@@ -81,6 +82,20 @@ selected-run/list evidence while the saga is paused mid-compensation. The script
 required saga scenario reported as `pass`, `fail`, `unsupported`,
 `not_covered`, or `runner_blocked`; a partial or runner-blocked run is
 therefore non-passing instead of being recorded as green.
+
+Host conformance runners discover the heartbeat runtime handoff from
+`GET /api/cluster/info` under
+`heartbeat_runtime_contract.host_runner_contract.runner_id=heartbeats` and
+exercise it against the current published server image, CLI release, Python
+SDK, PHP workflow runtime, Rust worker artifact, and Waterline package
+versions. A passing result must record PHP, Python, and Rust SDK heartbeat
+loops; heartbeat-shape uniformity; cadence drift; stale transition timing;
+stale-worker exclusion from task and query routing; worker list/detail API
+output; CLI worker list/describe output; Waterline Worker Status visibility;
+malformed and unregistered heartbeat refusal; cross-namespace isolation; and
+focused product finding routing. If a host reaches the handoff but omits a
+required cell, the result is `not_covered` with a conformance-runner finding and
+`runnerBlocked=false` instead of a smoke-only pass.
 
 The server repo also ships a source-free principal-attribution runner at
 `scripts/conformance/principal-attribution-published-artifacts.sh`. Host

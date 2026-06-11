@@ -127,6 +127,13 @@ final class HeartbeatRuntimeResultGate
                 'local_product_source_checkouts_used_is_explicitly_false',
                 'no_local_product_source_artifacts_are_reported',
                 'sdk_heartbeat_loop_worker_execution_uses_published_artifacts',
+                'sdk_heartbeat_loops_report_successive_timestamps',
+                'cadence_drift_reports_numeric_intervals_within_tolerance',
+                'stale_transition_matches_acknowledged_window',
+                'stale_worker_routing_reports_zero_claims',
+                'waterline_visibility_reports_rendered_worker_status',
+                'adversarial_heartbeat_rejections_are_4xx_typed_and_not_persisted',
+                'cross_namespace_isolation_reports_zero_leaks',
                 'runner_blocked_false_for_product_evidence',
                 'smoke_only_results_remain_non_passing',
             ],
@@ -232,6 +239,7 @@ final class HeartbeatRuntimeResultGate
         array_push($failures, ...self::sourcePolicyFailures($result, $contract, $scenarioResults));
         array_push($failures, ...self::matrixFailures($result, $contract));
         array_push($failures, ...self::requiredSectionFailures($result));
+        array_push($failures, ...self::semanticEvidenceFailures($scenarioResults));
 
         $smokeSubsetDetected = self::isSmokeSubset($scenarioStatuses, $contract);
         if ($smokeSubsetDetected) {
@@ -1178,6 +1186,627 @@ final class HeartbeatRuntimeResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $scenarioResults
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function semanticEvidenceFailures(array $scenarioResults): array
+    {
+        $failures = [];
+
+        foreach (array_keys(self::sdkHeartbeatLoopArtifacts()) as $scenarioId) {
+            if (! self::isPassScenario($scenarioResults, $scenarioId)) {
+                continue;
+            }
+
+            array_push(
+                $failures,
+                ...self::sdkLoopSemanticFailures($scenarioId, self::scenarioOutputs($scenarioResults, $scenarioId)),
+            );
+        }
+
+        if (self::isPassScenario($scenarioResults, 'heartbeat_wire_shape_uniformity')) {
+            array_push(
+                $failures,
+                ...self::wireShapeSemanticFailures(
+                    self::scenarioOutputs($scenarioResults, 'heartbeat_wire_shape_uniformity'),
+                ),
+            );
+        }
+
+        if (self::isPassScenario($scenarioResults, 'cadence_drift_window')) {
+            array_push(
+                $failures,
+                ...self::cadenceSemanticFailures(self::scenarioOutputs($scenarioResults, 'cadence_drift_window')),
+            );
+        }
+
+        if (self::isPassScenario($scenarioResults, 'stale_worker_transition_timing')) {
+            array_push(
+                $failures,
+                ...self::staleTransitionSemanticFailures(
+                    self::scenarioOutputs($scenarioResults, 'stale_worker_transition_timing'),
+                ),
+            );
+        }
+
+        if (self::isPassScenario($scenarioResults, 'stale_worker_routing_exclusion')) {
+            array_push(
+                $failures,
+                ...self::staleRoutingSemanticFailures(
+                    self::scenarioOutputs($scenarioResults, 'stale_worker_routing_exclusion'),
+                ),
+            );
+        }
+
+        if (self::isPassScenario($scenarioResults, 'waterline_worker_status_visibility')) {
+            array_push(
+                $failures,
+                ...self::waterlineSemanticFailures(
+                    self::scenarioOutputs($scenarioResults, 'waterline_worker_status_visibility'),
+                ),
+            );
+        }
+
+        foreach ([
+            'malformed_heartbeat_rejection',
+            'unregistered_heartbeat_rejection',
+        ] as $scenarioId) {
+            if (! self::isPassScenario($scenarioResults, $scenarioId)) {
+                continue;
+            }
+
+            array_push(
+                $failures,
+                ...self::heartbeatRejectionSemanticFailures($scenarioId, self::scenarioOutputs($scenarioResults, $scenarioId)),
+            );
+        }
+
+        if (self::isPassScenario($scenarioResults, 'cross_namespace_isolation')) {
+            array_push(
+                $failures,
+                ...self::crossNamespaceSemanticFailures(
+                    self::scenarioOutputs($scenarioResults, 'cross_namespace_isolation'),
+                ),
+            );
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $scenarioResults
+     */
+    private static function isPassScenario(array $scenarioResults, string $scenarioId): bool
+    {
+        return self::stringValue($scenarioResults[$scenarioId]['status'] ?? null) === 'pass';
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $scenarioResults
+     *
+     * @return array<string, mixed>
+     */
+    private static function scenarioOutputs(array $scenarioResults, string $scenarioId): array
+    {
+        return self::arrayField($scenarioResults[$scenarioId] ?? [], ['observed_outputs', 'observedOutputs']) ?? [];
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function sdkLoopSemanticFailures(string $scenarioId, array $outputs): array
+    {
+        $failures = [];
+
+        foreach (['runtime', 'worker_id'] as $field) {
+            if (self::isConcreteEvidence(self::fieldValue($outputs, $field))) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'sdk_heartbeat_loop_missing_concrete_field',
+                'scenario_id' => $scenarioId,
+                'field' => $field,
+            ];
+        }
+
+        foreach (['registered_types', 'task_slots', 'process_metrics'] as $field) {
+            if (! self::isEmptyEvidence(self::arrayField($outputs, [$field]))) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'sdk_heartbeat_loop_missing_structured_field',
+                'scenario_id' => $scenarioId,
+                'field' => $field,
+            ];
+        }
+
+        if (! self::hasSuccessiveTimestamps(self::fieldValue($outputs, 'heartbeat_timestamps'))) {
+            $failures[] = [
+                'code' => 'sdk_heartbeat_loop_missing_successive_timestamps',
+                'scenario_id' => $scenarioId,
+                'field' => 'heartbeat_timestamps',
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function wireShapeSemanticFailures(array $outputs): array
+    {
+        $failures = [];
+
+        foreach (['runtime_records', 'common_field_set', 'server_records'] as $field) {
+            if (! self::isEmptyEvidence(self::arrayField($outputs, [$field]))) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'heartbeat_wire_shape_missing_structured_field',
+                'scenario_id' => 'heartbeat_wire_shape_uniformity',
+                'field' => $field,
+            ];
+        }
+
+        $diff = self::fieldValue($outputs, 'language_specific_field_diff');
+        if ($diff !== null && self::isEmptyEvidence($diff)) {
+            return $failures;
+        }
+
+        if (is_array($diff) && self::onlyEmptyNestedValues($diff)) {
+            return $failures;
+        }
+
+        $failures[] = [
+            'code' => 'heartbeat_wire_shape_language_specific_diff_not_empty',
+            'scenario_id' => 'heartbeat_wire_shape_uniformity',
+            'field' => 'language_specific_field_diff',
+            'value' => $diff,
+        ];
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function cadenceSemanticFailures(array $outputs): array
+    {
+        $failures = [];
+        $nominal = self::numberValue(self::fieldValue($outputs, 'nominal_interval_seconds'));
+        $tolerance = self::numberValue(self::fieldValue($outputs, 'tolerance_percent'));
+        $intervals = self::numericSamples(self::fieldValue($outputs, 'inter_arrival_seconds'));
+
+        if ($nominal === null || $nominal <= 0) {
+            $failures[] = [
+                'code' => 'cadence_drift_window_invalid_nominal_interval',
+                'scenario_id' => 'cadence_drift_window',
+                'field' => 'nominal_interval_seconds',
+            ];
+        }
+
+        if ($tolerance === null || $tolerance < 0) {
+            $failures[] = [
+                'code' => 'cadence_drift_window_invalid_tolerance',
+                'scenario_id' => 'cadence_drift_window',
+                'field' => 'tolerance_percent',
+            ];
+        }
+
+        if ($intervals === []) {
+            $failures[] = [
+                'code' => 'cadence_drift_window_missing_numeric_intervals',
+                'scenario_id' => 'cadence_drift_window',
+                'field' => 'inter_arrival_seconds',
+            ];
+        }
+
+        if ($nominal === null || $nominal <= 0 || $tolerance === null || $tolerance < 0 || $intervals === []) {
+            return $failures;
+        }
+
+        foreach ($intervals as $interval) {
+            $driftPercent = abs($interval - $nominal) / $nominal * 100;
+            if ($driftPercent <= $tolerance) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'cadence_interval_exceeds_tolerance',
+                'scenario_id' => 'cadence_drift_window',
+                'interval_seconds' => $interval,
+                'nominal_interval_seconds' => $nominal,
+                'tolerance_percent' => $tolerance,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function staleTransitionSemanticFailures(array $outputs): array
+    {
+        $failures = [];
+        $staleAfter = self::numberValue(self::fieldValue($outputs, 'stale_after_seconds'));
+        $stopTimestamp = self::timestampValue(self::fieldValue($outputs, 'stop_timestamp'));
+        $disappearedAt = self::timestampValue(self::fieldValue($outputs, 'disappeared_from_default_list_at'));
+        $probeGrace = max(1.0, self::numberValue(self::fieldValue($outputs, 'probe_grace_seconds')) ?? 60.0);
+
+        if ($staleAfter === null || $staleAfter <= 0) {
+            $failures[] = [
+                'code' => 'stale_transition_invalid_stale_after_seconds',
+                'scenario_id' => 'stale_worker_transition_timing',
+                'field' => 'stale_after_seconds',
+            ];
+        }
+
+        if ($stopTimestamp === null || $disappearedAt === null) {
+            $failures[] = [
+                'code' => 'stale_transition_missing_parseable_timestamps',
+                'scenario_id' => 'stale_worker_transition_timing',
+            ];
+        }
+
+        if ($staleAfter === null || $staleAfter <= 0 || $stopTimestamp === null || $disappearedAt === null) {
+            return $failures;
+        }
+
+        $observedSeconds = $disappearedAt - $stopTimestamp;
+        if ($observedSeconds < 0 || $observedSeconds > ($staleAfter + $probeGrace)) {
+            $failures[] = [
+                'code' => 'stale_transition_exceeded_acknowledged_window',
+                'scenario_id' => 'stale_worker_transition_timing',
+                'stale_after_seconds' => $staleAfter,
+                'probe_grace_seconds' => $probeGrace,
+                'observed_seconds' => $observedSeconds,
+            ];
+        }
+
+        if (self::isEmptyEvidence(self::arrayField($outputs, ['stale_list_entry']))) {
+            $failures[] = [
+                'code' => 'stale_transition_missing_stale_list_entry',
+                'scenario_id' => 'stale_worker_transition_timing',
+                'field' => 'stale_list_entry',
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function staleRoutingSemanticFailures(array $outputs): array
+    {
+        $claimCount = self::numberValue(self::fieldValue($outputs, 'stale_worker_claim_count'));
+        if ($claimCount === 0.0) {
+            return [];
+        }
+
+        return [[
+            'code' => 'stale_worker_routing_claims_not_zero',
+            'scenario_id' => 'stale_worker_routing_exclusion',
+            'field' => 'stale_worker_claim_count',
+            'value' => self::fieldValue($outputs, 'stale_worker_claim_count'),
+        ]];
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function waterlineSemanticFailures(array $outputs): array
+    {
+        $failures = [];
+
+        foreach ([
+            'surface_snapshot',
+            'stale_worker_render',
+            'task_slots_render',
+            'process_metrics_render',
+        ] as $field) {
+            if (self::isConcreteEvidence(self::fieldValue($outputs, $field))) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'waterline_worker_status_visibility_missing_render',
+                'scenario_id' => 'waterline_worker_status_visibility',
+                'field' => $field,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function heartbeatRejectionSemanticFailures(string $scenarioId, array $outputs): array
+    {
+        $failures = [];
+        $status = self::statusCodeValue(self::fieldValue($outputs, 'status'));
+
+        if ($status === null || $status < 400 || $status >= 500) {
+            $failures[] = [
+                'code' => 'heartbeat_rejection_status_not_4xx',
+                'scenario_id' => $scenarioId,
+                'field' => 'status',
+                'value' => self::fieldValue($outputs, 'status'),
+            ];
+        }
+
+        if (! self::isTypedErrorEvidence(self::fieldValue($outputs, 'typed_error'))) {
+            $failures[] = [
+                'code' => 'heartbeat_rejection_missing_typed_error',
+                'scenario_id' => $scenarioId,
+                'field' => 'typed_error',
+            ];
+        }
+
+        if (self::fieldValue($outputs, 'persisted') !== false) {
+            $failures[] = [
+                'code' => 'heartbeat_rejection_persisted',
+                'scenario_id' => $scenarioId,
+                'field' => 'persisted',
+                'value' => self::fieldValue($outputs, 'persisted'),
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $outputs
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function crossNamespaceSemanticFailures(array $outputs): array
+    {
+        $failures = [];
+        $leakCount = self::numberValue(self::fieldValue($outputs, 'leak_count'));
+
+        if ($leakCount !== 0.0) {
+            $failures[] = [
+                'code' => 'cross_namespace_worker_leak_count_not_zero',
+                'scenario_id' => 'cross_namespace_isolation',
+                'field' => 'leak_count',
+                'value' => self::fieldValue($outputs, 'leak_count'),
+            ];
+        }
+
+        $workerListA = self::workerIds(self::fieldValue($outputs, 'worker_list_a'));
+        $workerListB = self::workerIds(self::fieldValue($outputs, 'worker_list_b'));
+        $overlap = array_values(array_intersect($workerListA, $workerListB));
+        if ($overlap !== []) {
+            $failures[] = [
+                'code' => 'cross_namespace_worker_ids_overlap',
+                'scenario_id' => 'cross_namespace_isolation',
+                'worker_ids' => $overlap,
+            ];
+        }
+
+        return $failures;
+    }
+
+    private static function isConcreteEvidence(mixed $value): bool
+    {
+        if (is_array($value)) {
+            return ! self::isEmptyEvidence($value);
+        }
+
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return true;
+        }
+
+        if (! is_string($value)) {
+            return false;
+        }
+
+        $normalized = strtolower(trim($value));
+
+        return $normalized !== ''
+            && ! in_array($normalized, [
+                'observed',
+                'present',
+                'recorded',
+                'placeholder',
+                'todo',
+                'n/a',
+                'none',
+            ], true);
+    }
+
+    private static function hasSuccessiveTimestamps(mixed $value): bool
+    {
+        if (! is_array($value) || count($value) < 2) {
+            return false;
+        }
+
+        $timestamps = [];
+        foreach ($value as $item) {
+            $timestamp = self::timestampValue($item);
+            if ($timestamp === null) {
+                return false;
+            }
+
+            $timestamps[] = $timestamp;
+        }
+
+        for ($index = 1; $index < count($timestamps); $index++) {
+            if ($timestamps[$index] <= $timestamps[$index - 1]) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static function timestampValue(mixed $value): ?float
+    {
+        if (is_int($value) || is_float($value)) {
+            return (float) $value;
+        }
+
+        if (! is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        $timestamp = strtotime($value);
+
+        return $timestamp === false ? null : (float) $timestamp;
+    }
+
+    /**
+     * @return list<float>
+     */
+    private static function numericSamples(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $samples = [];
+        foreach ($value as $item) {
+            if (is_array($item)) {
+                array_push($samples, ...self::numericSamples($item));
+                continue;
+            }
+
+            $number = self::numberValue($item);
+            if ($number !== null) {
+                $samples[] = $number;
+            }
+        }
+
+        return $samples;
+    }
+
+    private static function numberValue(mixed $value): ?float
+    {
+        if (is_int($value) || is_float($value)) {
+            return (float) $value;
+        }
+
+        if (is_string($value) && is_numeric(trim($value))) {
+            return (float) trim($value);
+        }
+
+        return null;
+    }
+
+    private static function statusCodeValue(mixed $value): ?int
+    {
+        if (is_array($value)) {
+            foreach (['status_code', 'statusCode', 'status', 'code', 'http_status', 'httpStatus'] as $field) {
+                $status = self::statusCodeValue($value[$field] ?? null);
+                if ($status !== null) {
+                    return $status;
+                }
+            }
+
+            return null;
+        }
+
+        $number = self::numberValue($value);
+
+        return $number === null ? null : (int) $number;
+    }
+
+    private static function isTypedErrorEvidence(mixed $value): bool
+    {
+        if (is_array($value)) {
+            foreach (['type', 'error_type', 'errorType', 'code', 'reason'] as $field) {
+                if (self::isConcreteEvidence($value[$field] ?? null)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return self::isConcreteEvidence($value);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function workerIds(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $workerIds = [];
+        foreach ($value as $key => $item) {
+            if (is_string($item) && trim($item) !== '') {
+                $workerIds[] = trim($item);
+                continue;
+            }
+
+            if (is_array($item)) {
+                $workerId = self::stringField($item, ['worker_id', 'workerId', 'id']);
+                if ($workerId !== '') {
+                    $workerIds[] = $workerId;
+                }
+                continue;
+            }
+
+            if (is_string($key) && trim($key) !== '') {
+                $workerIds[] = trim($key);
+            }
+        }
+
+        return array_values(array_unique($workerIds));
+    }
+
+    /**
+     * @param array<mixed> $value
+     */
+    private static function onlyEmptyNestedValues(array $value): bool
+    {
+        foreach ($value as $item) {
+            if (is_array($item)) {
+                if (! self::onlyEmptyNestedValues($item)) {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (! in_array($item, [null, false, '', 0, '0'], true)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
