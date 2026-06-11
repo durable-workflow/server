@@ -662,6 +662,23 @@ class SchedulesRuntimeContractTest extends TestCase
         $this->assertSame([], $evaluation['gate_failures']);
     }
 
+    public function test_result_gate_accepts_ghcr_server_image_sources(): void
+    {
+        $result = $this->completeSchedulesResult();
+        $source = 'docker://ghcr.io/durable-workflow/server:0.2.174';
+        $result['artifact_sources']['server'] = $source;
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['server'] =
+            $source;
+        $result['artifact_install_evidence']['artifacts'][0]['source'] = $source;
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_install_evidence']['artifacts'][0]['source'] =
+            $source;
+
+        $evaluation = SchedulesRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $evaluation['gate_failures']);
+    }
+
     public function test_result_gate_requires_cli_schedule_command_transcripts_for_cli_surface_pass(): void
     {
         $result = $this->completeSchedulesResult();

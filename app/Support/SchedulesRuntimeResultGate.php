@@ -53,6 +53,14 @@ final class SchedulesRuntimeResultGate
         ],
     ];
 
+    private const PUBLISHED_SERVER_IMAGE_REPOSITORIES = [
+        'durableworkflow/server',
+        'docker.io/durableworkflow/server',
+        'index.docker.io/durableworkflow/server',
+        'registry-1.docker.io/durableworkflow/server',
+        'ghcr.io/durable-workflow/server',
+    ];
+
     private const CLI_RELEASE_ASSET_NAMES = [
         'dw.phar',
         'dw-linux-aarch64',
@@ -708,24 +716,37 @@ final class SchedulesRuntimeResultGate
 
     private static function matchesServerArtifactSource(string $version, string $source): bool
     {
-        $escapedVersion = preg_quote($version, '/');
+        $image = preg_replace('/^docker:\/\//i', '', trim($source));
+        if ($image === null || $image === '') {
+            return false;
+        }
 
-        return preg_match('/^docker:\/\/durableworkflow\/server@sha256:[0-9a-f]{64}$/i', $source) === 1
-            || preg_match('/^durableworkflow\/server@sha256:[0-9a-f]{64}$/i', $source) === 1
-            || preg_match('/^docker:\/\/durableworkflow\/server:'.$escapedVersion.'@sha256:[0-9a-f]{64}$/i', $source) === 1
-            || preg_match('/^durableworkflow\/server:'.$escapedVersion.'@sha256:[0-9a-f]{64}$/i', $source) === 1
-            || $source === 'docker://durableworkflow/server:'.$version
-            || $source === 'durableworkflow/server:'.$version;
+        $escapedVersion = preg_quote($version, '/');
+        foreach (self::PUBLISHED_SERVER_IMAGE_REPOSITORIES as $repository) {
+            $escapedRepository = preg_quote($repository, '/');
+
+            if (strcasecmp($image, $repository.':'.$version) === 0
+                || preg_match('/^'.$escapedRepository.'@sha256:[0-9a-f]{64}$/i', $image) === 1
+                || preg_match('/^'.$escapedRepository.':'.$escapedVersion.'@sha256:[0-9a-f]{64}$/i', $image) === 1) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static function matchesCliArtifactSource(string $version, string $source): bool
     {
-        $prefix = 'https://github.com/durable-workflow/cli/releases/download/'.$version.'/';
-        if (! str_starts_with($source, $prefix)) {
-            return false;
+        foreach ([
+            'https://github.com/durable-workflow/cli/releases/download/'.$version.'/',
+            'https://github.com/durable-workflow/cli/releases/download/v'.$version.'/',
+        ] as $prefix) {
+            if (str_starts_with($source, $prefix)) {
+                return in_array(substr($source, strlen($prefix)), self::CLI_RELEASE_ASSET_NAMES, true);
+            }
         }
 
-        return in_array(substr($source, strlen($prefix)), self::CLI_RELEASE_ASSET_NAMES, true);
+        return false;
     }
 
     private static function matchesComposerArtifactSource(string $packageName, string $version, string $source): bool

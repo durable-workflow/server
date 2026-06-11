@@ -87,6 +87,13 @@ const PUBLISHED_ARTIFACT_SOURCE_LABELS = {
     'published_packagist_release',
   ]),
 };
+const PUBLISHED_SERVER_IMAGE_REPOSITORIES = [
+  'durableworkflow/server',
+  'docker.io/durableworkflow/server',
+  'index.docker.io/durableworkflow/server',
+  'registry-1.docker.io/durableworkflow/server',
+  'ghcr.io/durable-workflow/server',
+];
 const CLI_RELEASE_ASSET_NAMES = new Set([
   'dw.phar',
   'dw-linux-aarch64',
@@ -120,7 +127,7 @@ async function main() {
 
   const startedAt = process.env.DW_SCHEDULES_STARTED_AT ?? timestamp();
   const artifactVersions = artifactVersionsFromEnv();
-  let artifactSources = artifactSourcesFromEnv();
+  let artifactSources = artifactSourcesFromEnv(artifactVersions);
   const evidenceInputs = readEvidenceInputs();
   const cadenceEvidence = await maybeRunCadenceShard(startedAt, artifactVersions, artifactSources);
   if (cadenceEvidence !== null) {
@@ -430,12 +437,15 @@ function publishedArtifactInstallPolicy(artifactVersions, artifactSources, evide
     outputs.resolved_artifact_versions,
     outputs.resolvedArtifactVersions,
   );
-  const installArtifactSources = mergeObjects(
-    artifactSources,
-    outputs.artifact_sources,
-    outputs.artifactSources,
-    outputs.install_sources,
-    outputs.installSources,
+  const installArtifactSources = normalizeArtifactSources(
+    mergeObjects(
+      artifactSources,
+      outputs.artifact_sources,
+      outputs.artifactSources,
+      outputs.install_sources,
+      outputs.installSources,
+    ),
+    installArtifactVersions,
   );
   const artifactSourceVerification = artifactSourceVerificationFrom(evidence, outputs);
   const localProductSourceUsed = localProductSourceCheckoutsUsed(evidence, outputs);
@@ -657,21 +667,116 @@ function publishedSourceLabelAllowed(artifact, source) {
   return labels instanceof Set && labels.has(source);
 }
 
-function matchesServerArtifactSource(version, source) {
-  if (/^docker:\/\/durableworkflow\/server@sha256:[0-9a-f]{64}$/i.test(source)
-    || /^durableworkflow\/server@sha256:[0-9a-f]{64}$/i.test(source)
-    || new RegExp(`^docker://durableworkflow/server:${escapeRegExp(version)}@sha256:[0-9a-f]{64}$`, 'i').test(source)
-    || new RegExp(`^durableworkflow/server:${escapeRegExp(version)}@sha256:[0-9a-f]{64}$`, 'i').test(source)) {
-    return true;
+function normalizeArtifactSources(artifactSources, artifactVersions) {
+  const normalized = { ...objectValue(artifactSources) };
+
+  for (const artifact of REQUIRED_PUBLISHED_ARTIFACTS) {
+    const source = artifactValue(normalized, artifact);
+    if (source === '') {
+      continue;
+    }
+
+    const version = artifactValue(artifactVersions, artifact);
+    const normalizedSource = normalizePublishedArtifactSource(artifact, version, source);
+    normalized[artifact] = normalizedSource;
+    if (artifact === 'workflow-php') {
+      normalized.workflow = normalizedSource;
+    }
   }
 
-  return source === `docker://durableworkflow/server:${version}`
-    || source === `durableworkflow/server:${version}`;
+  return normalized;
+}
+
+function normalizePublishedArtifactSource(artifact, version, source) {
+  const sourceValue = stringValue(source);
+  if (sourceValue === '' || sourceValue === 'not_exercised') {
+    return sourceValue;
+  }
+
+  if (!isConcretePublishedVersion(version) || !publishedSourceLabelAllowed(artifact, sourceValue)) {
+    return sourceValue;
+  }
+
+  return canonicalPublishedArtifactSource(artifact, version, sourceValue) || sourceValue;
+}
+
+function canonicalPublishedArtifactSource(artifact, version, source) {
+  switch (artifact) {
+    case 'server':
+      if (source === 'existing_published_server_url') {
+        return serverImageArtifactSource(version) || '';
+      }
+
+      return serverImageArtifactSource(version);
+    case 'cli':
+      return cliReleaseAssetSource(version, 'install.sh');
+    case 'sdk-python':
+      return pythonPackageArtifactSource(version);
+    case 'workflow-php':
+      return composerPackageArtifactSource('durable-workflow/workflow', version);
+    case 'waterline':
+      return composerPackageArtifactSource('durable-workflow/waterline', version);
+    default:
+      return '';
+  }
+}
+
+function serverImageArtifactSource(version) {
+  const configured = stringValue(process.env.DW_SERVER_IMAGE);
+  if (configured !== '') {
+    return dockerImageArtifactSource(configured);
+  }
+
+  return `docker://durableworkflow/server:${version}`;
+}
+
+function dockerImageArtifactSource(image) {
+  const imageValue = stringValue(image).replace(/^docker:\/\//i, '');
+  if (imageValue === '') {
+    return '';
+  }
+
+  return `docker://${imageValue}`;
+}
+
+function cliReleaseAssetSource(version, assetName) {
+  return `https://github.com/durable-workflow/cli/releases/download/${version}/${assetName}`;
+}
+
+function pythonPackageArtifactSource(version) {
+  return `pypi://durable-workflow==${version}`;
+}
+
+function composerPackageArtifactSource(packageName, version) {
+  return `packagist://${packageName}@${version}`;
+}
+
+function matchesServerArtifactSource(version, source) {
+  const image = stringValue(source).replace(/^docker:\/\//i, '');
+  if (image === '') {
+    return false;
+  }
+
+  return PUBLISHED_SERVER_IMAGE_REPOSITORIES.some((repository) => {
+    const escapedRepository = escapeRegExp(repository);
+    const escapedVersion = escapeRegExp(version);
+
+    return image.toLowerCase() === `${repository}:${version}`.toLowerCase()
+      || new RegExp(`^${escapedRepository}@sha256:[0-9a-f]{64}$`, 'i').test(image)
+      || new RegExp(`^${escapedRepository}:${escapedVersion}@sha256:[0-9a-f]{64}$`, 'i').test(image);
+  });
 }
 
 function matchesCliArtifactSource(version, source) {
-  const prefix = `https://github.com/durable-workflow/cli/releases/download/${version}/`;
-  return source.startsWith(prefix) && CLI_RELEASE_ASSET_NAMES.has(source.slice(prefix.length));
+  const prefixes = [
+    `https://github.com/durable-workflow/cli/releases/download/${version}/`,
+    `https://github.com/durable-workflow/cli/releases/download/v${version}/`,
+  ];
+
+  return prefixes.some((prefix) => (
+    source.startsWith(prefix)
+    && CLI_RELEASE_ASSET_NAMES.has(source.slice(prefix.length))
+  ));
 }
 
 function matchesComposerArtifactSource(packageName, version, source) {
@@ -1062,8 +1167,8 @@ function artifactVersionsFromEnv() {
   };
 }
 
-function artifactSourcesFromEnv() {
-  return {
+function artifactSourcesFromEnv(artifactVersions = artifactVersionsFromEnv()) {
+  return normalizeArtifactSources({
     server: envString('DW_SCHEDULES_SERVER_ARTIFACT_SOURCE', 'DW_SERVER_ARTIFACT_SOURCE') || 'not_exercised',
     cli: envString('DW_SCHEDULES_CLI_ARTIFACT_SOURCE', 'DW_CLI_ARTIFACT_SOURCE') || 'not_exercised',
     'sdk-python': envString('DW_SCHEDULES_PYTHON_SDK_ARTIFACT_SOURCE', 'DW_PYTHON_SDK_ARTIFACT_SOURCE') || 'not_exercised',
@@ -1078,7 +1183,7 @@ function artifactSourcesFromEnv() {
       'DW_WORKFLOW_ARTIFACT_SOURCE',
     ) || 'not_exercised',
     waterline: envString('DW_SCHEDULES_WATERLINE_ARTIFACT_SOURCE', 'DW_WATERLINE_ARTIFACT_SOURCE') || 'not_exercised',
-  };
+  }, artifactVersions);
 }
 
 function envString(...names) {
@@ -1157,7 +1262,7 @@ function buildArtifactInstallEvidence(artifactVersions, artifactSources, evidenc
       entry?.resolvedVersion,
       fallbackVersion,
     ));
-    const source = stringValue(firstDefined(
+    const source = normalizePublishedArtifactSource(artifact, version, stringValue(firstDefined(
       entry?.source,
       entry?.install_source,
       entry?.installSource,
@@ -1166,7 +1271,7 @@ function buildArtifactInstallEvidence(artifactVersions, artifactSources, evidenc
       entry?.resolved_source,
       entry?.resolvedSource,
       fallbackSource,
-    ));
+    )));
     const sourceVerification = artifactInstallEntrySourceVerification(
       entry,
       artifactObjectValue(artifactSourceVerification, artifact),
@@ -1557,7 +1662,7 @@ async function runCadenceShard({ startedAt, artifactVersions, artifactSources, s
   ];
   let composeStarted = false;
 
-  markArtifactSource(artifactSources, 'server', existingServerUrl === '' ? 'published_docker_image' : 'existing_published_server_url');
+  markArtifactSource(artifactSources, 'server', existingServerUrl === '' ? 'published_docker_image' : 'existing_published_server_url', artifactVersions);
 
   if (existingServerUrl === '') {
     writeSchedulerOverlay(overlayPath, schedulerTickSeconds);
@@ -2066,7 +2171,7 @@ async function runOperatorControlsShard({ startedAt, artifactVersions, artifactS
   ];
   let composeStarted = false;
 
-  markArtifactSource(artifactSources, 'server', existingServerUrl === '' ? 'published_docker_image' : 'existing_published_server_url');
+  markArtifactSource(artifactSources, 'server', existingServerUrl === '' ? 'published_docker_image' : 'existing_published_server_url', artifactVersions);
 
   if (existingServerUrl === '') {
     writeSchedulerOverlay(overlayPath, schedulerTickSeconds);
@@ -2451,7 +2556,7 @@ async function probePythonSdkListDescribe({
       };
     }
 
-    markArtifactSource(artifactSources, 'sdk-python', 'pypi');
+    markArtifactSource(artifactSources, 'sdk-python', pythonPackageArtifactSource(pythonVersion), artifactVersions);
 
     const listScheduleIds = arrayValue(parsed.value.list_schedule_ids).map((value) => stringValue(value)).filter(Boolean);
     const descriptions = arrayValue(parsed.value.descriptions);
@@ -3061,7 +3166,7 @@ async function runMissedRestartShard({ startedAt, artifactVersions, artifactSour
   let composeStarted = false;
   let schedulesCreated = [];
 
-  markArtifactSource(artifactSources, 'server', 'published_docker_image');
+  markArtifactSource(artifactSources, 'server', 'published_docker_image', artifactVersions);
 
   writeSchedulerOverlay(overlayPath, schedulerTickSeconds);
   await execLogged(
@@ -4610,7 +4715,7 @@ async function runCliSurfaceShard({ startedAt, artifactVersions, artifactSources
   let composeStarted = false;
   let cliPath = '';
 
-  markArtifactSource(artifactSources, 'server', existingServerUrl === '' ? 'published_docker_image' : 'existing_published_server_url');
+  markArtifactSource(artifactSources, 'server', existingServerUrl === '' ? 'published_docker_image' : 'existing_published_server_url', artifactVersions);
 
   if (existingServerUrl === '') {
     await execLogged(
@@ -4714,7 +4819,7 @@ async function resolvePublishedCli(artifactVersions, artifactSources) {
   const configuredCli = stringValue(process.env.DW_SCHEDULES_CLI_EXECUTABLE ?? process.env.DW_CLI_EXECUTABLE);
   if (configuredCli !== '') {
     fs.accessSync(configuredCli, fs.constants.X_OK);
-    markArtifactSource(artifactSources, 'cli', 'official_cli_executable');
+    markArtifactSource(artifactSources, 'cli', 'official_cli_executable', artifactVersions);
     return configuredCli;
   }
 
@@ -4746,14 +4851,14 @@ async function resolvePublishedCli(artifactVersions, artifactSources) {
 
   const cliPath = path.join(installDir, 'dw');
   fs.accessSync(cliPath, fs.constants.X_OK);
-  markArtifactSource(artifactSources, 'cli', 'official_install_script');
+  markArtifactSource(artifactSources, 'cli', installerUrl, artifactVersions);
   writeJson(path.join(resultDir, 'schedules-cli-install.json'), {
     schema: 'durable-workflow.v2.schedules-runtime.cli-install',
     cli_version: cliVersion,
     installer_url: installerUrl,
     install_dir: installDir,
     executable: cliPath,
-    source: 'official_install_script',
+    source: installerUrl,
   });
 
   return cliPath;
@@ -5214,7 +5319,7 @@ async function runCrossLanguageShard({ startedAt, artifactVersions, artifactSour
 
   fs.rmSync(shardRoot, { recursive: true, force: true });
   fs.mkdirSync(shardRoot, { recursive: true });
-  markArtifactSource(artifactSources, 'server', existingServerUrl === '' ? 'published_docker_image' : 'existing_published_server_url');
+  markArtifactSource(artifactSources, 'server', existingServerUrl === '' ? 'published_docker_image' : 'existing_published_server_url', artifactVersions);
 
   if (existingServerUrl === '') {
     writeSchedulerOverlay(overlayPath, schedulerTickSeconds);
@@ -5398,7 +5503,7 @@ async function installSchedulesPythonArtifact(shardRoot, artifactVersions, artif
     ['-m', 'pip', 'install', `durable-workflow==${pythonVersion}`],
     path.join(resultDir, 'schedules-cross-language-python-install.log'),
   );
-  markArtifactSource(artifactSources, 'sdk-python', 'pypi');
+  markArtifactSource(artifactSources, 'sdk-python', pythonPackageArtifactSource(pythonVersion), artifactVersions);
 
   return { pythonRoot, pythonBin, scriptPath };
 }
@@ -5428,7 +5533,12 @@ async function installSchedulesPhpArtifact(shardRoot, artifactVersions, artifact
     ],
     path.join(resultDir, 'schedules-cross-language-php-install.log'),
   );
-  markArtifactSource(artifactSources, 'workflow-php', 'composer_packagist');
+  markArtifactSource(
+    artifactSources,
+    'workflow-php',
+    composerPackageArtifactSource('durable-workflow/workflow', workflowPhpVersion),
+    artifactVersions,
+  );
 
   return { phpRoot, scriptPath };
 }
@@ -6197,10 +6307,15 @@ function redactCliArg(arg) {
   return arg;
 }
 
-function markArtifactSource(artifactSources, artifact, source) {
+function markArtifactSource(artifactSources, artifact, source, artifactVersions = artifactVersionsFromEnv()) {
   const current = stringValue(artifactSources[artifact]);
   if (current === '' || current === 'not_exercised') {
-    artifactSources[artifact] = source;
+    const version = artifactValue(artifactVersions, artifact);
+    const normalizedSource = normalizePublishedArtifactSource(artifact, version, source);
+    artifactSources[artifact] = normalizedSource;
+    if (artifact === 'workflow-php') {
+      artifactSources.workflow = normalizedSource;
+    }
   }
 }
 

@@ -574,7 +574,23 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             );
             $this->assertFalse($publishedArtifacts['local_product_source_checkouts_used']);
             $this->assertSame(
-                'published_waterline_artifact',
+                'docker://durableworkflow/server:0.2.312',
+                $publishedArtifacts['artifact_install_evidence']['artifact_sources']['server'],
+            );
+            $this->assertSame(
+                'https://github.com/durable-workflow/cli/releases/download/0.1.77/install.sh',
+                $publishedArtifacts['artifact_install_evidence']['artifact_sources']['cli'],
+            );
+            $this->assertSame(
+                'pypi://durable-workflow==0.4.85',
+                $publishedArtifacts['artifact_install_evidence']['artifact_sources']['sdk-python'],
+            );
+            $this->assertSame(
+                'packagist://durable-workflow/workflow@2.0.0-alpha.197',
+                $publishedArtifacts['artifact_install_evidence']['artifact_sources']['workflow-php'],
+            );
+            $this->assertSame(
+                'packagist://durable-workflow/waterline@2.0.0-alpha.83',
                 $publishedArtifacts['artifact_install_evidence']['artifact_sources']['waterline'],
             );
         } finally {
@@ -745,6 +761,7 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                     'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
                     'DW_SCHEDULES_RESULT_DIR' => $resultDir,
                     'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SERVER_IMAGE' => 'ghcr.io/durable-workflow/server:0.2.323',
                     'DW_SERVER_VERSION' => '0.2.323',
                     'DW_CLI_VERSION' => '0.1.77',
                     'DW_PYTHON_SDK_VERSION' => '0.4.85',
@@ -802,7 +819,31 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             );
             $this->assertFalse($publishedArtifacts['local_product_source_checkouts_used']);
             $this->assertSame(
-                'published_waterline_artifact',
+                'docker://ghcr.io/durable-workflow/server:0.2.323',
+                $result['artifact_sources']['server'],
+            );
+            $this->assertSame(
+                'docker://ghcr.io/durable-workflow/server:0.2.323',
+                $scenario['observed_outputs']['artifact_sources']['server'],
+            );
+            $this->assertSame(
+                'docker://ghcr.io/durable-workflow/server:0.2.323',
+                $publishedArtifacts['artifact_install_evidence']['artifact_sources']['server'],
+            );
+            $this->assertSame(
+                'https://github.com/durable-workflow/cli/releases/download/0.1.77/install.sh',
+                $publishedArtifacts['artifact_install_evidence']['artifact_sources']['cli'],
+            );
+            $this->assertSame(
+                'pypi://durable-workflow==0.4.85',
+                $publishedArtifacts['artifact_install_evidence']['artifact_sources']['sdk-python'],
+            );
+            $this->assertSame(
+                'packagist://durable-workflow/workflow@2.0.0-alpha.197',
+                $publishedArtifacts['artifact_install_evidence']['artifact_sources']['workflow-php'],
+            );
+            $this->assertSame(
+                'packagist://durable-workflow/waterline@2.0.0-alpha.83',
                 $publishedArtifacts['artifact_install_evidence']['artifact_sources']['waterline'],
             );
         } finally {
