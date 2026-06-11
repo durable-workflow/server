@@ -188,6 +188,10 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'pinned_run_build_id',
             'incompatible_delivery_count',
             'incompatible_worker_task_count',
+            'started_workflow_visibility',
+            'task_queue_build_id_samples',
+            'no_compatible_visibility_deadline_seconds',
+            'no_compatible_visibility_attempts',
             'pending_or_typed_error',
             'operator_visible_signal_explicit',
         ] as $field) {
@@ -320,6 +324,26 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'the server protocol probe must capture the build-id cohort row used to prove the no-compatible diagnostic',
         );
         $this->assertStringContainsString(
+            'Date.now() + noCompatibleVisibilitySeconds * 1000',
+            $node,
+            'the server protocol probe must wait up to the public no-compatible visibility deadline',
+        );
+        $this->assertStringContainsString(
+            'DW_WV_NO_COMPATIBLE_VISIBILITY_SECONDS',
+            $node,
+            'the no-compatible visibility deadline should be configurable for host conformance',
+        );
+        $this->assertStringContainsString(
+            'task_queue_build_id_samples: noCompatibleVisibility.task_queue_build_id_samples',
+            $node,
+            'the server protocol probe must retain the sampled task-queue diagnostics that prove the explicit signal',
+        );
+        $this->assertStringContainsString(
+            'taskQueueBuildIdSignalValuesFromOutputs(outputs)',
+            $node,
+            'published worker no-compatible evidence normalization must accept sampled task-queue diagnostics',
+        );
+        $this->assertStringContainsString(
             "publishedWorkerScenarioOutputs(publishedWorkerEvidence, 'adversarial_no_version_bump')",
             $node,
             'adversarial no-version-bump can pass only from a published worker evidence shard',
@@ -366,11 +390,17 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'incompatible_worker_poll_attempts: incompatiblePolls.length',
             'incompatible_worker_poll_statuses: incompatiblePollStatuses',
             'incompatible_worker_polls: incompatiblePolls',
+            'started_workflow_visibility',
             'workflow_visibility_samples',
             'task_queue_build_id_entry',
+            'task_queue_build_id_samples',
             'pending_workflow_tasks',
+            'no_compatible_visibility_deadline_seconds',
+            'no_compatible_visibility_attempts',
             'operator_visible_signal: operatorVisibleSignal',
             'isExplicitNoCompatibleSignal(operatorVisibleSignal)',
+            'Date.now() + noCompatibleVisibilitySeconds * 1000',
+            'DW_WV_NO_COMPATIBLE_VISIBILITY_SECONDS',
             'poll_timeout_seconds',
             'DW_WV_WORKER_POLL_CLIENT_TIMEOUT_SECONDS',
             'urllib.request.Request',

@@ -34,6 +34,10 @@ const FORBIDDEN_INSTALL_SOURCE_TOKENS = [
   'workspace_repo',
 ];
 const SERVER_PROTOCOL_PROBE = 'server_http_protocol_probe';
+const noCompatibleVisibilitySeconds = Math.max(1, numberValue(
+  process.env.DW_WV_NO_COMPATIBLE_VISIBILITY_SECONDS
+    ?? process.env.DW_WV_WORKER_VERSIONING_NO_COMPATIBLE_VISIBILITY_SECONDS,
+) ?? 60);
 
 const scenarioManifest = readJsonIfExists(scenarioManifestPath) ?? {};
 const requiredScenarios = Array.isArray(scenarioManifest.scenarios)
@@ -270,6 +274,14 @@ async function main() {
   });
   const noCompatibleWorkflowId = stringValue(noCompatibleRun.workflow_id);
   const noCompatibleRunId = stringValue(noCompatibleRun.run_id);
+  const noCompatibleStartedVisibility = noCompatibleWorkflowId && noCompatibleRunId
+    ? await getJson(
+      serverUrl,
+      `/api/workflows/${encodeURIComponent(noCompatibleWorkflowId)}/runs/${encodeURIComponent(noCompatibleRunId)}`,
+      controlHeaders,
+      [200],
+    )
+    : {};
   const v1Delete = await deleteJson(
     serverUrl,
     `/api/workers/${encodeURIComponent(v1WorkerId)}`,
@@ -291,17 +303,13 @@ async function main() {
       serverUrl,
       noCompatibleWorkflowId,
       noCompatibleRunId,
+      buildV1,
       controlHeaders,
     )
-    : { latest: {}, samples: [] };
+    : emptyNoCompatibleVisibilityResult();
   const noCompatibleShow = noCompatibleVisibility.latest;
-  const noCompatibleBuildIds = await getJson(
-    serverUrl,
-    `/api/task-queues/${encodeURIComponent(taskQueue)}/build-ids`,
-    controlHeaders,
-    [200],
-  );
-  const noCompatibleBuildIdEntry = taskQueueBuildIdEntry(noCompatibleBuildIds, buildV1);
+  const noCompatibleBuildIds = noCompatibleVisibility.task_queue_build_ids;
+  const noCompatibleBuildIdEntry = noCompatibleVisibility.task_queue_build_id_entry;
   const noCompatiblePollStatuses = noCompatiblePolls
     .map((poll) => stringValue(poll.poll_status))
     .filter(Boolean);
@@ -761,11 +769,15 @@ async function main() {
     published_server_artifact: publishedServerArtifactEvidence(artifactVersions, artifactSources),
     published_artifact_worker_execution: false,
     local_product_source_checkouts_used: false,
+    started_workflow_visibility: noCompatibleStartedVisibility,
     deregister_response: v1Delete,
     workflow_visibility: noCompatibleShow,
     workflow_visibility_samples: noCompatibleVisibility.samples,
     task_queue_build_ids: noCompatibleBuildIds,
     task_queue_build_id_entry: noCompatibleBuildIdEntry,
+    task_queue_build_id_samples: noCompatibleVisibility.task_queue_build_id_samples,
+    no_compatible_visibility_deadline_seconds: noCompatibleVisibilitySeconds,
+    no_compatible_visibility_attempts: noCompatibleVisibility.attempts,
   };
   const noCompatiblePublishedEvidence = noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidence);
   const publishedNoCompatibleOutputs = noCompatiblePublishedEvidence.outputs;
@@ -1200,10 +1212,28 @@ async function pollWorkflowTask(serverUrl, headers, workerId, taskQueue, buildId
   };
 }
 
-async function waitForNoCompatibleVisibility(serverUrl, workflowId, runId, headers) {
-  const samples = [];
+function emptyNoCompatibleVisibilityResult() {
+  return {
+    latest: {},
+    samples: [],
+    task_queue_build_ids: {},
+    task_queue_build_id_entry: null,
+    task_queue_build_id_samples: [],
+    attempts: 0,
+  };
+}
 
-  for (let attempt = 1; attempt <= 6; attempt += 1) {
+async function waitForNoCompatibleVisibility(serverUrl, workflowId, runId, buildId, headers) {
+  const samples = [];
+  const taskQueueBuildIdSamples = [];
+  const deadline = Date.now() + noCompatibleVisibilitySeconds * 1000;
+  let latest = {};
+  let latestBuildIds = {};
+  let latestBuildIdEntry = null;
+  let attempts = 0;
+
+  do {
+    attempts += 1;
     const sample = await getJson(
       serverUrl,
       `/api/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}`,
@@ -1211,23 +1241,49 @@ async function waitForNoCompatibleVisibility(serverUrl, workflowId, runId, heade
       [200],
     );
     samples.push(sample);
+    latest = sample;
+
+    latestBuildIds = await getJson(
+      serverUrl,
+      `/api/task-queues/${encodeURIComponent(taskQueue)}/build-ids`,
+      headers,
+      [200],
+    );
+    latestBuildIdEntry = taskQueueBuildIdEntry(latestBuildIds, buildId);
+    taskQueueBuildIdSamples.push({
+      attempt: attempts,
+      build_id_entry: latestBuildIdEntry,
+      pending_workflow_tasks: objectValue(
+        latestBuildIdEntry?.pending_workflow_tasks
+          ?? latestBuildIdEntry?.pendingWorkflowTasks,
+      ),
+    });
 
     const signal = firstExplicitNoCompatibleSignal(
       sample.compatibility_status,
       sample.compatibilityStatus,
       sample.compatibility_fleet_reason,
       sample.compatibilityFleetReason,
+      ...pendingWorkflowTaskDiagnosticSignals(latestBuildIdEntry),
     );
     if (isExplicitNoCompatibleSignal(signal)) {
       break;
     }
 
-    await sleep(500);
-  }
+    if (Date.now() >= deadline) {
+      break;
+    }
+
+    await sleep(1000);
+  } while (Date.now() < deadline);
 
   return {
-    latest: samples[samples.length - 1] ?? {},
+    latest,
     samples,
+    task_queue_build_ids: latestBuildIds,
+    task_queue_build_id_entry: latestBuildIdEntry,
+    task_queue_build_id_samples: taskQueueBuildIdSamples,
+    attempts,
   };
 }
 
@@ -1661,6 +1717,7 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
   );
   const pollStatuses = pollStatusValuesFromOutputs(outputs);
   const workflowVisibilitySignals = workflowVisibilitySignalValuesFromOutputs(outputs);
+  const taskQueueBuildIdSignals = taskQueueBuildIdSignalValuesFromOutputs(outputs);
   const observedPollErrorCount = pollStatuses
     .filter((pollStatus) => isGenericPollErrorStatus(pollStatus))
     .length;
@@ -1694,6 +1751,7 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
     outputs.compatibility_fleet_reason,
     outputs.compatibilityFleetReason,
     ...workflowVisibilitySignals,
+    ...taskQueueBuildIdSignals,
   );
   const rawPendingOrTypedError = firstDefined(
     outputs.pending_or_typed_error,
@@ -1711,6 +1769,7 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
       outputs.compatibility_fleet_reason,
       outputs.compatibilityFleetReason,
       ...workflowVisibilitySignals,
+      ...taskQueueBuildIdSignals,
     ),
   );
   const incompatibleWorkerTaskCount = numberValue(rawIncompatibleWorkerTaskCount);
@@ -2418,6 +2477,37 @@ function workflowVisibilitySignalValuesFromOutputs(outputs) {
       sample.compatibilityStatus,
       sample.compatibility_fleet_reason,
       sample.compatibilityFleetReason,
+    );
+  }
+
+  return values.map((value) => stringValue(value)).filter(Boolean);
+}
+
+function taskQueueBuildIdSignalValuesFromOutputs(outputs) {
+  const values = [
+    ...pendingWorkflowTaskDiagnosticSignals(
+      outputs.task_queue_build_id_entry
+        ?? outputs.taskQueueBuildIdEntry,
+    ),
+  ];
+
+  for (const sample of [
+    ...arrayValue(outputs.task_queue_build_id_samples),
+    ...arrayValue(outputs.taskQueueBuildIdSamples),
+  ]) {
+    if (!sample || typeof sample !== 'object' || Array.isArray(sample)) {
+      continue;
+    }
+
+    values.push(
+      ...pendingWorkflowTaskDiagnosticSignals(
+        sample.build_id_entry
+          ?? sample.buildIdEntry,
+      ),
+      ...pendingWorkflowTaskDiagnosticSignals({
+        pending_workflow_tasks: sample.pending_workflow_tasks
+          ?? sample.pendingWorkflowTasks,
+      }),
     );
   }
 
