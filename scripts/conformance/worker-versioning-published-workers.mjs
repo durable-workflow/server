@@ -1541,11 +1541,22 @@ async def main():
                     "error": str(exc),
                 }
         elif payload["action"] == "poll":
-            task = await client.poll_workflow_task(
-                worker_id=payload["worker_id"],
-                task_queue=payload["task_queue"],
-                timeout=float(payload.get("poll_timeout_seconds") or 2.0),
-            )
+            if hasattr(client, "poll_workflow_task_response"):
+                response = await client.poll_workflow_task_response(
+                    worker_id=payload["worker_id"],
+                    task_queue=payload["task_queue"],
+                    build_id=payload["build_id"],
+                    timeout=float(payload.get("poll_timeout_seconds") or 2.0),
+                )
+                task = response.get("task") if isinstance(response, dict) else None
+                poll_status = response.get("poll_status") if isinstance(response, dict) else None
+            else:
+                task = await client.poll_workflow_task(
+                    worker_id=payload["worker_id"],
+                    task_queue=payload["task_queue"],
+                    timeout=float(payload.get("poll_timeout_seconds") or 2.0),
+                )
+                poll_status = None
             if task and payload.get("complete"):
                 await client.complete_workflow_task(
                     task_id=task["task_id"],
@@ -1566,7 +1577,12 @@ async def main():
                     message=payload.get("failure_message") or "published worker task failed",
                     failure_type=payload.get("failure_type") or "RuntimeError",
                 )
-            result = {"action": "poll", "task": task}
+            result = {
+                "action": "poll",
+                "task": task,
+                "poll_status": poll_status,
+                "sdk_poll_envelope_used": hasattr(client, "poll_workflow_task_response"),
+            }
         elif payload["action"] == "raw_poll":
             body = {
                 "worker_id": payload["worker_id"],
