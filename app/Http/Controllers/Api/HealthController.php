@@ -12,6 +12,7 @@ use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
 use App\Support\CoordinationHealthContract;
 use App\Support\FilesystemDiskAvailability;
+use App\Support\HeartbeatRuntimeContract;
 use App\Support\MigrationRuntimeContract;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\NexusContract;
@@ -138,6 +139,7 @@ class HealthController
             'schedules_runtime_contract' => true,
             'child_workflow_runtime_contract' => true,
             'saga_runtime_contract' => true,
+            'heartbeat_runtime_contract' => true,
             'principal_attribution_contract' => true,
             'python_sdk_parity_contract' => true,
             'skew_refusal_matrix_contract' => true,
@@ -190,6 +192,7 @@ class HealthController
             'schedules_runtime_contract' => SchedulesRuntimeContract::manifest(),
             'child_workflow_runtime_contract' => ChildWorkflowRuntimeContract::manifest(),
             'saga_runtime_contract' => SagaRuntimeContract::manifest(),
+            'heartbeat_runtime_contract' => HeartbeatRuntimeContract::manifest(),
             'principal_attribution_contract' => PrincipalAttributionContract::manifest(),
             'python_sdk_parity_contract' => PythonSdkParityContract::manifest(),
             'skew_refusal_matrix_contract' => SkewRefusalMatrixContract::manifest(),

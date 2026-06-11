@@ -8,6 +8,7 @@ use App\Support\ChildWorkflowRuntimeContract;
 use App\Support\ControlPlaneProtocol;
 use App\Support\ControlPlaneRequestContract;
 use App\Support\CoordinationHealthContract;
+use App\Support\HeartbeatRuntimeContract;
 use App\Support\MigrationRuntimeContract;
 use App\Support\NamespaceRuntimeContract;
 use App\Support\PrincipalAttributionContract;
@@ -65,6 +66,7 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'payload_codec_envelope',
                     'payload_codec_envelope_responses',
                     'bridge_adapter_outcome_contract',
+                    'heartbeat_runtime_contract',
                     'skew_refusal_matrix_contract',
                     'worker_versioning_runtime_contract',
                     'migration_runtime_contract',
@@ -236,6 +238,26 @@ class ClusterInfoCompatibilityTest extends TestCase
                     'scenario_manifest',
                     'artifact_policy',
                     'scenario_statuses',
+                    'topology',
+                    'required_matrix',
+                    'required_scenarios',
+                    'scenario_requirements',
+                    'coverage_gate',
+                    'host_runner_contract',
+                    'result_gate',
+                    'finding_policy',
+                ],
+                'heartbeat_runtime_contract' => [
+                    'schema',
+                    'version',
+                    'result_schema',
+                    'result_version',
+                    'fixture_category',
+                    'platform_conformance_suite_authority',
+                    'scenario_manifest',
+                    'artifact_policy',
+                    'scenario_statuses',
+                    'heartbeat_contract',
                     'topology',
                     'required_matrix',
                     'required_scenarios',
@@ -424,6 +446,12 @@ class ClusterInfoCompatibilityTest extends TestCase
             ->assertJsonPath('saga_runtime_contract.version', SagaRuntimeContract::VERSION)
             ->assertJsonPath(
                 'saga_runtime_contract.platform_conformance_suite_authority',
+                PlatformConformanceSuite::SCHEMA,
+            )
+            ->assertJsonPath('heartbeat_runtime_contract.schema', HeartbeatRuntimeContract::SCHEMA)
+            ->assertJsonPath('heartbeat_runtime_contract.version', HeartbeatRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'heartbeat_runtime_contract.platform_conformance_suite_authority',
                 PlatformConformanceSuite::SCHEMA,
             )
             ->assertJsonPath('principal_attribution_contract.schema', PrincipalAttributionContract::SCHEMA)

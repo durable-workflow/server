@@ -9,6 +9,8 @@ use App\Support\ChildWorkflowRuntimeContract;
 use App\Support\ChildWorkflowRuntimeResultGate;
 use App\Support\CoordinationHealthContract;
 use App\Support\ControlPlaneProtocol;
+use App\Support\HeartbeatRuntimeContract;
+use App\Support\HeartbeatRuntimeResultGate;
 use App\Support\MigrationRuntimeContract;
 use App\Support\MigrationRuntimeResultGate;
 use App\Support\NamespaceRuntimeContract;
@@ -734,6 +736,71 @@ class ClusterInfoTest extends TestCase
         );
         $this->assertContains(
             'runner_blocked_false_for_product_evidence',
+            $contract['result_gate']['pass_requires'],
+        );
+    }
+
+    public function test_it_publishes_the_heartbeat_runtime_conformance_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('capabilities.heartbeat_runtime_contract', true)
+            ->assertJsonPath('heartbeat_runtime_contract.schema', HeartbeatRuntimeContract::SCHEMA)
+            ->assertJsonPath('heartbeat_runtime_contract.version', HeartbeatRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'heartbeat_runtime_contract.fixture_category',
+                'heartbeat_runtime_contract',
+            )
+            ->assertJsonPath(
+                'heartbeat_runtime_contract.coverage_gate.smoke_subset_outcome',
+                'non_passing',
+            )
+            ->assertJsonPath(
+                'heartbeat_runtime_contract.scenario_manifest.suite_version',
+                PlatformConformanceSuite::VERSION,
+            );
+
+        $contract = $response->json('heartbeat_runtime_contract');
+        $this->assertIsArray($contract);
+        foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'sdk-rust', 'waterline'] as $artifact) {
+            $this->assertArrayHasKey($artifact, $contract['artifact_policy']['install_channels']);
+        }
+        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-rust', $contract['required_matrix']['runtimes']);
+        $this->assertContains('dw worker:list', $contract['required_matrix']['operator_visibility_paths']);
+        $this->assertContains('Waterline Worker Status view', $contract['required_matrix']['operator_visibility_paths']);
+        $this->assertContains('stale_workers_excluded_from_workflow_start', $contract['required_matrix']['routing_cells']);
+        $this->assertContains('stale_workers_excluded_from_query_tasks', $contract['required_matrix']['routing_cells']);
+        $this->assertContains('php_sdk_heartbeat_loop', $contract['required_scenarios']);
+        $this->assertContains('python_sdk_heartbeat_loop', $contract['required_scenarios']);
+        $this->assertContains('rust_sdk_heartbeat_loop', $contract['required_scenarios']);
+        $this->assertContains('stale_worker_transition_timing', $contract['required_scenarios']);
+        $this->assertContains('stale_worker_routing_exclusion', $contract['required_scenarios']);
+        $this->assertContains('waterline_worker_status_visibility', $contract['required_scenarios']);
+        $this->assertContains('cross_namespace_isolation', $contract['required_scenarios']);
+        $this->assertContains(
+            'runner_blocked_false_for_product_evidence',
+            $contract['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertSame(
+            'required_for_passing_heartbeats_conformance',
+            $contract['host_runner_contract']['status'],
+        );
+        $this->assertContains(
+            'waterline-worker-status',
+            $contract['host_runner_contract']['required_execution_scopes'],
+        );
+        $this->assertSame(
+            'conformance_runner_coverage_gap',
+            $contract['host_runner_contract']['routing_policy']['missing_required_scenario']['finding_type'],
+        );
+        $this->assertSame(
+            HeartbeatRuntimeResultGate::SCHEMA,
+            $contract['result_gate']['schema'],
+        );
+        $this->assertContains(
+            'smoke_only_results_remain_non_passing',
             $contract['result_gate']['pass_requires'],
         );
     }
