@@ -76,6 +76,7 @@ class WorkerController
             'supported_workflow_types.*' => ['string'],
             'workflow_definition_fingerprints' => ['nullable', 'array'],
             'workflow_definition_fingerprints.*' => ['string', 'max:255'],
+            'workflow_command_contracts' => ['nullable', 'array'],
             'supported_activity_types' => ['nullable', 'array'],
             'supported_activity_types.*' => ['string'],
             'capabilities' => ['nullable', 'array'],
@@ -100,6 +101,9 @@ class WorkerController
         $workerId = $validated['worker_id'] ?? Str::ulid()->toBase32();
         $workflowDefinitionFingerprints = $this->workflowDefinitionFingerprints(
             $validated['workflow_definition_fingerprints'] ?? []
+        );
+        $workflowCommandContracts = $this->workflowCommandContracts(
+            $validated['workflow_command_contracts'] ?? []
         );
 
         $existing = WorkerRegistration::query()
@@ -130,7 +134,18 @@ class WorkerController
                 $workflowDefinitionFingerprints,
                 $validated['supported_workflow_types'] ?? null,
             );
+
+            if (! $request->has('workflow_command_contracts')) {
+                $workflowCommandContracts = $this->workflowCommandContracts(
+                    $existing->workflow_command_contracts ?? []
+                );
+            }
         }
+
+        $workflowCommandContracts = $this->filterWorkflowCommandContracts(
+            $workflowCommandContracts,
+            $validated['supported_workflow_types'] ?? null,
+        );
 
         $registrationStatus = $this->workerRegistrationStatus(
             $namespace,
@@ -157,6 +172,7 @@ class WorkerController
                 'build_id' => $validated['build_id'] ?? null,
                 'supported_workflow_types' => $validated['supported_workflow_types'] ?? [],
                 'workflow_definition_fingerprints' => $workflowDefinitionFingerprints,
+                'workflow_command_contracts' => $workflowCommandContracts,
                 'supported_activity_types' => $validated['supported_activity_types'] ?? [],
                 'capabilities' => $this->nonEmptyStringArray($validated['capabilities'] ?? []),
                 'max_concurrent_workflow_tasks' => $maxWorkflowTasks,
@@ -231,6 +247,196 @@ class WorkerController
         ksort($normalized);
 
         return $normalized;
+    }
+
+    /**
+     * @param  array<array-key, mixed>  $contracts
+     * @return array<string, array<string, mixed>>
+     */
+    private function workflowCommandContracts(array $contracts): array
+    {
+        $normalized = [];
+
+        foreach ($contracts as $workflowType => $contract) {
+            if (! is_string($workflowType) || ! is_array($contract)) {
+                continue;
+            }
+
+            $workflowType = trim($workflowType);
+
+            if ($workflowType === '') {
+                continue;
+            }
+
+            $commandContract = $this->workflowCommandContract($contract);
+
+            if ($commandContract === null) {
+                continue;
+            }
+
+            $normalized[$workflowType] = $commandContract;
+        }
+
+        ksort($normalized);
+
+        return $normalized;
+    }
+
+    /**
+     * @param  array<string, mixed>  $contract
+     * @return array<string, mixed>|null
+     */
+    private function workflowCommandContract(array $contract): ?array
+    {
+        $normalized = [
+            'queries' => $this->nonEmptyStringArray($contract['queries'] ?? []),
+            'query_contracts' => $this->commandHandlerContracts($contract['query_contracts'] ?? []),
+            'signals' => $this->nonEmptyStringArray($contract['signals'] ?? []),
+            'signal_contracts' => $this->commandHandlerContracts($contract['signal_contracts'] ?? []),
+            'updates' => $this->nonEmptyStringArray($contract['updates'] ?? []),
+            'update_contracts' => $this->commandHandlerContracts($contract['update_contracts'] ?? []),
+        ];
+
+        if ($normalized['queries'] === []
+            && $normalized['query_contracts'] === []
+            && $normalized['signals'] === []
+            && $normalized['signal_contracts'] === []
+            && $normalized['updates'] === []
+            && $normalized['update_contracts'] === []
+        ) {
+            return null;
+        }
+
+        foreach ($normalized['query_contracts'] as $handlerContract) {
+            $normalized['queries'][] = $handlerContract['name'];
+        }
+
+        foreach ($normalized['signal_contracts'] as $handlerContract) {
+            $normalized['signals'][] = $handlerContract['name'];
+        }
+
+        foreach ($normalized['update_contracts'] as $handlerContract) {
+            $normalized['updates'][] = $handlerContract['name'];
+        }
+
+        $normalized['queries'] = $this->sortedUniqueStrings($normalized['queries']);
+        $normalized['signals'] = $this->sortedUniqueStrings($normalized['signals']);
+        $normalized['updates'] = $this->sortedUniqueStrings($normalized['updates']);
+
+        return $normalized;
+    }
+
+    /**
+     * @param  mixed  $contracts
+     * @return list<array{name: string, parameters: list<array<string, mixed>>}>
+     */
+    private function commandHandlerContracts(mixed $contracts): array
+    {
+        if (! is_array($contracts) || ! array_is_list($contracts)) {
+            return [];
+        }
+
+        $normalized = [];
+        $seen = [];
+
+        foreach ($contracts as $contract) {
+            if (! is_array($contract)) {
+                continue;
+            }
+
+            $name = $this->stringValue($contract['name'] ?? null);
+
+            if ($name === null || in_array($name, $seen, true)) {
+                continue;
+            }
+
+            $seen[] = $name;
+            $normalized[] = [
+                'name' => $name,
+                'parameters' => $this->commandHandlerParameters($contract['parameters'] ?? []),
+            ];
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param  mixed  $parameters
+     * @return list<array<string, mixed>>
+     */
+    private function commandHandlerParameters(mixed $parameters): array
+    {
+        if (! is_array($parameters) || ! array_is_list($parameters)) {
+            return [];
+        }
+
+        $normalized = [];
+        $seen = [];
+        $position = 0;
+
+        foreach ($parameters as $parameter) {
+            if (! is_array($parameter)) {
+                continue;
+            }
+
+            $name = $this->stringValue($parameter['name'] ?? null);
+
+            if ($name === null || in_array($name, $seen, true)) {
+                continue;
+            }
+
+            $seen[] = $name;
+            $type = $this->stringValue($parameter['type'] ?? null);
+            $normalized[] = [
+                'name' => $name,
+                'position' => $this->intValue($parameter['position'] ?? null) ?? $position,
+                'required' => (bool) ($parameter['required'] ?? ! array_key_exists('default', $parameter)),
+                'variadic' => (bool) ($parameter['variadic'] ?? false),
+                'default_available' => (bool) ($parameter['default_available'] ?? array_key_exists('default', $parameter)),
+                'default' => $parameter['default'] ?? null,
+                'type' => $type,
+                'allows_null' => (bool) ($parameter['allows_null'] ?? true),
+            ];
+            $position++;
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $contracts
+     * @param  array<array-key, mixed>|null  $supportedWorkflowTypes
+     * @return array<string, array<string, mixed>>
+     */
+    private function filterWorkflowCommandContracts(array $contracts, ?array $supportedWorkflowTypes): array
+    {
+        if ($supportedWorkflowTypes === null) {
+            return $contracts;
+        }
+
+        $supported = $this->nonEmptyStringArray($supportedWorkflowTypes);
+
+        if ($supported === []) {
+            return [];
+        }
+
+        return array_intersect_key($contracts, array_flip($supported));
+    }
+
+    /**
+     * @param  list<string>  $values
+     * @return list<string>
+     */
+    private function sortedUniqueStrings(array $values): array
+    {
+        $values = array_values(array_unique(array_filter(
+            $values,
+            static fn (mixed $value): bool => is_string($value) && $value !== '',
+        )));
+
+        sort($values);
+
+        return $values;
     }
 
     /**
@@ -2211,6 +2417,30 @@ class WorkerController
         }
 
         return $result;
+    }
+
+    private function stringValue(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value === '' ? null : $value;
+    }
+
+    private function intValue(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        if (is_numeric($value)) {
+            return (int) $value;
+        }
+
+        return null;
     }
 
     private function drainingWorkerPollResponse(

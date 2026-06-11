@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
+use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
@@ -394,6 +395,93 @@ class WorkflowControlPlaneTest extends TestCase
             'instance_not_found',
             $signal->json('control_plane.contract.rejection_reasons'),
         );
+    }
+
+    public function test_external_worker_command_contract_rejects_malformed_signal_and_query_payloads(): void
+    {
+        Queue::fake();
+
+        $this->createNamespace('default', 'Default namespace');
+
+        $this->withHeaders($this->workerHeaders())->postJson('/api/worker/register', [
+            'worker_id' => 'external-command-contract-worker',
+            'task_queue' => 'external-command-contracts',
+            'runtime' => 'php',
+            'supported_workflow_types' => ['external.counter'],
+            'capabilities' => ['query_tasks'],
+            'workflow_command_contracts' => [
+                'external.counter' => $this->externalCounterCommandContract(),
+            ],
+        ])->assertCreated();
+
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-external-command-contract',
+                'workflow_type' => 'external.counter',
+                'task_queue' => 'external-command-contracts',
+            ]);
+
+        $start->assertCreated()
+            ->assertJsonPath('workflow_id', 'wf-external-command-contract');
+
+        $runId = (string) $start->json('run_id');
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->firstOrFail();
+
+        $this->assertSame(['count-at-least', 'state'], $started->payload['declared_queries'] ?? null);
+        $this->assertSame(['increment'], $started->payload['declared_signals'] ?? null);
+        $this->assertSame('external:external.counter', $started->payload['declared_entry_declaring_class'] ?? null);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-external-command-contract/signal/increment', [
+                'input' => ['amount' => 'bad'],
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('signal_name', 'increment')
+            ->assertJsonPath('reason', 'invalid_signal_arguments')
+            ->assertJsonPath('rejection_reason', 'invalid_signal_arguments')
+            ->assertJsonPath('validation_errors.amount.0', 'The amount argument must be of type int.');
+
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $runId,
+            'event_type' => HistoryEventType::SignalReceived->value,
+        ]);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-external-command-contract/signal/missing')
+            ->assertNotFound()
+            ->assertJsonPath('signal_name', 'missing')
+            ->assertJsonPath('reason', 'unknown_signal')
+            ->assertJsonPath('signal_admission', 'handler_not_declared');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-external-command-contract/query/count-at-least', [
+                'input' => ['minimum' => 'bad'],
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('query_name', 'count-at-least')
+            ->assertJsonPath('reason', 'invalid_query_arguments')
+            ->assertJsonPath('validation_errors.minimum.0', 'The minimum argument must be of type int.');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-external-command-contract/query/missing')
+            ->assertNotFound()
+            ->assertJsonPath('query_name', 'missing')
+            ->assertJsonPath('reason', 'rejected_unknown_query');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-external-command-contract-missing/signal/increment')
+            ->assertNotFound()
+            ->assertJsonPath('reason', 'instance_not_found')
+            ->assertJsonPath('control_plane.operation', 'signal');
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-external-command-contract-missing/query/state')
+            ->assertNotFound()
+            ->assertJsonPath('reason', 'instance_not_found')
+            ->assertJsonPath('control_plane.operation', 'query');
     }
 
     public function test_it_returns_query_validation_errors_and_scopes_control_plane_commands_by_namespace(): void
@@ -2104,6 +2192,54 @@ class WorkflowControlPlaneTest extends TestCase
         ]);
     }
 
+    private function externalCounterCommandContract(): array
+    {
+        return [
+            'queries' => ['state', 'count-at-least'],
+            'query_contracts' => [
+                [
+                    'name' => 'state',
+                    'parameters' => [],
+                ],
+                [
+                    'name' => 'count-at-least',
+                    'parameters' => [
+                        [
+                            'name' => 'minimum',
+                            'position' => 0,
+                            'required' => true,
+                            'variadic' => false,
+                            'default_available' => false,
+                            'default' => null,
+                            'type' => 'int',
+                            'allows_null' => false,
+                        ],
+                    ],
+                ],
+            ],
+            'signals' => ['increment'],
+            'signal_contracts' => [
+                [
+                    'name' => 'increment',
+                    'parameters' => [
+                        [
+                            'name' => 'amount',
+                            'position' => 0,
+                            'required' => true,
+                            'variadic' => false,
+                            'default_available' => false,
+                            'default' => null,
+                            'type' => 'int',
+                            'allows_null' => false,
+                        ],
+                    ],
+                ],
+            ],
+            'updates' => [],
+            'update_contracts' => [],
+        ];
+    }
+
     private function createNamespace(string $name, string $description): void
     {
         WorkflowNamespace::query()->updateOrCreate(
@@ -2121,6 +2257,14 @@ class WorkflowControlPlaneTest extends TestCase
         return [
             'X-Namespace' => $namespace,
             'X-Durable-Workflow-Control-Plane-Version' => '2',
+        ];
+    }
+
+    private function workerHeaders(string $namespace = 'default'): array
+    {
+        return [
+            'X-Namespace' => $namespace,
+            WorkerProtocol::HEADER => WorkerProtocol::VERSION,
         ];
     }
 

@@ -27,9 +27,11 @@ use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\MatchingRoleSnapshot;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
+use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\ServiceExecutionContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
+use Workflow\V2\Support\WorkflowQueryContract;
 
 /**
  * Pins the API floor contract the server relies on from
@@ -261,6 +263,16 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertContains([ExternalPayloadStoragePolicy::class, 'thresholdBytesFor'], $interfaces);
     }
 
+    public function test_command_contract_apis_are_listed_in_the_package_floor(): void
+    {
+        $floor = new ReflectionClass(WorkflowPackageApiFloor::class);
+
+        $apis = $this->privateConstant($floor, 'REQUIRED_APIS');
+        $this->assertContains([RunCommandContract::class, 'forRun'], $apis);
+        $this->assertContains([WorkflowQueryContract::class, 'resolveTargetForRun'], $apis);
+        $this->assertContains([WorkflowQueryContract::class, 'validatedArgumentsForRun'], $apis);
+    }
+
     public function test_payload_envelope_resolver_external_storage_signature_matches_api_floor(): void
     {
         $confirms = $this->invokeConfirmsPayloadEnvelopeResolverSignature();
@@ -315,6 +327,38 @@ class WorkflowPackageApiFloorTest extends TestCase
         ], WorkflowCommandNormalizer::payloadEnvelopeFields());
 
         $this->assertTrue($this->invokeConfirmsWorkflowCommandNormalizerPayloadEnvelopeContract());
+    }
+
+    public function test_run_command_contract_signature_matches_api_floor(): void
+    {
+        $reflection = new ReflectionClass(RunCommandContract::class);
+        $method = $reflection->getMethod('forRun');
+
+        $this->assertTrue($method->isPublic());
+        $this->assertTrue($method->isStatic());
+        $this->assertTrue(
+            $this->invokeConfirmsRunCommandContractSignature(),
+            'RunCommandContract::forRun() no longer matches the server API floor. If this fails, '
+            .'the installed workflow package can pass boot and then fail during query routing.'
+        );
+    }
+
+    public function test_workflow_query_contract_signature_matches_api_floor(): void
+    {
+        $reflection = new ReflectionClass(WorkflowQueryContract::class);
+
+        foreach (['resolveTargetForRun', 'validatedArgumentsForRun'] as $methodName) {
+            $method = $reflection->getMethod($methodName);
+
+            $this->assertTrue($method->isPublic());
+            $this->assertTrue($method->isStatic());
+        }
+
+        $this->assertTrue(
+            $this->invokeConfirmsWorkflowQueryContractSignature(),
+            'WorkflowQueryContract no longer matches the server API floor. If this fails, '
+            .'external query validation can fatal after boot on stale workflow package snapshots.'
+        );
     }
 
     public function test_workflow_task_bridge_poll_signature_matches_api_floor(): void
@@ -463,6 +507,26 @@ class WorkflowPackageApiFloorTest extends TestCase
             WorkflowPackageApiFloor::class,
             'confirmsWorkflowCommandNormalizerPayloadEnvelopeContract',
         );
+
+        /** @var bool $result */
+        $result = $reflection->invoke(null);
+
+        return $result;
+    }
+
+    private function invokeConfirmsRunCommandContractSignature(): bool
+    {
+        $reflection = new ReflectionMethod(WorkflowPackageApiFloor::class, 'confirmsRunCommandContractSignature');
+
+        /** @var bool $result */
+        $result = $reflection->invoke(null);
+
+        return $result;
+    }
+
+    private function invokeConfirmsWorkflowQueryContractSignature(): bool
+    {
+        $reflection = new ReflectionMethod(WorkflowPackageApiFloor::class, 'confirmsWorkflowQueryContractSignature');
 
         /** @var bool $result */
         $result = $reflection->invoke(null);

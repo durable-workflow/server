@@ -15,6 +15,7 @@ use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Exceptions\ExternalPayloadIntegrityException;
 use Workflow\V2\Models\WorkflowSearchAttribute;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\BackendCapabilities;
 use Workflow\V2\Support\ChildWorkflowNamespaceProjection;
 use Workflow\V2\Support\DefaultMatchingRole;
@@ -23,9 +24,11 @@ use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\MatchingRoleSnapshot;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
+use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\ServiceExecutionContract;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
+use Workflow\V2\Support\WorkflowQueryContract;
 
 /**
  * Enforces the minimum `durable-workflow/workflow` API surface the server
@@ -86,6 +89,11 @@ final class WorkflowPackageApiFloor
         [ExternalPayloads::class, 'wireEnvelope'],
         [ExternalPayloads::class, 'historyValue'],
         [ExternalPayloads::class, 'storedEnvelope'],
+        // Durable command-contract APIs used by server-side signal/query
+        // validation for external workers.
+        [RunCommandContract::class, 'forRun'],
+        [WorkflowQueryContract::class, 'resolveTargetForRun'],
+        [WorkflowQueryContract::class, 'validatedArgumentsForRun'],
     ];
 
     /**
@@ -261,6 +269,14 @@ final class WorkflowPackageApiFloor
             $missing[] = WorkflowCommandNormalizer::class.' command payload-envelope contract';
         }
 
+        if (! self::confirmsRunCommandContractSignature()) {
+            $missing[] = RunCommandContract::class.' run command-contract signatures';
+        }
+
+        if (! self::confirmsWorkflowQueryContractSignature()) {
+            $missing[] = WorkflowQueryContract::class.' workflow query-contract signatures';
+        }
+
         if (! class_exists(self::POLL_MODE_DEMOTION_CLASS)) {
             $missing[] = self::POLL_MODE_DEMOTION_CLASS;
         } elseif (! self::confirmsPollModeDemotion(self::POLL_MODE_DEMOTION_CLASS, self::POLL_MODE_DEMOTION_METHOD)) {
@@ -285,8 +301,8 @@ final class WorkflowPackageApiFloor
             .'the poll-mode queue capability demotion, the matching-role repair-pass contract, '
             .'the service execution control-plane contract, the worker-session protocol contract, '
             .'the external payload storage protocol APIs, the command payload-envelope contract, '
-            .'the typed search-attribute storage constants, plus ChildWorkflowNamespaceProjection '
-            .'for package-owned child namespace propagation '
+            .'the external command/query contract APIs, the typed search-attribute storage '
+            .'constants, plus ChildWorkflowNamespaceProjection for package-owned child namespace propagation '
             .'(install the v2 workflow package snapshot that matches this server release).',
             implode(', ', $missing),
             self::REQUIRED_WORKER_PROTOCOL_VERSION,
@@ -575,6 +591,43 @@ final class WorkflowPackageApiFloor
             && WorkflowCommandNormalizer::acceptsPayloadEnvelope('record_side_effect', 'result')
             && ! WorkflowCommandNormalizer::acceptsPayloadEnvelope('complete_update', 'arguments')
             && ! WorkflowCommandNormalizer::acceptsPayloadEnvelope('fail_update', 'result');
+    }
+
+    private static function confirmsRunCommandContractSignature(): bool
+    {
+        return self::matchesStaticMethod(
+            RunCommandContract::class,
+            'forRun',
+            [
+                ['run', WorkflowRun::class, false, false, null],
+            ],
+            'array',
+            false,
+        );
+    }
+
+    private static function confirmsWorkflowQueryContractSignature(): bool
+    {
+        return self::matchesStaticMethod(
+            WorkflowQueryContract::class,
+            'resolveTargetForRun',
+            [
+                ['run', WorkflowRun::class, false, false, null],
+                ['target', 'string', false, false, null],
+            ],
+            'array',
+            true,
+        ) && self::matchesStaticMethod(
+            WorkflowQueryContract::class,
+            'validatedArgumentsForRun',
+            [
+                ['run', WorkflowRun::class, false, false, null],
+                ['queryName', 'string', false, false, null],
+                ['arguments', 'array', false, false, null],
+            ],
+            'array',
+            false,
+        );
     }
 
     /**

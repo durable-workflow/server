@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
@@ -34,6 +35,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ExternalPayloads;
 
 class WorkflowQueryTaskBrokerTest extends TestCase
 {
@@ -398,6 +400,155 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 (string) $pollTask['query_arguments']['blob'],
             ),
         );
+    }
+
+    public function test_external_zero_argument_query_with_durable_command_contract_reaches_worker(): void
+    {
+        Queue::fake();
+
+        $this->registerPythonWorker(
+            'python-query-zero-argument-worker',
+            'python-queries',
+            ['python.queryable'],
+            workflowCommandContracts: [
+                'python.queryable' => [
+                    'queries' => ['status'],
+                    'query_contracts' => [
+                        [
+                            'name' => 'status',
+                            'parameters' => [],
+                        ],
+                    ],
+                    'signals' => [],
+                    'signal_contracts' => [],
+                    'updates' => [],
+                    'update_contracts' => [],
+                ],
+            ],
+        );
+        $run = $this->startRemoteWorkflow('wf-query-task-contracted-zero-argument');
+
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->firstOrFail();
+        $this->assertSame(['status'], $started->payload['declared_queries'] ?? null);
+        $this->assertSame(
+            [
+                [
+                    'name' => 'status',
+                    'parameters' => [],
+                ],
+            ],
+            $started->payload['declared_query_contracts'] ?? null,
+        );
+
+        /** @var LongPollSignalStore $signals */
+        $signals = app(LongPollSignalStore::class);
+        /** @var LongPollWaitSlotStore $waitSlots */
+        $waitSlots = app(LongPollWaitSlotStore::class);
+        $poller = new class($signals, $waitSlots) extends LongPoller
+        {
+            /** @var callable(): void|null */
+            public $afterFirstUnreadyProbe = null;
+
+            private bool $runningAfterProbe = false;
+
+            public function until(
+                callable $probe,
+                callable $ready,
+                ?int $timeoutSeconds = null,
+                ?int $intervalMilliseconds = null,
+                array $wakeChannels = [],
+                ?callable $nextProbeAt = null,
+                bool $reserveWorkerWaitSlot = false,
+                string $waitSlotPool = 'worker',
+            ): mixed {
+                $value = $probe();
+
+                if ($ready($value)) {
+                    return $value;
+                }
+
+                if (! is_callable($this->afterFirstUnreadyProbe) || $this->runningAfterProbe) {
+                    return $value;
+                }
+
+                $this->runningAfterProbe = true;
+
+                try {
+                    ($this->afterFirstUnreadyProbe)();
+                } finally {
+                    $this->runningAfterProbe = false;
+                    $this->afterFirstUnreadyProbe = null;
+                }
+
+                return $probe();
+            }
+        };
+        $broker = new WorkflowQueryTaskBroker(
+            app(ServerPollingCache::class),
+            $poller,
+            $signals,
+            app(ExternalPayloadEnvelopeService::class),
+            app(QueryTaskPollRequestStore::class),
+        );
+        $this->app->instance(WorkflowQueryTaskBroker::class, $broker);
+
+        /** @var WorkerRegistration $worker */
+        $worker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-query-zero-argument-worker')
+            ->firstOrFail();
+
+        $polledTask = null;
+        $poller->afterFirstUnreadyProbe = function () use ($broker, $worker, &$polledTask): void {
+            $task = $broker->poll('default', $worker);
+
+            $this->assertIsArray($task);
+            $this->assertSame('status', $task['query_name'] ?? null);
+            $this->assertSame(
+                [],
+                Serializer::unserializeWithCodec(
+                    (string) ($task['query_arguments']['codec'] ?? ''),
+                    (string) ($task['query_arguments']['blob'] ?? ''),
+                ),
+            );
+
+            $polledTask = $task;
+
+            $broker->complete(
+                'default',
+                (string) $task['query_task_id'],
+                'python-query-zero-argument-worker',
+                (int) $task['query_task_attempt'],
+                ['state' => 'ready'],
+                [
+                    'codec' => 'avro',
+                    'blob' => Serializer::serializeWithCodec('avro', ['state' => 'ready']),
+                ],
+            );
+        };
+
+        $query = $this->postJson(
+            '/api/workflows/wf-query-task-contracted-zero-argument/query/status',
+            [],
+            $this->apiHeaders(),
+        );
+
+        $query->assertOk()
+            ->assertHeader(ControlPlaneProtocol::HEADER, ControlPlaneProtocol::VERSION)
+            ->assertJsonPath('workflow_id', 'wf-query-task-contracted-zero-argument')
+            ->assertJsonPath('run_id', $run->id)
+            ->assertJsonPath('query_name', 'status')
+            ->assertJsonPath('result.state', 'ready')
+            ->assertJsonPath('reason', null)
+            ->assertJsonPath('control_plane.operation', 'query')
+            ->assertJsonPath('control_plane.operation_name', 'status')
+            ->assertJsonPath('control_plane.reason', null);
+
+        $this->assertIsArray($polledTask);
+        $this->assertSame($run->id, $polledTask['run_id'] ?? null);
     }
 
     public function test_duplicate_query_poll_request_ids_replay_the_same_query_task(): void
@@ -814,6 +965,331 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         $this->assertSame($task['query_task_id'], $poll['query_task_id'] ?? null);
         $this->assertSame('python-matching-definition-worker', $poll['lease_owner'] ?? null);
+    }
+
+    public function test_query_task_poll_requires_worker_build_to_match_run_compatibility_for_contracted_queries(): void
+    {
+        Queue::fake();
+
+        $this->registerPythonWorker(
+            'python-query-contract-v1-worker',
+            'contract-query-builds',
+            ['external.counter'],
+            workflowCommandContracts: [
+                'external.counter' => $this->externalCounterCommandContract(queryName: 'legacy-count'),
+            ],
+            buildId: 'v1.0.0',
+        );
+        $this->registerPythonWorker(
+            'python-query-contract-v2-worker',
+            'contract-query-builds',
+            ['external.counter'],
+            workflowCommandContracts: [
+                'external.counter' => $this->externalCounterCommandContract(queryName: 'count-at-least'),
+            ],
+            buildId: 'v2.0.0',
+        );
+
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'contract-query-builds',
+            'build_id' => 'v2.0.0',
+            'drain_intent' => WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE,
+            'promoted_at' => now()->subMinute(),
+        ]);
+
+        $run = $this->startRemoteWorkflow(
+            'wf-query-task-build-contract',
+            workflowType: 'external.counter',
+            taskQueue: 'contract-query-builds',
+        );
+
+        $this->assertSame('v2.0.0', $run->compatibility);
+
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->firstOrFail();
+
+        $this->assertSame(['count-at-least', 'state'], $started->payload['declared_queries'] ?? null);
+        $this->assertNotContains('legacy-count', $started->payload['declared_queries'] ?? []);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'count-at-least', [
+            'codec' => 'avro',
+            'blob' => Serializer::serializeWithCodec('avro', [1]),
+        ]);
+
+        $this->assertSame('v2.0.0', $task['compatibility'] ?? null);
+
+        /** @var WorkerRegistration $v1Worker */
+        $v1Worker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-query-contract-v1-worker')
+            ->firstOrFail();
+
+        $this->assertNull($broker->poll('default', $v1Worker));
+
+        $stored = $broker->task((string) $task['query_task_id']);
+        $this->assertIsArray($stored);
+        $this->assertSame('pending', $stored['status'] ?? null);
+        $this->assertArrayNotHasKey('lease_owner', $stored);
+
+        /** @var WorkerRegistration $v2Worker */
+        $v2Worker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-query-contract-v2-worker')
+            ->firstOrFail();
+
+        $poll = $broker->poll('default', $v2Worker);
+
+        $this->assertSame($task['query_task_id'], $poll['query_task_id'] ?? null);
+        $this->assertSame('v2.0.0', $poll['compatibility'] ?? null);
+        $this->assertSame('python-query-contract-v2-worker', $poll['lease_owner'] ?? null);
+    }
+
+    public function test_query_task_poll_requires_unversioned_worker_for_unversioned_contracted_queries_in_mixed_queue(): void
+    {
+        Queue::fake();
+
+        $this->registerPythonWorker(
+            'python-query-contract-unversioned-worker',
+            'contract-query-unversioned',
+            ['external.counter'],
+            workflowCommandContracts: [
+                'external.counter' => $this->externalCounterCommandContract(queryName: 'legacy-count'),
+            ],
+        );
+        $this->registerPythonWorker(
+            'python-query-contract-versioned-worker',
+            'contract-query-unversioned',
+            ['external.counter'],
+            workflowCommandContracts: [
+                'external.counter' => $this->externalCounterCommandContract(queryName: 'count-at-least'),
+            ],
+            buildId: 'v2.0.0',
+        );
+
+        WorkerBuildIdRollout::query()->create([
+            'namespace' => 'default',
+            'task_queue' => 'contract-query-unversioned',
+            'build_id' => WorkerBuildIdRollout::UNVERSIONED_KEY,
+            'drain_intent' => WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE,
+            'promoted_at' => now()->subMinute(),
+        ]);
+
+        $run = $this->startRemoteWorkflow(
+            'wf-query-task-unversioned-contract',
+            workflowType: 'external.counter',
+            taskQueue: 'contract-query-unversioned',
+        );
+
+        $this->assertNull($run->compatibility);
+
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->firstOrFail();
+
+        $this->assertSame(['legacy-count', 'state'], $started->payload['declared_queries'] ?? null);
+        $this->assertNotContains('count-at-least', $started->payload['declared_queries'] ?? []);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $route = $broker->queryRoute('default', $run);
+
+        $this->assertTrue($route['servable']);
+        $this->assertSame(2, $route['query_capable_worker_count']);
+        $this->assertSame(2, $route['workflow_type_worker_count']);
+        $this->assertSame(1, $route['compatible_worker_count']);
+
+        $task = $broker->enqueue('default', $run, 'legacy-count', [
+            'codec' => 'avro',
+            'blob' => Serializer::serializeWithCodec('avro', [1]),
+        ]);
+
+        $this->assertNull($task['compatibility'] ?? null);
+        $this->assertSame('unversioned', $task['compatibility_scope'] ?? null);
+        $this->assertFalse($broker->hasPendingTaskForPoller(
+            'default',
+            'contract-query-unversioned',
+            ['external.counter'],
+            'v2.0.0',
+        ));
+        $this->assertTrue($broker->hasPendingTaskForPoller(
+            'default',
+            'contract-query-unversioned',
+            ['external.counter'],
+        ));
+
+        /** @var WorkerRegistration $versionedWorker */
+        $versionedWorker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-query-contract-versioned-worker')
+            ->firstOrFail();
+
+        $this->assertNull($broker->poll('default', $versionedWorker));
+
+        $stored = $broker->task((string) $task['query_task_id']);
+        $this->assertIsArray($stored);
+        $this->assertSame('pending', $stored['status'] ?? null);
+        $this->assertArrayNotHasKey('lease_owner', $stored);
+
+        /** @var WorkerRegistration $unversionedWorker */
+        $unversionedWorker = WorkerRegistration::query()
+            ->where('namespace', 'default')
+            ->where('worker_id', 'python-query-contract-unversioned-worker')
+            ->firstOrFail();
+
+        $poll = $broker->poll('default', $unversionedWorker);
+
+        $this->assertSame($task['query_task_id'], $poll['query_task_id'] ?? null);
+        $this->assertNull($poll['compatibility'] ?? null);
+        $this->assertSame('unversioned', $poll['compatibility_scope'] ?? null);
+        $this->assertSame('python-query-contract-unversioned-worker', $poll['lease_owner'] ?? null);
+    }
+
+    public function test_contracted_query_validation_resolves_external_storage_arguments_before_worker_routing(): void
+    {
+        Queue::fake();
+
+        $directory = storage_path('framework/testing/query-task-contracted-external-input');
+        File::deleteDirectory($directory);
+        WorkflowNamespace::query()->where('name', 'default')->update([
+            'external_payload_storage' => [
+                'driver' => 'local',
+                'enabled' => true,
+                'threshold_bytes' => 1,
+                'config' => [
+                    'uri' => 'file://'.$directory,
+                ],
+            ],
+        ]);
+
+        try {
+            $this->registerPythonWorker(
+                'python-query-contract-external-worker',
+                'contract-query-external-input',
+                ['external.counter'],
+                workflowCommandContracts: [
+                    'external.counter' => $this->externalCounterCommandContract(queryName: 'count-at-least'),
+                ],
+            );
+            $run = $this->startRemoteWorkflow(
+                'wf-query-task-contracted-external-input',
+                workflowType: 'external.counter',
+                taskQueue: 'contract-query-external-input',
+            );
+
+            /** @var LongPollSignalStore $signals */
+            $signals = app(LongPollSignalStore::class);
+            /** @var LongPollWaitSlotStore $waitSlots */
+            $waitSlots = app(LongPollWaitSlotStore::class);
+            $poller = new class($signals, $waitSlots) extends LongPoller
+            {
+                /** @var callable(): void|null */
+                public $afterFirstUnreadyProbe = null;
+
+                private bool $runningAfterProbe = false;
+
+                public function until(
+                    callable $probe,
+                    callable $ready,
+                    ?int $timeoutSeconds = null,
+                    ?int $intervalMilliseconds = null,
+                    array $wakeChannels = [],
+                    ?callable $nextProbeAt = null,
+                    bool $reserveWorkerWaitSlot = false,
+                    string $waitSlotPool = 'worker',
+                ): mixed {
+                    $value = $probe();
+
+                    if ($ready($value)) {
+                        return $value;
+                    }
+
+                    if (! is_callable($this->afterFirstUnreadyProbe) || $this->runningAfterProbe) {
+                        return $value;
+                    }
+
+                    $this->runningAfterProbe = true;
+
+                    try {
+                        ($this->afterFirstUnreadyProbe)();
+                    } finally {
+                        $this->runningAfterProbe = false;
+                        $this->afterFirstUnreadyProbe = null;
+                    }
+
+                    return $probe();
+                }
+            };
+            $broker = new WorkflowQueryTaskBroker(
+                app(ServerPollingCache::class),
+                $poller,
+                $signals,
+                app(ExternalPayloadEnvelopeService::class),
+                app(QueryTaskPollRequestStore::class),
+            );
+            $this->app->instance(WorkflowQueryTaskBroker::class, $broker);
+
+            /** @var WorkerRegistration $worker */
+            $worker = WorkerRegistration::query()
+                ->where('namespace', 'default')
+                ->where('worker_id', 'python-query-contract-external-worker')
+                ->firstOrFail();
+
+            $payload = Serializer::serializeWithCodec('avro', [3]);
+            $storedReference = ExternalPayloads::externalizeForNamespace($payload, 'avro', 'default');
+            $this->assertIsString($storedReference);
+            $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $storedReference);
+            $externalEnvelope = ExternalPayloads::storedEnvelope($storedReference);
+            $this->assertIsArray($externalEnvelope);
+
+            foreach ([
+                'explicit_external_storage' => $externalEnvelope,
+                'stored_reference_blob' => [
+                    'codec' => 'avro',
+                    'blob' => $storedReference,
+                ],
+            ] as $mode => $queryArguments) {
+                $poller->afterFirstUnreadyProbe = function () use ($broker, $worker, $mode): void {
+                    $task = $broker->poll('default', $worker);
+
+                    $this->assertIsArray($task);
+                    $this->assertSame('count-at-least', $task['query_name'] ?? null);
+                    $this->assertSame(
+                        [3],
+                        Serializer::unserializeWithCodec(
+                            (string) ($task['query_arguments']['codec'] ?? ''),
+                            (string) ($task['query_arguments']['blob'] ?? ''),
+                        ),
+                        'Contracted query arguments were not resolved for '.$mode,
+                    );
+
+                    $broker->complete(
+                        'default',
+                        (string) $task['query_task_id'],
+                        'python-query-contract-external-worker',
+                        (int) $task['query_task_attempt'],
+                        ['mode' => $mode],
+                        [
+                            'codec' => 'avro',
+                            'blob' => Serializer::serializeWithCodec('avro', ['mode' => $mode]),
+                        ],
+                    );
+                };
+
+                $result = $broker->query('default', $run, 'count-at-least', $queryArguments);
+
+                $this->assertTrue($result['success']);
+                $this->assertSame(200, $result['status']);
+                $this->assertSame(['mode' => $mode], $result['result']);
+            }
+        } finally {
+            File::deleteDirectory($directory);
+        }
     }
 
     public function test_duplicate_query_poll_request_id_does_not_replay_after_query_task_completion(): void
@@ -1793,6 +2269,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         array $supportedWorkflowTypes,
         array $capabilities = ['query_tasks'],
         array $workflowDefinitionFingerprints = [],
+        array $workflowCommandContracts = [],
+        ?string $buildId = null,
     ): void {
         $this->registerQueryWorker(
             $workerId,
@@ -1801,6 +2279,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             'python',
             $capabilities,
             $workflowDefinitionFingerprints,
+            $workflowCommandContracts,
+            $buildId,
         );
     }
 
@@ -1808,6 +2288,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
      * @param  list<string>  $supportedWorkflowTypes
      * @param  list<string>  $capabilities
      * @param  array<string, string>  $workflowDefinitionFingerprints
+     * @param  array<string, array<string, mixed>>  $workflowCommandContracts
      */
     private function registerQueryWorker(
         string $workerId,
@@ -1816,6 +2297,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         string $runtime,
         array $capabilities = ['query_tasks'],
         array $workflowDefinitionFingerprints = [],
+        array $workflowCommandContracts = [],
+        ?string $buildId = null,
     ): void {
         WorkerRegistration::query()->updateOrCreate(
             ['worker_id' => $workerId, 'namespace' => 'default'],
@@ -1823,14 +2306,59 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 'task_queue' => $taskQueue,
                 'runtime' => $runtime,
                 'sdk_version' => 'durable-workflow-'.$runtime.'/0.2.0',
+                'build_id' => $buildId,
                 'supported_workflow_types' => $supportedWorkflowTypes,
                 'workflow_definition_fingerprints' => $workflowDefinitionFingerprints,
+                'workflow_command_contracts' => $workflowCommandContracts,
                 'supported_activity_types' => [],
                 'capabilities' => $capabilities,
                 'last_heartbeat_at' => now(),
                 'status' => 'active',
             ],
         );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function externalCounterCommandContract(string $queryName): array
+    {
+        return [
+            'queries' => ['state', $queryName],
+            'query_contracts' => [
+                [
+                    'name' => 'state',
+                    'parameters' => [],
+                ],
+                [
+                    'name' => $queryName,
+                    'parameters' => [
+                        $this->typedCommandParameter('minimum', 0, 'int'),
+                    ],
+                ],
+            ],
+            'signals' => [],
+            'signal_contracts' => [],
+            'updates' => [],
+            'update_contracts' => [],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function typedCommandParameter(string $name, int $position, string $type): array
+    {
+        return [
+            'name' => $name,
+            'position' => $position,
+            'required' => true,
+            'variadic' => false,
+            'default_available' => false,
+            'default' => null,
+            'type' => $type,
+            'allows_null' => false,
+        ];
     }
 
     /**

@@ -8,19 +8,26 @@ use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\HistoryExport;
+use Workflow\V2\Support\PayloadEnvelopeResolver;
+use Workflow\V2\Support\RunCommandContract;
+use Workflow\V2\Support\WorkflowQueryContract;
 
 final class WorkflowQueryTaskBroker
 {
     private const CACHE_PREFIX = 'server:workflow-query-task:';
     private const QUERY_TASKS_CAPABILITY = 'query_tasks';
+    private const COMPATIBILITY_SCOPE_UNVERSIONED = 'unversioned';
 
     public function __construct(
         private readonly ServerPollingCache $cache,
@@ -36,7 +43,7 @@ final class WorkflowQueryTaskBroker
     }
 
     /**
-     * @param  array{codec: string, blob: string}  $queryArguments
+     * @param  array<string, mixed>  $queryArguments
      * @return array<string, mixed>
      */
     public function query(
@@ -79,6 +86,24 @@ final class WorkflowQueryTaskBroker
                 ),
                 409,
             );
+        }
+
+        $validatedQuery = $this->validateContractedQueryArguments($namespace, $run, $queryName, $queryArguments);
+
+        if (($validatedQuery['failed'] ?? false) === true) {
+            return $this->queryFailed(
+                $run,
+                $queryName,
+                (string) $validatedQuery['reason'],
+                (string) $validatedQuery['message'],
+                (int) $validatedQuery['status'],
+                $this->validationErrors($validatedQuery['validation_errors'] ?? null),
+            );
+        }
+
+        if (is_array($validatedQuery['query_arguments'] ?? null)) {
+            /** @var array{codec: string, blob: string} $queryArguments */
+            $queryArguments = $validatedQuery['query_arguments'];
         }
 
         try {
@@ -154,6 +179,202 @@ final class WorkflowQueryTaskBroker
         );
     }
 
+    /**
+     * @param  array<string, mixed>  $queryArguments
+     * @return array<string, mixed>
+     */
+    private function validateContractedQueryArguments(
+        string $namespace,
+        WorkflowRun $run,
+        string $queryName,
+        array $queryArguments,
+    ): array {
+        $contract = RunCommandContract::forRun($run);
+
+        if (($contract['queries'] ?? []) === [] && ($contract['query_contracts'] ?? []) === []) {
+            return ['failed' => false];
+        }
+
+        if (WorkflowQueryContract::resolveTargetForRun($run, $queryName) === null) {
+            return [
+                'failed' => true,
+                'reason' => 'rejected_unknown_query',
+                'message' => sprintf('Workflow query [%s] is not declared on workflow [%s].', $queryName, $run->workflow_instance_id),
+                'status' => 404,
+                'validation_errors' => [],
+            ];
+        }
+
+        $codec = is_string($queryArguments['codec'] ?? null)
+            ? $queryArguments['codec']
+            : CodecRegistry::defaultCodec();
+        $blob = $queryArguments['blob'] ?? null;
+
+        if ($this->isEmptyQueryInput($queryArguments)) {
+            $arguments = [];
+        } else {
+            if (! is_string($blob)) {
+                if (! array_key_exists('external_storage', $queryArguments)) {
+                    return [
+                        'failed' => true,
+                        'reason' => 'invalid_query_arguments',
+                        'message' => sprintf('Workflow query [%s] arguments are missing a payload blob.', $queryName),
+                        'status' => 422,
+                        'validation_errors' => [
+                            'arguments' => ['Query arguments must be encoded as a payload blob.'],
+                        ],
+                    ];
+                }
+            }
+
+            $resolvedEnvelope = $this->resolveContractedQueryArgumentsEnvelope($namespace, $queryName, $queryArguments);
+
+            if (($resolvedEnvelope['failed'] ?? false) === true) {
+                return $resolvedEnvelope;
+            }
+
+            $codec = is_string($resolvedEnvelope['codec'] ?? null)
+                ? $resolvedEnvelope['codec']
+                : $codec;
+            $blob = $resolvedEnvelope['blob'] ?? null;
+
+            if (! is_string($blob)) {
+                return [
+                    'failed' => true,
+                    'reason' => 'invalid_query_arguments',
+                    'message' => sprintf('Workflow query [%s] arguments are missing a payload blob.', $queryName),
+                    'status' => 422,
+                    'validation_errors' => [
+                        'arguments' => ['Query arguments must be encoded as a payload blob.'],
+                    ],
+                ];
+            }
+
+            try {
+                $arguments = Serializer::unserializeWithCodec($codec, $blob);
+            } catch (\Throwable) {
+                return [
+                    'failed' => true,
+                    'reason' => 'invalid_query_arguments',
+                    'message' => sprintf('Workflow query [%s] arguments could not be decoded.', $queryName),
+                    'status' => 422,
+                    'validation_errors' => [
+                        'arguments' => ['Query arguments could not be decoded.'],
+                    ],
+                ];
+            }
+        }
+
+        if (! is_array($arguments)) {
+            return [
+                'failed' => true,
+                'reason' => 'invalid_query_arguments',
+                'message' => sprintf('Workflow query [%s] arguments must decode to an array.', $queryName),
+                'status' => 422,
+                'validation_errors' => [
+                    'arguments' => ['Query arguments must decode to an array.'],
+                ],
+            ];
+        }
+
+        $validated = WorkflowQueryContract::validatedArgumentsForRun($run, $queryName, $arguments);
+        $validationErrors = $this->validationErrors($validated['validation_errors'] ?? null);
+
+        if ($validationErrors !== []) {
+            return [
+                'failed' => true,
+                'reason' => 'invalid_query_arguments',
+                'message' => sprintf('Workflow query [%s] argument validation failed.', $queryName),
+                'status' => 422,
+                'validation_errors' => $validationErrors,
+            ];
+        }
+
+        return [
+            'failed' => false,
+            'query_arguments' => [
+                'codec' => $codec,
+                'blob' => Serializer::serializeWithCodec($codec, $validated['arguments']),
+            ],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $queryArguments
+     * @return array{codec: string, blob: string}|array<string, mixed>
+     */
+    private function resolveContractedQueryArgumentsEnvelope(
+        string $namespace,
+        string $queryName,
+        array $queryArguments,
+    ): array {
+        try {
+            $externalStorage = app(NamespaceExternalPayloadStorage::class)->driverFor($namespace);
+
+            if (array_key_exists('external_storage', $queryArguments)) {
+                return PayloadEnvelopeResolver::resolve($queryArguments, 'query_arguments', $externalStorage);
+            }
+
+            $codec = is_string($queryArguments['codec'] ?? null)
+                ? $queryArguments['codec']
+                : CodecRegistry::defaultCodec();
+            $blob = $queryArguments['blob'] ?? null;
+
+            if (! is_string($blob)) {
+                return [
+                    'codec' => $codec,
+                    'blob' => $blob,
+                ];
+            }
+
+            if (! ExternalPayloads::isStoredReference($blob)) {
+                return [
+                    'codec' => $codec,
+                    'blob' => $blob,
+                ];
+            }
+
+            $blob = ExternalPayloads::resolveStoredPayload($blob, $codec, $namespace, $externalStorage);
+
+            return [
+                'codec' => CodecRegistry::canonicalize($codec),
+                'blob' => $blob,
+            ];
+        } catch (ValidationException $exception) {
+            return [
+                'failed' => true,
+                'reason' => 'invalid_query_arguments',
+                'message' => sprintf('Workflow query [%s] arguments could not be resolved.', $queryName),
+                'status' => 422,
+                'validation_errors' => $exception->errors(),
+            ];
+        } catch (\Throwable $exception) {
+            return [
+                'failed' => true,
+                'reason' => 'invalid_query_arguments',
+                'message' => sprintf('Workflow query [%s] arguments could not be resolved.', $queryName),
+                'status' => 422,
+                'validation_errors' => [
+                    'query_arguments' => [$exception->getMessage()],
+                ],
+            ];
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $queryArguments
+     */
+    private function isEmptyQueryInput(array $queryArguments): bool
+    {
+        if ($queryArguments === []) {
+            return true;
+        }
+
+        return array_key_exists('blob', $queryArguments)
+            && $queryArguments['blob'] === null
+            && (! array_key_exists('codec', $queryArguments) || $queryArguments['codec'] === null);
+    }
+
     private function markTimedOut(string $queryTaskId): void
     {
         $task = $this->task($queryTaskId);
@@ -189,6 +410,7 @@ final class WorkflowQueryTaskBroker
         $taskQueue = $this->taskQueue($run);
         $commandContextAttributes = $commandContext?->attributes();
         $principal = $this->commandContextPrincipal($commandContextAttributes);
+        $compatibilityScope = $this->queryTaskCompatibilityScope($run);
         $task = [
             'query_task_id' => $queryTaskId,
             'status' => 'pending',
@@ -197,6 +419,7 @@ final class WorkflowQueryTaskBroker
             'run_id' => $run->id,
             'workflow_type' => $run->workflow_type,
             'workflow_definition_fingerprint' => $this->recordedWorkflowDefinitionFingerprint($run),
+            'compatibility' => $this->stringValue($run->compatibility),
             'task_queue' => $taskQueue,
             'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
             'query_name' => $queryName,
@@ -204,6 +427,10 @@ final class WorkflowQueryTaskBroker
             'attempt_count' => 0,
             'created_at' => now()->toJSON(),
         ];
+
+        if ($compatibilityScope !== null) {
+            $task['compatibility_scope'] = $compatibilityScope;
+        }
 
         if ($commandContextAttributes !== null) {
             $task['command_context'] = $commandContextAttributes;
@@ -264,6 +491,7 @@ final class WorkflowQueryTaskBroker
             $worker->worker_id,
             $supportedWorkflowTypes,
             $workflowDefinitionFingerprints,
+            $buildId,
         );
     }
 
@@ -375,7 +603,7 @@ final class WorkflowQueryTaskBroker
             return $cached;
         }
 
-        if ($this->cachedTaskStillDeliverable($namespace, $taskQueue, $leaseOwner, $cached['task'])) {
+        if ($this->cachedTaskStillDeliverable($namespace, $taskQueue, $buildId, $leaseOwner, $cached['task'])) {
             return $cached;
         }
 
@@ -402,6 +630,7 @@ final class WorkflowQueryTaskBroker
     private function cachedTaskStillDeliverable(
         string $namespace,
         string $taskQueue,
+        ?string $buildId,
         string $leaseOwner,
         ?array $task,
     ): bool {
@@ -430,6 +659,14 @@ final class WorkflowQueryTaskBroker
             || ($current['task_queue'] ?? null) !== $taskQueue
             || ($current['lease_owner'] ?? null) !== $leaseOwner
         ) {
+            return false;
+        }
+
+        if (! $this->matchesCompatibility(
+            $buildId,
+            $current['compatibility'] ?? ($task['compatibility'] ?? null),
+            $current['compatibility_scope'] ?? ($task['compatibility_scope'] ?? null),
+        )) {
             return false;
         }
 
@@ -628,6 +865,8 @@ final class WorkflowQueryTaskBroker
         $taskQueue = $this->taskQueue($run);
         $workflowType = $this->stringValue($run->workflow_type);
         $recordedFingerprint = $this->recordedWorkflowDefinitionFingerprint($run);
+        $compatibility = $this->stringValue($run->compatibility);
+        $compatibilityScope = $this->queryTaskCompatibilityScope($run);
 
         $activeWorkers = WorkerRegistration::query()
             ->where('namespace', $namespace)
@@ -694,7 +933,33 @@ final class WorkflowQueryTaskBroker
             );
         }
 
-        $compatibleWorkers = $typeWorkers
+        $buildCompatibleWorkers = $typeWorkers
+            ->filter(fn (WorkerRegistration $worker): bool => $this->matchesCompatibility(
+                $this->stringValue($worker->build_id),
+                $compatibility,
+                $compatibilityScope,
+            ))
+            ->values();
+
+        if ($buildCompatibleWorkers->isEmpty()) {
+            return $this->queryRouteResult(
+                false,
+                'query_worker_incompatible',
+                sprintf(
+                    'Query-capable workers on task queue [%s] support workflow type [%s], but none match run compatibility [%s].',
+                    $taskQueue,
+                    $workflowType ?? 'unknown',
+                    $this->compatibilityLabel($compatibility, $compatibilityScope),
+                ),
+                $taskQueue,
+                $activeWorkers->count(),
+                $queryWorkers->count(),
+                $typeWorkers->count(),
+                0,
+            );
+        }
+
+        $compatibleWorkers = $buildCompatibleWorkers
             ->filter(fn (WorkerRegistration $worker): bool => $this->matchesWorkflowDefinitionFingerprint(
                 $this->fingerprintMap($worker->workflow_definition_fingerprints),
                 $workflowType,
@@ -800,11 +1065,20 @@ final class WorkflowQueryTaskBroker
         string $namespace,
         string $taskQueue,
         array $supportedWorkflowTypes,
+        ?string $buildId = null,
     ): bool {
         foreach ($this->pendingTaskIds($namespace, $taskQueue) as $queryTaskId) {
             $task = $this->task($queryTaskId);
 
             if (! is_array($task) || ($task['status'] ?? null) !== 'pending') {
+                continue;
+            }
+
+            if (! $this->matchesCompatibility(
+                $buildId,
+                $task['compatibility'] ?? null,
+                $task['compatibility_scope'] ?? null,
+            )) {
                 continue;
             }
 
@@ -872,6 +1146,16 @@ final class WorkflowQueryTaskBroker
             $task = $this->task($queryTaskId);
 
             if (! is_array($task) || ($task['status'] ?? null) !== 'pending') {
+                continue;
+            }
+
+            if (! $this->matchesCompatibility(
+                $buildId,
+                $task['compatibility'] ?? null,
+                $task['compatibility_scope'] ?? null,
+            )) {
+                $remaining[] = $queryTaskId;
+
                 continue;
             }
 
@@ -944,6 +1228,7 @@ final class WorkflowQueryTaskBroker
             'run_id' => $task['run_id'],
             'workflow_type' => $task['workflow_type'],
             'workflow_class' => $run?->workflow_class,
+            'compatibility' => $this->stringValue($task['compatibility'] ?? null),
             'query_name' => $task['query_name'],
             'payload_codec' => $task['payload_codec'],
             'workflow_arguments' => $run instanceof WorkflowRun && is_string($run->arguments)
@@ -962,6 +1247,11 @@ final class WorkflowQueryTaskBroker
             'lease_owner' => $task['lease_owner'] ?? null,
             'lease_expires_at' => $task['lease_expires_at'] ?? null,
         ];
+
+        $compatibilityScope = $this->stringValue($task['compatibility_scope'] ?? null);
+        if ($compatibilityScope !== null) {
+            $payload['compatibility_scope'] = $compatibilityScope;
+        }
 
         $principal = $this->taskPrincipal($task);
         if ($principal !== null) {
@@ -1247,6 +1537,53 @@ final class WorkflowQueryTaskBroker
         return $advertisedFingerprint !== null && hash_equals($recordedFingerprint, $advertisedFingerprint);
     }
 
+    private function matchesCompatibility(?string $buildId, mixed $compatibility, mixed $compatibilityScope = null): bool
+    {
+        $compatibility = $this->stringValue($compatibility);
+
+        if ($compatibility !== null) {
+            return $buildId !== null && hash_equals($compatibility, $buildId);
+        }
+
+        if ($this->stringValue($compatibilityScope) === self::COMPATIBILITY_SCOPE_UNVERSIONED) {
+            return $buildId === null;
+        }
+
+        return true;
+    }
+
+    private function queryTaskCompatibilityScope(WorkflowRun $run): ?string
+    {
+        if ($this->stringValue($run->compatibility) !== null) {
+            return null;
+        }
+
+        if (! $this->canReadWorkflowStartedEvent($run)) {
+            return null;
+        }
+
+        $contract = RunCommandContract::forRun($run);
+
+        if (($contract['queries'] ?? []) === [] && ($contract['query_contracts'] ?? []) === []) {
+            return null;
+        }
+
+        return self::COMPATIBILITY_SCOPE_UNVERSIONED;
+    }
+
+    private function compatibilityLabel(?string $compatibility, ?string $compatibilityScope): string
+    {
+        if ($compatibility !== null) {
+            return $compatibility;
+        }
+
+        if ($compatibilityScope === self::COMPATIBILITY_SCOPE_UNVERSIONED) {
+            return 'unversioned';
+        }
+
+        return 'legacy';
+    }
+
     private function workerAcceptsQueryTasks(string $namespace, WorkerRegistration $worker): bool
     {
         if (in_array(self::QUERY_TASKS_CAPABILITY, $this->stringArray($worker->capabilities), true)) {
@@ -1271,7 +1608,7 @@ final class WorkflowQueryTaskBroker
 
     private function recordedWorkflowDefinitionFingerprint(WorkflowRun $run): ?string
     {
-        if (! $run->exists) {
+        if (! $this->canReadWorkflowStartedEvent($run)) {
             return null;
         }
 
@@ -1283,6 +1620,24 @@ final class WorkflowQueryTaskBroker
             ->first();
 
         return $this->stringValue($event?->payload['workflow_definition_fingerprint'] ?? null);
+    }
+
+    private function canReadWorkflowStartedEvent(WorkflowRun $run): bool
+    {
+        if (! $run->exists) {
+            return false;
+        }
+
+        $event = new WorkflowHistoryEvent;
+        $connection = $event->getConnectionName();
+
+        try {
+            return $connection === null
+                ? Schema::hasTable($event->getTable())
+                : Schema::connection($connection)->hasTable($event->getTable());
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /**

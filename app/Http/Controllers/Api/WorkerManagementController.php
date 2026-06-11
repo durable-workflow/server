@@ -65,6 +65,7 @@ class WorkerManagementController
             'build_id' => $worker->build_id,
             'supported_workflow_types' => $worker->supported_workflow_types ?? [],
             'workflow_definition_fingerprints' => $worker->workflow_definition_fingerprints ?? [],
+            'workflow_command_contracts' => $worker->workflow_command_contracts ?? [],
             'supported_activity_types' => $worker->supported_activity_types ?? [],
             'capabilities' => $worker->capabilities ?? [],
             'max_concurrent_workflow_tasks' => $worker->max_concurrent_workflow_tasks,

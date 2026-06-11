@@ -465,7 +465,7 @@ final class WorkflowTaskPoller
                     }
                 }
 
-                if ($this->queryTasks->hasPendingTaskForPoller($namespace, $taskQueue, $supportedWorkflowTypes)) {
+                if ($this->queryTasks->hasPendingTaskForPoller($namespace, $taskQueue, $supportedWorkflowTypes, $buildId)) {
                     return [
                         'task' => null,
                         'poll_status' => 'query_task_pending',

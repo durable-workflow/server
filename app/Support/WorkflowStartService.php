@@ -2,12 +2,17 @@
 
 namespace App\Support;
 
+use App\Models\WorkerBuildIdRollout;
+use App\Models\WorkerRegistration;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\RoutingResolver;
+use Workflow\V2\Support\StandaloneWorkerVisibility;
 use Workflow\WorkflowMetadata;
 
 class WorkflowStartService
@@ -87,19 +92,6 @@ class WorkflowStartService
      *     message: string|null,
      * }
      */
-    /**
-     * @param  array<string, mixed>  $validated
-     * @return array{
-     *     started: bool,
-     *     workflow_id: string,
-     *     run_id: string|null,
-     *     workflow_type: string,
-     *     outcome: string|null,
-     *     reason: string|null,
-     *     rejection_reason: string|null,
-     *     message: string|null,
-     * }
-     */
     private function startRemoteWorkflow(
         string $workflowType,
         ?string $workflowId,
@@ -121,9 +113,14 @@ class WorkflowStartService
         $arguments = $envelope['blob'] ?? Serializer::serializeWithCodec($defaultCodec, []);
         $payloadCodec = $envelope['codec'] ?? $defaultCodec;
 
-        $pinnedBuildId = $namespace !== null
-            ? $this->versionPin->resolve($namespace, $taskQueue)
-            : null;
+        $startCohort = $namespace !== null
+            ? $this->versionPin->resolveForStart($namespace, $taskQueue)
+            : [
+                'build_id' => null,
+                'contract_build_id' => null,
+                'contract_scope' => WorkflowStartVersionPin::CONTRACT_SCOPE_NONE,
+            ];
+        $pinnedBuildId = $startCohort['build_id'];
 
         $result = $this->controlPlane->start($workflowType, $workflowId, array_filter([
             'arguments' => $arguments,
@@ -159,6 +156,17 @@ class WorkflowStartService
             ? $result['message']
             : null;
 
+        if ($started) {
+            $this->enrichStartedEventWithExternalCommandContract(
+                $namespace,
+                $taskQueue,
+                $workflowType,
+                $startCohort['contract_build_id'],
+                $startCohort['contract_scope'],
+                $result['workflow_run_id'] ?? null,
+            );
+        }
+
         return [
             'started' => $started,
             'workflow_id' => $result['workflow_instance_id'],
@@ -169,6 +177,218 @@ class WorkflowStartService
             'rejection_reason' => $started ? null : $reason,
             'message' => $message,
         ];
+    }
+
+    private function enrichStartedEventWithExternalCommandContract(
+        ?string $namespace,
+        string $taskQueue,
+        string $workflowType,
+        ?string $contractBuildId,
+        string $contractScope,
+        mixed $runId,
+    ): void {
+        if (! is_string($runId) || trim($runId) === '') {
+            return;
+        }
+
+        $contract = $this->externalCommandContract(
+            $namespace,
+            $taskQueue,
+            $workflowType,
+            $contractBuildId,
+            $contractScope,
+        );
+
+        if ($contract === null) {
+            return;
+        }
+
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->first();
+
+        if (! $event instanceof WorkflowHistoryEvent) {
+            return;
+        }
+
+        $payload = is_array($event->payload) ? $event->payload : [];
+
+        if (array_key_exists('declared_signals', $payload)
+            || array_key_exists('declared_query_contracts', $payload)
+        ) {
+            return;
+        }
+
+        $event->payload = array_merge($payload, [
+            'declared_queries' => $this->stringList($contract['queries'] ?? []),
+            'declared_query_contracts' => $this->contractList($contract['query_contracts'] ?? []),
+            'declared_signals' => $this->stringList($contract['signals'] ?? []),
+            'declared_signal_contracts' => $this->contractList($contract['signal_contracts'] ?? []),
+            'declared_updates' => $this->stringList($contract['updates'] ?? []),
+            'declared_update_contracts' => $this->contractList($contract['update_contracts'] ?? []),
+            'declared_entry_method' => $this->nullableString($contract['entry_method'] ?? null) ?? 'handle',
+            'declared_entry_mode' => $this->nullableString($contract['entry_mode'] ?? null) ?? 'canonical',
+            'declared_entry_declaring_class' => $this->nullableString($contract['entry_declaring_class'] ?? null)
+                ?? sprintf('external:%s', $workflowType),
+        ]);
+        $event->save();
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function externalCommandContract(
+        ?string $namespace,
+        string $taskQueue,
+        string $workflowType,
+        ?string $contractBuildId,
+        string $contractScope,
+    ): ?array
+    {
+        if ($namespace === null || trim($namespace) === '') {
+            return null;
+        }
+
+        if ($contractScope === WorkflowStartVersionPin::CONTRACT_SCOPE_NONE) {
+            return null;
+        }
+
+        /** @var \Illuminate\Support\Collection<int, WorkerRegistration> $workers */
+        $workers = WorkerRegistration::query()
+            ->where('namespace', $namespace)
+            ->where('task_queue', $taskQueue)
+            ->orderByDesc('last_heartbeat_at')
+            ->orderByDesc('id')
+            ->get();
+
+        foreach ($workers as $worker) {
+            if (! $this->workerCanClaimStartedContract($worker, $contractBuildId, $contractScope)) {
+                continue;
+            }
+
+            $supportedTypes = $this->stringList($worker->supported_workflow_types ?? []);
+
+            if (! in_array($workflowType, $supportedTypes, true)) {
+                continue;
+            }
+
+            $contracts = $worker->workflow_command_contracts ?? [];
+
+            if (! is_array($contracts) || ! is_array($contracts[$workflowType] ?? null)) {
+                continue;
+            }
+
+            return $contracts[$workflowType];
+        }
+
+        return null;
+    }
+
+    private function workerCanClaimStartedContract(
+        WorkerRegistration $worker,
+        ?string $contractBuildId,
+        string $contractScope,
+    ): bool
+    {
+        if (! $this->workerIsActive($worker) || ! $this->workerIsFresh($worker)) {
+            return false;
+        }
+
+        return match ($contractScope) {
+            WorkflowStartVersionPin::CONTRACT_SCOPE_BUILD_ID => $contractBuildId !== null
+                && $this->workerBuildId($worker) === $contractBuildId,
+            WorkflowStartVersionPin::CONTRACT_SCOPE_UNVERSIONED => $this->workerBuildId($worker) === null,
+            default => false,
+        };
+    }
+
+    private function workerIsActive(WorkerRegistration $worker): bool
+    {
+        $status = $this->nullableString($worker->status);
+
+        return $status === null || $status === WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE;
+    }
+
+    private function workerIsFresh(WorkerRegistration $worker): bool
+    {
+        $heartbeat = $worker->last_heartbeat_at;
+
+        if (! $heartbeat instanceof \DateTimeInterface) {
+            return true;
+        }
+
+        return $heartbeat->getTimestamp() >= now()
+            ->subSeconds($this->workerStaleAfterSeconds())
+            ->getTimestamp();
+    }
+
+    private function workerBuildId(WorkerRegistration $worker): ?string
+    {
+        return $this->nullableString($worker->build_id);
+    }
+
+    private function workerStaleAfterSeconds(): int
+    {
+        $configured = config('server.workers.stale_after_seconds');
+        $pollingTimeout = config('server.polling.timeout');
+
+        return StandaloneWorkerVisibility::staleAfterSeconds(
+            is_numeric($configured) ? (int) $configured : null,
+            is_numeric($pollingTimeout) ? (int) $pollingTimeout : null,
+        );
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function stringList(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $strings = [];
+
+        foreach ($value as $item) {
+            if (is_string($item) && trim($item) !== '') {
+                $strings[] = trim($item);
+            }
+        }
+
+        $strings = array_values(array_unique($strings));
+        sort($strings);
+
+        return $strings;
+    }
+
+    private function nullableString(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value === '' ? null : $value;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function contractList(mixed $value): array
+    {
+        if (! is_array($value) || ! array_is_list($value)) {
+            return [];
+        }
+
+        return array_values(array_filter(
+            $value,
+            static fn (mixed $contract): bool => is_array($contract)
+                && is_string($contract['name'] ?? null)
+                && trim($contract['name']) !== ''
+                && is_array($contract['parameters'] ?? null),
+        ));
     }
 
     private function controlPlaneDuplicatePolicy(?string $policy): string

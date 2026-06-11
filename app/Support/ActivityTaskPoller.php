@@ -626,6 +626,7 @@ final class ActivityTaskPoller
                     $namespace,
                     $taskQueue,
                     $this->stringList($worker->supported_workflow_types ?? []),
+                    $buildId,
                 )) {
                     return [
                         'task' => null,

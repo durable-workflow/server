@@ -575,7 +575,7 @@ class WorkflowController
         );
 
         if ($run instanceof WorkflowRun
-            && ($this->queryTasks->hasWorkerFor($namespace, $run) || ! $this->canReplayQueryInProcess($run))) {
+            && ($this->queryTasks->hasWorkerFor($namespace, $run) || $this->requiresQueryTaskRouting($run))) {
             return $this->resultMapper->query(
                 $workflowId,
                 $queryName,
@@ -612,6 +612,12 @@ class WorkflowController
             && is_subclass_of($workflowClass, Workflow::class);
     }
 
+    private function requiresQueryTaskRouting(WorkflowRun $run): bool
+    {
+        return $this->nonEmptyString($run->compatibility) !== null
+            || ! $this->canReplayQueryInProcess($run);
+    }
+
     private function rejectsTerminalQuery(WorkflowRun $run): bool
     {
         return $run->status->isTerminal()
@@ -624,7 +630,7 @@ class WorkflowController
             return false;
         }
 
-        return $this->canReplayQueryInProcess($run)
+        return ! $this->requiresQueryTaskRouting($run)
             || $this->queryTasks->hasWorkerFor($namespace, $run);
     }
 
