@@ -84,10 +84,185 @@ if [[ -z "$result_dir" ]]; then
 fi
 mkdir -p "$result_dir"
 
-if [[ -z "${DW_NEXUS_EVIDENCE_JSON:-}" && "${DW_NEXUS_SKIP_SHARED_SERVICE_PROBE:-0}" != "1" ]]; then
+should_probe_shared_service() {
+  if [[ "${DW_NEXUS_SKIP_SHARED_SERVICE_PROBE:-0}" == "1" ]]; then
+    return 1
+  fi
+
+  if [[ -z "${DW_NEXUS_EVIDENCE_JSON:-}" ]]; then
+    return 0
+  fi
+
+  node - "${DW_NEXUS_EVIDENCE_JSON}" <<'NODE'
+const fs = require('fs');
+
+const evidencePath = process.argv[2] || '';
+const requiredScenarioIds = [
+  'tenant_a_calls_shared_service',
+  'tenant_b_calls_shared_service',
+];
+const sharedServicePassRequirements = {
+  tenant_a_calls_shared_service: [
+    {fields: ['caller_namespace', 'callerNamespace'], kind: 'value_equals', value: 'tenant-a'},
+    {fields: ['target_namespace', 'targetNamespace'], kind: 'value_equals', value: 'shared'},
+    {fields: ['endpoint_name', 'endpointName'], kind: 'non_empty_string'},
+    {fields: ['service_name', 'serviceName'], kind: 'value_equals', value: 'Greeter'},
+    {fields: ['operation_name', 'operationName'], kind: 'value_equals', value: 'greet'},
+    {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string'},
+    {fields: ['workflow_result', 'workflowResult'], kind: 'non_empty_string'},
+    {fields: ['request', 'requestEvidence', 'invocation_request', 'invocationRequest'], kind: 'non_empty_object'},
+    {fields: ['response', 'responseEvidence', 'invocation_response', 'invocationResponse'], kind: 'non_empty_object'},
+    {fields: ['service_call_record', 'serviceCallRecord', 'service_call_detail', 'serviceCallDetail'], kind: 'non_empty_object'},
+    {fields: ['caller_history_evidence', 'callerHistoryEvidence', 'caller_history', 'callerHistory'], kind: 'non_empty_object'},
+    {fields: ['caller_history_recorded', 'callerHistoryRecorded'], kind: 'boolean_true'},
+  ],
+  tenant_b_calls_shared_service: [
+    {fields: ['caller_namespace', 'callerNamespace'], kind: 'value_equals', value: 'tenant-b'},
+    {fields: ['target_namespace', 'targetNamespace'], kind: 'value_equals', value: 'shared'},
+    {fields: ['endpoint_name', 'endpointName'], kind: 'non_empty_string'},
+    {fields: ['service_name', 'serviceName'], kind: 'value_equals', value: 'Greeter'},
+    {fields: ['operation_name', 'operationName'], kind: 'value_equals', value: 'greet'},
+    {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string'},
+    {fields: ['workflow_result', 'workflowResult'], kind: 'non_empty_string'},
+    {fields: ['request', 'requestEvidence', 'invocation_request', 'invocationRequest'], kind: 'non_empty_object'},
+    {fields: ['response', 'responseEvidence', 'invocation_response', 'invocationResponse'], kind: 'non_empty_object'},
+    {fields: ['service_call_record', 'serviceCallRecord', 'service_call_detail', 'serviceCallDetail'], kind: 'non_empty_object'},
+    {fields: ['caller_history_evidence', 'callerHistoryEvidence', 'caller_history', 'callerHistory'], kind: 'non_empty_object'},
+    {fields: ['caller_history_recorded', 'callerHistoryRecorded'], kind: 'boolean_true'},
+  ],
+};
+
+function readEvidence(path) {
+  try {
+    return JSON.parse(fs.readFileSync(path, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function byScenarioId(items) {
+  const indexed = new Map();
+  if (Array.isArray(items)) {
+    for (const item of items) {
+      if (item && typeof item.scenario_id === 'string') {
+        indexed.set(item.scenario_id, item);
+      }
+    }
+    return indexed;
+  }
+
+  if (items && typeof items === 'object') {
+    for (const [scenarioId, item] of Object.entries(items)) {
+      if (item && typeof item === 'object') {
+        indexed.set(scenarioId, {
+          scenario_id: scenarioId,
+          ...item,
+        });
+      }
+    }
+  }
+
+  return indexed;
+}
+
+function hasNonEmptyObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0;
+}
+
+function stringValue(value) {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+    ? String(value).trim()
+    : '';
+}
+
+function truthy(value) {
+  if (value === true) {
+    return true;
+  }
+  return ['1', 'true', 'yes'].includes(stringValue(value).toLowerCase());
+}
+
+function evidenceLookup(outputs, fields) {
+  const container = outputs && typeof outputs === 'object' && !Array.isArray(outputs) ? outputs : {};
+  for (const field of fields) {
+    if (Object.prototype.hasOwnProperty.call(container, field)) {
+      return {present: true, value: container[field]};
+    }
+  }
+
+  return {present: false, value: undefined};
+}
+
+function isMissingEvidenceValue(value, kind) {
+  if (value === null || value === undefined) {
+    return true;
+  }
+  if (kind === 'non_empty_object') {
+    return !hasNonEmptyObject(value);
+  }
+
+  return stringValue(value) === '';
+}
+
+function evidenceRequirementSatisfied(requirement, value) {
+  switch (requirement.kind) {
+    case 'non_empty_string':
+      return stringValue(value) !== '';
+    case 'non_empty_object':
+      return hasNonEmptyObject(value);
+    case 'boolean_true':
+      return truthy(value);
+    case 'value_equals':
+      return stringValue(value) === stringValue(requirement.value);
+    default:
+      return false;
+  }
+}
+
+function hasSharedServicePassEvidence(scenarioId, outputs) {
+  const requirements = sharedServicePassRequirements[scenarioId] || [];
+  return requirements.length > 0 && requirements.every((requirement) => {
+    const lookup = evidenceLookup(outputs, requirement.fields);
+    return lookup.present
+      && !isMissingEvidenceValue(lookup.value, requirement.kind)
+      && evidenceRequirementSatisfied(requirement, lookup.value);
+  });
+}
+
+function hasSpecificEvidence(scenarioId, scenario) {
+  if (!scenario || typeof scenario !== 'object') {
+    return false;
+  }
+
+  const status = typeof scenario.status === 'string' ? scenario.status : '';
+  const outputs = scenario.observed_outputs && typeof scenario.observed_outputs === 'object'
+    ? scenario.observed_outputs
+    : {};
+
+  if (status === 'pass') {
+    return hasSharedServicePassEvidence(scenarioId, outputs);
+  }
+
+  if (status === 'fail') {
+    return hasNonEmptyObject(outputs.error_shape)
+      || String(outputs.failure_reason || '') !== ''
+      || (Array.isArray(scenario.linked_findings) && scenario.linked_findings.length > 0);
+  }
+
+  return false;
+}
+
+const scenarios = byScenarioId(readEvidence(evidencePath).scenario_results);
+const missing = requiredScenarioIds.some((scenarioId) => !hasSpecificEvidence(scenarioId, scenarios.get(scenarioId)));
+process.exit(missing ? 0 : 1);
+NODE
+}
+
+if should_probe_shared_service; then
+  supplied_evidence_path="${DW_NEXUS_EVIDENCE_JSON:-}"
   generated_evidence_path="$result_dir/shared-service-evidence.json"
 
-  if node - "$result_dir" "$generated_evidence_path" <<'NODE'
+  if node - "$result_dir" "$generated_evidence_path" "$supplied_evidence_path" <<'NODE'
 const fs = require('fs');
 const os = require('os');
 const net = require('net');
@@ -97,6 +272,7 @@ const {spawnSync} = require('child_process');
 
 const resultDir = process.argv[2];
 const evidencePath = process.argv[3];
+const suppliedEvidencePath = process.argv[4] || '';
 const requiredArtifacts = ['server', 'cli', 'workflow', 'sdk-python', 'waterline'];
 const artifactOwners = {
   server: 'server',
@@ -120,6 +296,26 @@ const builtInProbeScenarioIds = [
   'worker_restart_replay_does_not_reissue_call',
   'caller_cancellation_propagates_to_service',
 ];
+const artifactAliases = {
+  server: ['server'],
+  cli: ['cli'],
+  workflow: ['workflow', 'workflow-php', 'workflow_php', 'workflowPhp'],
+  'sdk-python': ['sdk-python', 'sdk_python', 'python-sdk', 'pythonSdk'],
+  waterline: ['waterline'],
+};
+
+function readJsonFile(filePath) {
+  if (filePath === '') {
+    return {};
+  }
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+const suppliedEvidence = readJsonFile(suppliedEvidencePath);
 
 function timestamp() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -128,6 +324,43 @@ function timestamp() {
 function env(name) {
   const value = process.env[name];
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+}
+
+function suppliedMapValue(mapNames, artifact) {
+  for (const mapName of mapNames) {
+    const map = suppliedEvidence[mapName];
+    if (!map || typeof map !== 'object' || Array.isArray(map)) {
+      continue;
+    }
+    for (const alias of artifactAliases[artifact] || [artifact]) {
+      const value = map[alias];
+      if (typeof value === 'string' && value.trim() !== '') {
+        return value.trim();
+      }
+    }
+  }
+
+  return null;
+}
+
+function suppliedArtifactVersion(artifact) {
+  return suppliedMapValue([
+    'artifact_versions',
+    'artifactVersions',
+    'published_artifact_versions',
+    'publishedArtifactVersions',
+    'resolved_artifact_versions',
+    'resolvedArtifactVersions',
+  ], artifact);
+}
+
+function suppliedArtifactSource(artifact) {
+  return suppliedMapValue([
+    'artifact_sources',
+    'artifactSources',
+    'install_sources',
+    'installSources',
+  ], artifact);
 }
 
 function randomToken(prefix) {
@@ -151,22 +384,22 @@ function serverImage() {
     return explicit.replace(/^docker:\/\//, '');
   }
 
-  const source = env('DW_SERVER_ARTIFACT_SOURCE');
+  const source = env('DW_SERVER_ARTIFACT_SOURCE') || suppliedArtifactSource('server');
   if (source !== null && /^(docker:\/\/)?durableworkflow\/server[:@]/.test(source)) {
     return source.replace(/^docker:\/\//, '');
   }
 
-  const version = env('DW_SERVER_VERSION');
+  const version = env('DW_SERVER_VERSION') || suppliedArtifactVersion('server');
   return version === null ? null : `durableworkflow/server:${version}`;
 }
 
 function artifactVersions(image) {
   return {
-    server: env('DW_SERVER_VERSION') || (image === null ? null : exactServerVersionFrom(image)),
-    cli: env('DW_CLI_VERSION'),
-    workflow: env('DW_WORKFLOW_PHP_VERSION') || env('DW_WORKFLOW_VERSION'),
-    'sdk-python': env('DW_PYTHON_SDK_VERSION') || env('DW_SDK_PYTHON_VERSION'),
-    waterline: env('DW_WATERLINE_VERSION'),
+    server: env('DW_SERVER_VERSION') || suppliedArtifactVersion('server') || (image === null ? null : exactServerVersionFrom(image)),
+    cli: env('DW_CLI_VERSION') || suppliedArtifactVersion('cli'),
+    workflow: env('DW_WORKFLOW_PHP_VERSION') || env('DW_WORKFLOW_VERSION') || suppliedArtifactVersion('workflow'),
+    'sdk-python': env('DW_PYTHON_SDK_VERSION') || env('DW_SDK_PYTHON_VERSION') || suppliedArtifactVersion('sdk-python'),
+    waterline: env('DW_WATERLINE_VERSION') || suppliedArtifactVersion('waterline'),
   };
 }
 
@@ -177,15 +410,20 @@ function compactObject(object) {
 function artifactSources(versions, image) {
   return compactObject({
     server: env('DW_SERVER_ARTIFACT_SOURCE')
+      || suppliedArtifactSource('server')
       || (image === null ? null : `docker://${image}`),
     cli: env('DW_CLI_ARTIFACT_SOURCE')
+      || suppliedArtifactSource('cli')
       || (versions.cli ? `https://github.com/durable-workflow/cli/releases/download/${versions.cli}/install.sh` : null),
     workflow: env('DW_WORKFLOW_ARTIFACT_SOURCE')
       || env('DW_WORKFLOW_PHP_ARTIFACT_SOURCE')
+      || suppliedArtifactSource('workflow')
       || (versions.workflow ? `packagist://durable-workflow/workflow@${versions.workflow}` : null),
     'sdk-python': env('DW_PYTHON_SDK_ARTIFACT_SOURCE')
+      || suppliedArtifactSource('sdk-python')
       || (versions['sdk-python'] ? `pypi://durable-workflow==${versions['sdk-python']}` : null),
     waterline: env('DW_WATERLINE_ARTIFACT_SOURCE')
+      || suppliedArtifactSource('waterline')
       || (versions.waterline ? `packagist://durable-workflow/waterline@${versions.waterline}` : null),
   });
 }
@@ -1783,7 +2021,133 @@ main().catch((error) => {
 });
 NODE
   then
-    export DW_NEXUS_EVIDENCE_JSON="$generated_evidence_path"
+    if [[ -n "$supplied_evidence_path" ]]; then
+      merged_evidence_path="$result_dir/merged-shared-service-evidence.json"
+      node - "$supplied_evidence_path" "$generated_evidence_path" "$merged_evidence_path" <<'NODE'
+const fs = require('fs');
+
+const suppliedPath = process.argv[2];
+const generatedPath = process.argv[3];
+const mergedPath = process.argv[4];
+const builtInProbeScenarioIds = [
+  'tenant_a_calls_shared_service',
+  'tenant_b_calls_shared_service',
+  'endpoint_permission_denied_without_information_leak',
+  'malformed_payload_refused_before_dispatch',
+  'nonexistent_endpoint_typed_not_found',
+  'worker_restart_replay_does_not_reissue_call',
+  'caller_cancellation_propagates_to_service',
+];
+
+function readJson(path) {
+  try {
+    return JSON.parse(fs.readFileSync(path, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function byScenarioId(items) {
+  const indexed = {};
+  if (Array.isArray(items)) {
+    for (const item of items) {
+      if (item && typeof item.scenario_id === 'string') {
+        indexed[item.scenario_id] = item;
+      }
+    }
+    return indexed;
+  }
+
+  if (items && typeof items === 'object') {
+    for (const [scenarioId, item] of Object.entries(items)) {
+      if (item && typeof item === 'object') {
+        indexed[scenarioId] = {
+          scenario_id: scenarioId,
+          ...item,
+        };
+      }
+    }
+  }
+
+  return indexed;
+}
+
+function hasNonEmptyObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0;
+}
+
+function firstNonEmptyObject(...values) {
+  return values.find(hasNonEmptyObject) || undefined;
+}
+
+const supplied = readJson(suppliedPath);
+const generated = readJson(generatedPath);
+const suppliedScenarios = byScenarioId(supplied.scenario_results);
+const generatedScenarios = byScenarioId(generated.scenario_results);
+
+for (const scenarioId of builtInProbeScenarioIds) {
+  if (generatedScenarios[scenarioId]) {
+    suppliedScenarios[scenarioId] = generatedScenarios[scenarioId];
+  }
+}
+
+const merged = {
+  ...generated,
+  ...supplied,
+  artifact_versions: firstNonEmptyObject(
+    supplied.artifact_versions,
+    supplied.artifactVersions,
+    generated.artifact_versions,
+    generated.artifactVersions,
+  ),
+  published_artifact_versions: firstNonEmptyObject(
+    supplied.published_artifact_versions,
+    supplied.publishedArtifactVersions,
+    generated.published_artifact_versions,
+    generated.publishedArtifactVersions,
+  ),
+  resolved_artifact_versions: firstNonEmptyObject(
+    supplied.resolved_artifact_versions,
+    supplied.resolvedArtifactVersions,
+    generated.resolved_artifact_versions,
+    generated.resolvedArtifactVersions,
+  ),
+  artifact_sources: firstNonEmptyObject(
+    supplied.artifact_sources,
+    supplied.artifactSources,
+    generated.artifact_sources,
+    generated.artifactSources,
+  ),
+  artifact_source_verification: firstNonEmptyObject(
+    supplied.artifact_source_verification,
+    supplied.artifactSourceVerification,
+    generated.artifact_source_verification,
+    generated.artifactSourceVerification,
+  ),
+  artifact_install_evidence: firstNonEmptyObject(
+    supplied.artifact_install_evidence,
+    supplied.artifactInstallEvidence,
+    generated.artifact_install_evidence,
+    generated.artifactInstallEvidence,
+  ),
+  findings: [
+    ...(Array.isArray(supplied.findings) ? supplied.findings : []),
+    ...(Array.isArray(generated.findings) ? generated.findings : []),
+  ],
+  scenario_results: suppliedScenarios,
+};
+
+if (!Object.hasOwn(merged, 'local_product_source_checkouts_used')
+  && Object.hasOwn(generated, 'local_product_source_checkouts_used')) {
+  merged.local_product_source_checkouts_used = generated.local_product_source_checkouts_used;
+}
+
+fs.writeFileSync(mergedPath, JSON.stringify(merged, null, 2) + '\n');
+NODE
+      export DW_NEXUS_EVIDENCE_JSON="$merged_evidence_path"
+    else
+      export DW_NEXUS_EVIDENCE_JSON="$generated_evidence_path"
+    fi
   elif [[ -f "$generated_evidence_path" ]]; then
     export DW_NEXUS_EVIDENCE_JSON="$generated_evidence_path"
   fi

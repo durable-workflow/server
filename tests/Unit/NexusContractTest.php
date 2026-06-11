@@ -380,6 +380,9 @@ class NexusContractTest extends TestCase
         $this->assertStringContainsString('runnerBlocked,', $contents);
         $this->assertStringContainsString('conformance_runner_coverage_gap', $contents);
         $this->assertStringContainsString('DW_NEXUS_SKIP_SHARED_SERVICE_PROBE', $contents);
+        $this->assertStringContainsString('should_probe_shared_service', $contents);
+        $this->assertStringContainsString('merged-shared-service-evidence.json', $contents);
+        $this->assertStringContainsString('supplied_evidence_path', $contents);
         $this->assertStringContainsString('setupSharedService', $contents);
         $this->assertStringContainsString('invokeSharedService', $contents);
         $this->assertStringContainsString('probeWorkerRestartReplay', $contents);
@@ -407,6 +410,62 @@ class NexusContractTest extends TestCase
         $this->assertFalse($result['local_product_source_checkouts_used']);
         $this->assertSame([], $result['artifact_policy_failures']);
         $this->assertSame('pass', $result['scenario_results'][0]['status']);
+    }
+
+    public function test_host_runner_does_not_probe_complete_aliased_shared_service_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $fieldAliases = [
+            'caller_namespace' => 'callerNamespace',
+            'target_namespace' => 'targetNamespace',
+            'endpoint_name' => 'endpointName',
+            'service_name' => 'serviceName',
+            'operation_name' => 'operationName',
+            'service_call_id' => 'serviceCallId',
+            'workflow_result' => 'workflowResult',
+            'request' => 'requestEvidence',
+            'response' => 'responseEvidence',
+            'service_call_record' => 'serviceCallRecord',
+            'caller_history_evidence' => 'callerHistoryEvidence',
+            'caller_history_recorded' => 'callerHistoryRecorded',
+        ];
+
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if (! in_array($scenario['scenario_id'] ?? null, [
+                'tenant_a_calls_shared_service',
+                'tenant_b_calls_shared_service',
+            ], true)) {
+                continue;
+            }
+
+            foreach ($fieldAliases as $canonical => $alias) {
+                $scenario['observed_outputs'][$alias] = $scenario['observed_outputs'][$canonical];
+                unset($scenario['observed_outputs'][$canonical]);
+            }
+        }
+        unset($scenario);
+
+        $record = null;
+        $resultFiles = null;
+        $result = $this->runNexusEvidence(
+            $evidence,
+            'dw-nexus-aliased-shared-service-',
+            null,
+            null,
+            $record,
+            $resultFiles,
+        );
+
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertFalse($result['runner_blocked']);
+        $this->assertIsArray($resultFiles);
+        $this->assertNotContains('shared-service-evidence.json', $resultFiles);
+        $this->assertNotContains('merged-shared-service-evidence.json', $resultFiles);
     }
 
     public function test_host_runner_preserves_runner_blocked_evidence_as_non_passing(): void
@@ -1834,6 +1893,7 @@ class NexusContractTest extends TestCase
         ?array $installEvidence = null,
         ?array $staleResultInstallEvidence = null,
         ?array &$record = null,
+        ?array &$resultFiles = null,
     ): array
     {
         $repoRoot = dirname(__DIR__, 2);
@@ -1891,6 +1951,8 @@ class NexusContractTest extends TestCase
             $recordPath = $resultDir.'/nexus-conformance-record.json';
             $this->assertFileExists($recordPath);
             $record = json_decode((string) file_get_contents($recordPath), true, 512, JSON_THROW_ON_ERROR);
+            $resultFiles = array_values(array_diff(scandir($resultDir) ?: [], ['.', '..']));
+            sort($resultFiles);
 
             return json_decode((string) file_get_contents($resultPath), true, 512, JSON_THROW_ON_ERROR);
         } finally {
