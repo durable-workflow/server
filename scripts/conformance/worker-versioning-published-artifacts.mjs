@@ -2169,8 +2169,19 @@ function historyHasCompatibility(history) {
 
 function writeResult(result) {
   fs.mkdirSync(resultDir, { recursive: true });
-  writeJson(path.join(resultDir, 'worker-versioning-result.json'), result);
-  writeJson(path.join(resultDir, 'worker-versioning-http-captures.json'), {
+  const resultPath = path.join(resultDir, 'worker-versioning-result.json');
+  const capturePath = path.join(resultDir, 'worker-versioning-http-captures.json');
+  const scenarioResults = objectValue(result.scenario_results);
+  const scenarioEntries = Object.entries(scenarioResults);
+  const scenarioStatuses = Object.fromEntries(
+    scenarioEntries.map(([scenarioId, scenario]) => [scenarioId, scenario?.status ?? null]),
+  );
+  const nonPassScenarios = scenarioEntries
+    .filter(([, scenario]) => scenario?.status !== 'pass')
+    .map(([scenarioId]) => scenarioId);
+
+  writeJson(resultPath, result);
+  writeJson(capturePath, {
     schema: CAPTURE_SCHEMA,
     generated_at: timestamp(),
     captures,
@@ -2179,11 +2190,34 @@ function writeResult(result) {
     schema: RECORD_SCHEMA,
     experiment: 'worker-versioning',
     outcome: result.outcome,
+    runner_blocked: result.runner_blocked === true,
     runnerBlocked: result.runner_blocked === true,
+    artifact_versions: result.artifact_versions ?? {},
     artifactVersions: result.artifact_versions ?? {},
-    resultPath: path.join(resultDir, 'worker-versioning-result.json'),
-    capturePath: path.join(resultDir, 'worker-versioning-http-captures.json'),
+    artifact_sources: result.artifact_sources ?? {},
+    artifactSources: result.artifact_sources ?? {},
+    resultPath,
+    capturePath,
+    result_file: 'worker-versioning-result.json',
+    capture_file: 'worker-versioning-http-captures.json',
     generated_at: result.generated_at ?? timestamp(),
+    started_at: result.started_at ?? null,
+    finished_at: result.finished_at ?? null,
+    required_scenarios: requiredScenarios,
+    reported_scenarios: scenarioEntries.map(([scenarioId]) => scenarioId),
+    reportedScenarios: scenarioEntries.map(([scenarioId]) => scenarioId),
+    scenario_results: scenarioResults,
+    scenarioResults,
+    scenario_statuses: scenarioStatuses,
+    scenarioStatuses,
+    non_pass_scenarios: nonPassScenarios,
+    nonPassScenarios,
+    finding_links: result.finding_links ?? {},
+    findingLinks: result.finding_links ?? {},
+    no_compatible_worker: result.no_compatible_worker ?? null,
+    noCompatibleWorker: result.no_compatible_worker ?? null,
+    structured_findings: result.findings ?? [],
+    structuredFindings: result.findings ?? [],
     findings: result.findings ?? [],
   });
 }
