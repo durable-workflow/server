@@ -424,6 +424,8 @@ async function runPythonNoCompatibleShard(python) {
     ? { latest: {}, samples: [] }
     : await waitForNoCompatibleVisibility(noCompatibleWorkflowId, runId);
   const workflowVisibility = workflowVisibilityResult.latest;
+  const noCompatibleBuildIds = await taskQueueBuildIds();
+  const noCompatibleBuildIdEntry = taskQueueBuildIdEntry(noCompatibleBuildIds, noCompatibleV1BuildId);
   const incompatiblePollStatuses = incompatiblePolls
     .map((poll) => stringValue(poll.poll_status) || stringValue(poll.response?.poll_status))
     .filter(Boolean);
@@ -440,6 +442,7 @@ async function runPythonNoCompatibleShard(python) {
     ...workflowVisibilityResult.samples.map((sample) => sample.compatibilityStatus),
     ...workflowVisibilityResult.samples.map((sample) => sample.compatibility_fleet_reason),
     ...workflowVisibilityResult.samples.map((sample) => sample.compatibilityFleetReason),
+    ...pendingWorkflowTaskDiagnosticSignals(noCompatibleBuildIdEntry),
   ));
   const pendingOrTypedError = isExplicitNoCompatibleSignal(operatorVisibleSignal)
     ? operatorVisibleSignal
@@ -466,6 +469,8 @@ async function runPythonNoCompatibleShard(python) {
     incompatible_worker_polls: incompatiblePolls,
     workflow_visibility: workflowVisibility,
     workflow_visibility_samples: workflowVisibilityResult.samples,
+    task_queue_build_ids: noCompatibleBuildIds,
+    task_queue_build_id_entry: noCompatibleBuildIdEntry,
     worker_execution_mode: 'published_python_worker_protocol_client',
     published_artifact_worker_execution: workerExecution,
     local_product_source_checkouts_used: false,
@@ -1084,6 +1089,24 @@ async function taskQueueBuildIds() {
     controlHeaders(namespace),
     [200],
   );
+}
+
+function taskQueueBuildIdEntry(snapshot, buildId) {
+  const wanted = stringValue(buildId);
+  const entries = Array.isArray(snapshot?.build_ids) ? snapshot.build_ids : [];
+
+  return entries.find((entry) => stringValue(entry?.build_id) === wanted) ?? null;
+}
+
+function pendingWorkflowTaskDiagnosticSignals(entry) {
+  const pending = objectValue(entry?.pending_workflow_tasks ?? entry?.pendingWorkflowTasks);
+
+  return [
+    pending.operator_visible_signal,
+    pending.operatorVisibleSignal,
+    pending.status,
+    pending.message,
+  ];
 }
 
 async function startWorkflow(workflowId, input) {

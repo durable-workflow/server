@@ -7,7 +7,14 @@ namespace Tests\Feature;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Tests\TestCase;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 
 class TaskQueueBuildIdsTest extends TestCase
 {
@@ -184,6 +191,86 @@ class TaskQueueBuildIdsTest extends TestCase
                 'fingerprint_count' => 2,
             ],
         ], $entry['workflow_definition_fingerprint_conflicts']);
+    }
+
+    public function test_surfaces_pending_pinned_work_when_no_compatible_worker_is_active(): void
+    {
+        $this->createWorker('w-v2', 'ingest', build: 'v2');
+        $runId = (string) Str::ulid();
+
+        WorkflowRun::query()->create([
+            'id' => $runId,
+            'workflow_instance_id' => (string) Str::ulid(),
+            'run_number' => 1,
+            'workflow_class' => 'Tests\\Fixtures\\WorkerVersioningWorkflow',
+            'workflow_type' => 'tests.worker-versioning',
+            'namespace' => 'default',
+            'status' => RunStatus::Running->value,
+            'connection' => 'redis',
+            'queue' => 'ingest',
+            'compatibility' => 'v1',
+        ]);
+
+        WorkflowTask::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $runId,
+            'namespace' => 'default',
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'connection' => 'redis',
+            'queue' => 'ingest',
+            'compatibility' => null,
+        ]);
+
+        WorkflowTask::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $runId,
+            'namespace' => 'default',
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'connection' => 'redis',
+            'queue' => 'ingest',
+            'compatibility' => 'v1',
+        ]);
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+
+        try {
+            $response = $this->getJson('/api/task-queues/ingest/build-ids', $this->apiHeaders());
+
+            $queries = collect(DB::getQueryLog())
+                ->pluck('query')
+                ->map(static fn (string $query): string => strtolower($query));
+        } finally {
+            DB::disableQueryLog();
+        }
+
+        $response->assertOk();
+
+        self::assertTrue(
+            $queries->contains(static fn (string $query): bool => str_contains($query, 'workflow_tasks')
+                && str_contains($query, 'count(*)')
+                && str_contains($query, 'group by')),
+            'pending workflow task counts should be aggregated by SQL instead of materializing task rows',
+        );
+
+        $entries = collect($response->json('build_ids'))->keyBy('build_id');
+        $v1 = $entries->get('v1');
+        $v2 = $entries->get('v2');
+
+        self::assertIsArray($v1, 'pending pinned work should create a cohort diagnostic row');
+        self::assertSame('no_workers', $v1['rollout_status']);
+        self::assertSame(0, $v1['active_worker_count']);
+        self::assertSame('no_compatible_worker', $v1['pending_workflow_tasks']['status']);
+        self::assertSame('no_compatible_worker', $v1['pending_workflow_tasks']['operator_visible_signal']);
+        self::assertSame(2, $v1['pending_workflow_tasks']['total_count']);
+        self::assertSame(1, $v1['pending_workflow_tasks']['ready_count']);
+        self::assertSame(1, $v1['pending_workflow_tasks']['leased_count']);
+
+        self::assertIsArray($v2);
+        self::assertSame('idle', $v2['pending_workflow_tasks']['status']);
+        self::assertNull($v2['pending_workflow_tasks']['operator_visible_signal']);
     }
 
     public function test_orders_build_ids_active_first_then_draining_then_stale_with_unversioned_last(): void

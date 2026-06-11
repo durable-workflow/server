@@ -5,6 +5,9 @@ namespace App\Support;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use Illuminate\Support\Facades\Schema;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
 
 final class TaskQueueBuildIdRolloutSnapshot
@@ -307,7 +310,29 @@ final class TaskQueueBuildIdRolloutSnapshot
 
         $rolloutMap = $this->rolloutsForTaskQueue($namespace, $taskQueue);
         $selectedNewStartKey = $this->newStartSelector->selectedKeyFromRollouts($rolloutMap);
+        $pendingWorkflowTasks = $this->pendingWorkflowTaskCountsForTaskQueue($namespace, $taskQueue);
         $buildIds = [];
+
+        foreach ($pendingWorkflowTasks as $key => $pending) {
+            $groupKey = $key === '' ? '__unversioned__' : $key;
+
+            if (isset($groups[$groupKey]) || isset($rolloutMap[$key])) {
+                continue;
+            }
+
+            $groups[$groupKey] = [
+                'build_id' => $pending['build_id'],
+                'active_worker_count' => 0,
+                'stale_worker_count' => 0,
+                'draining_worker_count' => 0,
+                'total_worker_count' => 0,
+                'runtimes' => [],
+                'sdk_versions' => [],
+                'workflow_definition_fingerprints' => [],
+                'last_heartbeat_at' => null,
+                'first_seen_at' => null,
+            ];
+        }
 
         foreach ($groups as $group) {
             $runtimes = array_keys($group['runtimes']);
@@ -319,6 +344,7 @@ final class TaskQueueBuildIdRolloutSnapshot
             $rollout = $rolloutMap[$rolloutKey] ?? null;
             $drainIntent = $rollout?->drain_intent ?? WorkerBuildIdRollout::DRAIN_INTENT_ACTIVE;
             $fingerprints = $this->fingerprintSummary($group['workflow_definition_fingerprints'] ?? []);
+            $pending = $pendingWorkflowTasks[$rolloutKey] ?? $this->emptyPendingWorkflowTasks($group['build_id']);
 
             $buildIds[] = [
                 'build_id' => $group['build_id'],
@@ -343,6 +369,10 @@ final class TaskQueueBuildIdRolloutSnapshot
                 'workflow_definition_fingerprint_conflicts' => $fingerprints['conflicts'],
                 'last_heartbeat_at' => $group['last_heartbeat_at']?->toJSON(),
                 'first_seen_at' => $group['first_seen_at']?->toJSON(),
+                'pending_workflow_tasks' => $this->pendingWorkflowTaskDiagnostic(
+                    $pending,
+                    $group['active_worker_count'],
+                ),
             ];
         }
 
@@ -350,6 +380,8 @@ final class TaskQueueBuildIdRolloutSnapshot
             if (isset($groups[$key === '' ? '__unversioned__' : $key])) {
                 continue;
             }
+
+            $pending = $pendingWorkflowTasks[$key] ?? $this->emptyPendingWorkflowTasks($rollout->publicBuildId());
 
             $buildIds[] = [
                 'build_id' => $rollout->publicBuildId(),
@@ -374,6 +406,7 @@ final class TaskQueueBuildIdRolloutSnapshot
                 'workflow_definition_fingerprint_conflicts' => [],
                 'last_heartbeat_at' => null,
                 'first_seen_at' => null,
+                'pending_workflow_tasks' => $this->pendingWorkflowTaskDiagnostic($pending, 0),
             ];
         }
 
@@ -391,6 +424,120 @@ final class TaskQueueBuildIdRolloutSnapshot
         });
 
         return $buildIds;
+    }
+
+    /**
+     * @return array<string, array{
+     *     build_id: string|null,
+     *     total_count: int,
+     *     ready_count: int,
+     *     leased_count: int
+     * }>
+     */
+    private function pendingWorkflowTaskCountsForTaskQueue(string $namespace, string $taskQueue): array
+    {
+        if (! Schema::hasTable('workflow_tasks') || ! Schema::hasTable('workflow_runs')) {
+            return [];
+        }
+
+        $compatibilityExpression = "COALESCE(NULLIF(TRIM(workflow_tasks.compatibility), ''), "
+            ."NULLIF(TRIM(workflow_runs.compatibility), ''))";
+
+        $rows = WorkflowTask::query()
+            ->toBase()
+            ->select('workflow_tasks.status')
+            ->selectRaw($compatibilityExpression.' as effective_compatibility')
+            ->selectRaw('COUNT(*) as task_count')
+            ->leftJoin('workflow_runs', 'workflow_runs.id', '=', 'workflow_tasks.workflow_run_id')
+            ->where('workflow_tasks.namespace', $namespace)
+            ->where('workflow_tasks.task_type', TaskType::Workflow->value)
+            ->where('workflow_tasks.queue', $taskQueue)
+            ->whereIn('workflow_tasks.status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->groupBy('workflow_tasks.status')
+            ->groupByRaw($compatibilityExpression)
+            ->get();
+
+        $counts = [];
+
+        foreach ($rows as $row) {
+            $compatibility = $this->nonEmptyString($row->effective_compatibility ?? null);
+            $key = WorkerBuildIdRollout::buildIdKey($compatibility);
+            $counts[$key] ??= $this->emptyPendingWorkflowTasks($compatibility);
+
+            $taskCount = max(0, (int) ($row->task_count ?? 0));
+            if ($taskCount === 0) {
+                continue;
+            }
+
+            $counts[$key]['total_count'] += $taskCount;
+
+            $status = $this->nonEmptyString($row->status ?? null);
+            if ($status === TaskStatus::Leased->value) {
+                $counts[$key]['leased_count'] += $taskCount;
+            } else {
+                $counts[$key]['ready_count'] += $taskCount;
+            }
+        }
+
+        return $counts;
+    }
+
+    /**
+     * @return array{build_id: string|null, total_count: int, ready_count: int, leased_count: int}
+     */
+    private function emptyPendingWorkflowTasks(?string $buildId): array
+    {
+        return [
+            'build_id' => $buildId,
+            'total_count' => 0,
+            'ready_count' => 0,
+            'leased_count' => 0,
+        ];
+    }
+
+    /**
+     * @param array{build_id: string|null, total_count: int, ready_count: int, leased_count: int} $pending
+     * @return array{
+     *     status: string,
+     *     operator_visible_signal: string|null,
+     *     message: string|null,
+     *     total_count: int,
+     *     ready_count: int,
+     *     leased_count: int
+     * }
+     */
+    private function pendingWorkflowTaskDiagnostic(array $pending, int $activeWorkerCount): array
+    {
+        $total = max(0, (int) $pending['total_count']);
+        $ready = max(0, (int) $pending['ready_count']);
+        $leased = max(0, (int) $pending['leased_count']);
+        $buildId = $pending['build_id'];
+        $status = 'idle';
+        $signal = null;
+        $message = null;
+
+        if ($total > 0) {
+            $status = 'pending';
+
+            if ($buildId !== null && $activeWorkerCount === 0) {
+                $status = 'no_compatible_worker';
+                $signal = 'no_compatible_worker';
+                $message = sprintf(
+                    'This build id has %d pending workflow task%s but no active compatible worker.',
+                    $total,
+                    $total === 1 ? '' : 's',
+                );
+            }
+        }
+
+        return [
+            'status' => $status,
+            'operator_visible_signal' => $signal,
+            'message' => $message,
+            'total_count' => $total,
+            'ready_count' => $ready,
+            'leased_count' => $leased,
+        ];
     }
 
     /**
@@ -555,6 +702,17 @@ final class TaskQueueBuildIdRolloutSnapshot
         }
 
         return $rank;
+    }
+
+    private function nonEmptyString(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value === '' ? null : $value;
     }
 
     private function workerStaleAfterSeconds(): int

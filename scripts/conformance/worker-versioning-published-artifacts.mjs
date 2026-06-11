@@ -295,6 +295,13 @@ async function main() {
     )
     : { latest: {}, samples: [] };
   const noCompatibleShow = noCompatibleVisibility.latest;
+  const noCompatibleBuildIds = await getJson(
+    serverUrl,
+    `/api/task-queues/${encodeURIComponent(taskQueue)}/build-ids`,
+    controlHeaders,
+    [200],
+  );
+  const noCompatibleBuildIdEntry = taskQueueBuildIdEntry(noCompatibleBuildIds, buildV1);
   const noCompatiblePollStatuses = noCompatiblePolls
     .map((poll) => stringValue(poll.poll_status))
     .filter(Boolean);
@@ -308,6 +315,7 @@ async function main() {
     ...noCompatibleVisibility.samples.map((sample) => sample.compatibilityStatus),
     ...noCompatibleVisibility.samples.map((sample) => sample.compatibility_fleet_reason),
     ...noCompatibleVisibility.samples.map((sample) => sample.compatibilityFleetReason),
+    ...pendingWorkflowTaskDiagnosticSignals(noCompatibleBuildIdEntry),
   ))
     || 'pending';
   const noCompatiblePendingOrTypedError = isExplicitNoCompatibleSignal(noCompatibleSignal)
@@ -756,6 +764,8 @@ async function main() {
     deregister_response: v1Delete,
     workflow_visibility: noCompatibleShow,
     workflow_visibility_samples: noCompatibleVisibility.samples,
+    task_queue_build_ids: noCompatibleBuildIds,
+    task_queue_build_id_entry: noCompatibleBuildIdEntry,
   };
   const noCompatiblePublishedEvidence = noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidence);
   const publishedNoCompatibleOutputs = noCompatiblePublishedEvidence.outputs;
@@ -1074,6 +1084,7 @@ async function main() {
       operator_visible_signal: scenarioResults.no_compatible_worker_behavior.observed_outputs.operator_visible_signal,
       pending_or_typed_error: scenarioResults.no_compatible_worker_behavior.observed_outputs.pending_or_typed_error,
       incompatible_worker_task_count: scenarioResults.no_compatible_worker_behavior.observed_outputs.incompatible_worker_task_count,
+      task_queue_build_id_entry: scenarioResults.no_compatible_worker_behavior.observed_outputs.task_queue_build_id_entry,
       published_artifact_worker_execution: scenarioResults
         .no_compatible_worker_behavior
         .observed_outputs
@@ -1218,6 +1229,24 @@ async function waitForNoCompatibleVisibility(serverUrl, workflowId, runId, heade
     latest: samples[samples.length - 1] ?? {},
     samples,
   };
+}
+
+function taskQueueBuildIdEntry(snapshot, buildId) {
+  const wanted = stringValue(buildId);
+  const entries = Array.isArray(snapshot?.build_ids) ? snapshot.build_ids : [];
+
+  return entries.find((entry) => stringValue(entry?.build_id) === wanted) ?? null;
+}
+
+function pendingWorkflowTaskDiagnosticSignals(entry) {
+  const pending = objectValue(entry?.pending_workflow_tasks ?? entry?.pendingWorkflowTasks);
+
+  return [
+    pending.operator_visible_signal,
+    pending.operatorVisibleSignal,
+    pending.status,
+    pending.message,
+  ];
 }
 
 async function completeWorkflow(serverUrl, headers, task, result) {
