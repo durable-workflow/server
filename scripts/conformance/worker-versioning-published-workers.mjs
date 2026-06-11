@@ -1574,49 +1574,61 @@ async def main():
                 "build_id": payload["build_id"],
                 "poll_request_id": f"{payload['worker_id']}-{time.time_ns()}",
             }
-            request = urllib.request.Request(
-                f"{payload['server_url'].rstrip('/')}/api/worker/workflow-tasks/poll",
-                data=json.dumps(body).encode("utf-8"),
-                method="POST",
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {payload['token']}",
-                    "X-Namespace": payload["namespace"],
-                    "X-Durable-Workflow-Protocol-Version": "1.8",
-                },
-            )
             poll_status = None
-            try:
-                with urllib.request.urlopen(
-                    request,
+            sdk_poll_envelope_used = False
+            if hasattr(client, "poll_workflow_task_response"):
+                response = await client.poll_workflow_task_response(
+                    worker_id=payload["worker_id"],
+                    task_queue=payload["task_queue"],
+                    build_id=payload["build_id"],
+                    poll_request_id=body["poll_request_id"],
                     timeout=float(payload.get("poll_timeout_seconds") or 2.0),
-                ) as handle:
-                    http_status = handle.status
-                    response_text = handle.read().decode("utf-8")
+                )
+                http_status = 200
                 error = None
                 error_type = None
-            except urllib.error.HTTPError as exc:
-                http_status = exc.code
-                response_text = exc.read().decode("utf-8")
-                error = str(exc)
-                error_type = exc.__class__.__name__
-            except Exception as exc:
-                http_status = None
-                response_text = ""
-                poll_status = "poll_timeout" if exc.__class__.__name__ in ("TimeoutException", "TimeoutError", "timeout") else "poll_error"
-                error = str(exc)
-                error_type = exc.__class__.__name__
+                sdk_poll_envelope_used = True
             else:
-                poll_status = None
-
-            if response_text:
+                request = urllib.request.Request(
+                    f"{payload['server_url'].rstrip('/')}/api/worker/workflow-tasks/poll",
+                    data=json.dumps(body).encode("utf-8"),
+                    method="POST",
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {payload['token']}",
+                        "X-Namespace": payload["namespace"],
+                        "X-Durable-Workflow-Protocol-Version": "1.8",
+                    },
+                )
                 try:
-                    response = json.loads(response_text)
-                except json.JSONDecodeError:
-                    response = {"raw_body": response_text}
-            else:
-                response = None
+                    with urllib.request.urlopen(
+                        request,
+                        timeout=float(payload.get("poll_timeout_seconds") or 2.0),
+                    ) as handle:
+                        http_status = handle.status
+                        response_text = handle.read().decode("utf-8")
+                    error = None
+                    error_type = None
+                except urllib.error.HTTPError as exc:
+                    http_status = exc.code
+                    response_text = exc.read().decode("utf-8")
+                    error = str(exc)
+                    error_type = exc.__class__.__name__
+                except Exception as exc:
+                    http_status = None
+                    response_text = ""
+                    poll_status = "poll_timeout" if exc.__class__.__name__ in ("TimeoutException", "TimeoutError", "timeout") else "poll_error"
+                    error = str(exc)
+                    error_type = exc.__class__.__name__
+
+                if response_text:
+                    try:
+                        response = json.loads(response_text)
+                    except json.JSONDecodeError:
+                        response = {"raw_body": response_text}
+                else:
+                    response = None
 
             if isinstance(response, dict):
                 poll_status = response.get("poll_status") or response.get("reason") or poll_status
@@ -1639,6 +1651,7 @@ async def main():
                 "poll_status": poll_status,
                 "error": error,
                 "error_type": error_type,
+                "sdk_poll_envelope_used": sdk_poll_envelope_used,
             }
         else:
             raise RuntimeError(f"unknown action: {payload['action']}")

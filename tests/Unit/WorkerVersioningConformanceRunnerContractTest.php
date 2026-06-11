@@ -374,6 +374,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'poll_timeout_seconds',
             'DW_WV_WORKER_POLL_CLIENT_TIMEOUT_SECONDS',
             'urllib.request.Request',
+            'poll_workflow_task_response',
+            'sdk_poll_envelope_used',
             '"http_status": http_status',
             '"poll_timeout" if exc.__class__.__name__ in ("TimeoutException", "TimeoutError", "timeout") else "poll_error"',
             '"error_type": error_type',
