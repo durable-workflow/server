@@ -788,6 +788,19 @@ GUIDE;
             'conformance_runner_coverage_gap',
             $result['scenario_results']['completed_history_preservation_and_replay']['linked_findings'][0]['finding_type'],
         );
+        $rollbackOutputs = $result['scenario_results']['rollback_contract_verified']['observed_outputs'];
+        $this->assertSame('documented_but_not_executed', $rollbackOutputs['rollback_supported_state']);
+        $this->assertSame(
+            'documented_but_not_executed',
+            $rollbackOutputs['public_operator_signal']['status'],
+        );
+        $skewOutputs = $result['scenario_results']['version_skew_refusal']['observed_outputs'];
+        $this->assertArrayHasKey('cli-v1-to-server-v2', $skewOutputs['cli_skew_observations']);
+        $this->assertArrayHasKey('cli-v2-to-server-v1', $skewOutputs['cli_skew_observations']);
+        $this->assertArrayHasKey('worker-v1-to-server-v2', $skewOutputs['worker_skew_observations']);
+        $this->assertArrayHasKey('worker-v2-to-server-v1', $skewOutputs['worker_skew_observations']);
+        $this->assertArrayHasKey('cli-v1-to-server-v2', $skewOutputs['request_response_evidence']);
+        $this->assertArrayHasKey('worker-v2-to-server-v1', $skewOutputs['request_response_evidence']);
         $this->assertArrayNotHasKey(
             'run_record',
             $result['finding_links'],

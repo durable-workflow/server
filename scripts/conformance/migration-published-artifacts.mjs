@@ -1196,6 +1196,13 @@ function publicGuideAuditScenarioOutputs(
         ...common,
         rollback_steps: signals.rollback_procedure ? commands.filter((command) => /backup|restore|composer require|queue:restart|mysql|psql/i.test(command)) : [],
         rollback_supported_state: signals.rollback_procedure ? 'documented_but_not_executed' : 'not_documented_by_public_guide_audit',
+        public_operator_signal: signals.rollback_procedure
+          ? {
+              source: guideRevision.url,
+              status: 'documented_but_not_executed',
+              observed_behavior: 'The guide audit found rollback instructions, but no operator-facing rollback refusal or support signal was exercised.',
+            }
+          : 'not_documented_by_public_guide_audit',
         postrollback_visibility: 'not_executed_by_public_guide_audit',
         postrollback_execution_result: 'not_executed_by_public_guide_audit',
       };
@@ -1203,13 +1210,50 @@ function publicGuideAuditScenarioOutputs(
       return {
         ...common,
         skew_matrix: scenarioManifest?.required_matrix?.skew_cells ?? [],
+        cli_skew_observations: skewObservationPlaceholders('client'),
+        worker_skew_observations: skewObservationPlaceholders('worker'),
         refusal_errors: 'not_executed_by_public_guide_audit',
         operator_visible_reason: 'not_executed_by_public_guide_audit',
+        request_response_evidence: skewRequestResponsePlaceholders(),
         no_partial_mutation_evidence: 'not_executed_by_public_guide_audit',
       };
     default:
       return common;
   }
+}
+
+function skewObservationPlaceholders(kind) {
+  return Object.fromEntries(skewCellsFor(kind).map((cell) => [
+    skewCellId(cell, kind),
+    'not_executed_by_public_guide_audit',
+  ]));
+}
+
+function skewRequestResponsePlaceholders() {
+  return Object.fromEntries([
+    ...skewCellsFor('client').map((cell) => [
+      skewCellId(cell, 'client'),
+      'not_executed_by_public_guide_audit',
+    ]),
+    ...skewCellsFor('worker').map((cell) => [
+      skewCellId(cell, 'worker'),
+      'not_executed_by_public_guide_audit',
+    ]),
+  ]);
+}
+
+function skewCellsFor(kind) {
+  return arrayValue(scenarioManifest?.required_matrix?.skew_cells)
+    .map((cell) => objectValue(cell))
+    .filter((cell) => stringValue(cell.server) !== '' && stringValue(cell[kind]) !== '');
+}
+
+function skewCellId(cell, kind) {
+  const subject = kind === 'worker'
+    ? stringValue(cell[kind]).replace(/^workflow-php-/, 'worker-')
+    : stringValue(cell[kind]);
+
+  return `${subject}-to-${stringValue(cell.server)}`;
 }
 
 function publicGuideAuditScenarioReason(scenarioId, signals) {
