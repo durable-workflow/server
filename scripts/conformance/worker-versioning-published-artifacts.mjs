@@ -1093,14 +1093,41 @@ async function main() {
       cache_eviction_incompatible_delivery_count: cacheEvictionIncompatibleCount,
     },
     no_compatible_worker: {
+      scenario_id: 'no_compatible_worker_behavior',
+      status: scenarioResults.no_compatible_worker_behavior.status,
       operator_visible_signal: scenarioResults.no_compatible_worker_behavior.observed_outputs.operator_visible_signal,
+      operator_visible_signal_explicit: scenarioResults
+        .no_compatible_worker_behavior
+        .observed_outputs
+        .operator_visible_signal_explicit,
       pending_or_typed_error: scenarioResults.no_compatible_worker_behavior.observed_outputs.pending_or_typed_error,
       incompatible_worker_task_count: scenarioResults.no_compatible_worker_behavior.observed_outputs.incompatible_worker_task_count,
+      incompatible_worker_poll_attempts: scenarioResults
+        .no_compatible_worker_behavior
+        .observed_outputs
+        .incompatible_worker_poll_attempts,
+      compatible_worker_deregistered: scenarioResults
+        .no_compatible_worker_behavior
+        .observed_outputs
+        .compatible_worker_deregistered,
       task_queue_build_id_entry: scenarioResults.no_compatible_worker_behavior.observed_outputs.task_queue_build_id_entry,
+      published_server_protocol_probe: scenarioResults
+        .no_compatible_worker_behavior
+        .observed_outputs
+        .published_server_protocol_probe,
+      published_server_artifact: scenarioResults
+        .no_compatible_worker_behavior
+        .observed_outputs
+        .published_server_artifact,
       published_artifact_worker_execution: scenarioResults
         .no_compatible_worker_behavior
         .observed_outputs
         .published_artifact_worker_execution,
+      worker_execution_mode: scenarioResults.no_compatible_worker_behavior.observed_outputs.worker_execution_mode,
+      local_product_source_checkouts_used: scenarioResults
+        .no_compatible_worker_behavior
+        .observed_outputs
+        .local_product_source_checkouts_used,
     },
     cross_language_matrix: scenarioResults.cross_language_php_python_pinning.observed_outputs.cross_language_delivery,
     adversarial_outcomes: scenarioResults.adversarial_no_version_bump.observed_outputs,
