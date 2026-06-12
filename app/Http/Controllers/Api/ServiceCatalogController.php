@@ -1164,30 +1164,75 @@ class ServiceCatalogController
         WorkflowService $service,
         WorkflowServiceOperation $operation,
     ): array {
-        return [
+        $payload = [
             'accepted' => false,
             'service_call_id' => $admission->call->id,
             'namespace' => $admission->call->namespace,
-            'endpoint_id' => $endpoint->id,
-            'endpoint_name' => $endpoint->endpoint_name,
-            'service_id' => $service->id,
-            'service_name' => $service->service_name,
-            'operation_id' => $operation->id,
-            'operation_name' => $operation->operation_name,
-            'operation_mode' => $admission->call->operation_mode,
             'status' => $admission->call->status,
             'outcome' => $admission->decision->outcome->value,
+            'error_type' => $admission->decision->outcome->value,
             'outcome_category' => $admission->call->outcome_category,
             'reason' => $admission->decision->reason,
-            'message' => $admission->decision->message,
+            'message' => $this->admissionRejectionMessage($admission),
             'retry_after_seconds' => $admission->decision->retryAfterSeconds,
             'policy_name' => $admission->decision->policyName,
-            'outcome_metadata' => $admission->decision->metadata,
+            'outcome_metadata' => $this->admissionRejectionMetadata($admission),
             'caller_namespace' => $admission->call->caller_namespace,
             'caller_principal_subject' => $admission->call->caller_principal_subject,
             'linked_workflow_instance_id' => null,
             'linked_workflow_run_id' => null,
             'linked_workflow_update_id' => null,
+        ];
+
+        if (! $this->redactAdmissionTarget($admission)) {
+            $payload = [
+                'accepted' => $payload['accepted'],
+                'service_call_id' => $payload['service_call_id'],
+                'namespace' => $payload['namespace'],
+                'endpoint_id' => $endpoint->id,
+                'endpoint_name' => $endpoint->endpoint_name,
+                'service_id' => $service->id,
+                'service_name' => $service->service_name,
+                'operation_id' => $operation->id,
+                'operation_name' => $operation->operation_name,
+                'operation_mode' => $admission->call->operation_mode,
+            ] + array_diff_key($payload, array_flip([
+                'accepted',
+                'service_call_id',
+                'namespace',
+            ]));
+        }
+
+        return $payload;
+    }
+
+    private function redactAdmissionTarget(ServiceCallAdmission $admission): bool
+    {
+        return $admission->decision->outcome->value === 'rejected_forbidden';
+    }
+
+    private function admissionRejectionMessage(ServiceCallAdmission $admission): ?string
+    {
+        if ($this->redactAdmissionTarget($admission)) {
+            return 'Nexus operation is not permitted for this caller.';
+        }
+
+        return $admission->decision->message;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function admissionRejectionMetadata(ServiceCallAdmission $admission): array
+    {
+        if (! $this->redactAdmissionTarget($admission)) {
+            return $admission->decision->metadata;
+        }
+
+        $failureReason = $admission->decision->metadata['failure_reason'] ?? 'policy_rejection';
+
+        return [
+            'failure_reason' => is_scalar($failureReason) ? (string) $failureReason : 'policy_rejection',
         ];
     }
 

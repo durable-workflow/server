@@ -29,6 +29,30 @@ class ServiceExecutionRoutesTest extends TestCase
 
     public function test_execute_returns_404_envelope_when_endpoint_missing(): void
     {
+        $stub = new class implements ServiceControlPlane
+        {
+            public bool $executed = false;
+
+            public function execute(string $endpointName, string $serviceName, string $operationName, array $options = []): array
+            {
+                $this->executed = true;
+
+                return ['accepted' => true];
+            }
+
+            public function describeCall(string $serviceCallId, array $options = []): array
+            {
+                return ['found' => false, 'service_call_id' => $serviceCallId];
+            }
+
+            public function cancelCall(string $serviceCallId, array $options = []): array
+            {
+                return ['accepted' => false, 'service_call_id' => $serviceCallId];
+            }
+        };
+
+        $this->app->instance(ServiceControlPlane::class, $stub);
+
         $response = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/service-endpoints/missing/services/svc/operations/op/execute', [
                 'arguments' => null,
@@ -37,6 +61,14 @@ class ServiceExecutionRoutesTest extends TestCase
         $response->assertStatus(404)
             ->assertJsonPath('accepted', false)
             ->assertJsonPath('reason', 'endpoint_not_found');
+
+        $this->assertFalse($stub->executed);
+        $this->assertDatabaseMissing('workflow_service_calls', [
+            'namespace' => 'default',
+            'endpoint_name' => 'missing',
+            'service_name' => 'svc',
+            'operation_name' => 'op',
+        ]);
     }
 
     public function test_execute_dispatches_through_service_control_plane(): void
@@ -680,9 +712,11 @@ class ServiceExecutionRoutesTest extends TestCase
 
         $response->assertStatus(403)
             ->assertJsonPath('accepted', false)
+            ->assertJsonPath('error_type', 'rejected_forbidden')
             ->assertJsonPath('outcome', 'rejected_forbidden')
             ->assertJsonPath('reason', 'caller_namespace_denied')
             ->assertJsonPath('caller_namespace', 'analytics');
+        $this->assertForbiddenResponseDoesNotDiscloseTarget($response->json());
 
         $this->assertNotSame($serviceCall->id, $response->json('service_call_id'));
         $this->assertFalse($stub->executeCalled);
@@ -707,6 +741,142 @@ class ServiceExecutionRoutesTest extends TestCase
             'outcome' => 'rejected_forbidden',
             'outcome_reason' => 'caller_namespace_denied',
         ]);
+    }
+
+    public function test_execute_rejects_unlisted_caller_namespace_without_target_disclosure(): void
+    {
+        [, , $operation] = $this->seedCatalog();
+        $operation->update([
+            'boundary_policy' => [
+                'authorization' => [
+                    'caller_namespaces' => ['allow' => ['trusted']],
+                ],
+            ],
+        ]);
+
+        $stub = new class implements ServiceControlPlane
+        {
+            public bool $executed = false;
+
+            public function execute(string $endpointName, string $serviceName, string $operationName, array $options = []): array
+            {
+                $this->executed = true;
+
+                return ['accepted' => true];
+            }
+
+            public function describeCall(string $serviceCallId, array $options = []): array
+            {
+                return ['found' => false, 'service_call_id' => $serviceCallId];
+            }
+
+            public function cancelCall(string $serviceCallId, array $options = []): array
+            {
+                return ['accepted' => false, 'service_call_id' => $serviceCallId];
+            }
+        };
+
+        $this->app->instance(ServiceControlPlane::class, $stub);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services/invoicing/operations/createinvoice/execute', [
+                'caller_namespace' => 'analytics',
+                'caller_workflow_instance_id' => 'caller-not-allowed',
+                'caller_workflow_run_id' => 'run-not-allowed',
+            ]);
+
+        $response->assertStatus(403)
+            ->assertJsonPath('accepted', false)
+            ->assertJsonPath('error_type', 'rejected_forbidden')
+            ->assertJsonPath('outcome', 'rejected_forbidden')
+            ->assertJsonPath('reason', 'caller_namespace_not_allowed')
+            ->assertJsonPath('message', 'Nexus operation is not permitted for this caller.')
+            ->assertJsonPath('caller_namespace', 'analytics');
+        $this->assertForbiddenResponseDoesNotDiscloseTarget($response->json());
+
+        $this->assertFalse($stub->executed);
+        $this->assertDatabaseHas('workflow_service_calls', [
+            'namespace' => 'default',
+            'caller_namespace' => 'analytics',
+            'endpoint_name' => 'billing',
+            'service_name' => 'invoicing',
+            'operation_name' => 'createinvoice',
+            'status' => 'failed',
+            'outcome' => 'rejected_forbidden',
+            'outcome_reason' => 'caller_namespace_not_allowed',
+        ]);
+    }
+
+    public function test_execute_redacts_forbidden_policy_metadata_without_target_disclosure(): void
+    {
+        $this->seedCatalog();
+
+        $this->app->forgetInstance(ServiceBoundaryPolicy::class);
+        $this->app->instance(ServiceBoundaryPolicy::class, new class implements ServiceBoundaryPolicy
+        {
+            public function evaluate(
+                \Workflow\V2\Support\ServiceBoundaryRequest $request,
+            ): \Workflow\V2\Support\ServiceBoundaryDecision {
+                return \Workflow\V2\Support\ServiceBoundaryDecision::denyAuthorization(
+                    reason: 'custom_policy_forbidden',
+                    message: sprintf(
+                        'Denied [%s/%s/%s].',
+                        $request->endpointName,
+                        $request->serviceName,
+                        $request->operationName,
+                    ),
+                    metadata: [
+                        'failure_reason' => 'policy_rejection',
+                        'endpoint_name' => $request->endpointName,
+                        'service_name' => $request->serviceName,
+                        'operation_name' => $request->operationName,
+                        'resolved_target_reference' => $request->resolvedTargetReference,
+                    ],
+                );
+            }
+        });
+        $this->app->forgetInstance(ServiceCallBoundary::class);
+
+        $stub = new class implements ServiceControlPlane
+        {
+            public bool $executed = false;
+
+            public function execute(string $endpointName, string $serviceName, string $operationName, array $options = []): array
+            {
+                $this->executed = true;
+
+                return ['accepted' => true];
+            }
+
+            public function describeCall(string $serviceCallId, array $options = []): array
+            {
+                return ['found' => false, 'service_call_id' => $serviceCallId];
+            }
+
+            public function cancelCall(string $serviceCallId, array $options = []): array
+            {
+                return ['accepted' => false, 'service_call_id' => $serviceCallId];
+            }
+        };
+
+        $this->app->instance(ServiceControlPlane::class, $stub);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services/invoicing/operations/createinvoice/execute', [
+                'caller_namespace' => 'analytics',
+                'caller_workflow_instance_id' => 'caller-custom-denied',
+                'caller_workflow_run_id' => 'run-custom-denied',
+            ]);
+
+        $response->assertStatus(403)
+            ->assertJsonPath('accepted', false)
+            ->assertJsonPath('error_type', 'rejected_forbidden')
+            ->assertJsonPath('reason', 'custom_policy_forbidden')
+            ->assertJsonPath('message', 'Nexus operation is not permitted for this caller.')
+            ->assertJsonPath('outcome_metadata.failure_reason', 'policy_rejection');
+        $this->assertForbiddenResponseDoesNotDiscloseTarget($response->json());
+
+        $this->assertFalse($stub->executed);
     }
 
     public function test_execute_rejects_registered_search_attribute_type_mismatch_before_dispatch(): void
@@ -754,6 +924,59 @@ class ServiceExecutionRoutesTest extends TestCase
                 'validation_errors.search_attributes.0',
                 fn (string $msg): bool => str_contains($msg, 'CustomerAge')
                     && str_contains($msg, 'registered as int'),
+            );
+
+        $this->assertFalse($stub->executed);
+        $this->assertDatabaseMissing('workflow_service_calls', [
+            'namespace' => 'default',
+            'endpoint_name' => 'billing',
+            'service_name' => 'invoicing',
+            'operation_name' => 'createinvoice',
+        ]);
+    }
+
+    public function test_execute_rejects_malformed_payload_before_admission_or_dispatch(): void
+    {
+        $this->seedCatalog();
+
+        $stub = new class implements ServiceControlPlane
+        {
+            public bool $executed = false;
+
+            public function execute(string $endpointName, string $serviceName, string $operationName, array $options = []): array
+            {
+                $this->executed = true;
+
+                return ['accepted' => true];
+            }
+
+            public function describeCall(string $serviceCallId, array $options = []): array
+            {
+                return ['found' => false, 'service_call_id' => $serviceCallId];
+            }
+
+            public function cancelCall(string $serviceCallId, array $options = []): array
+            {
+                return ['accepted' => false, 'service_call_id' => $serviceCallId];
+            }
+        };
+
+        $this->app->instance(ServiceControlPlane::class, $stub);
+
+        $response = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/service-endpoints/billing/services/invoicing/operations/createinvoice/execute', [
+                'arguments' => ['name' => 'world'],
+                'wait_for' => 'dispatch_anyway',
+                'caller_namespace' => 'analytics',
+                'caller_workflow_instance_id' => 'caller-malformed',
+                'caller_workflow_run_id' => 'run-malformed',
+            ]);
+
+        $response->assertStatus(422)
+            ->assertJsonPath('reason', 'validation_failed')
+            ->assertJsonPath(
+                'validation_errors.wait_for.0',
+                fn (string $message): bool => str_contains($message, 'selected wait for is invalid'),
             );
 
         $this->assertFalse($stub->executed);
@@ -873,9 +1096,11 @@ class ServiceExecutionRoutesTest extends TestCase
 
         $response->assertStatus(403)
             ->assertJsonPath('accepted', false)
+            ->assertJsonPath('error_type', 'rejected_forbidden')
             ->assertJsonPath('outcome', 'rejected_forbidden')
             ->assertJsonPath('reason', 'caller_namespace_denied')
             ->assertJsonPath('caller_namespace', 'analytics');
+        $this->assertForbiddenResponseDoesNotDiscloseTarget($response->json());
 
         $this->assertFalse($stub->executed);
         $this->assertDatabaseHas('workflow_service_calls', [
@@ -1083,6 +1308,29 @@ class ServiceExecutionRoutesTest extends TestCase
         ]);
 
         return [$endpoint, $service, $operation];
+    }
+
+    /**
+     * @param array<string, mixed> $body
+     */
+    private function assertForbiddenResponseDoesNotDiscloseTarget(array $body): void
+    {
+        foreach ([
+            'endpoint_id',
+            'endpoint_name',
+            'service_id',
+            'service_name',
+            'operation_id',
+            'operation_name',
+            'operation_mode',
+        ] as $field) {
+            $this->assertArrayNotHasKey($field, $body);
+        }
+
+        $encoded = strtolower(json_encode($body, JSON_THROW_ON_ERROR));
+        foreach (['billing', 'invoicing', 'createinvoice', 'workflows.invoice.create'] as $token) {
+            $this->assertStringNotContainsString($token, $encoded);
+        }
     }
 
     /**

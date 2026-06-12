@@ -1034,24 +1034,49 @@ async function callerHistory(baseUrl, token, callerNamespace, workflowId, runId)
   );
 }
 
-function dispatchEvidence(response, history, serviceCallId = '') {
+function isNoDispatchOutcome(outcome) {
+  const normalized = String(outcome || '').toLowerCase();
+  return normalized.startsWith('rejected_')
+    || ['cancelled', 'canceled', 'timed_out'].includes(normalized);
+}
+
+function isDispatchLikeHistoryRow(row) {
+  const status = String(row.status || '').toLowerCase();
+  const outcome = String(row.outcome || '').toLowerCase();
+  return ['accepted', 'started', 'completed'].includes(status)
+    || ['accepted', 'started', 'completed', 'handler_failed'].includes(outcome)
+    || (status === 'failed' && outcome !== '' && !isNoDispatchOutcome(outcome));
+}
+
+function dispatchEvidence(response, history, serviceCallId = '', options = {}) {
   const historyRows = historyRowsFrom(history);
   const matchingRows = serviceCallId === ''
     ? historyRows
     : historyRows.filter((row) => String(row.service_call_id || '') === serviceCallId);
-  const dispatchLikeRows = matchingRows.filter((row) => {
-    const status = String(row.status || '');
+  const matchingRejectedRows = matchingRows.filter((row) => {
     const outcome = String(row.outcome || '');
-    return ['accepted', 'started', 'completed'].includes(status)
-      || ['accepted', 'completed'].includes(outcome);
+    return isNoDispatchOutcome(outcome);
   });
+  const dispatchLikeRows = matchingRows.filter(isDispatchLikeHistoryRow);
   const responseAccepted = response.body?.accepted === true;
+  const historySucceeded = history.ok === true
+    && history.body
+    && typeof history.body === 'object'
+    && Array.isArray(history.body.nexus_operations);
+  const requireRejectedHistory = options.requireRejectedHistory === true;
+  const historyStateProven = historySucceeded
+    && (serviceCallId === ''
+      ? !requireRejectedHistory && matchingRows.length === 0
+      : matchingRejectedRows.length > 0);
 
   return {
     handler_dispatch_count: responseAccepted ? 1 : dispatchLikeRows.length,
     service_invoked: responseAccepted || dispatchLikeRows.length > 0,
     service_call_id: serviceCallId,
+    caller_history_query_succeeded: historySucceeded,
+    caller_history_state_proven: historyStateProven,
     caller_history_rows: matchingRows,
+    matching_rejected_history_count: matchingRejectedRows.length,
     caller_history_response: responseSummary(history),
   };
 }
@@ -1094,7 +1119,7 @@ async function probeEndpointPermissionDenied(baseUrl, token, versions) {
     callerWorkflowRunId,
   );
   const leak = endpointLeakDetails(refusal, ['shared-greeter', 'Greeter', 'greet']);
-  const dispatch = dispatchEvidence(refusal, history, serviceCallId);
+  const dispatch = dispatchEvidence(refusal, history, serviceCallId, {requireRejectedHistory: true});
   const observedOutputs = {
     caller_namespace: callerNamespace,
     target_namespace: 'shared',
@@ -1108,6 +1133,8 @@ async function probeEndpointPermissionDenied(baseUrl, token, versions) {
     handler_dispatch_count: dispatch.handler_dispatch_count,
     service_invoked: dispatch.service_invoked,
     service_call_id: serviceCallId,
+    caller_history_query_succeeded: dispatch.caller_history_query_succeeded,
+    caller_history_state_proven: dispatch.caller_history_state_proven,
     request: refusal.request,
     response: responseEvidence(refusal),
     dispatch_evidence: dispatch,
@@ -1116,18 +1143,31 @@ async function probeEndpointPermissionDenied(baseUrl, token, versions) {
   const typedPermissionDenied = refusal.status === 403
     && ['rejected_forbidden', 'caller_namespace_denied', 'forbidden'].includes(errorTypeFrom(refusal, '').toLowerCase());
 
-  if (typedPermissionDenied && !leak.disclosed && dispatch.handler_dispatch_count === 0) {
+  if (
+    typedPermissionDenied
+    && !leak.disclosed
+    && dispatch.handler_dispatch_count === 0
+    && dispatch.service_invoked === false
+    && dispatch.caller_history_query_succeeded
+    && dispatch.caller_history_state_proven
+  ) {
     return scenarioResult('pass', scenarioId, observedOutputs);
   }
+
+  const failureType = leak.disclosed
+    ? 'permission_denied_information_leak'
+    : (!dispatch.caller_history_query_succeeded || !dispatch.caller_history_state_proven
+        ? 'nexus_refusal_no_dispatch_evidence_gap'
+        : 'nexus_authorization_refusal_shape_drift');
 
   return scenarioResult('fail', scenarioId, observedOutputs, [
     scenarioProductFailure(
       scenarioId,
       versions,
-      leak.disclosed ? 'permission_denied_information_leak' : 'nexus_authorization_refusal_shape_drift',
+      failureType,
       leak.disclosed
         ? `Permission-denied response disclosed endpoint-specific fields: ${JSON.stringify(leak)}`
-        : `Permission-denied probe did not return the typed 403 shape: ${JSON.stringify(responseSummary(refusal)).slice(0, 1000)}`,
+        : `Permission-denied probe did not prove typed refusal plus no dispatch: ${JSON.stringify(observedOutputs).slice(0, 1000)}`,
       'Unauthorized Nexus callers receive a typed permission-denied refusal that does not disclose whether the endpoint, service, or operation exists.',
       'fix Nexus authorization refusal shape and rerun the endpoint isolation cell',
     ),
@@ -1181,6 +1221,8 @@ async function probeMalformedPayloadRefusal(baseUrl, token, versions) {
     typed_error: errorTypeFrom(refusal, 'validation_failed'),
     handler_dispatch_count: dispatch.handler_dispatch_count,
     service_invoked: dispatch.service_invoked,
+    caller_history_query_succeeded: dispatch.caller_history_query_succeeded,
+    caller_history_state_proven: dispatch.caller_history_state_proven,
     request: refusal.request,
     response: responseEvidence(refusal),
     dispatch_evidence: dispatch,
@@ -1189,7 +1231,9 @@ async function probeMalformedPayloadRefusal(baseUrl, token, versions) {
   const pass = refusal.status === 422
     && errorTypeFrom(refusal, '').toLowerCase() === 'validation_failed'
     && dispatch.handler_dispatch_count === 0
-    && dispatch.service_invoked === false;
+    && dispatch.service_invoked === false
+    && dispatch.caller_history_query_succeeded
+    && dispatch.caller_history_state_proven;
 
   if (pass) {
     return scenarioResult('pass', scenarioId, observedOutputs);
@@ -1199,7 +1243,11 @@ async function probeMalformedPayloadRefusal(baseUrl, token, versions) {
     scenarioProductFailure(
       scenarioId,
       versions,
-      dispatch.service_invoked ? 'malformed_payload_dispatched' : 'malformed_payload_refusal_shape_drift',
+      dispatch.service_invoked
+        ? 'malformed_payload_dispatched'
+        : (!dispatch.caller_history_query_succeeded || !dispatch.caller_history_state_proven
+            ? 'nexus_refusal_no_dispatch_evidence_gap'
+            : 'malformed_payload_refusal_shape_drift'),
       `Malformed payload refusal evidence did not satisfy the pre-dispatch contract: ${JSON.stringify(observedOutputs).slice(0, 1000)}`,
       'Malformed Nexus operation payloads are rejected with a typed validation error before service-call admission or handler dispatch.',
       'fix Nexus malformed-payload refusal and rerun the adversarial payload cell',
@@ -1255,6 +1303,8 @@ async function probeNonexistentEndpointNotFound(baseUrl, token, versions) {
     typed_error: errorTypeFrom(refusal, 'endpoint_not_found'),
     handler_dispatch_count: dispatch.handler_dispatch_count,
     service_invoked: dispatch.service_invoked,
+    caller_history_query_succeeded: dispatch.caller_history_query_succeeded,
+    caller_history_state_proven: dispatch.caller_history_state_proven,
     request: refusal.request,
     response: responseEvidence(refusal),
     dispatch_evidence: dispatch,
@@ -1263,7 +1313,9 @@ async function probeNonexistentEndpointNotFound(baseUrl, token, versions) {
   const pass = refusal.status === 404
     && errorTypeFrom(refusal, '').toLowerCase() === 'endpoint_not_found'
     && dispatch.handler_dispatch_count === 0
-    && dispatch.service_invoked === false;
+    && dispatch.service_invoked === false
+    && dispatch.caller_history_query_succeeded
+    && dispatch.caller_history_state_proven;
 
   if (pass) {
     return scenarioResult('pass', scenarioId, observedOutputs);
@@ -1273,7 +1325,11 @@ async function probeNonexistentEndpointNotFound(baseUrl, token, versions) {
     scenarioProductFailure(
       scenarioId,
       versions,
-      dispatch.service_invoked ? 'nonexistent_endpoint_dispatched' : 'nonexistent_endpoint_error_shape_drift',
+      dispatch.service_invoked
+        ? 'nonexistent_endpoint_dispatched'
+        : (!dispatch.caller_history_query_succeeded || !dispatch.caller_history_state_proven
+            ? 'nexus_refusal_no_dispatch_evidence_gap'
+            : 'nonexistent_endpoint_error_shape_drift'),
       `Nonexistent endpoint refusal evidence did not satisfy the typed not-found contract: ${JSON.stringify(observedOutputs).slice(0, 1000)}`,
       'Invoking a nonexistent Nexus endpoint returns a typed not-found error without admitting or dispatching a service call.',
       'fix Nexus nonexistent-endpoint refusal and rerun the not-found adversarial cell',
@@ -2347,6 +2403,21 @@ const scenarioEvidenceRequirements = {
     {fields: ['request', 'requestEvidence', 'invocation_request', 'invocationRequest'], kind: 'non_empty_object', expected: 'request evidence for the unauthorized Nexus invocation'},
     {fields: ['response', 'responseEvidence', 'invocation_response', 'invocationResponse'], kind: 'non_empty_object', expected: 'response evidence for the unauthorized Nexus refusal'},
     {fields: ['dispatch_evidence', 'dispatchEvidence'], kind: 'non_empty_object', expected: 'dispatch/no-dispatch evidence for the unauthorized Nexus refusal'},
+    {fields: ['caller_history_evidence', 'callerHistoryEvidence', 'caller_history', 'callerHistory'], kind: 'non_empty_object', expected: 'caller-history query evidence for the unauthorized Nexus refusal'},
+    {
+      fields: ['caller_history_query_succeeded', 'callerHistoryQuerySucceeded'],
+      kind: 'boolean_true',
+      expected: 'caller-history query succeeded for no-dispatch evidence',
+      invalid_code: 'nexus_refusal_no_dispatch_evidence_gap',
+      finding_type: 'nexus_refusal_no_dispatch_evidence_gap',
+    },
+    {
+      fields: ['caller_history_state_proven', 'callerHistoryStateProven'],
+      kind: 'boolean_true',
+      expected: 'caller-history response proved a matching rejected state for the refused call',
+      invalid_code: 'nexus_refusal_no_dispatch_evidence_gap',
+      finding_type: 'nexus_refusal_no_dispatch_evidence_gap',
+    },
     {fields: ['refusal_status', 'refusalStatus', 'error_type', 'errorType'], kind: 'non_empty_string', expected: 'typed permission-denied refusal'},
     {
       fields: ['authorization_refusal_disclosed_endpoint_existence', 'authorizationRefusalDisclosedEndpointExistence', 'endpoint_existence_disclosed', 'endpointExistenceDisclosed'],
@@ -2357,11 +2428,27 @@ const scenarioEvidenceRequirements = {
       owning_surface: 'server',
     },
     {fields: ['handler_dispatch_count', 'handlerDispatchCount'], kind: 'number_equals', value: 0, expected: 'forbidden call was refused before handler dispatch'},
+    {fields: ['service_invoked', 'serviceInvoked'], kind: 'boolean_false', expected: 'forbidden call did not invoke the service'},
   ],
   malformed_payload_refused_before_dispatch: [
     {fields: ['request', 'requestEvidence', 'invocation_request', 'invocationRequest'], kind: 'non_empty_object', expected: 'request evidence for the malformed Nexus invocation'},
     {fields: ['response', 'responseEvidence', 'invocation_response', 'invocationResponse'], kind: 'non_empty_object', expected: 'response evidence for the malformed-payload refusal'},
     {fields: ['dispatch_evidence', 'dispatchEvidence'], kind: 'non_empty_object', expected: 'dispatch/no-dispatch evidence for the malformed-payload refusal'},
+    {fields: ['caller_history_evidence', 'callerHistoryEvidence', 'caller_history', 'callerHistory'], kind: 'non_empty_object', expected: 'caller-history query evidence for the malformed-payload refusal'},
+    {
+      fields: ['caller_history_query_succeeded', 'callerHistoryQuerySucceeded'],
+      kind: 'boolean_true',
+      expected: 'caller-history query succeeded for no-dispatch evidence',
+      invalid_code: 'nexus_refusal_no_dispatch_evidence_gap',
+      finding_type: 'nexus_refusal_no_dispatch_evidence_gap',
+    },
+    {
+      fields: ['caller_history_state_proven', 'callerHistoryStateProven'],
+      kind: 'boolean_true',
+      expected: 'caller-history response proved the malformed payload was not admitted',
+      invalid_code: 'nexus_refusal_no_dispatch_evidence_gap',
+      finding_type: 'nexus_refusal_no_dispatch_evidence_gap',
+    },
     {fields: ['refusal_status', 'refusalStatus', 'error_type', 'errorType'], kind: 'non_empty_string', expected: 'typed malformed-payload refusal'},
     {fields: ['typed_error', 'typedError'], kind: 'non_empty_string', expected: 'schema or payload error type returned to the caller'},
     {fields: ['handler_dispatch_count', 'handlerDispatchCount'], kind: 'number_equals', value: 0, expected: 'malformed payload was refused before handler dispatch'},
@@ -2371,9 +2458,25 @@ const scenarioEvidenceRequirements = {
     {fields: ['request', 'requestEvidence', 'invocation_request', 'invocationRequest'], kind: 'non_empty_object', expected: 'request evidence for the nonexistent Nexus endpoint invocation'},
     {fields: ['response', 'responseEvidence', 'invocation_response', 'invocationResponse'], kind: 'non_empty_object', expected: 'response evidence for the nonexistent-endpoint refusal'},
     {fields: ['dispatch_evidence', 'dispatchEvidence'], kind: 'non_empty_object', expected: 'dispatch/no-dispatch evidence for the nonexistent-endpoint refusal'},
+    {fields: ['caller_history_evidence', 'callerHistoryEvidence', 'caller_history', 'callerHistory'], kind: 'non_empty_object', expected: 'caller-history query evidence for the nonexistent-endpoint refusal'},
+    {
+      fields: ['caller_history_query_succeeded', 'callerHistoryQuerySucceeded'],
+      kind: 'boolean_true',
+      expected: 'caller-history query succeeded for no-dispatch evidence',
+      invalid_code: 'nexus_refusal_no_dispatch_evidence_gap',
+      finding_type: 'nexus_refusal_no_dispatch_evidence_gap',
+    },
+    {
+      fields: ['caller_history_state_proven', 'callerHistoryStateProven'],
+      kind: 'boolean_true',
+      expected: 'caller-history response proved the nonexistent endpoint was not admitted',
+      invalid_code: 'nexus_refusal_no_dispatch_evidence_gap',
+      finding_type: 'nexus_refusal_no_dispatch_evidence_gap',
+    },
     {fields: ['refusal_status', 'refusalStatus', 'error_type', 'errorType'], kind: 'non_empty_string', expected: 'typed not-found refusal'},
     {fields: ['typed_error', 'typedError'], kind: 'non_empty_string', expected: 'not-found error type returned to the caller'},
     {fields: ['handler_dispatch_count', 'handlerDispatchCount'], kind: 'number_equals', value: 0, expected: 'nonexistent endpoint did not dispatch a handler'},
+    {fields: ['service_invoked', 'serviceInvoked'], kind: 'boolean_false', expected: 'nonexistent endpoint did not invoke the service'},
   ],
   caller_history_attempt_visibility: [
     {fields: ['service_call_id', 'serviceCallId'], kind: 'non_empty_string', expected: 'durable service-call id visible in caller history'},
@@ -2618,7 +2721,149 @@ function scenarioEvidenceFailures(scenarioId, observedOutputs) {
     }
   }
 
+  failures.push(...refusalNoDispatchEvidenceFailures(scenarioId, observedOutputs));
+
   return failures;
+}
+
+function refusalNoDispatchEvidenceFailures(scenarioId, observedOutputs) {
+  const policies = {
+    endpoint_permission_denied_without_information_leak: {
+      requireRejectedHistory: true,
+      field: 'caller_history_evidence',
+      expected: 'caller history proves the unauthorized Nexus call reached a rejected/cancelled/timed_out state without handler dispatch',
+    },
+    malformed_payload_refused_before_dispatch: {
+      requireEmptyHistory: true,
+      field: 'caller_history_evidence',
+      expected: 'caller history proves the malformed Nexus payload was refused before service-call admission or handler dispatch',
+    },
+    nonexistent_endpoint_typed_not_found: {
+      requireEmptyHistory: true,
+      field: 'caller_history_evidence',
+      expected: 'caller history proves the nonexistent Nexus endpoint was refused before service-call admission or handler dispatch',
+    },
+  };
+  const policy = policies[scenarioId];
+  if (!policy) {
+    return [];
+  }
+
+  const dispatch = evidenceLookup(observedOutputs, ['dispatch_evidence', 'dispatchEvidence']).value;
+  if (!hasNonEmptyObjectValue(dispatch)) {
+    return [];
+  }
+
+  const rows = refusalHistoryRows(observedOutputs, dispatch);
+  const serviceCallId = stringValue(
+    observedOutputs?.service_call_id
+      ?? observedOutputs?.serviceCallId
+      ?? dispatch.service_call_id
+      ?? dispatch.serviceCallId,
+  );
+  const matchingRows = serviceCallId === ''
+    ? rows
+    : rows.filter((row) => serviceCallIdForHistoryRow(row) === serviceCallId);
+  const disallowedRows = rows.filter((row) => !historyRowProvesNoDispatch(row));
+  const failures = [];
+
+  if (numberValue(dispatch.handler_dispatch_count ?? dispatch.handlerDispatchCount) !== 0
+    || !explicitFalse(dispatch.service_invoked ?? dispatch.serviceInvoked)) {
+    failures.push(refusalNoDispatchFailure(
+      'dispatch_evidence',
+      'dispatch evidence reports zero handler dispatches and service_invoked=false',
+      dispatch,
+    ));
+  }
+
+  if (disallowedRows.length > 0) {
+    failures.push(refusalNoDispatchFailure(
+      policy.field,
+      policy.expected,
+      disallowedRows,
+    ));
+  }
+
+  if (policy.requireRejectedHistory
+    && disallowedRows.length === 0
+    && !matchingRows.some(historyRowProvesNoDispatch)) {
+    failures.push(refusalNoDispatchFailure(
+      policy.field,
+      policy.expected,
+      rows,
+    ));
+  }
+
+  if (policy.requireEmptyHistory && rows.length > 0) {
+    failures.push(refusalNoDispatchFailure(
+      policy.field,
+      policy.expected,
+      rows,
+    ));
+  }
+
+  return failures;
+}
+
+function refusalNoDispatchFailure(field, expected, observed) {
+  return {
+    code: 'nexus_refusal_no_dispatch_evidence_gap',
+    field,
+    expected,
+    observed,
+    result_status: 'fail',
+    finding_type: 'nexus_refusal_no_dispatch_evidence_gap',
+    owning_surface: 'conformance_harness',
+  };
+}
+
+function refusalHistoryRows(observedOutputs, dispatch) {
+  return [
+    ...historyRowsFromEvidenceValue(dispatch.caller_history_rows ?? dispatch.callerHistoryRows ?? dispatch.history_rows ?? dispatch.historyRows),
+    ...historyRowsFromEvidenceValue(dispatch.caller_history_response ?? dispatch.callerHistoryResponse),
+    ...historyRowsFromEvidenceValue(observedOutputs?.caller_history_evidence ?? observedOutputs?.callerHistoryEvidence),
+    ...historyRowsFromEvidenceValue(observedOutputs?.caller_history ?? observedOutputs?.callerHistory),
+  ];
+}
+
+function historyRowsFromEvidenceValue(value) {
+  if (Array.isArray(value)) {
+    return value.filter(hasNonEmptyObjectValue);
+  }
+  if (!hasNonEmptyObjectValue(value)) {
+    return [];
+  }
+
+  const candidates = [value];
+  if (hasNonEmptyObjectValue(value.body)) {
+    candidates.push(value.body);
+  }
+  if (hasNonEmptyObjectValue(value.response)) {
+    candidates.push(value.response);
+  }
+  if (hasNonEmptyObjectValue(value.response?.body)) {
+    candidates.push(value.response.body);
+  }
+
+  for (const candidate of candidates) {
+    for (const field of ['nexus_operations', 'nexusOperations', 'operations', 'rows', 'history_rows', 'historyRows']) {
+      if (Array.isArray(candidate[field])) {
+        return candidate[field].filter(hasNonEmptyObjectValue);
+      }
+    }
+  }
+
+  return [];
+}
+
+function serviceCallIdForHistoryRow(row) {
+  return stringValue(row.service_call_id ?? row.serviceCallId ?? row.id);
+}
+
+function historyRowProvesNoDispatch(row) {
+  const outcome = stringValue(row.outcome ?? row.result ?? row.reason).toLowerCase();
+  return outcome.startsWith('rejected_')
+    || ['cancelled', 'canceled', 'timed_out'].includes(outcome);
 }
 
 function evidenceLookup(outputs, fields) {

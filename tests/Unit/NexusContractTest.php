@@ -19,6 +19,15 @@ class NexusContractTest extends TestCase
         $this->assertSame('durable-workflow.v2.nexus-runtime.result', $manifest['result_schema']);
     }
 
+    public function test_authority_document_names_refusal_caller_history_evidence(): void
+    {
+        $contents = (string) file_get_contents(dirname(__DIR__, 2).'/docs/contracts/nexus.md');
+
+        $this->assertStringContainsString('caller-history query evidence', $contents);
+        $this->assertStringContainsString('successful caller-history query', $contents);
+        $this->assertStringContainsString('proven caller-history state', $contents);
+    }
+
     public function test_manifest_names_the_temporal_parity_target_and_underlying_contract(): void
     {
         $manifest = NexusContract::manifest();
@@ -253,6 +262,28 @@ class NexusContractTest extends TestCase
             'authorization_refusal_disclosed_endpoint_existence',
             $manifest['scenario_evidence_requirements']['endpoint_permission_denied_without_information_leak'],
         );
+        foreach ([
+            'endpoint_permission_denied_without_information_leak',
+            'malformed_payload_refused_before_dispatch',
+            'nonexistent_endpoint_typed_not_found',
+        ] as $refusalScenario) {
+            $this->assertContains(
+                'caller_history_evidence',
+                $manifest['scenario_evidence_requirements'][$refusalScenario],
+            );
+            $this->assertContains(
+                'caller_history_query_succeeded',
+                $manifest['scenario_evidence_requirements'][$refusalScenario],
+            );
+            $this->assertContains(
+                'caller_history_state_proven',
+                $manifest['scenario_evidence_requirements'][$refusalScenario],
+            );
+            $this->assertContains(
+                'service_invoked',
+                $manifest['scenario_evidence_requirements'][$refusalScenario],
+            );
+        }
         $this->assertContains(
             'request',
             $manifest['scenario_evidence_requirements']['endpoint_permission_denied_without_information_leak'],
@@ -390,6 +421,9 @@ class NexusContractTest extends TestCase
         $this->assertStringContainsString('duplicate_call_issue_count', $contents);
         $this->assertStringContainsString('cancellation_propagation_ms', $contents);
         $this->assertStringContainsString('caller_history_recorded: true', $contents);
+        $this->assertStringContainsString('caller_history_query_succeeded', $contents);
+        $this->assertStringContainsString('caller_history_state_proven', $contents);
+        $this->assertStringContainsString('handler_failed', $contents);
         $this->assertStringContainsString('verifyGithubReleaseAsset', $contents);
         $this->assertStringContainsString('verifyPackagistPackage', $contents);
         $this->assertStringContainsString('verifyPypiPackage', $contents);
@@ -1879,6 +1913,73 @@ class NexusContractTest extends TestCase
         );
     }
 
+    public function test_host_runner_rejects_pass_when_refusal_no_dispatch_history_query_failed(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if ($scenario['scenario_id'] === 'endpoint_permission_denied_without_information_leak') {
+                $scenario['observed_outputs']['caller_history_query_succeeded'] = false;
+                $scenario['observed_outputs']['dispatch_evidence']['caller_history_query_succeeded'] = false;
+                $scenario['observed_outputs']['dispatch_evidence']['caller_history_response'] = [
+                    'status' => 500,
+                    'body' => ['reason' => 'history_unavailable'],
+                ];
+            }
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-refusal-history-');
+        $scenario = $this->scenarioResult($result, 'endpoint_permission_denied_without_information_leak');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertContains(
+            'nexus_refusal_no_dispatch_evidence_gap',
+            array_column($scenario['linked_findings'], 'finding_type'),
+        );
+    }
+
+    public function test_host_runner_rejects_pass_when_refusal_history_row_is_handler_failed(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the Nexus runner result gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        foreach ($evidence['scenario_results'] as &$scenario) {
+            if ($scenario['scenario_id'] !== 'endpoint_permission_denied_without_information_leak') {
+                continue;
+            }
+
+            $handlerFailedRow = [
+                'service_call_id' => 'svc-endpoint-permission-denied',
+                'status' => 'failed',
+                'outcome' => 'handler_failed',
+            ];
+            $scenario['observed_outputs']['dispatch_evidence']['matching_rejected_history_count'] = 1;
+            $scenario['observed_outputs']['dispatch_evidence']['caller_history_rows'] = [$handlerFailedRow];
+            $scenario['observed_outputs']['dispatch_evidence']['caller_history_response']['body']['nexus_operations'] = [$handlerFailedRow];
+            $scenario['observed_outputs']['caller_history_evidence']['nexus_operations'] = [$handlerFailedRow];
+        }
+        unset($scenario);
+
+        $result = $this->runNexusEvidence($evidence, 'dw-nexus-refusal-handler-failed-');
+        $scenario = $this->scenarioResult($result, 'endpoint_permission_denied_without_information_leak');
+
+        $this->assertSame('fail', $result['outcome']);
+        $this->assertSame('fail', $scenario['status']);
+        $this->assertContains(
+            'nexus_refusal_no_dispatch_evidence_gap',
+            array_column($scenario['linked_findings'], 'finding_type'),
+        );
+    }
+
     /**
      * @param array<string, mixed> $evidence
      * @param array<string, mixed>|null $installEvidence
@@ -2253,6 +2354,7 @@ class NexusContractTest extends TestCase
             'endpoint_permission_denied_without_information_leak' => [
                 'caller_namespace' => 'denied',
                 'refusal_status' => 'rejected_forbidden',
+                'service_call_id' => 'svc-endpoint-permission-denied',
                 'request' => [
                     'method' => 'POST',
                     'path' => '/api/service-endpoints/shared-greeter/services/Greeter/operations/greet/execute',
@@ -2274,10 +2376,43 @@ class NexusContractTest extends TestCase
                 'dispatch_evidence' => [
                     'handler_dispatch_count' => 0,
                     'service_invoked' => false,
-                    'caller_history_rows' => [],
+                    'caller_history_query_succeeded' => true,
+                    'caller_history_state_proven' => true,
+                    'matching_rejected_history_count' => 1,
+                    'caller_history_rows' => [
+                        [
+                            'service_call_id' => 'svc-endpoint-permission-denied',
+                            'status' => 'failed',
+                            'outcome' => 'rejected_forbidden',
+                        ],
+                    ],
+                    'caller_history_response' => [
+                        'status' => 200,
+                        'body' => [
+                            'nexus_operations' => [
+                                [
+                                    'service_call_id' => 'svc-endpoint-permission-denied',
+                                    'status' => 'failed',
+                                    'outcome' => 'rejected_forbidden',
+                                ],
+                            ],
+                        ],
+                    ],
                 ],
+                'caller_history_evidence' => [
+                    'nexus_operations' => [
+                        [
+                            'service_call_id' => 'svc-endpoint-permission-denied',
+                            'status' => 'failed',
+                            'outcome' => 'rejected_forbidden',
+                        ],
+                    ],
+                ],
+                'caller_history_query_succeeded' => true,
+                'caller_history_state_proven' => true,
                 'authorization_refusal_disclosed_endpoint_existence' => false,
                 'handler_dispatch_count' => 0,
+                'service_invoked' => false,
             ],
             'malformed_payload_refused_before_dispatch' => [
                 'refusal_status' => 'rejected_bad_payload',
@@ -2300,8 +2435,21 @@ class NexusContractTest extends TestCase
                 'dispatch_evidence' => [
                     'handler_dispatch_count' => 0,
                     'service_invoked' => false,
+                    'caller_history_query_succeeded' => true,
+                    'caller_history_state_proven' => true,
                     'caller_history_rows' => [],
+                    'caller_history_response' => [
+                        'status' => 200,
+                        'body' => [
+                            'nexus_operations' => [],
+                        ],
+                    ],
                 ],
+                'caller_history_evidence' => [
+                    'nexus_operations' => [],
+                ],
+                'caller_history_query_succeeded' => true,
+                'caller_history_state_proven' => true,
                 'handler_dispatch_count' => 0,
                 'service_invoked' => false,
             ],
@@ -2326,9 +2474,23 @@ class NexusContractTest extends TestCase
                 'dispatch_evidence' => [
                     'handler_dispatch_count' => 0,
                     'service_invoked' => false,
+                    'caller_history_query_succeeded' => true,
+                    'caller_history_state_proven' => true,
                     'caller_history_rows' => [],
+                    'caller_history_response' => [
+                        'status' => 200,
+                        'body' => [
+                            'nexus_operations' => [],
+                        ],
+                    ],
                 ],
+                'caller_history_evidence' => [
+                    'nexus_operations' => [],
+                ],
+                'caller_history_query_succeeded' => true,
+                'caller_history_state_proven' => true,
                 'handler_dispatch_count' => 0,
+                'service_invoked' => false,
             ],
             'caller_history_attempt_visibility' => $base + [
                 'caller_history_attempts' => [
