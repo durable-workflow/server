@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const RESULT_SCHEMA = 'durable-workflow.v2.worker-versioning-runtime.result';
@@ -87,6 +88,7 @@ async function main() {
   let artifactSources = artifactSourcesFromEnv();
   const installEvidence = artifactInstallEvidence(artifactVersions, artifactSources);
   artifactSources = mergeArtifactSources(artifactSources, installEvidence);
+  maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions);
   const publishedWorkerEvidence = publishedWorkerExecutionEvidence(artifactVersions, artifactSources);
   writePublishedArtifacts(artifactVersions, artifactSources, installEvidence);
 
@@ -1729,6 +1731,57 @@ export function publishedWorkerExecutionEvidence(artifactVersions, artifactSourc
     findings: Array.isArray(supplied.findings) ? supplied.findings : [],
     source_path: fs.existsSync(publishedWorkerEvidencePath) ? publishedWorkerEvidencePath : null,
   };
+}
+
+function maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions) {
+  if (skipPublishedWorkerShard() || fs.existsSync(publishedWorkerEvidencePath)) {
+    return;
+  }
+
+  const workerShardPath = path.join(path.dirname(modulePath), 'worker-versioning-published-workers.mjs');
+  if (!fs.existsSync(workerShardPath)) {
+    return;
+  }
+
+  const env = {
+    ...process.env,
+    DW_WV_SERVER_URL: serverUrl,
+    DW_WV_RESULT_DIR: resultDir,
+    DW_WV_RUN_ROOT: runRoot,
+    DW_WV_REPO_ROOT: repoRoot,
+    DW_WV_PUBLISHED_WORKER_EVIDENCE: publishedWorkerEvidencePath,
+    DW_SERVER_VERSION: stringValue(artifactVersions.server) || process.env.DW_SERVER_VERSION || '',
+    DW_CLI_VERSION: stringValue(artifactVersions.cli) || process.env.DW_CLI_VERSION || '',
+    DW_PYTHON_SDK_VERSION: stringValue(artifactVersions['sdk-python']) || process.env.DW_PYTHON_SDK_VERSION || '',
+    DW_WORKFLOW_PHP_VERSION: stringValue(artifactVersions['workflow-php'])
+      || stringValue(artifactVersions.workflow)
+      || process.env.DW_WORKFLOW_PHP_VERSION
+      || process.env.DW_WORKFLOW_VERSION
+      || '',
+    DW_WATERLINE_VERSION: stringValue(artifactVersions.waterline) || process.env.DW_WATERLINE_VERSION || '',
+  };
+
+  const generated = spawnSync(process.execPath, [workerShardPath], {
+    cwd: repoRoot,
+    env,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  writeTextIfNotEmpty(path.join(resultDir, 'published-worker-execution.stdout.log'), generated.stdout);
+  writeTextIfNotEmpty(path.join(resultDir, 'published-worker-execution.stderr.log'), generated.stderr);
+}
+
+function skipPublishedWorkerShard() {
+  return ['1', 'true', 'yes'].includes(trim(process.env.DW_WV_SKIP_PUBLISHED_WORKER_SHARD).toLowerCase());
+}
+
+function writeTextIfNotEmpty(filePath, contents) {
+  if (typeof contents !== 'string' || contents === '') {
+    return;
+  }
+
+  fs.writeFileSync(filePath, contents, 'utf8');
 }
 
 function publishedWorkerScenarioOutputs(evidence, scenarioId) {

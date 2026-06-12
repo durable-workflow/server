@@ -81,9 +81,29 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'the shell handoff must attempt the published PHP/Python worker shard before aggregating results',
         );
         $this->assertStringContainsString(
+            'maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions);',
+            $node,
+            'direct Node host invocations must generate the published worker shard before aggregating results',
+        );
+        $this->assertStringContainsString(
+            "spawnSync(process.execPath, [workerShardPath]",
+            $node,
+            'direct Node host invocations must execute the checked-in published worker shard',
+        );
+        $this->assertStringContainsString(
+            'DW_WV_PUBLISHED_WORKER_EVIDENCE: publishedWorkerEvidencePath',
+            $node,
+            'the direct Node handoff must write the shard to the evidence path consumed by the result gate',
+        );
+        $this->assertStringContainsString(
             'DW_WV_SKIP_PUBLISHED_WORKER_SHARD',
             $shell,
             'the host runner must be able to skip automatic shard generation when it supplies a richer topology',
+        );
+        $this->assertStringContainsString(
+            'DW_WV_SKIP_PUBLISHED_WORKER_SHARD',
+            $node,
+            'direct Node host invocations must respect the same skip override as the shell handoff',
         );
         foreach ([
             'durable-workflow==${pythonVersion}',
