@@ -330,67 +330,67 @@ async function main() {
     scenario_results: scenarioResults,
     findings: [],
     finding_links: {},
-    migration_plan: nonEmptyObject(evidence.migration_plan)
+    migration_plan: nonEmptyObject(fieldValue(evidence, 'migration_plan'))
       ?? missingRunRecordObservation(
         'migration_plan',
         'No public migration-guide execution plan was supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    preupgrade_state_snapshot: nonEmptyObject(evidence.preupgrade_state_snapshot)
+    preupgrade_state_snapshot: nonEmptyObject(fieldValue(evidence, 'preupgrade_state_snapshot'))
       ?? missingRunRecordObservation(
         'preupgrade_state_snapshot',
         'No realistic v1 state snapshot was supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    postupgrade_state_snapshot: nonEmptyObject(evidence.postupgrade_state_snapshot)
+    postupgrade_state_snapshot: nonEmptyObject(fieldValue(evidence, 'postupgrade_state_snapshot'))
       ?? missingRunRecordObservation(
         'postupgrade_state_snapshot',
         'No migrated v2 state snapshot was supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    history_dumps: nonEmptyObject(evidence.history_dumps)
+    history_dumps: nonEmptyObject(fieldValue(evidence, 'history_dumps'))
       ?? missingRunRecordObservation(
         'history_dumps',
         'No before/after history dumps were supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    activity_attempts: nonEmptyObject(evidence.activity_attempts)
+    activity_attempts: nonEmptyObject(fieldValue(evidence, 'activity_attempts'))
       ?? missingRunRecordObservation(
         'activity_attempts',
         'No activity retry observations were supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    schedule_ticks: nonEmptyObject(evidence.schedule_ticks)
+    schedule_ticks: nonEmptyObject(fieldValue(evidence, 'schedule_ticks'))
       ?? missingRunRecordObservation(
         'schedule_ticks',
         'No cross-upgrade schedule tick observations were supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    worker_registration_observations: nonEmptyObject(evidence.worker_registration_observations)
+    worker_registration_observations: nonEmptyObject(fieldValue(evidence, 'worker_registration_observations'))
       ?? missingRunRecordObservation(
         'worker_registration_observations',
         'No worker registration projection observations were supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    cli_observations: nonEmptyObject(evidence.cli_observations)
+    cli_observations: nonEmptyObject(fieldValue(evidence, 'cli_observations'))
       ?? missingRunRecordObservation(
         'cli_observations',
         'No CLI observations against migrated state were supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    waterline_observations: nonEmptyObject(evidence.waterline_observations)
+    waterline_observations: nonEmptyObject(fieldValue(evidence, 'waterline_observations'))
       ?? missingRunRecordObservation(
         'waterline_observations',
         'No Waterline/operator observations were supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    rollback_observations: nonEmptyObject(evidence.rollback_observations)
+    rollback_observations: nonEmptyObject(fieldValue(evidence, 'rollback_observations'))
       ?? missingRunRecordObservation(
         'rollback_observations',
         'No rollback observations were supplied.',
         storageSmokeOnlyProductEvidence,
       ),
-    version_skew_observations: nonEmptyObject(evidence.version_skew_observations)
+    version_skew_observations: nonEmptyObject(fieldValue(evidence, 'version_skew_observations'))
       ?? missingRunRecordObservation(
         'version_skew_observations',
         'No version-skew refusal observations were supplied.',
@@ -2022,7 +2022,7 @@ function readMigrationEvidence() {
     }
   }
 
-  return mergeEvidenceObjects(...inputs);
+  return normalizeMigrationEvidenceShape(mergeEvidenceObjects(...inputs));
 }
 
 function evidenceShardPaths(dirPath) {
@@ -2063,6 +2063,410 @@ function normalizeEvidenceShard(value) {
       [scenarioId]: scenario,
     },
   };
+}
+
+function normalizeMigrationEvidenceShape(evidence) {
+  const merged = {};
+
+  for (const candidate of unwrappedEvidenceCandidates(evidence)) {
+    mergeEvidenceInto(merged, candidate);
+  }
+
+  mergeEvidenceInto(merged, runbookEvidenceFrom(merged));
+
+  return merged;
+}
+
+function unwrappedEvidenceCandidates(evidence) {
+  const root = objectValue(evidence);
+  const candidates = [root];
+
+  for (const field of [
+    'result',
+    'output',
+    'evidence',
+    'record',
+    'run_record',
+    'runRecord',
+    'migration_run_record',
+    'migrationRunRecord',
+    'migration_conformance_result',
+    'migrationConformanceResult',
+    'migration_conformance_record',
+    'migrationConformanceRecord',
+  ]) {
+    const value = objectValue(root[field]);
+    if (Object.keys(value).length > 0) {
+      candidates.push(value);
+    }
+  }
+
+  return candidates;
+}
+
+function runbookEvidenceFrom(evidence) {
+  const runbook = {};
+  const pinnedVersions = firstNonEmptyObject(evidence, [
+    'pinned_versions',
+    'pinnedVersions',
+    'pinned_artifact_versions',
+    'pinnedArtifactVersions',
+    'artifact_tuple',
+    'artifactTuple',
+  ]);
+  const sourceArtifacts = firstNonEmptyObject(evidence, [
+    'v1_source_artifacts',
+    'v1SourceArtifacts',
+    'source_artifacts',
+    'sourceArtifacts',
+  ]);
+  const targetArtifacts = firstNonEmptyObject(evidence, [
+    'current_v2_tuple',
+    'currentV2Tuple',
+    'v2_target_artifacts',
+    'v2TargetArtifacts',
+    'target_artifacts',
+    'targetArtifacts',
+  ]);
+  const installSources = firstNonEmptyObject(evidence, [
+    'artifact_sources',
+    'artifactSources',
+    'install_sources',
+    'installSources',
+    'artifact_source_record',
+    'artifactSourceRecord',
+  ]);
+  const artifactVersions = artifactVersionsFromRunbook(
+    pinnedVersions,
+    sourceArtifacts,
+    targetArtifacts,
+  );
+
+  if (Object.keys(artifactVersions).length > 0) {
+    runbook.published_artifact_versions = artifactVersions;
+    runbook.resolved_artifact_versions = artifactVersions;
+  }
+  if (Object.keys(installSources).length > 0) {
+    runbook.artifact_sources = installSources;
+  }
+
+  setRunbookSection(runbook, evidence, 'migration_plan', [
+    'migration_guide_execution',
+    'migrationGuideExecution',
+    'guide_execution',
+    'guideExecution',
+    'step_by_step_guide',
+    'stepByStepGuide',
+  ]);
+  setRunbookSection(runbook, evidence, 'preupgrade_state_snapshot', [
+    'preupgrade_state_snapshot',
+    'preupgradeStateSnapshot',
+    'pre_upgrade_state_snapshot',
+    'preUpgradeStateSnapshot',
+    'realistic_v1_state_snapshot',
+    'realisticV1StateSnapshot',
+    'v1_state_snapshot',
+    'v1StateSnapshot',
+  ]);
+  setRunbookSection(runbook, evidence, 'postupgrade_state_snapshot', [
+    'postupgrade_state_snapshot',
+    'postupgradeStateSnapshot',
+    'post_upgrade_state_snapshot',
+    'postUpgradeStateSnapshot',
+    'post_upgrade_verification',
+    'postUpgradeVerification',
+  ]);
+  setRunbookSection(runbook, evidence, 'history_dumps', [
+    'history_dumps',
+    'historyDumps',
+    'completed_history_preservation_and_replay',
+    'completedHistoryPreservationAndReplay',
+    'completed_history_replay',
+    'completedHistoryReplay',
+  ]);
+  setRunbookSection(runbook, evidence, 'activity_attempts', [
+    'activity_attempts',
+    'activityAttempts',
+    'mid_activity_retry_preserved',
+    'midActivityRetryPreserved',
+  ]);
+  setRunbookSection(runbook, evidence, 'schedule_ticks', [
+    'schedule_ticks',
+    'scheduleTicks',
+    'schedule_cross_upgrade_cadence_preserved',
+    'scheduleCrossUpgradeCadencePreserved',
+  ]);
+  setRunbookSection(runbook, evidence, 'worker_registration_observations', [
+    'worker_registration_observations',
+    'workerRegistrationObservations',
+    'worker_registration_projection_preserved',
+    'workerRegistrationProjectionPreserved',
+  ]);
+  setRunbookSection(runbook, evidence, 'cli_observations', [
+    'cli_observations',
+    'cliObservations',
+    'cli_access_to_preupgrade_state',
+    'cliAccessToPreupgradeState',
+  ]);
+  setRunbookSection(runbook, evidence, 'waterline_observations', [
+    'waterline_observations',
+    'waterlineObservations',
+    'waterline_operator_visibility_preserved',
+    'waterlineOperatorVisibilityPreserved',
+    'operator_projections',
+    'operatorProjections',
+  ]);
+  setRunbookSection(runbook, evidence, 'rollback_observations', [
+    'rollback_observations',
+    'rollbackObservations',
+    'rollback_result',
+    'rollbackResult',
+    'rollback_contract_verified',
+    'rollbackContractVerified',
+  ]);
+  setRunbookSection(runbook, evidence, 'version_skew_observations', [
+    'version_skew_observations',
+    'versionSkewObservations',
+    'version_skew_refusal',
+    'versionSkewRefusal',
+    'skew_observations',
+    'skewObservations',
+  ]);
+
+  const scenarios = runbookScenarioResultsFrom(evidence);
+  if (Object.keys(scenarios).length > 0) {
+    runbook.scenario_results = scenarios;
+  }
+
+  return runbook;
+}
+
+function setRunbookSection(target, evidence, field, aliases) {
+  const value = firstNonEmptyObject(evidence, aliases);
+  if (Object.keys(value).length > 0) {
+    target[field] = value;
+  }
+}
+
+function runbookScenarioResultsFrom(evidence) {
+  const scenarios = {};
+  const scenarioSources = {
+    latest_supported_v1_state_setup: firstNonEmptyObject(evidence, [
+      'realistic_v1_state_snapshot',
+      'realisticV1StateSnapshot',
+      'v1_state_snapshot',
+      'v1StateSnapshot',
+      'preupgrade_state_snapshot',
+      'preupgradeStateSnapshot',
+      'pre_upgrade_state_snapshot',
+      'preUpgradeStateSnapshot',
+    ]),
+    documented_migration_steps_execute: firstNonEmptyObject(evidence, [
+      'migration_guide_execution',
+      'migrationGuideExecution',
+      'guide_execution',
+      'guideExecution',
+      'step_by_step_guide',
+      'stepByStepGuide',
+      'migration_plan',
+      'migrationPlan',
+    ]),
+    completed_history_preservation_and_replay: firstNonEmptyObject(evidence, [
+      'completed_history_preservation_and_replay',
+      'completedHistoryPreservationAndReplay',
+      'completed_history_replay',
+      'completedHistoryReplay',
+      'history_dumps',
+      'historyDumps',
+    ]),
+    in_flight_workflow_progress_preserved: firstNonEmptyObject(evidence, [
+      'in_flight_workflow_progress_preserved',
+      'inFlightWorkflowProgressPreserved',
+      'in_flight_workflow_progress',
+      'inFlightWorkflowProgress',
+      'postupgrade_state_snapshot',
+      'postupgradeStateSnapshot',
+      'post_upgrade_verification',
+      'postUpgradeVerification',
+    ]),
+    mid_activity_retry_preserved: firstNonEmptyObject(evidence, [
+      'mid_activity_retry_preserved',
+      'midActivityRetryPreserved',
+      'activity_attempts',
+      'activityAttempts',
+      'edge_case_results',
+      'edgeCaseResults',
+    ]),
+    schedule_cross_upgrade_cadence_preserved: firstNonEmptyObject(evidence, [
+      'schedule_cross_upgrade_cadence_preserved',
+      'scheduleCrossUpgradeCadencePreserved',
+      'schedule_ticks',
+      'scheduleTicks',
+      'edge_case_results',
+      'edgeCaseResults',
+    ]),
+    worker_registration_projection_preserved: firstNonEmptyObject(evidence, [
+      'worker_registration_projection_preserved',
+      'workerRegistrationProjectionPreserved',
+      'worker_registration_observations',
+      'workerRegistrationObservations',
+      'worker_registrations',
+      'workerRegistrations',
+    ]),
+    waterline_operator_visibility_preserved: firstNonEmptyObject(evidence, [
+      'waterline_operator_visibility_preserved',
+      'waterlineOperatorVisibilityPreserved',
+      'waterline_observations',
+      'waterlineObservations',
+      'operator_projections',
+      'operatorProjections',
+    ]),
+    cli_access_to_preupgrade_state: firstNonEmptyObject(evidence, [
+      'cli_access_to_preupgrade_state',
+      'cliAccessToPreupgradeState',
+      'cli_observations',
+      'cliObservations',
+    ]),
+    new_v2_workflow_start_after_upgrade: firstNonEmptyObject(evidence, [
+      'new_v2_workflow_start_after_upgrade',
+      'newV2WorkflowStartAfterUpgrade',
+      'new_v2_workflow',
+      'newV2Workflow',
+      'post_upgrade_verification',
+      'postUpgradeVerification',
+    ]),
+    rollback_contract_verified: firstNonEmptyObject(evidence, [
+      'rollback_contract_verified',
+      'rollbackContractVerified',
+      'rollback_result',
+      'rollbackResult',
+      'rollback_observations',
+      'rollbackObservations',
+    ]),
+    version_skew_refusal: firstNonEmptyObject(evidence, [
+      'version_skew_refusal',
+      'versionSkewRefusal',
+      'version_skew_observations',
+      'versionSkewObservations',
+      'skew_observations',
+      'skewObservations',
+    ]),
+  };
+
+  for (const [scenarioId, source] of Object.entries(scenarioSources)) {
+    const observedOutputs = observedOutputsForRunbookScenario(scenarioId, source);
+    if (Object.keys(observedOutputs).length === 0) {
+      continue;
+    }
+
+    scenarios[scenarioId] = {
+      scenario_id: scenarioId,
+      status: normalizedStatus(source.status || source.outcome || 'pass'),
+      observed_outputs: observedOutputs,
+    };
+  }
+
+  return scenarios;
+}
+
+function observedOutputsForRunbookScenario(scenarioId, source) {
+  const fields = requiredFieldsFor(scenarioId);
+  const observed = {};
+
+  for (const field of fields) {
+    const value = runbookFieldValue(source, field);
+    if (!isEmptyEvidence(value)) {
+      observed[field] = value;
+    }
+  }
+
+  if (scenarioId === 'documented_migration_steps_execute') {
+    observed.commands_executed ??= runbookFieldValue(source, 'commands');
+    observed.exit_codes ??= runbookFieldValue(source, 'exit_codes_by_command');
+    observed.command_timings ??= runbookFieldValue(source, 'timings');
+    observed.schema_or_storage_migration_output ??= runbookFieldValue(source, 'migration_output');
+  }
+
+  return Object.fromEntries(
+    Object.entries(observed).filter(([, value]) => !isEmptyEvidence(value)),
+  );
+}
+
+function runbookFieldValue(container, field) {
+  const direct = fieldValue(container, field);
+  if (!isEmptyEvidence(direct)) {
+    return direct;
+  }
+
+  const object = objectValue(container);
+  for (const alias of fieldAliases(field)) {
+    const value = object[alias];
+    if (!isEmptyEvidence(value)) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function firstNonEmptyObject(container, fields) {
+  const object = objectValue(container);
+  for (const field of fields) {
+    const value = objectValue(object[field]);
+    if (Object.keys(value).length > 0) {
+      return value;
+    }
+  }
+
+  return {};
+}
+
+function artifactVersionsFromRunbook(...sources) {
+  const versions = {};
+
+  for (const source of sources) {
+    mergeArtifactVersionEntries(versions, source, '');
+    mergeArtifactVersionEntries(versions, firstNonEmptyObject(source, ['v1', 'source', 'source_release_set', 'sourceReleaseSet']), 'v1');
+    mergeArtifactVersionEntries(versions, firstNonEmptyObject(source, ['v2', 'target', 'target_release_set', 'targetReleaseSet']), 'v2');
+  }
+
+  return versions;
+}
+
+function mergeArtifactVersionEntries(target, source, generation) {
+  const object = objectValue(source);
+  if (Object.keys(object).length === 0) {
+    return;
+  }
+
+  const mappings = generation === 'v1'
+    ? [
+        ['server-v1', ['server', 'server-v1', 'serverV1']],
+        ['cli-v1', ['cli', 'cli-v1', 'cliV1']],
+        ['workflow-php-v1', ['workflow', 'workflow-php', 'workflow_php', 'workflow-php-v1', 'workflowPhpV1']],
+        ['waterline-v1', ['waterline', 'waterline-v1', 'waterlineV1']],
+        ['sample-app-v1', ['sample-app', 'sample_app', 'sampleApp', 'sample-app-v1', 'sampleAppV1']],
+      ]
+    : generation === 'v2'
+      ? [
+          ['server-v2', ['server', 'server-v2', 'serverV2']],
+          ['cli-v2', ['cli', 'cli-v2', 'cliV2']],
+          ['workflow-php-v2', ['workflow', 'workflow-php', 'workflow_php', 'workflow-php-v2', 'workflowPhpV2']],
+          ['sdk-python', ['sdk-python', 'sdk_python', 'sdkPython', 'python', 'python-sdk', 'pythonSdk']],
+          ['waterline-v2', ['waterline', 'waterline-v2', 'waterlineV2']],
+        ]
+      : effectiveRequiredArtifacts().map((artifact) => [artifact, [artifact, ...artifactAliasesFor(artifact)]]);
+
+  for (const [artifact, aliases] of mappings) {
+    if (stringValue(target[artifact]) !== '') {
+      continue;
+    }
+
+    const value = aliases.map((alias) => object[alias]).find((entry) => stringValue(entry) !== '');
+    if (value !== undefined) {
+      target[artifact] = value;
+    }
+  }
 }
 
 function mergeEvidenceInto(target, source) {

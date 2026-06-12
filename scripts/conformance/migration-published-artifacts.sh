@@ -20,7 +20,7 @@ Environment overrides:
   DW_MIGRATION_RUN_ROOT              Scratch directory. Defaults to mktemp.
   DW_MIGRATION_RESULT_DIR            Result directory. Defaults to run root.
   DW_MIGRATION_KEEP_RUN_ROOT=1       Keep scratch directory after success.
-  DW_MIGRATION_EVIDENCE_JSON         Full-result or scenario-shard JSON from the host migration runner.
+  DW_MIGRATION_EVIDENCE_JSON         Full-result, runbook-shaped, or scenario-shard JSON from the host migration runner.
   DW_MIGRATION_EVIDENCE_DIR          Directory of sorted JSON evidence shards from the host migration runner.
   DW_MIGRATION_STORAGE_SMOKE_JSON    Advisory storage-connection smoke JSON.
   DW_MIGRATION_RUN_PUBLIC_GUIDE_AUDIT
