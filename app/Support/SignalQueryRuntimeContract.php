@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 13;
+    public const VERSION = 14;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -279,6 +279,16 @@ final class SignalQueryRuntimeContract
                         'query_not_found',
                         'rejected_unknown_query',
                     ],
+                    'evidence' => [
+                        'cli_unknown_signal_sample',
+                        'cli_unknown_query_sample',
+                        'cli_missing_workflow_signal_sample',
+                        'cli_missing_workflow_query_sample',
+                        'sdk_python_unknown_signal_sample',
+                        'sdk_python_unknown_query_sample',
+                        'sdk_python_missing_workflow_signal_sample',
+                        'sdk_python_missing_workflow_query_sample',
+                    ],
                     'history_integrity' => 'no_handler_invocation_or_state_corruption',
                 ],
                 'malformed_signal_and_query_payloads' => [
@@ -523,6 +533,14 @@ final class SignalQueryRuntimeContract
                             'missing_workflow_query',
                             'query_not_found',
                             'rejected_unknown_query',
+                            'cli_unknown_signal_sample',
+                            'cli_unknown_query_sample',
+                            'cli_missing_workflow_signal_sample',
+                            'cli_missing_workflow_query_sample',
+                            'sdk_python_unknown_signal_sample',
+                            'sdk_python_unknown_query_sample',
+                            'sdk_python_missing_workflow_signal_sample',
+                            'sdk_python_missing_workflow_query_sample',
                         ],
                         'finding_type_when_missing' => 'signal_query_unknown_handler_errors_uncovered',
                         'owning_surface' => 'server, workflow, sdk-python, cli',

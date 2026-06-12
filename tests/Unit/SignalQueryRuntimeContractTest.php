@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(13, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(14, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -188,6 +188,18 @@ class SignalQueryRuntimeContractTest extends TestCase
             $requirements['unknown_signal_and_query_errors']['required_errors'],
         );
         foreach ([
+            'cli_unknown_signal_sample',
+            'cli_unknown_query_sample',
+            'cli_missing_workflow_signal_sample',
+            'cli_missing_workflow_query_sample',
+            'sdk_python_unknown_signal_sample',
+            'sdk_python_unknown_query_sample',
+            'sdk_python_missing_workflow_signal_sample',
+            'sdk_python_missing_workflow_query_sample',
+        ] as $field) {
+            $this->assertContains($field, $requirements['unknown_signal_and_query_errors']['evidence']);
+        }
+        foreach ([
             'invalid_signal_arguments.status_code',
             'invalid_signal_arguments.reason',
             'invalid_query_arguments.status_code',
@@ -257,7 +269,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(13, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(14, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -352,6 +364,24 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertSame(
             'signal_query_unknown_handler_errors_uncovered',
             $hostRunner['evidence_shards']['unknown_handler_errors']['finding_type_when_missing'],
+        );
+        $this->assertSame(
+            [
+                'unknown_signal',
+                'missing_workflow_signal',
+                'missing_workflow_query',
+                'query_not_found',
+                'rejected_unknown_query',
+                'cli_unknown_signal_sample',
+                'cli_unknown_query_sample',
+                'cli_missing_workflow_signal_sample',
+                'cli_missing_workflow_query_sample',
+                'sdk_python_unknown_signal_sample',
+                'sdk_python_unknown_query_sample',
+                'sdk_python_missing_workflow_signal_sample',
+                'sdk_python_missing_workflow_query_sample',
+            ],
+            $hostRunner['evidence_shards']['unknown_handler_errors']['required_evidence_fields'],
         );
         $this->assertSame(
             [
@@ -1192,6 +1222,14 @@ class SignalQueryRuntimeContractTest extends TestCase
         unset($result['terminal_run_behavior']['completed_run_signal_and_query']['run_status_after_operations']);
         unset($result['scenario_results']['unknown_signal_and_query_errors']['observed_outputs']['missing_workflow_query']);
         unset($result['adversarial_errors']['unknown_signal_and_query_errors']['missing_workflow_query']);
+        unset(
+            $result['scenario_results']['unknown_signal_and_query_errors']['observed_outputs']
+                ['sdk_python_missing_workflow_query_sample']
+        );
+        unset(
+            $result['adversarial_errors']['unknown_signal_and_query_errors']
+                ['sdk_python_missing_workflow_query_sample']
+        );
         unset($result['scenario_results']['malformed_signal_and_query_payloads']['observed_outputs']['invalid_query_arguments']);
         unset($result['adversarial_errors']['malformed_signal_and_query_payloads']['invalid_query_arguments']);
         unset(
@@ -1267,6 +1305,14 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'code' => 'missing_required_pass_evidence',
                 'scenario_id' => 'unknown_signal_and_query_errors',
                 'evidence_key' => 'missing_workflow_query',
+            ],
+            $missingEvidence,
+        );
+        $this->assertContains(
+            [
+                'code' => 'missing_required_pass_evidence',
+                'scenario_id' => 'unknown_signal_and_query_errors',
+                'evidence_key' => 'sdk_python_missing_workflow_query_sample',
             ],
             $missingEvidence,
         );
@@ -1393,6 +1439,37 @@ class SignalQueryRuntimeContractTest extends TestCase
         );
         $this->assertContains(
             'malformed_payload_side_effect_observed',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_unknown_handler_errors_without_public_typed_shapes(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $observed = &$result['scenario_results']['unknown_signal_and_query_errors']['observed_outputs'];
+        $section = &$result['adversarial_errors']['unknown_signal_and_query_errors'];
+
+        $observed['cli_unknown_signal_sample']['status_code'] = 500;
+        $section['cli_unknown_signal_sample']['status_code'] = 500;
+        $observed['sdk_python_unknown_query_sample']['reason'] = 'server_error';
+        $section['sdk_python_unknown_query_sample']['reason'] = 'server_error';
+        $observed['sdk_python_missing_workflow_query_sample']['exception'] = 'ServerError';
+        $section['sdk_python_missing_workflow_query_sample']['exception'] = 'ServerError';
+        unset($observed, $section);
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'unexpected_status_code',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+        $this->assertContains(
+            'unexpected_unknown_handler_reason',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+        $this->assertContains(
+            'unexpected_unknown_handler_sdk_exception',
             array_column($evaluation['gate_failures'], 'code'),
         );
     }
@@ -1911,11 +1988,57 @@ class SignalQueryRuntimeContractTest extends TestCase
             'run_status_after_operations' => 'completed',
         ];
         $scenarioResults['unknown_signal_and_query_errors']['observed_outputs'] = [
-            'unknown_signal' => ['reason' => 'unknown_signal'],
-            'missing_workflow_signal' => ['reason' => 'instance_not_found'],
-            'missing_workflow_query' => ['reason' => 'instance_not_found'],
-            'query_not_found' => ['reason' => 'query_not_found'],
-            'rejected_unknown_query' => ['reason' => 'rejected_unknown_query'],
+            'unknown_signal' => ['status_code' => 404, 'reason' => 'unknown_signal'],
+            'missing_workflow_signal' => ['status_code' => 404, 'reason' => 'instance_not_found'],
+            'missing_workflow_query' => ['status_code' => 404, 'reason' => 'instance_not_found'],
+            'query_not_found' => ['status_code' => 404, 'reason' => 'query_not_found'],
+            'rejected_unknown_query' => ['status_code' => 404, 'reason' => 'rejected_unknown_query'],
+            'cli_unknown_signal_sample' => [
+                'command' => 'dw workflow:signal wf-unknown missing --output=json',
+                'exit_code' => 2,
+                'status_code' => 404,
+                'reason' => 'unknown_signal',
+            ],
+            'cli_unknown_query_sample' => [
+                'command' => 'dw workflow:query wf-unknown missing --output=json',
+                'exit_code' => 2,
+                'status_code' => 404,
+                'reason' => 'query_not_found',
+            ],
+            'cli_missing_workflow_signal_sample' => [
+                'command' => 'dw workflow:signal wf-missing increment --output=json',
+                'exit_code' => 2,
+                'status_code' => 404,
+                'reason' => 'instance_not_found',
+            ],
+            'cli_missing_workflow_query_sample' => [
+                'command' => 'dw workflow:query wf-missing current --output=json',
+                'exit_code' => 2,
+                'status_code' => 404,
+                'reason' => 'instance_not_found',
+            ],
+            'sdk_python_unknown_signal_sample' => [
+                'client' => 'sdk-python',
+                'exception' => 'SignalFailed',
+                'status_code' => 404,
+                'reason' => 'unknown_signal',
+            ],
+            'sdk_python_unknown_query_sample' => [
+                'client' => 'sdk-python',
+                'exception' => 'QueryFailed',
+                'status_code' => 404,
+                'reason' => 'query_not_found',
+            ],
+            'sdk_python_missing_workflow_signal_sample' => [
+                'client' => 'sdk-python',
+                'exception' => 'WorkflowNotFound',
+                'reason' => 'instance_not_found',
+            ],
+            'sdk_python_missing_workflow_query_sample' => [
+                'client' => 'sdk-python',
+                'exception' => 'WorkflowNotFound',
+                'reason' => 'instance_not_found',
+            ],
         ];
         $scenarioResults['malformed_signal_and_query_payloads']['observed_outputs'] = [
             'invalid_signal_arguments' => [

@@ -474,29 +474,44 @@ def sdk_error_sample(
     operation: str,
     name: str,
     log_file: Path,
+    args: list[Any] | None = None,
 ) -> dict[str, Any]:
     code = r'''
 import asyncio
 import json
 import sys
 
-from durable_workflow import Client, QueryFailed, SignalFailed
+from durable_workflow import Client, DurableWorkflowError, WorkflowNotFound
 
 base_url, token, namespace, workflow_id, operation, name = sys.argv[1:7]
+args = json.loads(sys.argv[7]) if len(sys.argv) > 7 and sys.argv[7] else None
+
+def exception_reason(exc):
+    reason = getattr(exc, "reason", None)
+    if callable(reason):
+        reason = reason()
+    body = getattr(exc, "body", None)
+    if not isinstance(reason, str) and isinstance(body, dict):
+        candidate = body.get("reason")
+        if isinstance(candidate, str):
+            reason = candidate
+    if not isinstance(reason, str) and isinstance(exc, WorkflowNotFound):
+        reason = "instance_not_found"
+    return reason if isinstance(reason, str) else None
 
 async def main():
     async with Client(base_url, token=token, namespace=namespace, timeout=15.0) as client:
         try:
             if operation == "signal":
-                await client.signal_workflow(workflow_id, name, args=["bad"])
+                await client.signal_workflow(workflow_id, name, args=args)
             else:
-                await client.query_workflow(workflow_id, name, args=["bad"])
-        except (SignalFailed, QueryFailed) as exc:
+                await client.query_workflow(workflow_id, name, args=args)
+        except DurableWorkflowError as exc:
             print(json.dumps({
                 "client": "sdk-python",
                 "exception": type(exc).__name__,
                 "status_code": getattr(exc, "status", None),
-                "reason": getattr(exc, "reason", None),
+                "reason": exception_reason(exc),
                 "validation_errors": getattr(exc, "validation_errors", None),
                 "body": getattr(exc, "body", None),
             }, sort_keys=True))
@@ -511,8 +526,11 @@ async def main():
 
 raise SystemExit(asyncio.run(main()))
 '''
+    command = [python_bin, "-c", code, base_url, token, namespace, workflow_id, operation, name]
+    if args is not None:
+        command.append(json.dumps(args))
     completed = run_command(
-        [python_bin, "-c", code, base_url, token, namespace, workflow_id, operation, name],
+        command,
         log_file=log_file,
         timeout=60,
     )
@@ -1255,6 +1273,58 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             ],
             log_file,
         )
+        cli_unknown_signal = cli_json_sample(
+            cli_bin,
+            base_url,
+            token,
+            namespace,
+            [
+                "workflow:signal",
+                workflow_id,
+                "missing",
+                "--output=json",
+            ],
+            log_file,
+        )
+        cli_unknown_query = cli_json_sample(
+            cli_bin,
+            base_url,
+            token,
+            namespace,
+            [
+                "workflow:query",
+                workflow_id,
+                "missing",
+                "--output=json",
+            ],
+            log_file,
+        )
+        cli_missing_workflow_signal = cli_json_sample(
+            cli_bin,
+            base_url,
+            token,
+            namespace,
+            [
+                "workflow:signal",
+                workflow_id + "-missing",
+                "increment",
+                "--output=json",
+            ],
+            log_file,
+        )
+        cli_missing_workflow_query = cli_json_sample(
+            cli_bin,
+            base_url,
+            token,
+            namespace,
+            [
+                "workflow:query",
+                workflow_id + "-missing",
+                "state",
+                "--output=json",
+            ],
+            log_file,
+        )
         sdk_invalid_signal = sdk_error_sample(
             python_bin,
             base_url,
@@ -1264,6 +1334,7 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             "signal",
             "increment",
             log_file,
+            args=["bad"],
         )
         sdk_invalid_query = sdk_error_sample(
             python_bin,
@@ -1273,6 +1344,47 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             workflow_id,
             "query",
             "count-at-least",
+            log_file,
+            args=["bad"],
+        )
+        sdk_unknown_signal = sdk_error_sample(
+            python_bin,
+            base_url,
+            token,
+            namespace,
+            workflow_id,
+            "signal",
+            "missing",
+            log_file,
+        )
+        sdk_unknown_query = sdk_error_sample(
+            python_bin,
+            base_url,
+            token,
+            namespace,
+            workflow_id,
+            "query",
+            "missing",
+            log_file,
+        )
+        sdk_missing_workflow_signal = sdk_error_sample(
+            python_bin,
+            base_url,
+            token,
+            namespace,
+            workflow_id + "-missing",
+            "signal",
+            "increment",
+            log_file,
+        )
+        sdk_missing_workflow_query = sdk_error_sample(
+            python_bin,
+            base_url,
+            token,
+            namespace,
+            workflow_id + "-missing",
+            "query",
+            "state",
             log_file,
         )
 
@@ -1375,6 +1487,14 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             "missing_workflow_query": response_sample(missing_workflow_query),
             "query_not_found": response_sample(query_not_found),
             "rejected_unknown_query": response_sample(query_not_found),
+            "cli_unknown_signal_sample": cli_unknown_signal,
+            "cli_unknown_query_sample": cli_unknown_query,
+            "cli_missing_workflow_signal_sample": cli_missing_workflow_signal,
+            "cli_missing_workflow_query_sample": cli_missing_workflow_query,
+            "sdk_python_unknown_signal_sample": sdk_unknown_signal,
+            "sdk_python_unknown_query_sample": sdk_unknown_query,
+            "sdk_python_missing_workflow_signal_sample": sdk_missing_workflow_signal,
+            "sdk_python_missing_workflow_query_sample": sdk_missing_workflow_query,
             "published_artifact_versions": versions,
             "artifact_sources": sources,
         }
@@ -1841,6 +1961,14 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "missing_workflow_query",
         "query_not_found",
         "rejected_unknown_query",
+        "cli_unknown_signal_sample",
+        "cli_unknown_query_sample",
+        "cli_missing_workflow_signal_sample",
+        "cli_missing_workflow_query_sample",
+        "sdk_python_unknown_signal_sample",
+        "sdk_python_unknown_query_sample",
+        "sdk_python_missing_workflow_signal_sample",
+        "sdk_python_missing_workflow_query_sample",
     ],
     "malformed_signal_and_query_payloads": [
         "invalid_signal_arguments",
@@ -1951,6 +2079,11 @@ def integer_value(value: Any) -> int | None:
 def status_code_in_range(observed: dict[str, Any], key: str, minimum: int, maximum: int) -> bool:
     status = integer_value(evidence_lookup(observed, key))
     return status is not None and minimum <= status <= maximum
+
+
+def reason_in(observed: dict[str, Any], key: str, allowed: set[str]) -> bool:
+    value = evidence_lookup(observed, key)
+    return isinstance(value, str) and value in allowed
 
 
 def artifact_sources_from_outputs(observed: dict[str, Any]) -> dict[str, Any]:
@@ -2079,6 +2212,42 @@ def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
             and query_status is not None
             and 200 <= query_status <= 499
             and (query_status < 400 or required_evidence_satisfied("query_result_or_error.reason", query_reason))
+        )
+
+    if scenario == "unknown_signal_and_query_errors":
+        query_reasons = {"query_not_found", "rejected_unknown_query"}
+        return (
+            all(
+                required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
+                for evidence_key in SCENARIO_REQUIRED_EVIDENCE[scenario]
+            )
+            and status_code_in_range(observed, "unknown_signal.status_code", 404, 404)
+            and status_code_in_range(observed, "missing_workflow_signal.status_code", 404, 404)
+            and status_code_in_range(observed, "missing_workflow_query.status_code", 404, 404)
+            and status_code_in_range(observed, "query_not_found.status_code", 404, 404)
+            and reason_in(observed, "unknown_signal.reason", {"unknown_signal"})
+            and reason_in(observed, "missing_workflow_signal.reason", {"instance_not_found"})
+            and reason_in(observed, "missing_workflow_query.reason", {"instance_not_found"})
+            and reason_in(observed, "query_not_found.reason", query_reasons)
+            and reason_in(observed, "rejected_unknown_query.reason", query_reasons)
+            and status_code_in_range(observed, "cli_unknown_signal_sample.status_code", 404, 404)
+            and status_code_in_range(observed, "cli_unknown_query_sample.status_code", 404, 404)
+            and status_code_in_range(observed, "cli_missing_workflow_signal_sample.status_code", 404, 404)
+            and status_code_in_range(observed, "cli_missing_workflow_query_sample.status_code", 404, 404)
+            and reason_in(observed, "cli_unknown_signal_sample.reason", {"unknown_signal"})
+            and reason_in(observed, "cli_unknown_query_sample.reason", query_reasons)
+            and reason_in(observed, "cli_missing_workflow_signal_sample.reason", {"instance_not_found"})
+            and reason_in(observed, "cli_missing_workflow_query_sample.reason", {"instance_not_found"})
+            and status_code_in_range(observed, "sdk_python_unknown_signal_sample.status_code", 404, 404)
+            and status_code_in_range(observed, "sdk_python_unknown_query_sample.status_code", 404, 404)
+            and reason_in(observed, "sdk_python_unknown_signal_sample.reason", {"unknown_signal"})
+            and reason_in(observed, "sdk_python_unknown_query_sample.reason", query_reasons)
+            and reason_in(observed, "sdk_python_missing_workflow_signal_sample.reason", {"instance_not_found"})
+            and reason_in(observed, "sdk_python_missing_workflow_query_sample.reason", {"instance_not_found"})
+            and evidence_lookup(observed, "sdk_python_unknown_signal_sample.exception") == "SignalFailed"
+            and evidence_lookup(observed, "sdk_python_unknown_query_sample.exception") == "QueryFailed"
+            and evidence_lookup(observed, "sdk_python_missing_workflow_signal_sample.exception") == "WorkflowNotFound"
+            and evidence_lookup(observed, "sdk_python_missing_workflow_query_sample.exception") == "WorkflowNotFound"
         )
 
     if scenario == "malformed_signal_and_query_payloads":

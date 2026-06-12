@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 13;
+    public const VERSION = 14;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -1147,6 +1147,25 @@ final class SignalQueryRuntimeResultGate
                 );
             }
 
+            if ($scenarioId === 'unknown_signal_and_query_errors') {
+                array_push(
+                    $failures,
+                    ...self::statusCodeFailures($result, $scenarioResult, $scenarioId, [
+                        'unknown_signal.status_code' => [404, 404],
+                        'missing_workflow_signal.status_code' => [404, 404],
+                        'missing_workflow_query.status_code' => [404, 404],
+                        'query_not_found.status_code' => [404, 404],
+                        'cli_unknown_signal_sample.status_code' => [404, 404],
+                        'cli_unknown_query_sample.status_code' => [404, 404],
+                        'cli_missing_workflow_signal_sample.status_code' => [404, 404],
+                        'cli_missing_workflow_query_sample.status_code' => [404, 404],
+                        'sdk_python_unknown_signal_sample.status_code' => [404, 404],
+                        'sdk_python_unknown_query_sample.status_code' => [404, 404],
+                    ]),
+                    ...self::unknownHandlerReasonFailures($result, $scenarioResult, $scenarioId),
+                );
+            }
+
             if ($scenarioId === 'malformed_signal_and_query_payloads') {
                 array_push(
                     $failures,
@@ -1157,6 +1176,77 @@ final class SignalQueryRuntimeResultGate
                     ...self::malformedPayloadReasonFailures($result, $scenarioResult, $scenarioId),
                 );
             }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function unknownHandlerReasonFailures(
+        array $result,
+        array $scenarioResult,
+        string $scenarioId,
+    ): array {
+        $failures = [];
+
+        foreach ([
+            'unknown_signal.reason' => ['unknown_signal'],
+            'missing_workflow_signal.reason' => ['instance_not_found'],
+            'missing_workflow_query.reason' => ['instance_not_found'],
+            'query_not_found.reason' => ['query_not_found', 'rejected_unknown_query'],
+            'rejected_unknown_query.reason' => ['query_not_found', 'rejected_unknown_query'],
+            'cli_unknown_signal_sample.reason' => ['unknown_signal'],
+            'cli_unknown_query_sample.reason' => ['query_not_found', 'rejected_unknown_query'],
+            'cli_missing_workflow_signal_sample.reason' => ['instance_not_found'],
+            'cli_missing_workflow_query_sample.reason' => ['instance_not_found'],
+            'sdk_python_unknown_signal_sample.reason' => ['unknown_signal'],
+            'sdk_python_unknown_query_sample.reason' => ['query_not_found', 'rejected_unknown_query'],
+            'sdk_python_missing_workflow_signal_sample.reason' => ['instance_not_found'],
+            'sdk_python_missing_workflow_query_sample.reason' => ['instance_not_found'],
+        ] as $evidenceKey => $expectedReasons) {
+            $actualReason = self::stringValue(
+                self::evidenceValue($result, $scenarioResult, $scenarioId, $evidenceKey),
+            );
+
+            if (in_array($actualReason, $expectedReasons, true)) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'unexpected_unknown_handler_reason',
+                'scenario_id' => $scenarioId,
+                'evidence_key' => $evidenceKey,
+                'expected_reasons' => $expectedReasons,
+                'actual_reason' => $actualReason,
+            ];
+        }
+
+        foreach ([
+            'sdk_python_unknown_signal_sample.exception' => 'SignalFailed',
+            'sdk_python_unknown_query_sample.exception' => 'QueryFailed',
+            'sdk_python_missing_workflow_signal_sample.exception' => 'WorkflowNotFound',
+            'sdk_python_missing_workflow_query_sample.exception' => 'WorkflowNotFound',
+        ] as $evidenceKey => $expectedException) {
+            $actualException = self::stringValue(
+                self::evidenceValue($result, $scenarioResult, $scenarioId, $evidenceKey),
+            );
+
+            if ($actualException === $expectedException) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'unexpected_unknown_handler_sdk_exception',
+                'scenario_id' => $scenarioId,
+                'evidence_key' => $evidenceKey,
+                'expected_exception' => $expectedException,
+                'actual_exception' => $actualException,
+            ];
         }
 
         return $failures;
