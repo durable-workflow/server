@@ -14,7 +14,7 @@ class SearchAttributeRuntimeContractTest extends TestCase
         $manifest = SearchAttributeRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.contract', $manifest['schema']);
-        $this->assertSame(9, SearchAttributeRuntimeContract::VERSION);
+        $this->assertSame(10, SearchAttributeRuntimeContract::VERSION);
         $this->assertSame(SearchAttributeRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.search-attribute-runtime.result', $manifest['result_schema']);
         $this->assertSame('search_attribute_runtime_contract', $manifest['fixture_category']);
@@ -236,9 +236,11 @@ class SearchAttributeRuntimeContractTest extends TestCase
         );
         $this->assertTrue(is_executable($runnerPath), 'the advertised search-attributes host runner must be executable');
         $this->assertContains('waterline-search-attributes-shard.json', $runner['result_files']);
+        $this->assertContains('codec-round-trip-shard.json', $runner['result_files']);
         $this->assertTrue($runner['must_execute_against_published_artifacts']);
         $this->assertTrue($runner['must_record_runner_blocked_false_for_product_evidence']);
         $this->assertContains('waterline-operator-search-attribute-shard', $runner['required_execution_scopes']);
+        $this->assertContains('cross-language-codec-shard', $runner['required_execution_scopes']);
 
         $waterline = $runner['runtime_shards']['waterline'];
         $this->assertSame('durable-workflow/waterline', $waterline['artifact']);
@@ -257,6 +259,16 @@ class SearchAttributeRuntimeContractTest extends TestCase
             'waterline',
             $runner['routing_policy']['waterline_operator_mismatch']['owner'],
         );
+
+        $codec = $runner['runtime_shards']['codec'];
+        $this->assertSame('cross-language-codec-shard', $codec['scope']);
+        $this->assertContains('DW_SEARCH_ATTRIBUTES_CODEC_SHARD_FILE', $codec['input_environment']);
+        $this->assertSame('codec-round-trip-shard.json', $codec['result_file']);
+        $this->assertContains('python_to_php_codec_round_trip', $codec['must_cover_scenarios']);
+        $this->assertContains('php_to_python_codec_round_trip', $codec['must_cover_scenarios']);
+        $this->assertContains('python_to_php.reader_verifications.workflow-php-sdk', $codec['must_capture_fields']);
+        $this->assertContains('php_to_python.reader_verifications.sdk-python', $codec['must_capture_fields']);
+        $this->assertContains('keyword_list', $codec['required_value_types']);
     }
 
     public function test_published_artifact_runner_writes_gate_consumable_runner_blocked_record(): void
@@ -310,18 +322,36 @@ class SearchAttributeRuntimeContractTest extends TestCase
                 512,
                 JSON_THROW_ON_ERROR,
             );
+            $codecShard = json_decode(
+                (string) file_get_contents($resultDir.'/codec-round-trip-shard.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
 
             $this->assertSame('non_passing_runner_blocked', $result['outcome']);
             $this->assertTrue($result['runner_blocked']);
             $this->assertSame('non_passing_runner_blocked', $record['outcome']);
             $this->assertTrue($record['runnerBlocked']);
             $this->assertSame('runner_blocked', $waterlineShard['status']);
+            $this->assertSame('runner_blocked', $codecShard['status']);
 
             $scenarioResults = array_column($result['scenario_results'], null, 'scenario_id');
             foreach (SearchAttributeRuntimeContract::manifest()['required_scenarios'] as $scenarioId) {
                 $this->assertArrayHasKey($scenarioId, $scenarioResults);
                 $this->assertSame('runner_blocked', $scenarioResults[$scenarioId]['status']);
                 $this->assertNotEmpty($scenarioResults[$scenarioId]['linked_findings']);
+            }
+
+            foreach (['python_to_php_codec_round_trip', 'php_to_python_codec_round_trip'] as $scenarioId) {
+                $this->assertSame(
+                    'cross-language-codec-shard',
+                    $scenarioResults[$scenarioId]['observed_outputs']['required_execution_scope'],
+                );
+                $this->assertSame(
+                    'cross-language-codec-shard',
+                    $scenarioResults[$scenarioId]['linked_findings'][0]['required_execution_scope'],
+                );
             }
 
             $evaluation = SearchAttributeRuntimeResultGate::evaluate($result);
@@ -331,6 +361,103 @@ class SearchAttributeRuntimeContractTest extends TestCase
             $this->assertNotContains('missing_run_record_field', $failureCodes);
             $this->assertNotContains('missing_non_pass_finding', $failureCodes);
             $this->assertNotContains('invalid_declared_outcome', $failureCodes);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_published_artifact_runner_accepts_focused_codec_shard_as_product_evidence(): void
+    {
+        if (trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('node is required to exercise the search-attributes runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = SearchAttributeRuntimeContract::manifest()['host_runner_contract'];
+        $resultDir = sys_get_temp_dir().'/dw-search-attributes-'.bin2hex(random_bytes(6));
+        mkdir($resultDir);
+        $codecShardFile = $resultDir.'/codec-shard.json';
+
+        try {
+            file_put_contents(
+                $codecShardFile,
+                json_encode($this->completeCodecRoundTripShard(), JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR)."\n",
+            );
+
+            $command = implode(' ', [
+                'DW_SERVER_VERSION=0.2.398',
+                'DW_CLI_VERSION=0.1.80',
+                'DW_PYTHON_SDK_VERSION=0.4.88',
+                'DW_WORKFLOW_PHP_VERSION=2.0.0-alpha.203',
+                'DW_WATERLINE_VERSION=2.0.0-alpha.87',
+                'DW_SEARCH_ATTRIBUTES_CODEC_SHARD_FILE='.escapeshellarg($codecShardFile),
+                escapeshellarg($repoRoot.'/'.$runner['runner_path']),
+                '--result-dir',
+                escapeshellarg($resultDir),
+            ]);
+
+            $output = [];
+            $exitCode = 0;
+            exec($command.' 2>&1', $output, $exitCode);
+
+            $this->assertSame(1, $exitCode, implode("\n", $output));
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/search-attributes-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                (string) file_get_contents($resultDir.'/search-attributes-record.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $codecShard = json_decode(
+                (string) file_get_contents($resultDir.'/codec-round-trip-shard.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('non_passing', $record['outcome']);
+            $this->assertFalse($record['runnerBlocked']);
+            $this->assertSame('pass', $codecShard['status']);
+
+            $scenarioResults = array_column($result['scenario_results'], null, 'scenario_id');
+            $this->assertSame('pass', $scenarioResults['python_to_php_codec_round_trip']['status']);
+            $this->assertSame('pass', $scenarioResults['php_to_python_codec_round_trip']['status']);
+            $this->assertSame('not_covered', $scenarioResults['waterline_operator_visibility']['status']);
+            $this->assertNotEmpty($scenarioResults['waterline_operator_visibility']['linked_findings']);
+            $this->assertArrayNotHasKey('python_to_php_codec_round_trip', $result['finding_links']);
+            $this->assertArrayNotHasKey('php_to_python_codec_round_trip', $result['finding_links']);
+
+            $this->assertSame(
+                ['urgent', 'renewal'],
+                $result['codec_round_trips']['python_to_php']['decoded_attributes']['tags'],
+            );
+            $this->assertTrue(
+                $result['codec_round_trips']['python_to_php']['reader_verifications']['workflow-php-sdk'],
+            );
+            $this->assertTrue(
+                $result['codec_round_trips']['php_to_python']['reader_verifications']['sdk-python'],
+            );
+
+            $codecFailureCodes = array_column(
+                array_values(array_filter(
+                    $result['result_gate']['gate_failures'],
+                    static fn (array $failure): bool => in_array(
+                        $failure['scenario_id'] ?? null,
+                        ['python_to_php_codec_round_trip', 'php_to_python_codec_round_trip'],
+                        true,
+                    ),
+                )),
+                'code',
+            );
+            $this->assertSame([], $codecFailureCodes);
         } finally {
             $this->removeDirectory($resultDir);
         }
@@ -1242,6 +1369,57 @@ class SearchAttributeRuntimeContractTest extends TestCase
         }
 
         rmdir($directory);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function completeCodecRoundTripShard(): array
+    {
+        $decodedAttributes = [
+            'customer_id' => 'cust-7',
+            'order_total_cents' => 7500,
+            'discount_ratio' => 0.15,
+            'priority_tier' => 'gold',
+            'is_vip' => true,
+            'created_at' => '2026-05-20T12:00:00Z',
+            'tags' => ['urgent', 'renewal'],
+        ];
+
+        return [
+            'schema' => 'durable-workflow.v2.search-attribute-runtime.codec-shard',
+            'status' => 'pass',
+            'codec_round_trips' => [
+                'python_to_php' => [
+                    'wire_value_context' => [
+                        'storage_surface' => 'workflow_search_attributes',
+                        'wire_values' => [
+                            'customer_id' => ['type' => 'string', 'value_string' => 'cust-7'],
+                            'order_total_cents' => ['type' => 'int', 'value_int' => 7500],
+                            'discount_ratio' => ['type' => 'double', 'value_double' => 0.15],
+                            'priority_tier' => ['type' => 'keyword', 'value_keyword' => 'gold'],
+                            'is_vip' => ['type' => 'bool', 'value_bool' => true],
+                            'created_at' => ['type' => 'datetime', 'value_datetime' => '2026-05-20T12:00:00Z'],
+                            'tags' => ['type' => 'keyword_list', 'value_keyword_list' => ['urgent', 'renewal']],
+                        ],
+                    ],
+                    'decoded_attributes' => $decodedAttributes,
+                    'reader_verifications' => [
+                        'workflow-php-sdk' => true,
+                        'cli' => true,
+                    ],
+                ],
+                'php_to_python' => [
+                    'encoded_payload' => 'json:php-search-attributes-fixture',
+                    'written_attributes' => $decodedAttributes,
+                    'decoded_attributes' => $decodedAttributes,
+                    'reader_verifications' => [
+                        'sdk-python' => true,
+                        'cli' => true,
+                    ],
+                ],
+            ],
+        ];
     }
 
     /**

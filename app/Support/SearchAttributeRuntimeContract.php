@@ -16,7 +16,7 @@ final class SearchAttributeRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.search-attribute-runtime.contract';
 
-    public const VERSION = 9;
+    public const VERSION = 10;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.search-attribute-runtime.result';
 
@@ -407,6 +407,7 @@ final class SearchAttributeRuntimeContract
                     'run-metadata.json',
                     'artifact-install-evidence.json',
                     'waterline-search-attributes-shard.json',
+                    'codec-round-trip-shard.json',
                     'search-attributes-result.json',
                     'search-attributes-record.json',
                 ],
@@ -456,6 +457,46 @@ final class SearchAttributeRuntimeContract
                         'fallback_status_when_command_missing' => 'unsupported',
                         'fallback_status_when_surface_missing' => 'not_covered',
                         'fallback_finding_type' => 'unsupported_public_surface',
+                    ],
+                    'codec' => [
+                        'scope' => 'cross-language-codec-shard',
+                        'artifacts' => [
+                            'durable-workflow/workflow',
+                            'durable-workflow',
+                            'dw',
+                        ],
+                        'input_environment' => [
+                            'DW_SEARCH_ATTRIBUTES_CODEC_SHARD_FILE',
+                            'DW_SEARCH_ATTRIBUTES_CODEC_SHARD_JSON',
+                        ],
+                        'result_file' => 'codec-round-trip-shard.json',
+                        'must_cover_scenarios' => [
+                            'python_to_php_codec_round_trip',
+                            'php_to_python_codec_round_trip',
+                        ],
+                        'must_capture_fields' => [
+                            'python_to_php.written_attributes',
+                            'python_to_php.decoded_attributes',
+                            'python_to_php.reader_verifications.workflow-php-sdk',
+                            'python_to_php.reader_verifications.cli',
+                            'python_to_php.encoded_payload_or_wire_value_context',
+                            'php_to_python.written_attributes',
+                            'php_to_python.decoded_attributes',
+                            'php_to_python.reader_verifications.sdk-python',
+                            'php_to_python.reader_verifications.cli',
+                            'php_to_python.encoded_payload_or_wire_value_context',
+                        ],
+                        'required_value_types' => [
+                            'string',
+                            'int',
+                            'double',
+                            'bool',
+                            'datetime',
+                            'keyword',
+                            'keyword_list',
+                        ],
+                        'fallback_status_when_surface_missing' => 'not_covered',
+                        'fallback_finding_type' => 'conformance_runner_coverage_gap',
                     ],
                     'workflow-php' => [
                         'scope' => 'workflow-php-search-attribute-shard',

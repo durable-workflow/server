@@ -12,6 +12,7 @@ The runner writes these files to the result directory:
   run-metadata.json
   artifact-install-evidence.json
   waterline-search-attributes-shard.json
+  codec-round-trip-shard.json
   search-attributes-result.json
   search-attributes-record.json
 
@@ -21,6 +22,8 @@ Environment overrides:
   DW_SEARCH_ATTRIBUTES_RESULT_JSON             Complete JSON result string from a host-backed matrix run.
   DW_SEARCH_ATTRIBUTES_WATERLINE_SHARD_FILE    Waterline shard JSON emitted by waterline:search-attributes-conformance.
   DW_SEARCH_ATTRIBUTES_WATERLINE_SHARD_JSON    Waterline shard JSON string.
+  DW_SEARCH_ATTRIBUTES_CODEC_SHARD_FILE        PHP/Python codec round-trip shard JSON.
+  DW_SEARCH_ATTRIBUTES_CODEC_SHARD_JSON        PHP/Python codec round-trip shard JSON string.
   DW_SEARCH_ATTRIBUTES_BLOCKED_REASON          Reason to record when shard evidence is unavailable.
   DW_SERVER_VERSION                            Published server version under test.
   DW_CLI_VERSION                               Published CLI version under test.
@@ -87,6 +90,8 @@ DW_SEARCH_ATTRIBUTES_RESULT_FILE="${DW_SEARCH_ATTRIBUTES_RESULT_FILE:-}" \
 DW_SEARCH_ATTRIBUTES_RESULT_JSON="${DW_SEARCH_ATTRIBUTES_RESULT_JSON:-}" \
 DW_SEARCH_ATTRIBUTES_WATERLINE_SHARD_FILE="${DW_SEARCH_ATTRIBUTES_WATERLINE_SHARD_FILE:-}" \
 DW_SEARCH_ATTRIBUTES_WATERLINE_SHARD_JSON="${DW_SEARCH_ATTRIBUTES_WATERLINE_SHARD_JSON:-}" \
+DW_SEARCH_ATTRIBUTES_CODEC_SHARD_FILE="${DW_SEARCH_ATTRIBUTES_CODEC_SHARD_FILE:-}" \
+DW_SEARCH_ATTRIBUTES_CODEC_SHARD_JSON="${DW_SEARCH_ATTRIBUTES_CODEC_SHARD_JSON:-}" \
 DW_SEARCH_ATTRIBUTES_BLOCKED_REASON="${DW_SEARCH_ATTRIBUTES_BLOCKED_REASON:-}" \
 node - <<'NODE'
 const fs = require('node:fs');
@@ -99,6 +104,7 @@ const RESULT_FILES = [
   'run-metadata.json',
   'artifact-install-evidence.json',
   'waterline-search-attributes-shard.json',
+  'codec-round-trip-shard.json',
   'search-attributes-result.json',
   'search-attributes-record.json',
 ];
@@ -286,12 +292,14 @@ function scenarioScope(scenarioId) {
   if (scenarioId === 'python_worker_start_and_upsert_visibility') {
     return 'server-python-search-attribute-smoke';
   }
+  if (scenarioId === 'php_worker_start_and_upsert_visibility') {
+    return 'workflow-php-search-attribute-shard';
+  }
   if ([
-    'php_worker_start_and_upsert_visibility',
     'python_to_php_codec_round_trip',
     'php_to_python_codec_round_trip',
   ].includes(scenarioId)) {
-    return 'workflow-php-search-attribute-shard';
+    return 'cross-language-codec-shard';
   }
   if (scenarioId === 'cli_query_and_error_surface') {
     return 'cli-search-attribute-surface-shard';
@@ -1052,6 +1060,15 @@ function mergeFinding(result, finding) {
     links.push(finding);
   }
   result.finding_links[finding.scenario_id] = links;
+}
+
+function clearFindingsForScenario(result, scenarioId) {
+  if (Array.isArray(result.findings)) {
+    result.findings = result.findings.filter((finding) => !isObject(finding) || stringValue(finding.scenario_id || finding.scenario) !== scenarioId);
+  }
+  if (isObject(result.finding_links)) {
+    delete result.finding_links[scenarioId];
+  }
 }
 
 function ensureMissingScenarioResults(result, missingScenarios, reason, versions) {
@@ -2043,6 +2060,115 @@ function blockedResult(reason, startedAt, finishedAt, versions) {
   };
 }
 
+function partialCoverageResult(reason, startedAt, finishedAt, versions) {
+  const findings = REQUIRED_SCENARIOS.map((scenarioId) => coverageGapFindingFor(scenarioId, reason, versions));
+  return {
+    schema: SCHEMA,
+    outcome: 'non_passing',
+    runner_blocked: false,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    generated_at: finishedAt,
+    artifactVersions: versions,
+    published_artifact_versions: versions,
+    artifact_sources: artifactSources(),
+    runtime_matrix: RUNTIME_MATRIX,
+    topology: TOPOLOGY,
+    query_verdicts: {},
+    type_safety_errors: {},
+    latency_distribution: {},
+    load_profile: {},
+    waterline_operator_visibility: {},
+    cli_surface: {},
+    codec_round_trips: {},
+    namespace_isolation: {},
+    adversarial_queries: {},
+    scenario_results: REQUIRED_SCENARIOS.map((scenarioId) => notCoveredScenarioResult(scenarioId, reason, versions)),
+    findings,
+    finding_links: Object.fromEntries(findings.map((finding) => [finding.scenario_id, [finding]])),
+  };
+}
+
+function statusForShardEntry(entry, shard) {
+  const status = stringValue(entry.status || entry.outcome || entry.verdict || shard.status || shard.outcome || shard.verdict);
+  if (ALLOWED_STATUSES.includes(status)) {
+    return status;
+  }
+  if (status === 'non_passing' || status === 'non_passing_with_root_cause_finding') {
+    return 'fail';
+  }
+  if (status === 'non_passing_runner_blocked') {
+    return 'runner_blocked';
+  }
+  return 'pass';
+}
+
+function codecEntryFromShard(shard, direction, scenarioId) {
+  const section = firstArrayField(shard, ['codec_round_trips', 'codecRoundTrips', 'round_trips', 'roundTrips']) || shard;
+  const direct = arrayValue(section, direction)
+    || arrayValue(section, camelize(direction))
+    || arrayValue(shard, direction)
+    || arrayValue(shard, camelize(direction));
+  if (direct !== null) {
+    return direct;
+  }
+  const shardScenarioId = stringValue(shard.scenario_id || shard.scenarioId || shard.id);
+  if (shardScenarioId === scenarioId) {
+    return section;
+  }
+  return null;
+}
+
+function shardLinkedFindings(entry, shard, scenarioId, status, versions) {
+  const supplied = firstArrayField(entry, ['linked_findings', 'linkedFindings', 'finding_links', 'findingLinks'])
+    || firstArrayField(shard, ['linked_findings', 'linkedFindings', 'finding_links', 'findingLinks']);
+  if (supplied !== null && nonEmptyValue(supplied)) {
+    return Array.isArray(supplied) ? supplied : Object.values(supplied);
+  }
+  if (status === 'pass') {
+    return [];
+  }
+  return [coverageGapFindingFor(
+    scenarioId,
+    'codec round-trip shard reported a non-pass status without a linked root-cause finding',
+    versions
+  )];
+}
+
+function mergeCodecShard(result, shard, versions) {
+  if (!isObject(result.codec_round_trips)) {
+    result.codec_round_trips = {};
+  }
+  const existing = scenarioResultsById(result);
+  for (const [direction, scenarioId] of Object.entries({
+    python_to_php: 'python_to_php_codec_round_trip',
+    php_to_python: 'php_to_python_codec_round_trip',
+  })) {
+    const entry = codecEntryFromShard(shard, direction, scenarioId);
+    if (!isObject(entry)) {
+      continue;
+    }
+    const status = statusForShardEntry(entry, shard);
+    const linkedFindings = shardLinkedFindings(entry, shard, scenarioId, status, versions);
+    clearFindingsForScenario(result, scenarioId);
+    result.codec_round_trips[direction] = entry;
+    existing[scenarioId] = {
+      scenario_id: scenarioId,
+      status,
+      observed_outputs: {
+        [direction]: entry,
+      },
+      linked_findings: linkedFindings,
+    };
+    for (const finding of linkedFindings) {
+      if (isObject(finding)) {
+        mergeFinding(result, finding);
+      }
+    }
+  }
+  result.scenario_results = existing;
+}
+
 function waterlineShardFor(result, supplied, reason, versions) {
   let shard;
   if (isObject(supplied)) {
@@ -2071,6 +2197,61 @@ function waterlineShardFor(result, supplied, reason, versions) {
   return shard;
 }
 
+function codecShardStatusFromResult(result, fallback = 'not_covered') {
+  const scenarioResults = scenarioResultsById(result);
+  const statuses = [
+    scenarioResults.python_to_php_codec_round_trip?.status,
+    scenarioResults.php_to_python_codec_round_trip?.status,
+  ].filter((status) => typeof status === 'string' && status !== '');
+  if (statuses.length === 2 && statuses.every((status) => status === 'pass')) {
+    return 'pass';
+  }
+  if (statuses.includes('fail')) {
+    return 'fail';
+  }
+  if (statuses.includes('runner_blocked')) {
+    return 'runner_blocked';
+  }
+  if (statuses.includes('unsupported')) {
+    return 'unsupported';
+  }
+  if (statuses.length > 0) {
+    return 'not_covered';
+  }
+  return fallback;
+}
+
+function codecShardFor(result, supplied) {
+  if (isObject(supplied)) {
+    return {
+      schema: supplied.schema || 'durable-workflow.v2.search-attribute-runtime.codec-shard',
+      status: codecShardStatusFromResult(result, stringValue(supplied.status || supplied.outcome || 'not_covered')),
+      artifact_versions: supplied.artifact_versions || supplied.artifactVersions || result.artifactVersions,
+      codec_round_trips: supplied.codec_round_trips
+        || supplied.codecRoundTrips
+        || {
+          python_to_php: supplied.python_to_php || supplied.pythonToPhp,
+          php_to_python: supplied.php_to_python || supplied.phpToPython,
+        },
+      scenario_results: supplied.scenario_results || supplied.scenarioResults || {},
+      observed_outputs: supplied.observed_outputs || supplied.observedOutputs || {},
+      linked_findings: supplied.linked_findings || supplied.linkedFindings || [],
+    };
+  }
+
+  const scenarioResults = scenarioResultsById(result);
+  return {
+    schema: 'durable-workflow.v2.search-attribute-runtime.codec-shard',
+    status: codecShardStatusFromResult(result),
+    artifact_versions: result.artifactVersions,
+    codec_round_trips: result.codec_round_trips || {},
+    scenario_results: {
+      python_to_php_codec_round_trip: scenarioResults.python_to_php_codec_round_trip || null,
+      php_to_python_codec_round_trip: scenarioResults.php_to_python_codec_round_trip || null,
+    },
+  };
+}
+
 const resultDir = process.env.RESULT_DIR;
 const startedAt = process.env.STARTED_AT;
 const finishedAt = now();
@@ -2083,9 +2264,15 @@ let waterlineShard = loadJson(
   'DW_SEARCH_ATTRIBUTES_WATERLINE_SHARD_FILE',
   'DW_SEARCH_ATTRIBUTES_WATERLINE_SHARD_JSON'
 );
+let codecShard = loadJson(
+  'DW_SEARCH_ATTRIBUTES_CODEC_SHARD_FILE',
+  'DW_SEARCH_ATTRIBUTES_CODEC_SHARD_JSON'
+);
 
 if (isObject(result)) {
   result = normalizeResult(result, startedAt, finishedAt, versions);
+} else if (isObject(codecShard)) {
+  result = partialCoverageResult(reason, startedAt, finishedAt, versions);
 } else {
   result = blockedResult(reason, startedAt, finishedAt, versions);
 }
@@ -2097,8 +2284,13 @@ if (isObject(waterlineShard)) {
     || waterlineShard;
 }
 
+if (isObject(codecShard)) {
+  mergeCodecShard(result, codecShard, versions);
+}
+
 const gateEvaluation = applyGateEvaluation(result, versions);
 waterlineShard = waterlineShardFor(result, waterlineShard, reason, versions);
+codecShard = codecShardFor(result, codecShard);
 const runnerBlocked = Boolean(result.runner_blocked || result.runnerBlocked || false);
 const outcome = String(result.outcome || result.status || 'non_passing');
 const findings = Array.isArray(result.findings) ? result.findings : [];
@@ -2140,6 +2332,7 @@ writeJson(path.join(resultDir, 'pins.json'), pins);
 writeJson(path.join(resultDir, 'run-metadata.json'), metadata);
 writeJson(path.join(resultDir, 'artifact-install-evidence.json'), installEvidence);
 writeJson(path.join(resultDir, 'waterline-search-attributes-shard.json'), waterlineShard);
+writeJson(path.join(resultDir, 'codec-round-trip-shard.json'), codecShard);
 writeJson(path.join(resultDir, 'search-attributes-result.json'), result);
 writeJson(path.join(resultDir, 'search-attributes-record.json'), record);
 
