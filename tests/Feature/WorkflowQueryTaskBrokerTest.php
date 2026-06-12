@@ -865,6 +865,101 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('control_plane.operation_name', 'status');
     }
 
+    public function test_worker_routed_query_waits_for_worker_registration_before_reporting_unavailable(): void
+    {
+        Queue::fake();
+        config(['server.query_tasks.timeout' => 5]);
+
+        $run = $this->startRemoteWorkflow('wf-query-task-registration-race');
+
+        /** @var LongPollSignalStore $signals */
+        $signals = app(LongPollSignalStore::class);
+        /** @var LongPollWaitSlotStore $waitSlots */
+        $waitSlots = app(LongPollWaitSlotStore::class);
+        $poller = new class($signals, $waitSlots) extends LongPoller
+        {
+            /** @var list<callable(): void> */
+            public array $afterUnreadyProbes = [];
+
+            private bool $runningAfterProbe = false;
+
+            public function until(
+                callable $probe,
+                callable $ready,
+                ?int $timeoutSeconds = null,
+                ?int $intervalMilliseconds = null,
+                array $wakeChannels = [],
+                ?callable $nextProbeAt = null,
+                bool $reserveWorkerWaitSlot = false,
+                string $waitSlotPool = 'worker',
+            ): mixed {
+                $value = $probe();
+
+                if ($ready($value)) {
+                    return $value;
+                }
+
+                $afterProbe = array_shift($this->afterUnreadyProbes);
+
+                if (! is_callable($afterProbe) || $this->runningAfterProbe) {
+                    return $value;
+                }
+
+                $this->runningAfterProbe = true;
+
+                try {
+                    $afterProbe();
+                } finally {
+                    $this->runningAfterProbe = false;
+                }
+
+                return $probe();
+            }
+        };
+        $broker = new WorkflowQueryTaskBroker(
+            app(ServerPollingCache::class),
+            $poller,
+            $signals,
+            app(ExternalPayloadEnvelopeService::class),
+            app(QueryTaskPollRequestStore::class),
+        );
+
+        $poller->afterUnreadyProbes[] = function (): void {
+            $this->registerPythonWorker('python-query-registration-race-worker', 'python-queries', ['python.queryable']);
+        };
+        $poller->afterUnreadyProbes[] = function () use ($broker): void {
+            /** @var WorkerRegistration $worker */
+            $worker = WorkerRegistration::query()
+                ->where('namespace', 'default')
+                ->where('worker_id', 'python-query-registration-race-worker')
+                ->firstOrFail();
+
+            $task = $broker->poll('default', $worker);
+
+            $this->assertIsArray($task);
+            $this->assertSame('wf-query-task-registration-race', $task['workflow_id'] ?? null);
+
+            $broker->complete(
+                'default',
+                (string) $task['query_task_id'],
+                'python-query-registration-race-worker',
+                (int) $task['query_task_attempt'],
+                ['status' => 'ready'],
+                null,
+            );
+        };
+
+        $result = $broker->query('default', $run, 'status', $this->queryArguments());
+
+        $this->assertTrue($result['success']);
+        $this->assertSame('wf-query-task-registration-race', $result['workflow_id']);
+        $this->assertSame($run->id, $result['run_id']);
+        $this->assertSame('status', $result['query_name']);
+        $this->assertSame(['status' => 'ready'], $result['result']);
+        $this->assertNull($result['reason']);
+        $this->assertSame(200, $result['status']);
+    }
+
     public function test_external_control_plane_query_reports_incompatible_worker_type(): void
     {
         Queue::fake();

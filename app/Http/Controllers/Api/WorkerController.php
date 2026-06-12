@@ -209,6 +209,10 @@ class WorkerController
             buildId: $validated['build_id'] ?? null,
         );
 
+        if (is_string($namespace)) {
+            $this->queryTasks->wakeTaskQueue($namespace, $registration->task_queue);
+        }
+
         return WorkerProtocol::json([
             'worker_id' => $workerId,
             'registered' => true,

@@ -75,7 +75,7 @@ final class WorkflowQueryTaskBroker
             );
         }
 
-        $route = $this->queryRoute($namespace, $run);
+        $route = $this->awaitQueryRoute($namespace, $run);
 
         if (! $route['servable']) {
             return $this->queryFailed(
@@ -1022,6 +1022,44 @@ final class WorkflowQueryTaskBroker
      *     compatible_worker_count: int
      * }
      */
+    private function awaitQueryRoute(string $namespace, WorkflowRun $run): array
+    {
+        $route = $this->queryRoute($namespace, $run);
+
+        if (! $this->shouldAwaitQueryRoute($route)) {
+            return $route;
+        }
+
+        return $this->longPoller->until(
+            fn (): array => $this->queryRoute($namespace, $run),
+            fn (array $candidate): bool => $candidate['servable'] || ! $this->shouldAwaitQueryRoute($candidate),
+            $this->queryTimeoutSeconds(),
+            wakeChannels: $this->signals->queryTaskPollChannels($namespace, $route['task_queue']),
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $route
+     */
+    private function shouldAwaitQueryRoute(array $route): bool
+    {
+        return ($route['servable'] ?? false) !== true
+            && ($route['reason'] ?? null) === 'query_worker_unavailable'
+            && $this->queryTimeoutSeconds() > 0;
+    }
+
+    /**
+     * @return array{
+     *     servable: bool,
+     *     reason: string|null,
+     *     message: string|null,
+     *     task_queue: string,
+     *     active_worker_count: int,
+     *     query_capable_worker_count: int,
+     *     workflow_type_worker_count: int,
+     *     compatible_worker_count: int
+     * }
+     */
     private function queryRouteResult(
         bool $servable,
         ?string $reason,
@@ -1647,6 +1685,8 @@ final class WorkflowQueryTaskBroker
             true,
             now()->addSeconds($this->queryPollingWorkerTtlSeconds()),
         );
+
+        $this->signals->signalQueryTaskQueue($namespace, $taskQueue);
     }
 
     private function recordedWorkflowDefinitionFingerprint(WorkflowRun $run): ?string
