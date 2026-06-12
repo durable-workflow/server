@@ -1073,7 +1073,9 @@ services:
       SESSION_DRIVER: array
       WATERLINE_ALLOW_UNAUTHENTICATED: "true"
       WATERLINE_ENGINE_SOURCE: v2
+      WATERLINE_HEALTH_TASK_DISPATCH_MODE: poll
       WATERLINE_NAMESPACE: default
+      DW_V2_TASK_DISPATCH_MODE: poll
     ports:
       - "${waterline_bind_host}:${waterline_port}:8090"
     volumes:

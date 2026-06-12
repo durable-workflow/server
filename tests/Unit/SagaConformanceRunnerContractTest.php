@@ -534,6 +534,16 @@ class SagaConformanceRunnerContractTest extends TestCase
             'the generated Waterline host app must be pinned to the v2 operator bridge',
         );
         $this->assertStringContainsString(
+            'WATERLINE_HEALTH_TASK_DISPATCH_MODE: poll',
+            $source,
+            'the generated Waterline host app must evaluate readiness as a read-only observer instead of requiring a local async queue',
+        );
+        $this->assertStringContainsString(
+            'DW_V2_TASK_DISPATCH_MODE: poll',
+            $source,
+            'the generated Waterline host app must demote sync queue capability notes while the server and queue worker own task execution',
+        );
+        $this->assertStringContainsString(
             '- "$run_root/waterline-app:/app"',
             $source,
             'the compose topology must boot the generated host app, not only install the package',
