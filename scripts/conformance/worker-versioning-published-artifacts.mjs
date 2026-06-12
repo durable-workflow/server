@@ -35,6 +35,7 @@ const FORBIDDEN_INSTALL_SOURCE_TOKENS = [
   'workspace_repo',
 ];
 const SERVER_PROTOCOL_PROBE = 'server_http_protocol_probe';
+const PUBLISHED_CROSS_LANGUAGE_WORKER_EXECUTION = 'published_php_python_worker_protocol_clients';
 const noCompatibleVisibilitySeconds = Math.max(1, numberValue(
   process.env.DW_WV_NO_COMPATIBLE_VISIBILITY_SECONDS
     ?? process.env.DW_WV_WORKER_VERSIONING_NO_COMPATIBLE_VISIBILITY_SECONDS,
@@ -985,36 +986,23 @@ async function main() {
     published_artifact_worker_execution: false,
     local_product_source_checkouts_used: false,
   };
+  const publishedCrossLanguageEvidence = crossLanguagePublishedWorkerEvidenceResult(publishedWorkerEvidence);
   const publishedCrossLanguageOutputs = mergeScenarioOutputs(
     crossLanguageOutputs,
-    publishedWorkerScenarioOutputs(publishedWorkerEvidence, 'cross_language_php_python_pinning'),
+    publishedCrossLanguageEvidence.outputs,
   );
-  const publishedPhpToPythonIncompatibleCount = numberValue(
-    publishedCrossLanguageOutputs.php_v1_to_python_v2_incompatible_delivery_count,
-  );
-  const publishedPythonToPhpIncompatibleCount = numberValue(
-    publishedCrossLanguageOutputs.python_v1_to_php_v2_incompatible_delivery_count,
-  );
-  const publishedPhpCompatibleCount = numberValue(
-    publishedCrossLanguageOutputs.php_v1_compatible_delivery_count,
-  );
-  const publishedPythonCompatibleCount = numberValue(
-    publishedCrossLanguageOutputs.python_v1_compatible_delivery_count,
-  );
-  const publishedCrossLanguageWorkerExecuted = publishedWorkerScenarioPasses(
-    publishedCrossLanguageOutputs,
-    ['sdk-python', 'workflow-php'],
-    true,
-  );
+  const publishedPhpToPythonIncompatibleCount =
+    publishedCrossLanguageEvidence.php_v1_to_python_v2_incompatible_delivery_count;
+  const publishedPythonToPhpIncompatibleCount =
+    publishedCrossLanguageEvidence.python_v1_to_php_v2_incompatible_delivery_count;
+  const publishedPhpCompatibleCount = publishedCrossLanguageEvidence.php_v1_compatible_delivery_count;
+  const publishedPythonCompatibleCount = publishedCrossLanguageEvidence.python_v1_compatible_delivery_count;
+  const publishedCrossLanguageWorkerExecuted = publishedCrossLanguageEvidence.worker_executed;
   const publishedCrossLanguageFindings = publishedWorkerScenarioFindings(
     publishedWorkerEvidence,
     'cross_language_php_python_pinning',
   );
-  const crossLanguagePasses = publishedCrossLanguageWorkerExecuted
-    && publishedPhpToPythonIncompatibleCount === 0
-    && publishedPythonToPhpIncompatibleCount === 0
-    && publishedPhpCompatibleCount > 0
-    && publishedPythonCompatibleCount > 0;
+  const crossLanguagePasses = publishedCrossLanguageEvidence.passes;
   if (crossLanguagePasses) {
     addPass('cross_language_php_python_pinning', publishedCrossLanguageOutputs);
   } else if (publishedCrossLanguageWorkerExecuted) {
@@ -2033,6 +2021,349 @@ export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidenc
   };
 }
 
+export function crossLanguagePublishedWorkerEvidenceResult(publishedWorkerEvidence) {
+  const outputs = publishedWorkerScenarioOutputs(
+    publishedWorkerEvidence,
+    'cross_language_php_python_pinning',
+  );
+  const publicOutcome = firstObjectValue(
+    outputs.public_outcome,
+    outputs.publicOutcome,
+  );
+  const phpToPythonCell = crossLanguageDeliveryCell(
+    outputs,
+    'php_v1_not_delivered_to_python_v2',
+    'workflow-php-v1',
+    'sdk-python-v2',
+  );
+  const pythonToPhpCell = crossLanguageDeliveryCell(
+    outputs,
+    'python_v1_not_delivered_to_php_v2',
+    'sdk-python-v1',
+    'workflow-php-v2',
+  );
+  const phpToPythonIncompatibleCount = numberValue(firstDefined(
+    outputs.php_v1_to_python_v2_incompatible_delivery_count,
+    outputs.phpV1ToPythonV2IncompatibleDeliveryCount,
+    publicOutcome.php_v1_to_python_v2_incompatible_delivery_count,
+    publicOutcome.phpV1ToPythonV2IncompatibleDeliveryCount,
+    phpToPythonCell.incompatible_delivery_count,
+    phpToPythonCell.incompatibleDeliveryCount,
+    phpToPythonCell.incompatible_worker_task_count,
+    phpToPythonCell.incompatibleWorkerTaskCount,
+    phpToPythonCell.incompatible_task_count,
+    phpToPythonCell.incompatibleTaskCount,
+  ));
+  const pythonToPhpIncompatibleCount = numberValue(firstDefined(
+    outputs.python_v1_to_php_v2_incompatible_delivery_count,
+    outputs.pythonV1ToPhpV2IncompatibleDeliveryCount,
+    publicOutcome.python_v1_to_php_v2_incompatible_delivery_count,
+    publicOutcome.pythonV1ToPhpV2IncompatibleDeliveryCount,
+    pythonToPhpCell.incompatible_delivery_count,
+    pythonToPhpCell.incompatibleDeliveryCount,
+    pythonToPhpCell.incompatible_worker_task_count,
+    pythonToPhpCell.incompatibleWorkerTaskCount,
+    pythonToPhpCell.incompatible_task_count,
+    pythonToPhpCell.incompatibleTaskCount,
+  ));
+  const phpCompatibleCount = numberValue(firstDefined(
+    outputs.php_v1_compatible_delivery_count,
+    outputs.phpV1CompatibleDeliveryCount,
+    publicOutcome.php_v1_compatible_delivery_count,
+    publicOutcome.phpV1CompatibleDeliveryCount,
+    phpToPythonCell.compatible_delivery_count,
+    phpToPythonCell.compatibleDeliveryCount,
+    phpToPythonCell.compatible_worker_task_count,
+    phpToPythonCell.compatibleWorkerTaskCount,
+    phpToPythonCell.compatible_task_count,
+    phpToPythonCell.compatibleTaskCount,
+  ));
+  const pythonCompatibleCount = numberValue(firstDefined(
+    outputs.python_v1_compatible_delivery_count,
+    outputs.pythonV1CompatibleDeliveryCount,
+    publicOutcome.python_v1_compatible_delivery_count,
+    publicOutcome.pythonV1CompatibleDeliveryCount,
+    pythonToPhpCell.compatible_delivery_count,
+    pythonToPhpCell.compatibleDeliveryCount,
+    pythonToPhpCell.compatible_worker_task_count,
+    pythonToPhpCell.compatibleWorkerTaskCount,
+    pythonToPhpCell.compatible_task_count,
+    pythonToPhpCell.compatibleTaskCount,
+  ));
+  const workerExecuted = publishedWorkerScenarioPasses(
+    outputs,
+    ['sdk-python', 'workflow-php'],
+    true,
+  );
+  const passes = workerExecuted
+    && phpToPythonIncompatibleCount === 0
+    && pythonToPhpIncompatibleCount === 0
+    && phpCompatibleCount !== null
+    && phpCompatibleCount > 0
+    && pythonCompatibleCount !== null
+    && pythonCompatibleCount > 0;
+  const normalizedOutputs = { ...outputs };
+
+  if (phpToPythonIncompatibleCount !== null) {
+    normalizedOutputs.php_v1_to_python_v2_incompatible_delivery_count = phpToPythonIncompatibleCount;
+  }
+  if (pythonToPhpIncompatibleCount !== null) {
+    normalizedOutputs.python_v1_to_php_v2_incompatible_delivery_count = pythonToPhpIncompatibleCount;
+  }
+  if (phpCompatibleCount !== null) {
+    normalizedOutputs.php_v1_compatible_delivery_count = phpCompatibleCount;
+  }
+  if (pythonCompatibleCount !== null) {
+    normalizedOutputs.python_v1_compatible_delivery_count = pythonCompatibleCount;
+  }
+  Object.assign(
+    normalizedOutputs,
+    canonicalCrossLanguagePublishedOutputs(outputs, workerExecuted),
+  );
+  if (Object.keys(publicOutcome).length > 0
+    || phpToPythonIncompatibleCount !== null
+    || pythonToPhpIncompatibleCount !== null
+    || phpCompatibleCount !== null
+    || pythonCompatibleCount !== null) {
+    normalizedOutputs.public_outcome = {
+      ...publicOutcome,
+      passed: passes,
+      php_v1_to_python_v2_incompatible_delivery_count: phpToPythonIncompatibleCount,
+      python_v1_to_php_v2_incompatible_delivery_count: pythonToPhpIncompatibleCount,
+      php_v1_compatible_delivery_count: phpCompatibleCount,
+      python_v1_compatible_delivery_count: pythonCompatibleCount,
+    };
+  }
+
+  return {
+    outputs: normalizedOutputs,
+    worker_executed: workerExecuted,
+    php_v1_to_python_v2_incompatible_delivery_count: phpToPythonIncompatibleCount,
+    python_v1_to_php_v2_incompatible_delivery_count: pythonToPhpIncompatibleCount,
+    php_v1_compatible_delivery_count: phpCompatibleCount,
+    python_v1_compatible_delivery_count: pythonCompatibleCount,
+    passes,
+  };
+}
+
+function canonicalCrossLanguagePublishedOutputs(outputs, workerExecuted) {
+  const normalized = {};
+  const workerRuntimeIdentities = normalizedCrossLanguageWorkerRuntimeIdentities(firstDefined(
+    outputs.worker_runtime_identities,
+    outputs.workerRuntimeIdentities,
+  ));
+  const workflowRuns = normalizedCrossLanguageWorkflowRuns(firstObjectValue(
+    outputs.workflow_runs,
+    outputs.workflowRuns,
+  ));
+  const rolloutState = normalizedCrossLanguageRolloutState(firstObjectValue(
+    outputs.rollout_state,
+    outputs.rolloutState,
+  ));
+  const phpWorkerBuildIds = normalizedCrossLanguageBuildIds(firstObjectValue(
+    outputs.php_worker_build_ids,
+    outputs.phpWorkerBuildIds,
+  ));
+  const pythonWorkerBuildIds = normalizedCrossLanguageBuildIds(firstObjectValue(
+    outputs.python_worker_build_ids,
+    outputs.pythonWorkerBuildIds,
+  ));
+  const crossLanguageDelivery = canonicalCrossLanguageDeliveryOutput(outputs);
+
+  if (workerRuntimeIdentities.length > 0) {
+    normalized.worker_runtime_identities = workerRuntimeIdentities;
+  }
+  if (Object.keys(workflowRuns).length > 0) {
+    normalized.workflow_runs = workflowRuns;
+  }
+  if (Object.keys(rolloutState).length > 0) {
+    normalized.rollout_state = rolloutState;
+  }
+  if (Object.keys(phpWorkerBuildIds).length > 0) {
+    normalized.php_worker_build_ids = phpWorkerBuildIds;
+  }
+  if (Object.keys(pythonWorkerBuildIds).length > 0) {
+    normalized.python_worker_build_ids = pythonWorkerBuildIds;
+  }
+
+  const phpWorkerBuildId = stringValue(outputs.php_worker_build_id)
+    || stringValue(outputs.phpWorkerBuildId)
+    || stringValue(workflowRuns.php_v1_started?.pinned_build_id)
+    || stringValue(phpWorkerBuildIds.v1);
+  if (phpWorkerBuildId) {
+    normalized.php_worker_build_id = phpWorkerBuildId;
+  }
+
+  const pythonWorkerBuildId = stringValue(outputs.python_worker_build_id)
+    || stringValue(outputs.pythonWorkerBuildId)
+    || stringValue(workflowRuns.python_v1_started?.pinned_build_id)
+    || stringValue(pythonWorkerBuildIds.v1);
+  if (pythonWorkerBuildId) {
+    normalized.python_worker_build_id = pythonWorkerBuildId;
+  }
+
+  if (Object.keys(crossLanguageDelivery).length > 0) {
+    normalized.cross_language_delivery = crossLanguageDelivery;
+  }
+
+  if (workerExecuted) {
+    const reportedMode = stringValue(outputs.worker_execution_mode)
+      || stringValue(outputs.workerExecutionMode);
+    normalized.worker_execution_mode = reportedMode && reportedMode !== SERVER_PROTOCOL_PROBE
+      ? reportedMode
+      : PUBLISHED_CROSS_LANGUAGE_WORKER_EXECUTION;
+    normalized.server_protocol_probe_only = false;
+  }
+
+  return normalized;
+}
+
+function normalizedCrossLanguageWorkerRuntimeIdentities(value) {
+  return arrayValue(value)
+    .filter((identity) => identity && typeof identity === 'object' && !Array.isArray(identity))
+    .map((identity) => {
+      const normalized = { ...identity };
+      const workerId = stringValue(identity.worker_id) || stringValue(identity.workerId);
+      const buildId = stringValue(identity.build_id) || stringValue(identity.buildId);
+
+      if (workerId) {
+        normalized.worker_id = workerId;
+      }
+      if (buildId) {
+        normalized.build_id = buildId;
+      }
+
+      return normalized;
+    });
+}
+
+function normalizedCrossLanguageWorkflowRuns(runs) {
+  const normalized = { ...runs };
+  for (const [field, aliases] of Object.entries({
+    php_v1_started: ['php_v1_started', 'phpV1Started'],
+    python_v1_started: ['python_v1_started', 'pythonV1Started'],
+  })) {
+    const run = firstObjectValue(...aliases.map((alias) => runs[alias]));
+    if (Object.keys(run).length > 0) {
+      normalized[field] = normalizedCrossLanguageWorkflowRun(run);
+    }
+  }
+
+  return normalized;
+}
+
+function normalizedCrossLanguageWorkflowRun(run) {
+  const normalized = { ...run };
+  for (const [field, aliases] of Object.entries({
+    workflow_id: ['workflow_id', 'workflowId'],
+    run_id: ['run_id', 'runId'],
+    started_by_runtime: ['started_by_runtime', 'startedByRuntime'],
+    pinned_build_id: ['pinned_build_id', 'pinnedBuildId'],
+    compatible_worker_runtime: ['compatible_worker_runtime', 'compatibleWorkerRuntime'],
+    incompatible_worker_runtime: ['incompatible_worker_runtime', 'incompatibleWorkerRuntime'],
+  })) {
+    const value = firstDefined(...aliases.map((alias) => run[alias]));
+    if (value !== undefined && value !== null) {
+      normalized[field] = value;
+    }
+  }
+
+  return normalized;
+}
+
+function normalizedCrossLanguageRolloutState(state) {
+  const normalized = { ...state };
+  for (const [field, aliases] of Object.entries({
+    after_php_v1_promotion: ['after_php_v1_promotion', 'afterPhpV1Promotion'],
+    after_python_v1_promotion: ['after_python_v1_promotion', 'afterPythonV1Promotion'],
+  })) {
+    const value = firstDefined(...aliases.map((alias) => state[alias]));
+    if (value !== undefined && value !== null) {
+      normalized[field] = value;
+    }
+  }
+
+  const promotedBuildIds = firstObjectValue(
+    state.promoted_build_ids,
+    state.promotedBuildIds,
+  );
+  if (Object.keys(promotedBuildIds).length > 0) {
+    normalized.promoted_build_ids = { ...promotedBuildIds };
+    for (const [field, aliases] of Object.entries({
+      php_started_run: ['php_started_run', 'phpStartedRun'],
+      python_started_run: ['python_started_run', 'pythonStartedRun'],
+    })) {
+      const value = firstDefined(...aliases.map((alias) => promotedBuildIds[alias]));
+      if (value !== undefined && value !== null) {
+        normalized.promoted_build_ids[field] = value;
+      }
+    }
+  }
+
+  return normalized;
+}
+
+function normalizedCrossLanguageBuildIds(buildIds) {
+  const normalized = { ...buildIds };
+  for (const field of ['v1', 'v2']) {
+    const value = firstDefined(buildIds[field], buildIds[field.toUpperCase()]);
+    if (value !== undefined && value !== null) {
+      normalized[field] = value;
+    }
+  }
+
+  return normalized;
+}
+
+function canonicalCrossLanguageDeliveryOutput(outputs) {
+  const delivery = {
+    ...firstObjectValue(
+      outputs.cross_language_delivery,
+      outputs.crossLanguageDelivery,
+      outputs.cross_language_matrix,
+      outputs.crossLanguageMatrix,
+    ),
+  };
+  const taskQueue = stringValue(firstDefined(
+    delivery.task_queue,
+    delivery.taskQueue,
+    outputs.task_queue,
+    outputs.taskQueue,
+  ));
+  const cells = crossLanguageDeliveryCells(outputs).map(normalizedCrossLanguageDeliveryCell);
+
+  if (taskQueue) {
+    delivery.task_queue = taskQueue;
+  }
+  if (cells.length > 0) {
+    delivery.cells = cells;
+  }
+
+  return delivery;
+}
+
+function normalizedCrossLanguageDeliveryCell(cell) {
+  const normalized = { ...cell };
+  for (const [field, aliases] of Object.entries({
+    scenario: ['scenario', 'scenario_id', 'scenarioId', 'id'],
+    started_by: ['started_by', 'startedBy', 'starter', 'workflow_runtime', 'workflowRuntime'],
+    incompatible_worker: ['incompatible_worker', 'incompatibleWorker', 'incompatible_runtime', 'incompatibleRuntime', 'worker', 'runtime'],
+    compatible_worker: ['compatible_worker', 'compatibleWorker', 'compatible_runtime', 'compatibleRuntime'],
+    compatible_delivery_count: ['compatible_delivery_count', 'compatibleDeliveryCount', 'compatible_worker_task_count', 'compatibleWorkerTaskCount', 'compatible_task_count', 'compatibleTaskCount'],
+    incompatible_delivery_count: ['incompatible_delivery_count', 'incompatibleDeliveryCount', 'incompatible_worker_task_count', 'incompatibleWorkerTaskCount', 'incompatible_task_count', 'incompatibleTaskCount'],
+    workflow_id: ['workflow_id', 'workflowId'],
+    run_id: ['run_id', 'runId'],
+    started_run_id: ['started_run_id', 'startedRunId'],
+  })) {
+    const value = firstDefined(...aliases.map((alias) => cell[alias]));
+    if (value !== undefined && value !== null) {
+      normalized[field] = value;
+    }
+  }
+
+  return normalized;
+}
+
 function mergeScenarioOutputs(base, supplied) {
   if (!supplied || Object.keys(supplied).length === 0) {
     return base;
@@ -2368,6 +2699,86 @@ function topLevelPublishedWorkerScenarios(evidence) {
   }
 
   return scenarios;
+}
+
+function crossLanguageDeliveryCell(outputs, scenarioId, startedBy, incompatibleWorker) {
+  for (const cell of crossLanguageDeliveryCells(outputs)) {
+    const reportedScenario = stringValue(cell.scenario)
+      || stringValue(cell.scenario_id)
+      || stringValue(cell.scenarioId)
+      || stringValue(cell.id);
+    if (reportedScenario === scenarioId) {
+      return cell;
+    }
+
+    const reportedStartedBy = stringValue(cell.started_by)
+      || stringValue(cell.startedBy)
+      || stringValue(cell.starter)
+      || stringValue(cell.workflow_runtime)
+      || stringValue(cell.workflowRuntime);
+    const reportedIncompatibleWorker = stringValue(cell.incompatible_worker)
+      || stringValue(cell.incompatibleWorker)
+      || stringValue(cell.incompatible_runtime)
+      || stringValue(cell.incompatibleRuntime)
+      || stringValue(cell.worker)
+      || stringValue(cell.runtime);
+    if (sameRuntimeSurface(reportedStartedBy, startedBy)
+      && sameRuntimeSurface(reportedIncompatibleWorker, incompatibleWorker)) {
+      return cell;
+    }
+  }
+
+  return {};
+}
+
+function crossLanguageDeliveryCells(outputs) {
+  const cells = [];
+  for (const container of [
+    outputs,
+    outputs.cross_language_delivery,
+    outputs.crossLanguageDelivery,
+    outputs.cross_language_matrix,
+    outputs.crossLanguageMatrix,
+  ]) {
+    const object = objectValue(container);
+    if (Object.keys(object).length === 0) {
+      continue;
+    }
+
+    for (const field of [
+      'cross_language_cells',
+      'crossLanguageCells',
+      'cells',
+      'runtime_cells',
+      'runtimeCells',
+    ]) {
+      cells.push(...arrayValue(object[field]));
+    }
+  }
+
+  return cells.filter((cell) => cell && typeof cell === 'object' && !Array.isArray(cell));
+}
+
+function sameRuntimeSurface(actual, expected) {
+  const normalizedActual = runtimeSurfaceToken(actual);
+  const normalizedExpected = runtimeSurfaceToken(expected);
+
+  return normalizedActual !== '' && normalizedActual === normalizedExpected;
+}
+
+function runtimeSurfaceToken(value) {
+  const normalized = stringValue(value).toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  if (!normalized) {
+    return '';
+  }
+  if (normalized.includes('python')) {
+    return 'sdk-python';
+  }
+  if (normalized.includes('php') || normalized.includes('workflow')) {
+    return 'workflow-php';
+  }
+
+  return normalized;
 }
 
 function objectValue(value) {

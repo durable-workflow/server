@@ -41,9 +41,18 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         }
 
         $this->assertStringContainsString(
-            'const crossLanguagePasses = publishedWorkerScenarioPasses',
+            'const crossLanguagePasses = publishedCrossLanguageEvidence.passes;',
             $node,
-            'the PHP/Python cell must require published worker execution evidence before passing',
+            'the PHP/Python cell must pass only through parsed published cross-language evidence',
+        );
+        $this->assertStringContainsString(
+            'const workerExecuted = publishedWorkerScenarioPasses(
+    outputs,
+    [\'sdk-python\', \'workflow-php\'],
+    true,
+  );',
+            $node,
+            'the parsed PHP/Python evidence must require both published SDK Python and workflow PHP worker artifacts',
         );
         $this->assertStringContainsString(
             'server_protocol_probe_only',
@@ -505,6 +514,105 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertSame('', $result['operator_visible_signal']);
         $this->assertArrayNotHasKey('incompatible_worker_task_count', $result['outputs']);
         $this->assertArrayNotHasKey('operator_visible_signal', $result['outputs']);
+    }
+
+    public function test_cross_language_published_shard_accepts_nested_delivery_cells(): void
+    {
+        $result = $this->evaluateCrossLanguagePublishedWorkerEvidence([
+            'localProductSourceCheckoutsUsed' => false,
+            'suppliedShardLocalProductSourceCheckoutsUsed' => false,
+            'publishedArtifactWorkerExecution' => [
+                'localProductSourceCheckoutsUsed' => false,
+                'artifacts' => [
+                    [
+                        'id' => 'sdk-python',
+                        'artifactVersion' => '0.4.88',
+                        'artifactSource' => 'pypi_release',
+                        'result' => 'pass',
+                        'localProductSourceCheckoutsUsed' => false,
+                    ],
+                    [
+                        'id' => 'workflow-php',
+                        'artifactVersion' => '2.0.0-alpha.203',
+                        'artifactSource' => 'packagist_release',
+                        'result' => 'pass',
+                        'localProductSourceCheckoutsUsed' => false,
+                    ],
+                ],
+            ],
+            'crossLanguageMatrix' => [
+                'workerRuntimeIdentities' => [
+                    ['workerId' => 'php-v1', 'runtime' => 'php', 'buildId' => 'php-build-v1'],
+                    ['workerId' => 'python-v2', 'runtime' => 'python', 'buildId' => 'python-build-v2'],
+                    ['workerId' => 'python-v1', 'runtime' => 'python', 'buildId' => 'python-build-v1'],
+                    ['workerId' => 'php-v2', 'runtime' => 'php', 'buildId' => 'php-build-v2'],
+                ],
+                'workflowRuns' => [
+                    'phpV1Started' => [
+                        'workflowId' => 'php-run',
+                        'runId' => 'run-php',
+                        'pinnedBuildId' => 'php-build-v1',
+                    ],
+                    'pythonV1Started' => [
+                        'workflowId' => 'python-run',
+                        'runId' => 'run-python',
+                        'pinnedBuildId' => 'python-build-v1',
+                    ],
+                ],
+                'rolloutState' => [
+                    'promotedBuildIds' => [
+                        'phpStartedRun' => 'php-build-v1',
+                        'pythonStartedRun' => 'python-build-v1',
+                    ],
+                ],
+                'publicOutcome' => [
+                    'verificationSurface' => 'published worker poll outputs and task-queue build-id rollout API',
+                ],
+                'cells' => [
+                    [
+                        'scenario' => 'php_v1_not_delivered_to_python_v2',
+                        'startedBy' => 'workflow-php-v1',
+                        'incompatibleWorker' => 'sdk-python-v2',
+                        'compatibleDeliveryCount' => 2,
+                        'incompatibleDeliveryCount' => 0,
+                    ],
+                    [
+                        'scenario' => 'python_v1_not_delivered_to_php_v2',
+                        'startedBy' => 'sdk-python-v1',
+                        'incompatibleWorker' => 'workflow-php-v2',
+                        'compatibleDeliveryCount' => 1,
+                        'incompatibleDeliveryCount' => 0,
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->assertTrue($result['worker_executed']);
+        $this->assertTrue($result['passes']);
+        $this->assertSame(0, $result['php_v1_to_python_v2_incompatible_delivery_count']);
+        $this->assertSame(0, $result['python_v1_to_php_v2_incompatible_delivery_count']);
+        $this->assertSame(2, $result['php_v1_compatible_delivery_count']);
+        $this->assertSame(1, $result['python_v1_compatible_delivery_count']);
+        $this->assertSame(0, $result['outputs']['php_v1_to_python_v2_incompatible_delivery_count']);
+        $this->assertTrue($result['outputs']['public_outcome']['passed']);
+        $this->assertSame(
+            'published_php_python_worker_protocol_clients',
+            $result['outputs']['worker_execution_mode'],
+        );
+        $this->assertFalse($result['outputs']['server_protocol_probe_only']);
+        $this->assertSame('php-build-v1', $result['outputs']['php_worker_build_id']);
+        $this->assertSame('python-build-v1', $result['outputs']['python_worker_build_id']);
+        $this->assertSame('php-v1', $result['outputs']['worker_runtime_identities'][0]['worker_id']);
+        $this->assertSame('php-build-v1', $result['outputs']['workflow_runs']['php_v1_started']['pinned_build_id']);
+        $this->assertSame('php-build-v1', $result['outputs']['rollout_state']['promoted_build_ids']['php_started_run']);
+        $this->assertSame(
+            'php_v1_not_delivered_to_python_v2',
+            $result['outputs']['cross_language_delivery']['cells'][0]['scenario'],
+        );
+        $this->assertSame(
+            0,
+            $result['outputs']['cross_language_delivery']['cells'][0]['incompatible_delivery_count'],
+        );
     }
 
     public function test_no_compatible_published_shard_accepts_camel_case_outputs(): void
@@ -1145,6 +1253,59 @@ const evidence = JSON.parse(process.argv[3]);
 const { noCompatiblePublishedWorkerEvidenceResult } = await import(moduleUrl);
 
 console.log(JSON.stringify(noCompatiblePublishedWorkerEvidenceResult(evidence)));
+JS;
+
+        $process = proc_open(
+            [
+                $nodeBinary,
+                '--input-type=module',
+                '-e',
+                $script,
+                'import-runner-helper',
+                $repoRoot.'/scripts/conformance/worker-versioning-published-artifacts.mjs',
+                json_encode($evidence, JSON_THROW_ON_ERROR),
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            $repoRoot,
+            ['PATH' => getenv('PATH') ?: '/usr/bin:/bin'],
+        );
+
+        $this->assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stderr);
+
+        return json_decode((string) $stdout, true, 512, JSON_THROW_ON_ERROR);
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     * @return array<string, mixed>
+     */
+    private function evaluateCrossLanguagePublishedWorkerEvidence(array $evidence): array
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the worker-versioning runner shard gate.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $script = <<<'JS'
+import { pathToFileURL } from 'node:url';
+
+const moduleUrl = pathToFileURL(process.argv[2]).href;
+const evidence = JSON.parse(process.argv[3]);
+const { crossLanguagePublishedWorkerEvidenceResult } = await import(moduleUrl);
+
+console.log(JSON.stringify(crossLanguagePublishedWorkerEvidenceResult(evidence)));
 JS;
 
         $process = proc_open(
