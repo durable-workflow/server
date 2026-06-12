@@ -149,6 +149,66 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         );
     }
 
+    public function test_query_task_poll_waits_for_active_workflow_task_lease_before_claiming(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-replay-barrier');
+        $this->registerPythonWorker('python-query-replay-barrier-worker', 'python-queries', ['python.queryable']);
+
+        $workflowPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'python-query-replay-barrier-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $workflowPoll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.run_id', $run->id);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+        $duringReplay = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-replay-barrier-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $duringReplay->assertOk()
+            ->assertJsonPath('poll_status', 'empty')
+            ->assertJsonPath('task', null);
+
+        $this->assertSame('pending', $broker->task((string) $task['query_task_id'])['status'] ?? null);
+
+        $workflowTaskId = (string) $workflowPoll->json('task.task_id');
+        $workflowTaskAttempt = (int) $workflowPoll->json('task.workflow_task_attempt');
+        $workflowLeaseOwner = (string) $workflowPoll->json('task.lease_owner');
+
+        $this->postJson("/api/worker/workflow-tasks/{$workflowTaskId}/complete", [
+            'lease_owner' => $workflowLeaseOwner,
+            'workflow_task_attempt' => $workflowTaskAttempt,
+            'commands' => [
+                [
+                    'type' => 'open_condition_wait',
+                    'condition_key' => 'query-replay-barrier',
+                    'timeout_seconds' => 60,
+                ],
+            ],
+        ], $this->workerHeaders())
+            ->assertOk()
+            ->assertJsonPath('run_status', 'waiting');
+
+        $afterReplay = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-replay-barrier-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $afterReplay->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.query_task_id', $task['query_task_id'])
+            ->assertJsonPath('task.run_id', $run->id);
+    }
+
     public function test_worker_routed_query_task_exposes_server_derived_principal(): void
     {
         Queue::fake();

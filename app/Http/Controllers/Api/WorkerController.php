@@ -1190,6 +1190,7 @@ class WorkerController
         }
 
         app(ServiceModeTimerDispatcher::class)->dispatchCreatedTaskIds($outcome['created_task_ids'] ?? []);
+        $this->wakeQueryTaskPollersForWorkflowTask($namespace, $taskId);
 
         return WorkerProtocol::json([
             'task_id' => $taskId,
@@ -2175,6 +2176,19 @@ class WorkerController
             array_filter($outcome, static fn (mixed $value): bool => $value !== null),
             (int) ($outcome['status'] ?? 200),
         );
+    }
+
+    private function wakeQueryTaskPollersForWorkflowTask(mixed $namespace, string $taskId): void
+    {
+        if (! is_string($namespace) || trim($namespace) === '') {
+            return;
+        }
+
+        $taskQueue = WorkflowTask::query()
+            ->whereKey($taskId)
+            ->value('queue');
+
+        $this->queryTasks->wakeTaskQueue($namespace, is_string($taskQueue) ? $taskQueue : null);
     }
 
     /**

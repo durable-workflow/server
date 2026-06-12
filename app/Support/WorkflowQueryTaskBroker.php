@@ -15,8 +15,11 @@ use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
@@ -453,6 +456,17 @@ final class WorkflowQueryTaskBroker
         $this->signals->signalQueryTaskQueue($namespace, $taskQueue);
 
         return $task;
+    }
+
+    public function wakeTaskQueue(string $namespace, ?string $taskQueue): void
+    {
+        $taskQueue = $this->stringValue($taskQueue);
+
+        if ($taskQueue === null) {
+            return;
+        }
+
+        $this->signals->signalQueryTaskQueue($namespace, $taskQueue);
     }
 
     /**
@@ -1175,6 +1189,12 @@ final class WorkflowQueryTaskBroker
                 continue;
             }
 
+            if ($this->hasActiveWorkflowTaskLease($task)) {
+                $remaining[] = $queryTaskId;
+
+                continue;
+            }
+
             if (
                 $pollRequestId !== null
                 && ! $this->pollRequests->isCurrent($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId)
@@ -1211,6 +1231,29 @@ final class WorkflowQueryTaskBroker
         $this->storePendingTaskIds($namespace, $taskQueue, $remaining);
 
         return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $queryTask
+     */
+    private function hasActiveWorkflowTaskLease(array $queryTask): bool
+    {
+        $runId = $this->stringValue($queryTask['run_id'] ?? null);
+
+        if ($runId === null) {
+            return false;
+        }
+
+        return WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Leased->value)
+            ->where(static function ($query): void {
+                $query
+                    ->whereNull('lease_expires_at')
+                    ->orWhere('lease_expires_at', '>', now());
+            })
+            ->exists();
     }
 
     /**

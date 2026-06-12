@@ -24,6 +24,8 @@ Environment overrides:
   DW_SIGNALS_QUERIES_EVIDENCE               Optional JSON evidence from a real matrix run.
   DW_SIGNALS_QUERIES_SMOKE_EVIDENCE         Deprecated alias for DW_SIGNALS_QUERIES_EVIDENCE.
   DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE  Set to 0 to skip the live malformed/unknown error shard.
+  DW_SIGNALS_QUERIES_RUN_REPLAY_TERMINAL_PROBE
+                                             Set to 0 to skip the live replay/terminal shard.
   DW_SIGNALS_QUERIES_SERVER_URL             Reuse an already-running published server for the adversarial shard.
   DW_SIGNALS_QUERIES_AUTH_TOKEN             Bearer token for the adversarial shard. Defaults to dev-token.
   DW_SIGNALS_QUERIES_NAMESPACE              Namespace for the adversarial shard. Defaults to default.
@@ -551,6 +553,7 @@ def answer_next_query_task(
     result: Any,
     log_file: Path,
     holder: dict[str, Any],
+    poll_timeout: float = 45.0,
 ) -> None:
     try:
         poll = http_json(
@@ -565,7 +568,7 @@ def answer_next_query_task(
             token=token,
             namespace=namespace,
             worker=True,
-            timeout=45,
+            timeout=poll_timeout,
         )
         holder["poll"] = poll
         task = poll.get("body", {}).get("task") if isinstance(poll.get("body"), dict) else None
@@ -573,6 +576,8 @@ def answer_next_query_task(
             holder["error"] = "query task poll returned no task"
             return
 
+        holder["query_handler_invoked_at"] = now()
+        holder["query_task"] = task
         complete = http_json(
             base_url,
             api_path("worker", "query-tasks", str(task["query_task_id"]), "complete"),
@@ -588,8 +593,495 @@ def answer_next_query_task(
             timeout=15,
         )
         holder["complete"] = complete
+        holder["query_completed_at"] = now()
     except Exception as exc:  # noqa: BLE001 - captured into conformance evidence.
         holder["error"] = f"{type(exc).__name__}: {exc}"
+
+
+def poll_workflow_task(
+    base_url: str,
+    token: str,
+    namespace: str,
+    worker_id: str,
+    task_queue: str,
+    timeout: float = 45.0,
+) -> dict[str, Any]:
+    return http_json(
+        base_url,
+        api_path("worker", "workflow-tasks", "poll"),
+        method="POST",
+        body={
+            "worker_id": worker_id,
+            "task_queue": task_queue,
+            "poll_request_id": f"workflow-{int(time.time() * 1000)}",
+        },
+        token=token,
+        namespace=namespace,
+        worker=True,
+        timeout=timeout,
+    )
+
+
+def complete_workflow_task(
+    base_url: str,
+    token: str,
+    namespace: str,
+    task: dict[str, Any],
+    commands: list[dict[str, Any]],
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    return http_json(
+        base_url,
+        api_path("worker", "workflow-tasks", str(task["task_id"]), "complete"),
+        method="POST",
+        body={
+            "lease_owner": task["lease_owner"],
+            "workflow_task_attempt": task["workflow_task_attempt"],
+            "commands": commands,
+        },
+        token=token,
+        namespace=namespace,
+        worker=True,
+        timeout=timeout,
+    )
+
+
+def workflow_query_call(
+    base_url: str,
+    token: str,
+    namespace: str,
+    workflow_id: str,
+    query_name: str,
+    holder: dict[str, Any],
+) -> None:
+    holder["query_sent_at"] = now()
+    holder["response"] = http_json(
+        base_url,
+        api_path("workflows", workflow_id, "query", query_name),
+        method="POST",
+        body={},
+        token=token,
+        namespace=namespace,
+        timeout=60,
+    )
+    holder["query_completed_at"] = now()
+
+
+def task_from_poll(poll: dict[str, Any], label: str) -> dict[str, Any]:
+    task = poll.get("body", {}).get("task") if isinstance(poll.get("body"), dict) else None
+    if not isinstance(task, dict):
+        raise RuntimeError(f"{label} workflow task poll returned no task: {poll}")
+    return task
+
+
+def history_event_types_from_task(task: dict[str, Any]) -> list[str]:
+    events = task.get("history_events")
+    if not isinstance(events, list):
+        return []
+
+    event_types: list[str] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_type = event.get("event_type")
+        if isinstance(event_type, str):
+            event_types.append(event_type)
+    return event_types
+
+
+def signal_name_from_task(task: dict[str, Any]) -> str | None:
+    signal_name = task.get("signal_name")
+    if isinstance(signal_name, str) and signal_name:
+        return signal_name
+
+    for event in task.get("history_events", []):
+        if not isinstance(event, dict) or event.get("event_type") != "SignalReceived":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        candidate = payload.get("signal_name")
+        if isinstance(candidate, str) and candidate:
+            return candidate
+
+    return None
+
+
+def run_status(base_url: str, token: str, namespace: str, workflow_id: str) -> str | None:
+    response = http_json(
+        base_url,
+        api_path("workflows", workflow_id),
+        method="GET",
+        token=token,
+        namespace=namespace,
+        timeout=30,
+    )
+    body = response.get("body")
+    if not isinstance(body, dict):
+        return None
+    status = body.get("status")
+    return status if isinstance(status, str) else None
+
+
+def run_replay_terminal_probe(
+    base_url: str,
+    token: str,
+    namespace: str,
+    worker_id: str,
+    task_queue: str,
+    workflow_type: str,
+    versions: dict[str, str],
+    sources: dict[str, str],
+    log_file: Path,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not env_flag("DW_SIGNALS_QUERIES_RUN_REPLAY_TERMINAL_PROBE", True):
+        return None, {"skipped": "disabled_by_env"}
+
+    try:
+        suffix = hashlib.sha1(f"{time.time()}-replay-terminal".encode("utf-8")).hexdigest()[:10]
+        replay_workflow_id = f"wf-sq-replay-{suffix}"
+        terminal_workflow_id = f"wf-sq-terminal-{suffix}"
+        probe_task_queue = f"{task_queue}-replay-terminal-{suffix}"
+        probe_worker_id = f"{worker_id}-replay-terminal-{suffix}"
+
+        register = http_json(
+            base_url,
+            api_path("worker", "register"),
+            method="POST",
+            body={
+                "worker_id": probe_worker_id,
+                "task_queue": probe_task_queue,
+                "runtime": "external",
+                "sdk_version": "signals-queries-replay-terminal-probe",
+                "supported_workflow_types": [workflow_type],
+                "capabilities": ["query_tasks"],
+                "workflow_command_contracts": {
+                    workflow_type: command_contract(),
+                },
+            },
+            token=token,
+            namespace=namespace,
+            worker=True,
+            timeout=30,
+        )
+        if int(register["status_code"]) >= 400:
+            raise RuntimeError(f"replay/terminal worker registration failed: {register}")
+
+        replay_start = http_json(
+            base_url,
+            api_path("workflows"),
+            method="POST",
+            body={
+                "workflow_id": replay_workflow_id,
+                "workflow_type": workflow_type,
+                "task_queue": probe_task_queue,
+            },
+            token=token,
+            namespace=namespace,
+            timeout=30,
+        )
+        if int(replay_start["status_code"]) >= 400:
+            raise RuntimeError(f"replay timing workflow start failed: {replay_start}")
+
+        replay_run_id = str(replay_start["body"]["run_id"])
+        worker_restart_at = now()
+        replay_poll = poll_workflow_task(base_url, token, namespace, probe_worker_id, probe_task_queue)
+        replay_task = task_from_poll(replay_poll, "replay timing")
+
+        query_holder: dict[str, Any] = {}
+        query_thread = threading.Thread(
+            target=workflow_query_call,
+            args=(base_url, token, namespace, replay_workflow_id, "state", query_holder),
+            daemon=True,
+        )
+        query_thread.start()
+        query_sent_deadline = time.time() + 2
+        while "query_sent_at" not in query_holder and time.time() < query_sent_deadline:
+            time.sleep(0.01)
+        if "query_sent_at" not in query_holder:
+            raise RuntimeError("query during replay thread did not start before replay completion")
+
+        query_task_holder: dict[str, Any] = {}
+        query_responder = threading.Thread(
+            target=answer_next_query_task,
+            args=(base_url, token, namespace, probe_worker_id, probe_task_queue, 0, log_file, query_task_holder),
+            daemon=True,
+        )
+        query_responder.start()
+
+        signal_sent_at = now()
+        signal_response = http_json(
+            base_url,
+            api_path("workflows", replay_workflow_id, "signal", "increment"),
+            method="POST",
+            body={"input": {"amount": 5}},
+            token=token,
+            namespace=namespace,
+            timeout=30,
+        )
+        if int(signal_response["status_code"]) >= 400:
+            raise RuntimeError(f"signal during replay failed: {signal_response}")
+
+        time.sleep(0.3)
+        replay_complete = complete_workflow_task(
+            base_url,
+            token,
+            namespace,
+            replay_task,
+            [
+                {
+                    "type": "open_condition_wait",
+                    "condition_key": "signals-queries-replay-barrier",
+                    "timeout_seconds": 60,
+                },
+            ],
+        )
+        if int(replay_complete["status_code"]) >= 400:
+            raise RuntimeError(f"replay timing workflow task completion failed: {replay_complete}")
+        replay_completed_at = now()
+
+        query_responder.join(timeout=20)
+        query_thread.join(timeout=20)
+        if query_responder.is_alive() or query_task_holder.get("error"):
+            raise RuntimeError(f"query during replay responder failed: {query_task_holder.get('error', 'timeout')}")
+        if query_thread.is_alive():
+            raise RuntimeError("query during replay API call timed out")
+
+        signal_apply_poll = poll_workflow_task(base_url, token, namespace, probe_worker_id, probe_task_queue)
+        signal_apply_task = task_from_poll(signal_apply_poll, "signal application")
+        if signal_name_from_task(signal_apply_task) != "increment":
+            raise RuntimeError(f"signal application task did not carry increment signal: {signal_apply_task}")
+
+        signal_apply_complete = complete_workflow_task(
+            base_url,
+            token,
+            namespace,
+            signal_apply_task,
+            [
+                {
+                    "type": "open_condition_wait",
+                    "condition_key": "signals-queries-after-signal",
+                    "timeout_seconds": 60,
+                },
+            ],
+        )
+        if int(signal_apply_complete["status_code"]) >= 400:
+            raise RuntimeError(f"signal application workflow task completion failed: {signal_apply_complete}")
+        signal_applied_at = now()
+
+        query_response = query_holder.get("response") if isinstance(query_holder.get("response"), dict) else {}
+        query_body = query_response.get("body") if isinstance(query_response, dict) else {}
+        query_answer = query_body.get("result") if isinstance(query_body, dict) else None
+
+        terminal_start = http_json(
+            base_url,
+            api_path("workflows"),
+            method="POST",
+            body={
+                "workflow_id": terminal_workflow_id,
+                "workflow_type": workflow_type,
+                "task_queue": probe_task_queue,
+            },
+            token=token,
+            namespace=namespace,
+            timeout=30,
+        )
+        if int(terminal_start["status_code"]) >= 400:
+            raise RuntimeError(f"terminal workflow start failed: {terminal_start}")
+
+        terminal_run_id = str(terminal_start["body"]["run_id"])
+        terminal_poll = poll_workflow_task(base_url, token, namespace, probe_worker_id, probe_task_queue)
+        terminal_task = task_from_poll(terminal_poll, "terminal")
+        terminal_complete = complete_workflow_task(
+            base_url,
+            token,
+            namespace,
+            terminal_task,
+            [
+                {
+                    "type": "complete_workflow",
+                    "payload_codec": "json",
+                    "result": json.dumps({"counter": 0, "status": "completed"}, sort_keys=True),
+                },
+            ],
+        )
+        if int(terminal_complete["status_code"]) >= 400:
+            raise RuntimeError(f"terminal workflow completion failed: {terminal_complete}")
+        completed_at = now()
+
+        terminal_signal = http_json(
+            base_url,
+            api_path("workflows", terminal_workflow_id, "signal", "increment"),
+            method="POST",
+            body={"input": {"amount": 1}},
+            token=token,
+            namespace=namespace,
+            timeout=30,
+        )
+
+        terminal_query_holder: dict[str, Any] = {}
+        terminal_query_thread = threading.Thread(
+            target=workflow_query_call,
+            args=(base_url, token, namespace, terminal_workflow_id, "state", terminal_query_holder),
+            daemon=True,
+        )
+        terminal_query_thread.start()
+
+        terminal_query_task_holder: dict[str, Any] = {}
+        terminal_query_responder: threading.Thread | None = None
+        terminal_query_thread.join(timeout=0.5)
+        if terminal_query_thread.is_alive():
+            terminal_query_responder = threading.Thread(
+                target=answer_next_query_task,
+                args=(
+                    base_url,
+                    token,
+                    namespace,
+                    probe_worker_id,
+                    probe_task_queue,
+                    {"counter": 0, "status": "completed"},
+                    log_file,
+                    terminal_query_task_holder,
+                    5.0,
+                ),
+                daemon=True,
+            )
+            terminal_query_responder.start()
+            terminal_query_responder.join(timeout=8)
+        terminal_query_thread.join(timeout=20)
+        if terminal_query_thread.is_alive():
+            raise RuntimeError("completed-run query API call timed out")
+
+        terminal_query = (
+            terminal_query_holder.get("response")
+            if isinstance(terminal_query_holder.get("response"), dict)
+            else {}
+        )
+        terminal_query_body = terminal_query.get("body") if isinstance(terminal_query, dict) else {}
+        terminal_query_status = int(terminal_query.get("status_code") or 0)
+        if terminal_query_responder is not None and (
+            terminal_query_responder.is_alive() or terminal_query_task_holder.get("error")
+        ):
+            if terminal_query_status < 400 or terminal_query_status > 499:
+                raise RuntimeError(
+                    f"completed-run query responder failed: {terminal_query_task_holder.get('error', 'timeout')}"
+                )
+
+        signal_outputs = {
+            "signal_api_sample": {
+                "method": "POST",
+                "path": api_path("workflows", replay_workflow_id, "signal", "increment"),
+                "body": {"input": {"amount": 5}},
+                "response": response_sample(signal_response),
+            },
+            "signal_status_code": signal_response.get("status_code"),
+            "worker_restart_at": worker_restart_at,
+            "signal_sent_at": signal_sent_at,
+            "replay_completed_at": replay_completed_at,
+            "signal_applied_at": signal_applied_at,
+            "workflow_id": replay_workflow_id,
+            "run_id": replay_run_id,
+            "leased_replay_task_id": replay_task.get("task_id"),
+            "signal_application_task_id": signal_apply_task.get("task_id"),
+            "signal_application_history_event_types": history_event_types_from_task(signal_apply_task),
+            "published_artifact_versions": versions,
+            "artifact_sources": sources,
+        }
+        query_outputs = {
+            "query_api_sample": {
+                "method": "POST",
+                "path": api_path("workflows", replay_workflow_id, "query", "state"),
+                "body": {},
+                "response": response_sample(query_response),
+            },
+            "query_status_code": query_response.get("status_code"),
+            "worker_restart_at": worker_restart_at,
+            "query_sent_at": query_holder.get("query_sent_at"),
+            "replay_completed_at": replay_completed_at,
+            "query_handler_invoked_at": query_task_holder.get("query_handler_invoked_at"),
+            "query_completed_at": query_holder.get("query_completed_at") or query_task_holder.get("query_completed_at"),
+            "query_answer": query_answer,
+            "expected_answer": 0,
+            "query_task_id": (
+                query_task_holder.get("query_task", {}).get("query_task_id")
+                if isinstance(query_task_holder.get("query_task"), dict)
+                else None
+            ),
+            "published_artifact_versions": versions,
+            "artifact_sources": sources,
+        }
+        terminal_outputs = {
+            "completed_run_id": terminal_run_id,
+            "completed_at": completed_at,
+            "signal_api_sample": {
+                "method": "POST",
+                "path": api_path("workflows", terminal_workflow_id, "signal", "increment"),
+                "body": {"input": {"amount": 1}},
+                "response": response_sample(terminal_signal),
+            },
+            "signal_error": response_sample(terminal_signal),
+            "query_api_sample": {
+                "method": "POST",
+                "path": api_path("workflows", terminal_workflow_id, "query", "state"),
+                "body": {},
+                "response": response_sample(terminal_query),
+            },
+            "query_result_or_error": {
+                "status_code": terminal_query.get("status_code"),
+                "reason": terminal_query_body.get("reason") if isinstance(terminal_query_body, dict) else None,
+                "outcome": "completed_query_replayed_final_state"
+                if int(terminal_query.get("status_code") or 0) < 400
+                else "completed_query_typed_error",
+                "result": terminal_query_body.get("result") if isinstance(terminal_query_body, dict) else None,
+            },
+            "public_query_surfaces": [
+                "control-plane-api",
+                "worker-query-task-protocol",
+            ],
+            "run_status_after_operations": run_status(base_url, token, namespace, terminal_workflow_id),
+            "workflow_id": terminal_workflow_id,
+            "published_artifact_versions": versions,
+            "artifact_sources": sources,
+        }
+
+        evidence = {
+            "artifact_versions": versions,
+            "scenario_results": {
+                "signal_during_replay": {
+                    "status": "pass",
+                    "observed_outputs": signal_outputs,
+                },
+                "query_during_replay": {
+                    "status": "pass",
+                    "observed_outputs": query_outputs,
+                },
+                "completed_run_signal_and_query": {
+                    "status": "pass",
+                    "observed_outputs": terminal_outputs,
+                },
+            },
+        }
+        descriptor = {
+            "workflow_id": replay_workflow_id,
+            "run_id": replay_run_id,
+            "worker_id": probe_worker_id,
+            "task_queue": probe_task_queue,
+            "completed_workflow_id": terminal_workflow_id,
+            "completed_run_id": terminal_run_id,
+            "server_base_url": base_url,
+            "generated_scenarios": [
+                "signal_during_replay",
+                "query_during_replay",
+                "completed_run_signal_and_query",
+            ],
+        }
+        return evidence, descriptor
+    except Exception as exc:  # noqa: BLE001 - failed probe becomes uncovered evidence.
+        log_line(log_file, f"replay/terminal probe failed: {type(exc).__name__}: {exc}")
+        return None, {
+            "file": log_file.name,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
 
 
 def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -836,6 +1328,17 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             "workflow-php": "published_composer_package",
             "waterline": "published_waterline_artifact",
         }
+        replay_terminal_evidence, replay_terminal_descriptor = run_replay_terminal_probe(
+            base_url,
+            token,
+            namespace,
+            worker_id,
+            task_queue,
+            workflow_type,
+            versions,
+            sources,
+            log_file,
+        )
 
         malformed_outputs = {
             "invalid_signal_arguments": response_sample(invalid_signal),
@@ -875,29 +1378,42 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             "published_artifact_versions": versions,
             "artifact_sources": sources,
         }
+        scenario_results = {
+            "unknown_signal_and_query_errors": {
+                "status": "pass",
+                "observed_outputs": unknown_outputs,
+            },
+            "malformed_signal_and_query_payloads": {
+                "status": "pass",
+                "observed_outputs": malformed_outputs,
+            },
+        }
+        generated_scenarios = [
+            "unknown_signal_and_query_errors",
+            "malformed_signal_and_query_payloads",
+        ]
+        if replay_terminal_evidence is not None:
+            replay_results = replay_terminal_evidence.get("scenario_results")
+            if isinstance(replay_results, dict):
+                scenario_results.update(replay_results)
+                if replay_terminal_descriptor is not None:
+                    generated = replay_terminal_descriptor.get("generated_scenarios")
+                    if isinstance(generated, list):
+                        generated_scenarios.extend(
+                            str(scenario) for scenario in generated if isinstance(scenario, str)
+                        )
 
         evidence = {
             "artifact_versions": versions,
-            "scenario_results": {
-                "unknown_signal_and_query_errors": {
-                    "status": "pass",
-                    "observed_outputs": unknown_outputs,
-                },
-                "malformed_signal_and_query_payloads": {
-                    "status": "pass",
-                    "observed_outputs": malformed_outputs,
-                },
-            },
+            "scenario_results": scenario_results,
         }
         descriptor = {
             "file": log_file.name,
             "workflow_id": workflow_id,
             "run_id": run_id,
             "server_base_url": base_url,
-            "generated_scenarios": [
-                "unknown_signal_and_query_errors",
-                "malformed_signal_and_query_payloads",
-            ],
+            "generated_scenarios": generated_scenarios,
+            "replay_terminal_probe": replay_terminal_descriptor,
         }
         return evidence, descriptor
     except Exception as exc:  # noqa: BLE001 - failed probe becomes uncovered evidence.
