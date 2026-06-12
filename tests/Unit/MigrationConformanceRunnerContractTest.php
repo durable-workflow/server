@@ -65,6 +65,9 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'embedded-v1-server-runtime',
             'maybeRunPublicGuideAudit',
             'public_migration_guide_audit',
+            'migrationGuideCommandExecutability',
+            'unresolved_placeholder',
+            'interactive_password_prompt',
             'SCENARIO_FINDING_POLICIES',
             'findingForNonPassScenario',
             'scenario_statuses',
@@ -774,17 +777,30 @@ GUIDE;
         $this->assertTrue($result['migration_plan']['guide_audit_only']);
         $this->assertTrue($result['migration_plan']['guide_signals']['finish_on_v1_strategy']);
         $this->assertTrue($result['migration_plan']['guide_signals']['rollback_procedure']);
+        $this->assertSame('fail', $result['migration_plan']['guide_command_executability']['status']);
         $this->assertContains('php artisan migrate', $result['migration_plan']['commands_extracted']);
         $this->assertSame(
-            'not_covered',
+            'fail',
             $result['scenario_results']['documented_migration_steps_execute']['status'],
+        );
+        $this->assertSame(
+            'missing_or_wrong_migration_guide_step',
+            $result['scenario_results']['documented_migration_steps_execute']['linked_findings'][0]['finding_type'],
+        );
+        $this->assertSame(
+            'docs',
+            $result['scenario_results']['documented_migration_steps_execute']['linked_findings'][0]['owning_surface'],
+        );
+        $this->assertSame(
+            'blocked_before_execution_by_unexecutable_public_guide_commands',
+            $result['scenario_results']['documented_migration_steps_execute']['observed_outputs']['schema_or_storage_migration_output'],
         );
         $this->assertSame(
             'public_migration_guide_audit',
             $result['scenario_results']['documented_migration_steps_execute']['observed_outputs']['source'],
         );
         $this->assertStringContainsString(
-            'public migration guide was audited',
+            'cannot be executed verbatim',
             $result['scenario_results']['documented_migration_steps_execute']['linked_findings'][0]['observed_behavior'],
         );
         $this->assertSame(
@@ -1805,6 +1821,15 @@ COMMAND;
             'migration_guide_revision' => [
                 'url' => 'https://durable-workflow.github.io/docs/2.0/migration/',
                 'sha256' => 'migration-guide-sha',
+            ],
+            'guide_command_executability' => [
+                'status' => 'pass',
+                'checked_commands' => [
+                    'composer require durable-workflow/workflow:2.0.0-alpha.185',
+                    'php artisan migrate',
+                    'php artisan queue:restart',
+                ],
+                'unexecutable_commands' => [],
             ],
             'commands_executed' => [
                 'composer require durable-workflow/workflow:2.0.0-alpha.185',

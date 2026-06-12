@@ -783,8 +783,11 @@ function scenarioSpecificMissingRequiredFields(scenarioId, scenario, observedOut
         ]),
       ];
     case 'documented_migration_steps_execute':
-      return ['commands_executed', 'exit_codes', 'command_timings']
-        .filter((field) => !hasNonEmptyArrayField(observedOutputs, field) && !hasNonEmptyArrayField(scenario, field));
+      return [
+        ...['commands_executed', 'exit_codes', 'command_timings']
+          .filter((field) => !hasNonEmptyArrayField(observedOutputs, field) && !hasNonEmptyArrayField(scenario, field)),
+        ...missingGuideCommandExecutabilityFields(scenario, observedOutputs),
+      ];
     case 'rollback_contract_verified':
       return [
         ...['rollback_steps']
@@ -813,6 +816,32 @@ function scenarioSpecificMissingRequiredFields(scenarioId, scenario, observedOut
     default:
       return [];
   }
+}
+
+function missingGuideCommandExecutabilityFields(scenario, observedOutputs) {
+  let value = fieldValue(observedOutputs, 'guide_command_executability');
+  if (isEmptyEvidence(value)) {
+    value = fieldValue(scenario, 'guide_command_executability');
+  }
+
+  if (isEmptyEvidence(value)) {
+    return ['guide_command_executability'];
+  }
+
+  const evidence = objectValue(value);
+  const status = stringValue(evidence.status).toLowerCase();
+  const unexecutableCommands = arrayValue(evidence.unexecutable_commands ?? evidence.unexecutableCommands);
+  const missing = [];
+
+  if (status !== 'pass') {
+    missing.push('guide_command_executability.status_pass');
+  }
+
+  if (unexecutableCommands.length > 0) {
+    missing.push('guide_command_executability.unexecutable_commands_empty');
+  }
+
+  return missing;
 }
 
 function missingRollbackClassificationFields(scenario, observedOutputs) {
@@ -971,6 +1000,7 @@ function buildPublicGuideAuditEvidence(
   const normalized = normalizeGuideText(text);
   const signals = publicGuideSignals(normalized);
   const commands = extractMigrationGuideCommands(guide.text, text);
+  const guideCommandExecutability = migrationGuideCommandExecutability(commands);
   const guideDigest = sha256(text);
   const guideRevision = {
     url: guide.url,
@@ -992,6 +1022,7 @@ function buildPublicGuideAuditEvidence(
       guide_sha256: guideDigest,
       guide_signals: signals,
       commands_extracted: commands,
+      guide_command_executability: guideCommandExecutability,
       recorded_timings: {
         guide_fetch_ms: guide.fetch_duration_ms,
       },
@@ -1048,6 +1079,7 @@ function buildPublicGuideAuditEvidence(
               guideRevision,
               guideDigest,
               commands,
+              guideCommandExecutability,
               signals,
               resolvedArtifactVersions,
             ),
@@ -1069,11 +1101,14 @@ function publicGuideAuditTopLevelObservation(kind, fields = {}) {
 }
 
 function publicGuideAuditScenario(scenarioId, observedOutputs, artifactVersions) {
+  const scenarioStatus = normalizedStatus(observedOutputs.scenario_status)
+    || normalizedStatus(observedOutputs.scenarioStatus)
+    || 'not_covered';
   const reason = stringValue(observedOutputs.failure_reason)
     || `The public migration guide audit did not execute the ${scenarioId} migration cell against published artifacts.`;
-  return {
+  const scenario = {
     scenario_id: scenarioId,
-    status: 'not_covered',
+    status: scenarioStatus,
     observed_outputs: {
       ...observedOutputs,
       source: 'public_migration_guide_audit',
@@ -1081,6 +1116,19 @@ function publicGuideAuditScenario(scenarioId, observedOutputs, artifactVersions)
       required_fields: requiredFieldsFor(scenarioId),
       local_product_source_checkouts_used: false,
     },
+  };
+
+  if (scenarioStatus === 'fail' || scenarioStatus === 'unsupported') {
+    return {
+      ...scenario,
+      linked_findings: [
+        findingForNonPassScenario(scenarioId, scenarioStatus, scenario, artifactVersions),
+      ],
+    };
+  }
+
+  return {
+    ...scenario,
     linked_findings: [
       coverageGapFinding(scenarioId, artifactVersions, {
         guide_url: observedOutputs.guide_url ?? migrationGuideUrl,
@@ -1097,6 +1145,7 @@ function publicGuideAuditScenarioOutputs(
   guideRevision,
   guideDigest,
   commands,
+  guideCommandExecutability,
   signals,
   artifactVersions,
 ) {
@@ -1106,6 +1155,7 @@ function publicGuideAuditScenarioOutputs(
     guide_sha256: guideDigest,
     guide_signals: signals,
     commands_extracted: commands,
+    guide_command_executability: guideCommandExecutability,
     failure_reason: publicGuideAuditScenarioReason(scenarioId, signals),
   };
 
@@ -1120,6 +1170,18 @@ function publicGuideAuditScenarioOutputs(
         queryable_history: 'not_executed_by_public_guide_audit',
       };
     case 'documented_migration_steps_execute':
+      if (guideCommandExecutability.status === 'fail') {
+        return {
+          ...common,
+          scenario_status: 'fail',
+          failure_reason: guideCommandExecutability.observed_behavior,
+          commands_executed: [],
+          exit_codes: [],
+          command_timings: [],
+          schema_or_storage_migration_output: 'blocked_before_execution_by_unexecutable_public_guide_commands',
+        };
+      }
+
       return {
         ...common,
         commands_executed: [],
@@ -1279,6 +1341,69 @@ function publicGuideSignals(text) {
     new_v2_workflow_step: text.includes('start a test workflow') || text.includes('v2 workflows start'),
     worker_restart_step: text.includes('queue:restart') || text.includes('restart queue workers'),
   };
+}
+
+function migrationGuideCommandExecutability(commands) {
+  const checkedCommands = arrayOfStrings(commands);
+  const unexecutable = [];
+
+  for (const command of checkedCommands) {
+    const reasons = migrationGuideCommandExecutabilityReasons(command);
+    if (reasons.length === 0) {
+      continue;
+    }
+
+    unexecutable.push({
+      command,
+      reasons,
+    });
+  }
+
+  if (unexecutable.length === 0) {
+    return {
+      status: 'pass',
+      checked_commands: checkedCommands,
+      unexecutable_commands: [],
+      observed_behavior: 'The extracted public migration guide command stream contained no unresolved placeholders, interactive password prompts, or long-running monitor commands.',
+    };
+  }
+
+  const sample = unexecutable
+    .slice(0, 5)
+    .map((entry) => `${entry.command} (${entry.reasons.join(', ')})`)
+    .join('; ');
+
+  return {
+    status: 'fail',
+    checked_commands: checkedCommands,
+    unexecutable_commands: unexecutable,
+    observed_behavior: `The live public migration guide includes commands that cannot be executed verbatim by an unattended published-artifact migration run: ${sample}.`,
+    expected_behavior: 'Every command in the migration guide can be copied directly into the documented environment, or the guide clearly marks it as an example that must be adapted before execution.',
+    next_acceptance_criterion: 'Update the public migration guide so the executable migration runbook has concrete commands for the selected database, worker supervisor, rollback, and monitoring phases, then rerun migration conformance from realistic v1 state.',
+  };
+}
+
+function migrationGuideCommandExecutabilityReasons(command) {
+  const value = stringValue(command);
+  const reasons = [];
+
+  if (/\b(?:your_database|your-worker-group)\b/i.test(value) || /<[^>\n]+>/.test(value)) {
+    reasons.push('unresolved_placeholder');
+  }
+
+  if (/\bYYYYMMDD(?:-HHMMSS)?\b/.test(value) || /%%artifact\.|{{[^}]+}}/.test(value)) {
+    reasons.push('unresolved_template_token');
+  }
+
+  if (/^(?:mysqldump|mysql)\b/i.test(value) && /(?:^|\s)-p(?:\s|$)/.test(value)) {
+    reasons.push('interactive_password_prompt');
+  }
+
+  if (/^tail\s+-f\b/i.test(value)) {
+    reasons.push('long_running_monitor_command');
+  }
+
+  return reasons;
 }
 
 function extractMigrationGuideCommands(value, fallbackText = '') {

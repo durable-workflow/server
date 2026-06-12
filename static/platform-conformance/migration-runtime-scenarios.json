@@ -189,6 +189,7 @@
     "documented_migration_steps_execute": {
       "required_fields": [
         "migration_guide_revision",
+        "guide_command_executability",
         "commands_executed",
         "exit_codes",
         "command_timings",

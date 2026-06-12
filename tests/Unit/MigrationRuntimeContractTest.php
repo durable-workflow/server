@@ -97,6 +97,10 @@ class MigrationRuntimeContractTest extends TestCase
             $manifest['scenario_requirements']['documented_migration_steps_execute']['required_fields'],
         );
         $this->assertContains(
+            'guide_command_executability',
+            $manifest['scenario_requirements']['documented_migration_steps_execute']['required_fields'],
+        );
+        $this->assertContains(
             'public_operator_signal',
             $manifest['scenario_requirements']['rollback_contract_verified']['required_fields'],
         );
@@ -491,6 +495,15 @@ class MigrationRuntimeContractTest extends TestCase
         $result['scenario_results']['documented_migration_steps_execute']['observed_outputs']['commands_executed'] =
             'php artisan migrate';
         $result['scenario_results']['documented_migration_steps_execute']['observed_outputs']['command_timings'] = [];
+        $result['scenario_results']['documented_migration_steps_execute']['observed_outputs']['guide_command_executability'] = [
+            'status' => 'fail',
+            'unexecutable_commands' => [
+                [
+                    'command' => 'sudo supervisorctl restart <your-worker-group>:*',
+                    'reasons' => ['unresolved_placeholder'],
+                ],
+            ],
+        ];
 
         $evaluation = MigrationRuntimeResultGate::evaluate($result);
         $missingFields = $this->missingScenarioRequiredFields($evaluation, 'documented_migration_steps_execute');
@@ -498,6 +511,8 @@ class MigrationRuntimeContractTest extends TestCase
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertContains('commands_executed', $missingFields);
         $this->assertContains('command_timings', $missingFields);
+        $this->assertContains('guide_command_executability.status_pass', $missingFields);
+        $this->assertContains('guide_command_executability.unexecutable_commands_empty', $missingFields);
     }
 
     public function test_result_gate_requires_explicit_rollback_and_skew_observations_before_passing(): void
@@ -899,6 +914,15 @@ class MigrationRuntimeContractTest extends TestCase
             'migration_guide_revision' => [
                 'url' => 'https://durable-workflow.github.io/docs/2.0/migration/',
                 'sha256' => 'migration-guide-sha',
+            ],
+            'guide_command_executability' => [
+                'status' => 'pass',
+                'checked_commands' => [
+                    'composer require durable-workflow/workflow:2.0.0-alpha.185',
+                    'php artisan migrate',
+                    'php artisan queue:restart',
+                ],
+                'unexecutable_commands' => [],
             ],
             'commands_executed' => [
                 'composer require durable-workflow/workflow:2.0.0-alpha.185',

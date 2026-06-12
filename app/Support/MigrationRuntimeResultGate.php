@@ -342,15 +342,18 @@ final class MigrationRuntimeResultGate
                     'queryable_history',
                 ]),
             ],
-            'documented_migration_steps_execute' => self::missingArrayEvidenceFields(
-                $scenarioResult,
-                $observedOutputs,
-                [
-                    'commands_executed',
-                    'exit_codes',
-                    'command_timings',
-                ],
-            ),
+            'documented_migration_steps_execute' => [
+                ...self::missingArrayEvidenceFields(
+                    $scenarioResult,
+                    $observedOutputs,
+                    [
+                        'commands_executed',
+                        'exit_codes',
+                        'command_timings',
+                    ],
+                ),
+                ...self::missingGuideCommandExecutabilityFields($scenarioResult, $observedOutputs),
+            ],
             'rollback_contract_verified' => [
                 ...self::missingArrayEvidenceFields(
                     $scenarioResult,
@@ -411,6 +414,41 @@ final class MigrationRuntimeResultGate
         }
 
         return ['rollback_supported_state.supported_refused_or_irreversible'];
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     * @param array<string, mixed> $observedOutputs
+     *
+     * @return list<string>
+     */
+    private static function missingGuideCommandExecutabilityFields(
+        array $scenarioResult,
+        array $observedOutputs,
+    ): array {
+        $value = self::fieldValue($observedOutputs, 'guide_command_executability');
+        if (self::isEmptyEvidence($value)) {
+            $value = self::fieldValue($scenarioResult, 'guide_command_executability');
+        }
+
+        if (self::isEmptyEvidence($value)) {
+            return ['guide_command_executability'];
+        }
+
+        $evidence = is_array($value) ? $value : [];
+        $status = strtolower(self::stringValue($evidence['status'] ?? null));
+        $unexecutableCommands = $evidence['unexecutable_commands'] ?? $evidence['unexecutableCommands'] ?? [];
+        $missing = [];
+
+        if ($status !== 'pass') {
+            $missing[] = 'guide_command_executability.status_pass';
+        }
+
+        if (is_array($unexecutableCommands) && $unexecutableCommands !== []) {
+            $missing[] = 'guide_command_executability.unexecutable_commands_empty';
+        }
+
+        return $missing;
     }
 
     /**
