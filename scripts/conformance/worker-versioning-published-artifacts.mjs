@@ -1006,6 +1006,10 @@ async function main() {
     ['sdk-python', 'workflow-php'],
     true,
   );
+  const publishedCrossLanguageFindings = publishedWorkerScenarioFindings(
+    publishedWorkerEvidence,
+    'cross_language_php_python_pinning',
+  );
   const crossLanguagePasses = publishedCrossLanguageWorkerExecuted
     && publishedPhpToPythonIncompatibleCount === 0
     && publishedPythonToPhpIncompatibleCount === 0
@@ -1030,18 +1034,20 @@ async function main() {
     && pythonToPhpIncompatibleCount === 0
     && phpV1CompatibleCount > 0
     && pythonV1CompatibleCount > 0) {
-    addNotCovered('cross_language_php_python_pinning', crossLanguageOutputs, {
-      scenario_id: 'cross_language_php_python_pinning',
-      owning_surface: 'conformance_harness',
-      artifact_versions: artifactVersions,
-      observed_behavior: 'The cross-language counts came from synthetic server HTTP worker registrations; no published workflow-php or sdk-python worker process executed the PHP/Python pinning cells.',
-      expected_behavior: 'PHP v1-pinned runs are never delivered to Python v2, Python v1-pinned runs are never delivered to PHP v2, and both directions are exercised by actual published worker artifacts.',
-      next_acceptance_criterion: 'run the cross-language cells with installed workflow-php and sdk-python artifacts and record both incompatible delivery counts as zero with positive compatible delivery counts',
-      php_v1_to_python_v2_incompatible_delivery_count: phpToPythonIncompatibleCount,
-      python_v1_to_php_v2_incompatible_delivery_count: pythonToPhpIncompatibleCount,
-      php_v1_compatible_delivery_count: phpV1CompatibleCount,
-      python_v1_compatible_delivery_count: pythonV1CompatibleCount,
-    });
+    addNotCovered(
+      'cross_language_php_python_pinning',
+      publishedCrossLanguageOutputs,
+      focusedCrossLanguageNotCoveredFinding(
+        publishedCrossLanguageFindings,
+        artifactVersions,
+        {
+          php_v1_to_python_v2_incompatible_delivery_count: phpToPythonIncompatibleCount,
+          python_v1_to_php_v2_incompatible_delivery_count: pythonToPhpIncompatibleCount,
+          php_v1_compatible_delivery_count: phpV1CompatibleCount,
+          python_v1_compatible_delivery_count: pythonV1CompatibleCount,
+        },
+      ),
+    );
   } else {
     addFail('cross_language_php_python_pinning', crossLanguageOutputs, {
       scenario_id: 'cross_language_php_python_pinning',
@@ -1829,6 +1835,63 @@ function publishedWorkerScenarioOutputs(evidence, scenarioId) {
       ?? evidence.suppliedShardLocalProductSourceCheckoutsUsed,
     published_worker_evidence_status: normalizedArtifactStatus(scenario.status),
     published_worker_evidence_source: evidence.source_path ?? null,
+  };
+}
+
+function publishedWorkerScenarioFindings(evidence, scenarioId) {
+  const scenario = scenarioResultsById(evidence)[scenarioId]
+    ?? topLevelPublishedWorkerScenario(evidence, scenarioId);
+  const findings = [];
+
+  for (const item of [
+    ...arrayValue(scenario?.linked_findings),
+    ...arrayValue(scenario?.linkedFindings),
+    ...arrayValue(scenario?.finding_links),
+    ...arrayValue(scenario?.findingLinks),
+    ...arrayValue(evidence?.findings),
+  ]) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      continue;
+    }
+
+    const linkedScenario = stringValue(item.scenario_id)
+      || stringValue(item.scenario)
+      || stringValue(item.scenarioId);
+    if (linkedScenario === '' || linkedScenario === scenarioId) {
+      findings.push(item);
+    }
+  }
+
+  return findings;
+}
+
+function focusedCrossLanguageNotCoveredFinding(publishedFindings, artifactVersions, counts) {
+  const supplied = publishedFindings.find((finding) => (
+    stringValue(finding.scenario_id)
+      || stringValue(finding.scenario)
+      || stringValue(finding.scenarioId)
+  ) === 'cross_language_php_python_pinning') ?? publishedFindings[0] ?? {};
+
+  return {
+    scenario_id: 'cross_language_php_python_pinning',
+    owning_surface: stringValue(supplied.owning_surface)
+      || stringValue(supplied.owningSurface)
+      || 'conformance_harness',
+    artifact_versions: {
+      ...artifactVersions,
+      ...objectValue(supplied.artifact_versions),
+      ...objectValue(supplied.artifactVersions),
+    },
+    observed_behavior: stringValue(supplied.observed_behavior)
+      || stringValue(supplied.observedBehavior)
+      || 'The cross-language counts came from synthetic server HTTP worker registrations; no published workflow-php or sdk-python worker process executed the PHP/Python pinning cells.',
+    expected_behavior: stringValue(supplied.expected_behavior)
+      || stringValue(supplied.expectedBehavior)
+      || 'PHP v1-pinned runs are never delivered to Python v2, Python v1-pinned runs are never delivered to PHP v2, and both directions are exercised by actual published worker artifacts.',
+    next_acceptance_criterion: stringValue(supplied.next_acceptance_criterion)
+      || stringValue(supplied.nextAcceptanceCriterion)
+      || 'run the cross-language cells with installed workflow-php and sdk-python artifacts and record both incompatible delivery counts as zero with positive compatible delivery counts',
+    ...counts,
   };
 }
 

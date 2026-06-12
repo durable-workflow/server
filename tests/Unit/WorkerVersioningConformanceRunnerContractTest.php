@@ -86,6 +86,16 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'direct Node host invocations must generate the published worker shard before aggregating results',
         );
         $this->assertStringContainsString(
+            'publishedWorkerScenarioFindings(',
+            $node,
+            'the aggregate result must preserve focused findings from the published PHP/Python worker shard',
+        );
+        $this->assertStringContainsString(
+            'focusedCrossLanguageNotCoveredFinding(',
+            $node,
+            'cross-language not-covered results must route the shard-specific finding instead of a generic synthetic-probe gap',
+        );
+        $this->assertStringContainsString(
             "spawnSync(process.execPath, [workerShardPath]",
             $node,
             'direct Node host invocations must execute the checked-in published worker shard',
