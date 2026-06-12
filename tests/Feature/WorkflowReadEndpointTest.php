@@ -8,6 +8,7 @@ use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\Fixtures\AwaitApprovalWorkflow;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Models\WorkflowRun;
 
 class WorkflowReadEndpointTest extends TestCase
 {
@@ -294,6 +295,49 @@ class WorkflowReadEndpointTest extends TestCase
                 'output_envelope',
                 'started_at',
                 'closed_at',
+                'actions',
+                'control_plane',
+            ]);
+    }
+
+    public function test_show_run_keeps_run_metadata_available_when_payloads_cannot_decode(): void
+    {
+        $start = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-read-show-run-undecodable-payload',
+                'workflow_type' => 'tests.await-approval-workflow',
+                'input' => ['seed' => true],
+            ]);
+
+        $start->assertCreated();
+        $runId = (string) $start->json('run_id');
+
+        WorkflowRun::query()
+            ->whereKey($runId)
+            ->update([
+                'arguments' => 'not-a-decodable-input-payload',
+                'output' => 'not-a-decodable-output-payload',
+                'payload_codec' => 'python-json',
+                'compatibility' => 'php-worker-v1',
+            ]);
+
+        $showRun = $this->withHeaders($this->apiHeaders())
+            ->getJson("/api/workflows/wf-read-show-run-undecodable-payload/runs/{$runId}");
+
+        $showRun->assertOk()
+            ->assertJsonPath('workflow_id', 'wf-read-show-run-undecodable-payload')
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('compatibility', 'php-worker-v1')
+            ->assertJsonPath('input', [])
+            ->assertJsonPath('output', null)
+            ->assertJsonPath('input_envelope.codec', 'python-json')
+            ->assertJsonPath('input_envelope.blob', 'not-a-decodable-input-payload')
+            ->assertJsonPath('output_envelope.codec', 'python-json')
+            ->assertJsonPath('output_envelope.blob', 'not-a-decodable-output-payload')
+            ->assertJsonStructure([
+                'status',
+                'status_bucket',
+                'task_queue',
                 'actions',
                 'control_plane',
             ]);

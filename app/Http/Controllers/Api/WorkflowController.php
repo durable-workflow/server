@@ -21,6 +21,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 use LogicException;
+use Throwable;
+use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -1053,14 +1055,14 @@ class WorkflowController
             'run_timeout_seconds' => $runDescription['run_timeout_seconds'] ?? null,
             'execution_deadline_at' => $runDescription['execution_deadline_at'] ?? null,
             'run_deadline_at' => $runDescription['run_deadline_at'] ?? null,
-            'input' => $run->workflowArguments(),
-            'output' => $run->workflowOutput(),
-            'input_envelope' => $this->payloadEnvelopes->workerEnvelope(
+            'input' => $this->workflowArguments($run),
+            'output' => $this->workflowOutput($run),
+            'input_envelope' => $this->workerEnvelope(
                 $namespace,
                 $run->payload_codec,
                 is_string($run->arguments) ? $run->arguments : null,
             ),
-            'output_envelope' => $this->payloadEnvelopes->workerEnvelope(
+            'output_envelope' => $this->workerEnvelope(
                 $namespace,
                 $run->payload_codec,
                 is_string($run->output) ? $run->output : null,
@@ -1083,6 +1085,50 @@ class WorkflowController
         }
 
         return $payload;
+    }
+
+    /**
+     * @return array<int, mixed>
+     */
+    private function workflowArguments(WorkflowRun $run): array
+    {
+        try {
+            return $run->workflowArguments();
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    private function workflowOutput(WorkflowRun $run): mixed
+    {
+        if ($run->output === null) {
+            return null;
+        }
+
+        try {
+            return $run->workflowOutput();
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * @return array{codec: string, blob: string}|array{codec: string, external_storage: array<string, mixed>}|null
+     */
+    private function workerEnvelope(?string $namespace, ?string $codec, ?string $blob): ?array
+    {
+        if ($blob === null) {
+            return null;
+        }
+
+        try {
+            return $this->payloadEnvelopes->workerEnvelope($namespace, $codec, $blob);
+        } catch (Throwable) {
+            return [
+                'codec' => $this->nonEmptyString($codec) ?? CodecRegistry::defaultCodec(),
+                'blob' => $blob,
+            ];
+        }
     }
 
     /**
