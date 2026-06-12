@@ -1145,6 +1145,43 @@ final class WorkflowQueryTaskBroker
     /**
      * @param  list<string>  $supportedWorkflowTypes
      * @param  array<string, string>  $workflowDefinitionFingerprints
+     */
+    public function hasClaimablePendingTaskForPoller(
+        string $namespace,
+        string $taskQueue,
+        array $supportedWorkflowTypes,
+        ?string $buildId = null,
+        bool $acceptsQueryTasks = true,
+        array $workflowDefinitionFingerprints = [],
+    ): bool {
+        if (! $acceptsQueryTasks) {
+            return false;
+        }
+
+        foreach ($this->pendingTaskIds($namespace, $taskQueue) as $queryTaskId) {
+            $task = $this->task($queryTaskId);
+
+            if (! is_array($task) || ($task['status'] ?? null) !== 'pending') {
+                continue;
+            }
+
+            if ($this->canClaimPendingTaskForPoller(
+                $task,
+                $supportedWorkflowTypes,
+                $workflowDefinitionFingerprints,
+                $buildId,
+                $acceptsQueryTasks,
+            )) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  list<string>  $supportedWorkflowTypes
+     * @param  array<string, string>  $workflowDefinitionFingerprints
      * @return array<string, mixed>|null
      */
     private function claimNext(
@@ -1201,33 +1238,12 @@ final class WorkflowQueryTaskBroker
                 continue;
             }
 
-            if (! $this->matchesCompatibility(
-                $buildId,
-                $task['compatibility'] ?? null,
-                $task['compatibility_scope'] ?? null,
-            )) {
-                $remaining[] = $queryTaskId;
-
-                continue;
-            }
-
-            if (! $this->matchesWorkflowType($supportedWorkflowTypes, $task['workflow_type'] ?? null)) {
-                $remaining[] = $queryTaskId;
-
-                continue;
-            }
-
-            if (! $this->matchesWorkflowDefinitionFingerprint(
+            if (! $this->canClaimPendingTaskForPoller(
+                $task,
+                $supportedWorkflowTypes,
                 $workflowDefinitionFingerprints,
-                $task['workflow_type'] ?? null,
-                $task['workflow_definition_fingerprint'] ?? null,
+                $buildId,
             )) {
-                $remaining[] = $queryTaskId;
-
-                continue;
-            }
-
-            if ($this->hasActiveWorkflowTaskLease($task)) {
                 $remaining[] = $queryTaskId;
 
                 continue;
@@ -1269,6 +1285,33 @@ final class WorkflowQueryTaskBroker
         $this->storePendingTaskIds($namespace, $taskQueue, $remaining);
 
         return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $task
+     * @param  list<string>  $supportedWorkflowTypes
+     * @param  array<string, string>  $workflowDefinitionFingerprints
+     */
+    private function canClaimPendingTaskForPoller(
+        array $task,
+        array $supportedWorkflowTypes,
+        array $workflowDefinitionFingerprints,
+        ?string $buildId,
+        bool $acceptsQueryTasks = true,
+    ): bool {
+        return $acceptsQueryTasks
+            && $this->matchesCompatibility(
+                $buildId,
+                $task['compatibility'] ?? null,
+                $task['compatibility_scope'] ?? null,
+            )
+            && $this->matchesWorkflowType($supportedWorkflowTypes, $task['workflow_type'] ?? null)
+            && $this->matchesWorkflowDefinitionFingerprint(
+                $workflowDefinitionFingerprints,
+                $task['workflow_type'] ?? null,
+                $task['workflow_definition_fingerprint'] ?? null,
+            )
+            && ! $this->hasActiveWorkflowTaskLease($task);
     }
 
     /**
@@ -1665,7 +1708,7 @@ final class WorkflowQueryTaskBroker
         return 'legacy';
     }
 
-    private function workerAcceptsQueryTasks(string $namespace, WorkerRegistration $worker): bool
+    public function workerAcceptsQueryTasks(string $namespace, WorkerRegistration $worker): bool
     {
         if (in_array(self::QUERY_TASKS_CAPABILITY, $this->stringArray($worker->capabilities), true)) {
             return true;

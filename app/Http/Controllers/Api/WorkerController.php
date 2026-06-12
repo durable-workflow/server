@@ -941,6 +941,13 @@ class WorkerController
                 historyPageSize: $pageSize,
                 acceptHistoryEncoding: $acceptHistoryEncoding,
                 supportedWorkflowTypes: $supportedWorkflowTypes,
+                workflowDefinitionFingerprints: $this->workflowDefinitionFingerprints(
+                    $worker->workflow_definition_fingerprints ?? [],
+                ),
+                acceptsQueryTasks: $this->queryTasks->workerAcceptsQueryTasks(
+                    $namespace,
+                    $worker,
+                ),
             );
         } catch (\Throwable $exception) {
             if (BackendLockPressure::is($exception)) {

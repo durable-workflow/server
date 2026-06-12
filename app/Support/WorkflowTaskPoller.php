@@ -43,6 +43,7 @@ final class WorkflowTaskPoller
 
     /**
      * @param  list<string>  $supportedWorkflowTypes
+     * @param  array<string, string>  $workflowDefinitionFingerprints
      * @return array{task: array<string, mixed>|null, poll_status: string}
      */
     public function poll(
@@ -55,6 +56,8 @@ final class WorkflowTaskPoller
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
+        array $workflowDefinitionFingerprints = [],
+        bool $acceptsQueryTasks = false,
     ): array {
         $pollRequestId = $this->nonEmptyString($pollRequestId);
 
@@ -69,6 +72,8 @@ final class WorkflowTaskPoller
                 historyPageSize: $historyPageSize,
                 acceptHistoryEncoding: $acceptHistoryEncoding,
                 supportedWorkflowTypes: $supportedWorkflowTypes,
+                workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
+                acceptsQueryTasks: $acceptsQueryTasks,
             );
         }
 
@@ -82,11 +87,14 @@ final class WorkflowTaskPoller
             historyPageSize: $historyPageSize,
             acceptHistoryEncoding: $acceptHistoryEncoding,
             supportedWorkflowTypes: $supportedWorkflowTypes,
+            workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
+            acceptsQueryTasks: $acceptsQueryTasks,
         );
     }
 
     /**
      * @param  list<string>  $supportedWorkflowTypes
+     * @param  array<string, string>  $workflowDefinitionFingerprints
      * @return array{task: array<string, mixed>|null, poll_status: string}
      */
     private function coordinatedPoll(
@@ -99,6 +107,8 @@ final class WorkflowTaskPoller
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
+        array $workflowDefinitionFingerprints = [],
+        bool $acceptsQueryTasks = false,
     ): array {
         for ($attempt = 0; $attempt < 3; $attempt++) {
             $cached = $this->cachedPollResult(
@@ -133,6 +143,8 @@ final class WorkflowTaskPoller
                     historyPageSize: $historyPageSize,
                     acceptHistoryEncoding: $acceptHistoryEncoding,
                     supportedWorkflowTypes: $supportedWorkflowTypes,
+                    workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
+                    acceptsQueryTasks: $acceptsQueryTasks,
                 );
             }
 
@@ -236,6 +248,7 @@ final class WorkflowTaskPoller
 
     /**
      * @param  list<string>  $supportedWorkflowTypes
+     * @param  array<string, string>  $workflowDefinitionFingerprints
      * @return array{task: array<string, mixed>|null, poll_status: string}
      */
     private function runCoordinatedPollLeader(
@@ -248,6 +261,8 @@ final class WorkflowTaskPoller
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
+        array $workflowDefinitionFingerprints = [],
+        bool $acceptsQueryTasks = false,
     ): array {
         try {
             $task = $this->performPoll(
@@ -260,6 +275,8 @@ final class WorkflowTaskPoller
                 historyPageSize: $historyPageSize,
                 acceptHistoryEncoding: $acceptHistoryEncoding,
                 supportedWorkflowTypes: $supportedWorkflowTypes,
+                workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
+                acceptsQueryTasks: $acceptsQueryTasks,
             );
         } catch (Throwable $exception) {
             $this->pollRequests->forgetPending(
@@ -288,6 +305,7 @@ final class WorkflowTaskPoller
 
     /**
      * @param  list<string>  $supportedWorkflowTypes
+     * @param  array<string, string>  $workflowDefinitionFingerprints
      * @return array{task: array<string, mixed>|null, poll_status: string}
      */
     private function performPoll(
@@ -300,6 +318,8 @@ final class WorkflowTaskPoller
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
+        array $workflowDefinitionFingerprints = [],
+        bool $acceptsQueryTasks = false,
     ): array {
         $limit = max(10, max(1, (int) config('server.polling.max_tasks_per_poll', 1)) * 10);
         $nextProbeAt = null;
@@ -319,6 +339,8 @@ final class WorkflowTaskPoller
                 $historyPageSize,
                 $acceptHistoryEncoding,
                 $supportedWorkflowTypes,
+                $workflowDefinitionFingerprints,
+                $acceptsQueryTasks,
                 $limit,
                 &$nextProbeAt,
                 &$resolvedResult,
@@ -333,6 +355,8 @@ final class WorkflowTaskPoller
                     $historyPageSize,
                     $acceptHistoryEncoding,
                     $supportedWorkflowTypes,
+                    $workflowDefinitionFingerprints,
+                    $acceptsQueryTasks,
                 );
                 $nextProbeAt = $resolvedResult['next_probe_at'] ?? null;
 
@@ -376,6 +400,7 @@ final class WorkflowTaskPoller
 
     /**
      * @param  list<string>  $supportedWorkflowTypes
+     * @param  array<string, string>  $workflowDefinitionFingerprints
      * @return array{task: array<string, mixed>|null, poll_status: string, next_probe_at: \DateTimeInterface|null}
      */
     private function nextTask(
@@ -388,6 +413,8 @@ final class WorkflowTaskPoller
         ?int $historyPageSize = null,
         ?string $acceptHistoryEncoding = null,
         array $supportedWorkflowTypes = [],
+        array $workflowDefinitionFingerprints = [],
+        bool $acceptsQueryTasks = false,
     ): array {
         return $this->withWorkerCompatibility(
             $namespace,
@@ -402,8 +429,25 @@ final class WorkflowTaskPoller
                 $historyPageSize,
                 $acceptHistoryEncoding,
                 $supportedWorkflowTypes,
+                $workflowDefinitionFingerprints,
+                $acceptsQueryTasks,
             ): array {
                 $this->runDueServiceModeTimers($namespace, $taskQueue, $buildId);
+
+                if ($this->queryTasks->hasClaimablePendingTaskForPoller(
+                    $namespace,
+                    $taskQueue,
+                    $supportedWorkflowTypes,
+                    $buildId,
+                    $acceptsQueryTasks,
+                    $workflowDefinitionFingerprints,
+                )) {
+                    return [
+                        'task' => null,
+                        'poll_status' => 'query_task_pending',
+                        'next_probe_at' => null,
+                    ];
+                }
 
                 $task = $this->admission->withLeaseAdmission(
                     $namespace,

@@ -32,6 +32,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -2004,6 +2005,124 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $poll->assertOk()
             ->assertJsonPath('task', null)
             ->assertJsonPath('poll_status', 'query_task_pending');
+    }
+
+    public function test_claimable_query_task_preempts_ready_workflow_task_poll(): void
+    {
+        Queue::fake();
+        config(['server.polling.timeout' => 10]);
+
+        $run = $this->startRemoteWorkflow('wf-query-task-preempts-workflow');
+        $this->registerPythonWorker('python-query-preempt-worker', 'python-queries', ['python.queryable']);
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+        $this->assertTrue(
+            WorkflowTask::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('task_type', 'workflow')
+                ->where('status', 'ready')
+                ->exists(),
+        );
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'python-query-preempt-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $poll->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'query_task_pending');
+
+        $this->assertSame(
+            TaskStatus::Ready,
+            WorkflowTask::query()
+                ->where('workflow_run_id', $run->id)
+                ->where('task_type', 'workflow')
+                ->value('status'),
+        );
+    }
+
+    public function test_query_task_preemption_requires_polling_worker_query_capability(): void
+    {
+        Queue::fake();
+        config(['server.polling.timeout' => 10]);
+
+        $run = $this->startRemoteWorkflow('wf-query-task-preempt-capability');
+        $this->registerPythonWorker(
+            'python-query-capable-worker',
+            'python-queries',
+            ['python.queryable'],
+        );
+        $this->registerPythonWorker(
+            'python-workflow-only-worker',
+            'python-queries',
+            ['python.queryable'],
+            capabilities: [],
+        );
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $queryTask = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'python-workflow-only-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $poll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.run_id', $run->id)
+            ->assertJsonPath('task.lease_owner', 'python-workflow-only-worker');
+
+        $this->assertSame(
+            'pending',
+            $broker->task((string) $queryTask['query_task_id'])['status'] ?? null,
+        );
+    }
+
+    public function test_query_task_preemption_requires_matching_workflow_definition_fingerprint(): void
+    {
+        Queue::fake();
+        config(['server.polling.timeout' => 10]);
+
+        $run = $this->startRemoteWorkflow(
+            'wf-query-task-preempt-fingerprint',
+            workflowDefinitionFingerprint: 'sha256:python-counter',
+        );
+        $this->registerPythonWorker(
+            'python-query-matching-fingerprint-worker',
+            'python-queries',
+            ['python.queryable'],
+            workflowDefinitionFingerprints: ['python.queryable' => 'sha256:python-counter'],
+        );
+        $this->registerPythonWorker(
+            'python-query-mismatched-fingerprint-worker',
+            'python-queries',
+            ['python.queryable'],
+            workflowDefinitionFingerprints: ['python.queryable' => 'sha256:other-counter'],
+        );
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $queryTask = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'python-query-mismatched-fingerprint-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $poll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.run_id', $run->id)
+            ->assertJsonPath('task.lease_owner', 'python-query-mismatched-fingerprint-worker');
+
+        $this->assertSame(
+            'pending',
+            $broker->task((string) $queryTask['query_task_id'])['status'] ?? null,
+        );
     }
 
     public function test_pending_query_task_interrupts_idle_activity_task_poll(): void
