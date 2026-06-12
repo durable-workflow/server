@@ -908,10 +908,12 @@ versions = {
 finding = {
     "scenario_id": "waterline_operator_namespace_visibility",
     "owning_surface": "conformance_harness",
+    "finding_type": "unsupported_public_surface",
     "observed_behavior": f"Waterline namespace shard could not run in the published-artifact harness: {reason}",
     "expected_behavior": "waterline:namespace-conformance runs against the published Waterline artifact and emits scoped operator evidence",
     "next_acceptance_criterion": "restore the Waterline shard execution path and rerun namespaces conformance",
     "priority": "P1",
+    "scenario_status": "unsupported",
 }
 scenario_results = [
     {
@@ -925,7 +927,7 @@ scenario_results = [
     },
     {
         "scenario_id": "waterline_operator_namespace_visibility",
-        "status": "fail",
+        "status": "unsupported",
         "observed_outputs": {
             "shard_command": "waterline:namespace-conformance",
             "setup_failure": reason,
@@ -948,7 +950,7 @@ report = {
     "schema_version": 1,
     "suite_version": suite_version,
     "coverage_scope": "waterline-operator-namespace-shard",
-    "outcome": "fail",
+    "outcome": "non_passing",
     "started_at": started_at,
     "finished_at": finished,
     "generated_at": finished,
@@ -1172,8 +1174,18 @@ def run(command: list[str], *, env: dict[str, str] | None = None, timeout: int =
     return {"command": command, "exit_code": completed.returncode, "output": completed.stdout[-4000:]}
 
 
-def finding(scenario_id: str, owner: str, observed: str, expected: str, acceptance: str, priority: str = "P0") -> dict[str, Any]:
-    return {
+def finding(
+    scenario_id: str,
+    owner: str,
+    observed: str,
+    expected: str,
+    acceptance: str,
+    priority: str = "P0",
+    *,
+    finding_type: str | None = None,
+    scenario_status: str | None = None,
+) -> dict[str, Any]:
+    item = {
         "scenario_id": scenario_id,
         "owning_surface": owner,
         "observed_behavior": observed,
@@ -1181,6 +1193,11 @@ def finding(scenario_id: str, owner: str, observed: str, expected: str, acceptan
         "next_acceptance_criterion": acceptance,
         "priority": priority,
     }
+    if finding_type:
+        item["finding_type"] = finding_type
+    if scenario_status:
+        item["scenario_status"] = scenario_status
+    return item
 
 
 def scenario(scenario_id: str, status: str, observed_outputs: dict[str, Any], linked_findings: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -1452,10 +1469,13 @@ def load_required_shard(path: str | None, scenario_id: str, command: str, scope:
     if not path:
         return None, None, finding(
             scenario_id,
-            "conformance_harness",
-            f"required {scope} report was not supplied to this runner invocation",
+            "workflow",
+            f"required {scope} report was not supplied to this runner invocation; the server/CLI/Python probes still ran, but the Workflow PHP namespace mirror cell remains focused unsupported evidence",
             f"{command} runs against the published artifact tuple and emits {scenario_id}",
             f"run {command} from the published workflow PHP artifact and pass DW_NAMESPACES_WORKFLOW_PHP_RESULT",
+            "P1",
+            finding_type="unsupported_public_surface",
+            scenario_status="unsupported",
         )
     shard_path = Path(path)
     if not shard_path.exists():
@@ -1570,7 +1590,10 @@ def workflow_php_findings(scenario_id: str, item: dict[str, Any] | None, error: 
 def combined_status(local_failures: list[str], item: dict[str, Any] | None, error: dict[str, Any] | None) -> str:
     if local_failures:
         return "fail"
-    if error is not None or item is None:
+    if error is not None:
+        status = str(error.get("scenario_status") or "")
+        return status if status in ALLOWED_SCENARIO_STATUSES else "not_covered"
+    if item is None:
         return "not_covered"
     status = str(item.get("status") or "")
     return status if status in ALLOWED_SCENARIO_STATUSES else "fail"
@@ -2275,6 +2298,8 @@ def main() -> int:
             "waterline:namespace-conformance runs against the published Waterline artifact and emits scoped operator evidence",
             "wire the host topology to run the published Waterline namespace shard and pass DW_NAMESPACES_WATERLINE_RESULT",
             "P1",
+            finding_type="unsupported_public_surface",
+            scenario_status="unsupported",
         )
         add(scenario(
             "waterline_operator_namespace_visibility",

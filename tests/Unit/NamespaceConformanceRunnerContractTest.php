@@ -210,6 +210,23 @@ class NamespaceConformanceRunnerContractTest extends TestCase
         $this->assertStringNotContainsString('"php_client_namespace": "workflow:v2:namespace-conformance"', $source);
     }
 
+    public function test_runner_routes_missing_namespace_shards_as_focused_unsupported_surface_findings(): void
+    {
+        $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
+
+        $this->assertStringContainsString('finding_type: str | None = None', $source);
+        $this->assertStringContainsString('scenario_status: str | None = None', $source);
+        $this->assertStringContainsString('"finding_type": "unsupported_public_surface"', $source);
+        $this->assertStringContainsString('"scenario_status": "unsupported"', $source);
+        $this->assertStringContainsString(
+            'the Workflow PHP namespace mirror cell remains focused unsupported evidence',
+            $source,
+        );
+        $this->assertStringContainsString('return status if status in ALLOWED_SCENARIO_STATUSES else "not_covered"', $source);
+        $this->assertStringContainsString('finding_type="unsupported_public_surface"', $source);
+        $this->assertStringContainsString('scenario_status="unsupported"', $source);
+    }
+
     public function test_runner_exercises_cross_namespace_schedule_mutation_not_only_describe(): void
     {
         $source = $this->read('scripts/conformance/namespaces-published-artifacts.sh');
