@@ -778,8 +778,15 @@ async function runPythonReplayShard(python) {
     countTaskForRun(v2BeforeReplay, runId) + countTaskForRun(v2AfterRestart, runId);
   const cacheEvictionIncompatibleCount = countTaskForRun(v2AfterRestart, runId);
   const replayWorkerBuildId = stringValue(v1ReplayPoll?.task?.compatibility);
+  const v1FirstTaskId = stringValue(v1FirstPoll?.task?.task_id);
+  const v1ReplayTaskId = stringValue(v1ReplayPoll?.task?.task_id);
+  const replayRetryOfTaskId = workflowTaskRetryOf(v1ReplayPoll);
   const cacheEvictionObserved = countTaskForRun(v1ReplayPoll, runId) > 0
-    && numberValue(v1ReplayPoll?.task?.workflow_task_attempt) >= 2;
+    && (
+      numberValue(v1ReplayPoll?.task?.workflow_task_attempt) >= 2
+      || replayRetryOfTaskId !== ''
+      || (v1FirstTaskId !== '' && v1ReplayTaskId !== '' && v1ReplayTaskId !== v1FirstTaskId)
+    );
   const divergentWorkflowExecutionObserved = v1Fingerprint !== v2Fingerprint
     && v1TaskCount > 0
     && workflowResult[0] === 'activity_a';
@@ -794,12 +801,31 @@ async function runPythonReplayShard(python) {
     pinned_run_build_id: pinnedRunBuildId,
     v1_worker_build_id: replayV1BuildId,
     v2_worker_build_id: replayV2BuildId,
+    v1_first_task_id: v1FirstTaskId,
+    replay_task_id: v1ReplayTaskId,
+    workflow_task_retry_of: replayRetryOfTaskId,
     divergent_workflow_execution_observed: divergentWorkflowExecutionObserved,
     worker_task_counts_by_run: {
       [runId]: {
         [replayV1WorkerId]: v1TaskCount,
         [replayV2WorkerId]: v2TaskCountForV1Run,
       },
+    },
+    replay_decision: {
+      task_queue: taskQueue,
+      compatible_worker_id: replayV1WorkerId,
+      compatible_worker_build_id: replayV1BuildId,
+      incompatible_worker_id: replayV2WorkerId,
+      incompatible_worker_build_id: replayV2BuildId,
+      compatible_delivery_count: v1TaskCount,
+      incompatible_delivery_count: v2TaskCountForV1Run,
+      routed_only_to_compatible_worker: v1TaskCount > 0 && v2TaskCountForV1Run === 0,
+    },
+    poll_outputs: {
+      v2_before_replay: v2BeforeReplay,
+      v1_first_poll: v1FirstPoll,
+      v2_after_restart: v2AfterRestart,
+      v1_replay_poll: v1ReplayPoll,
     },
     worker_execution_mode: 'published_python_worker_protocol_client',
     published_artifact_worker_execution: workerExecution,
@@ -816,6 +842,22 @@ async function runPythonReplayShard(python) {
     v2_worker_task_count_for_v1_run: v2TaskCountForV1Run,
     divergent_workflow_execution_observed: divergentWorkflowExecutionObserved,
     replay_attempt: numberValue(v1ReplayPoll?.task?.workflow_task_attempt),
+    v1_first_task_id: v1FirstTaskId,
+    replay_task_id: v1ReplayTaskId,
+    workflow_task_retry_of: replayRetryOfTaskId,
+    replay_decision: {
+      task_queue: taskQueue,
+      replay_worker_id: replayV1WorkerId,
+      replay_worker_build_id: replayWorkerBuildId,
+      incompatible_worker_id: replayV2WorkerId,
+      incompatible_worker_build_id: replayV2BuildId,
+      incompatible_delivery_count: cacheEvictionIncompatibleCount,
+      routed_only_to_compatible_worker: cacheEvictionObserved && cacheEvictionIncompatibleCount === 0,
+    },
+    poll_outputs: {
+      v2_after_restart: v2AfterRestart,
+      v1_replay_poll: v1ReplayPoll,
+    },
     worker_execution_mode: 'published_python_worker_protocol_client',
     published_artifact_worker_execution: workerExecution,
     local_product_source_checkouts_used: false,
@@ -1261,6 +1303,20 @@ function commandExists(command) {
 
 function countTaskForRun(output, runId) {
   return stringValue(output?.task?.run_id) === runId ? 1 : 0;
+}
+
+function workflowTaskRetryOf(output) {
+  const task = output?.task;
+  const payload = task?.payload && typeof task.payload === 'object' && !Array.isArray(task.payload)
+    ? task.payload
+    : {};
+
+  return stringValue(task?.workflow_task_retry_of)
+    || stringValue(task?.workflowTaskRetryOf)
+    || stringValue(payload.workflow_task_retry_of)
+    || stringValue(payload.workflowTaskRetryOf)
+    || stringValue(payload.retry_of)
+    || stringValue(payload.retryOf);
 }
 
 function numberValue(value) {

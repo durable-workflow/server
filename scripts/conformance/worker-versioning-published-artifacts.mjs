@@ -241,9 +241,16 @@ async function main() {
   const v2AfterRestart = await pollWorkflowTask(serverUrl, workerHeaders, v2WorkerId, taskQueue, buildV2);
   const v1ReplayPoll = await pollWorkflowTask(serverUrl, workerHeaders, v1WorkerId, taskQueue, buildV1);
   const replayWorkerBuildId = stringValue(v1ReplayPoll?.task?.compatibility);
+  const v1FirstTaskId = stringValue(v1FirstPoll?.task?.task_id);
+  const v1ReplayTaskId = stringValue(v1ReplayPoll?.task?.task_id);
+  const replayRetryOfTaskId = workflowTaskRetryOf(v1ReplayPoll);
   const cacheEvictionIncompatibleCount = countTasksForRun([v2AfterRestart], v1RunId);
   const cacheEvictionObserved = countTasksForRun([v1ReplayPoll], v1RunId) > 0
-    && numberValue(v1ReplayPoll?.task?.workflow_task_attempt) >= 2;
+    && (
+      numberValue(v1ReplayPoll?.task?.workflow_task_attempt) >= 2
+      || replayRetryOfTaskId !== ''
+      || (v1FirstTaskId !== '' && v1ReplayTaskId !== '' && v1ReplayTaskId !== v1FirstTaskId)
+    );
 
   if (v1ReplayPoll?.task) {
     await completeWorkflow(serverUrl, workerHeaders, v1ReplayPoll.task, ['activity_a', 'activity_b']);
@@ -612,6 +619,25 @@ async function main() {
     v1_worker_task_count: v1TaskCount,
     v2_worker_task_count_for_v1_run: v2TaskCountForV1Run,
     workflow_result: ['activity_a', 'activity_b'],
+    workflow_id: v1WorkflowId,
+    v1_pinned_run_id: v1RunId,
+    pinned_run_build_id: stringValue(v1RunShow.compatibility) || buildV1,
+    v1_worker_build_id: buildV1,
+    v2_worker_build_id: buildV2,
+    replay_decision: {
+      task_queue: taskQueue,
+      compatible_worker_id: v1WorkerId,
+      compatible_worker_build_id: buildV1,
+      incompatible_worker_id: v2WorkerId,
+      incompatible_worker_build_id: buildV2,
+      compatible_delivery_count: v1TaskCount,
+      incompatible_delivery_count: v2TaskCountForV1Run,
+      routed_only_to_compatible_worker: v1TaskCount > 0 && v2TaskCountForV1Run === 0,
+    },
+    operator_visible_result: v1RunShow,
+    v1_first_task_id: v1FirstTaskId,
+    replay_task_id: v1ReplayTaskId,
+    workflow_task_retry_of: replayRetryOfTaskId,
     worker_execution_mode: SERVER_PROTOCOL_PROBE,
     published_artifact_worker_execution: false,
     divergent_workflow_execution_observed: false,
@@ -680,6 +706,25 @@ async function main() {
     cache_eviction_observed: cacheEvictionObserved,
     replay_worker_build_id: replayWorkerBuildId,
     incompatible_delivery_count: cacheEvictionIncompatibleCount,
+    workflow_id: v1WorkflowId,
+    v1_pinned_run_id: v1RunId,
+    pinned_run_build_id: stringValue(v1RunShow.compatibility) || buildV1,
+    expected_replay_worker_build_id: stringValue(v1RunShow.compatibility) || buildV1,
+    v1_worker_build_id: buildV1,
+    v2_worker_build_id: buildV2,
+    v1_first_task_id: v1FirstTaskId,
+    replay_task_id: v1ReplayTaskId,
+    workflow_task_retry_of: replayRetryOfTaskId,
+    replay_attempt: numberValue(v1ReplayPoll?.task?.workflow_task_attempt),
+    replay_decision: {
+      task_queue: taskQueue,
+      replay_worker_id: v1WorkerId,
+      replay_worker_build_id: replayWorkerBuildId,
+      incompatible_worker_id: v2WorkerId,
+      incompatible_worker_build_id: buildV2,
+      incompatible_delivery_count: cacheEvictionIncompatibleCount,
+      routed_only_to_compatible_worker: cacheEvictionObserved && cacheEvictionIncompatibleCount === 0,
+    },
     worker_execution_mode: SERVER_PROTOCOL_PROBE,
     published_artifact_worker_execution: false,
     divergent_workflow_execution_observed: false,
@@ -1406,6 +1451,20 @@ async function requestJson(serverUrl, method, pathName, body, headers, expectedS
 
 function countTasksForRun(polls, runId) {
   return polls.filter((poll) => stringValue(poll?.task?.run_id) === runId).length;
+}
+
+function workflowTaskRetryOf(poll) {
+  const task = poll?.task;
+  const payload = task?.payload && typeof task.payload === 'object' && !Array.isArray(task.payload)
+    ? task.payload
+    : {};
+
+  return stringValue(task?.workflow_task_retry_of)
+    || stringValue(task?.workflowTaskRetryOf)
+    || stringValue(payload.workflow_task_retry_of)
+    || stringValue(payload.workflowTaskRetryOf)
+    || stringValue(payload.retry_of)
+    || stringValue(payload.retryOf);
 }
 
 function processMetrics(processId, processStartedAt) {

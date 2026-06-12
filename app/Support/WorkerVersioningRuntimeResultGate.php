@@ -1147,16 +1147,23 @@ final class WorkerVersioningRuntimeResultGate
                 'replay_worker_build_id',
                 'replayWorkerBuildId',
             ]);
+            $expectedReplayWorkerBuildId = self::stringField($cacheEviction, [
+                'expected_replay_worker_build_id',
+                'expectedReplayWorkerBuildId',
+                'pinned_run_build_id',
+                'pinnedRunBuildId',
+            ]) ?: $pinnedBuildId;
+
             if (
-                $pinnedBuildId !== ''
+                $expectedReplayWorkerBuildId !== ''
                 && $replayWorkerBuildId !== ''
-                && $replayWorkerBuildId !== $pinnedBuildId
+                && $replayWorkerBuildId !== $expectedReplayWorkerBuildId
             ) {
                 $failures[] = [
                     'code' => 'replay_worker_build_id_mismatch',
                     'scenario_id' => 'replay_across_cache_eviction',
                     'field' => 'replay_worker_build_id',
-                    'expected' => $pinnedBuildId,
+                    'expected' => $expectedReplayWorkerBuildId,
                     'actual' => $replayWorkerBuildId,
                 ];
             }

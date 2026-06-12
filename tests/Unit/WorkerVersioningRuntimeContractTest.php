@@ -552,6 +552,27 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         $this->assertNotEmpty($failures);
     }
 
+    public function test_result_gate_accepts_cache_eviction_expected_build_from_replay_shard(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['scenario_results']['pin_on_start']['observed_outputs']['run_compatibility'] =
+            'server-protocol-v1';
+        $result['scenario_results']['replay_across_cache_eviction']['observed_outputs'][
+            'expected_replay_worker_build_id'
+        ] = 'published-python-v1';
+        $result['scenario_results']['replay_across_cache_eviction']['observed_outputs'][
+            'pinned_run_build_id'
+        ] = 'published-python-v1';
+        $result['scenario_results']['replay_across_cache_eviction']['observed_outputs'][
+            'replay_worker_build_id'
+        ] = 'published-python-v1';
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('pass', $evaluation['status']);
+        $this->assertSame([], $evaluation['gate_failures']);
+    }
+
     public function test_result_gate_rejects_cross_language_pinning_without_directional_counts(): void
     {
         $result = $this->completeWorkerVersioningResult();
