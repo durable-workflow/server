@@ -8,6 +8,9 @@ dockerhub_image="${DOCKERHUB_IMAGE:-durableworkflow/server}"
 ghcr_image="${GHCR_IMAGE:-ghcr.io/durable-workflow/server}"
 validation_outcome="${VALIDATION_OUTCOME:-success}"
 exact_publish_outcome="${EXACT_PUBLISH_OUTCOME:-skipped}"
+exact_publish_reason="${EXACT_PUBLISH_REASON:-}"
+exact_verify_outcome="${EXACT_VERIFY_OUTCOME:-skipped}"
+docker_build_outcome="${DOCKER_BUILD_OUTCOME:-skipped}"
 rolling_guard_outcome="${ROLLING_GUARD_OUTCOME:-skipped}"
 rolling_promote_outcome="${ROLLING_PROMOTE_OUTCOME:-skipped}"
 rolling_status="${ROLLING_ARTIFACT_STATUS:-}"
@@ -21,7 +24,9 @@ workflow_package_name="${WORKFLOW_PACKAGE_NAME:-durable-workflow/workflow}"
 workflow_package_source="${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}"
 workflow_package_ref="${WORKFLOW_PACKAGE_REF:-}"
 workflow_package_commit="${WORKFLOW_PACKAGE_COMMIT:-}"
+required_platforms="${RELEASE_IMAGE_REQUIRED_PLATFORMS:-linux/amd64 linux/arm64}"
 reason=""
+rolling_reason=""
 
 json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -63,15 +68,43 @@ write_string_array() {
 }
 
 write_artifact_versions() {
-    printf '{"server": '
-    json_string "${dockerhub_image}:${release_tag}"
+    first="true"
 
-    if [ -n "$workflow_package_ref" ]; then
-        printf ', "workflow-php": '
+    printf '{'
+
+    if [ "$exact_publish_outcome" = "success" ] && [ -n "$release_tag" ]; then
+        printf '"server": '
+        json_string "${dockerhub_image}:${release_tag}"
+        first="false"
+    fi
+
+    if [ "$exact_publish_outcome" = "success" ] && [ -n "$workflow_package_ref" ]; then
+        if [ "$first" = "false" ]; then
+            printf ', '
+        fi
+        printf '"workflow-php": '
         json_string "${workflow_package_name}:${workflow_package_ref}"
     fi
 
     printf '}'
+}
+
+write_platform_array() {
+    first="true"
+
+    printf '['
+    for platform in $(printf '%s' "$required_platforms" | tr ',' ' '); do
+        [ -n "$platform" ] || continue
+
+        if [ "$first" = "true" ]; then
+            first="false"
+        else
+            printf ', '
+        fi
+
+        json_string "$platform"
+    done
+    printf ']'
 }
 
 status="$rolling_status"
@@ -81,7 +114,11 @@ if [ "$validation_outcome" != "success" ]; then
     reason="release_publish_validation_${validation_outcome}"
 elif [ "$exact_publish_outcome" != "success" ]; then
     status="failed"
-    reason="exact_image_publish_${exact_publish_outcome}"
+    if [ -n "$exact_publish_reason" ]; then
+        reason="$exact_publish_reason"
+    else
+        reason="exact_image_publish_${exact_publish_outcome}"
+    fi
 elif [ "$rolling_guard_outcome" = "failure" ] || [ "$rolling_guard_outcome" = "cancelled" ]; then
     status="failed"
     reason="rolling_alias_guard_${rolling_guard_outcome}"
@@ -92,9 +129,14 @@ elif [ -z "$status" ]; then
     status="current"
 fi
 
-exact_refs=""
+expected_exact_refs=""
 if [ -n "$release_tag" ]; then
-    exact_refs="$(printf '%s:%s\n%s:%s' "$dockerhub_image" "$release_tag" "$ghcr_image" "$release_tag")"
+    expected_exact_refs="$(printf '%s:%s\n%s:%s' "$dockerhub_image" "$release_tag" "$ghcr_image" "$release_tag")"
+fi
+
+exact_refs=""
+if [ "$exact_publish_outcome" = "success" ]; then
+    exact_refs="$expected_exact_refs"
 fi
 
 rolling_refs=""
@@ -114,6 +156,20 @@ if is_stable_semver_tag "$release_tag"; then
         "$ghcr_image" "latest")"
 fi
 
+if ! is_stable_semver_tag "$release_tag"; then
+    rolling_reason="not_stable_semver_tag"
+elif [ "$exact_publish_outcome" != "success" ]; then
+    rolling_reason="exact_image_publish_not_verified"
+elif [ "$rolling_guard_outcome" = "failure" ] || [ "$rolling_guard_outcome" = "cancelled" ]; then
+    rolling_reason="rolling_alias_guard_${rolling_guard_outcome}"
+elif [ "$rolling_should_promote" = "true" ] && [ "$rolling_promote_outcome" != "success" ]; then
+    rolling_reason="rolling_alias_promotion_${rolling_promote_outcome}"
+elif [ "$status" = "superseded" ]; then
+    rolling_reason="superseded_by_newer_release"
+elif [ "$rolling_should_promote" != "true" ]; then
+    rolling_reason="rolling_alias_promotion_not_requested"
+fi
+
 {
     printf '{\n'
     printf '  "schema": "durable-workflow.release-image-publish-evidence.v1",\n'
@@ -131,14 +187,23 @@ fi
     printf '    "version": '; json_string_or_null "$workflow_package_ref"; printf ',\n'
     printf '    "commit": '; json_string_or_null "$workflow_package_commit"; printf '\n'
     printf '  },\n'
+    printf '  "expected_exact_refs": '; write_string_array "$expected_exact_refs"; printf ',\n'
     printf '  "exact_refs": '; write_string_array "$exact_refs"; printf ',\n'
     printf '  "digest": '; json_string_or_null "$image_digest"; printf ',\n'
+    printf '  "exact_publish": {\n'
+    printf '    "outcome": '; json_string "$exact_publish_outcome"; printf ',\n'
+    printf '    "reason": '; json_string_or_null "$exact_publish_reason"; printf ',\n'
+    printf '    "build_step_outcome": '; json_string "$docker_build_outcome"; printf ',\n'
+    printf '    "verification_outcome": '; json_string "$exact_verify_outcome"; printf ',\n'
+    printf '    "required_platforms": '; write_platform_array; printf '\n'
+    printf '  },\n'
     printf '  "rolling": {\n'
     printf '    "eligible": %s,\n' "$(is_stable_semver_tag "$release_tag" && printf 'true' || printf 'false')"
     printf '    "should_promote": %s,\n' "$([ "$rolling_should_promote" = "true" ] && printf 'true' || printf 'false')"
     printf '    "promotion_outcome": '; json_string_or_null "$rolling_promote_outcome"; printf ',\n'
+    printf '    "reason": '; json_string_or_null "$rolling_reason"; printf ',\n'
     printf '    "superseded_by": '; json_string_or_null "$superseded_by"; printf ',\n'
-    printf '    "refs": '; if [ "$status" = "current" ]; then write_string_array "$rolling_refs"; else write_string_array ""; fi; printf ',\n'
+    printf '    "refs": '; if [ "$status" = "current" ] && [ "$rolling_should_promote" = "true" ] && [ "$rolling_promote_outcome" = "success" ]; then write_string_array "$rolling_refs"; else write_string_array ""; fi; printf ',\n'
     printf '    "skipped_refs": '; if [ "$status" = "superseded" ]; then write_string_array "$rolling_refs"; else write_string_array ""; fi; printf '\n'
     printf '  }\n'
     printf '}\n'

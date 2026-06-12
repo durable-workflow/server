@@ -82,12 +82,16 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+            dev.durable-workflow.release.tag=${{ steps.release_publish.outputs.tag }}
+            dev.durable-workflow.release.run-id=${{ github.run_id }}
+            dev.durable-workflow.release.run-attempt=${{ github.run_attempt }}
             dev.durable-workflow.workflow.package=durable-workflow/workflow
             dev.durable-workflow.workflow.version=${{ steps.workflow.outputs.tag }}
             dev.durable-workflow.workflow.commit=${{ steps.workflow.outputs.commit }}
 
       - name: Build and push exact image tags
         id: build
+        continue-on-error: true
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -96,15 +100,31 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=max,ignore-error=true
           provenance: false
           build-args: |
             WORKFLOW_PACKAGE_REF=${{ steps.workflow.outputs.tag }}
             WORKFLOW_PACKAGE_COMMIT=${{ steps.workflow.outputs.commit }}
 
+      - name: Verify exact image publication
+        id: exact
+        env:
+          RELEASE_TAG: ${{ steps.release_publish.outputs.tag }}
+          DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_IMAGE }}
+          GHCR_IMAGE: ${{ env.GHCR_IMAGE }}
+          DOCKER_BUILD_OUTCOME: ${{ steps.build.outcome || 'skipped' }}
+          BUILT_IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          BUILT_IMAGE_METADATA: ${{ steps.build.outputs.metadata }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_RUN_ID: ${{ github.run_id }}
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+          WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.tag }}
+          WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}
+        run: scripts/ci/verify-release-exact-images.sh
+
       - name: Resolve rolling image aliases
         id: rolling
-        if: ${{ steps.release_publish.outputs.is_semver == 'true' && steps.build.outcome == 'success' }}
+        if: ${{ steps.release_publish.outputs.is_semver == 'true' && steps.exact.outputs.exact_publish_outcome == 'success' }}
         env:
           RELEASE_TAG: ${{ steps.release_publish.outputs.tag }}
           DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_IMAGE }}
@@ -130,13 +150,16 @@ jobs:
           DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_IMAGE }}
           GHCR_IMAGE: ${{ env.GHCR_IMAGE }}
           VALIDATION_OUTCOME: ${{ steps.release_publish.outcome || 'skipped' }}
-          EXACT_PUBLISH_OUTCOME: ${{ steps.build.outcome || 'skipped' }}
+          EXACT_PUBLISH_OUTCOME: ${{ steps.exact.outputs.exact_publish_outcome || steps.exact.outcome || steps.build.outcome || 'skipped' }}
+          EXACT_PUBLISH_REASON: ${{ steps.exact.outputs.exact_publish_reason }}
+          EXACT_VERIFY_OUTCOME: ${{ steps.exact.outcome || 'skipped' }}
+          DOCKER_BUILD_OUTCOME: ${{ steps.build.outcome || 'skipped' }}
           ROLLING_GUARD_OUTCOME: ${{ steps.rolling.outcome || 'skipped' }}
           ROLLING_PROMOTE_OUTCOME: ${{ steps.promote_rolling.outcome || 'skipped' }}
           ROLLING_ARTIFACT_STATUS: ${{ steps.promote_rolling.outputs.artifact_status || steps.rolling.outputs.artifact_status }}
           ROLLING_SHOULD_PROMOTE: ${{ steps.promote_rolling.outputs.rolling_should_promote || steps.rolling.outputs.rolling_should_promote || 'false' }}
           ROLLING_SUPERSEDED_BY: ${{ steps.promote_rolling.outputs.superseded_by || steps.rolling.outputs.superseded_by }}
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_DIGEST: ${{ steps.exact.outputs.image_digest || steps.build.outputs.digest }}
           RELEASE_COMMIT: ${{ github.sha }}
           RELEASE_RUN_ID: ${{ github.run_id }}
           RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
@@ -145,7 +168,7 @@ jobs:
         run: scripts/ci/write-release-image-publish-evidence.sh
 
       - name: Verify live docs release audit after public images
-        if: ${{ steps.build.outcome == 'success' }}
+        if: ${{ steps.exact.outputs.exact_publish_outcome == 'success' }}
         env:
           DOCS_RELEASE_AUDIT_ARTIFACT: server
           DOCS_RELEASE_AUDIT_VERSION: ${{ steps.release_publish.outputs.tag || github.event.inputs.tag || github.ref_name }}

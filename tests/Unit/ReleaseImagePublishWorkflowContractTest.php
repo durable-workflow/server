@@ -78,6 +78,9 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         foreach ([
             'dev.durable-workflow.workflow.package=durable-workflow/workflow',
+            'dev.durable-workflow.release.tag=${{ steps.release_publish.outputs.tag }}',
+            'dev.durable-workflow.release.run-id=${{ github.run_id }}',
+            'dev.durable-workflow.release.run-attempt=${{ github.run_attempt }}',
             'dev.durable-workflow.workflow.version=${{ steps.workflow.outputs.tag }}',
             'dev.durable-workflow.workflow.commit=${{ steps.workflow.outputs.commit }}',
             'WORKFLOW_PACKAGE_REF=${{ steps.workflow.outputs.tag }}',
@@ -159,7 +162,19 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         $this->assertStringContainsString('Extract exact image metadata', $workflow);
         $this->assertStringContainsString('Build and push exact image tags', $workflow);
+        $this->assertStringContainsString('continue-on-error: true', $workflow);
+        $this->assertStringContainsString('cache-to: type=gha,mode=max,ignore-error=true', $workflow);
+        $this->assertStringContainsString('Verify exact image publication', $workflow);
+        $this->assertStringContainsString('BUILT_IMAGE_DIGEST: ${{ steps.build.outputs.digest }}', $workflow);
+        $this->assertStringContainsString('BUILT_IMAGE_METADATA: ${{ steps.build.outputs.metadata }}', $workflow);
+        $this->assertStringContainsString('RELEASE_COMMIT: ${{ github.sha }}', $workflow);
+        $this->assertStringContainsString('RELEASE_RUN_ID: ${{ github.run_id }}', $workflow);
+        $this->assertStringContainsString('RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}', $workflow);
+        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.tag }}', $workflow);
+        $this->assertStringContainsString('WORKFLOW_PACKAGE_COMMIT: ${{ steps.workflow.outputs.commit }}', $workflow);
+        $this->assertStringContainsString('scripts/ci/verify-release-exact-images.sh', $workflow);
         $this->assertStringContainsString('scripts/ci/resolve-release-image-rolling-tags.sh', $workflow);
+        $this->assertStringContainsString("steps.exact.outputs.exact_publish_outcome == 'success'", $workflow);
         $this->assertStringContainsString('steps.rolling.outputs.rolling_should_promote == \'true\'', $workflow);
         $this->assertStringContainsString('scripts/ci/promote-release-image-rolling-tags.sh', $workflow);
         $this->assertStringContainsString('scripts/ci/write-release-image-publish-evidence.sh', $workflow);
@@ -173,15 +188,18 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringNotContainsString('type=raw,value=latest', $workflow);
 
         $buildOffset = strpos($workflow, 'Build and push exact image tags');
+        $exactOffset = strpos($workflow, 'Verify exact image publication');
         $resolveOffset = strpos($workflow, 'Resolve rolling image aliases');
         $promoteOffset = strpos($workflow, 'Promote rolling image aliases');
         $evidenceOffset = strpos($workflow, 'Write release image publish evidence');
 
         $this->assertIsInt($buildOffset);
+        $this->assertIsInt($exactOffset);
         $this->assertIsInt($resolveOffset);
         $this->assertIsInt($promoteOffset);
         $this->assertIsInt($evidenceOffset);
-        $this->assertLessThan($resolveOffset, $buildOffset);
+        $this->assertLessThan($exactOffset, $buildOffset);
+        $this->assertLessThan($resolveOffset, $exactOffset);
         $this->assertLessThan($promoteOffset, $resolveOffset);
         $this->assertLessThan($evidenceOffset, $promoteOffset);
     }
@@ -193,7 +211,7 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
         foreach ([
             'Verify live docs release audit after public images',
-            "if: \${{ steps.build.outcome == 'success' }}",
+            "if: \${{ steps.exact.outputs.exact_publish_outcome == 'success' }}",
             'DOCS_RELEASE_AUDIT_ARTIFACT: server',
             'DOCS_RELEASE_AUDIT_VERSION: ${{ steps.release_publish.outputs.tag || github.event.inputs.tag || github.ref_name }}',
             'DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json',
@@ -212,15 +230,18 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('observed_artifact_versions: versions', $auditor);
 
         $buildOffset = strpos($workflow, 'Build and push exact image tags');
+        $exactOffset = strpos($workflow, 'Verify exact image publication');
         $writeEvidenceOffset = strpos($workflow, 'Write release image publish evidence');
         $docsAuditOffset = strpos($workflow, 'Verify live docs release audit after public images');
         $uploadOffset = strpos($workflow, 'Upload release image publish evidence');
 
         $this->assertIsInt($buildOffset);
+        $this->assertIsInt($exactOffset);
         $this->assertIsInt($writeEvidenceOffset);
         $this->assertIsInt($docsAuditOffset);
         $this->assertIsInt($uploadOffset);
-        $this->assertLessThan($writeEvidenceOffset, $buildOffset);
+        $this->assertLessThan($exactOffset, $buildOffset);
+        $this->assertLessThan($writeEvidenceOffset, $exactOffset);
         $this->assertLessThan($docsAuditOffset, $writeEvidenceOffset);
         $this->assertLessThan($uploadOffset, $docsAuditOffset);
     }
@@ -393,6 +414,314 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         }
     }
 
+    public function test_exact_image_verifier_accepts_verified_manifests_after_build_step_failure(): void
+    {
+        $tmpDir = sys_get_temp_dir().'/release-image-docker-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $dockerBin = $tmpDir.'/docker';
+        $outputFile = $tmpDir.'/outputs';
+        $digest = 'sha256:'.str_repeat('c', 64);
+        $dockerScript = <<<SH
+#!/usr/bin/env sh
+if [ "\$1" = "buildx" ] && [ "\$2" = "imagetools" ] && [ "\$3" = "inspect" ]; then
+    printf 'Name: %s\\nMediaType: application/vnd.oci.image.index.v1+json\\nDigest: {$digest}\\n\\nManifests:\\n  Platform: linux/amd64\\n  Platform: linux/arm64\\n' "\$4"
+    exit 0
+fi
+exit 1
+SH;
+        file_put_contents($dockerBin, $dockerScript);
+        chmod($dockerBin, 0755);
+
+        try {
+            $result = $this->runScript('scripts/ci/verify-release-exact-images.sh', [
+                'RELEASE_TAG' => '0.2.396',
+                'DOCKER' => $dockerBin,
+                'DOCKER_BUILD_OUTCOME' => 'failure',
+                'BUILT_IMAGE_DIGEST' => $digest,
+                'GITHUB_OUTPUT' => $outputFile,
+            ]);
+
+            $this->assertSame(0, $result['exitCode']);
+            $outputs = file_get_contents($outputFile);
+            $this->assertNotFalse($outputs);
+            $this->assertStringContainsString("exact_publish_outcome=success\n", $outputs);
+            $this->assertStringContainsString("exact_publish_reason=exact_manifests_verified_after_build_step_failure\n", $outputs);
+            $this->assertStringContainsString("image_digest={$digest}\n", $outputs);
+            $this->assertStringContainsString('durableworkflow/server:0.2.396', $outputs);
+            $this->assertStringContainsString('ghcr.io/durable-workflow/server:0.2.396', $outputs);
+            $this->assertStringContainsString('Docker build step reported failure, but exact image manifests match this release build digest', $result['stdout']);
+        } finally {
+            @unlink($dockerBin);
+            @unlink($outputFile);
+            @rmdir($tmpDir);
+        }
+    }
+
+    public function test_exact_image_verifier_accepts_build_metadata_digest_when_direct_digest_is_missing(): void
+    {
+        $tmpDir = sys_get_temp_dir().'/release-image-docker-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $dockerBin = $tmpDir.'/docker';
+        $outputFile = $tmpDir.'/outputs';
+        $digest = 'sha256:'.str_repeat('f', 64);
+        $metadata = json_encode(['containerimage.digest' => $digest], JSON_THROW_ON_ERROR);
+        $dockerScript = <<<SH
+#!/usr/bin/env sh
+if [ "\$1" = "buildx" ] && [ "\$2" = "imagetools" ] && [ "\$3" = "inspect" ]; then
+    printf 'Name: %s\\nMediaType: application/vnd.oci.image.index.v1+json\\nDigest: {$digest}\\n\\nManifests:\\n  Platform: linux/amd64\\n  Platform: linux/arm64\\n' "\$4"
+    exit 0
+fi
+exit 1
+SH;
+        file_put_contents($dockerBin, $dockerScript);
+        chmod($dockerBin, 0755);
+
+        try {
+            $result = $this->runScript('scripts/ci/verify-release-exact-images.sh', [
+                'RELEASE_TAG' => '0.2.396',
+                'DOCKER' => $dockerBin,
+                'DOCKER_BUILD_OUTCOME' => 'failure',
+                'BUILT_IMAGE_METADATA' => $metadata,
+                'GITHUB_OUTPUT' => $outputFile,
+            ]);
+
+            $this->assertSame(0, $result['exitCode']);
+            $outputs = file_get_contents($outputFile);
+            $this->assertNotFalse($outputs);
+            $this->assertStringContainsString("exact_publish_outcome=success\n", $outputs);
+            $this->assertStringContainsString("image_digest={$digest}\n", $outputs);
+        } finally {
+            @unlink($dockerBin);
+            @unlink($outputFile);
+            @rmdir($tmpDir);
+        }
+    }
+
+    public function test_exact_image_verifier_accepts_release_metadata_identity_when_build_digest_is_missing(): void
+    {
+        $tmpDir = sys_get_temp_dir().'/release-image-docker-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $dockerBin = $tmpDir.'/docker';
+        $outputFile = $tmpDir.'/outputs';
+        $digest = 'sha256:'.str_repeat('c', 64);
+        $releaseCommit = str_repeat('b', 40);
+        $runId = '27420890537';
+        $runAttempt = '2';
+        $workflowRef = '2.0.0-alpha.202';
+        $workflowCommit = 'ccb529859234cc2bbdb415ceb7f7106600453fe6';
+        $imageConfig = json_encode([
+            'config' => [
+                'Labels' => [
+                    'org.opencontainers.image.revision' => $releaseCommit,
+                    'dev.durable-workflow.release.tag' => '0.2.396',
+                    'dev.durable-workflow.release.run-id' => $runId,
+                    'dev.durable-workflow.release.run-attempt' => $runAttempt,
+                    'dev.durable-workflow.workflow.version' => $workflowRef,
+                    'dev.durable-workflow.workflow.commit' => $workflowCommit,
+                ],
+            ],
+        ], JSON_THROW_ON_ERROR);
+        $dockerScript = <<<SH
+#!/usr/bin/env sh
+if [ "\$1" = "buildx" ] && [ "\$2" = "imagetools" ] && [ "\$3" = "inspect" ]; then
+    if [ "\${4:-}" = "--format" ]; then
+        printf '%s\\n' '{$imageConfig}'
+        exit 0
+    fi
+    printf 'Name: %s\\nMediaType: application/vnd.oci.image.index.v1+json\\nDigest: {$digest}\\n\\nManifests:\\n  Platform: linux/amd64\\n  Platform: linux/arm64\\n' "\$4"
+    exit 0
+fi
+exit 1
+SH;
+        file_put_contents($dockerBin, $dockerScript);
+        chmod($dockerBin, 0755);
+
+        try {
+            $result = $this->runScript('scripts/ci/verify-release-exact-images.sh', [
+                'RELEASE_TAG' => '0.2.396',
+                'DOCKER' => $dockerBin,
+                'DOCKER_BUILD_OUTCOME' => 'failure',
+                'RELEASE_COMMIT' => $releaseCommit,
+                'RELEASE_RUN_ID' => $runId,
+                'RELEASE_RUN_ATTEMPT' => $runAttempt,
+                'WORKFLOW_PACKAGE_REF' => $workflowRef,
+                'WORKFLOW_PACKAGE_COMMIT' => $workflowCommit,
+                'GITHUB_OUTPUT' => $outputFile,
+            ]);
+
+            $this->assertSame(0, $result['exitCode']);
+            $outputs = file_get_contents($outputFile);
+            $this->assertNotFalse($outputs);
+            $this->assertStringContainsString("exact_publish_outcome=success\n", $outputs);
+            $this->assertStringContainsString("image_digest={$digest}\n", $outputs);
+            $this->assertStringContainsString('carry this release run metadata and use the same manifest digest', $result['stdout']);
+        } finally {
+            @unlink($dockerBin);
+            @unlink($outputFile);
+            @rmdir($tmpDir);
+        }
+    }
+
+    public function test_exact_image_verifier_fails_when_public_tags_cannot_be_matched_to_build_digest(): void
+    {
+        $tmpDir = sys_get_temp_dir().'/release-image-docker-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $dockerBin = $tmpDir.'/docker';
+        $outputFile = $tmpDir.'/outputs';
+        $dockerScript = <<<'SH'
+#!/usr/bin/env sh
+if [ "$1" = "buildx" ] && [ "$2" = "imagetools" ] && [ "$3" = "inspect" ]; then
+    printf 'Name: %s\nMediaType: application/vnd.oci.image.index.v1+json\nDigest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n\nManifests:\n  Platform: linux/amd64\n  Platform: linux/arm64\n' "$4"
+    exit 0
+fi
+exit 1
+SH;
+        file_put_contents($dockerBin, $dockerScript);
+        chmod($dockerBin, 0755);
+
+        try {
+            $result = $this->runScript('scripts/ci/verify-release-exact-images.sh', [
+                'RELEASE_TAG' => '0.2.396',
+                'DOCKER' => $dockerBin,
+                'DOCKER_BUILD_OUTCOME' => 'failure',
+                'GITHUB_OUTPUT' => $outputFile,
+            ]);
+
+            $this->assertSame(1, $result['exitCode']);
+            $outputs = file_get_contents($outputFile);
+            $this->assertNotFalse($outputs);
+            $this->assertStringContainsString("exact_publish_outcome=failure\n", $outputs);
+            $this->assertStringContainsString("exact_publish_reason=exact_build_metadata_digest_missing\n", $outputs);
+            $this->assertStringContainsString('did not expose a digest or containerimage.digest metadata', $result['stderr']);
+        } finally {
+            @unlink($dockerBin);
+            @unlink($outputFile);
+            @rmdir($tmpDir);
+        }
+    }
+
+    public function test_exact_image_verifier_fails_when_registry_digests_do_not_match(): void
+    {
+        $tmpDir = sys_get_temp_dir().'/release-image-docker-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $dockerBin = $tmpDir.'/docker';
+        $outputFile = $tmpDir.'/outputs';
+        $dockerHubDigest = 'sha256:'.str_repeat('c', 64);
+        $ghcrDigest = 'sha256:'.str_repeat('d', 64);
+        $dockerScript = <<<SH
+#!/usr/bin/env sh
+if [ "\$1" = "buildx" ] && [ "\$2" = "imagetools" ] && [ "\$3" = "inspect" ]; then
+    digest="{$dockerHubDigest}"
+    case "\$4" in
+        ghcr.io/*) digest="{$ghcrDigest}" ;;
+    esac
+    printf 'Name: %s\\nMediaType: application/vnd.oci.image.index.v1+json\\nDigest: %s\\n\\nManifests:\\n  Platform: linux/amd64\\n  Platform: linux/arm64\\n' "\$4" "\$digest"
+    exit 0
+fi
+exit 1
+SH;
+        file_put_contents($dockerBin, $dockerScript);
+        chmod($dockerBin, 0755);
+
+        try {
+            $result = $this->runScript('scripts/ci/verify-release-exact-images.sh', [
+                'RELEASE_TAG' => '0.2.396',
+                'DOCKER' => $dockerBin,
+                'BUILT_IMAGE_DIGEST' => $dockerHubDigest,
+                'GITHUB_OUTPUT' => $outputFile,
+            ]);
+
+            $this->assertSame(1, $result['exitCode']);
+            $outputs = file_get_contents($outputFile);
+            $this->assertNotFalse($outputs);
+            $this->assertStringContainsString("exact_publish_outcome=failure\n", $outputs);
+            $this->assertStringContainsString("exact_publish_reason=exact_manifest_digest_mismatch\n", $outputs);
+            $this->assertStringContainsString('not identical across registries', $result['stderr']);
+        } finally {
+            @unlink($dockerBin);
+            @unlink($outputFile);
+            @rmdir($tmpDir);
+        }
+    }
+
+    public function test_exact_image_verifier_fails_when_public_digest_does_not_match_build_digest(): void
+    {
+        $tmpDir = sys_get_temp_dir().'/release-image-docker-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $dockerBin = $tmpDir.'/docker';
+        $outputFile = $tmpDir.'/outputs';
+        $buildDigest = 'sha256:'.str_repeat('c', 64);
+        $publicDigest = 'sha256:'.str_repeat('d', 64);
+        $dockerScript = <<<SH
+#!/usr/bin/env sh
+if [ "\$1" = "buildx" ] && [ "\$2" = "imagetools" ] && [ "\$3" = "inspect" ]; then
+    printf 'Name: %s\\nMediaType: application/vnd.oci.image.index.v1+json\\nDigest: {$publicDigest}\\n\\nManifests:\\n  Platform: linux/amd64\\n  Platform: linux/arm64\\n' "\$4"
+    exit 0
+fi
+exit 1
+SH;
+        file_put_contents($dockerBin, $dockerScript);
+        chmod($dockerBin, 0755);
+
+        try {
+            $result = $this->runScript('scripts/ci/verify-release-exact-images.sh', [
+                'RELEASE_TAG' => '0.2.396',
+                'DOCKER' => $dockerBin,
+                'BUILT_IMAGE_DIGEST' => $buildDigest,
+                'GITHUB_OUTPUT' => $outputFile,
+            ]);
+
+            $this->assertSame(1, $result['exitCode']);
+            $outputs = file_get_contents($outputFile);
+            $this->assertNotFalse($outputs);
+            $this->assertStringContainsString("exact_publish_outcome=failure\n", $outputs);
+            $this->assertStringContainsString("exact_publish_reason=exact_manifest_build_digest_mismatch\n", $outputs);
+            $this->assertStringContainsString('this release build produced', $result['stderr']);
+        } finally {
+            @unlink($dockerBin);
+            @unlink($outputFile);
+            @rmdir($tmpDir);
+        }
+    }
+
+    public function test_exact_image_verifier_fails_when_required_platform_is_missing(): void
+    {
+        $tmpDir = sys_get_temp_dir().'/release-image-docker-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($tmpDir));
+        $dockerBin = $tmpDir.'/docker';
+        $outputFile = $tmpDir.'/outputs';
+        $dockerScript = <<<'SH'
+#!/usr/bin/env sh
+if [ "$1" = "buildx" ] && [ "$2" = "imagetools" ] && [ "$3" = "inspect" ]; then
+    printf 'Name: %s\nMediaType: application/vnd.oci.image.index.v1+json\nDigest: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\n\nManifests:\n  Platform: linux/amd64\n' "$4"
+    exit 0
+fi
+exit 1
+SH;
+        file_put_contents($dockerBin, $dockerScript);
+        chmod($dockerBin, 0755);
+
+        try {
+            $result = $this->runScript('scripts/ci/verify-release-exact-images.sh', [
+                'RELEASE_TAG' => '0.2.396',
+                'DOCKER' => $dockerBin,
+                'BUILT_IMAGE_DIGEST' => 'sha256:'.str_repeat('d', 64),
+                'GITHUB_OUTPUT' => $outputFile,
+            ]);
+
+            $this->assertSame(1, $result['exitCode']);
+            $outputs = file_get_contents($outputFile);
+            $this->assertNotFalse($outputs);
+            $this->assertStringContainsString("exact_publish_outcome=failure\n", $outputs);
+            $this->assertStringContainsString("exact_publish_reason=exact_manifest_platform_missing\n", $outputs);
+            $this->assertStringContainsString('linux/arm64', $result['stderr']);
+        } finally {
+            @unlink($dockerBin);
+            @unlink($outputFile);
+            @rmdir($tmpDir);
+        }
+    }
+
     public function test_evidence_records_superseded_release_without_current_rolling_refs(): void
     {
         $evidenceFile = tempnam(sys_get_temp_dir(), 'release-image-evidence-');
@@ -421,10 +750,99 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
             $this->assertSame('superseded', $decoded['status']);
             $this->assertSame(['pending', 'current', 'superseded', 'failed'], $decoded['status_values']);
             $this->assertSame(['server' => 'durableworkflow/server:0.2.177'], $decoded['artifact_versions']);
+            $this->assertSame('success', $decoded['exact_publish']['outcome']);
+            $this->assertContains('durableworkflow/server:0.2.177', $decoded['exact_refs']);
             $this->assertSame('0.2.178', $decoded['rolling']['superseded_by']);
+            $this->assertSame('superseded_by_newer_release', $decoded['rolling']['reason']);
             $this->assertSame([], $decoded['rolling']['refs']);
             $this->assertContains('durableworkflow/server:0.2', $decoded['rolling']['skipped_refs']);
             $this->assertContains('ghcr.io/durable-workflow/server:latest', $decoded['rolling']['skipped_refs']);
+        } finally {
+            @unlink($evidenceFile);
+        }
+    }
+
+    public function test_evidence_does_not_advertise_artifact_versions_when_exact_publish_failed(): void
+    {
+        $evidenceFile = tempnam(sys_get_temp_dir(), 'release-image-evidence-');
+        $this->assertIsString($evidenceFile);
+
+        try {
+            $result = $this->runScript('scripts/ci/write-release-image-publish-evidence.sh', [
+                'RELEASE_IMAGE_EVIDENCE_PATH' => $evidenceFile,
+                'RELEASE_TAG' => '0.2.396',
+                'VALIDATION_OUTCOME' => 'success',
+                'EXACT_PUBLISH_OUTCOME' => 'failure',
+                'EXACT_PUBLISH_REASON' => 'exact_manifest_missing',
+                'EXACT_VERIFY_OUTCOME' => 'failure',
+                'DOCKER_BUILD_OUTCOME' => 'failure',
+                'ROLLING_GUARD_OUTCOME' => 'skipped',
+                'ROLLING_PROMOTE_OUTCOME' => 'skipped',
+                'ROLLING_SHOULD_PROMOTE' => 'false',
+                'RELEASE_COMMIT' => str_repeat('b', 40),
+                'RELEASE_RUN_ID' => '27420890537',
+                'RELEASE_RUN_ATTEMPT' => '1',
+            ]);
+
+            $this->assertSame(0, $result['exitCode']);
+            $decoded = json_decode((string) file_get_contents($evidenceFile), true, flags: JSON_THROW_ON_ERROR);
+            $this->assertSame('failed', $decoded['status']);
+            $this->assertSame('exact_manifest_missing', $decoded['reason']);
+            $this->assertSame([], $decoded['artifact_versions']);
+            $this->assertContains('durableworkflow/server:0.2.396', $decoded['expected_exact_refs']);
+            $this->assertContains('ghcr.io/durable-workflow/server:0.2.396', $decoded['expected_exact_refs']);
+            $this->assertSame([], $decoded['exact_refs']);
+            $this->assertSame('failure', $decoded['exact_publish']['outcome']);
+            $this->assertSame('failure', $decoded['exact_publish']['build_step_outcome']);
+            $this->assertSame('failure', $decoded['exact_publish']['verification_outcome']);
+            $this->assertSame('exact_image_publish_not_verified', $decoded['rolling']['reason']);
+            $this->assertSame([], $decoded['rolling']['refs']);
+        } finally {
+            @unlink($evidenceFile);
+        }
+    }
+
+    public function test_evidence_records_success_when_exact_manifests_are_verified_after_build_failure(): void
+    {
+        $evidenceFile = tempnam(sys_get_temp_dir(), 'release-image-evidence-');
+        $this->assertIsString($evidenceFile);
+        $digest = 'sha256:'.str_repeat('e', 64);
+
+        try {
+            $result = $this->runScript('scripts/ci/write-release-image-publish-evidence.sh', [
+                'RELEASE_IMAGE_EVIDENCE_PATH' => $evidenceFile,
+                'RELEASE_TAG' => '0.2.396',
+                'VALIDATION_OUTCOME' => 'success',
+                'EXACT_PUBLISH_OUTCOME' => 'success',
+                'EXACT_PUBLISH_REASON' => 'exact_manifests_verified_after_build_step_failure',
+                'EXACT_VERIFY_OUTCOME' => 'success',
+                'DOCKER_BUILD_OUTCOME' => 'failure',
+                'ROLLING_GUARD_OUTCOME' => 'success',
+                'ROLLING_PROMOTE_OUTCOME' => 'success',
+                'ROLLING_ARTIFACT_STATUS' => 'current',
+                'ROLLING_SHOULD_PROMOTE' => 'true',
+                'IMAGE_DIGEST' => $digest,
+                'RELEASE_COMMIT' => str_repeat('b', 40),
+                'RELEASE_RUN_ID' => '27420890537',
+                'RELEASE_RUN_ATTEMPT' => '2',
+            ]);
+
+            $this->assertSame(0, $result['exitCode']);
+            $decoded = json_decode((string) file_get_contents($evidenceFile), true, flags: JSON_THROW_ON_ERROR);
+            $this->assertSame('current', $decoded['status']);
+            $this->assertNull($decoded['reason']);
+            $this->assertSame(['server' => 'durableworkflow/server:0.2.396'], $decoded['artifact_versions']);
+            $this->assertSame($digest, $decoded['digest']);
+            $this->assertSame('success', $decoded['exact_publish']['outcome']);
+            $this->assertSame('failure', $decoded['exact_publish']['build_step_outcome']);
+            $this->assertSame('success', $decoded['exact_publish']['verification_outcome']);
+            $this->assertSame('exact_manifests_verified_after_build_step_failure', $decoded['exact_publish']['reason']);
+            $this->assertSame(['linux/amd64', 'linux/arm64'], $decoded['exact_publish']['required_platforms']);
+            $this->assertContains('durableworkflow/server:0.2.396', $decoded['exact_refs']);
+            $this->assertContains('ghcr.io/durable-workflow/server:0.2.396', $decoded['exact_refs']);
+            $this->assertNull($decoded['rolling']['reason']);
+            $this->assertContains('durableworkflow/server:latest', $decoded['rolling']['refs']);
+            $this->assertContains('ghcr.io/durable-workflow/server:latest', $decoded['rolling']['refs']);
         } finally {
             @unlink($evidenceFile);
         }
