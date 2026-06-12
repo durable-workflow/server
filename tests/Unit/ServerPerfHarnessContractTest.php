@@ -228,6 +228,34 @@ class ServerPerfHarnessContractTest extends TestCase
         }
     }
 
+    public function test_perf_smoke_records_environment_setup_failures_before_load_starts(): void
+    {
+        $source = file_get_contents(dirname(__DIR__, 2).'/scripts/perf/run-server-soak.sh');
+        $this->assertNotFalse($source, 'scripts/perf/run-server-soak.sh must be readable');
+
+        foreach ([
+            'write_environment_setup_failure()',
+            'environment-setup-failure.json',
+            '"phase": "environment_setup"',
+            'Wrote perf environment setup failure artifact',
+            'Perf environment setup failed before product smoke execution',
+            'docker compose failed before server_soak.py started',
+            'server port discovery failed before server_soak.py started',
+        ] as $needle) {
+            $this->assertStringContainsString(
+                $needle,
+                $source,
+                "Perf smoke wrapper must classify pre-load setup failures with {$needle}.",
+            );
+        }
+
+        $composeOffset = strpos($source, 'docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" up -d --build --wait');
+        $loadOffset = strpos($source, 'Running perf load against ${BASE_URL}');
+        $this->assertIsInt($composeOffset);
+        $this->assertIsInt($loadOffset);
+        $this->assertLessThan($loadOffset, $composeOffset);
+    }
+
     public function test_soak_cache_key_patterns_match_bounded_growth_policy(): void
     {
         $repoRoot = dirname(__DIR__, 2);

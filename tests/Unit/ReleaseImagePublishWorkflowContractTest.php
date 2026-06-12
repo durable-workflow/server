@@ -130,6 +130,26 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('WORKFLOW_PACKAGE_COMMIT', $metadataScript);
     }
 
+    public function test_dockerfile_installs_redis_extension_from_pinned_phpredis_source(): void
+    {
+        $dockerfile = $this->read('Dockerfile');
+
+        foreach ([
+            'FROM composer:2 AS phpredis-source',
+            'ARG PHPREDIS_VERSION=6.3.0',
+            'ARG PHPREDIS_COMMIT=df4fab2de7fc327c54c94a13af2b9542e4fbd720',
+            'git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpredis/phpredis.git /phpredis',
+            'RESOLVED_COMMIT="$(git rev-parse HEAD)"',
+            'COPY --from=phpredis-source /phpredis /usr/src/php/ext/redis',
+            'docker-php-ext-install redis pdo pdo_mysql pdo_pgsql pcntl zip bcmath',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $dockerfile);
+        }
+
+        $this->assertStringNotContainsString('pecl install redis', $dockerfile);
+        $this->assertStringNotContainsString('pecl.php.net/redis', $dockerfile);
+    }
+
     public function test_docker_build_docs_compose_and_ci_defaults_match_workflow_package_fallback(): void
     {
         $fallback = '2.0.0-alpha.202';

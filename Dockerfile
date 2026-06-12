@@ -1,13 +1,26 @@
+FROM composer:2 AS phpredis-source
+
+ARG PHPREDIS_VERSION=6.3.0
+ARG PHPREDIS_COMMIT=df4fab2de7fc327c54c94a13af2b9542e4fbd720
+
+RUN git clone --depth 1 --branch "${PHPREDIS_VERSION}" https://github.com/phpredis/phpredis.git /phpredis \
+    && cd /phpredis \
+    && RESOLVED_COMMIT="$(git rev-parse HEAD)" \
+    && if [ "${RESOLVED_COMMIT}" != "${PHPREDIS_COMMIT}" ]; then \
+         echo "ERROR: Resolved phpredis commit ${RESOLVED_COMMIT} does not match pinned PHPREDIS_COMMIT=${PHPREDIS_COMMIT}" >&2; \
+         exit 1; \
+       fi
+
 FROM php:8.3-cli AS base
+
+COPY --from=phpredis-source /phpredis /usr/src/php/ext/redis
 
 RUN apt-get update && apt-get install -y \
     curl \
     libpq-dev \
     libzip-dev \
     unzip \
-    && pecl install redis \
-    && docker-php-ext-enable redis \
-    && docker-php-ext-install pdo pdo_mysql pdo_pgsql pcntl zip bcmath \
+    && docker-php-ext-install redis pdo pdo_mysql pdo_pgsql pcntl zip bcmath \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer

@@ -110,6 +110,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
+write_environment_setup_failure() {
+  local status="$1"
+  local phase="$2"
+  local message="$3"
+
+  cat > "$ARTIFACT_DIR/environment-setup-failure.json" <<JSON
+{
+  "phase": "environment_setup",
+  "setup_phase": "${phase}",
+  "compose_project": "${PROJECT}",
+  "status": ${status},
+  "message": "${message}"
+}
+JSON
+
+  echo "Wrote perf environment setup failure artifact to ${ARTIFACT_DIR}/environment-setup-failure.json" >&2
+}
+
 maybe_start_prometheus() {
   if [ "${DW_PERF_REMOTE_WRITE_ENABLED:-true}" != "true" ]; then
     echo "Prometheus remote_write disabled for this run; writing local perf artifacts only."
@@ -200,10 +218,19 @@ if [ -n "${DW_PERF_SERVER_PORT:-}" ]; then
 else
   echo "Starting perf stack with project ${PROJECT} on a dynamic host port"
 fi
-docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" up -d --build --wait
+setup_status=0
+docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" up -d --build --wait || setup_status=$?
+if [ "$setup_status" -ne 0 ]; then
+  echo "Perf environment setup failed before product smoke execution; docker compose could not build or start the stack." >&2
+  write_environment_setup_failure "$setup_status" "docker_compose_up" "docker compose failed before server_soak.py started"
+  docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" ps >&2 || true
+  exit "$setup_status"
+fi
+
 PUBLISHED_SERVER_PORT="$(docker compose -p "$PROJECT" -f "$ROOT_DIR/docker-compose.yml" -f "$OVERRIDE_FILE" port server 8080 | awk -F: 'END {print $NF}')"
 if [ -z "$PUBLISHED_SERVER_PORT" ]; then
   echo "Unable to discover published server port for ${PROJECT}" >&2
+  write_environment_setup_failure 1 "published_port_discovery" "server port discovery failed before server_soak.py started"
   exit 1
 fi
 SERVER_PORT="$PUBLISHED_SERVER_PORT"
