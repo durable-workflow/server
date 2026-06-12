@@ -90,9 +90,9 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'the shell handoff must attempt the published PHP/Python worker shard before aggregating results',
         );
         $this->assertStringContainsString(
-            'maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions);',
+            'maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions, artifactSources);',
             $node,
-            'direct Node host invocations must generate the published worker shard before aggregating results',
+            'direct Node host invocations must generate the published worker shard with artifact source evidence before aggregating results',
         );
         $this->assertStringContainsString(
             'publishedWorkerScenarioFindings(',
@@ -124,6 +124,36 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             $node,
             'direct Node host invocations must respect the same skip override as the shell handoff',
         );
+        $this->assertStringContainsString(
+            'DW_WV_PUBLISHED_WORKER_SHARD_TIMEOUT_SECONDS',
+            $shell,
+            'the shell handoff must document the bounded published-worker shard budget',
+        );
+        $this->assertStringContainsString(
+            'publishedWorkerShardFallbackEvidence(',
+            $node,
+            'the aggregate runner must emit structured not-covered evidence when the published-worker shard times out',
+        );
+        $this->assertStringContainsString(
+            'write_published_worker_fallback_evidence',
+            $shell,
+            'the shell timeout handoff must write structured fallback evidence before skipping aggregate shard generation',
+        );
+        $this->assertStringContainsString(
+            'DW_WV_PUBLISHED_WORKER_SHARD_EXIT_STATUS',
+            $shell,
+            'the shell fallback must preserve the direct shard exit status',
+        );
+        $this->assertStringContainsString(
+            'artifactVersionsFromEnv',
+            $shell,
+            'the shell fallback must use the same artifact version normalization as the aggregate runner',
+        );
+        $this->assertStringContainsString(
+            'if [[ ! -s "${DW_WV_PUBLISHED_WORKER_EVIDENCE:-}" ]]',
+            $shell,
+            'the shell fallback must only synthesize evidence when the shard did not write its own file',
+        );
         foreach ([
             'durable-workflow==${pythonVersion}',
             'durable-workflow/workflow:${workflowPhpVersion}',
@@ -144,40 +174,54 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         }
     }
 
-    public function test_published_worker_shard_records_python_cells_before_php_cross_language_prerequisites(): void
+    public function test_published_worker_shard_records_cross_language_before_supplemental_python_cells(): void
     {
         $publishedWorkers = $this->read('scripts/conformance/worker-versioning-published-workers.mjs');
 
         foreach ([
             'const python = await installPythonWorker(shardRoot);',
-            'const pythonReplay = await runPythonReplayShardSafely(python);',
-            'const pythonNoCompatible = await runPythonNoCompatibleShardSafely(python);',
-            'const pythonAdversarial = await runPythonAdversarialShardSafely(python);',
+            'let pythonReplay = emptySupplementalShard();',
+            'let pythonNoCompatible = emptySupplementalShard();',
+            'let pythonAdversarial = emptySupplementalShard();',
+            'pythonReplay = await runPythonReplayShardSafely(python);',
+            'pythonNoCompatible = await runPythonNoCompatibleShardSafely(python);',
+            'pythonAdversarial = await runPythonAdversarialShardSafely(python);',
             'writeShard(pythonScenarioShard(python, shardRoot, pythonReplay, pythonNoCompatible, pythonAdversarial));',
             "if (!workflowPhpVersion) crossLanguageMissing.push('DW_WORKFLOW_PHP_VERSION');",
             "if (!commandExists('docker')) crossLanguageMissing.push('docker');",
             'published PHP/Python cross-language worker shard prerequisites are missing',
+            'function emptySupplementalShard()',
             'function pythonScenarioShard(python, shardRoot, pythonReplay, pythonNoCompatible, pythonAdversarial)',
         ] as $token) {
             $this->assertStringContainsString($token, $publishedWorkers);
         }
 
+        $crossLanguageEvidenceWrite = strpos(
+            $publishedWorkers,
+            "scenario_results: {\n      [CROSS_LANGUAGE_SCENARIO]: {",
+        );
         $pythonEvidenceWrite = strpos($publishedWorkers, 'writeShard(pythonScenarioShard(');
         $crossLanguagePrerequisiteGate = strpos($publishedWorkers, 'const crossLanguageMissing = [];');
         $phpInstall = strpos($publishedWorkers, 'const php = installPhpWorker(shardRoot);');
 
+        $this->assertIsInt($crossLanguageEvidenceWrite);
         $this->assertIsInt($pythonEvidenceWrite);
         $this->assertIsInt($crossLanguagePrerequisiteGate);
         $this->assertIsInt($phpInstall);
         $this->assertLessThan(
-            $crossLanguagePrerequisiteGate,
-            $pythonEvidenceWrite,
-            'Python replay/no-compatible/adversarial evidence must be persisted before PHP/Docker prerequisites are checked.',
-        );
-        $this->assertLessThan(
             $phpInstall,
             $crossLanguagePrerequisiteGate,
-            'PHP installation must be scoped to the cross-language cell after Python-only evidence is recorded.',
+            'PHP installation must remain scoped to the cross-language cell after prerequisite checks.',
+        );
+        $this->assertLessThan(
+            $crossLanguageEvidenceWrite,
+            $phpInstall,
+            'Published PHP/Python cross-language evidence must be written before supplemental Python-only cells start.',
+        );
+        $this->assertLessThan(
+            $pythonEvidenceWrite,
+            $crossLanguageEvidenceWrite,
+            'Supplemental Python replay/no-compatible/adversarial evidence must append after the acceptance-critical cross-language shard.',
         );
     }
 
@@ -242,12 +286,12 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         }
 
         $this->assertStringContainsString(
-            'const pythonReplay = await runPythonReplayShardSafely(python);',
+            'pythonReplay = await runPythonReplayShardSafely(python);',
             $publishedWorkers,
-            'a replay/cache shard exception must be recorded without preventing the cross-language cell from running',
+            'a replay/cache shard exception must be recorded after the cross-language cell has had a chance to run',
         );
         $this->assertStringContainsString(
-            'const pythonNoCompatible = await runPythonNoCompatibleShardSafely(python);',
+            'pythonNoCompatible = await runPythonNoCompatibleShardSafely(python);',
             $publishedWorkers,
             'the no-compatible cell must be measured by an installed published worker shard',
         );
@@ -1063,6 +1107,211 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_published_worker_shard_fallback_preserves_artifact_sources(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the worker-versioning runner fallback evidence.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $script = <<<'JS'
+import { pathToFileURL } from 'node:url';
+
+const moduleUrl = pathToFileURL(process.argv[2]).href;
+const { publishedWorkerShardFallbackEvidence } = await import(moduleUrl);
+const evidence = publishedWorkerShardFallbackEvidence(
+  { status: 9, signal: null, error: null },
+  {
+    server: '0.2.391',
+    cli: '0.1.80',
+    'sdk-python': '0.4.88',
+    workflow: '2.0.0-alpha.203',
+    'workflow-php': '2.0.0-alpha.203',
+    waterline: '2.0.0-alpha.86',
+  },
+  {
+    server: 'published_docker_image',
+    cli: 'official_install_script',
+    'sdk-python': 'pypi_release',
+    workflow: 'packagist_release',
+    'workflow-php': 'packagist_release',
+    waterline: 'published_waterline_release',
+  },
+);
+
+console.log(JSON.stringify(evidence));
+JS;
+
+        $process = proc_open(
+            [
+                $nodeBinary,
+                '--input-type=module',
+                '-e',
+                $script,
+                'import-runner-helper',
+                $repoRoot.'/scripts/conformance/worker-versioning-published-artifacts.mjs',
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            $repoRoot,
+            ['PATH' => getenv('PATH') ?: '/usr/bin:/bin'],
+        );
+
+        $this->assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stderr);
+
+        $evidence = json_decode((string) $stdout, true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame('published_docker_image', $evidence['artifact_sources']['server']);
+        $this->assertSame('pypi_release', $evidence['artifact_sources']['sdk-python']);
+        $this->assertSame('packagist_release', $evidence['artifact_sources']['workflow-php']);
+        $this->assertSame(
+            'not_covered',
+            $evidence['scenario_results']['cross_language_php_python_pinning']['status'],
+        );
+        $this->assertFalse(
+            $evidence['scenario_results']['cross_language_php_python_pinning']['observed_outputs']['published_artifact_worker_execution'],
+        );
+    }
+
+    public function test_shell_timeout_handoff_writes_published_worker_fallback_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the worker-versioning shell fallback evidence.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $suffix = bin2hex(random_bytes(4));
+        $resultDir = $repoRoot.'/storage/framework/worker-versioning-timeout-result-'.$suffix;
+        $runRoot = $repoRoot.'/storage/framework/worker-versioning-timeout-run-'.$suffix;
+        $fakeBin = $repoRoot.'/storage/framework/worker-versioning-timeout-bin-'.$suffix;
+        mkdir($resultDir, 0777, true);
+        mkdir($runRoot, 0777, true);
+        mkdir($fakeBin, 0777, true);
+
+        try {
+            $fakeTimeout = $fakeBin.'/timeout';
+            file_put_contents($fakeTimeout, "#!/bin/sh\nexit 124\n");
+            chmod($fakeTimeout, 0755);
+            $installEvidencePath = $resultDir.'/artifact-install-evidence.json';
+            file_put_contents($installEvidencePath, json_encode([
+                'local_product_source_checkouts_used' => false,
+                'artifacts' => [
+                    [
+                        'artifact' => 'server',
+                        'version' => '0.2.391',
+                        'source' => 'docker',
+                        'status' => 'pass',
+                    ],
+                    [
+                        'artifact' => 'cli',
+                        'version' => '0.1.80',
+                        'source' => 'official_install_script',
+                        'status' => 'pass',
+                    ],
+                    [
+                        'artifact' => 'sdk-python',
+                        'version' => '0.4.88',
+                        'source' => 'pypi_release',
+                        'status' => 'pass',
+                    ],
+                    [
+                        'artifact' => 'workflow-php',
+                        'version' => '2.0.0-alpha.203',
+                        'source' => 'packagist_release',
+                        'status' => 'pass',
+                    ],
+                    [
+                        'artifact' => 'waterline',
+                        'version' => '2.0.0-alpha.86',
+                        'source' => 'published_waterline_release',
+                        'status' => 'pass',
+                    ],
+                ],
+            ], JSON_THROW_ON_ERROR));
+
+            $path = $fakeBin.PATH_SEPARATOR.(getenv('PATH') ?: '/usr/bin:/bin');
+            $process = proc_open(
+                [
+                    'bash',
+                    $repoRoot.'/scripts/conformance/worker-versioning-published-artifacts.sh',
+                    '--result-dir',
+                    $resultDir,
+                    '--keep-run-root',
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => $path,
+                    'DW_WV_RESULT_DIR' => $resultDir,
+                    'DW_WV_RUN_ROOT' => $runRoot,
+                    'DW_WV_SERVER_URL' => 'http://127.0.0.1:9',
+                    'DW_WV_BLOCKED_REASON' => 'unit test stops after shell fallback evidence',
+                    'DW_WV_ARTIFACT_INSTALL_EVIDENCE' => $installEvidencePath,
+                    'DW_WV_PUBLISHED_WORKER_SHARD_TIMEOUT_SECONDS' => '1',
+                    'DW_SERVER_VERSION' => '0.2.391',
+                    'DW_CLI_VERSION' => '0.1.80',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.88',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.203',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.86',
+                    'DW_WV_SERVER_ARTIFACT_SOURCE' => 'docker',
+                    'DW_CLI_ARTIFACT_SOURCE' => 'official_install_script',
+                    'DW_PYTHON_SDK_ARTIFACT_SOURCE' => 'pypi_release',
+                    'DW_WORKFLOW_PHP_ARTIFACT_SOURCE' => 'packagist_release',
+                    'DW_WATERLINE_ARTIFACT_SOURCE' => 'published_waterline_release',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stdout.$stderr);
+
+            $evidencePath = $resultDir.'/published-worker-execution-evidence.json';
+            $this->assertFileExists($evidencePath);
+
+            $evidence = json_decode((string) file_get_contents($evidencePath), true, 512, JSON_THROW_ON_ERROR);
+            $scenario = $evidence['scenario_results']['cross_language_php_python_pinning'];
+            $outputs = $scenario['observed_outputs'];
+
+            $this->assertSame('not_covered', $scenario['status']);
+            $this->assertSame(1000, $outputs['shard_timeout_ms']);
+            $this->assertSame(124, $outputs['shard_status']);
+            $this->assertSame('SIGTERM', $outputs['shard_signal']);
+            $this->assertFalse($outputs['published_artifact_worker_execution']);
+            $this->assertSame('docker', $evidence['artifact_sources']['server']);
+            $this->assertSame('pypi_release', $evidence['artifact_sources']['sdk-python']);
+            $this->assertSame('packagist_release', $evidence['artifact_sources']['workflow-php']);
+            $this->assertStringContainsString(
+                'published worker shard did not complete during direct shell handoff',
+                (string) file_get_contents($resultDir.'/published-worker-shard-direct.log'),
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+            $this->removeDirectory($runRoot);
+            $this->removeDirectory($fakeBin);
+        }
+    }
+
     private function read(string $path): string
     {
         $fullPath = dirname(__DIR__, 2).DIRECTORY_SEPARATOR.$path;
@@ -1070,6 +1319,28 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertFileExists($fullPath);
 
         return (string) file_get_contents($fullPath);
+    }
+
+    private function removeDirectory(string $path): void
+    {
+        if (! is_dir($path)) {
+            return;
+        }
+
+        $items = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($path, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST,
+        );
+
+        foreach ($items as $item) {
+            if ($item->isDir()) {
+                @rmdir($item->getPathname());
+            } else {
+                @unlink($item->getPathname());
+            }
+        }
+
+        @rmdir($path);
     }
 
     /**

@@ -63,10 +63,9 @@ async function main() {
   await ensureNamespace();
 
   const python = await installPythonWorker(shardRoot);
-  const pythonReplay = await runPythonReplayShardSafely(python);
-  const pythonNoCompatible = await runPythonNoCompatibleShardSafely(python);
-  const pythonAdversarial = await runPythonAdversarialShardSafely(python);
-  writeShard(pythonScenarioShard(python, shardRoot, pythonReplay, pythonNoCompatible, pythonAdversarial));
+  let pythonReplay = emptySupplementalShard();
+  let pythonNoCompatible = emptySupplementalShard();
+  let pythonAdversarial = emptySupplementalShard();
 
   const crossLanguageMissing = [];
   if (!workflowPhpVersion) crossLanguageMissing.push('DW_WORKFLOW_PHP_VERSION');
@@ -326,6 +325,19 @@ async function main() {
       shard_root: shardRoot,
     },
   });
+
+  pythonReplay = await runPythonReplayShardSafely(python);
+  pythonNoCompatible = await runPythonNoCompatibleShardSafely(python);
+  pythonAdversarial = await runPythonAdversarialShardSafely(python);
+  writeShard(pythonScenarioShard(python, shardRoot, pythonReplay, pythonNoCompatible, pythonAdversarial));
+}
+
+function emptySupplementalShard() {
+  return {
+    workers: [],
+    scenario_results: {},
+    findings: [],
+  };
 }
 
 function pythonScenarioShard(python, shardRoot, pythonReplay, pythonNoCompatible, pythonAdversarial) {

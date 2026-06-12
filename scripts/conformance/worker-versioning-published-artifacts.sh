@@ -43,6 +43,9 @@ Environment overrides:
                               Client-side timeout for published-worker shard polls.
                               Defaults to DW_WV_WORKER_POLL_TIMEOUT,
                               DW_WORKER_POLL_TIMEOUT, then 2 seconds.
+  DW_WV_PUBLISHED_WORKER_SHARD_TIMEOUT_SECONDS
+                              Wall-clock timeout for the automatic published
+                              PHP/Python worker shard. Defaults to 90 seconds.
   DW_WV_SKIP_PUBLISHED_WORKER_SHARD=1
                               Skip automatic published PHP/Python worker shard generation.
 USAGE
@@ -188,6 +191,62 @@ write_blocked_result() {
   node "$script_dir/worker-versioning-published-artifacts.mjs"
 }
 
+write_published_worker_fallback_evidence() {
+  local shard_status="$1"
+  local timed_out="$2"
+
+  DW_WV_PUBLISHED_WORKER_SHARD_EXIT_STATUS="$shard_status" \
+  DW_WV_PUBLISHED_WORKER_SHARD_TIMED_OUT="$timed_out" \
+  node --input-type=module - "$script_dir/worker-versioning-published-artifacts.mjs" <<'NODE'
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const moduleUrl = pathToFileURL(process.argv[2]).href;
+const {
+  artifactInstallEvidence,
+  artifactSourcesFromEnv,
+  artifactVersionsFromEnv,
+  mergeArtifactSources,
+  publishedWorkerShardFallbackEvidence,
+} = await import(moduleUrl);
+
+const outputPath = process.env.DW_WV_PUBLISHED_WORKER_EVIDENCE;
+if (!outputPath) {
+  throw new Error('DW_WV_PUBLISHED_WORKER_EVIDENCE is required to write worker shard fallback evidence');
+}
+
+const status = Number.parseInt(process.env.DW_WV_PUBLISHED_WORKER_SHARD_EXIT_STATUS ?? '', 10);
+const timedOut = ['1', 'true', 'yes'].includes(
+  String(process.env.DW_WV_PUBLISHED_WORKER_SHARD_TIMED_OUT ?? '').toLowerCase(),
+);
+const artifactVersions = artifactVersionsFromEnv();
+let artifactSources = artifactSourcesFromEnv();
+artifactSources = mergeArtifactSources(
+  artifactSources,
+  artifactInstallEvidence(artifactVersions, artifactSources),
+);
+const generated = {
+  status: Number.isFinite(status) ? status : null,
+  signal: timedOut ? 'SIGTERM' : null,
+  error: timedOut
+    ? { code: 'ETIMEDOUT', message: 'published worker shard exceeded shell timeout before emitting evidence' }
+    : null,
+};
+
+fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+fs.writeFileSync(
+  outputPath,
+  `${JSON.stringify(publishedWorkerShardFallbackEvidence(
+    generated,
+    artifactVersions,
+    artifactSources,
+  ), null, 2)}\n`,
+  'utf8',
+);
+NODE
+}
+
 if ! require_command node; then
   printf '%s\n' 'required command not found: node' >&2
   exit 127
@@ -271,7 +330,23 @@ if [[ -z "${DW_WV_PUBLISHED_WORKER_EVIDENCE:-}" ]]; then
 fi
 
 if [[ "${DW_WV_SKIP_PUBLISHED_WORKER_SHARD:-0}" != "1" ]]; then
-  node "$script_dir/worker-versioning-published-workers.mjs"
+  if require_command timeout; then
+    shard_timeout_seconds="${DW_WV_PUBLISHED_WORKER_SHARD_TIMEOUT_SECONDS:-90}"
+    shard_status=0
+    timeout "${shard_timeout_seconds}s" node "$script_dir/worker-versioning-published-workers.mjs" >"$result_dir/published-worker-shard-direct.log" 2>&1 || shard_status=$?
+    if [[ "$shard_status" -ne 0 ]]; then
+      printf 'published worker shard did not complete during direct shell handoff; aggregating available evidence\n' >>"$result_dir/published-worker-shard-direct.log"
+      if [[ ! -s "${DW_WV_PUBLISHED_WORKER_EVIDENCE:-}" ]]; then
+        shard_timed_out=0
+        if [[ "$shard_status" -eq 124 || "$shard_status" -eq 137 ]]; then
+          shard_timed_out=1
+        fi
+        write_published_worker_fallback_evidence "$shard_status" "$shard_timed_out"
+      fi
+    fi
+
+    export DW_WV_SKIP_PUBLISHED_WORKER_SHARD=1
+  fi
 fi
 
 node "$script_dir/worker-versioning-published-artifacts.mjs"

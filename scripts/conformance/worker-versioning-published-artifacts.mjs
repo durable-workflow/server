@@ -40,6 +40,11 @@ const noCompatibleVisibilitySeconds = Math.max(1, numberValue(
   process.env.DW_WV_NO_COMPATIBLE_VISIBILITY_SECONDS
     ?? process.env.DW_WV_WORKER_VERSIONING_NO_COMPATIBLE_VISIBILITY_SECONDS,
 ) ?? 60);
+const publishedWorkerShardTimeoutMs = timeoutMsFromEnv(
+  'DW_WV_PUBLISHED_WORKER_SHARD_TIMEOUT_MS',
+  'DW_WV_PUBLISHED_WORKER_SHARD_TIMEOUT_SECONDS',
+  90000,
+);
 
 const scenarioManifest = readJsonIfExists(scenarioManifestPath) ?? {};
 const requiredScenarios = Array.isArray(scenarioManifest.scenarios)
@@ -89,7 +94,7 @@ async function main() {
   let artifactSources = artifactSourcesFromEnv();
   const installEvidence = artifactInstallEvidence(artifactVersions, artifactSources);
   artifactSources = mergeArtifactSources(artifactSources, installEvidence);
-  maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions);
+  maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions, artifactSources);
   const publishedWorkerEvidence = publishedWorkerExecutionEvidence(artifactVersions, artifactSources);
   writePublishedArtifacts(artifactVersions, artifactSources, installEvidence);
 
@@ -1508,7 +1513,7 @@ function noCompatibleServerProtocolProbePasses(outputs, artifactVersions, artifa
     && !artifactSourceIsForbidden(serverSource);
 }
 
-function artifactVersionsFromEnv() {
+export function artifactVersionsFromEnv() {
   const workflow = trim(process.env.DW_WORKFLOW_PHP_VERSION ?? process.env.DW_WORKFLOW_VERSION);
 
   return {
@@ -1521,7 +1526,7 @@ function artifactVersionsFromEnv() {
   };
 }
 
-function artifactSourcesFromEnv() {
+export function artifactSourcesFromEnv() {
   return {
     server: process.env.DW_WV_SERVER_ARTIFACT_SOURCE ?? 'published_server_url',
     cli: trim(process.env.DW_CLI_ARTIFACT_SOURCE) || 'not_exercised',
@@ -1727,7 +1732,7 @@ export function publishedWorkerExecutionEvidence(artifactVersions, artifactSourc
   };
 }
 
-function maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions) {
+function maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions, artifactSources) {
   if (skipPublishedWorkerShard() || fs.existsSync(publishedWorkerEvidencePath)) {
     return;
   }
@@ -1760,10 +1765,58 @@ function maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions) {
     env,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: publishedWorkerShardTimeoutMs,
+    killSignal: 'SIGTERM',
   });
 
   writeTextIfNotEmpty(path.join(resultDir, 'published-worker-execution.stdout.log'), generated.stdout);
   writeTextIfNotEmpty(path.join(resultDir, 'published-worker-execution.stderr.log'), generated.stderr);
+  if (!fs.existsSync(publishedWorkerEvidencePath)
+    && (generated.error || generated.signal || generated.status !== 0)) {
+    writeJson(
+      publishedWorkerEvidencePath,
+      publishedWorkerShardFallbackEvidence(generated, artifactVersions, artifactSources),
+    );
+  }
+}
+
+export function publishedWorkerShardFallbackEvidence(generated, artifactVersions, artifactSources) {
+  const timedOut = generated.error?.code === 'ETIMEDOUT';
+  const detail = timedOut
+    ? `published PHP/Python worker shard exceeded ${publishedWorkerShardTimeoutMs}ms before emitting evidence`
+    : `published PHP/Python worker shard exited before emitting evidence: status=${generated.status ?? 'unknown'}; signal=${generated.signal ?? 'none'}; error=${generated.error?.message ?? 'none'}`;
+  const finding = {
+    scenario_id: 'cross_language_php_python_pinning',
+    owning_surface: 'conformance_harness',
+    artifact_versions: artifactVersions,
+    observed_behavior: detail,
+    expected_behavior: 'Published workflow-php and sdk-python worker artifacts execute the cross-language worker-versioning cell and emit delivery counts before the aggregate result is written.',
+    next_acceptance_criterion: 'rerun the worker-versioning host topology with published-worker shard evidence present, including PHP/Python worker build IDs, runtime identities, workflow/run IDs, rollout state, and cross-language delivery counts',
+  };
+
+  return {
+    schema: 'durable-workflow.v2.worker-versioning-runtime.published-worker-execution-evidence',
+    local_product_source_checkouts_used: false,
+    generated_at: timestamp(),
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    scenario_results: {
+      cross_language_php_python_pinning: {
+        scenario_id: 'cross_language_php_python_pinning',
+        status: 'not_covered',
+        observed_outputs: {
+          shard_timeout_ms: timedOut ? publishedWorkerShardTimeoutMs : null,
+          shard_status: generated.status ?? null,
+          shard_signal: generated.signal ?? null,
+          shard_error: generated.error?.message ?? null,
+          published_artifact_worker_execution: false,
+          local_product_source_checkouts_used: false,
+        },
+        linked_findings: [finding],
+      },
+    },
+    findings: [finding],
+  };
 }
 
 function skipPublishedWorkerShard() {
@@ -3037,6 +3090,20 @@ function numberValue(value) {
   }
 
   return Number.isFinite(Number(value)) ? Number(value) : null;
+}
+
+function timeoutMsFromEnv(millisecondsName, secondsName, fallbackMs) {
+  const explicitMilliseconds = numberValue(process.env[millisecondsName]);
+  if (explicitMilliseconds !== null) {
+    return Math.max(1000, explicitMilliseconds);
+  }
+
+  const explicitSeconds = numberValue(process.env[secondsName]);
+  if (explicitSeconds !== null) {
+    return Math.max(1000, explicitSeconds * 1000);
+  }
+
+  return fallbackMs;
 }
 
 function pollStatusValuesFromOutputs(outputs) {
