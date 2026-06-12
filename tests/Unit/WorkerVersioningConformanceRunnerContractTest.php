@@ -323,6 +323,11 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'the server protocol probe must accept the task-queue build-id pending-work diagnostic as an explicit no-compatible signal',
         );
         $this->assertStringContainsString(
+            'waitForNoCompatibleVisibility('."\n      serverUrl,\n      noCompatibleWorkflowId,\n      noCompatibleRunId,\n      taskQueue,",
+            $node,
+            'the no-compatible visibility helper must receive the scoped task queue used for build-id diagnostics',
+        );
+        $this->assertStringContainsString(
             'task_queue_build_id_entry: noCompatibleBuildIdEntry',
             $node,
             'the server protocol probe must capture the build-id cohort row used to prove the no-compatible diagnostic',

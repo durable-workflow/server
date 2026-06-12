@@ -310,6 +310,7 @@ async function main() {
       serverUrl,
       noCompatibleWorkflowId,
       noCompatibleRunId,
+      taskQueue,
       buildV1,
       controlHeaders,
     )
@@ -1295,7 +1296,7 @@ function emptyNoCompatibleVisibilityResult() {
   };
 }
 
-async function waitForNoCompatibleVisibility(serverUrl, workflowId, runId, buildId, headers) {
+async function waitForNoCompatibleVisibility(serverUrl, workflowId, runId, taskQueue, buildId, headers) {
   const samples = [];
   const taskQueueBuildIdSamples = [];
   const deadline = Date.now() + noCompatibleVisibilitySeconds * 1000;
