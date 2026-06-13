@@ -545,6 +545,7 @@ import json
 import os
 import re
 import sys
+import urllib.error
 import urllib.request
 from typing import Any
 
@@ -604,16 +605,38 @@ def latest_docker_tag() -> str:
     return sorted(tags, key=semver_key)[-1]
 
 
+def github_release_tag_candidates(override: str) -> list[str]:
+    requested = override.strip()
+    normalized = requested[1:] if requested.startswith("v") else requested
+    return list(dict.fromkeys([requested, normalized, f"v{normalized}"]))
+
+
+def github_release_by_tag(repo: str, tag: str) -> Any:
+    return read_json(f"https://api.github.com/repos/{repo}/releases/tags/{tag}")
+
+
 def github_release(repo: str, override: str | None, required_asset: str) -> tuple[str, str]:
     if override:
-        tag = override if override.startswith("v") else f"v{override}"
-        release = read_json(f"https://api.github.com/repos/{repo}/releases/tags/{tag}")
+        release = None
+        tag = ""
+        for candidate in github_release_tag_candidates(override):
+            try:
+                release = github_release_by_tag(repo, candidate)
+                tag = candidate
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    continue
+                raise
+        if release is None:
+            raise RuntimeError(f"{repo} release {override!r} was not found")
     else:
         release = read_json(f"https://api.github.com/repos/{repo}/releases/latest")
         tag = str(release.get("tag_name", ""))
     for asset in release.get("assets", []):
         if asset.get("name") == required_asset and asset.get("browser_download_url"):
-            version = tag[1:] if tag.startswith("v") else tag
+            resolved_tag = str(release.get("tag_name", tag))
+            version = resolved_tag[1:] if resolved_tag.startswith("v") else resolved_tag
             return version, str(asset["browser_download_url"])
     raise RuntimeError(f"{repo} release {tag} does not expose {required_asset}")
 

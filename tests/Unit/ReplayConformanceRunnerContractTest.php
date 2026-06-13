@@ -31,6 +31,24 @@ class ReplayConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('published-artifact-install.json', $source);
     }
 
+    public function test_cli_release_resolution_accepts_bare_and_v_prefixed_tags(): void
+    {
+        $source = $this->read('scripts/conformance/replay-published-artifacts.sh');
+
+        $this->assertStringContainsString('import urllib.error', $source);
+        $this->assertStringContainsString('def github_release_tag_candidates(override: str) -> list[str]:', $source);
+        $this->assertStringContainsString('return list(dict.fromkeys([requested, normalized, f"v{normalized}"]))', $source);
+        $this->assertStringContainsString('for candidate in github_release_tag_candidates(override):', $source);
+        $this->assertStringContainsString('release = github_release_by_tag(repo, candidate)', $source);
+        $this->assertStringContainsString('if exc.code == 404:', $source);
+        $this->assertStringContainsString('resolved_tag = str(release.get("tag_name", tag))', $source);
+        $this->assertStringNotContainsString(
+            'tag = override if override.startswith("v") else f"v{override}"',
+            $source,
+            'explicit CLI versions must try the requested release tag before falling back to alternate semver spellings',
+        );
+    }
+
     public function test_runner_composes_python_and_php_runtime_shards(): void
     {
         $source = $this->read('scripts/conformance/replay-published-artifacts.sh');
