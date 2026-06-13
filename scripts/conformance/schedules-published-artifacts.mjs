@@ -25,6 +25,8 @@ const smokeEvidencePath = process.env.DW_SCHEDULES_SMOKE_EVIDENCE
   ?? path.join(resultDir, 'schedules-smoke-evidence.json');
 const cliEvidencePath = process.env.DW_SCHEDULES_CLI_EVIDENCE
   ?? path.join(resultDir, 'schedules-cli-evidence.json');
+const pythonLifecycleEvidencePath = process.env.DW_SCHEDULES_PYTHON_LIFECYCLE_EVIDENCE
+  ?? path.join(resultDir, 'schedules-python-lifecycle-evidence.json');
 const operatorControlsEvidencePath = process.env.DW_SCHEDULES_OPERATOR_CONTROLS_EVIDENCE
   ?? path.join(resultDir, 'schedules-operator-controls-evidence.json');
 const missedRestartEvidencePath = process.env.DW_SCHEDULES_MISSED_RESTART_EVIDENCE
@@ -135,6 +137,7 @@ async function main() {
     { name: 'operator-controls', run: () => maybeRunOperatorControlsShard(startedAt, artifactVersions, artifactSources) },
     { name: 'missed-restart', run: () => maybeRunMissedRestartShard(startedAt, artifactVersions, artifactSources) },
     { name: 'cli-surface', run: () => maybeRunCliSurfaceShard(startedAt, artifactVersions, artifactSources) },
+    { name: 'python-lifecycle', run: () => maybeRunPythonLifecycleShard(startedAt, artifactVersions, artifactSources) },
     { name: 'cross-language', run: () => maybeRunCrossLanguageShard(startedAt, artifactVersions, artifactSources) },
     { name: 'adversarial', run: () => maybeRunAdversarialShard(startedAt, artifactVersions, artifactSources) },
   ]);
@@ -384,13 +387,14 @@ function pythonSmokePassesScenario(scenarioId, evidence) {
       'resume',
       'trigger',
       'delete',
-    ]);
+    ]) && smoke.triggered_workflow_completed === true;
   }
 
   if (scenarioId === 'invalid_cron_refusal') {
     return smoke.invalid_cron_refused === true
       && smoke.invalid_cron_typed_error === true
-      && smoke.invalid_cron_persisted === false;
+      && smoke.invalid_cron_persisted === false
+      && invalidCronPublicPersistenceChecked(smoke);
   }
 
   return false;
@@ -400,10 +404,18 @@ function pythonSmokeOutputs(scenarioId, evidence, artifactVersions) {
   const smoke = evidence.python_schedule_lifecycle_smoke ?? evidence.pythonScheduleLifecycleSmoke ?? {};
 
   if (scenarioId === 'invalid_cron_refusal') {
+    const persistenceEvidence = invalidCronPublicPersistenceEvidence(smoke);
     return {
       refused: true,
       typed_error: true,
       persisted: false,
+      public_persistence_checked: true,
+      persistence_evidence: persistenceEvidence,
+      public_list_checked: persistenceEvidence.public_list_checked === true,
+      list_contains_invalid_schedule: persistenceEvidence.list_contains_invalid_schedule ?? null,
+      public_describe_checked: persistenceEvidence.public_describe_checked === true,
+      describe_found: persistenceEvidence.describe_found ?? null,
+      describe_status: persistenceEvidence.describe_status ?? null,
       smoke_source: 'published_python_sdk_lifecycle_smoke',
       artifact_versions: artifactVersions,
     };
@@ -414,10 +426,55 @@ function pythonSmokeOutputs(scenarioId, evidence, artifactVersions) {
     list_observed: smoke.list === true,
     describe_observed: smoke.describe === true,
     control_observed: ['pause', 'resume', 'trigger', 'delete'].every((key) => smoke[key] === true),
+    manual_trigger_observed: smoke.trigger === true,
     triggered_workflow_completion_observed: smoke.triggered_workflow_completed === true,
+    operations: {
+      create: smoke.create === true,
+      list: smoke.list === true,
+      describe: smoke.describe === true,
+      pause: smoke.pause === true,
+      resume: smoke.resume === true,
+      manual_trigger: smoke.trigger === true,
+      delete: smoke.delete === true,
+      triggered_workflow_completion: smoke.triggered_workflow_completed === true,
+    },
     smoke_source: 'published_python_sdk_lifecycle_smoke',
     artifact_versions: artifactVersions,
   };
+}
+
+function invalidCronPublicPersistenceEvidence(smoke) {
+  return objectValue(
+    smoke.invalid_cron_public_persistence
+      ?? smoke.invalidCronPublicPersistence
+      ?? smoke.invalid_cron_persistence_evidence
+      ?? smoke.invalidCronPersistenceEvidence,
+  );
+}
+
+function invalidCronPublicPersistenceChecked(smoke) {
+  const evidence = invalidCronPublicPersistenceEvidence(smoke);
+  const explicitChecked = smoke.invalid_cron_public_persistence_checked === true
+    || smoke.invalidCronPublicPersistenceChecked === true;
+  const listChecked = evidence.public_list_checked === true
+    || evidence.publicListChecked === true
+    || Object.hasOwn(evidence, 'list_contains_invalid_schedule')
+    || Object.hasOwn(evidence, 'listContainsInvalidSchedule');
+  const describeChecked = evidence.public_describe_checked === true
+    || evidence.publicDescribeChecked === true
+    || Object.hasOwn(evidence, 'describe_found')
+    || Object.hasOwn(evidence, 'describeFound')
+    || Object.hasOwn(evidence, 'describe_status')
+    || Object.hasOwn(evidence, 'describeStatus');
+  const listProvesAbsent = evidence.list_contains_invalid_schedule === false
+    || evidence.listContainsInvalidSchedule === false;
+  const describeProvesAbsent = evidence.describe_found === false
+    || evidence.describeFound === false
+    || Number.parseInt(String(evidence.describe_status ?? evidence.describeStatus ?? ''), 10) === 404;
+
+  return (explicitChecked && (listProvesAbsent || describeProvesAbsent))
+    || (listChecked && listProvesAbsent)
+    || (describeChecked && describeProvesAbsent);
 }
 
 function publishedArtifactInstallPassesScenario(scenarioId, artifactVersions, artifactSources, evidence) {
@@ -1529,6 +1586,7 @@ function readEvidenceInputs() {
     operatorControlsEvidencePath,
     missedRestartEvidencePath,
     cliEvidencePath,
+    pythonLifecycleEvidencePath,
     crossLanguageEvidencePath,
     adversarialEvidencePath,
   ].filter((value, index, values) => stringValue(value) !== '' && values.indexOf(value) === index);
@@ -1611,6 +1669,524 @@ function mergeArrays(left, right) {
   }
 
   return result;
+}
+
+async function maybeRunPythonLifecycleShard(startedAt, artifactVersions, artifactSources) {
+  const mode = stringValue(process.env.DW_SCHEDULES_RUN_PYTHON_LIFECYCLE_SHARD).toLowerCase();
+  if (!['1', 'true', 'yes', 'auto'].includes(mode)) {
+    return null;
+  }
+
+  if (readJsonIfExists(pythonLifecycleEvidencePath) !== null) {
+    return null;
+  }
+
+  const explicit = mode !== 'auto';
+  const serverUrl = stringValue(process.env.DW_SCHEDULES_SERVER_URL);
+  const dockerAvailable = await commandSucceeds('docker', ['--version']);
+  const composeAvailable = dockerAvailable && await commandSucceeds('docker', ['compose', 'version']);
+  const serverImage = resolveServerImage(artifactVersions);
+  const pythonVersion = artifactValue(artifactVersions, 'sdk-python');
+  const missing = [];
+
+  if (!await commandSucceeds('python3', ['--version'])) {
+    missing.push('python3');
+  }
+  if (pythonVersion === '') {
+    missing.push('DW_PYTHON_SDK_VERSION');
+  }
+  if (serverUrl === '' && (!dockerAvailable || !composeAvailable || serverImage === '')) {
+    if (!dockerAvailable) {
+      missing.push('docker');
+    }
+    if (dockerAvailable && !composeAvailable) {
+      missing.push('docker compose');
+    }
+    if (serverImage === '') {
+      missing.push('DW_SERVER_VERSION or DW_SERVER_IMAGE');
+    }
+  }
+
+  if (missing.length > 0) {
+    if (!explicit) {
+      return null;
+    }
+
+    return pythonLifecycleBlockedEvidence(
+      `Python schedules lifecycle shard prerequisites are missing: ${missing.join(', ')}.`,
+      startedAt,
+      artifactVersions,
+      artifactSources,
+    );
+  }
+
+  try {
+    return await runPythonLifecycleShard({
+      startedAt,
+      artifactVersions,
+      artifactSources,
+      serverImage,
+      existingServerUrl: serverUrl,
+    });
+  } catch (error) {
+    const reason = failureReasonWithShardLogs(error, 'schedules-python-lifecycle');
+    return pythonLifecycleBlockedEvidence(reason, startedAt, artifactVersions, artifactSources);
+  }
+}
+
+async function runPythonLifecycleShard({ startedAt, artifactVersions, artifactSources, serverImage, existingServerUrl }) {
+  const lifecycleStartedAt = timestamp();
+  const runId = `schedules-python-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const namespace = sanitizeDockerName(`${stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance'}-${runId}`).slice(0, 96);
+  const taskQueue = stringValue(process.env.DW_SCHEDULES_PYTHON_LIFECYCLE_TASK_QUEUE)
+    || `schedules-python-lifecycle-${runId}`;
+  const workflowType = stringValue(process.env.DW_SCHEDULES_PYTHON_LIFECYCLE_WORKFLOW_TYPE)
+    || 'SchedulesConformancePythonLifecycleWorkflow';
+  const token = stringValue(process.env.DW_SCHEDULES_AUTH_TOKEN) || 'dev-token';
+  const readinessTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_SERVER_READY_TIMEOUT_SECONDS, 120);
+  const timeoutSeconds = positiveInt(process.env.DW_SCHEDULES_PYTHON_LIFECYCLE_TIMEOUT_SECONDS, 120);
+  const schedulerTickSeconds = positiveInt(process.env.DW_SCHEDULES_PYTHON_LIFECYCLE_SCHEDULER_TICK_SECONDS, 2);
+  const interval = stringValue(process.env.DW_SCHEDULES_PYTHON_LIFECYCLE_INTERVAL) || 'PT1H';
+  const invalidCron = stringValue(process.env.DW_SCHEDULES_INVALID_CRON_EXPRESSION) || 'not a cron expression';
+  const scheduleId = `${runId}-lifecycle`;
+  const invalidScheduleId = `${runId}-invalid-cron`;
+  const workerId = `${runId}-worker`;
+  const serverPort = positiveInt(process.env.DW_SCHEDULES_SERVER_PORT, 0) || await freePort();
+  let serverUrl = existingServerUrl || `http://127.0.0.1:${serverPort}`;
+  const composeProject = sanitizeDockerName(runId);
+  const overlayPath = path.join(resultDir, 'schedules-python-lifecycle-compose.override.yml');
+  const composeFiles = [
+    '-f',
+    path.join(repoRoot, 'docker-compose.published.yml'),
+    '-f',
+    overlayPath,
+  ];
+  const shardRoot = path.join(resultDir, 'schedules-python-lifecycle-shard');
+  let composeStarted = false;
+
+  fs.rmSync(shardRoot, { recursive: true, force: true });
+  fs.mkdirSync(shardRoot, { recursive: true });
+  markArtifactSource(artifactSources, 'server', existingServerUrl === '' ? 'published_docker_image' : 'existing_published_server_url', artifactVersions);
+
+  if (existingServerUrl === '') {
+    writeSchedulerOverlay(overlayPath, schedulerTickSeconds);
+    await execLogged(
+      'docker',
+      ['image', 'pull', serverImage],
+      path.join(resultDir, 'schedules-python-lifecycle-docker-pull.log'),
+    );
+    composeStarted = true;
+    await startPublishedComposeServices({
+      composeProject,
+      composeFiles,
+      serverPort,
+      serverImage,
+      token,
+      artifactVersions,
+      logPrefix: 'schedules-python-lifecycle',
+    });
+  }
+
+  try {
+    serverUrl = await waitForReachableServerUrl({
+      preferredUrl: serverUrl,
+      timeoutSeconds: readinessTimeoutSeconds,
+      composeProject: composeStarted ? composeProject : '',
+      composeFiles,
+      serverPort,
+      serverImage,
+      token,
+      artifactVersions,
+    });
+    await ensureNamespace(serverUrl, token, namespace);
+
+    const python = await installSchedulesPythonLifecycleArtifact(shardRoot, artifactVersions, artifactSources);
+    const output = await runSchedulesPythonLifecycleScript(python, {
+      action: 'python_lifecycle',
+      server_url: serverUrl,
+      token,
+      namespace,
+      task_queue: taskQueue,
+      worker_id: workerId,
+      workflow_type: workflowType,
+      schedule_id: scheduleId,
+      invalid_schedule_id: invalidScheduleId,
+      interval,
+      invalid_cron: invalidCron,
+      sdk_version: artifactValue(artifactVersions, 'sdk-python'),
+      timeout_seconds: timeoutSeconds,
+      timeout_ms: (timeoutSeconds + 60) * 1000,
+    });
+
+    const evidence = pythonLifecycleEvidenceFromOutput({
+      startedAt: lifecycleStartedAt,
+      finishedAt: timestamp(),
+      output,
+      artifactVersions,
+      artifactSources,
+      namespace,
+      taskQueue,
+      workflowType,
+      scheduleId,
+      invalidScheduleId,
+      workerId,
+      interval,
+      invalidCron,
+    });
+    writeJson(pythonLifecycleEvidencePath, evidence);
+
+    return evidence;
+  } finally {
+    await bestEffortDeleteSchedule(serverUrl, token, namespace, scheduleId);
+    await bestEffortDeleteSchedule(serverUrl, token, namespace, invalidScheduleId);
+    writeJson(path.join(resultDir, 'schedules-python-lifecycle-run-metadata.json'), {
+      schema: 'durable-workflow.v2.schedules-runtime.python-lifecycle-run-metadata',
+      started_at: startedAt,
+      python_lifecycle_started_at: lifecycleStartedAt,
+      finished_at: timestamp(),
+      server_url: serverUrl,
+      namespace,
+      task_queue: taskQueue,
+      server_image: existingServerUrl === '' ? serverImage : null,
+      compose_project: existingServerUrl === '' ? composeProject : null,
+      published_artifact_versions: artifactVersions,
+      artifact_sources: artifactSources,
+      local_product_source_checkouts_used: false,
+      schedules_created: [scheduleId, invalidScheduleId],
+    });
+
+    if (composeStarted) {
+      await collectPythonLifecycleComposeLogs(composeProject, composeFiles);
+      await execFile('docker', ['compose', '-p', composeProject, ...composeFiles, 'down', '-v'], {
+        env: composeEnv(serverPort, serverImage, token, artifactVersions),
+        maxBuffer: 1024 * 1024 * 8,
+      }).catch(() => {});
+    }
+  }
+}
+
+async function installSchedulesPythonLifecycleArtifact(shardRoot, artifactVersions, artifactSources) {
+  const pythonRoot = path.join(shardRoot, 'python');
+  const venv = path.join(pythonRoot, 'venv');
+  const pythonVersion = artifactValue(artifactVersions, 'sdk-python');
+  const scriptPath = path.join(pythonRoot, 'schedules_python_lifecycle.py');
+  fs.mkdirSync(pythonRoot, { recursive: true });
+  writeText(scriptPath, schedulesPythonLifecycleScript());
+
+  await execLogged('python3', ['-m', 'venv', venv], path.join(resultDir, 'schedules-python-lifecycle-venv.log'));
+  const pythonBin = path.join(venv, 'bin', 'python');
+  await execLogged(pythonBin, ['-m', 'pip', 'install', '--upgrade', 'pip'], path.join(resultDir, 'schedules-python-lifecycle-pip-upgrade.log'));
+  await execLogged(
+    pythonBin,
+    ['-m', 'pip', 'install', `durable-workflow==${pythonVersion}`],
+    path.join(resultDir, 'schedules-python-lifecycle-install.log'),
+  );
+  markArtifactSource(artifactSources, 'sdk-python', pythonPackageArtifactSource(pythonVersion), artifactVersions);
+
+  return { pythonRoot, pythonBin, scriptPath };
+}
+
+async function runSchedulesPythonLifecycleScript(python, input) {
+  const { inputPath, outputPath } = writeSchedulesWorkerInput(python.pythonRoot, input);
+  const logPath = path.join(resultDir, `schedules-python-lifecycle-${safeLogName(input.schedule_id ?? input.action)}.log`);
+  const result = await execCommandCapture(python.pythonBin, [python.scriptPath, inputPath, outputPath], {
+    timeout: positiveInt(input.timeout_ms, 180000),
+    maxBuffer: 1024 * 1024 * 6,
+  });
+  writeText(logPath, `${result.stdout}${result.stderr}`);
+  if (result.exit_code !== 0) {
+    throw new Error(`published Python schedules lifecycle action failed; see ${path.basename(logPath)}`);
+  }
+
+  const output = readJsonIfExists(outputPath);
+  if (!output || typeof output !== 'object') {
+    throw new Error('published Python schedules lifecycle action did not write JSON output');
+  }
+
+  return output;
+}
+
+function pythonLifecycleEvidenceFromOutput({
+  startedAt,
+  finishedAt,
+  output,
+  artifactVersions,
+  artifactSources,
+  namespace,
+  taskQueue,
+  workflowType,
+  scheduleId,
+  invalidScheduleId,
+  workerId,
+  interval,
+  invalidCron,
+}) {
+  const operations = objectValue(output.operations);
+  const invalidCronOutcome = objectValue(output.invalid_cron_refusal);
+  const completion = objectValue(output.triggered_workflow_completion);
+  const lifecycleFailures = [];
+  const invalidFailures = [];
+  const operationChecks = {
+    create: operations.create === true,
+    list: operations.list === true,
+    describe: operations.describe === true,
+    pause: operations.pause === true,
+    resume: operations.resume === true,
+    manual_trigger: operations.manual_trigger === true,
+    delete: operations.delete === true,
+    triggered_workflow_completion: completion.workflow_completed === true,
+  };
+
+  for (const [operation, passed] of Object.entries(operationChecks)) {
+    if (!passed) {
+      lifecycleFailures.push(`${operation} was not observed through the published Python SDK lifecycle smoke`);
+    }
+  }
+
+  if (invalidCronOutcome.refused !== true) {
+    invalidFailures.push('invalid cron create was not refused');
+  }
+  if (invalidCronOutcome.typed_error !== true) {
+    invalidFailures.push('invalid cron refusal was not a typed SDK error');
+  }
+  if (invalidCronOutcome.persisted !== false) {
+    invalidFailures.push('invalid cron schedule persistence was not proven false');
+  }
+  if (!invalidCronPublicPersistenceChecked({
+    invalid_cron_public_persistence: invalidCronOutcome.persistence_evidence,
+  })) {
+    invalidFailures.push('invalid cron non-persistence was not proven with public list or describe evidence');
+  }
+
+  const lifecycleOutputs = {
+    create_or_observe: operationChecks.create,
+    list_observed: operationChecks.list,
+    describe_observed: operationChecks.describe,
+    control_observed: operationChecks.pause
+      && operationChecks.resume
+      && operationChecks.manual_trigger
+      && operationChecks.delete,
+    manual_trigger_observed: operationChecks.manual_trigger,
+    triggered_workflow_completion_observed: operationChecks.triggered_workflow_completion,
+    operations: operationChecks,
+    schedule_id: scheduleId,
+    namespace,
+    task_queue: taskQueue,
+    workflow_type: workflowType,
+    worker_id: workerId,
+    interval,
+    sdk_version: artifactValue(artifactVersions, 'sdk-python'),
+    schedule_state: output.schedule_state ?? {},
+    trigger_result: output.trigger_result ?? {},
+    triggered_workflow_completion: completion,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    failures: lifecycleFailures,
+  };
+  const invalidOutputs = {
+    refused: invalidCronOutcome.refused === true,
+    typed_error: invalidCronOutcome.typed_error === true,
+    persisted: invalidCronOutcome.persisted === false ? false : invalidCronOutcome.persisted,
+    public_persistence_checked: true,
+    persistence_evidence: objectValue(invalidCronOutcome.persistence_evidence),
+    public_list_checked: objectValue(invalidCronOutcome.persistence_evidence).public_list_checked === true,
+    list_contains_invalid_schedule: objectValue(invalidCronOutcome.persistence_evidence).list_contains_invalid_schedule ?? null,
+    public_describe_checked: objectValue(invalidCronOutcome.persistence_evidence).public_describe_checked === true,
+    describe_found: objectValue(invalidCronOutcome.persistence_evidence).describe_found ?? null,
+    describe_status: objectValue(invalidCronOutcome.persistence_evidence).describe_status ?? null,
+    schedule_id: invalidScheduleId,
+    invalid_cron: invalidCron,
+    error: invalidCronOutcome.error ?? null,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    failures: invalidFailures,
+  };
+  const lifecycleStatus = lifecycleFailures.length === 0 ? 'pass' : 'fail';
+  const invalidStatus = invalidFailures.length === 0 ? 'pass' : 'fail';
+  const lifecycleFindings = lifecycleStatus === 'pass' ? [] : [pythonLifecycleFinding(lifecycleOutputs, artifactVersions)];
+  const invalidFindings = invalidStatus === 'pass' ? [] : [pythonInvalidCronFinding(invalidOutputs, artifactVersions)];
+
+  return {
+    schema: 'durable-workflow.v2.schedules-runtime.python-lifecycle-evidence',
+    started_at: startedAt,
+    finished_at: finishedAt,
+    generated_at: finishedAt,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    local_product_source_checkouts_used: false,
+    scenario_results: {
+      python_sdk_schedule_surface: {
+        scenario_id: 'python_sdk_schedule_surface',
+        status: lifecycleStatus,
+        observed_outputs: lifecycleOutputs,
+        linked_findings: lifecycleFindings,
+      },
+      invalid_cron_refusal: {
+        scenario_id: 'invalid_cron_refusal',
+        status: invalidStatus,
+        observed_outputs: invalidOutputs,
+        linked_findings: invalidFindings,
+      },
+    },
+    findings: [...lifecycleFindings, ...invalidFindings],
+    topology: {
+      namespace,
+      task_queue: taskQueue,
+      worker_execution_mode: 'published_python_sdk_lifecycle_smoke',
+      worker_ids: { python: workerId },
+      schedules_created: [scheduleId],
+    },
+    runtime_matrix: {
+      runtimes: ['sdk-python'],
+      client_paths: ['sdk-python'],
+      schedule_types: ['fixed_rate_interval', 'cron_expression'],
+    },
+    client_surfaces: {
+      'sdk-python': {
+        create_or_observe: lifecycleOutputs.create_or_observe,
+        list_observed: lifecycleOutputs.list_observed,
+        describe_observed: lifecycleOutputs.describe_observed,
+        control_observed: lifecycleOutputs.control_observed,
+        manual_trigger_observed: lifecycleOutputs.manual_trigger_observed,
+        triggered_workflow_completion_observed: lifecycleOutputs.triggered_workflow_completion_observed,
+        operations: operationChecks,
+        schedule_state: lifecycleOutputs.schedule_state,
+      },
+    },
+    adversarial_outcomes: {
+      invalid_cron_refusal: invalidOutputs,
+    },
+    python_schedule_lifecycle_smoke: {
+      passed: lifecycleStatus === 'pass' && invalidStatus === 'pass',
+      create: operationChecks.create,
+      list: operationChecks.list,
+      describe: operationChecks.describe,
+      pause: operationChecks.pause,
+      resume: operationChecks.resume,
+      trigger: operationChecks.manual_trigger,
+      delete: operationChecks.delete,
+      triggered_workflow_completed: operationChecks.triggered_workflow_completion,
+      invalid_cron_refused: invalidOutputs.refused,
+      invalid_cron_typed_error: invalidOutputs.typed_error,
+      invalid_cron_persisted: invalidOutputs.persisted,
+      invalid_cron_public_persistence_checked: true,
+      invalid_cron_public_persistence: invalidOutputs.persistence_evidence,
+      verified_operations: [
+        'create',
+        'list',
+        'describe',
+        'pause',
+        'resume',
+        'manual_trigger',
+        'delete',
+        'triggered_workflow_completion',
+        'invalid_cron_refusal',
+        'invalid_cron_public_persistence_check',
+      ],
+    },
+    raw_python_output: output,
+  };
+}
+
+function pythonLifecycleFinding(observedOutputs, artifactVersions) {
+  const configured = coverageGapFindings.python_sdk_schedule_surface ?? {};
+  return {
+    finding_id: 'schedules-python-sdk-lifecycle-evidence',
+    scenario_id: 'python_sdk_schedule_surface',
+    finding_type: 'schedule_python_sdk_lifecycle_gap',
+    owning_surface: 'sdk-python',
+    execution_scope: stringValue(configured.scope) || 'sdk-python-schedule-surface-shard',
+    artifact_versions: artifactVersions,
+    observed_behavior: arrayValue(observedOutputs.failures).join('; ')
+      || 'Python SDK lifecycle evidence did not satisfy the schedules contract.',
+    expected_behavior: stringValue(configured.expected_behavior)
+      || 'The Python SDK schedule surface reports create, list, describe, pause, resume, trigger, delete, and triggered workflow completion evidence.',
+    next_acceptance_criterion: arrayValue(configured.acceptance).join('; ')
+      || 'rerun the Python schedules lifecycle shard and record every lifecycle operation plus triggered workflow completion',
+    observed_outputs: observedOutputs,
+  };
+}
+
+function pythonInvalidCronFinding(observedOutputs, artifactVersions) {
+  const configured = coverageGapFindings.invalid_cron_refusal ?? {};
+  return {
+    finding_id: 'schedules-python-invalid-cron-refusal-evidence',
+    scenario_id: 'invalid_cron_refusal',
+    finding_type: 'schedule_invalid_cron_refusal_gap',
+    owning_surface: 'server',
+    execution_scope: stringValue(configured.scope) || 'adversarial-schedule-input-shard',
+    artifact_versions: artifactVersions,
+    observed_behavior: arrayValue(observedOutputs.failures).join('; ')
+      || 'Invalid cron refusal evidence did not satisfy the schedules contract.',
+    expected_behavior: stringValue(configured.expected_behavior)
+      || 'Invalid cron input is rejected before schedule persistence and the result records the typed error plus public non-persistence proof.',
+    next_acceptance_criterion: arrayValue(configured.acceptance).join('; ')
+      || 'attempt invalid cron creation through the Python SDK and record refused=true, typed_error=true, and persisted=false from public list or describe evidence',
+    observed_outputs: observedOutputs,
+  };
+}
+
+function pythonLifecycleBlockedEvidence(reason, startedAt, artifactVersions, artifactSources) {
+  const finishedAt = timestamp();
+  const findings = [
+    {
+      finding_id: 'schedules-python-lifecycle-runner-blocked',
+      scenario_id: 'python_sdk_schedule_surface',
+      finding_type: 'conformance_runner_blocked',
+      owning_surface: 'conformance_harness',
+      execution_scope: 'sdk-python-schedule-surface-shard',
+      artifact_versions: artifactVersions,
+      observed_behavior: reason,
+      expected_behavior: 'The schedules conformance host can install the published Python SDK artifact and run the Python schedule lifecycle shard.',
+      next_acceptance_criterion: 'restore the missing host capability and rerun the Python schedules lifecycle shard',
+    },
+    {
+      finding_id: 'schedules-python-invalid-cron-runner-blocked',
+      scenario_id: 'invalid_cron_refusal',
+      finding_type: 'conformance_runner_blocked',
+      owning_surface: 'conformance_harness',
+      execution_scope: 'adversarial-schedule-input-shard',
+      artifact_versions: artifactVersions,
+      observed_behavior: reason,
+      expected_behavior: 'The schedules conformance host can attempt invalid cron creation through the published Python SDK and read public persistence state.',
+      next_acceptance_criterion: 'restore the missing host capability and rerun the Python invalid-cron shard',
+    },
+  ];
+
+  return {
+    schema: 'durable-workflow.v2.schedules-runtime.python-lifecycle-evidence',
+    started_at: startedAt,
+    finished_at: finishedAt,
+    generated_at: finishedAt,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    scenario_results: {
+      python_sdk_schedule_surface: {
+        scenario_id: 'python_sdk_schedule_surface',
+        status: 'runner_blocked',
+        observed_outputs: { blocked_reason: reason },
+        linked_findings: [findings[0]],
+      },
+      invalid_cron_refusal: {
+        scenario_id: 'invalid_cron_refusal',
+        status: 'runner_blocked',
+        observed_outputs: { blocked_reason: reason },
+        linked_findings: [findings[1]],
+      },
+    },
+    findings,
+    client_surfaces: {
+      'sdk-python': {
+        create_or_observe: false,
+        list_observed: false,
+        control_observed: false,
+        blocked_reason: reason,
+      },
+    },
+    adversarial_outcomes: {
+      invalid_cron_refusal: { blocked_reason: reason },
+    },
+  };
 }
 
 async function maybeRunCadenceShard(startedAt, artifactVersions, artifactSources) {
@@ -6091,8 +6667,356 @@ async function collectCrossLanguageComposeLogs(composeProject, composeFiles) {
   }
 }
 
+async function collectPythonLifecycleComposeLogs(composeProject, composeFiles) {
+  for (const service of ['server', 'scheduler', 'bootstrap', 'mysql', 'redis']) {
+    const logPath = path.join(resultDir, `schedules-python-lifecycle-${service}.log`);
+    await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'logs', service],
+      logPath,
+    ).catch(() => {});
+  }
+}
+
 function safeLogName(value) {
   return stringValue(value).replace(/[^A-Za-z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 96) || 'action';
+}
+
+function schedulesPythonLifecycleScript() {
+  return String.raw`import asyncio
+import dataclasses
+import json
+import os
+import sys
+import time
+from typing import Any
+
+from durable_workflow import Client, ScheduleAction, ScheduleSpec
+from durable_workflow.errors import InvalidArgument, ScheduleNotFound, ServerError
+
+
+def as_dict(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    try:
+        converted = dataclasses.asdict(value)
+        return converted if isinstance(converted, dict) else {"value": converted}
+    except TypeError:
+        raw = getattr(value, "__dict__", None)
+        if isinstance(raw, dict):
+            return dict(raw)
+    if isinstance(value, dict):
+        return dict(value)
+    return {"value": str(value)}
+
+
+def process_metrics() -> dict[str, Any]:
+    return {
+        "process_id": os.getpid(),
+        "host": "schedules-python-lifecycle-shard",
+        "process_started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "process_uptime_seconds": 1,
+    }
+
+
+def schedule_ids(schedule_list: Any) -> list[str]:
+    return [
+        str(getattr(item, "schedule_id", "") or "")
+        for item in getattr(schedule_list, "schedules", [])
+        if str(getattr(item, "schedule_id", "") or "") != ""
+    ]
+
+
+def schedule_status(value: Any) -> str:
+    return str(getattr(value, "status", "") or "").lower()
+
+
+def exception_record(error: BaseException) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "type": error.__class__.__name__,
+        "message": str(error),
+    }
+    if isinstance(error, InvalidArgument):
+        record["typed_error"] = True
+        record["errors"] = error.errors
+    elif isinstance(error, ServerError):
+        record["status"] = error.status
+        record["body"] = error.body
+        record["reason"] = error.reason()
+        record["typed_error"] = error.status == 422
+    else:
+        record["typed_error"] = False
+    return record
+
+
+async def poll_and_complete_workflow(
+    client: Client,
+    *,
+    worker_id: str,
+    task_queue: str,
+    workflow_type: str,
+    trigger: Any,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    trigger_workflow_id = getattr(trigger, "workflow_id", None)
+    trigger_run_id = getattr(trigger, "run_id", None)
+    attempts = 0
+    last_task = None
+    complete_response = None
+
+    while time.monotonic() < deadline:
+        attempts += 1
+        task = await client.poll_workflow_task(
+            worker_id=worker_id,
+            task_queue=task_queue,
+            timeout=3.0,
+        )
+        if not task:
+            await asyncio.sleep(0.2)
+            continue
+
+        last_task = task
+        complete_response = await client.complete_workflow_task(
+            task_id=task["task_id"],
+            lease_owner=task["lease_owner"],
+            workflow_task_attempt=int(task.get("workflow_task_attempt") or 1),
+            commands=[
+                {
+                    "type": "complete_workflow",
+                    "result": json.dumps({
+                        "scenario": "python_sdk_schedule_surface",
+                        "worker_id": worker_id,
+                        "workflow_type": workflow_type,
+                        "runtime": "sdk-python",
+                    }),
+                }
+            ],
+        )
+        trigger_workflow_id = trigger_workflow_id or task.get("workflow_id")
+        trigger_run_id = trigger_run_id or task.get("run_id")
+        break
+
+    workflow_run = {}
+    workflow_completed = False
+    if trigger_workflow_id:
+        for _ in range(20):
+            described = await client.describe_workflow(str(trigger_workflow_id))
+            workflow_run = as_dict(described)
+            workflow_completed = schedule_status(described) == "completed"
+            if workflow_completed:
+                break
+            await asyncio.sleep(0.5)
+
+    return {
+        "workflow_completed": workflow_completed,
+        "workflow_id": trigger_workflow_id,
+        "run_id": trigger_run_id,
+        "poll_attempts": attempts,
+        "last_task": last_task,
+        "complete_response": complete_response,
+        "workflow_run": workflow_run,
+    }
+
+
+async def invalid_cron_probe(
+    client: Client,
+    *,
+    schedule_id: str,
+    invalid_cron: str,
+    workflow_type: str,
+    task_queue: str,
+) -> dict[str, Any]:
+    refused = False
+    error_record: dict[str, Any] | None = None
+    create_response = None
+    try:
+        handle = await client.create_schedule(
+            schedule_id=schedule_id,
+            spec=ScheduleSpec(cron_expressions=[invalid_cron], timezone="UTC"),
+            action=ScheduleAction(
+                workflow_type=workflow_type,
+                task_queue=task_queue,
+                input=[{"scenario": "invalid_cron_refusal"}],
+            ),
+        )
+        create_response = {"schedule_id": handle.schedule_id}
+    except Exception as error:
+        refused = True
+        error_record = exception_record(error)
+
+    listed = await client.list_schedules()
+    listed_ids = schedule_ids(listed)
+    describe_found = False
+    describe_status: int | str = "not_checked"
+    describe_error: dict[str, Any] | None = None
+    described = {}
+    try:
+        description = await client.describe_schedule(schedule_id)
+        describe_found = True
+        describe_status = 200
+        described = as_dict(description)
+    except ScheduleNotFound as error:
+        describe_found = False
+        describe_status = 404
+        describe_error = exception_record(error)
+    except ServerError as error:
+        describe_found = False
+        describe_status = error.status
+        describe_error = exception_record(error)
+    except Exception as error:
+        describe_found = False
+        describe_status = "error"
+        describe_error = exception_record(error)
+
+    list_contains = schedule_id in listed_ids
+    persisted = list_contains or describe_found
+    if not refused and persisted:
+        await client.delete_schedule(schedule_id)
+
+    return {
+        "refused": refused,
+        "typed_error": bool(error_record and error_record.get("typed_error") is True),
+        "persisted": persisted,
+        "create_response": create_response,
+        "error": error_record,
+        "persistence_evidence": {
+            "surface": "python-sdk-public-list-describe",
+            "public_list_checked": True,
+            "list_contains_invalid_schedule": list_contains,
+            "list_schedule_ids": listed_ids,
+            "public_describe_checked": True,
+            "describe_found": describe_found,
+            "describe_status": describe_status,
+            "describe_error": describe_error,
+            "described_schedule": described,
+        },
+    }
+
+
+async def main() -> None:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    output_path = sys.argv[2]
+    timeout_seconds = int(payload.get("timeout_seconds") or 120)
+    schedule_id = payload["schedule_id"]
+    invalid_schedule_id = payload["invalid_schedule_id"]
+    workflow_type = payload["workflow_type"]
+    task_queue = payload["task_queue"]
+    worker_id = payload["worker_id"]
+
+    async with Client(
+        payload["server_url"],
+        token=payload["token"],
+        namespace=payload["namespace"],
+        timeout=8.0,
+    ) as client:
+        registration = await client.register_worker(
+            worker_id=worker_id,
+            task_queue=task_queue,
+            supported_workflow_types=[workflow_type],
+            workflow_definition_fingerprints={
+                workflow_type: f"schedules-conformance:{workflow_type}:python-lifecycle"
+            },
+            supported_activity_types=[],
+            max_concurrent_workflow_tasks=10,
+            max_concurrent_activity_tasks=10,
+            runtime="python",
+            sdk_version=payload.get("sdk_version") or "published",
+            task_slots={"workflow_available": 10, "activity_available": 10},
+            process_metrics=process_metrics(),
+        )
+
+        handle = await client.create_schedule(
+            schedule_id=schedule_id,
+            spec=ScheduleSpec(
+                intervals=[{"every": payload.get("interval") or "PT1H"}],
+                timezone="UTC",
+            ),
+            action=ScheduleAction(
+                workflow_type=workflow_type,
+                task_queue=task_queue,
+                input=[{"scenario": "python_sdk_schedule_surface", "schedule_id": schedule_id}],
+            ),
+            overlap_policy="allow_all",
+            jitter_seconds=0,
+        )
+        list_after_create = await client.list_schedules()
+        describe_after_create = await client.describe_schedule(schedule_id)
+
+        await client.pause_schedule(schedule_id, note="python schedules lifecycle pause")
+        describe_after_pause = await client.describe_schedule(schedule_id)
+        await client.resume_schedule(schedule_id, note="python schedules lifecycle resume")
+        describe_after_resume = await client.describe_schedule(schedule_id)
+
+        trigger = await client.trigger_schedule(schedule_id, overlap_policy="allow_all")
+        completion = await poll_and_complete_workflow(
+            client,
+            worker_id=worker_id,
+            task_queue=task_queue,
+            workflow_type=workflow_type,
+            trigger=trigger,
+            timeout_seconds=timeout_seconds,
+        )
+
+        await client.delete_schedule(schedule_id)
+        list_after_delete = await client.list_schedules()
+        describe_after_delete_found = False
+        describe_after_delete_status: int | str = "not_checked"
+        try:
+            await client.describe_schedule(schedule_id)
+            describe_after_delete_found = True
+            describe_after_delete_status = 200
+        except ScheduleNotFound:
+            describe_after_delete_status = 404
+        except ServerError as error:
+            describe_after_delete_status = error.status
+
+        invalid = await invalid_cron_probe(
+            client,
+            schedule_id=invalid_schedule_id,
+            invalid_cron=payload["invalid_cron"],
+            workflow_type=workflow_type,
+            task_queue=task_queue,
+        )
+
+    output = {
+        "schema": "durable-workflow.v2.schedules-runtime.python-lifecycle-worker-output",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "registration": registration,
+        "operations": {
+            "create": getattr(handle, "schedule_id", "") == schedule_id,
+            "list": schedule_id in schedule_ids(list_after_create),
+            "describe": getattr(describe_after_create, "schedule_id", "") == schedule_id,
+            "pause": schedule_status(describe_after_pause) == "paused"
+                or bool(getattr(describe_after_pause, "paused_at", None)),
+            "resume": schedule_status(describe_after_resume) == "active"
+                or not bool(getattr(describe_after_resume, "paused_at", None)),
+            "manual_trigger": getattr(trigger, "outcome", "") == "triggered"
+                and bool(getattr(trigger, "workflow_id", None)),
+            "delete": schedule_id not in schedule_ids(list_after_delete)
+                and describe_after_delete_found is False,
+        },
+        "schedule_state": {
+            "list_after_create": [as_dict(item) for item in getattr(list_after_create, "schedules", [])],
+            "describe_after_create": as_dict(describe_after_create),
+            "describe_after_pause": as_dict(describe_after_pause),
+            "describe_after_resume": as_dict(describe_after_resume),
+            "list_after_delete": [as_dict(item) for item in getattr(list_after_delete, "schedules", [])],
+            "describe_after_delete_found": describe_after_delete_found,
+            "describe_after_delete_status": describe_after_delete_status,
+        },
+        "trigger_result": as_dict(trigger),
+        "triggered_workflow_completion": completion,
+        "invalid_cron_refusal": invalid,
+    }
+    with open(output_path, "w", encoding="utf-8") as handle:
+        json.dump(output, handle, indent=2, default=str)
+        handle.write("\n")
+
+
+asyncio.run(main())
+`;
 }
 
 function schedulesPythonWorkerScript() {

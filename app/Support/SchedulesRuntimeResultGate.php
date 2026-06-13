@@ -1620,6 +1620,37 @@ final class SchedulesRuntimeResultGate
             array_push($failures, ...self::cliScheduleCommandTranscriptFailures($evidence));
         }
 
+        if ($client === 'sdk-python') {
+            foreach (['manual_trigger_observed', 'triggered_workflow_completion_observed'] as $field) {
+                if (! self::hasTruthyField($evidence, [$field, self::camelize($field)])) {
+                    $failures[] = [
+                        'code' => 'missing_client_surface_evidence',
+                        'client' => $client,
+                        'field' => $field,
+                    ];
+                }
+            }
+
+            $operations = self::arrayField($evidence, ['operations']) ?? [];
+            foreach ([
+                'create',
+                'list',
+                'describe',
+                'pause',
+                'resume',
+                'manual_trigger',
+                'delete',
+                'triggered_workflow_completion',
+            ] as $operation) {
+                if (! self::hasTruthyField($operations, [$operation, self::camelize($operation)])) {
+                    $failures[] = [
+                        'code' => 'missing_python_schedule_lifecycle_operation',
+                        'operation' => $operation,
+                    ];
+                }
+            }
+        }
+
         return $failures;
     }
 
@@ -1754,7 +1785,8 @@ final class SchedulesRuntimeResultGate
 
         if (self::hasTruthyField($evidence, ['refused'])
             && self::hasTruthyField($evidence, ['typed_error', 'typedError'])
-            && self::hasExplicitFalseField($evidence, ['persisted'])) {
+            && self::hasExplicitFalseField($evidence, ['persisted'])
+            && self::invalidCronPublicPersistenceProven($evidence)) {
             return [];
         }
 
@@ -1762,6 +1794,33 @@ final class SchedulesRuntimeResultGate
             'code' => 'missing_invalid_cron_refusal_evidence',
             'scenario_id' => 'invalid_cron_refusal',
         ]];
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     */
+    private static function invalidCronPublicPersistenceProven(array $evidence): bool
+    {
+        $persistence = self::arrayField($evidence, [
+            'persistence_evidence',
+            'persistenceEvidence',
+            'public_persistence_evidence',
+            'publicPersistenceEvidence',
+        ]) ?? [];
+        $containers = [$evidence, $persistence];
+
+        $listChecked = self::hasTruthyFieldIn($containers, ['public_list_checked', 'publicListChecked'])
+            || self::hasExplicitFalseFieldIn($containers, ['list_contains_invalid_schedule', 'listContainsInvalidSchedule']);
+        $describeChecked = self::hasTruthyFieldIn($containers, ['public_describe_checked', 'publicDescribeChecked'])
+            || self::hasExplicitFalseFieldIn($containers, ['describe_found', 'describeFound'])
+            || self::intField($persistence, ['describe_status', 'describeStatus']) === 404
+            || self::intField($evidence, ['describe_status', 'describeStatus']) === 404;
+        $listProvesAbsent = self::hasExplicitFalseFieldIn($containers, ['list_contains_invalid_schedule', 'listContainsInvalidSchedule']);
+        $describeProvesAbsent = self::hasExplicitFalseFieldIn($containers, ['describe_found', 'describeFound'])
+            || self::intField($persistence, ['describe_status', 'describeStatus']) === 404
+            || self::intField($evidence, ['describe_status', 'describeStatus']) === 404;
+
+        return ($listChecked && $listProvesAbsent) || ($describeChecked && $describeProvesAbsent);
     }
 
     /**

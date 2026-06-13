@@ -333,6 +333,14 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
                 'invalid_cron_refused' => true,
                 'invalid_cron_typed_error' => true,
                 'invalid_cron_persisted' => false,
+                'invalid_cron_public_persistence_checked' => true,
+                'invalid_cron_public_persistence' => [
+                    'public_list_checked' => true,
+                    'list_contains_invalid_schedule' => false,
+                    'public_describe_checked' => true,
+                    'describe_found' => false,
+                    'describe_status' => 404,
+                ],
             ],
         ], JSON_THROW_ON_ERROR));
 
@@ -380,7 +388,104 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
             $this->assertSame('not_covered', $result['scenario_results']['php_created_python_workflow']['status']);
             $this->assertSame([], $result['scenario_results']['python_sdk_schedule_surface']['linked_findings']);
             $this->assertTrue(
+                $result['scenario_results']['python_sdk_schedule_surface']['observed_outputs']['manual_trigger_observed'],
+            );
+            $this->assertTrue(
+                $result['scenario_results']['python_sdk_schedule_surface']['observed_outputs']['triggered_workflow_completion_observed'],
+            );
+            $this->assertTrue(
                 $result['scenario_results']['invalid_cron_refusal']['observed_outputs']['persisted'] === false,
+            );
+            $this->assertTrue(
+                $result['scenario_results']['invalid_cron_refusal']['observed_outputs']['public_persistence_checked'],
+            );
+            $this->assertFalse(
+                $result['scenario_results']['invalid_cron_refusal']['observed_outputs']['list_contains_invalid_schedule'],
+            );
+            $this->assertSame(
+                404,
+                $result['scenario_results']['invalid_cron_refusal']['observed_outputs']['describe_status'],
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    public function test_runner_rejects_partial_python_smoke_without_completion_and_public_persistence_proof(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+        file_put_contents($resultDir.'/schedules-smoke-evidence.json', json_encode([
+            'python_schedule_lifecycle_smoke' => [
+                'passed' => true,
+                'create' => true,
+                'list' => true,
+                'describe' => true,
+                'pause' => true,
+                'resume' => true,
+                'trigger' => true,
+                'delete' => true,
+                'triggered_workflow_completed' => false,
+                'invalid_cron_refused' => true,
+                'invalid_cron_typed_error' => true,
+                'invalid_cron_persisted' => false,
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SERVER_VERSION' => '0.2.244',
+                    'DW_CLI_VERSION' => '0.1.75',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.84',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.189',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.77',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('not_covered', $result['scenario_results']['python_sdk_schedule_surface']['status']);
+            $this->assertSame('not_covered', $result['scenario_results']['invalid_cron_refusal']['status']);
+            $this->assertNotEmpty($result['scenario_results']['python_sdk_schedule_surface']['linked_findings']);
+            $this->assertNotEmpty($result['scenario_results']['invalid_cron_refusal']['linked_findings']);
+            $this->assertSame(
+                'not_covered',
+                $result['scenario_results']['python_sdk_schedule_surface']['observed_outputs']['coverage_status'],
+            );
+            $this->assertSame(
+                'not_covered',
+                $result['scenario_results']['invalid_cron_refusal']['observed_outputs']['coverage_status'],
             );
         } finally {
             $this->removeDirectory($resultDir);
@@ -1824,7 +1929,12 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('fixedServerPort > 0', $source);
         $this->assertStringContainsString('publishedCliInstallPromise', $source);
         $this->assertStringContainsString('async function installPublishedCliArtifact', $source);
+        $this->assertStringContainsString('maybeRunPythonLifecycleShard', $source);
+        $this->assertStringContainsString('DW_SCHEDULES_RUN_PYTHON_LIFECYCLE_SHARD', $source);
+        $this->assertStringContainsString('DW_SCHEDULES_PYTHON_LIFECYCLE_EVIDENCE', $source);
         $this->assertStringContainsString('DW_SCHEDULES_SHARD_CONCURRENCY', $shell);
+        $this->assertStringContainsString('DW_SCHEDULES_RUN_PYTHON_LIFECYCLE_SHARD', $shell);
+        $this->assertStringContainsString('DW_SCHEDULES_PYTHON_LIFECYCLE_EVIDENCE', $shell);
     }
 
     public function test_runner_uses_published_compose_dependency_graph_for_schedule_shards(): void
