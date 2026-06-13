@@ -148,8 +148,63 @@ php_artisan_command_available() {
 tmp_parent="${DW_CONFORMANCE_TMPDIR:-${TMPDIR:-/tmp}}"
 mkdir -p "$tmp_parent"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-repo_root="$(cd "$script_dir/../.." && pwd -P)"
-published_compose_file="$repo_root/docker-compose.published.yml"
+
+canonical_server_repo_root() {
+  local candidate="$1"
+
+  if [[ -n "$candidate" && -f "$candidate/docker-compose.published.yml" ]]; then
+    cd "$candidate" && pwd -P
+    return 0
+  fi
+
+  return 1
+}
+
+resolve_server_repo_root() {
+  local candidate
+  local git_root
+
+  for candidate in "${DW_SERVER_REPO_ROOT:-}" "${SERVER_REPO_PATH:-}"; do
+    if canonical_server_repo_root "$candidate"; then
+      return 0
+    fi
+  done
+
+  if git_root="$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null)" \
+    && canonical_server_repo_root "$git_root"; then
+    return 0
+  fi
+
+  candidate="$script_dir"
+  while [[ -n "$candidate" && "$candidate" != "/" ]]; do
+    if canonical_server_repo_root "$candidate"; then
+      return 0
+    fi
+    if canonical_server_repo_root "$candidate/repos/server"; then
+      return 0
+    fi
+    candidate="$(dirname "$candidate")"
+  done
+
+  printf '%s\n' 'could not locate server checkout containing docker-compose.published.yml' >&2
+  return 1
+}
+
+resolve_published_compose_file() {
+  local root="$1"
+  local directory
+
+  directory="$(cd "$root" && pwd -P)"
+  if [[ ! -f "$directory/docker-compose.published.yml" ]]; then
+    printf 'server checkout is missing docker-compose.published.yml: %s\n' "$directory" >&2
+    return 1
+  fi
+
+  printf '%s/docker-compose.published.yml\n' "$directory"
+}
+
+repo_root="$(resolve_server_repo_root)"
+published_compose_file="$(resolve_published_compose_file "$repo_root")"
 run_root="${DW_REPLAY_RUN_ROOT:-}"
 if [[ -z "$run_root" ]]; then
   run_root="$(mktemp -d "$tmp_parent/dw-replay.XXXXXX")"
