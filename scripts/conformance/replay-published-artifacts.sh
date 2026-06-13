@@ -530,6 +530,317 @@ result_dir.mkdir(parents=True, exist_ok=True)
 PY
 }
 
+capture_compose_diagnostics() {
+  local prefix="${1:-docker-compose}"
+  local compose_file="$repo_root/docker-compose.published.yml"
+  local service
+
+  docker compose -p "$compose_project" -f "$compose_file" ps -a \
+    > "$result_dir/${prefix}-ps.log" 2>&1 || true
+  docker compose -p "$compose_project" -f "$compose_file" ps -a --format json \
+    > "$result_dir/${prefix}-ps.json" 2> "$result_dir/${prefix}-ps-json.log" || true
+  docker compose -p "$compose_project" -f "$compose_file" logs --no-color --tail=200 \
+    > "$result_dir/${prefix}-logs.log" 2>&1 || true
+
+  for service in bootstrap server mysql redis worker scheduler; do
+    docker compose -p "$compose_project" -f "$compose_file" logs --no-color --tail=200 "$service" \
+      > "$result_dir/${service}.log" 2>&1 || true
+  done
+
+  python3 - "$result_dir" "$compose_project" "$compose_file" "$prefix" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+result_dir = Path(sys.argv[1])
+compose_project = sys.argv[2]
+compose_file = sys.argv[3]
+prefix = sys.argv[4]
+
+
+def tail_text(path: Path, max_lines: int = 80, max_chars: int = 6000) -> str:
+    if not path.exists():
+        return ""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    if len(lines) > max_lines:
+        text = "\n".join(lines[-max_lines:])
+    if len(text) > max_chars:
+        text = text[-max_chars:]
+    return text.strip()
+
+
+def load_compose_ps(path: Path) -> list[dict[str, Any]]:
+    if not path.exists() or path.stat().st_size == 0:
+        return []
+    raw = path.read_text(encoding="utf-8", errors="replace").strip()
+    if raw == "":
+        return []
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+        if isinstance(parsed, dict):
+            return [parsed]
+    except json.JSONDecodeError:
+        pass
+
+    rows: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            rows.append(parsed)
+    return rows
+
+
+service_logs = {}
+for name in ["bootstrap", "server", "mysql", "redis", "worker", "scheduler"]:
+    snippet = tail_text(result_dir / f"{name}.log")
+    if snippet:
+        service_logs[name] = {
+            "file": f"{name}.log",
+            "tail": snippet,
+        }
+
+diagnostics = {
+    "schema": "durable-workflow.v2.replay-conformance.compose-startup-diagnostics",
+    "compose_project": compose_project,
+    "compose_file": Path(compose_file).name,
+    "files": {
+        "compose_up": f"{prefix}-up.log",
+        "dependency_up": "docker-compose-dependencies-up.log",
+        "server_bootstrap": "server-bootstrap.log",
+        "compose_ps": f"{prefix}-ps.log",
+        "compose_ps_json": f"{prefix}-ps.json",
+        "compose_logs": f"{prefix}-logs.log",
+    },
+    "compose_up_tail": tail_text(result_dir / f"{prefix}-up.log"),
+    "dependency_up_tail": tail_text(result_dir / "docker-compose-dependencies-up.log"),
+    "server_bootstrap_tail": tail_text(result_dir / "server-bootstrap.log"),
+    "compose_ps_tail": tail_text(result_dir / f"{prefix}-ps.log"),
+    "compose_ps_json_error_tail": tail_text(result_dir / f"{prefix}-ps-json.log"),
+    "compose_logs_tail": tail_text(result_dir / f"{prefix}-logs.log"),
+    "service_status": load_compose_ps(result_dir / f"{prefix}-ps.json"),
+    "service_logs": service_logs,
+}
+(result_dir / "compose-startup-diagnostics.json").write_text(
+    json.dumps(diagnostics, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
+published_server_topology_failure_result() {
+  local reason="$1"
+  local phase="${2:-docker_compose_up_server}"
+  local server_image_value="${server_image:-}"
+  local server_base_url_value="${server_base_url:-}"
+
+  python3 - "$result_dir" "$started_at" "$reason" "$phase" "$server_image_value" "$server_base_url_value" "$compose_project" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+result_dir = Path(sys.argv[1])
+started_at = sys.argv[2]
+reason = sys.argv[3]
+phase = sys.argv[4]
+server_image = sys.argv[5]
+server_base_url = sys.argv[6]
+compose_project = sys.argv[7]
+
+REQUIRED = [
+    "published_artifact_install_only",
+    "python_completed_history_activity_replay",
+    "python_completed_history_signal_update_replay",
+    "python_completed_history_wait_condition_replay",
+    "python_completed_history_version_marker_replay",
+    "python_completed_history_saga_compensation_replay",
+    "php_completed_history_activity_replay",
+    "php_completed_history_signal_update_replay",
+    "php_completed_history_wait_condition_replay",
+    "php_completed_history_version_marker_replay",
+    "php_completed_history_saga_compensation_replay",
+    "python_worker_restart_completed_query",
+    "python_worker_restart_activity_state",
+    "python_worker_restart_signal_update_state",
+    "python_worker_restart_wait_condition_state",
+    "python_worker_restart_version_marker_state",
+    "python_worker_restart_saga_compensation_state",
+    "php_worker_restart_completed_query",
+    "php_worker_restart_activity_state",
+    "php_worker_restart_signal_update_state",
+    "php_worker_restart_wait_condition_state",
+    "php_worker_restart_version_marker_state",
+    "php_worker_restart_saga_compensation_state",
+    "python_code_divergence_refusal",
+    "php_code_divergence_refusal",
+    "server_history_mutation_refusal",
+    "malformed_history_refusal",
+    "python_in_flight_signal_restart_timing",
+    "php_in_flight_signal_restart_timing",
+]
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    if not path.exists() or path.stat().st_size == 0:
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def section(scenarios: list[str]) -> dict[str, Any]:
+    return {
+        "status": "fail",
+        "scenarios": scenarios,
+        "scenario_statuses": {scenario: "fail" for scenario in scenarios},
+        "passed": 0,
+        "total": len(scenarios),
+    }
+
+
+pins = load_json(result_dir / "pins.json")
+versions = dict(pins.get("artifact_versions") or {})
+sources = dict(pins.get("artifact_sources") or {})
+diagnostics = load_json(result_dir / "compose-startup-diagnostics.json")
+finished_at = now()
+
+finding = {
+    "type": "published_server_topology_startup_failure",
+    "owning_surface": "server",
+    "summary": reason,
+    "observed_behavior": {
+        "phase": phase,
+        "server_image": server_image,
+        "server_url": server_base_url,
+        "compose_project": compose_project,
+        "diagnostics": diagnostics,
+    },
+    "expected_behavior": "the published server compose topology starts from the resolved Docker image before replay scenarios run",
+    "next_acceptance_criterion": "publish a server image and compose topology that starts successfully, or route the failing service shown in compose-startup-diagnostics.json to its owning surface",
+}
+scenario_results = {}
+for scenario in REQUIRED:
+    scenario_results[scenario] = {
+        "scenario_id": scenario,
+        "status": "fail",
+        "published_artifact_versions": versions,
+        "artifact_sources": sources,
+        "observed_outputs": {
+            "blocked_before_replay_execution": True,
+            "published_server_topology_started": False,
+            "failure_phase": phase,
+            "compose_diagnostics_file": "compose-startup-diagnostics.json",
+            "compose_service_status_file": "docker-compose-ps.json",
+            "compose_service_logs": diagnostics.get("service_logs", {}),
+        },
+        "linked_findings": [finding],
+    }
+
+result = {
+    "schema": "durable-workflow.v2.replay-conformance.result",
+    "schema_version": 1,
+    "started_at": started_at,
+    "finished_at": finished_at,
+    "generated_at": finished_at,
+    "outcome": "fail",
+    "runner_blocked": False,
+    "artifact_versions": versions,
+    "artifact_sources": sources,
+    "source_policy": {
+        "artifact_source": "published_artifacts",
+        "local_product_source_checkouts_used": False,
+    },
+    "runtime_matrix": {
+        "runtimes": ["workflow-php", "sdk-python"],
+        "coverage_scopes": ["workflow-php-runtime-shard", "sdk-python-runtime-shard"],
+    },
+    "scenario_results": scenario_results,
+    "completed_history_replay": section(REQUIRED[1:11]),
+    "worker_restart_replay": section(REQUIRED[11:23]),
+    "adversarial_replay": section(REQUIRED[23:27]),
+    "in_flight_timing": section(REQUIRED[27:]),
+    "findings": [finding],
+    "finding_links": {scenario: [finding] for scenario in REQUIRED},
+}
+record = {
+    "schema": "durable-workflow.v2.replay-conformance.record",
+    "outcome": "fail",
+    "runnerBlocked": False,
+    "reason": reason,
+    "artifactVersions": versions,
+    "started_at": started_at,
+    "finished_at": finished_at,
+    "result_file": "replay-conformance-result.json",
+}
+metadata = {
+    "schema": "durable-workflow.v2.replay-conformance.run-metadata",
+    "started_at": started_at,
+    "finished_at": finished_at,
+    "runner_blocked": False,
+    "published_server_topology_started": False,
+    "published_server_topology_failure": {
+        "phase": phase,
+        "reason": reason,
+        "server_image": server_image,
+        "server_url": server_base_url,
+        "compose_project": compose_project,
+        "diagnostics_file": "compose-startup-diagnostics.json",
+    },
+    "result_files": [
+        "pins.json",
+        "run-metadata.json",
+        "compose-startup-diagnostics.json",
+        "docker-compose-up.log",
+        "docker-compose-dependencies-up.log",
+        "server-bootstrap.log",
+        "docker-compose-ps.log",
+        "docker-compose-ps.json",
+        "docker-compose-logs.log",
+        "bootstrap.log",
+        "server.log",
+        "mysql.log",
+        "redis.log",
+        "replay-conformance-result.json",
+        "replay-conformance-record.json",
+    ],
+}
+
+(result_dir / "replay-conformance-result.json").write_text(
+    json.dumps(result, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+(result_dir / "replay-conformance-record.json").write_text(
+    json.dumps(record, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+(result_dir / "run-metadata.json").write_text(
+    json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
 require_command python3
 require_command curl
 require_command docker
@@ -769,6 +1080,13 @@ from pathlib import Path
 print(json.loads(Path(sys.argv[1]).read_text())["artifact_versions"]["waterline"])
 PY
 )"
+server_version="$(python3 - "$result_dir/pins.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+print(json.loads(Path(sys.argv[1]).read_text())["artifact_versions"]["server"])
+PY
+)"
 
 mkdir -p "$run_root/cli/bin"
 if ! curl -fsSL "$cli_install_url" -o "$run_root/cli/install.sh"; then
@@ -800,22 +1118,40 @@ server_base_url="http://127.0.0.1:${server_port}"
 compose_cleanup_needed=1
 if ! SERVER_PORT="$server_port" \
   DW_SERVER_IMAGE="$server_image" \
-  DW_SERVER_TAG="$(python3 - "$result_dir/pins.json" <<'PY'
-import json
-import sys
-from pathlib import Path
-print(json.loads(Path(sys.argv[1]).read_text())["artifact_versions"]["server"])
-PY
-)" \
+  DW_SERVER_TAG="$server_version" \
   DW_AUTH_TOKEN="$auth_token" \
   DW_WORKER_POLL_TIMEOUT="${DW_REPLAY_WORKER_POLL_TIMEOUT:-1}" \
   DW_WORKER_POLL_INTERVAL_MS="${DW_REPLAY_WORKER_POLL_INTERVAL_MS:-100}" \
-  docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d server > "$result_dir/docker-compose-up.log" 2>&1; then
-  blocked_result "Replay conformance runner could not start the published server topology; see docker-compose-up.log"
+  docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d mysql redis > "$result_dir/docker-compose-dependencies-up.log" 2>&1; then
+  capture_compose_diagnostics docker-compose
+  published_server_topology_failure_result "Replay conformance runner could not start the published server dependencies; see docker-compose-dependencies-up.log, docker-compose-ps.log, compose-startup-diagnostics.json, and service logs." "docker_compose_up_dependencies"
+  exit 1
+fi
+if ! SERVER_PORT="$server_port" \
+  DW_SERVER_IMAGE="$server_image" \
+  DW_SERVER_TAG="$server_version" \
+  DW_AUTH_TOKEN="$auth_token" \
+  DW_WORKER_POLL_TIMEOUT="${DW_REPLAY_WORKER_POLL_TIMEOUT:-1}" \
+  DW_WORKER_POLL_INTERVAL_MS="${DW_REPLAY_WORKER_POLL_INTERVAL_MS:-100}" \
+  docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" run --rm bootstrap > "$result_dir/server-bootstrap.log" 2>&1; then
+  capture_compose_diagnostics docker-compose
+  published_server_topology_failure_result "Replay conformance runner could not bootstrap the published server topology; see server-bootstrap.log, docker-compose-ps.log, compose-startup-diagnostics.json, and service logs." "server_bootstrap"
+  exit 1
+fi
+if ! SERVER_PORT="$server_port" \
+  DW_SERVER_IMAGE="$server_image" \
+  DW_SERVER_TAG="$server_version" \
+  DW_AUTH_TOKEN="$auth_token" \
+  DW_WORKER_POLL_TIMEOUT="${DW_REPLAY_WORKER_POLL_TIMEOUT:-1}" \
+  DW_WORKER_POLL_INTERVAL_MS="${DW_REPLAY_WORKER_POLL_INTERVAL_MS:-100}" \
+  docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d --no-deps server > "$result_dir/docker-compose-up.log" 2>&1; then
+  capture_compose_diagnostics docker-compose
+  published_server_topology_failure_result "Replay conformance runner could not start the published server HTTP service; see docker-compose-up.log, docker-compose-ps.log, compose-startup-diagnostics.json, and service logs." "docker_compose_up_server"
   exit 1
 fi
 if ! wait_for_server "$server_base_url" > "$result_dir/server-ready.log" 2>&1; then
-  blocked_result "Replay conformance runner started $server_image but it did not become ready; see server-ready.log"
+  capture_compose_diagnostics docker-compose
+  published_server_topology_failure_result "Replay conformance runner started $server_image but it did not become ready; see server-ready.log, docker-compose-ps.log, compose-startup-diagnostics.json, and service logs." "server_ready_probe"
   exit 1
 fi
 if ! python3 - "$server_base_url" "$auth_token" "$result_dir/server-cluster-info.json" <<'PY' > "$result_dir/server-cluster-info.log" 2>&1

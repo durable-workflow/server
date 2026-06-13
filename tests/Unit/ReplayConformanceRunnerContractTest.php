@@ -22,7 +22,9 @@ class ReplayConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('"artifact_sources"', $source);
         $this->assertStringContainsString('"local_product_source_checkouts_used": False', $source);
         $this->assertStringContainsString('docker pull "$server_image"', $source);
-        $this->assertStringContainsString('docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d server', $source);
+        $this->assertStringContainsString('docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d mysql redis', $source);
+        $this->assertStringContainsString('docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" run --rm bootstrap', $source);
+        $this->assertStringContainsString('docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d --no-deps server', $source);
         $this->assertStringContainsString('GET /api/cluster/info did not expose replay_verification_contract', $source);
         $this->assertStringContainsString('VERSION="$cli_version"', $source);
         $this->assertStringContainsString('DURABLE_WORKFLOW_INSTALL_DIR="$run_root/cli/bin"', $source);
@@ -128,6 +130,61 @@ class ReplayConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('"published_artifact_install_only"', $source);
         $this->assertStringContainsString('"python_in_flight_signal_restart_timing"', $source);
         $this->assertStringContainsString('"php_in_flight_signal_restart_timing"', $source);
+    }
+
+    public function test_runner_records_published_topology_startup_diagnostics_as_product_evidence(): void
+    {
+        $source = $this->read('scripts/conformance/replay-published-artifacts.sh');
+
+        foreach ([
+            'capture_compose_diagnostics docker-compose',
+            'docker-compose-dependencies-up.log',
+            'server-bootstrap.log',
+            'docker-compose-ps.log',
+            'docker-compose-ps.json',
+            'docker-compose-logs.log',
+            'compose-startup-diagnostics.json',
+            'bootstrap.log',
+            'server.log',
+            'mysql.log',
+            'redis.log',
+            'published_server_topology_failure_result',
+            'published_server_topology_startup_failure',
+            '"owning_surface": "server"',
+            '"runner_blocked": False',
+            '"runnerBlocked": False',
+            '"published_server_topology_started": False',
+            '"blocked_before_replay_execution": True',
+            '"compose_service_status_file": "docker-compose-ps.json"',
+            'docker_compose_up_dependencies',
+            'server_bootstrap',
+            'docker_compose_up_server',
+            'server_ready_probe',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $source);
+        }
+
+        $this->assertStringNotContainsString(
+            'docker compose -p "$compose_project" -f "$compose_file" config',
+            $source,
+            'published compose diagnostics must not dump expanded compose config because it contains interpolated secrets',
+        );
+        $this->assertStringNotContainsString(
+            'compose_config',
+            $source,
+            'published compose diagnostics must not reference an expanded compose config artifact',
+        );
+        $this->assertStringNotContainsString(
+            'config.yml',
+            $source,
+            'published compose diagnostics must not write expanded compose config artifacts',
+        );
+
+        $this->assertStringNotContainsString(
+            'blocked_result "Replay conformance runner could not start the published server topology',
+            $source,
+            'published server startup failures must preserve tuple and service diagnostics as non-runner-blocked replay findings',
+        );
     }
 
     private function read(string $path): string
