@@ -22,9 +22,9 @@ class ReplayConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('"artifact_sources"', $source);
         $this->assertStringContainsString('"local_product_source_checkouts_used": False', $source);
         $this->assertStringContainsString('docker pull "$server_image"', $source);
-        $this->assertStringContainsString('docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d mysql redis', $source);
-        $this->assertStringContainsString('docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" run --rm bootstrap', $source);
-        $this->assertStringContainsString('docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d --no-deps server', $source);
+        $this->assertStringContainsString('docker compose -p "$compose_project" -f "$published_compose_file" up -d mysql redis', $source);
+        $this->assertStringContainsString('docker compose -p "$compose_project" -f "$published_compose_file" run --rm bootstrap', $source);
+        $this->assertStringContainsString('docker compose -p "$compose_project" -f "$published_compose_file" up -d --no-deps server', $source);
         $this->assertStringContainsString('GET /api/cluster/info did not expose replay_verification_contract', $source);
         $this->assertStringContainsString('VERSION="$cli_version"', $source);
         $this->assertStringContainsString('DURABLE_WORKFLOW_INSTALL_DIR="$run_root/cli/bin"', $source);
@@ -160,6 +160,7 @@ class ReplayConformanceRunnerContractTest extends TestCase
             'server_bootstrap',
             'docker_compose_up_server',
             'server_ready_probe',
+            'local compose_file="$published_compose_file"',
         ] as $needle) {
             $this->assertStringContainsString($needle, $source);
         }
@@ -185,6 +186,39 @@ class ReplayConformanceRunnerContractTest extends TestCase
             $source,
             'published server startup failures must preserve tuple and service diagnostics as non-runner-blocked replay findings',
         );
+    }
+
+    public function test_runner_uses_server_checkout_compose_path_before_any_compose_call(): void
+    {
+        $source = $this->read('scripts/conformance/replay-published-artifacts.sh');
+
+        $composeDefinition = strpos($source, 'published_compose_file="$repo_root/docker-compose.published.yml"');
+        $firstComposeCall = strpos($source, 'docker compose');
+
+        $this->assertIsInt($composeDefinition);
+        $this->assertIsInt($firstComposeCall);
+        $this->assertLessThan(
+            $firstComposeCall,
+            $composeDefinition,
+            'the published compose path must be resolved before cleanup, diagnostics, or startup can invoke docker compose',
+        );
+        $this->assertStringContainsString('repo_root="$(cd "$script_dir/../.." && pwd -P)"', $source);
+        $this->assertStringContainsString('local compose_file="$published_compose_file"', $source);
+
+        preg_match_all('/docker compose[^\n]+ -f "([^"]+)"/', $source, $matches);
+        $this->assertNotEmpty($matches[1], 'the contract test must inspect replay docker compose invocations');
+        foreach ($matches[1] as $composeFileArgument) {
+            $this->assertContains(
+                $composeFileArgument,
+                ['$published_compose_file', '$compose_file'],
+                'docker compose invocations must use the server checkout compose file, including diagnostics',
+            );
+        }
+
+        $this->assertStringNotContainsString('-f docker-compose.published.yml', $source);
+        $this->assertStringNotContainsString('-f "$repo_root/docker-compose.published.yml"', $source);
+        $this->assertStringNotContainsString('-f "$run_root/docker-compose.published.yml"', $source);
+        $this->assertStringNotContainsString('-f "$result_dir/docker-compose.published.yml"', $source);
     }
 
     private function read(string $path): string

@@ -147,8 +147,9 @@ php_artisan_command_available() {
 
 tmp_parent="${DW_CONFORMANCE_TMPDIR:-${TMPDIR:-/tmp}}"
 mkdir -p "$tmp_parent"
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/../.." && pwd)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(cd "$script_dir/../.." && pwd -P)"
+published_compose_file="$repo_root/docker-compose.published.yml"
 run_root="${DW_REPLAY_RUN_ROOT:-}"
 if [[ -z "$run_root" ]]; then
   run_root="$(mktemp -d "$tmp_parent/dw-replay.XXXXXX")"
@@ -171,7 +172,7 @@ cleanup() {
   local code=$?
 
   if [[ "$compose_cleanup_needed" == "1" ]]; then
-    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" down -v >/dev/null 2>&1 || true
+    docker compose -p "$compose_project" -f "$published_compose_file" down -v >/dev/null 2>&1 || true
   fi
 
   if [[ "$keep_run_root" != "1" && "$code" -eq 0 && "$result_dir" != "$run_root" ]]; then
@@ -532,7 +533,7 @@ PY
 
 capture_compose_diagnostics() {
   local prefix="${1:-docker-compose}"
-  local compose_file="$repo_root/docker-compose.published.yml"
+  local compose_file="$published_compose_file"
   local service
 
   docker compose -p "$compose_project" -f "$compose_file" ps -a \
@@ -1122,7 +1123,7 @@ if ! SERVER_PORT="$server_port" \
   DW_AUTH_TOKEN="$auth_token" \
   DW_WORKER_POLL_TIMEOUT="${DW_REPLAY_WORKER_POLL_TIMEOUT:-1}" \
   DW_WORKER_POLL_INTERVAL_MS="${DW_REPLAY_WORKER_POLL_INTERVAL_MS:-100}" \
-  docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d mysql redis > "$result_dir/docker-compose-dependencies-up.log" 2>&1; then
+  docker compose -p "$compose_project" -f "$published_compose_file" up -d mysql redis > "$result_dir/docker-compose-dependencies-up.log" 2>&1; then
   capture_compose_diagnostics docker-compose
   published_server_topology_failure_result "Replay conformance runner could not start the published server dependencies; see docker-compose-dependencies-up.log, docker-compose-ps.log, compose-startup-diagnostics.json, and service logs." "docker_compose_up_dependencies"
   exit 1
@@ -1133,7 +1134,7 @@ if ! SERVER_PORT="$server_port" \
   DW_AUTH_TOKEN="$auth_token" \
   DW_WORKER_POLL_TIMEOUT="${DW_REPLAY_WORKER_POLL_TIMEOUT:-1}" \
   DW_WORKER_POLL_INTERVAL_MS="${DW_REPLAY_WORKER_POLL_INTERVAL_MS:-100}" \
-  docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" run --rm bootstrap > "$result_dir/server-bootstrap.log" 2>&1; then
+  docker compose -p "$compose_project" -f "$published_compose_file" run --rm bootstrap > "$result_dir/server-bootstrap.log" 2>&1; then
   capture_compose_diagnostics docker-compose
   published_server_topology_failure_result "Replay conformance runner could not bootstrap the published server topology; see server-bootstrap.log, docker-compose-ps.log, compose-startup-diagnostics.json, and service logs." "server_bootstrap"
   exit 1
@@ -1144,7 +1145,7 @@ if ! SERVER_PORT="$server_port" \
   DW_AUTH_TOKEN="$auth_token" \
   DW_WORKER_POLL_TIMEOUT="${DW_REPLAY_WORKER_POLL_TIMEOUT:-1}" \
   DW_WORKER_POLL_INTERVAL_MS="${DW_REPLAY_WORKER_POLL_INTERVAL_MS:-100}" \
-  docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d --no-deps server > "$result_dir/docker-compose-up.log" 2>&1; then
+  docker compose -p "$compose_project" -f "$published_compose_file" up -d --no-deps server > "$result_dir/docker-compose-up.log" 2>&1; then
   capture_compose_diagnostics docker-compose
   published_server_topology_failure_result "Replay conformance runner could not start the published server HTTP service; see docker-compose-up.log, docker-compose-ps.log, compose-startup-diagnostics.json, and service logs." "docker_compose_up_server"
   exit 1
