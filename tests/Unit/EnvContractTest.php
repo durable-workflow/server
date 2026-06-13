@@ -85,7 +85,7 @@ class EnvContractTest extends TestCase
         $this->assertNotFalse($source);
 
         $this->assertSame(
-            'max(DW_WORKER_POLL_TIMEOUT + 15, 40)',
+            'max(DW_WORKER_POLL_TIMEOUT + 15, DW_WORKFLOW_TASK_TIMEOUT + 5, 40)',
             self::$contract['vars']['DW_QUERY_TASK_TIMEOUT']['default'] ?? null,
         );
         $this->assertStringContainsString(
@@ -97,6 +97,11 @@ class EnvContractTest extends TestCase
             '+ 15',
             $source,
             'The query-task timeout default must retain dispatch grace beyond one worker poll.',
+        );
+        $this->assertStringContainsString(
+            "'DW_WORKFLOW_TASK_TIMEOUT'",
+            $source,
+            'The query-task timeout default must cover the workflow-task lease barrier.',
         );
     }
 

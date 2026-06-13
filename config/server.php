@@ -376,6 +376,7 @@ return [
                     'WORKFLOW_SERVER_WORKER_POLL_TIMEOUT',
                     WorkerProtocolVersion::DEFAULT_LONG_POLL_TIMEOUT,
                 ) + 15,
+                (int) EnvAuditor::env('DW_WORKFLOW_TASK_TIMEOUT', 'WORKFLOW_TASK_TIMEOUT', 60) + 5,
                 40,
             ),
         ),

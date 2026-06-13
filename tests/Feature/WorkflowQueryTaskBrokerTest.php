@@ -334,6 +334,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         );
         $this->app->instance(WorkflowQueryTaskBroker::class, $broker);
 
+        $this->primeQueryTaskPoller('python-query-completed-worker');
+
         /** @var WorkerRegistration $worker */
         $worker = WorkerRegistration::query()
             ->where('namespace', 'default')
@@ -561,6 +563,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->where('namespace', 'default')
             ->where('worker_id', 'python-query-zero-argument-worker')
             ->firstOrFail();
+
+        $this->primeQueryTaskPoller('python-query-zero-argument-worker');
 
         $polledTask = null;
         $poller->afterFirstUnreadyProbe = function () use ($broker, $worker, &$polledTask): void {
@@ -843,6 +847,10 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         $this->registerPythonWorker('python-query-explicit-worker', 'python-queries', ['python.queryable']);
 
+        $this->assertFalse($broker->hasWorkerFor('default', $run));
+
+        $this->primeQueryTaskPoller('python-query-explicit-worker');
+
         $this->assertTrue($broker->hasWorkerFor('default', $run));
     }
 
@@ -894,27 +902,31 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 bool $reserveWorkerWaitSlot = false,
                 string $waitSlotPool = 'worker',
             ): mixed {
-                $value = $probe();
+                while (true) {
+                    $value = $probe();
 
-                if ($ready($value)) {
-                    return $value;
+                    if ($ready($value)) {
+                        return $value;
+                    }
+
+                    if ($this->runningAfterProbe) {
+                        return $value;
+                    }
+
+                    $afterProbe = array_shift($this->afterUnreadyProbes);
+
+                    if (! is_callable($afterProbe)) {
+                        return $value;
+                    }
+
+                    $this->runningAfterProbe = true;
+
+                    try {
+                        $afterProbe();
+                    } finally {
+                        $this->runningAfterProbe = false;
+                    }
                 }
-
-                $afterProbe = array_shift($this->afterUnreadyProbes);
-
-                if (! is_callable($afterProbe) || $this->runningAfterProbe) {
-                    return $value;
-                }
-
-                $this->runningAfterProbe = true;
-
-                try {
-                    $afterProbe();
-                } finally {
-                    $this->runningAfterProbe = false;
-                }
-
-                return $probe();
             }
         };
         $broker = new WorkflowQueryTaskBroker(
@@ -927,6 +939,15 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         $poller->afterUnreadyProbes[] = function (): void {
             $this->registerPythonWorker('python-query-registration-race-worker', 'python-queries', ['python.queryable']);
+        };
+        $poller->afterUnreadyProbes[] = function () use ($broker): void {
+            /** @var WorkerRegistration $worker */
+            $worker = WorkerRegistration::query()
+                ->where('namespace', 'default')
+                ->where('worker_id', 'python-query-registration-race-worker')
+                ->firstOrFail();
+
+            $this->assertNull($broker->poll('default', $worker));
         };
         $poller->afterUnreadyProbes[] = function () use ($broker): void {
             /** @var WorkerRegistration $worker */
@@ -1255,6 +1276,16 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $broker = app(WorkflowQueryTaskBroker::class);
         $route = $broker->queryRoute('default', $run);
 
+        $this->assertFalse($route['servable']);
+        $this->assertSame('query_worker_unavailable', $route['reason']);
+        $this->assertSame(2, $route['query_capable_worker_count']);
+        $this->assertSame(2, $route['workflow_type_worker_count']);
+        $this->assertSame(0, $route['compatible_worker_count']);
+
+        $this->primeQueryTaskPoller('python-query-contract-unversioned-worker', 'contract-query-unversioned');
+
+        $route = $broker->queryRoute('default', $run);
+
         $this->assertTrue($route['servable']);
         $this->assertSame(2, $route['query_capable_worker_count']);
         $this->assertSame(2, $route['workflow_type_worker_count']);
@@ -1410,6 +1441,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                     'blob' => $storedReference,
                 ],
             ] as $mode => $queryArguments) {
+                $this->primeQueryTaskPoller('python-query-contract-external-worker', 'contract-query-external-input');
+
                 $poller->afterFirstUnreadyProbe = function () use ($broker, $worker, $mode): void {
                     $task = $broker->poll('default', $worker);
 
@@ -1600,6 +1633,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         $this->startRemoteWorkflow('wf-query-task-timeout');
         $this->registerPythonWorker('python-query-timeout-worker', 'python-queries', ['python.queryable']);
+        $this->primeQueryTaskPoller('python-query-timeout-worker');
 
         $query = $this->postJson('/api/workflows/wf-query-task-timeout/query/status', [
             'input' => ['summary'],
@@ -1633,6 +1667,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             taskQueue: 'polyglot-php',
         );
         $this->registerQueryWorker('php-query-timeout-worker', 'polyglot-php', ['polyglot.php.signal.wait'], 'php');
+        $this->primeQueryTaskPoller('php-query-timeout-worker', 'polyglot-php');
 
         $query = $this->postJson('/api/workflows/wf-query-task-php-worker-timeout/query/status', [
             'input' => ['summary'],
@@ -1706,6 +1741,8 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             app(QueryTaskPollRequestStore::class),
         );
         $this->app->instance(WorkflowQueryTaskBroker::class, $broker);
+
+        $this->primeQueryTaskPoller('python-query-leased-timeout-worker');
 
         /** @var WorkerRegistration $worker */
         $worker = WorkerRegistration::query()
@@ -1992,6 +2029,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $run = $this->startRemoteWorkflow('wf-query-task-interrupt-workflow-poll');
         WorkflowTask::query()->where('workflow_run_id', $run->id)->delete();
         $this->registerPythonWorker('python-query-workflow-interrupt-worker', 'python-queries', ['python.queryable']);
+        $this->primeQueryTaskPoller('python-query-workflow-interrupt-worker');
 
         /** @var WorkflowQueryTaskBroker $broker */
         $broker = app(WorkflowQueryTaskBroker::class);
@@ -2014,6 +2052,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         $run = $this->startRemoteWorkflow('wf-query-task-preempts-workflow');
         $this->registerPythonWorker('python-query-preempt-worker', 'python-queries', ['python.queryable']);
+        $this->primeQueryTaskPoller('python-query-preempt-worker');
 
         /** @var WorkflowQueryTaskBroker $broker */
         $broker = app(WorkflowQueryTaskBroker::class);
@@ -2138,6 +2177,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ['python.queryable'],
             ['python.activity'],
         );
+        $this->primeQueryTaskPoller('python-query-activity-interrupt-worker');
 
         /** @var WorkflowQueryTaskBroker $broker */
         $broker = app(WorkflowQueryTaskBroker::class);
@@ -2256,6 +2296,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
 
         $run = $this->startRemoteWorkflow('wf-query-task-full-response');
         $this->registerPythonWorker('python-query-full-worker', 'python-queries', ['python.queryable']);
+        $this->primeQueryTaskPoller('python-query-full-worker');
 
         /** @var WorkflowQueryTaskBroker $broker */
         $broker = app(WorkflowQueryTaskBroker::class);
@@ -2306,6 +2347,11 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->startRemoteWorkflow('wf-query-task-unlocked-response');
         $this->registerPythonWorker('python-query-unlocked-worker', 'python-queries', ['python.queryable']);
 
+        $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-unlocked-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders())->assertStatus(503);
+
         $query = $this->postJson('/api/workflows/wf-query-task-unlocked-response/query/status', [
             'input' => ['summary'],
         ], $this->apiHeaders());
@@ -2355,6 +2401,11 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $this->bindPollingCacheStore($store);
         $this->startRemoteWorkflow('wf-query-task-lock-timeout-response');
         $this->registerPythonWorker('python-query-lock-timeout-worker', 'python-queries', ['python.queryable']);
+
+        $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-lock-timeout-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders())->assertStatus(503);
 
         $query = $this->postJson('/api/workflows/wf-query-task-lock-timeout-response/query/status', [
             'input' => ['summary'],
@@ -2532,6 +2583,25 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 'codec' => $codec,
             ],
         ];
+    }
+
+    private function primeQueryTaskPoller(string $workerId, string $taskQueue = 'python-queries'): void
+    {
+        $pollingTimeout = config('server.polling.timeout');
+
+        config(['server.polling.timeout' => 0]);
+
+        try {
+            $this->postJson('/api/worker/query-tasks/poll', [
+                'worker_id' => $workerId,
+                'task_queue' => $taskQueue,
+            ], $this->workerHeaders())
+                ->assertOk()
+                ->assertJsonPath('task', null)
+                ->assertJsonPath('poll_status', 'empty');
+        } finally {
+            config(['server.polling.timeout' => $pollingTimeout]);
+        }
     }
 
     /**

@@ -75,22 +75,6 @@ final class WorkflowQueryTaskBroker
             );
         }
 
-        $route = $this->awaitQueryRoute($namespace, $run);
-
-        if (! $route['servable']) {
-            return $this->queryFailed(
-                $run,
-                $queryName,
-                $route['reason'] ?? 'query_worker_unavailable',
-                $route['message'] ?? sprintf(
-                    'No compatible query-capable worker is available for workflow type [%s] on task queue [%s].',
-                    $this->stringValue($run->workflow_type) ?? 'unknown',
-                    $this->taskQueue($run),
-                ),
-                409,
-            );
-        }
-
         $validatedQuery = $this->validateContractedQueryArguments($namespace, $run, $queryName, $queryArguments);
 
         if (($validatedQuery['failed'] ?? false) === true) {
@@ -107,6 +91,22 @@ final class WorkflowQueryTaskBroker
         if (is_array($validatedQuery['query_arguments'] ?? null)) {
             /** @var array{codec: string, blob: string} $queryArguments */
             $queryArguments = $validatedQuery['query_arguments'];
+        }
+
+        $route = $this->awaitQueryRoute($namespace, $run);
+
+        if (! $route['servable']) {
+            return $this->queryFailed(
+                $run,
+                $queryName,
+                $route['reason'] ?? 'query_worker_unavailable',
+                $route['message'] ?? sprintf(
+                    'No compatible query-capable worker is available for workflow type [%s] on task queue [%s].',
+                    $this->stringValue($run->workflow_type) ?? 'unknown',
+                    $this->taskQueue($run),
+                ),
+                409,
+            );
         }
 
         try {
@@ -904,7 +904,7 @@ final class WorkflowQueryTaskBroker
         }
 
         $queryWorkers = $activeWorkers
-            ->filter(fn (WorkerRegistration $worker): bool => $this->workerAcceptsQueryTasks($namespace, $worker))
+            ->filter(fn (WorkerRegistration $worker): bool => $this->workerSupportsQueryTasks($namespace, $worker))
             ->values();
 
         if ($queryWorkers->isEmpty()) {
@@ -998,6 +998,26 @@ final class WorkflowQueryTaskBroker
             );
         }
 
+        $pollingWorkers = $compatibleWorkers
+            ->filter(fn (WorkerRegistration $worker): bool => $this->workerAcceptsQueryTasks($namespace, $worker))
+            ->values();
+
+        if ($pollingWorkers->isEmpty()) {
+            return $this->queryRouteResult(
+                false,
+                'query_worker_unavailable',
+                sprintf(
+                    'Compatible query-capable workers on task queue [%s] are not currently polling workflow query tasks.',
+                    $taskQueue,
+                ),
+                $taskQueue,
+                $activeWorkers->count(),
+                $queryWorkers->count(),
+                $typeWorkers->count(),
+                0,
+            );
+        }
+
         return $this->queryRouteResult(
             true,
             null,
@@ -1006,7 +1026,7 @@ final class WorkflowQueryTaskBroker
             $activeWorkers->count(),
             $queryWorkers->count(),
             $typeWorkers->count(),
-            $compatibleWorkers->count(),
+            $pollingWorkers->count(),
         );
     }
 
@@ -1710,10 +1730,20 @@ final class WorkflowQueryTaskBroker
 
     public function workerAcceptsQueryTasks(string $namespace, WorkerRegistration $worker): bool
     {
+        return $this->queryPollingWorkerIsCurrent($namespace, $worker);
+    }
+
+    private function workerSupportsQueryTasks(string $namespace, WorkerRegistration $worker): bool
+    {
         if (in_array(self::QUERY_TASKS_CAPABILITY, $this->stringArray($worker->capabilities), true)) {
             return true;
         }
 
+        return $this->queryPollingWorkerIsCurrent($namespace, $worker);
+    }
+
+    private function queryPollingWorkerIsCurrent(string $namespace, WorkerRegistration $worker): bool
+    {
         return $this->store()->get($this->queryPollingWorkerKey(
             $namespace,
             (string) $worker->task_queue,
