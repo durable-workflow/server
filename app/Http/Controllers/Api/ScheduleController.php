@@ -7,7 +7,9 @@ use App\Support\SearchAttributeValueValidator;
 use App\Support\WorkflowCommandContextFactory;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use LogicException;
 use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Enums\ScheduleStatus;
 use Workflow\V2\Models\WorkflowSchedule;
@@ -89,31 +91,64 @@ class ScheduleController
 
         $context = $this->commandContexts->make($request, $scheduleId, 'schedule.create');
 
-        $schedule = ScheduleManager::createFromSpec(
-            scheduleId: $scheduleId,
-            spec: $validated['spec'],
-            action: $validated['action'],
-            overlapPolicy: $overlapPolicy,
-            memo: $validated['memo'] ?? [],
-            searchAttributes: $validated['search_attributes'] ?? [],
-            jitterSeconds: (int) ($validated['jitter_seconds'] ?? 0),
-            maxRuns: $validated['max_runs'] ?? null,
-            note: $validated['note'] ?? null,
-            namespace: $namespace,
-            context: $context,
-        );
+        try {
+            $schedule = DB::transaction(function () use (
+                $request,
+                $validated,
+                $scheduleId,
+                $namespace,
+                $overlapPolicy,
+                $context
+            ): WorkflowSchedule {
+                $schedule = ScheduleManager::createFromSpec(
+                    scheduleId: $scheduleId,
+                    spec: $validated['spec'],
+                    action: $validated['action'],
+                    overlapPolicy: $overlapPolicy,
+                    memo: $validated['memo'] ?? [],
+                    searchAttributes: $validated['search_attributes'] ?? [],
+                    jitterSeconds: (int) ($validated['jitter_seconds'] ?? 0),
+                    maxRuns: $validated['max_runs'] ?? null,
+                    note: $validated['note'] ?? null,
+                    namespace: $namespace,
+                    context: $context,
+                );
 
-        if (! empty($validated['paused'])) {
-            ScheduleManager::pause(
-                $schedule,
-                context: $this->commandContexts->make($request, $scheduleId, 'schedule.pause'),
-            );
+                if (! empty($validated['paused'])) {
+                    ScheduleManager::pause(
+                        $schedule,
+                        context: $this->commandContexts->make($request, $scheduleId, 'schedule.pause'),
+                    );
+                }
+
+                return $schedule;
+            });
+        } catch (LogicException $exception) {
+            return $this->invalidScheduleSpecResponse($exception, $scheduleId);
         }
 
         return ControlPlaneProtocol::json([
-            'schedule_id' => $scheduleId,
+            'schedule_id' => $schedule->schedule_id,
             'outcome' => 'created',
         ], 201);
+    }
+
+    private function invalidScheduleSpecResponse(LogicException $exception, string $scheduleId): JsonResponse
+    {
+        $message = $exception->getMessage() !== ''
+            ? $exception->getMessage()
+            : 'Schedule spec is invalid.';
+        $isInvalidCron = str_starts_with($message, 'Invalid cron expression');
+        $field = $isInvalidCron ? 'spec.cron_expressions' : 'spec';
+
+        return ControlPlaneProtocol::json([
+            'message' => $message,
+            'reason' => $isInvalidCron ? 'invalid_cron_expression' : 'invalid_schedule_spec',
+            'schedule_id' => $scheduleId,
+            'errors' => [
+                $field => [$message],
+            ],
+        ], 422);
     }
 
     public function show(Request $request, string $scheduleId): JsonResponse

@@ -122,6 +122,50 @@ class ScheduleTest extends TestCase
         ]);
     }
 
+    public function test_create_rejects_invalid_cron_without_persisting_schedule(): void
+    {
+        $response = $this->withHeaders($this->headers())
+            ->postJson('/api/schedules', [
+                'schedule_id' => 'bad-cron',
+                'spec' => [
+                    'cron_expressions' => ['not a cron'],
+                    'timezone' => 'UTC',
+                ],
+                'action' => [
+                    'workflow_type' => 'CleanupWorkflow',
+                    'task_queue' => 'maintenance',
+                ],
+            ]);
+
+        $response->assertStatus(422)
+            ->assertJsonPath('reason', 'invalid_cron_expression')
+            ->assertJsonPath('schedule_id', 'bad-cron');
+
+        $this->assertSame(
+            ['Invalid cron expression: [not a cron].'],
+            $response->json('errors')['spec.cron_expressions'] ?? null,
+        );
+
+        $this->assertDatabaseMissing('workflow_schedules', [
+            'schedule_id' => 'bad-cron',
+            'namespace' => 'default',
+        ]);
+
+        $this->withHeaders($this->headers())
+            ->getJson('/api/schedules/bad-cron')
+            ->assertNotFound()
+            ->assertJsonPath('reason', 'schedule_not_found');
+
+        $listResponse = $this->withHeaders($this->headers())
+            ->getJson('/api/schedules')
+            ->assertOk();
+
+        $this->assertNotContains(
+            'bad-cron',
+            array_column($listResponse->json('schedules'), 'schedule_id'),
+        );
+    }
+
     public function test_it_generates_schedule_id_when_not_provided(): void
     {
         $response = $this->withHeaders($this->headers())
