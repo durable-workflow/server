@@ -1710,6 +1710,169 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_promotes_supplied_php_schedule_surface_evidence(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the schedules runner result builder.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-schedules-runner-'.bin2hex(random_bytes(4));
+        mkdir($resultDir);
+
+        $scheduleId = 'php-surface-schedule';
+        $state = [
+            'schedule_id' => $scheduleId,
+            'cadence' => '*/5 * * * *',
+            'pause_state' => 'active',
+            'last_fire_at' => '2026-06-03T00:00:00Z',
+            'next_fire_at' => '2026-06-03T00:05:00Z',
+        ];
+        $observedOutputs = [
+            'schedule_id' => $scheduleId,
+            'create_or_observe' => true,
+            'list_or_describe' => true,
+            'control_observed' => true,
+            'claimed_controls' => [
+                'pause' => true,
+                'resume' => true,
+                'trigger' => true,
+                'delete' => true,
+            ],
+            'unsupported_controls' => [],
+            'control_behavior' => [
+                'passed' => true,
+                'pause' => ['ok' => true, 'state_after_pause' => array_merge($state, ['pause_state' => 'paused'])],
+                'resume' => ['ok' => true, 'state_after_resume' => $state],
+                'trigger' => ['ok' => true, 'schedule_id' => $scheduleId],
+                'delete' => ['ok' => true, 'absent_from_php_list' => true],
+            ],
+            'state_comparison' => [
+                'fields_compared' => ['schedule_id', 'cadence', 'pause_state', 'last_fire_at', 'next_fire_at'],
+                'php' => ['describe' => $state, 'list' => $state],
+                'server' => ['describe' => $state, 'list' => $state],
+                'cli' => ['describe' => $state, 'list' => $state],
+                'server_compared' => true,
+                'cli_compared' => true,
+                'comparisons' => [
+                    [
+                        'php_surface' => 'php_describe',
+                        'target_surface' => 'server_describe',
+                        'field' => 'schedule_id',
+                        'php_value' => $scheduleId,
+                        'target_value' => $scheduleId,
+                        'matches' => true,
+                    ],
+                    [
+                        'php_surface' => 'php_describe',
+                        'target_surface' => 'cli_describe',
+                        'field' => 'next_fire_at',
+                        'php_value' => '2026-06-03T00:05:00Z',
+                        'target_value' => '2026-06-03T00:05:00Z',
+                        'matches' => true,
+                    ],
+                ],
+                'failures' => [],
+            ],
+            'php_report' => [
+                'create_or_observe' => ['ok' => true, 'response' => ['schedule_id' => $scheduleId]],
+                'list_or_describe' => [
+                    'list' => ['ok' => true, 'response' => ['schedules' => [['schedule_id' => $scheduleId]]]],
+                    'describe' => ['ok' => true, 'response' => ['schedule_id' => $scheduleId]],
+                ],
+            ],
+            'failures' => [],
+        ];
+
+        file_put_contents($resultDir.'/php-surface-evidence.json', json_encode([
+            'schema' => 'durable-workflow.v2.schedules-runtime.php-surface-evidence',
+            'scenario_results' => [
+                'php_schedule_surface' => [
+                    'scenario_id' => 'php_schedule_surface',
+                    'status' => 'pass',
+                    'observed_outputs' => $observedOutputs,
+                    'linked_findings' => [],
+                ],
+            ],
+            'client_surfaces' => [
+                'workflow-php-sdk' => [
+                    'create_or_observe' => true,
+                    'list_or_describe' => true,
+                    'control_observed' => true,
+                    'state_compared_with_server' => true,
+                    'state_compared_with_cli' => true,
+                    'schedule_id' => $scheduleId,
+                ],
+            ],
+            'runtime_matrix' => [
+                'runtimes' => ['workflow-php'],
+                'client_paths' => ['workflow-php-sdk', 'server-http-api', 'cli'],
+                'schedule_types' => ['cron_expression'],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $process = proc_open(
+                [$nodeBinary, $repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs'],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_SCHEDULES_RESULT_DIR' => $resultDir,
+                    'DW_SCHEDULES_REPO_ROOT' => $repoRoot,
+                    'DW_SCHEDULES_PHP_SURFACE_EVIDENCE' => $resultDir.'/php-surface-evidence.json',
+                    'DW_SERVER_VERSION' => '0.2.410',
+                    'DW_CLI_VERSION' => '0.1.80',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.88',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.204',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.96',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr."\n".$stdout);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/schedules-runtime-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $scenario = $result['scenario_results']['php_schedule_surface'];
+            $this->assertSame('pass', $scenario['status']);
+            $this->assertSame([], $scenario['linked_findings']);
+            $this->assertTrue($scenario['observed_outputs']['create_or_observe']);
+            $this->assertTrue($scenario['observed_outputs']['list_or_describe']);
+            $this->assertTrue($scenario['observed_outputs']['control_observed']);
+            $this->assertSame([], $scenario['observed_outputs']['unsupported_controls']);
+            $this->assertSame(
+                ['schedule_id', 'cadence', 'pause_state', 'last_fire_at', 'next_fire_at'],
+                $scenario['observed_outputs']['state_comparison']['fields_compared'],
+            );
+            $this->assertTrue($scenario['observed_outputs']['state_comparison']['server_compared']);
+            $this->assertTrue($scenario['observed_outputs']['state_comparison']['cli_compared']);
+            $this->assertSame(
+                $scheduleId,
+                $result['client_surfaces']['workflow-php-sdk']['schedule_id'],
+            );
+            $this->assertContains('workflow-php-sdk', $result['runtime_matrix']['client_paths']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_runner_promotes_supplied_cross_language_schedule_cells(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -1951,9 +2114,15 @@ final class SchedulesConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('maybeRunPythonLifecycleShard', $source);
         $this->assertStringContainsString('DW_SCHEDULES_RUN_PYTHON_LIFECYCLE_SHARD', $source);
         $this->assertStringContainsString('DW_SCHEDULES_PYTHON_LIFECYCLE_EVIDENCE', $source);
+        $this->assertStringContainsString('maybeRunPhpSurfaceShard', $source);
+        $this->assertStringContainsString('DW_SCHEDULES_RUN_PHP_SURFACE_SHARD', $source);
+        $this->assertStringContainsString('DW_SCHEDULES_PHP_SURFACE_EVIDENCE', $source);
+        $this->assertStringContainsString('schedules_php_surface.php', $source);
         $this->assertStringContainsString('DW_SCHEDULES_SHARD_CONCURRENCY', $shell);
         $this->assertStringContainsString('DW_SCHEDULES_RUN_PYTHON_LIFECYCLE_SHARD', $shell);
         $this->assertStringContainsString('DW_SCHEDULES_PYTHON_LIFECYCLE_EVIDENCE', $shell);
+        $this->assertStringContainsString('DW_SCHEDULES_RUN_PHP_SURFACE_SHARD', $shell);
+        $this->assertStringContainsString('DW_SCHEDULES_PHP_SURFACE_EVIDENCE', $shell);
     }
 
     public function test_runner_uses_published_compose_dependency_graph_for_schedule_shards(): void

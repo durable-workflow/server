@@ -38,6 +38,10 @@ Environment overrides:
                                     Python SDK schedule lifecycle shard.
                                     Scenario results in this file are merged
                                     into the output.
+  DW_SCHEDULES_PHP_SURFACE_EVIDENCE Optional JSON from a focused published
+                                    workflow PHP schedule client shard.
+                                    Scenario results in this file are merged
+                                    into the output.
   DW_SCHEDULES_OPERATOR_CONTROLS_EVIDENCE
                                     Optional JSON from a focused list/describe,
                                     pause/resume, and delete shard. Scenario
@@ -76,6 +80,10 @@ Environment overrides:
   DW_SCHEDULES_RUN_PYTHON_LIFECYCLE_SHARD
                                     Set to 0 to skip the automatic published
                                     Python SDK schedule lifecycle shard.
+                                    Defaults to auto.
+  DW_SCHEDULES_RUN_PHP_SURFACE_SHARD
+                                    Set to 0 to skip the automatic published
+                                    workflow PHP schedule client shard.
                                     Defaults to auto.
   DW_SCHEDULES_RUN_CROSS_LANGUAGE_SHARD
                                     Set to 0 to skip the automatic published
@@ -212,6 +220,7 @@ export DW_SCHEDULES_RUN_OPERATOR_CONTROLS_SHARD="${DW_SCHEDULES_RUN_OPERATOR_CON
 export DW_SCHEDULES_RUN_MISSED_RESTART_SHARD="${DW_SCHEDULES_RUN_MISSED_RESTART_SHARD:-auto}"
 export DW_SCHEDULES_RUN_CLI_SURFACE_SHARD="${DW_SCHEDULES_RUN_CLI_SURFACE_SHARD:-auto}"
 export DW_SCHEDULES_RUN_PYTHON_LIFECYCLE_SHARD="${DW_SCHEDULES_RUN_PYTHON_LIFECYCLE_SHARD:-auto}"
+export DW_SCHEDULES_RUN_PHP_SURFACE_SHARD="${DW_SCHEDULES_RUN_PHP_SURFACE_SHARD:-auto}"
 export DW_SCHEDULES_RUN_CROSS_LANGUAGE_SHARD="${DW_SCHEDULES_RUN_CROSS_LANGUAGE_SHARD:-auto}"
 export DW_SCHEDULES_RUN_ADVERSARIAL_SHARD="${DW_SCHEDULES_RUN_ADVERSARIAL_SHARD:-auto}"
 

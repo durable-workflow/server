@@ -27,6 +27,8 @@ const cliEvidencePath = process.env.DW_SCHEDULES_CLI_EVIDENCE
   ?? path.join(resultDir, 'schedules-cli-evidence.json');
 const pythonLifecycleEvidencePath = process.env.DW_SCHEDULES_PYTHON_LIFECYCLE_EVIDENCE
   ?? path.join(resultDir, 'schedules-python-lifecycle-evidence.json');
+const phpSurfaceEvidencePath = process.env.DW_SCHEDULES_PHP_SURFACE_EVIDENCE
+  ?? path.join(resultDir, 'schedules-php-surface-evidence.json');
 const operatorControlsEvidencePath = process.env.DW_SCHEDULES_OPERATOR_CONTROLS_EVIDENCE
   ?? path.join(resultDir, 'schedules-operator-controls-evidence.json');
 const missedRestartEvidencePath = process.env.DW_SCHEDULES_MISSED_RESTART_EVIDENCE
@@ -138,6 +140,7 @@ async function main() {
     { name: 'missed-restart', run: () => maybeRunMissedRestartShard(startedAt, artifactVersions, artifactSources) },
     { name: 'cli-surface', run: () => maybeRunCliSurfaceShard(startedAt, artifactVersions, artifactSources) },
     { name: 'python-lifecycle', run: () => maybeRunPythonLifecycleShard(startedAt, artifactVersions, artifactSources) },
+    { name: 'php-surface', run: () => maybeRunPhpSurfaceShard(startedAt, artifactVersions, artifactSources) },
     { name: 'cross-language', run: () => maybeRunCrossLanguageShard(startedAt, artifactVersions, artifactSources) },
     { name: 'adversarial', run: () => maybeRunAdversarialShard(startedAt, artifactVersions, artifactSources) },
   ]);
@@ -1587,6 +1590,7 @@ function readEvidenceInputs() {
     missedRestartEvidencePath,
     cliEvidencePath,
     pythonLifecycleEvidencePath,
+    phpSurfaceEvidencePath,
     crossLanguageEvidencePath,
     adversarialEvidencePath,
   ].filter((value, index, values) => stringValue(value) !== '' && values.indexOf(value) === index);
@@ -6118,7 +6122,12 @@ async function installSchedulesPythonArtifact(shardRoot, artifactVersions, artif
   return { pythonRoot, pythonBin, scriptPath };
 }
 
-async function installSchedulesPhpArtifact(shardRoot, artifactVersions, artifactSources) {
+async function installSchedulesPhpArtifact(
+  shardRoot,
+  artifactVersions,
+  artifactSources,
+  logPrefix = 'schedules-cross-language',
+) {
   const phpRoot = path.join(shardRoot, 'php');
   const workflowPhpVersion = artifactValue(artifactVersions, 'workflow-php');
   const scriptPath = path.join(phpRoot, 'schedules_worker.php');
@@ -6141,7 +6150,7 @@ async function installSchedulesPhpArtifact(shardRoot, artifactVersions, artifact
       '--no-progress',
       `durable-workflow/workflow:${workflowPhpVersion}`,
     ],
-    path.join(resultDir, 'schedules-cross-language-php-install.log'),
+    path.join(resultDir, `${logPrefix}-php-install.log`),
   );
   markArtifactSource(
     artifactSources,
@@ -6541,6 +6550,725 @@ function crossLanguageEvidenceFromObservations({
       },
     },
   };
+}
+
+async function maybeRunPhpSurfaceShard(startedAt, artifactVersions, artifactSources) {
+  const mode = stringValue(process.env.DW_SCHEDULES_RUN_PHP_SURFACE_SHARD).toLowerCase();
+  if (!['1', 'true', 'yes', 'auto'].includes(mode)) {
+    return null;
+  }
+
+  if (readJsonIfExists(phpSurfaceEvidencePath) !== null) {
+    return null;
+  }
+
+  const explicit = mode !== 'auto';
+  const serverUrl = stringValue(process.env.DW_SCHEDULES_SERVER_URL);
+  const dockerAvailable = await commandSucceeds('docker', ['--version']);
+  const composeAvailable = dockerAvailable && await commandSucceeds('docker', ['compose', 'version']);
+  const serverImage = resolveServerImage(artifactVersions);
+  const workflowPhpVersion = artifactValue(artifactVersions, 'workflow-php');
+  const configuredCli = stringValue(process.env.DW_SCHEDULES_CLI_EXECUTABLE ?? process.env.DW_CLI_EXECUTABLE);
+  const cliVersion = artifactValue(artifactVersions, 'cli');
+  const missing = [];
+
+  if (!dockerAvailable) {
+    missing.push('docker');
+  }
+  if (workflowPhpVersion === '') {
+    missing.push('DW_WORKFLOW_PHP_VERSION');
+  }
+  if (configuredCli === '' && cliVersion === '') {
+    missing.push('DW_CLI_VERSION or DW_SCHEDULES_CLI_EXECUTABLE');
+  }
+  if (serverUrl === '' && (!dockerAvailable || !composeAvailable || serverImage === '')) {
+    if (dockerAvailable && !composeAvailable) {
+      missing.push('docker compose');
+    }
+    if (serverImage === '') {
+      missing.push('DW_SERVER_VERSION or DW_SERVER_IMAGE');
+    }
+  }
+
+  if (missing.length > 0) {
+    if (!explicit) {
+      return null;
+    }
+
+    return phpSurfaceBlockedEvidence(
+      `PHP schedule surface shard prerequisites are missing: ${missing.join(', ')}.`,
+      startedAt,
+      artifactVersions,
+      artifactSources,
+    );
+  }
+
+  try {
+    return await runPhpSurfaceShard({
+      startedAt,
+      artifactVersions,
+      artifactSources,
+      serverImage,
+      existingServerUrl: serverUrl,
+    });
+  } catch (error) {
+    const reason = failureReasonWithShardLogs(error, 'schedules-php-surface');
+    return phpSurfaceBlockedEvidence(reason, startedAt, artifactVersions, artifactSources);
+  }
+}
+
+async function runPhpSurfaceShard({ startedAt, artifactVersions, artifactSources, serverImage, existingServerUrl }) {
+  const phpStartedAt = timestamp();
+  const runId = `schedules-php-surface-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const namespace = sanitizeDockerName(`${stringValue(process.env.DW_SCHEDULES_NAMESPACE) || 'schedules-conformance'}-${runId}`).slice(0, 96);
+  const taskQueue = stringValue(process.env.DW_SCHEDULES_PHP_SURFACE_TASK_QUEUE)
+    || `schedules-php-surface-${runId}`;
+  const workflowType = stringValue(process.env.DW_SCHEDULES_PHP_SURFACE_WORKFLOW_TYPE)
+    || 'SchedulesConformancePhpSurfaceWorkflow';
+  const scheduleId = stringValue(process.env.DW_SCHEDULES_PHP_SURFACE_SCHEDULE_ID)
+    || `${runId}-workflow-php`;
+  const cronExpression = stringValue(process.env.DW_SCHEDULES_PHP_SURFACE_CRON) || '*/5 * * * *';
+  const token = stringValue(process.env.DW_SCHEDULES_AUTH_TOKEN) || 'dev-token';
+  const readinessTimeoutSeconds = positiveInt(process.env.DW_SCHEDULES_SERVER_READY_TIMEOUT_SECONDS, 120);
+  const schedulerTickSeconds = positiveInt(process.env.DW_SCHEDULES_PHP_SURFACE_SCHEDULER_TICK_SECONDS, 2);
+  const serverPort = positiveInt(process.env.DW_SCHEDULES_SERVER_PORT, 0) || await freePort();
+  let serverUrl = existingServerUrl || `http://127.0.0.1:${serverPort}`;
+  const composeProject = sanitizeDockerName(runId);
+  const overlayPath = path.join(resultDir, 'schedules-php-surface-compose.override.yml');
+  const composeFiles = [
+    '-f',
+    path.join(repoRoot, 'docker-compose.published.yml'),
+    '-f',
+    overlayPath,
+  ];
+  const shardRoot = path.join(resultDir, 'schedules-php-surface-shard');
+  let composeStarted = false;
+  let cliPath = '';
+
+  fs.rmSync(shardRoot, { recursive: true, force: true });
+  fs.mkdirSync(shardRoot, { recursive: true });
+  markArtifactSource(artifactSources, 'server', existingServerUrl === '' ? 'published_docker_image' : 'existing_published_server_url', artifactVersions);
+
+  if (existingServerUrl === '') {
+    writeSchedulerOverlay(overlayPath, schedulerTickSeconds);
+    await execLogged(
+      'docker',
+      ['image', 'pull', serverImage],
+      path.join(resultDir, 'schedules-php-surface-docker-pull.log'),
+    );
+    composeStarted = true;
+    await startPublishedComposeServices({
+      composeProject,
+      composeFiles,
+      serverPort,
+      serverImage,
+      token,
+      artifactVersions,
+      logPrefix: 'schedules-php-surface',
+    });
+  }
+
+  try {
+    serverUrl = await waitForReachableServerUrl({
+      preferredUrl: serverUrl,
+      timeoutSeconds: readinessTimeoutSeconds,
+      composeProject: composeStarted ? composeProject : '',
+      composeFiles,
+      serverPort,
+      serverImage,
+      token,
+      artifactVersions,
+    });
+    await ensureNamespace(serverUrl, token, namespace);
+
+    cliPath = await resolvePublishedCli(artifactVersions, artifactSources);
+    const php = await installSchedulesPhpArtifact(
+      shardRoot,
+      artifactVersions,
+      artifactSources,
+      'schedules-php-surface',
+    );
+    writeText(path.join(php.phpRoot, 'schedules_php_surface.php'), schedulesPhpSurfaceProbeScript());
+
+    const phpReport = await runSchedulesPhpSurfaceProbe(php, {
+      action: 'create_observe_controls',
+      server_url: serverUrl,
+      token,
+      namespace,
+      task_queue: taskQueue,
+      schedule_id: scheduleId,
+      workflow_type: workflowType,
+      cron: cronExpression,
+      run_id: runId,
+      timeout_ms: 60000,
+    });
+    const httpList = await safeApiRequestResult(serverUrl, token, namespace, 'GET', '/schedules');
+    const httpDescribe = await safeApiRequestResult(serverUrl, token, namespace, 'GET', `/schedules/${encodeURIComponent(scheduleId)}`);
+    const cliContext = { serverUrl, namespace, token };
+    const cliList = await runDwJson(cliPath, ['schedules', 'list', '--json'], cliContext);
+    const cliDescribe = await runDwJson(cliPath, ['schedules', 'describe', scheduleId, '--json'], cliContext);
+    const phpDelete = await runSchedulesPhpSurfaceProbe(php, {
+      action: 'delete_schedule',
+      server_url: serverUrl,
+      token,
+      namespace,
+      schedule_id: scheduleId,
+      timeout_ms: 60000,
+    });
+
+    const evidence = phpSurfaceEvidenceFromObservations({
+      startedAt: phpStartedAt,
+      finishedAt: timestamp(),
+      artifactVersions,
+      artifactSources,
+      namespace,
+      taskQueue,
+      scheduleId,
+      workflowType,
+      cronExpression,
+      runId,
+      cliPath,
+      phpReport,
+      phpDelete,
+      httpList,
+      httpDescribe,
+      cliList,
+      cliDescribe,
+    });
+    writeJson(phpSurfaceEvidencePath, evidence);
+
+    return evidence;
+  } finally {
+    await bestEffortDeleteSchedule(serverUrl, token, namespace, scheduleId);
+
+    writeJson(path.join(resultDir, 'schedules-php-surface-run-metadata.json'), {
+      schema: 'durable-workflow.v2.schedules-runtime.php-surface-run-metadata',
+      started_at: startedAt,
+      php_surface_started_at: phpStartedAt,
+      finished_at: timestamp(),
+      server_url: serverUrl,
+      namespace,
+      task_queue: taskQueue,
+      schedule_id: scheduleId,
+      workflow_type: workflowType,
+      server_image: existingServerUrl === '' ? serverImage : null,
+      compose_project: existingServerUrl === '' ? composeProject : null,
+      cli_executable: cliPath || null,
+      published_artifact_versions: artifactVersions,
+      artifact_sources: artifactSources,
+      local_product_source_checkouts_used: false,
+    });
+
+    if (composeStarted) {
+      await collectPhpSurfaceComposeLogs(composeProject, composeFiles);
+      await execFile('docker', ['compose', '-p', composeProject, ...composeFiles, 'down', '-v'], {
+        env: composeEnv(serverPort, serverImage, token, artifactVersions),
+        maxBuffer: 1024 * 1024 * 8,
+      }).catch(() => {});
+    }
+  }
+}
+
+async function runSchedulesPhpSurfaceProbe(php, input) {
+  const { inputPath, outputPath } = writeSchedulesWorkerInput(php.phpRoot, input);
+  const containerInput = `/app/${path.relative(php.phpRoot, inputPath)}`;
+  const containerOutput = `/app/${path.relative(php.phpRoot, outputPath)}`;
+  const logPath = path.join(resultDir, `schedules-php-surface-${safeLogName(input.schedule_id ?? input.action)}-${input.action}.log`);
+  const result = await execCommandCapture('docker', [
+    'run',
+    '--rm',
+    '--network',
+    'host',
+    '-v',
+    `${php.phpRoot}:/app`,
+    '-w',
+    '/app',
+    '--entrypoint',
+    'php',
+    'composer:2',
+    '/app/schedules_php_surface.php',
+    containerInput,
+    containerOutput,
+  ], {
+    timeout: positiveInt(input.timeout_ms, 60000),
+    maxBuffer: 1024 * 1024 * 4,
+  });
+  writeText(logPath, `${result.stdout}${result.stderr}`);
+  if (result.exit_code !== 0) {
+    throw new Error(`published PHP schedule surface action ${input.action} failed; see ${path.basename(logPath)}`);
+  }
+
+  const output = readJsonIfExists(outputPath);
+  if (!output || typeof output !== 'object') {
+    throw new Error(`published PHP schedule surface action ${input.action} did not write JSON output`);
+  }
+
+  return output;
+}
+
+function phpSurfaceEvidenceFromObservations({
+  startedAt,
+  finishedAt,
+  artifactVersions,
+  artifactSources,
+  namespace,
+  taskQueue,
+  scheduleId,
+  workflowType,
+  cronExpression,
+  runId,
+  cliPath,
+  phpReport,
+  phpDelete,
+  httpList,
+  httpDescribe,
+  cliList,
+  cliDescribe,
+}) {
+  const checks = phpSurfaceChecks({
+    scheduleId,
+    cronExpression,
+    phpReport,
+    phpDelete,
+    httpList,
+    httpDescribe,
+    cliList,
+    cliDescribe,
+  });
+  const status = checks.unsupported_controls.length > 0 || checks.unsupported_required_operations.length > 0
+    ? 'unsupported'
+    : (checks.failures.length === 0 ? 'pass' : 'fail');
+  const finding = status === 'pass'
+    ? null
+    : phpSurfaceFinding(status, checks, artifactVersions);
+  const observedOutputs = {
+    schedule_id: scheduleId,
+    workflow_type: workflowType,
+    cron_expression: cronExpression,
+    create_or_observe: checks.create_or_observe,
+    list_or_describe: checks.list_or_describe,
+    control_observed: checks.control_observed,
+    claimed_controls: checks.claimed_controls,
+    unsupported_controls: checks.unsupported_controls,
+    unsupported_required_operations: checks.unsupported_required_operations,
+    control_behavior: checks.control_behavior,
+    state_comparison: checks.state_comparison,
+    php_report: phpReport,
+    php_delete_report: phpDelete,
+    server_state: checks.server_state,
+    cli_state: checks.cli_state,
+    failures: checks.failures,
+  };
+
+  return {
+    schema: 'durable-workflow.v2.schedules-runtime.php-surface-evidence',
+    started_at: startedAt,
+    finished_at: finishedAt,
+    generated_at: finishedAt,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    local_product_source_checkouts_used: false,
+    scenario_results: {
+      php_schedule_surface: {
+        scenario_id: 'php_schedule_surface',
+        status,
+        observed_outputs: observedOutputs,
+        linked_findings: finding === null ? [] : [finding],
+      },
+    },
+    findings: finding === null ? [] : [finding],
+    topology: {
+      namespace,
+      task_queue: taskQueue,
+      run_id: runId,
+      worker_execution_mode: 'published_workflow_php_control_plane_client',
+      schedules_created: [scheduleId],
+      cli_executable: cliPath,
+    },
+    runtime_matrix: {
+      runtimes: ['workflow-php'],
+      client_paths: ['workflow-php-sdk', 'server-http-api', 'cli'],
+      schedule_types: ['cron_expression'],
+    },
+    client_surfaces: {
+      'workflow-php-sdk': {
+        create_or_observe: checks.create_or_observe,
+        list_or_describe: checks.list_or_describe,
+        list_observed: checks.php_list_observed,
+        describe_observed: checks.php_describe_observed,
+        control_observed: checks.control_observed,
+        claimed_controls: checks.claimed_controls,
+        unsupported_controls: checks.unsupported_controls,
+        state_compared_with_server: checks.state_compared_with_server,
+        state_compared_with_cli: checks.state_compared_with_cli,
+        schedule_id: scheduleId,
+        command_outputs: {
+          create_observe_controls: phpReport,
+          delete: phpDelete,
+        },
+      },
+    },
+  };
+}
+
+function phpSurfaceChecks({
+  scheduleId,
+  cronExpression,
+  phpReport,
+  phpDelete,
+  httpList,
+  httpDescribe,
+  cliList,
+  cliDescribe,
+}) {
+  const createOperation = objectValue(phpReport.create_or_observe);
+  const listOperation = objectValue(phpReport.list_or_describe?.list);
+  const describeOperation = objectValue(phpReport.list_or_describe?.describe);
+  const deleteOperation = objectValue(phpDelete.delete);
+  const listAfterDeleteOperation = objectValue(phpDelete.list_after_delete);
+  const claimedControls = objectValue(phpReport.claimed_controls);
+  const unsupportedControls = Object.entries(claimedControls)
+    .filter(([, claimed]) => claimed === false)
+    .map(([control]) => control);
+  const unsupportedRequiredOperations = [
+    createOperation.supported === false ? 'createSchedule' : null,
+    listOperation.supported === false ? 'listSchedules' : null,
+    describeOperation.supported === false ? 'describeSchedule' : null,
+  ].filter(Boolean);
+  const phpListPayload = objectValue(listOperation.response);
+  const phpDescribePayload = objectValue(describeOperation.response);
+  const phpListedSchedule = findScheduleRecordInList(phpListPayload, scheduleId);
+  const phpDescribedSchedule = scheduleRecordFromPayload(phpDescribePayload);
+  const serverListPayload = objectValue(httpList.parsed);
+  const serverDescribePayload = objectValue(httpDescribe.parsed);
+  const serverListedSchedule = findScheduleRecordInList(serverListPayload, scheduleId);
+  const serverDescribedSchedule = scheduleRecordFromPayload(serverDescribePayload);
+  const cliListPayload = objectValue(cliList.parsed_json);
+  const cliDescribePayload = objectValue(cliDescribe.parsed_json);
+  const cliListedSchedule = findScheduleRecordInList(cliListPayload, scheduleId);
+  const cliDescribedSchedule = scheduleRecordFromPayload(cliDescribePayload);
+  const phpDescribeState = scheduleStateSnapshot(phpDescribedSchedule);
+  const phpListState = scheduleStateSnapshot(phpListedSchedule);
+  const serverDescribeState = scheduleStateSnapshot(serverDescribedSchedule);
+  const serverListState = scheduleStateSnapshot(serverListedSchedule);
+  const cliDescribeState = scheduleStateSnapshot(cliDescribedSchedule);
+  const cliListState = scheduleStateSnapshot(cliListedSchedule);
+  const createOrObserve = operationOk(createOperation)
+    && (scheduleIdFromOperation(createOperation) === scheduleId
+      || phpDescribeState.schedule_id === scheduleId
+      || phpListState.schedule_id === scheduleId);
+  const phpListObserved = operationOk(listOperation) && phpListState.schedule_id === scheduleId;
+  const phpDescribeObserved = operationOk(describeOperation) && phpDescribeState.schedule_id === scheduleId;
+  const listOrDescribe = phpListObserved && phpDescribeObserved;
+  const controlBehavior = phpControlBehavior({
+    scheduleId,
+    phpReport,
+    phpDelete,
+    deleteOperation,
+    listAfterDeleteOperation,
+  });
+  const stateComparison = phpSurfaceStateComparison({
+    scheduleId,
+    cronExpression,
+    phpDescribeState,
+    phpListState,
+    serverDescribeState,
+    serverListState,
+    cliDescribeState,
+    cliListState,
+  });
+  const failures = [];
+
+  if (!createOrObserve) {
+    failures.push('PHP-facing create_or_observe did not return or observe the requested schedule id');
+  }
+  if (!phpListObserved) {
+    failures.push('PHP-facing list did not include the requested schedule');
+  }
+  if (!phpDescribeObserved) {
+    failures.push('PHP-facing describe did not include the requested schedule');
+  }
+  if (!stateComparison.server_observed) {
+    failures.push('server HTTP list/describe did not expose the PHP-created schedule');
+  }
+  if (!stateComparison.cli_observed) {
+    failures.push('CLI list/describe did not expose the PHP-created schedule');
+  }
+  failures.push(...controlBehavior.failures);
+  failures.push(...stateComparison.failures);
+
+  return {
+    create_or_observe: createOrObserve,
+    list_or_describe: listOrDescribe,
+    php_list_observed: phpListObserved,
+    php_describe_observed: phpDescribeObserved,
+    control_observed: controlBehavior.passed,
+    claimed_controls: claimedControls,
+    unsupported_controls: unsupportedControls,
+    unsupported_required_operations: unsupportedRequiredOperations,
+    control_behavior: controlBehavior,
+    state_comparison: stateComparison,
+    state_compared_with_server: stateComparison.server_compared,
+    state_compared_with_cli: stateComparison.cli_compared,
+    server_state: {
+      list: publicResponseSnapshot(httpList),
+      describe: publicResponseSnapshot(httpDescribe),
+      listed_schedule_state: serverListState,
+      described_schedule_state: serverDescribeState,
+    },
+    cli_state: {
+      list: cliList,
+      describe: cliDescribe,
+      listed_schedule_state: cliListState,
+      described_schedule_state: cliDescribeState,
+    },
+    failures,
+  };
+}
+
+function phpControlBehavior({
+  scheduleId,
+  phpReport,
+  phpDelete,
+  deleteOperation,
+  listAfterDeleteOperation,
+}) {
+  const pauseOperation = objectValue(phpReport.control_behavior?.pause);
+  const resumeOperation = objectValue(phpReport.control_behavior?.resume);
+  const triggerOperation = objectValue(phpReport.control_behavior?.trigger);
+  const pauseState = scheduleStateSnapshot(scheduleRecordFromPayload(objectValue(phpReport.control_behavior?.describe_after_pause?.response)));
+  const resumeState = scheduleStateSnapshot(scheduleRecordFromPayload(objectValue(phpReport.control_behavior?.describe_after_resume?.response)));
+  const triggerScheduleId = scheduleIdFromOperation(triggerOperation);
+  const triggerWorkflowId = firstStringValue(
+    triggerOperation.response?.workflow_id,
+    triggerOperation.response?.workflowId,
+    triggerOperation.response?.workflow_run_id,
+    triggerOperation.response?.workflowRunId,
+    triggerOperation.response?.run_id,
+    triggerOperation.response?.runId,
+    triggerOperation.response?.result?.workflow_id,
+    triggerOperation.response?.result?.workflowId,
+    triggerOperation.response?.result?.workflow_run_id,
+    triggerOperation.response?.result?.workflowRunId,
+    triggerOperation.response?.result?.run_id,
+    triggerOperation.response?.result?.runId,
+  );
+  const listAfterDelete = objectValue(listAfterDeleteOperation.response);
+  const failures = [];
+
+  if (!operationOk(pauseOperation) || pauseState.pause_state !== 'paused') {
+    failures.push('PHP-facing pause did not produce paused schedule state');
+  }
+  if (!operationOk(resumeOperation) || resumeState.pause_state !== 'active') {
+    failures.push('PHP-facing resume did not produce active schedule state');
+  }
+  if (!operationOk(triggerOperation) || (triggerScheduleId !== scheduleId && triggerWorkflowId === '')) {
+    failures.push('PHP-facing trigger did not identify the requested schedule or a triggered workflow');
+  }
+  if (!operationOk(deleteOperation) || scheduleListContains(listAfterDelete, scheduleId)) {
+    failures.push('PHP-facing delete did not remove the schedule from PHP list output');
+  }
+
+  return {
+    passed: failures.length === 0,
+    failures,
+    pause: {
+      ok: operationOk(pauseOperation),
+      state_after_pause: pauseState,
+    },
+    resume: {
+      ok: operationOk(resumeOperation),
+      state_after_resume: resumeState,
+    },
+    trigger: {
+      ok: operationOk(triggerOperation),
+      schedule_id: triggerScheduleId,
+      workflow_id: triggerWorkflowId,
+      identified_requested_schedule_or_workflow: triggerScheduleId === scheduleId || triggerWorkflowId !== '',
+    },
+    delete: {
+      ok: operationOk(deleteOperation),
+      absent_from_php_list: !scheduleListContains(listAfterDelete, scheduleId),
+      list_after_delete: listAfterDeleteOperation,
+    },
+  };
+}
+
+function phpSurfaceStateComparison({
+  scheduleId,
+  cronExpression,
+  phpDescribeState,
+  phpListState,
+  serverDescribeState,
+  serverListState,
+  cliDescribeState,
+  cliListState,
+}) {
+  const fields = ['schedule_id', 'cadence', 'pause_state', 'last_fire_at', 'next_fire_at'];
+  const comparisons = [];
+  const failures = [];
+  const phpStates = {
+    php_describe: phpDescribeState,
+    php_list: phpListState,
+  };
+  const targetStates = {
+    server_describe: serverDescribeState,
+    server_list: serverListState,
+    cli_describe: cliDescribeState,
+    cli_list: cliListState,
+  };
+
+  for (const [phpSurface, phpState] of Object.entries(phpStates)) {
+    for (const [targetSurface, targetState] of Object.entries(targetStates)) {
+      for (const field of fields) {
+        const phpValue = stringValue(phpState[field]);
+        const targetValue = stringValue(targetState[field]);
+        if (phpValue === '' || targetValue === '') {
+          continue;
+        }
+
+        const matches = phpValue === targetValue;
+        comparisons.push({
+          php_surface: phpSurface,
+          target_surface: targetSurface,
+          field,
+          php_value: phpValue,
+          target_value: targetValue,
+          matches,
+        });
+        if (!matches) {
+          failures.push(`${field} differs between ${phpSurface} and ${targetSurface}`);
+        }
+      }
+    }
+  }
+
+  for (const [surface, state] of Object.entries({ php_describe: phpDescribeState, php_list: phpListState })) {
+    if (state.schedule_id !== scheduleId) {
+      failures.push(`${surface} schedule_id did not match requested schedule`);
+    }
+    if (state.cadence !== cronExpression) {
+      failures.push(`${surface} cadence did not match requested cron expression`);
+    }
+  }
+
+  const serverObserved = serverDescribeState.schedule_id === scheduleId || serverListState.schedule_id === scheduleId;
+  const cliObserved = cliDescribeState.schedule_id === scheduleId || cliListState.schedule_id === scheduleId;
+  const serverCompared = comparisons.some((comparison) => comparison.target_surface.startsWith('server_'));
+  const cliCompared = comparisons.some((comparison) => comparison.target_surface.startsWith('cli_'));
+
+  return {
+    fields_compared: fields,
+    expected: {
+      schedule_id: scheduleId,
+      cadence: cronExpression,
+    },
+    php: {
+      describe: phpDescribeState,
+      list: phpListState,
+    },
+    server: {
+      describe: serverDescribeState,
+      list: serverListState,
+    },
+    cli: {
+      describe: cliDescribeState,
+      list: cliListState,
+    },
+    comparisons,
+    server_observed: serverObserved,
+    cli_observed: cliObserved,
+    server_compared: serverCompared,
+    cli_compared: cliCompared,
+    failures,
+  };
+}
+
+function phpSurfaceFinding(status, checks, artifactVersions) {
+  const unsupported = [
+    ...arrayValue(checks.unsupported_required_operations),
+    ...arrayValue(checks.unsupported_controls),
+  ];
+
+  if (status === 'unsupported') {
+    return {
+      finding_id: 'schedules-php-surface-unsupported',
+      scenario_id: 'php_schedule_surface',
+      finding_type: 'unsupported_public_surface',
+      owning_surface: 'workflow-php',
+      execution_scope: 'workflow-php-schedule-surface-shard',
+      artifact_versions: artifactVersions,
+      observed_behavior: `The PHP-facing schedule client surface did not expose required operations: ${unsupported.join(', ')}.`,
+      expected_behavior: 'The published workflow PHP package exposes create/list/describe and records any claimed pause, resume, trigger, or delete behavior.',
+      next_acceptance_criterion: 'publish the PHP-facing schedule client operation or update the public contract to mark it unsupported, then rerun the PHP schedule surface shard',
+      observed_outputs: checks,
+    };
+  }
+
+  return {
+    finding_id: 'schedules-php-surface-behavior',
+    scenario_id: 'php_schedule_surface',
+    finding_type: 'schedule_php_surface_contract_gap',
+    owning_surface: 'workflow-php',
+    execution_scope: 'workflow-php-schedule-surface-shard',
+    artifact_versions: artifactVersions,
+    observed_behavior: checks.failures.join('; ') || 'The PHP-facing schedule client surface did not satisfy the schedule contract.',
+    expected_behavior: 'The PHP-facing workflow SDK surface creates or observes schedules, lists/describes them, records claimed control behavior, and matches server and CLI state for exposed fields.',
+    next_acceptance_criterion: 'rerun schedules conformance and record passing PHP create_or_observe, list_or_describe, control behavior, and server/CLI state comparison',
+    observed_outputs: checks,
+  };
+}
+
+function phpSurfaceBlockedEvidence(reason, startedAt, artifactVersions, artifactSources) {
+  const finishedAt = timestamp();
+  const finding = {
+    finding_id: 'schedules-php-surface-runner-blocked',
+    scenario_id: 'php_schedule_surface',
+    finding_type: 'conformance_runner_blocked',
+    owning_surface: 'conformance_harness',
+    execution_scope: 'workflow-php-schedule-surface-shard',
+    artifact_versions: artifactVersions,
+    observed_behavior: reason,
+    expected_behavior: 'The schedules conformance host can install the published workflow PHP package and execute its schedule client surface against published artifacts.',
+    next_acceptance_criterion: 'restore the missing host capability and rerun schedules conformance',
+  };
+
+  return {
+    schema: 'durable-workflow.v2.schedules-runtime.php-surface-evidence',
+    started_at: startedAt,
+    finished_at: finishedAt,
+    generated_at: finishedAt,
+    artifact_versions: artifactVersions,
+    artifact_sources: artifactSources,
+    scenario_results: {
+      php_schedule_surface: {
+        scenario_id: 'php_schedule_surface',
+        status: 'runner_blocked',
+        observed_outputs: { blocked_reason: reason },
+        linked_findings: [finding],
+      },
+    },
+    findings: [finding],
+    client_surfaces: {
+      'workflow-php-sdk': {
+        create_or_observe: false,
+        list_or_describe: false,
+        control_observed: false,
+        blocked_reason: reason,
+      },
+    },
+  };
+}
+
+async function collectPhpSurfaceComposeLogs(composeProject, composeFiles) {
+  for (const service of ['server', 'scheduler', 'bootstrap', 'mysql', 'redis']) {
+    const logPath = path.join(resultDir, `schedules-php-surface-${service}.log`);
+    await execLogged(
+      'docker',
+      ['compose', '-p', composeProject, ...composeFiles, 'logs', service],
+      logPath,
+    ).catch(() => {});
+  }
 }
 
 function crossLanguageFinding(cell, artifactVersions) {
@@ -7222,6 +7950,205 @@ file_put_contents($outputPath, json_encode($result, JSON_PRETTY_PRINT | JSON_THR
 `;
 }
 
+function schedulesPhpSurfaceProbeScript() {
+  return String.raw`<?php
+
+declare(strict_types=1);
+
+require __DIR__.'/vendor/autoload.php';
+
+use Illuminate\Http\Client\Factory as HttpFactory;
+use Throwable;
+use Workflow\V2\Client\ControlPlaneClient;
+use Workflow\V2\Exceptions\ControlPlaneRequestException;
+
+$payload = json_decode((string) file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
+$outputPath = $argv[2];
+$http = new HttpFactory();
+$client = new ControlPlaneClient(
+    $http,
+    (string) $payload['server_url'],
+    isset($payload['token']) && $payload['token'] !== '' ? (string) $payload['token'] : null,
+    (string) $payload['namespace'],
+    defaultRequestTimeoutSeconds: 8,
+);
+
+function dw_schedule_error(Throwable $exception): array
+{
+    $error = [
+        'class' => $exception::class,
+        'message' => $exception->getMessage(),
+    ];
+
+    if ($exception instanceof ControlPlaneRequestException) {
+        $error['status'] = $exception->status();
+        $error['reason'] = $exception->reason();
+        $error['body'] = $exception->body();
+    }
+
+    return $error;
+}
+
+function dw_schedule_operation(ControlPlaneClient $client, string $operation, string $method, array $arguments): array
+{
+    if (! method_exists($client, $method)) {
+        return [
+            'operation' => $operation,
+            'method' => $method,
+            'ok' => false,
+            'supported' => false,
+            'error' => ['message' => sprintf('%s is not exposed by ControlPlaneClient', $method)],
+        ];
+    }
+
+    try {
+        return [
+            'operation' => $operation,
+            'method' => $method,
+            'ok' => true,
+            'supported' => true,
+            'response' => $client->{$method}(...$arguments),
+        ];
+    } catch (Throwable $exception) {
+        return [
+            'operation' => $operation,
+            'method' => $method,
+            'ok' => false,
+            'supported' => true,
+            'error' => dw_schedule_error($exception),
+        ];
+    }
+}
+
+function dw_schedule_create_or_observe(ControlPlaneClient $client, string $scheduleId, array $spec, array $action): array
+{
+    if (! method_exists($client, 'createSchedule')) {
+        return [
+            'operation' => 'create_or_observe',
+            'method' => 'createSchedule',
+            'ok' => false,
+            'supported' => false,
+            'error' => ['message' => 'createSchedule is not exposed by ControlPlaneClient'],
+        ];
+    }
+
+    try {
+        $response = $client->createSchedule($scheduleId, $spec, $action, [
+            'overlap_policy' => 'allow_all',
+            'jitter_seconds' => 0,
+            'memo' => ['conformance' => 'php_schedule_surface'],
+            'search_attributes' => ['ScheduleSurface' => 'workflow-php'],
+        ]);
+        $response['observed_via'] = 'create';
+
+        return [
+            'operation' => 'create_or_observe',
+            'method' => 'createSchedule',
+            'ok' => true,
+            'supported' => true,
+            'response' => $response,
+        ];
+    } catch (ControlPlaneRequestException $exception) {
+        if (! in_array($exception->status(), [409, 422], true) || ! method_exists($client, 'describeSchedule')) {
+            return [
+                'operation' => 'create_or_observe',
+                'method' => 'createSchedule',
+                'ok' => false,
+                'supported' => true,
+                'error' => dw_schedule_error($exception),
+            ];
+        }
+
+        try {
+            $response = $client->describeSchedule($scheduleId);
+            $response['observed_via'] = 'describe_existing_after_create_rejection';
+            $response['create_rejection'] = dw_schedule_error($exception);
+
+            return [
+                'operation' => 'create_or_observe',
+                'method' => 'createSchedule',
+                'ok' => true,
+                'supported' => true,
+                'response' => $response,
+            ];
+        } catch (Throwable $observeException) {
+            return [
+                'operation' => 'create_or_observe',
+                'method' => 'createSchedule',
+                'ok' => false,
+                'supported' => true,
+                'error' => dw_schedule_error($observeException),
+                'create_rejection' => dw_schedule_error($exception),
+            ];
+        }
+    } catch (Throwable $exception) {
+        return [
+            'operation' => 'create_or_observe',
+            'method' => 'createSchedule',
+            'ok' => false,
+            'supported' => true,
+            'error' => dw_schedule_error($exception),
+        ];
+    }
+}
+
+$scheduleId = (string) $payload['schedule_id'];
+$action = (string) $payload['action'];
+
+if ($action === 'delete_schedule') {
+    $result = [
+        'action' => 'delete_schedule',
+        'schedule_id' => $scheduleId,
+        'claimed_controls' => [
+            'delete' => method_exists($client, 'deleteSchedule'),
+        ],
+        'delete' => dw_schedule_operation($client, 'delete', 'deleteSchedule', [$scheduleId]),
+        'list_after_delete' => dw_schedule_operation($client, 'list_after_delete', 'listSchedules', [['page_size' => 100]]),
+    ];
+} else {
+    $spec = [
+        'cron_expressions' => [(string) ($payload['cron'] ?? '*/5 * * * *')],
+        'timezone' => 'UTC',
+    ];
+    $workflowAction = [
+        'workflow_type' => (string) $payload['workflow_type'],
+        'task_queue' => (string) $payload['task_queue'],
+        'input' => [[
+            'source' => 'workflow-php-schedule-surface',
+            'run_id' => (string) ($payload['run_id'] ?? ''),
+        ]],
+    ];
+
+    $result = [
+        'action' => 'create_observe_controls',
+        'schedule_id' => $scheduleId,
+        'spec' => $spec,
+        'workflow_action' => $workflowAction,
+        'claimed_controls' => [
+            'pause' => method_exists($client, 'pauseSchedule'),
+            'resume' => method_exists($client, 'resumeSchedule'),
+            'trigger' => method_exists($client, 'triggerSchedule'),
+            'delete' => method_exists($client, 'deleteSchedule'),
+        ],
+        'create_or_observe' => dw_schedule_create_or_observe($client, $scheduleId, $spec, $workflowAction),
+        'list_or_describe' => [
+            'list' => dw_schedule_operation($client, 'list', 'listSchedules', [['page_size' => 100]]),
+            'describe' => dw_schedule_operation($client, 'describe', 'describeSchedule', [$scheduleId]),
+        ],
+        'control_behavior' => [
+            'pause' => dw_schedule_operation($client, 'pause', 'pauseSchedule', [$scheduleId, 'php schedule surface conformance pause']),
+            'describe_after_pause' => dw_schedule_operation($client, 'describe_after_pause', 'describeSchedule', [$scheduleId]),
+            'resume' => dw_schedule_operation($client, 'resume', 'resumeSchedule', [$scheduleId, 'php schedule surface conformance resume']),
+            'describe_after_resume' => dw_schedule_operation($client, 'describe_after_resume', 'describeSchedule', [$scheduleId]),
+            'trigger' => dw_schedule_operation($client, 'trigger', 'triggerSchedule', [$scheduleId, 'allow_all']),
+        ],
+    ];
+}
+
+file_put_contents($outputPath, json_encode($result, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR).PHP_EOL);
+`;
+}
+
 function parseJsonOutput(stdout) {
   const trimmed = String(stdout ?? '').trim();
   if (trimmed === '') {
@@ -7240,7 +8167,154 @@ function scheduleIdField(value) {
     return '';
   }
 
-  return stringValue(value.schedule_id ?? value.scheduleId);
+  return stringValue(value.schedule_id ?? value.scheduleId ?? value.id);
+}
+
+function firstStringValue(...values) {
+  for (const value of values) {
+    const normalized = stringValue(value);
+    if (normalized !== '') {
+      return normalized;
+    }
+  }
+
+  return '';
+}
+
+function operationOk(operation) {
+  return operation && typeof operation === 'object'
+    && operation.ok === true
+    && operation.supported !== false;
+}
+
+function scheduleIdFromOperation(operation) {
+  if (!operation || typeof operation !== 'object') {
+    return '';
+  }
+
+  const response = objectValue(operation.response);
+  const record = scheduleRecordFromPayload(response);
+  return firstStringValue(
+    scheduleIdField(record),
+    response.schedule_id,
+    response.scheduleId,
+    response.id,
+    response.result?.schedule_id,
+    response.result?.scheduleId,
+    response.schedule?.schedule_id,
+    response.schedule?.scheduleId,
+  );
+}
+
+function scheduleRecordFromPayload(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  for (const key of ['schedule_id', 'scheduleId', 'id', 'spec', 'cadence', 'cron', 'cron_expression', 'cronExpression', 'status', 'paused']) {
+    if (Object.hasOwn(value, key)) {
+      return value;
+    }
+  }
+
+  for (const key of ['schedule', 'record', 'result', 'data']) {
+    const nested = value[key];
+    if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+      return scheduleRecordFromPayload(nested) ?? nested;
+    }
+  }
+
+  return value;
+}
+
+function findScheduleRecordInList(value, scheduleId) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const schedules = arrayValue(value.schedules).length > 0
+    ? arrayValue(value.schedules)
+    : arrayValue(value.data);
+
+  for (const schedule of schedules) {
+    const record = scheduleRecordFromPayload(schedule);
+    if (record && scheduleIdField(record) === scheduleId) {
+      return record;
+    }
+  }
+
+  return null;
+}
+
+function scheduleStateSnapshot(record) {
+  const normalized = scheduleRecordFromPayload(record);
+  return {
+    schedule_id: scheduleIdField(normalized),
+    cadence: scheduleCadenceField(normalized),
+    pause_state: schedulePauseStateField(normalized),
+    last_fire_at: scheduleTimestampField(normalized, ['last_fire_at', 'lastFireAt', 'last_fired_at', 'lastFiredAt', 'last_fire', 'lastFire']),
+    next_fire_at: scheduleTimestampField(normalized, ['next_fire_at', 'nextFireAt', 'next_fire', 'nextFire']),
+  };
+}
+
+function scheduleCadenceField(record) {
+  if (!record || typeof record !== 'object') {
+    return '';
+  }
+
+  const direct = firstStringValue(record.cadence, record.cron, record.cron_expression, record.cronExpression, record.interval);
+  if (direct !== '') {
+    return direct;
+  }
+
+  const spec = record.spec && typeof record.spec === 'object' ? record.spec : record;
+  const cronExpressions = arrayValue(spec.cron_expressions ?? spec.cronExpressions);
+  for (const expression of cronExpressions) {
+    const normalized = stringValue(expression);
+    if (normalized !== '') {
+      return normalized;
+    }
+  }
+
+  for (const interval of arrayValue(spec.intervals)) {
+    if (interval && typeof interval === 'object') {
+      const every = stringValue(interval.every);
+      if (every !== '') {
+        return every;
+      }
+    }
+  }
+
+  return '';
+}
+
+function schedulePauseStateField(record) {
+  if (!record || typeof record !== 'object') {
+    return '';
+  }
+
+  if (typeof record.paused === 'boolean') {
+    return record.paused ? 'paused' : 'active';
+  }
+
+  const state = record.state && typeof record.state === 'object' ? record.state : {};
+  if (typeof state.paused === 'boolean') {
+    return state.paused ? 'paused' : 'active';
+  }
+
+  return firstStringValue(record.status, state.status).toLowerCase();
+}
+
+function scheduleTimestampField(record, names) {
+  const direct = scheduleTimeField(record, names);
+  if (direct !== '') {
+    return direct;
+  }
+
+  const info = record && typeof record === 'object' && record.info && typeof record.info === 'object'
+    ? record.info
+    : {};
+  return scheduleTimeField(info, names);
 }
 
 function scheduleListContains(value, scheduleId) {
@@ -7248,8 +8322,7 @@ function scheduleListContains(value, scheduleId) {
     return false;
   }
 
-  const schedules = arrayValue(value.schedules);
-  return schedules.some((schedule) => scheduleIdField(schedule) === scheduleId);
+  return findScheduleRecordInList(value, scheduleId) !== null;
 }
 
 function isUnsupportedCliCommand(transcript) {
