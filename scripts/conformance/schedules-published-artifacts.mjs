@@ -6691,7 +6691,7 @@ import sys
 import time
 from typing import Any
 
-from durable_workflow import Client, ScheduleAction, ScheduleSpec
+from durable_workflow import Client, ScheduleAction, ScheduleSpec, serializer
 from durable_workflow.errors import InvalidArgument, ScheduleNotFound, ServerError
 
 
@@ -6784,7 +6784,7 @@ async def poll_and_complete_workflow(
             commands=[
                 {
                     "type": "complete_workflow",
-                    "result": json.dumps({
+                    "result": serializer.envelope({
                         "scenario": "python_sdk_schedule_surface",
                         "worker_id": worker_id,
                         "workflow_type": workflow_type,

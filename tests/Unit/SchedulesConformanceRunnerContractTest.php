@@ -9,6 +9,25 @@ use PHPUnit\Framework\TestCase;
 
 final class SchedulesConformanceRunnerContractTest extends TestCase
 {
+    public function test_python_lifecycle_shard_uses_payload_envelope_for_manual_completion(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $runner = (string) file_get_contents($repoRoot.'/scripts/conformance/schedules-published-artifacts.mjs');
+        $lifecycleStart = strpos($runner, 'function schedulesPythonLifecycleScript()');
+        $lifecycleEnd = strpos($runner, 'function schedulesPythonWorkerScript()', $lifecycleStart ?: 0);
+
+        $this->assertIsInt($lifecycleStart);
+        $this->assertIsInt($lifecycleEnd);
+        $lifecycleShard = substr($runner, $lifecycleStart, $lifecycleEnd - $lifecycleStart);
+
+        $this->assertStringContainsString(
+            'from durable_workflow import Client, ScheduleAction, ScheduleSpec, serializer',
+            $lifecycleShard,
+        );
+        $this->assertStringContainsString('"result": serializer.envelope({', $lifecycleShard);
+        $this->assertStringNotContainsString('"result": json.dumps({', $lifecycleShard);
+    }
+
     public function test_published_artifact_runner_requires_supplied_install_evidence_for_install_cell_pass(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
