@@ -535,6 +535,15 @@ server_state_summary() {
   printf '%s\n' "$summary"
 }
 
+block_missing_resolved_server_url() {
+  local expected_summary="$1"
+  local state
+
+  state="$(server_state_summary)"
+  write_blocked_result "published server namespace setup returned success without writing a non-empty server-url-resolved.txt before worker-versioning matrix; expected one of ${expected_summary}; server state: ${state}; see server-namespace-setup.log, server-url-candidates.txt, docker-compose-ps.log, and server.log"
+  exit 0
+}
+
 verify_server_namespace_setup() {
   local namespace="${DW_WV_NAMESPACE:-worker-versioning-conformance}"
   local token="${DW_WV_AUTH_TOKEN:-dev-token}"
@@ -558,7 +567,15 @@ verify_server_namespace_setup() {
   expected_summary="$(IFS=', '; printf '%s' "${expected_paths[*]}")"
 
   if wait_for_server_namespace_setup "$namespace" "$token" "$timeout_seconds" "$resolved_url_file" "${server_url_candidates[@]}" >"$result_dir/server-namespace-setup.log" 2>&1; then
-    server_url="$(tr -d '\r\n' <"$resolved_url_file")"
+    if [[ ! -s "$resolved_url_file" ]]; then
+      block_missing_resolved_server_url "$expected_summary"
+    fi
+
+    server_url="$(tr -d '\r\n' <"$resolved_url_file" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    if [[ -z "$server_url" ]]; then
+      block_missing_resolved_server_url "$expected_summary"
+    fi
+
     promote_server_url_candidate "$server_url"
     write_server_url_candidates
     export DW_WV_SERVER_URL="$server_url"
