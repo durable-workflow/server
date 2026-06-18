@@ -155,9 +155,12 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'server_url_candidates=()',
             'build_server_url_candidates',
             'capture_server_port_bindings',
+            'capture_compose_state',
             'add_compose_port_binding_candidates',
+            'refresh_server_url_candidates_from_compose',
             'promote_server_url_candidate',
             'wait_for_server_namespace_setup',
+            'docker_compose',
             'verify_server_namespace_setup',
             'server_state_summary',
             'block_server_readiness_prerequisite',
@@ -176,6 +179,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'host.docker.internal',
             'gateway.docker.internal',
             'SERVER_PORT="$compose_server_port"',
+            'export SERVER_PORT="$compose_server_port"',
         ] as $token) {
             $this->assertStringContainsString($token, $shell);
         }
@@ -1034,6 +1038,255 @@ SH);
             $this->assertStringContainsString(
                 'port server 8080',
                 (string) file_get_contents($resultDir.'/docker-commands.log'),
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+            $this->removeDirectory($runRoot);
+            $this->removeDirectory($fakeBin);
+        }
+    }
+
+    public function test_shell_refreshes_server_url_after_waterline_compose_rebinds_server_port(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $suffix = bin2hex(random_bytes(4));
+        $resultDir = $repoRoot.'/storage/framework/worker-versioning-waterline-rebind-result-'.$suffix;
+        $runRoot = $repoRoot.'/storage/framework/worker-versioning-waterline-rebind-run-'.$suffix;
+        $fakeBin = $repoRoot.'/storage/framework/worker-versioning-waterline-rebind-bin-'.$suffix;
+        mkdir($resultDir, 0777, true);
+        mkdir($runRoot, 0777, true);
+        mkdir($fakeBin, 0777, true);
+
+        try {
+            $fakeNode = $fakeBin.'/node';
+            file_put_contents($fakeNode, <<<'SH'
+#!/bin/sh
+if [ "${1:-}" = "-" ]; then
+  if [ "$#" -ge 6 ]; then
+    resolved_url_path="${6:?resolved URL path is required}"
+    shift 6
+    count_file="${DW_WV_RESULT_DIR}/namespace-setup-count.txt"
+    count=0
+    if [ -f "$count_file" ]; then
+      count="$(cat "$count_file")"
+    fi
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$count_file"
+    printf '%s\n' "$@" > "${DW_WV_RESULT_DIR}/wait-helper-candidates-${count}.txt"
+    selected="${1:-}"
+    for candidate do
+      case "$candidate" in
+        *:8080)
+          selected="$candidate"
+          break
+          ;;
+      esac
+    done
+    printf '%s\n' "$selected" > "$resolved_url_path"
+    printf '%s\n' "published server namespace setup prerequisite satisfied at ${selected}/api/namespaces/worker-versioning-conformance"
+    exit 0
+  fi
+
+  printf '%s\n' "${2:-}" > "${DW_WV_RESULT_DIR}/waterline-wait-url.txt"
+  exit 0
+fi
+
+case "${1:-}" in
+  */worker-versioning-published-artifacts.mjs)
+    printf '%s\n' "${DW_WV_SERVER_URL:-}" > "${DW_WV_RESULT_DIR}/final-server-url.txt"
+    printf '%s\n' '{"outcome":"pass","runner_blocked":false}' > "${DW_WV_RESULT_DIR}/worker-versioning-result.json"
+    printf '%s\n' '{"outcome":"pass","runner_blocked":false}' > "${DW_WV_RESULT_DIR}/worker-versioning-record.json"
+    exit 0
+    ;;
+esac
+
+printf 'unexpected fake node invocation: %s\n' "$*" >&2
+exit 1
+SH);
+            chmod($fakeNode, 0755);
+
+            $fakeDocker = $fakeBin.'/docker';
+            file_put_contents($fakeDocker, <<<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "${DW_WV_RESULT_DIR}/docker-commands.log"
+cmd=" $* "
+waterline_flag="${DW_WV_RESULT_DIR}/waterline-up.flag"
+server_port="35279"
+if [ -f "$waterline_flag" ]; then
+  server_port="8080"
+fi
+
+if [ "${1:-}" = "compose" ] && [ "${2:-}" = "version" ]; then
+  exit 0
+fi
+
+if [ "${1:-}" = "network" ] && [ "${2:-}" = "inspect" ]; then
+  printf '%s\n' '172.17.0.1'
+  exit 0
+fi
+
+if [ "${1:-}" = "image" ]; then
+  case "${2:-}" in
+    pull)
+      exit 0
+      ;;
+    inspect)
+      printf '%s\n' '{"Id":"sha256:fake"}'
+      exit 0
+      ;;
+  esac
+fi
+
+if [ "${1:-}" = "build" ]; then
+  exit 0
+fi
+
+if [ "${1:-}" = "run" ]; then
+  case "$cmd" in
+    *" --entrypoint php "*" -r "*)
+      printf '%s\n' '8.4.1'
+      exit 0
+      ;;
+    *" --entrypoint php "*" -m "*)
+      printf '%s\n%s\n' 'PDO' 'pdo_mysql'
+      exit 0
+      ;;
+    *" composer:2 "*)
+      exit 0
+      ;;
+  esac
+fi
+
+case "$cmd" in
+  *" up -d server "*)
+    exit 0
+    ;;
+  *" up -d waterline "*)
+    printf '%s\n' "${SERVER_PORT:-}" > "${DW_WV_RESULT_DIR}/waterline-compose-server-port-env.txt"
+    : > "$waterline_flag"
+    exit 0
+    ;;
+  *" port server 8080 "*)
+    printf '0.0.0.0:%s\n' "$server_port"
+    exit 0
+    ;;
+  *" ps server --format json "*)
+    printf '{"Name":"dw-server","Health":"healthy","Publishers":[{"URL":"0.0.0.0","TargetPort":8080,"PublishedPort":%s,"Protocol":"tcp"}]}\n' "$server_port"
+    exit 0
+    ;;
+  *" logs server "*)
+    printf '%s\n' 'server log'
+    exit 0
+    ;;
+  *" logs waterline "*)
+    printf '%s\n' 'waterline log'
+    exit 0
+    ;;
+  *" ps "*)
+    printf 'server healthy 0.0.0.0:%s->8080/tcp\n' "$server_port"
+    if [ -f "$waterline_flag" ]; then
+      printf '%s\n' 'waterline running 127.0.0.1:46331->8090/tcp'
+    fi
+    exit 0
+    ;;
+  *" down -v "*)
+    exit 0
+    ;;
+esac
+
+printf 'unexpected fake docker invocation: %s\n' "$*" >&2
+exit 1
+SH);
+            chmod($fakeDocker, 0755);
+
+            $process = proc_open(
+                [
+                    'bash',
+                    $repoRoot.'/scripts/conformance/worker-versioning-published-artifacts.sh',
+                    '--result-dir',
+                    $resultDir,
+                    '--keep-run-root',
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => $fakeBin.PATH_SEPARATOR.(getenv('PATH') ?: '/usr/bin:/bin'),
+                    'DW_WV_RESULT_DIR' => $resultDir,
+                    'DW_WV_RUN_ROOT' => $runRoot,
+                    'DW_WV_SERVER_PORT' => '35279',
+                    'DW_WV_SERVER_CONNECT_HOST' => '127.0.0.1',
+                    'DW_WV_WATERLINE_PORT' => '46331',
+                    'DW_WV_SKIP_PUBLISHED_WORKER_SHARD' => '1',
+                    'DW_SERVER_VERSION' => '0.2.428',
+                    'DW_CLI_VERSION' => '0.1.81',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.89',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.206',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.97',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stdout.$stderr);
+            $this->assertFileExists($resultDir.'/wait-helper-candidates-1.txt');
+            $this->assertFileExists($resultDir.'/wait-helper-candidates-2.txt');
+            $this->assertFileExists($resultDir.'/server-url-candidates.txt');
+            $this->assertFileExists($resultDir.'/server-url-resolved.txt');
+            $this->assertFileExists($resultDir.'/server-port-bindings.txt');
+            $this->assertFileExists($resultDir.'/docker-compose-ps.log');
+
+            $this->assertStringContainsString(
+                'http://127.0.0.1:35279',
+                (string) file_get_contents($resultDir.'/wait-helper-candidates-1.txt'),
+            );
+            $this->assertStringContainsString(
+                'http://127.0.0.1:8080',
+                (string) file_get_contents($resultDir.'/wait-helper-candidates-2.txt'),
+            );
+            $this->assertStringNotContainsString(
+                '35279',
+                (string) file_get_contents($resultDir.'/wait-helper-candidates-2.txt'),
+            );
+            $this->assertStringContainsString(
+                'http://127.0.0.1:8080',
+                (string) file_get_contents($resultDir.'/server-url-candidates.txt'),
+            );
+            $this->assertStringNotContainsString(
+                '35279',
+                (string) file_get_contents($resultDir.'/server-url-candidates.txt'),
+            );
+            $this->assertSame(
+                'http://127.0.0.1:8080',
+                trim((string) file_get_contents($resultDir.'/server-url-resolved.txt')),
+            );
+            $this->assertSame(
+                'http://127.0.0.1:8080',
+                trim((string) file_get_contents($resultDir.'/final-server-url.txt')),
+            );
+            $this->assertSame(
+                '0.0.0.0:35279',
+                trim((string) file_get_contents($resultDir.'/waterline-compose-server-port-env.txt')),
+            );
+            $this->assertStringContainsString(
+                '0.0.0.0:8080',
+                (string) file_get_contents($resultDir.'/server-port-bindings.txt'),
+            );
+            $this->assertStringContainsString(
+                '0.0.0.0:8080->8080/tcp',
+                (string) file_get_contents($resultDir.'/docker-compose-ps.log'),
+            );
+            $this->assertStringContainsString(
+                'waterline running 127.0.0.1:46331->8090/tcp',
+                (string) file_get_contents($resultDir.'/docker-compose-ps.log'),
             );
         } finally {
             $this->removeDirectory($resultDir);

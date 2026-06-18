@@ -469,6 +469,19 @@ server_image="${DW_SERVER_IMAGE:-}"
 server_artifact_source="published_server_url"
 waterline_container=""
 
+docker_compose() {
+  local compose_args=(
+    -p "$compose_project"
+    -f "$repo_root/docker-compose.published.yml"
+  )
+
+  if [[ -f "$run_root/waterline-compose.yml" ]]; then
+    compose_args+=(-f "$run_root/waterline-compose.yml")
+  fi
+
+  docker compose "${compose_args[@]}" "$@"
+}
+
 add_server_url_candidate() {
   local candidate="${1%/}"
   local existing
@@ -570,8 +583,7 @@ capture_server_port_bindings() {
     return
   fi
 
-  docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" \
-    port server 8080 >"$result_dir/server-compose-port.txt" 2>"$result_dir/server-compose-port.err" || true
+  docker_compose port server 8080 >"$result_dir/server-compose-port.txt" 2>"$result_dir/server-compose-port.err" || true
 
   {
     printf '%s\n' 'docker compose port server 8080:'
@@ -582,9 +594,18 @@ capture_server_port_bindings() {
       cat "$result_dir/server-compose-port.err"
     fi
     printf '\n%s\n' 'docker compose ps server --format json:'
-    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" \
-      ps server --format json || true
+    docker_compose ps server --format json || true
   } >"$result_dir/server-port-bindings.txt" 2>&1
+}
+
+capture_compose_state() {
+  if [[ "$server_started" != "1" && "$compose_cleanup_needed" != "1" ]]; then
+    return
+  fi
+
+  capture_server_port_bindings
+  docker_compose ps >"$result_dir/docker-compose-ps.log" 2>&1 || true
+  docker_compose logs server >"$result_dir/server.log" 2>&1 || true
 }
 
 add_compose_port_binding_candidates() {
@@ -614,6 +635,31 @@ write_server_url_candidates() {
   if [[ "${#server_url_candidates[@]}" -gt 0 ]]; then
     printf '%s\n' "${server_url_candidates[@]}" >"$result_dir/server-url-candidates.txt"
   fi
+}
+
+refresh_server_url_candidates_from_compose() {
+  if [[ "$server_started" != "1" && "$compose_cleanup_needed" != "1" ]]; then
+    return
+  fi
+
+  capture_server_port_bindings
+
+  if [[ -n "$server_url_override" ]]; then
+    build_server_url_candidates
+    server_url="${server_url_candidates[0]}"
+    write_server_url_candidates
+    return
+  fi
+
+  server_url_candidates=()
+  add_compose_port_binding_candidates
+  if [[ "${#server_url_candidates[@]}" -eq 0 ]]; then
+    build_server_url_candidates
+  fi
+  if [[ "${#server_url_candidates[@]}" -gt 0 ]]; then
+    server_url="${server_url_candidates[0]}"
+  fi
+  write_server_url_candidates
 }
 
 promote_server_url_candidate() {
@@ -646,14 +692,7 @@ cleanup() {
   fi
 
   if [[ "$server_started" == "1" || "$compose_cleanup_needed" == "1" ]]; then
-    if [[ -f "$run_root/waterline-compose.yml" ]]; then
-      docker compose -p "$compose_project" \
-        -f "$repo_root/docker-compose.published.yml" \
-        -f "$run_root/waterline-compose.yml" \
-        down -v --remove-orphans >/dev/null 2>&1 || true
-    else
-      docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" down -v >/dev/null 2>&1 || true
-    fi
+    docker_compose down -v --remove-orphans >/dev/null 2>&1 || true
   fi
 
   if [[ "$keep_run_root" != "1" && "$code" -eq 0 && "$result_dir" != "$run_root" ]]; then
@@ -684,12 +723,10 @@ server_state_summary() {
   local summary=""
 
   if [[ "$server_started" == "1" || "$compose_cleanup_needed" == "1" ]]; then
-    capture_server_port_bindings
-    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" ps >"$result_dir/docker-compose-ps.log" 2>&1 || true
-    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" logs server >"$result_dir/server.log" 2>&1 || true
-    summary="$(docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" ps server --format json 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c1-700 || true)"
+    capture_compose_state
+    summary="$(docker_compose ps server --format json 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c1-700 || true)"
     if [[ -z "$summary" ]]; then
-      summary="$(docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" ps server 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c1-700 || true)"
+      summary="$(docker_compose ps server 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c1-700 || true)"
     fi
   fi
 
@@ -904,6 +941,7 @@ if [[ -z "$server_url" ]]; then
   if [[ -n "$server_bind_host" ]]; then
     compose_server_port="${server_bind_host}:${server_port}"
   fi
+  export SERVER_PORT="$compose_server_port"
   if [[ -z "$server_image" ]]; then
     if [[ -z "${DW_SERVER_VERSION:-}" ]]; then
       write_blocked_result 'DW_SERVER_VERSION or DW_SERVER_IMAGE is required so worker-versioning conformance can run an exact published server artifact'
@@ -939,20 +977,18 @@ if [[ -z "$server_url" ]]; then
 
   docker image inspect "$server_image" >"$result_dir/docker-image-inspect.json" 2>&1 || true
 
-  if ! SERVER_PORT="$compose_server_port" \
-    DW_SERVER_IMAGE="$server_image" \
+  if ! DW_SERVER_IMAGE="$server_image" \
     DW_SERVER_TAG="${DW_SERVER_VERSION:-}" \
     DW_AUTH_TOKEN="${DW_WV_AUTH_TOKEN:-dev-token}" \
     DW_WORKER_POLL_TIMEOUT="${DW_WV_WORKER_POLL_TIMEOUT:-1}" \
     DW_WORKER_POLL_INTERVAL_MS="${DW_WV_WORKER_POLL_INTERVAL_MS:-100}" \
-    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" up -d server >"$result_dir/docker-compose-up.log" 2>&1; then
+    docker_compose up -d server >"$result_dir/docker-compose-up.log" 2>&1; then
     write_blocked_result "published server failed to start from ${server_image}; see docker-compose-up.log"
     exit 0
   fi
   server_started=1
-  capture_server_port_bindings
-  add_compose_port_binding_candidates
-  write_server_url_candidates
+  refresh_server_url_candidates_from_compose
+  capture_compose_state
 
   verify_server_namespace_setup
 fi
@@ -1085,13 +1121,12 @@ services:
         condition: service_healthy
 YAML
 
-    if ! docker compose -p "$compose_project" \
-      -f "$repo_root/docker-compose.published.yml" \
-      -f "$run_root/waterline-compose.yml" \
-      up -d waterline >"$result_dir/waterline-compose-up.log" 2>&1; then
+    if ! docker_compose up -d waterline >"$result_dir/waterline-compose-up.log" 2>&1; then
       write_blocked_result "published Waterline app failed to start; see waterline-compose-up.log"
       exit 0
     fi
+    refresh_server_url_candidates_from_compose
+    capture_compose_state
   else
     waterline_db_port="${DW_WV_WATERLINE_DB_PORT:-${DB_PORT:-3306}}"
     waterline_db_database="${DW_WV_WATERLINE_DB_DATABASE:-${DB_DATABASE:-durable_workflow}}"
@@ -1139,10 +1174,7 @@ YAML
 
   if ! wait_for_waterline "$waterline_url"; then
     if [[ "$server_started" == "1" ]]; then
-      docker compose -p "$compose_project" \
-        -f "$repo_root/docker-compose.published.yml" \
-        -f "$run_root/waterline-compose.yml" \
-        logs waterline > "$result_dir/waterline.log" 2>&1 || true
+      docker_compose logs waterline > "$result_dir/waterline.log" 2>&1 || true
     elif [[ -n "$waterline_container" ]]; then
       docker logs "$waterline_container" >"$result_dir/waterline.log" 2>&1 || true
     fi
@@ -1159,6 +1191,8 @@ YAML
   printf '%s\n' "$waterline_url" > "$result_dir/waterline-url.txt"
 fi
 
+refresh_server_url_candidates_from_compose
+capture_compose_state
 verify_server_namespace_setup
 export DW_WV_SERVER_URL="$server_url"
 run_published_worker_shard
