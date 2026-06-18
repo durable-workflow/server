@@ -2759,15 +2759,218 @@ function observedOutputsForRunbookScenario(scenarioId, source) {
   }
 
   if (scenarioId === 'documented_migration_steps_execute') {
-    observed.commands_executed ??= runbookFieldValue(source, 'commands');
+    const commandOutputs = runbookMigrationCommandOutputs(source);
+    if (!isEmptyEvidence(commandOutputs)) {
+      observed.command_outputs ??= commandOutputs;
+    }
+
+    if (isEmptyEvidence(observed.commands_executed)) {
+      observed.commands_executed = commandsExecutedFromCommandOutputs(commandOutputs);
+    }
+    if (isEmptyEvidence(observed.commands_executed)) {
+      observed.commands_executed = runbookFieldValue(source, 'commands');
+    }
+
     observed.exit_codes ??= runbookFieldValue(source, 'exit_codes_by_command');
+    if (isEmptyEvidence(observed.exit_codes)) {
+      observed.exit_codes = exitCodesFromCommandOutputs(commandOutputs);
+    }
+
     observed.command_timings ??= runbookFieldValue(source, 'timings');
+    if (isEmptyEvidence(observed.command_timings)) {
+      observed.command_timings = commandTimingsFromCommandOutputs(commandOutputs);
+    }
+
     observed.schema_or_storage_migration_output ??= runbookFieldValue(source, 'migration_output');
+    if (isEmptyEvidence(observed.schema_or_storage_migration_output) && !isEmptyEvidence(commandOutputs)) {
+      observed.schema_or_storage_migration_output = {
+        source: 'migration_plan.command_outputs',
+        command_outputs: commandOutputs,
+      };
+    }
   }
 
   return Object.fromEntries(
     Object.entries(observed).filter(([, value]) => !isEmptyEvidence(value)),
   );
+}
+
+function runbookMigrationCommandOutputs(source) {
+  const direct = runbookFirstNonEmptyField(source, [
+    'command_outputs',
+    'commandOutputs',
+    'step_outputs',
+    'stepOutputs',
+    'executed_steps',
+    'executedSteps',
+    'command_results',
+    'commandResults',
+  ]);
+  if (!isEmptyEvidence(direct)) {
+    return direct;
+  }
+
+  const commands = runbookFieldValue(source, 'commands');
+  if (Array.isArray(commands) && commands.some((entry) => hasConcreteCommandOutput(entry))) {
+    return commands;
+  }
+
+  return undefined;
+}
+
+function commandsExecutedFromCommandOutputs(commandOutputs) {
+  const commands = commandOutputEntries(commandOutputs)
+    .map(([key, entry]) => commandOutputLabel(entry, key))
+    .filter(Boolean);
+
+  return commands.length > 0 ? commands : undefined;
+}
+
+function exitCodesFromCommandOutputs(commandOutputs) {
+  const exitCodes = commandOutputEntries(commandOutputs)
+    .map(([, entry]) => commandOutputExitCode(entry))
+    .filter((value) => value !== undefined);
+
+  return exitCodes.length > 0 ? exitCodes : undefined;
+}
+
+function commandTimingsFromCommandOutputs(commandOutputs) {
+  const timings = {};
+  for (const [index, [key, entry]] of commandOutputEntries(commandOutputs).entries()) {
+    const label = commandOutputLabel(entry, key);
+    if (label === '') {
+      continue;
+    }
+
+    timings[label] = commandOutputTiming(entry) ?? { order: index + 1 };
+  }
+
+  return Object.keys(timings).length > 0 ? timings : undefined;
+}
+
+function commandOutputEntries(commandOutputs) {
+  if (Array.isArray(commandOutputs)) {
+    return commandOutputs
+      .map((entry, index) => [String(index + 1), normalizeCommandOutputEntry(entry, String(index + 1))])
+      .filter(([, entry]) => hasConcreteCommandOutput(entry));
+  }
+
+  return Object.entries(objectValue(commandOutputs))
+    .map(([key, entry]) => [key, normalizeCommandOutputEntry(entry, key)])
+    .filter(([, entry]) => hasConcreteCommandOutput(entry));
+}
+
+function normalizeCommandOutputEntry(entry, fallbackKey = '') {
+  if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+    return entry;
+  }
+
+  if (/^\d+$/.test(fallbackKey) || isEmptyEvidence(entry)) {
+    return entry;
+  }
+
+  return {
+    command: fallbackKey,
+    output: entry,
+  };
+}
+
+function hasConcreteCommandOutput(entry) {
+  if (isEmptyEvidence(entry)) {
+    return false;
+  }
+
+  if (typeof entry === 'string' || typeof entry === 'number' || typeof entry === 'boolean') {
+    return false;
+  }
+
+  const output = objectValue(entry);
+  return [
+    'stdout',
+    'stderr',
+    'output',
+    'observed_output',
+    'observedOutput',
+    'response',
+    'body',
+    'result',
+    'exit_code',
+    'exitCode',
+    'status_code',
+    'statusCode',
+    'http_status',
+    'httpStatus',
+    'duration_ms',
+    'durationMs',
+    'timing_ms',
+    'timingMs',
+    'started_at',
+    'startedAt',
+    'finished_at',
+    'finishedAt',
+  ].some((field) => !isEmptyEvidence(output[field]));
+}
+
+function commandOutputLabel(entry, fallbackKey = '') {
+  const output = objectValue(entry);
+  for (const field of [
+    'public_guide_command',
+    'publicGuideCommand',
+    'command',
+    'api_call',
+    'apiCall',
+    'request',
+    'operation',
+    'step',
+    'name',
+  ]) {
+    const value = stringValue(output[field]);
+    if (value !== '') {
+      return value;
+    }
+  }
+
+  return /^\d+$/.test(fallbackKey) ? '' : stringValue(fallbackKey);
+}
+
+function commandOutputExitCode(entry) {
+  const output = objectValue(entry);
+  for (const field of ['exit_code', 'exitCode', 'status_code', 'statusCode', 'http_status', 'httpStatus']) {
+    const value = output[field];
+    if (typeof value === 'number' || typeof value === 'string') {
+      const parsed = Number.parseInt(String(value), 10);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function commandOutputTiming(entry) {
+  const output = objectValue(entry);
+  for (const field of ['duration_ms', 'durationMs', 'timing_ms', 'timingMs', 'elapsed_ms', 'elapsedMs']) {
+    const value = output[field];
+    if (typeof value === 'number' || typeof value === 'string') {
+      const parsed = Number.parseInt(String(value), 10);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+
+  const startedAt = stringValue(output.started_at ?? output.startedAt);
+  const finishedAt = stringValue(output.finished_at ?? output.finishedAt);
+  if (startedAt !== '' && finishedAt !== '') {
+    const startedMs = Date.parse(startedAt);
+    const finishedMs = Date.parse(finishedAt);
+    if (Number.isFinite(startedMs) && Number.isFinite(finishedMs) && finishedMs >= startedMs) {
+      return finishedMs - startedMs;
+    }
+  }
+
+  return undefined;
 }
 
 function maybeExecuteFoundationPlan(
@@ -3396,6 +3599,17 @@ function runbookFieldValue(container, field) {
   const object = objectValue(container);
   for (const alias of fieldAliases(field)) {
     const value = object[alias];
+    if (!isEmptyEvidence(value)) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function runbookFirstNonEmptyField(container, fields) {
+  for (const field of fields) {
+    const value = runbookFieldValue(container, field);
     if (!isEmptyEvidence(value)) {
       return value;
     }

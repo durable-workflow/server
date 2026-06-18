@@ -1959,6 +1959,113 @@ COMMAND;
         );
     }
 
+    public function test_runner_promotes_migration_plan_command_outputs_to_documented_steps(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner runbook normalization.');
+        }
+
+        $complete = $this->completeRunnerEvidence();
+        $scenarioResults = $complete['scenario_results'];
+        $documentedOutputs = $scenarioResults['documented_migration_steps_execute']['observed_outputs'];
+        $commands = $documentedOutputs['commands_executed'];
+        $commandOutputs = [
+            [
+                'public_guide_command' => $commands[0],
+                'command' => $commands[0],
+                'status' => 'pass',
+                'exit_code' => 0,
+                'duration_ms' => 1280,
+                'stdout' => 'Updated durable-workflow/workflow to 2.0.0-alpha.185.',
+                'stderr' => '',
+            ],
+            [
+                'public_guide_command' => $commands[1],
+                'command' => $commands[1],
+                'status' => 'pass',
+                'exit_code' => 0,
+                'duration_ms' => 430,
+                'stdout' => 'Migrated workflow storage tables.',
+                'stderr' => '',
+            ],
+            [
+                'public_guide_command' => $commands[2],
+                'command' => $commands[2],
+                'status' => 'pass',
+                'exit_code' => 0,
+                'duration_ms' => 95,
+                'stdout' => 'Queue restart signal sent.',
+                'stderr' => '',
+            ],
+        ];
+        $runbook = [
+            'outcome' => 'pass',
+            'startedAt' => $complete['started_at'],
+            'finishedAt' => $complete['finished_at'],
+            'localProductSourceCheckoutsUsed' => false,
+            'pinnedVersions' => [
+                'v1' => [
+                    'server' => $complete['published_artifact_versions']['server-v1'],
+                    'cli' => $complete['published_artifact_versions']['cli-v1'],
+                    'workflow' => $complete['published_artifact_versions']['workflow-php-v1'],
+                    'waterline' => $complete['published_artifact_versions']['waterline-v1'],
+                    'sampleApp' => $complete['published_artifact_versions']['sample-app-v1'],
+                ],
+                'v2' => [
+                    'server' => $complete['published_artifact_versions']['server-v2'],
+                    'cli' => $complete['published_artifact_versions']['cli-v2'],
+                    'workflow' => $complete['published_artifact_versions']['workflow-php-v2'],
+                    'pythonSdk' => $complete['published_artifact_versions']['sdk-python'],
+                    'waterline' => $complete['published_artifact_versions']['waterline-v2'],
+                ],
+            ],
+            'artifactSources' => $complete['artifact_sources'],
+            'realisticV1StateSnapshot' => $scenarioResults['latest_supported_v1_state_setup']['observed_outputs'],
+            'migrationPlan' => [
+                'source' => 'published_migration_guide_execution',
+                'migration_guide_revision' => $documentedOutputs['migration_guide_revision'],
+                'guide_command_executability' => $documentedOutputs['guide_command_executability'],
+                'command_outputs' => $commandOutputs,
+            ],
+            'completedHistoryReplay' => $scenarioResults['completed_history_preservation_and_replay']['observed_outputs'],
+            'inFlightWorkflowProgress' => $scenarioResults['in_flight_workflow_progress_preserved']['observed_outputs'],
+            'midActivityRetryPreserved' => $scenarioResults['mid_activity_retry_preserved']['observed_outputs'],
+            'scheduleCrossUpgradeCadencePreserved' => $scenarioResults['schedule_cross_upgrade_cadence_preserved']['observed_outputs'],
+            'workerRegistrationProjectionPreserved' => $scenarioResults['worker_registration_projection_preserved']['observed_outputs'],
+            'waterlineOperatorVisibilityPreserved' => $scenarioResults['waterline_operator_visibility_preserved']['observed_outputs'],
+            'cliAccessToPreupgradeState' => $scenarioResults['cli_access_to_preupgrade_state']['observed_outputs'],
+            'newV2WorkflowStartAfterUpgrade' => $scenarioResults['new_v2_workflow_start_after_upgrade']['observed_outputs'],
+            'rollbackResult' => $scenarioResults['rollback_contract_verified']['observed_outputs'],
+            'versionSkewObservations' => $scenarioResults['version_skew_refusal']['observed_outputs'],
+            'preupgradeStateSnapshot' => $complete['preupgrade_state_snapshot'],
+            'postupgradeStateSnapshot' => $complete['postupgrade_state_snapshot'],
+            'historyDumps' => $complete['history_dumps'],
+            'activityAttempts' => $complete['activity_attempts'],
+            'scheduleTicks' => $complete['schedule_ticks'],
+            'workerRegistrationObservations' => $complete['worker_registration_observations'],
+            'cliObservations' => $complete['cli_observations'],
+            'waterlineObservations' => $complete['waterline_observations'],
+            'rollbackObservations' => $complete['rollback_observations'],
+            'storageConnectionSmoke' => $complete['storage_connection_smoke'],
+        ];
+
+        $result = $this->runRunnerEvidence($nodeBinary, $runbook, 'dw-migration-plan-command-outputs-');
+        $observedOutputs = $result['scenario_results']['documented_migration_steps_execute']['observed_outputs'];
+
+        $this->assertSame('pass', $result['outcome']);
+        $this->assertSame('pass', $result['scenario_results']['documented_migration_steps_execute']['status']);
+        $this->assertArrayNotHasKey('missing_required_fields', $observedOutputs);
+        $this->assertSame($commands, $observedOutputs['commands_executed']);
+        $this->assertSame([0, 0, 0], $observedOutputs['exit_codes']);
+        $this->assertSame($documentedOutputs['command_timings'], $observedOutputs['command_timings']);
+        $this->assertSame($commandOutputs, $observedOutputs['command_outputs']);
+        $this->assertSame(
+            $commandOutputs,
+            $observedOutputs['schema_or_storage_migration_output']['command_outputs'],
+        );
+    }
+
     public function test_runner_normalizes_contract_release_artifact_aliases_before_passing(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
