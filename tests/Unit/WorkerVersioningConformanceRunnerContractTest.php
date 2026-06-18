@@ -148,16 +148,31 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'DW_WV_SERVER_BIND_HOST',
             'DW_WV_SERVER_CONNECT_HOST',
             'DW_WV_SERVER_READINESS_TIMEOUT_SECONDS',
+            'default_route_gateway',
+            'docker_bridge_gateway',
+            'server_url_candidates=()',
+            'build_server_url_candidates',
+            'promote_server_url_candidate',
             'wait_for_server_namespace_setup',
             'verify_server_namespace_setup',
             'server_state_summary',
             'server-namespace-setup.log',
+            'server-url-candidates.txt',
             'docker-compose-ps.log',
             'server-namespace-url.txt',
             'published server namespace setup prerequisite failed before worker-versioning matrix',
+            'expected one of',
+            'host.docker.internal',
             'SERVER_PORT="$compose_server_port"',
         ] as $token) {
             $this->assertStringContainsString($token, $shell);
+        }
+        foreach ([
+            'ensureNamespacePrerequisite',
+            'DW_WV_SERVER_READINESS_TIMEOUT_MS',
+            'published server namespace setup prerequisite failed before worker-versioning matrix',
+        ] as $token) {
+            $this->assertStringContainsString($token, $node);
         }
         $this->assertLessThan(
             strpos($shell, 'run_published_worker_shard'),
@@ -607,6 +622,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'DW_WV_WATERLINE_DOCKER_NETWORK',
             'DW_WV_SKIP_WATERLINE_SHARD',
             'published_waterline_worker_workflow_view_capture',
+            'server-url-candidates.txt',
             'server-namespace-url.txt',
             'waterline-url.txt',
         ] as $token) {
@@ -772,7 +788,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
                 $reason,
             );
             $this->assertStringContainsString(
-                'expected http://127.0.0.1:65534/api/namespaces/worker-versioning-conformance',
+                'expected one of http://127.0.0.1:65534/api/namespaces/worker-versioning-conformance',
                 $reason,
             );
             $this->assertStringContainsString(
@@ -782,6 +798,11 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             $this->assertStringContainsString(
                 'published server namespace setup did not become reachable before worker-versioning matrix',
                 (string) file_get_contents($resultDir.'/server-namespace-setup.log'),
+            );
+            $this->assertFileExists($resultDir.'/server-url-candidates.txt');
+            $this->assertStringContainsString(
+                'http://127.0.0.1:65534',
+                (string) file_get_contents($resultDir.'/server-url-candidates.txt'),
             );
         } finally {
             $this->removeDirectory($resultDir);
@@ -821,6 +842,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
                     'DW_WV_RUN_ROOT' => $runRoot,
                     'DW_WV_SERVER_URL' => 'http://127.0.0.1:65534',
                     'DW_WV_WATERLINE_URL' => 'http://127.0.0.1:65534',
+                    'DW_WV_SERVER_READINESS_TIMEOUT_SECONDS' => '1',
                     'DW_WV_SKIP_PUBLISHED_WORKER_SHARD' => '1',
                     'DW_SERVER_VERSION' => '0.2.421',
                     'DW_CLI_VERSION' => '0.1.80',
@@ -849,7 +871,15 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             $this->assertSame('non_passing_runner_blocked', $result['outcome']);
             $this->assertTrue($result['runner_blocked']);
             $this->assertStringContainsString(
-                'GET http://127.0.0.1:65534/api/namespaces/worker-versioning-conformance failed:',
+                'published server namespace setup prerequisite failed before worker-versioning matrix',
+                $reason,
+            );
+            $this->assertStringContainsString(
+                'expected http://127.0.0.1:65534/api/namespaces/worker-versioning-conformance',
+                $reason,
+            );
+            $this->assertStringContainsString(
+                'GET http://127.0.0.1:65534/api/ready failed:',
                 $reason,
             );
             $this->assertStringContainsString('ECONNREFUSED', $reason);

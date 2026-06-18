@@ -60,6 +60,11 @@ const waterlineRequestTimeoutMs = timeoutMsFromEnv(
   'DW_WV_WATERLINE_REQUEST_TIMEOUT_SECONDS',
   20000,
 );
+const serverReadinessTimeoutMs = timeoutMsFromEnv(
+  'DW_WV_SERVER_READINESS_TIMEOUT_MS',
+  'DW_WV_SERVER_READINESS_TIMEOUT_SECONDS',
+  120000,
+);
 
 const scenarioManifest = readJsonIfExists(scenarioManifestPath) ?? {};
 const requiredScenarios = Array.isArray(scenarioManifest.scenarios)
@@ -162,7 +167,7 @@ async function main() {
     'X-Durable-Workflow-Protocol-Version': '1.8',
   };
 
-  await ensureNamespace(serverUrl, namespace, bootstrapControlHeaders, controlHeaders);
+  await ensureNamespacePrerequisite(serverUrl, namespace, bootstrapControlHeaders, controlHeaders);
   maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions, artifactSources);
   const publishedWorkerEvidence = publishedWorkerExecutionEvidence(artifactVersions, artifactSources);
 
@@ -1498,6 +1503,31 @@ async function ensureNamespace(serverUrl, namespace, bootstrapHeaders, namespace
   if (created.name !== namespace) {
     throw new Error(`namespace bootstrap returned unexpected payload for ${namespace}`);
   }
+}
+
+async function ensureNamespacePrerequisite(serverUrl, namespace, bootstrapHeaders, namespaceHeaders) {
+  const readyUrl = `${serverUrl}/api/ready`;
+  const namespaceUrl = `${serverUrl}/api/namespaces/${encodeURIComponent(namespace)}`;
+  const deadline = Date.now() + serverReadinessTimeoutMs;
+  let lastError = '';
+
+  while (Date.now() <= deadline) {
+    try {
+      await getJson(serverUrl, '/api/ready', bootstrapHeaders, [200]);
+      await ensureNamespace(serverUrl, namespace, bootstrapHeaders, namespaceHeaders);
+      return;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      if (Date.now() > deadline) {
+        break;
+      }
+      await sleep(1000);
+    }
+  }
+
+  throw new Error(
+    `published server namespace setup prerequisite failed before worker-versioning matrix; expected ${namespaceUrl}; readiness ${readyUrl}; last_error=${lastError || 'none'}`,
+  );
 }
 
 async function registerWorker(serverUrl, headers, payload) {

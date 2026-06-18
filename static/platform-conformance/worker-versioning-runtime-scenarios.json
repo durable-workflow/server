@@ -202,6 +202,7 @@
       "worker-versioning-result.json",
       "worker-versioning-record.json",
       "worker-versioning-http-captures.json",
+      "server-url-candidates.txt",
       "server-namespace-url.txt",
       "waterline-url.txt"
     ],
@@ -210,7 +211,7 @@
       "DW_WV_PUBLISHED_WORKER_EVIDENCE": "Optional JSON report from the host worker-versioning topology after published worker artifacts executed replay, cache-eviction, no-compatible-worker, cross-language, or adversarial no-version-bump cells. When unset, the runner attempts to generate Python replay/cache/adversarial shards and a PHP/Python cross-language shard from published PyPI and Packagist artifacts.",
       "DW_WV_SKIP_PUBLISHED_WORKER_SHARD": "Set to 1 to skip automatic published PHP/Python worker shard generation when an external host topology is responsible for the shard.",
       "DW_WV_SERVER_BIND_HOST": "Optional Docker host interface for the self-started published server port. Defaults to 0.0.0.0.",
-      "DW_WV_SERVER_CONNECT_HOST": "Optional hostname or address used by the probe for the self-started server URL when 127.0.0.1 is not the address reachable by the host runner. Defaults to 127.0.0.1.",
+      "DW_WV_SERVER_CONNECT_HOST": "Optional first hostname or address to probe for the self-started server URL. The runner also tries localhost, default-route gateway, Docker bridge gateway, and host.docker.internal fallbacks.",
       "DW_WV_SERVER_READINESS_TIMEOUT_SECONDS": "Optional timeout for the server namespace setup prerequisite before the worker-versioning matrix starts. Defaults to 120 seconds.",
       "DW_WV_WATERLINE_URL": "Optional URL for an already running Packagist-installed Waterline app pointed at the same run database. When unset, the runner boots a disposable published Waterline app and records worker/workflow view captures when it started the server topology itself or when external database attach coordinates are supplied.",
       "DW_WV_WATERLINE_RUNTIME_IMAGE": "Optional PHP runtime image for the disposable Waterline app. Must provide PHP >= 8.4.1 and pdo_mysql for the shared MySQL run database; when unset, the runner builds a disposable PHP 8.4 runtime.",

@@ -41,8 +41,10 @@ Environment overrides:
                               from published PyPI and Packagist artifacts.
   DW_WV_SERVER_BIND_HOST       Docker host interface for the published server port.
                               Defaults to 0.0.0.0.
-  DW_WV_SERVER_CONNECT_HOST    Hostname/address used by the probe for the self-started
-                              server URL. Defaults to 127.0.0.1.
+  DW_WV_SERVER_CONNECT_HOST    First hostname/address used by the probe for the
+                              self-started server URL. Defaults to 127.0.0.1;
+                              the runner automatically probes localhost,
+                              gateway, and host.docker.internal fallbacks.
   DW_WV_SERVER_READINESS_TIMEOUT_SECONDS
                               Seconds to wait for the server namespace setup
                               prerequisite. Defaults to 120.
@@ -177,25 +179,49 @@ server.listen(0, '127.0.0.1', () => {
 NODE
 }
 
-wait_for_server_namespace_setup() {
-  local url="$1"
-  local namespace="$2"
-  local token="$3"
-  local timeout_seconds="$4"
+default_route_gateway() {
+  python3 - <<'PY' 2>/dev/null || true
+from __future__ import annotations
 
-  node - <<'NODE' "$url" "$namespace" "$token" "$timeout_seconds" "${DW_WV_BOOTSTRAP_NAMESPACE:-default}"
-const baseUrl = process.argv[2].replace(/\/+$/, '');
-const namespace = process.argv[3];
-const token = process.argv[4];
-const timeoutSeconds = Number.parseInt(process.argv[5] ?? '120', 10);
-const bootstrapNamespace = process.argv[6] || 'default';
-const readyUrl = `${baseUrl}/api/ready`;
+import socket
+
+try:
+    with open("/proc/net/route", "r", encoding="utf-8") as route_file:
+        next(route_file, None)
+        for line in route_file:
+            fields = line.strip().split()
+            if len(fields) >= 3 and fields[1] == "00000000":
+                print(socket.inet_ntoa(bytes.fromhex(fields[2])[::-1]))
+                break
+except OSError:
+    pass
+PY
+}
+
+docker_bridge_gateway() {
+  docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true
+}
+
+wait_for_server_namespace_setup() {
+  local namespace="$1"
+  local token="$2"
+  local timeout_seconds="$3"
+  local resolved_url_path="$4"
+  shift 4
+
+  node - "$namespace" "$token" "$timeout_seconds" "${DW_WV_BOOTSTRAP_NAMESPACE:-default}" "$resolved_url_path" "$@" <<'NODE'
+const fs = require('node:fs');
+
+const namespace = process.argv[2];
+const token = process.argv[3];
+const timeoutSeconds = Number.parseInt(process.argv[4] ?? '120', 10);
+const bootstrapNamespace = process.argv[5] || 'default';
+const resolvedUrlPath = process.argv[6];
+const baseUrls = orderedUnique(process.argv.slice(7).map((value) => value.replace(/\/+$/, '')));
 const namespacePath = `/api/namespaces/${encodeURIComponent(namespace)}`;
-const namespaceUrl = `${baseUrl}${namespacePath}`;
-const createNamespaceUrl = `${baseUrl}/api/namespaces`;
 const deadline = Date.now() + Math.max(1, Number.isFinite(timeoutSeconds) ? timeoutSeconds : 120) * 1000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-let lastError = '';
+const lastErrors = new Map();
 
 function controlHeaders(currentNamespace) {
   return {
@@ -207,7 +233,8 @@ function controlHeaders(currentNamespace) {
   };
 }
 
-async function requestJson(method, url, headers, body, expectedStatuses) {
+async function requestJson(baseUrl, method, pathName, headers, body, expectedStatuses) {
+  const url = `${baseUrl}${pathName}`;
   let response;
   try {
     response = await fetch(url, {
@@ -216,13 +243,13 @@ async function requestJson(method, url, headers, body, expectedStatuses) {
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch (error) {
-    lastError = formatFetchFailure(method, url, error);
+    lastErrors.set(baseUrl, formatFetchFailure(method, url, error));
     return null;
   }
 
   const text = await response.text();
   if (!expectedStatuses.includes(response.status)) {
-    lastError = `${method} ${url} returned ${response.status}: ${text.slice(0, 500)}`;
+    lastErrors.set(baseUrl, `${method} ${url} returned ${response.status}: ${text.slice(0, 500)}`);
     return null;
   }
 
@@ -294,45 +321,63 @@ function orderedUnique(values) {
   return seen;
 }
 
+function writeResolvedUrl(baseUrl) {
+  fs.writeFileSync(resolvedUrlPath, `${baseUrl}\n`, 'utf8');
+}
+
 (async () => {
+  if (baseUrls.length === 0) {
+    console.error('published server namespace setup did not receive any URL candidates');
+    process.exit(1);
+  }
+
   while (Date.now() <= deadline) {
-    const ready = await requestJson('GET', readyUrl, controlHeaders(bootstrapNamespace), undefined, [200]);
-    if (!ready) {
-      await sleep(1000);
-      continue;
-    }
+    for (const baseUrl of baseUrls) {
+      const ready = await requestJson(baseUrl, 'GET', '/api/ready', controlHeaders(bootstrapNamespace), undefined, [200]);
+      if (!ready) {
+        continue;
+      }
 
-    const show = await requestJson('GET', namespaceUrl, controlHeaders(namespace), undefined, [200, 404]);
-    if (!show) {
-      await sleep(1000);
-      continue;
-    }
-    if (show.__http_status === 200 && show.name === namespace) {
-      console.log(`published server namespace setup prerequisite satisfied at ${namespaceUrl}`);
-      process.exit(0);
-    }
+      const show = await requestJson(baseUrl, 'GET', namespacePath, controlHeaders(namespace), undefined, [200, 404]);
+      if (!show) {
+        continue;
+      }
+      if (show.__http_status === 200 && show.name === namespace) {
+        writeResolvedUrl(baseUrl);
+        console.log(`published server namespace setup prerequisite satisfied at ${baseUrl}${namespacePath}`);
+        process.exit(0);
+      }
 
-    const created = await requestJson(
-      'POST',
-      createNamespaceUrl,
-      controlHeaders(bootstrapNamespace),
-      {
-        name: namespace,
-        description: 'Worker-versioning conformance namespace',
-        retention_days: 7,
-      },
-      [201, 409],
-    );
-    if (created) {
-      console.log(`published server namespace setup prerequisite satisfied at ${namespaceUrl}`);
-      process.exit(0);
+      const created = await requestJson(
+        baseUrl,
+        'POST',
+        '/api/namespaces',
+        controlHeaders(bootstrapNamespace),
+        {
+          name: namespace,
+          description: 'Worker-versioning conformance namespace',
+          retention_days: 7,
+        },
+        [201, 409],
+      );
+      if (created) {
+        writeResolvedUrl(baseUrl);
+        console.log(`published server namespace setup prerequisite satisfied at ${baseUrl}${namespacePath}`);
+        process.exit(0);
+      }
     }
 
     await sleep(1000);
   }
 
+  const expectedUrls = baseUrls.map((baseUrl) => `${baseUrl}${namespacePath}`).join(', ');
+  const readyUrls = baseUrls.map((baseUrl) => `${baseUrl}/api/ready`).join(', ');
+  const errors = baseUrls
+    .map((baseUrl) => `${baseUrl}: ${lastErrors.get(baseUrl) || 'no response before timeout'}`)
+    .join(' | ');
+
   console.error(
-    `published server namespace setup did not become reachable before worker-versioning matrix; expected ${namespaceUrl}; readiness ${readyUrl}; last_error=${lastError || 'none'}`,
+    `published server namespace setup did not become reachable before worker-versioning matrix; expected one of ${expectedUrls}; readiness ${readyUrls}; last_errors=${errors || 'none'}`,
   );
   process.exit(1);
 })();
@@ -355,13 +400,84 @@ mkdir -p "$result_dir"
 
 run_label="$(printf '%s' "$(basename "$run_root")" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"
 compose_project="dw-worker-versioning-${run_label}"
-server_url="${DW_WV_SERVER_URL:-}"
+server_url_override="${DW_WV_SERVER_URL:-}"
+server_url="$server_url_override"
+server_url_candidates=()
 server_started=0
 compose_cleanup_needed=0
 server_image="${DW_SERVER_IMAGE:-}"
 server_artifact_source="published_server_url"
 waterline_container=""
-namespace_setup_verified=0
+
+add_server_url_candidate() {
+  local candidate="${1%/}"
+  local existing
+
+  [[ -n "$candidate" ]] || return
+  for existing in "${server_url_candidates[@]}"; do
+    if [[ "$existing" == "$candidate" ]]; then
+      return
+    fi
+  done
+  server_url_candidates+=("$candidate")
+}
+
+build_server_url_candidates() {
+  local gateway
+
+  server_url_candidates=()
+  if [[ -n "$server_url_override" ]]; then
+    add_server_url_candidate "$server_url_override"
+    return
+  fi
+
+  add_server_url_candidate "http://${server_connect_host}:${server_port}"
+  add_server_url_candidate "http://127.0.0.1:${server_port}"
+  add_server_url_candidate "http://localhost:${server_port}"
+
+  if [[ "$server_bind_host" != "0.0.0.0" && "$server_bind_host" != "127.0.0.1" && "$server_bind_host" != "localhost" ]]; then
+    add_server_url_candidate "http://${server_bind_host}:${server_port}"
+  fi
+
+  gateway="$(default_route_gateway)"
+  if [[ -n "$gateway" ]]; then
+    add_server_url_candidate "http://${gateway}:${server_port}"
+  fi
+
+  gateway="$(docker_bridge_gateway)"
+  if [[ -n "$gateway" && "$gateway" != "<no value>" ]]; then
+    add_server_url_candidate "http://${gateway}:${server_port}"
+  fi
+
+  add_server_url_candidate "http://host.docker.internal:${server_port}"
+}
+
+write_server_url_candidates() {
+  if [[ "${#server_url_candidates[@]}" -gt 0 ]]; then
+    printf '%s\n' "${server_url_candidates[@]}" >"$result_dir/server-url-candidates.txt"
+  fi
+}
+
+promote_server_url_candidate() {
+  local selected="${1%/}"
+  local existing
+  local promoted=()
+
+  [[ -n "$selected" ]] || return
+  promoted+=("$selected")
+  for existing in "${server_url_candidates[@]}"; do
+    if [[ "$existing" != "$selected" ]]; then
+      promoted+=("$existing")
+    fi
+  done
+  server_url_candidates=("${promoted[@]}")
+}
+
+if [[ -n "$server_url_override" ]]; then
+  build_server_url_candidates
+  server_url="${server_url_candidates[0]}"
+  write_server_url_candidates
+fi
 
 cleanup() {
   local code=$?
@@ -423,21 +539,35 @@ verify_server_namespace_setup() {
   local namespace="${DW_WV_NAMESPACE:-worker-versioning-conformance}"
   local token="${DW_WV_AUTH_TOKEN:-dev-token}"
   local timeout_seconds="${DW_WV_SERVER_READINESS_TIMEOUT_SECONDS:-120}"
-  local expected_url="${server_url%/}/api/namespaces/${namespace}"
+  local resolved_url_file="$result_dir/server-url-resolved.txt"
+  local expected_paths=()
+  local expected_summary
+  local candidate
   local state
 
-  if [[ "$namespace_setup_verified" == "1" ]]; then
-    return 0
+  if [[ "${#server_url_candidates[@]}" -eq 0 && -n "$server_url" ]]; then
+    add_server_url_candidate "$server_url"
   fi
 
-  if wait_for_server_namespace_setup "$server_url" "$namespace" "$token" "$timeout_seconds" >"$result_dir/server-namespace-setup.log" 2>&1; then
-    namespace_setup_verified=1
-    printf '%s\n' "$expected_url" >"$result_dir/server-namespace-url.txt"
+  write_server_url_candidates
+  rm -f "$resolved_url_file"
+
+  for candidate in "${server_url_candidates[@]}"; do
+    expected_paths+=("${candidate%/}/api/namespaces/${namespace}")
+  done
+  expected_summary="$(IFS=', '; printf '%s' "${expected_paths[*]}")"
+
+  if wait_for_server_namespace_setup "$namespace" "$token" "$timeout_seconds" "$resolved_url_file" "${server_url_candidates[@]}" >"$result_dir/server-namespace-setup.log" 2>&1; then
+    server_url="$(tr -d '\r\n' <"$resolved_url_file")"
+    promote_server_url_candidate "$server_url"
+    write_server_url_candidates
+    export DW_WV_SERVER_URL="$server_url"
+    printf '%s\n' "${server_url%/}/api/namespaces/${namespace}" >"$result_dir/server-namespace-url.txt"
     return 0
   fi
 
   state="$(server_state_summary)"
-  write_blocked_result "published server namespace setup prerequisite failed before worker-versioning matrix; expected ${expected_url}; server state: ${state}; see server-namespace-setup.log, docker-compose-ps.log, and server.log"
+  write_blocked_result "published server namespace setup prerequisite failed before worker-versioning matrix; expected one of ${expected_summary}; server state: ${state}; see server-namespace-setup.log, server-url-candidates.txt, docker-compose-ps.log, and server.log"
   exit 0
 }
 
@@ -574,7 +704,9 @@ if [[ -z "$server_url" ]]; then
   server_port="${DW_WV_SERVER_PORT:-$(free_port)}"
   server_bind_host="${DW_WV_SERVER_BIND_HOST:-0.0.0.0}"
   server_connect_host="${DW_WV_SERVER_CONNECT_HOST:-127.0.0.1}"
-  server_url="http://${server_connect_host}:${server_port}"
+  build_server_url_candidates
+  server_url="${server_url_candidates[0]}"
+  write_server_url_candidates
   compose_server_port="${server_port}"
   if [[ -n "$server_bind_host" ]]; then
     compose_server_port="${server_bind_host}:${server_port}"
@@ -832,6 +964,7 @@ YAML
 fi
 
 verify_server_namespace_setup
+export DW_WV_SERVER_URL="$server_url"
 run_published_worker_shard
 
 node "$script_dir/worker-versioning-published-artifacts.mjs"
