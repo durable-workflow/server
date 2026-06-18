@@ -459,6 +459,51 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertStringNotContainsString("waterline: 'published_artifact'", $node);
     }
 
+    public function test_worker_versioning_runner_records_published_cli_rollout_and_drain_evidence(): void
+    {
+        $node = $this->read('scripts/conformance/worker-versioning-published-artifacts.mjs');
+
+        foreach ([
+            'resolvePublishedCliArtifact',
+            'downloadCliInstaller',
+            'worker-versioning-cli-install.json',
+            "runCliJson(\n    cli.executable,\n    ['task-queue:promote'",
+            "runCliJson(\n    cli.executable,\n    ['worker:list'",
+            "runCliJson(\n    cli.executable,\n    ['task-queue:build-ids'",
+            "runCliJson(\n    cli.executable,\n    ['workflow:show-run'",
+            "runCliJson(\n    cli.executable,\n    ['task-queue:drain'",
+            "runCliJson(\n    cli.executable,\n    ['task-queue:resume'",
+            'pollWorkflowTaskWithStatuses',
+            'draining_worker_poll: drainingWorkerPoll',
+            'draining_worker_claim_blocked: drainingWorkerClaimBlocked',
+            'draining_worker_claim_count: drainingWorkerClaimCount',
+            "stringValue(drainingWorkerPoll?.reason) === 'worker_draining'",
+            'cli_operator_command_execution: commandExecutionPasses',
+            'rollout_visibility_passes: rolloutVisibilityPasses',
+            'drain_resume_controls_passes: drainResumeControlsPasses',
+            "addNotCovered('operator_rollout_visibility'",
+            "addPass('drain_resume_operator_controls'",
+            'Published CLI rollout controls were exercised and recorded',
+            'cli_rollout_visibility_passes: cliOperatorEvidence.rollout_visibility_passes',
+            'runtimeMatrix.client_paths = unique([...runtimeMatrix.client_paths, \'cli\']);',
+            'runtimeMatrix.uncovered_required_client_paths = runtimeMatrix.uncovered_required_client_paths',
+            "'dw workers list'",
+            "'dw task-queue build-ids'",
+            "'workflow show compatibility'",
+            'mergeCliInstallEvidence(installEvidence, cliOperatorEvidence.cli_install_evidence)',
+            'published_cli_execution: publishedCliExecution',
+        ] as $token) {
+            $this->assertStringContainsString($token, $node);
+        }
+
+        $this->assertStringNotContainsString(
+            "if (cliOperatorEvidence.rollout_visibility_passes) {\n    addPass('operator_rollout_visibility'",
+            $node,
+            'CLI-only rollout evidence must not pass the combined CLI and Waterline rollout scenario',
+        );
+        $this->assertStringNotContainsString('draining_worker_claim_count: 0,', $node);
+    }
+
     public function test_published_artifact_runner_gates_replay_cells_on_zero_incompatible_delivery(): void
     {
         $node = $this->read('scripts/conformance/worker-versioning-published-artifacts.mjs');

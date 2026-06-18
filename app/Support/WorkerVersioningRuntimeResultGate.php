@@ -881,6 +881,8 @@ final class WorkerVersioningRuntimeResultGate
             array_push($failures, ...self::publishedArtifactEvidenceFailures($result, $contract, $publishedArtifactResult));
         }
 
+        array_push($failures, ...self::operatorRolloutVisibilityEvidenceFailures($scenarioResults));
+        array_push($failures, ...self::drainResumeOperatorControlsEvidenceFailures($scenarioResults));
         array_push($failures, ...self::routingInvariantFailures($scenarioResults));
         array_push($failures, ...self::crossLanguageInvariantFailures($scenarioResults));
         array_push(
@@ -889,6 +891,238 @@ final class WorkerVersioningRuntimeResultGate
         );
 
         return $failures;
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $scenarioResults
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function operatorRolloutVisibilityEvidenceFailures(array $scenarioResults): array
+    {
+        $evidence = self::passingScenarioEvidence($scenarioResults, 'operator_rollout_visibility');
+        if ($evidence === null) {
+            return [];
+        }
+
+        $waterline = self::fieldValue($evidence, [
+            'waterline_operator_visibility',
+            'waterlineOperatorVisibility',
+        ]);
+        if ($waterline === null) {
+            return [];
+        }
+
+        if (! is_array($waterline)) {
+            return [[
+                'code' => 'invalid_waterline_operator_visibility_evidence',
+                'scenario_id' => 'operator_rollout_visibility',
+                'field' => 'waterline_operator_visibility',
+                'expected' => 'object',
+                'actual_type' => get_debug_type($waterline),
+            ]];
+        }
+
+        if ($waterline === []) {
+            return [];
+        }
+
+        if (self::isUnexercisedWaterlineVisibility($waterline)) {
+            return [[
+                'code' => 'waterline_operator_visibility_not_exercised',
+                'scenario_id' => 'operator_rollout_visibility',
+                'field' => 'waterline_operator_visibility',
+                'status' => self::stringField($waterline, ['status', 'outcome', 'result']),
+            ]];
+        }
+
+        if (! self::hasWaterlineVisibilitySignal($waterline)) {
+            return [[
+                'code' => 'missing_waterline_operator_visibility_signal',
+                'scenario_id' => 'operator_rollout_visibility',
+                'field' => 'waterline_operator_visibility',
+            ]];
+        }
+
+        return [];
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $scenarioResults
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function drainResumeOperatorControlsEvidenceFailures(array $scenarioResults): array
+    {
+        $evidence = self::passingScenarioEvidence($scenarioResults, 'drain_resume_operator_controls');
+        if ($evidence === null) {
+            return [];
+        }
+
+        $failures = [];
+        $claimBlockedAliases = self::evidenceFieldAliases(
+            'drain_resume_operator_controls',
+            'draining_worker_claim_blocked',
+        );
+        if (! self::fieldExists($evidence, $claimBlockedAliases)) {
+            $failures[] = [
+                'code' => 'missing_draining_worker_claim_blocked_evidence',
+                'scenario_id' => 'drain_resume_operator_controls',
+                'field' => 'draining_worker_claim_blocked',
+            ];
+        } elseif (! self::truthyField($evidence, $claimBlockedAliases)) {
+            $failures[] = [
+                'code' => 'draining_worker_claim_not_blocked',
+                'scenario_id' => 'drain_resume_operator_controls',
+                'field' => 'draining_worker_claim_blocked',
+                'expected' => true,
+                'actual' => self::fieldValue($evidence, $claimBlockedAliases),
+            ];
+        }
+
+        $claimCountAliases = self::evidenceFieldAliases(
+            'drain_resume_operator_controls',
+            'draining_worker_claim_count',
+        );
+        if (! self::fieldExists($evidence, $claimCountAliases)) {
+            $failures[] = [
+                'code' => 'missing_draining_worker_claim_count_evidence',
+                'scenario_id' => 'drain_resume_operator_controls',
+                'field' => 'draining_worker_claim_count',
+            ];
+        } else {
+            self::requireZeroCount(
+                $failures,
+                $evidence,
+                'drain_resume_operator_controls',
+                'draining_worker_claim_count',
+                $claimCountAliases,
+            );
+        }
+
+        $pollAliases = self::evidenceFieldAliases(
+            'drain_resume_operator_controls',
+            'draining_worker_poll',
+        );
+        $poll = self::fieldValue($evidence, $pollAliases);
+        if (! is_array($poll)) {
+            $failures[] = [
+                'code' => 'missing_draining_worker_poll_evidence',
+                'scenario_id' => 'drain_resume_operator_controls',
+                'field' => 'draining_worker_poll',
+                'expected' => 'poll_response_object',
+                'actual_type' => get_debug_type($poll),
+            ];
+
+            return $failures;
+        }
+
+        $pollStatus = self::stringField($poll, ['poll_status', 'pollStatus']);
+        $reason = self::stringField($poll, ['reason']);
+        $httpStatus = self::intField($poll, ['http_status', 'httpStatus', '__http_status']);
+        if ($pollStatus !== 'draining' || $reason !== 'worker_draining' || $httpStatus !== 409) {
+            $failures[] = [
+                'code' => 'draining_worker_poll_not_blocked',
+                'scenario_id' => 'drain_resume_operator_controls',
+                'field' => 'draining_worker_poll',
+                'expected' => [
+                    'http_status' => 409,
+                    'poll_status' => 'draining',
+                    'reason' => 'worker_draining',
+                ],
+                'actual' => [
+                    'http_status' => $httpStatus,
+                    'poll_status' => $pollStatus,
+                    'reason' => $reason,
+                ],
+            ];
+        }
+
+        if (! array_key_exists('task', $poll)) {
+            $failures[] = [
+                'code' => 'draining_worker_poll_missing_task_field',
+                'scenario_id' => 'drain_resume_operator_controls',
+                'field' => 'draining_worker_poll.task',
+                'expected' => null,
+            ];
+        } elseif ($poll['task'] !== null) {
+            $failures[] = [
+                'code' => 'draining_worker_poll_claimed_task',
+                'scenario_id' => 'drain_resume_operator_controls',
+                'field' => 'draining_worker_poll.task',
+                'expected' => null,
+                'actual' => $poll['task'],
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $waterline
+     */
+    private static function isUnexercisedWaterlineVisibility(array $waterline): bool
+    {
+        $status = self::stringField($waterline, ['status', 'outcome', 'result']);
+        if ($status === '') {
+            return false;
+        }
+
+        $normalized = self::normalizeToken($status);
+        foreach ([
+            'notexercisedbyserverhandoff',
+            'notexercised',
+            'notcovered',
+            'runnerblocked',
+            'unsupported',
+            'missing',
+            'placeholder',
+        ] as $placeholder) {
+            if ($normalized === $placeholder || str_contains($normalized, $placeholder)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $waterline
+     */
+    private static function hasWaterlineVisibilitySignal(array $waterline): bool
+    {
+        return self::hasArrayField($waterline, [
+            'worker_cohorts',
+            'workerCohorts',
+            'workflow_runs',
+            'workflowRuns',
+            'operator_surface_matrix',
+            'operatorSurfaceMatrix',
+            'api_captures',
+            'apiCaptures',
+            'worker_list',
+            'workerList',
+            'workflow_visibility',
+            'workflowVisibility',
+            'task_queue_build_ids',
+            'taskQueueBuildIds',
+        ])
+            || self::hasScalarField($waterline, [
+                'workflow_compatibility',
+                'workflowCompatibility',
+                'compatibility',
+                'output_sample',
+                'outputSample',
+            ])
+            || self::truthyField($waterline, [
+                'visible',
+                'operator_visible',
+                'operatorVisible',
+                'worker_view_visible',
+                'workerViewVisible',
+                'workflow_view_visible',
+                'workflowViewVisible',
+            ]);
     }
 
     /**

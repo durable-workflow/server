@@ -397,6 +397,22 @@ class WorkerVersioningRuntimeContractTest extends TestCase
         $this->assertSame([], $evaluation['gate_failures']);
     }
 
+    public function test_result_gate_rejects_drain_resume_without_draining_worker_poll_evidence(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        unset(
+            $result['scenario_results']['drain_resume_operator_controls']['observed_outputs']['draining_worker_poll'],
+            $result['scenario_results']['drain_resume_operator_controls']['observed_outputs']['draining_worker_claim_blocked'],
+        );
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $codes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('missing_draining_worker_poll_evidence', $codes);
+        $this->assertContains('missing_draining_worker_claim_blocked_evidence', $codes);
+    }
+
     public function test_result_gate_rejects_compatible_replay_when_v2_receives_v1_run_task(): void
     {
         $result = $this->completeWorkerVersioningResult();
@@ -704,6 +720,33 @@ class WorkerVersioningRuntimeContractTest extends TestCase
                 sprintf('generic observed=true evidence for %s must produce required-field failures', $scenarioId),
             );
         }
+    }
+
+    public function test_result_gate_rejects_rollout_visibility_with_unexercised_waterline_placeholder(): void
+    {
+        $result = $this->completeWorkerVersioningResult();
+        $result['scenario_results']['operator_rollout_visibility']['observed_outputs']['cli_operator_command_execution'] = true;
+        $result['scenario_results']['operator_rollout_visibility']['observed_outputs']['cli_output'] = [
+            'worker_cohorts' => ['v1', 'v2'],
+            'new_start_build_id' => 'v2',
+            'workflow_run_compatibility' => ['old-run' => 'v1'],
+        ];
+        $result['scenario_results']['operator_rollout_visibility']['observed_outputs']['waterline_operator_visibility'] = [
+            'status' => 'not_exercised_by_server_handoff',
+        ];
+
+        $evaluation = WorkerVersioningRuntimeResultGate::evaluate($result);
+        $waterlineFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'waterline_operator_visibility_not_exercised'
+                && ($failure['scenario_id'] ?? null) === 'operator_rollout_visibility',
+        ));
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty(
+            $waterlineFailures,
+            'CLI command output must not pass the combined rollout scenario while Waterline is only a handoff placeholder',
+        );
     }
 
     public function test_result_gate_requires_worker_runtime_matrix_entries_to_match_runtime_surface(): void
@@ -1256,6 +1299,13 @@ class WorkerVersioningRuntimeContractTest extends TestCase
             'drain_state_visible' => true,
             'resume_command' => 'dw task-queue build-id resume v1',
             'resume_state_visible' => true,
+            'draining_worker_poll' => [
+                'http_status' => 409,
+                'poll_status' => 'draining',
+                'reason' => 'worker_draining',
+                'task' => null,
+            ],
+            'draining_worker_claim_blocked' => true,
             'draining_worker_claim_count' => 0,
         ];
         $scenarioResults['pin_on_start']['observed_outputs'] += [

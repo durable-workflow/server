@@ -207,6 +207,8 @@ final class WorkerVersioningRuntimeContract
                         'drain_state_visible',
                         'resume_command',
                         'resume_state_visible',
+                        'draining_worker_poll',
+                        'draining_worker_claim_blocked',
                         'draining_worker_claim_count',
                     ],
                     'expected_behavior' => 'documented drain and resume controls update operator-visible rollout state and draining workers do not silently claim new work',

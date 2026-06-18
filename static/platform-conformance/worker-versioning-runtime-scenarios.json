@@ -109,6 +109,8 @@
         "drain_state_visible",
         "resume_command",
         "resume_state_visible",
+        "draining_worker_poll",
+        "draining_worker_claim_blocked",
         "draining_worker_claim_count"
       ]
     },

@@ -45,6 +45,16 @@ const publishedWorkerShardTimeoutMs = timeoutMsFromEnv(
   'DW_WV_PUBLISHED_WORKER_SHARD_TIMEOUT_SECONDS',
   90000,
 );
+const cliInstallTimeoutMs = timeoutMsFromEnv(
+  'DW_WV_CLI_INSTALL_TIMEOUT_MS',
+  'DW_WV_CLI_INSTALL_TIMEOUT_SECONDS',
+  120000,
+);
+const cliCommandTimeoutMs = timeoutMsFromEnv(
+  'DW_WV_CLI_COMMAND_TIMEOUT_MS',
+  'DW_WV_CLI_COMMAND_TIMEOUT_SECONDS',
+  30000,
+);
 
 const scenarioManifest = readJsonIfExists(scenarioManifestPath) ?? {};
 const requiredScenarios = Array.isArray(scenarioManifest.scenarios)
@@ -92,7 +102,7 @@ async function main() {
   const serverUrl = trimTrailingSlash(requiredEnv('DW_WV_SERVER_URL'));
   const artifactVersions = artifactVersionsFromEnv();
   let artifactSources = artifactSourcesFromEnv();
-  const installEvidence = artifactInstallEvidence(artifactVersions, artifactSources);
+  let installEvidence = artifactInstallEvidence(artifactVersions, artifactSources);
   artifactSources = mergeArtifactSources(artifactSources, installEvidence);
   maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions, artifactSources);
   const publishedWorkerEvidence = publishedWorkerExecutionEvidence(artifactVersions, artifactSources);
@@ -483,12 +493,67 @@ async function main() {
     [200],
   );
 
-  const drain = await postJson(serverUrl, `/api/task-queues/${encodeURIComponent(taskQueue)}/build-ids/drain`, {
+  await registerWorker(serverUrl, workerHeaders, {
+    worker_id: v1WorkerId,
+    task_queue: taskQueue,
+    runtime: 'php',
+    sdk_version: artifactVersions.workflow,
     build_id: buildV1,
-  }, controlHeaders, [200, 201]);
-  const resume = await postJson(serverUrl, `/api/task-queues/${encodeURIComponent(taskQueue)}/build-ids/resume`, {
-    build_id: buildV1,
-  }, controlHeaders, [200, 201]);
+    supported_workflow_types: [workflowType],
+    workflow_definition_fingerprints: { [workflowType]: `sequence-v1-${suffix}` },
+    supported_activity_types: ['activity_a', 'activity_b'],
+    process_metrics: processMetrics(1004, timestamp()),
+  });
+
+  const cliOperatorEvidence = await publishedCliOperatorEvidence({
+    serverUrl,
+    namespace,
+    token,
+    taskQueue,
+    workflowType,
+    buildV1,
+    buildV2,
+    v1WorkflowId,
+    v1RunId,
+    promotedWorkflowId: stringValue(promotedRun.workflow_id),
+    promotedRunId: stringValue(promotedRun.run_id),
+    artifactVersions,
+    artifactSources,
+    workerHeaders,
+  });
+  installEvidence = mergeCliInstallEvidence(installEvidence, cliOperatorEvidence.cli_install_evidence);
+  writePublishedArtifacts(artifactVersions, artifactSources, installEvidence);
+
+  let drain = cliCommandJson(cliOperatorEvidence, 'drain_command');
+  if (stringValue(drain.drain_intent) !== 'draining') {
+    drain = await postJson(serverUrl, `/api/task-queues/${encodeURIComponent(taskQueue)}/build-ids/drain`, {
+      build_id: buildV1,
+    }, controlHeaders, [200, 201]);
+  }
+  let resume = cliCommandJson(cliOperatorEvidence, 'resume_command');
+  if (stringValue(resume.drain_intent) !== 'active') {
+    resume = await postJson(serverUrl, `/api/task-queues/${encodeURIComponent(taskQueue)}/build-ids/resume`, {
+      build_id: buildV1,
+    }, controlHeaders, [200, 201]);
+  }
+
+  if (cliOperatorEvidence.cli_operator_command_execution) {
+    runtimeMatrix.client_paths = unique([...runtimeMatrix.client_paths, 'cli']);
+    runtimeMatrix.operator_visibility_paths = unique([
+      ...runtimeMatrix.operator_visibility_paths,
+      'dw workers list',
+      'dw task-queue build-ids',
+      'workflow show compatibility',
+    ]);
+    runtimeMatrix.uncovered_required_client_paths = runtimeMatrix.uncovered_required_client_paths
+      .filter((clientPath) => clientPath !== 'cli');
+    runtimeMatrix.uncovered_required_operator_visibility_paths = runtimeMatrix.uncovered_required_operator_visibility_paths
+      .filter((pathName) => ![
+        'dw workers list',
+        'dw task-queue build-ids',
+        'workflow show compatibility',
+      ].includes(pathName));
+  }
 
   const adversarial = await postJson(serverUrl, '/api/worker/register', {
     worker_id: v1WorkerId,
@@ -628,36 +693,77 @@ async function main() {
     runtimeMatrix.uncovered_required_client_paths = runtimeMatrix.uncovered_required_client_paths
       .filter((clientPath) => !['sdk-python', 'workflow-php-sdk'].includes(clientPath));
   }
+  const cliRolloutVisibility = objectValue(cliOperatorEvidence.rollout_visibility);
+  const cliDrainResumeControls = objectValue(cliOperatorEvidence.drain_resume_controls);
+  const waterlineOperatorVisibility = { status: 'not_exercised_by_server_handoff' };
   const operatorRolloutOutputs = {
-    worker_cohorts: unique((workerList.workers ?? []).map((worker) => worker.build_id).filter(Boolean)),
-    rollout_state: buildIds,
-    new_start_build_id: stringValue(promotedRun.compatibility) || stringValue(promotedPoll?.task?.compatibility),
-    workflow_run_compatibility: { [v1RunId]: stringValue(v1RunShow.compatibility) },
-    waterline_operator_visibility: { status: 'not_exercised_by_server_handoff' },
+    worker_cohorts: unique([
+      ...(workerList.workers ?? []).map((worker) => worker.build_id),
+      ...arrayValue(cliRolloutVisibility.worker_cohorts),
+    ]),
+    rollout_state: {
+      server_http: buildIds,
+      cli_task_queue_build_ids: objectValue(objectValue(cliRolloutVisibility.task_queue_build_ids).json),
+    },
+    new_start_build_id: stringValue(cliRolloutVisibility.new_start_build_id)
+      || stringValue(promotedRun.compatibility)
+      || stringValue(promotedPoll?.task?.compatibility),
+    workflow_run_compatibility: {
+      [v1RunId]: stringValue(v1RunShow.compatibility),
+      ...objectValue(cliRolloutVisibility.workflow_run_compatibility),
+    },
+    waterline_operator_visibility: waterlineOperatorVisibility,
+    cli_operator_command_execution: cliOperatorEvidence.cli_operator_command_execution,
+    cli_rollout_visibility_passes: cliOperatorEvidence.rollout_visibility_passes,
+    cli_rollout_visibility_gap: cliOperatorEvidence.rollout_visibility_gap,
+    cli_output: cliRolloutVisibility,
   };
-  addNotCovered('operator_rollout_visibility', operatorRolloutOutputs, {
-    scenario_id: 'operator_rollout_visibility',
-    owning_surface: 'conformance_harness',
-    artifact_versions: artifactVersions,
-    observed_behavior: 'The runner captured server HTTP rollout state but did not execute the published CLI or Waterline operator views required for rollout visibility evidence.',
-    expected_behavior: 'Operators can distinguish v1 and v2 cohorts, new-start build IDs, and per-run compatibility through published CLI and Waterline surfaces.',
-    next_acceptance_criterion: 'run dw and Waterline against the same published-artifact topology and attach their rollout visibility captures before marking this scenario pass',
-  });
-  addNotCovered('drain_resume_operator_controls', {
-    drain_command: 'POST /api/task-queues/{taskQueue}/build-ids/drain',
-    drain_state_visible: drain.drain_intent === 'draining',
-    resume_command: 'POST /api/task-queues/{taskQueue}/build-ids/resume',
-    resume_state_visible: resume.drain_intent === 'active',
-    draining_worker_claim_count: 0,
-    cli_operator_command_execution: false,
-  }, {
-    scenario_id: 'drain_resume_operator_controls',
-    owning_surface: 'conformance_harness',
-    artifact_versions: artifactVersions,
-    observed_behavior: 'The runner exercised drain and resume through server HTTP routes but did not run the documented published CLI operator command.',
-    expected_behavior: 'Drain and resume controls are executed through the published CLI and reflected in public rollout state.',
-    next_acceptance_criterion: 'run the published dw drain/resume commands against the topology and record command output with rollout-state confirmation',
-  });
+  if (cliOperatorEvidence.rollout_visibility_passes) {
+    addNotCovered('operator_rollout_visibility', operatorRolloutOutputs, {
+      scenario_id: 'operator_rollout_visibility',
+      owning_surface: 'waterline',
+      artifact_versions: artifactVersions,
+      observed_behavior: 'Published CLI rollout controls were exercised and recorded, but Waterline worker/workflow views are not attached to the worker-versioning rollout evidence.',
+      expected_behavior: 'Operators can distinguish v1 and v2 cohorts, new-start build IDs, and per-run compatibility through both published CLI and Waterline surfaces.',
+      next_acceptance_criterion: 'attach published Waterline worker/workflow view captures for the same worker-versioning topology before marking this combined rollout visibility scenario pass',
+    });
+  } else {
+    addNotCovered('operator_rollout_visibility', operatorRolloutOutputs, {
+      scenario_id: 'operator_rollout_visibility',
+      owning_surface: 'conformance_harness',
+      artifact_versions: artifactVersions,
+      observed_behavior: cliOperatorEvidence.rollout_visibility_gap
+        || 'The runner captured server HTTP rollout state but did not execute the published CLI operator views required for rollout visibility evidence.',
+      expected_behavior: 'Operators can distinguish v1 and v2 cohorts, new-start build IDs, and per-run compatibility through both published CLI and Waterline surfaces.',
+      next_acceptance_criterion: 'run dw against the same published-artifact topology and attach CLI rollout visibility captures before the Waterline rollout view is evaluated',
+    });
+  }
+  const drainResumeOutputs = {
+    drain_command: objectValue(cliDrainResumeControls.drain_command).command
+      ?? 'POST /api/task-queues/{taskQueue}/build-ids/drain',
+    drain_state_visible: cliDrainResumeControls.drain_state_visible === true || drain.drain_intent === 'draining',
+    resume_command: objectValue(cliDrainResumeControls.resume_command).command
+      ?? 'POST /api/task-queues/{taskQueue}/build-ids/resume',
+    resume_state_visible: cliDrainResumeControls.resume_state_visible === true || resume.drain_intent === 'active',
+    draining_worker_claim_count: numberValue(cliDrainResumeControls.draining_worker_claim_count) ?? 0,
+    draining_worker_claim_blocked: cliDrainResumeControls.draining_worker_claim_blocked === true,
+    draining_worker_poll: objectValue(cliDrainResumeControls.draining_worker_poll),
+    cli_operator_command_execution: cliOperatorEvidence.cli_operator_command_execution,
+    cli_output: cliDrainResumeControls,
+  };
+  if (cliOperatorEvidence.drain_resume_controls_passes) {
+    addPass('drain_resume_operator_controls', drainResumeOutputs);
+  } else {
+    addNotCovered('drain_resume_operator_controls', drainResumeOutputs, {
+      scenario_id: 'drain_resume_operator_controls',
+      owning_surface: 'conformance_harness',
+      artifact_versions: artifactVersions,
+      observed_behavior: cliOperatorEvidence.drain_resume_gap
+        || 'The runner exercised drain and resume through server HTTP routes but did not run the documented published CLI operator command.',
+      expected_behavior: 'Drain and resume controls are executed through the published CLI and reflected in public rollout state.',
+      next_acceptance_criterion: 'run the published dw drain/resume commands against the topology and record command output with rollout-state confirmation',
+    });
+  }
   addPass('pin_on_start', {
     run_compatibility: stringValue(v1RunShow.compatibility),
     first_task_compatibility: stringValue(v1FirstPoll?.task?.compatibility),
@@ -932,6 +1038,7 @@ async function main() {
     worker_list: workerList,
     task_queue_build_ids: buildIds,
     workflow_visibility: v1RunShow,
+    cli_operator_visibility: cliOperatorEvidence.rollout_visibility,
     waterline_operator_visibility: { status: 'not_exercised_by_server_handoff' },
   }, {
     scenario_id: 'operator_visibility_surfaces',
@@ -1172,6 +1279,11 @@ async function main() {
       promote: true,
       drain: drain.drain_intent === 'draining',
       resume: resume.drain_intent === 'active',
+      cli_operator_command_execution: cliOperatorEvidence.cli_operator_command_execution,
+      cli_output: {
+        rollout_visibility: cliOperatorEvidence.rollout_visibility,
+        drain_resume_controls: cliOperatorEvidence.drain_resume_controls,
+      },
     },
     mixed_version_polling: {
       v1_worker_task_count: v1TaskCount,
@@ -1309,18 +1421,28 @@ async function startWorkflow(serverUrl, headers, payload) {
 }
 
 async function pollWorkflowTask(serverUrl, headers, workerId, taskQueue, buildId) {
+  return pollWorkflowTaskWithStatuses(serverUrl, headers, workerId, taskQueue, buildId, [200]);
+}
+
+async function pollWorkflowTaskWithStatuses(serverUrl, headers, workerId, taskQueue, buildId, expectedStatuses) {
   const poll = await postJson(serverUrl, '/api/worker/workflow-tasks/poll', {
     worker_id: workerId,
     task_queue: taskQueue,
     build_id: buildId,
     poll_request_id: `${workerId}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     history_page_size: 100,
-  }, headers, [200]);
+  }, headers, expectedStatuses);
 
   return {
     worker_id: workerId,
     build_id: buildId,
+    http_status: poll.__http_status ?? null,
     poll_status: poll.poll_status ?? null,
+    reason: poll.reason ?? null,
+    error: poll.error ?? null,
+    drain_intent: poll.drain_intent ?? null,
+    worker_status: poll.worker_status ?? null,
+    registered_build_id: poll.registered_build_id ?? null,
     task: poll.task ?? null,
   };
 }
@@ -1488,6 +1610,431 @@ async function requestJson(serverUrl, method, pathName, body, headers, expectedS
   }
 
   return json;
+}
+
+async function publishedCliOperatorEvidence(options) {
+  try {
+    return await capturePublishedCliOperatorEvidence(options);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+
+    return {
+      cli_operator_command_execution: false,
+      rollout_visibility_passes: false,
+      drain_resume_controls_passes: false,
+      rollout_visibility_gap: `Published CLI rollout visibility could not be exercised: ${reason}`,
+      drain_resume_gap: `Published CLI drain/resume controls could not be exercised: ${reason}`,
+      cli_install_evidence: {
+        artifact: 'cli',
+        version: stringValue(options.artifactVersions.cli),
+        source: stringValue(options.artifactSources.cli) || 'not_exercised',
+        status: 'not_covered',
+        local_product_source_checkouts_used: false,
+        detail: reason,
+      },
+      rollout_visibility: {
+        status: 'not_covered',
+        error: reason,
+      },
+      drain_resume_controls: {
+        status: 'not_covered',
+        error: reason,
+      },
+    };
+  }
+}
+
+async function capturePublishedCliOperatorEvidence({
+  serverUrl,
+  namespace,
+  token,
+  taskQueue,
+  workflowType,
+  buildV1,
+  buildV2,
+  v1WorkflowId,
+  v1RunId,
+  promotedWorkflowId,
+  promotedRunId,
+  artifactVersions,
+  artifactSources,
+  workerHeaders,
+}) {
+  const cli = await resolvePublishedCliArtifact(artifactVersions, artifactSources);
+  const commonArgs = [
+    '--server',
+    serverUrl,
+    '--namespace',
+    namespace,
+    '--token',
+    token,
+    '--output=json',
+  ];
+  const commandEnv = {
+    ...process.env,
+    DW_ENV: '',
+    DURABLE_WORKFLOW_SERVER_URL: serverUrl,
+    DURABLE_WORKFLOW_NAMESPACE: namespace,
+    DURABLE_WORKFLOW_AUTH_TOKEN: token,
+  };
+  const version = runCliText(cli.executable, ['--version'], commandEnv);
+  const promote = runCliJson(
+    cli.executable,
+    ['task-queue:promote', taskQueue, '--build-id', buildV2, ...commonArgs],
+    commandEnv,
+  );
+  const workerList = runCliJson(
+    cli.executable,
+    ['worker:list', `--task-queue=${taskQueue}`, ...commonArgs],
+    commandEnv,
+  );
+  const buildIds = runCliJson(
+    cli.executable,
+    ['task-queue:build-ids', taskQueue, ...commonArgs],
+    commandEnv,
+  );
+  const v1Run = runCliJson(
+    cli.executable,
+    ['workflow:show-run', v1WorkflowId, v1RunId, ...commonArgs],
+    commandEnv,
+  );
+  const promotedRun = runCliJson(
+    cli.executable,
+    ['workflow:show-run', promotedWorkflowId, promotedRunId, ...commonArgs],
+    commandEnv,
+  );
+  const drain = runCliJson(
+    cli.executable,
+    ['task-queue:drain', taskQueue, '--build-id', buildV1, ...commonArgs],
+    commandEnv,
+  );
+  const drainState = runCliJson(
+    cli.executable,
+    ['task-queue:build-ids', taskQueue, ...commonArgs],
+    commandEnv,
+  );
+  const drainingWorkerId = `dw-drain-probe-${Date.now().toString(36)}-${Math.random().toString(16).slice(2)}`;
+  const drainingWorkerRegistration = await registerWorker(serverUrl, workerHeaders, {
+    worker_id: drainingWorkerId,
+    task_queue: taskQueue,
+    runtime: 'php',
+    sdk_version: artifactVersions.workflow,
+    build_id: buildV1,
+    supported_workflow_types: [workflowType],
+    workflow_definition_fingerprints: { [workflowType]: `drain-probe-${drainingWorkerId}` },
+    supported_activity_types: ['activity_a', 'activity_b'],
+    process_metrics: processMetrics(3001, timestamp()),
+  });
+  const drainingWorkerPoll = await pollWorkflowTaskWithStatuses(
+    serverUrl,
+    workerHeaders,
+    drainingWorkerId,
+    taskQueue,
+    buildV1,
+    [200, 409],
+  );
+  const resume = runCliJson(
+    cli.executable,
+    ['task-queue:resume', taskQueue, '--build-id', buildV1, ...commonArgs],
+    commandEnv,
+  );
+  const resumeState = runCliJson(
+    cli.executable,
+    ['task-queue:build-ids', taskQueue, ...commonArgs],
+    commandEnv,
+  );
+  const workerCohorts = unique([
+    ...arrayValue(objectValue(workerList.json).workers).map((worker) => worker?.build_id),
+    ...arrayValue(objectValue(buildIds.json).build_ids).map((entry) => entry?.build_id),
+  ]);
+  const selectedNewStartBuildId = selectedBuildIdFromRollout(objectValue(buildIds.json))
+    || stringValue(objectValue(promote.json).build_id);
+  const workflowRunCompatibility = {
+    [v1RunId]: stringValue(objectValue(v1Run.json).compatibility),
+    [promotedRunId]: stringValue(objectValue(promotedRun.json).compatibility),
+  };
+  const drainEntry = taskQueueBuildIdEntry(objectValue(drainState.json), buildV1);
+  const resumeEntry = taskQueueBuildIdEntry(objectValue(resumeState.json), buildV1);
+  const commandExecutionPasses = [
+    version,
+    promote,
+    workerList,
+    buildIds,
+    v1Run,
+    promotedRun,
+    drain,
+    drainState,
+    resume,
+    resumeState,
+  ].every(cliCommandSucceeded);
+  const rolloutVisibilityPasses = commandExecutionPasses
+    && workerCohorts.includes(buildV1)
+    && workerCohorts.includes(buildV2)
+    && selectedNewStartBuildId === buildV2
+    && workflowRunCompatibility[v1RunId] === buildV1
+    && workflowRunCompatibility[promotedRunId] === buildV2;
+  const drainStateVisible = stringValue(objectValue(drain.json).drain_intent) === 'draining'
+    && stringValue(drainEntry?.drain_intent) === 'draining';
+  const resumeStateVisible = stringValue(objectValue(resume.json).drain_intent) === 'active'
+    && stringValue(resumeEntry?.drain_intent) === 'active';
+  const drainingWorkerClaimCount = drainingWorkerPoll?.task ? 1 : 0;
+  const drainingWorkerClaimBlocked = drainingWorkerClaimCount === 0
+    && numberValue(drainingWorkerPoll?.http_status) === 409
+    && stringValue(drainingWorkerPoll?.reason) === 'worker_draining'
+    && stringValue(drainingWorkerPoll?.poll_status) === 'draining';
+  const drainResumeControlsPasses = commandExecutionPasses
+    && drainStateVisible
+    && resumeStateVisible
+    && drainingWorkerClaimBlocked;
+  const cliInstallEvidence = {
+    artifact: 'cli',
+    version: stringValue(artifactVersions.cli),
+    source: cli.source,
+    status: version.exit_code === 0 ? 'pass' : 'not_covered',
+    local_product_source_checkouts_used: false,
+    command: 'dw --version',
+    output_sample: outputSample(version.stdout || version.stderr),
+  };
+  const publishedCliExecution = {
+    local_product_source_checkouts_used: false,
+    artifacts: [cliInstallEvidence],
+  };
+  const rolloutVisibility = {
+    status: rolloutVisibilityPasses ? 'pass' : 'not_covered',
+    artifact_versions: { cli: stringValue(artifactVersions.cli) },
+    published_cli_execution: publishedCliExecution,
+    cli_version_output: version,
+    promote_command: promote,
+    worker_list: workerList,
+    task_queue_build_ids: buildIds,
+    workflow_show_runs: {
+      [v1RunId]: v1Run,
+      [promotedRunId]: promotedRun,
+    },
+    worker_cohorts: workerCohorts,
+    new_start_build_id: selectedNewStartBuildId,
+    workflow_run_compatibility: workflowRunCompatibility,
+    local_product_source_checkouts_used: false,
+  };
+  const drainResumeControls = {
+    status: drainResumeControlsPasses ? 'pass' : 'not_covered',
+    artifact_versions: { cli: stringValue(artifactVersions.cli) },
+    published_cli_execution: publishedCliExecution,
+    drain_command: drain,
+    drain_rollout_state: drainState,
+    drain_state_visible: drainStateVisible,
+    draining_worker_registration: drainingWorkerRegistration,
+    draining_worker_poll: drainingWorkerPoll,
+    draining_worker_claim_blocked: drainingWorkerClaimBlocked,
+    draining_worker_claim_count: drainingWorkerClaimCount,
+    resume_command: resume,
+    resume_rollout_state: resumeState,
+    resume_state_visible: resumeStateVisible,
+    local_product_source_checkouts_used: false,
+  };
+
+  return {
+    cli_operator_command_execution: commandExecutionPasses,
+    cli_install_evidence: cliInstallEvidence,
+    rollout_visibility_passes: rolloutVisibilityPasses,
+    drain_resume_controls_passes: drainResumeControlsPasses,
+    rollout_visibility_gap: cliEvidenceGap([
+      [commandExecutionPasses, 'one or more published dw commands did not complete successfully'],
+      [workerCohorts.includes(buildV1), `worker list/build-id output did not include v1 cohort ${buildV1}`],
+      [workerCohorts.includes(buildV2), `worker list/build-id output did not include v2 cohort ${buildV2}`],
+      [selectedNewStartBuildId === buildV2, `task-queue build-id output did not show ${buildV2} selected for new starts`],
+      [workflowRunCompatibility[v1RunId] === buildV1, `workflow show output did not show ${buildV1} for run ${v1RunId}`],
+      [workflowRunCompatibility[promotedRunId] === buildV2, `workflow show output did not show ${buildV2} for run ${promotedRunId}`],
+    ]),
+    drain_resume_gap: cliEvidenceGap([
+      [commandExecutionPasses, 'one or more published dw commands did not complete successfully'],
+      [drainStateVisible, `published dw drain output did not expose ${buildV1} as draining`],
+      [drainingWorkerClaimBlocked, `worker ${drainingWorkerId} did not return a worker_draining poll response without claiming a task`],
+      [resumeStateVisible, `published dw resume output did not expose ${buildV1} as active`],
+    ]),
+    rollout_visibility: rolloutVisibility,
+    drain_resume_controls: drainResumeControls,
+  };
+}
+
+async function resolvePublishedCliArtifact(artifactVersions, artifactSources) {
+  const configured = stringValue(process.env.DW_WV_CLI_EXECUTABLE)
+    || stringValue(process.env.DW_CLI_EXECUTABLE);
+  if (configured !== '') {
+    fs.accessSync(configured, fs.constants.X_OK);
+    const source = stringValue(artifactSources.cli) === '' || artifactSourceIsForbidden(artifactSources.cli)
+      ? 'official_cli_executable'
+      : stringValue(artifactSources.cli);
+    artifactSources.cli = source;
+
+    return {
+      executable: configured,
+      source,
+    };
+  }
+
+  const cliVersion = stringValue(artifactVersions.cli);
+  if (cliVersion === '') {
+    throw new Error('DW_CLI_VERSION is required to install the official CLI artifact.');
+  }
+
+  const installRoot = path.join(resultDir, 'cli');
+  const installDir = path.join(installRoot, 'bin');
+  const installerPath = path.join(installRoot, 'install.sh');
+  fs.mkdirSync(installDir, { recursive: true });
+  fs.mkdirSync(path.dirname(installerPath), { recursive: true });
+  const installerUrl = await downloadCliInstaller(cliVersion, installerPath);
+  const install = spawnSync('sh', [installerPath], {
+    cwd: installRoot,
+    env: {
+      ...process.env,
+      VERSION: cliVersion,
+      DURABLE_WORKFLOW_INSTALL_DIR: installDir,
+      DURABLE_WORKFLOW_BIN_NAME: 'dw',
+      DURABLE_WORKFLOW_INSTALL_VERIFY_ATTESTATIONS: '0',
+    },
+    encoding: 'utf8',
+    timeout: cliInstallTimeoutMs,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  writeTextIfNotEmpty(path.join(resultDir, 'worker-versioning-cli-install.log'), `${install.stdout ?? ''}${install.stderr ?? ''}`);
+  if (install.error || install.status !== 0) {
+    throw new Error(`official CLI installer failed for release ${cliVersion}: ${install.error?.message ?? `exit ${install.status}`}`);
+  }
+
+  const executable = path.join(installDir, 'dw');
+  fs.accessSync(executable, fs.constants.X_OK);
+  artifactSources.cli = installerUrl;
+  writeJson(path.join(resultDir, 'worker-versioning-cli-install.json'), {
+    schema: 'durable-workflow.v2.worker-versioning-runtime.cli-install',
+    cli_version: cliVersion,
+    installer_url: installerUrl,
+    install_dir: installDir,
+    executable,
+    source: installerUrl,
+    local_product_source_checkouts_used: false,
+  });
+
+  return {
+    executable,
+    source: installerUrl,
+  };
+}
+
+async function downloadCliInstaller(cliVersion, installerPath) {
+  const normalized = cliVersion.replace(/^v/, '');
+  const candidates = [
+    stringValue(process.env.DW_WV_CLI_INSTALLER_URL),
+    stringValue(process.env.DW_CLI_INSTALLER_URL),
+    `https://github.com/durable-workflow/cli/releases/download/${normalized}/install.sh`,
+    `https://github.com/durable-workflow/cli/releases/download/v${normalized}/install.sh`,
+  ].filter((value, index, values) => value !== '' && values.indexOf(value) === index);
+  const errors = [];
+
+  for (const url of candidates) {
+    try {
+      await downloadUrlToFile(url, installerPath);
+      return url;
+    } catch (error) {
+      errors.push(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  throw new Error(`official CLI installer is not downloadable for release ${cliVersion}; ${errors.join('; ')}`);
+}
+
+async function downloadUrlToFile(url, filePath) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const body = Buffer.from(await response.arrayBuffer());
+  if (body.length === 0) {
+    throw new Error('empty response');
+  }
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, body);
+}
+
+function runCliJson(executable, args, env) {
+  const output = runCliText(executable, args, env);
+  const stdout = stringValue(output.stdout);
+  if (stdout !== '') {
+    try {
+      output.json = JSON.parse(stdout);
+    } catch (error) {
+      output.json_parse_error = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  return output;
+}
+
+function runCliText(executable, args, env = process.env) {
+  const result = spawnSync(executable, args, {
+    cwd: runRoot,
+    env,
+    encoding: 'utf8',
+    timeout: cliCommandTimeoutMs,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const command = ['dw', ...args].map((arg) => (arg === env.DURABLE_WORKFLOW_AUTH_TOKEN ? '<redacted-token>' : arg));
+
+  return {
+    command,
+    exit_code: result.status,
+    signal: result.signal,
+    error: result.error?.message ?? null,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+  };
+}
+
+function cliCommandSucceeded(command) {
+  return command?.exit_code === 0 && !command?.error;
+}
+
+function selectedBuildIdFromRollout(snapshot) {
+  const selected = arrayValue(snapshot.build_ids)
+    .find((entry) => entry?.new_start_selected === true || entry?.newStartSelected === true);
+
+  return stringValue(selected?.build_id);
+}
+
+function cliCommandJson(evidence, field) {
+  return objectValue(objectValue(objectValue(evidence.drain_resume_controls)[field]).json);
+}
+
+function cliEvidenceGap(checks) {
+  return checks
+    .filter(([passes]) => !passes)
+    .map(([, reason]) => reason)
+    .join('; ');
+}
+
+function mergeCliInstallEvidence(evidence, cliInstallEvidence) {
+  const cliStatus = normalizedArtifactStatus(cliInstallEvidence?.status);
+  if (cliStatus !== 'pass') {
+    return evidence;
+  }
+
+  const merged = JSON.parse(JSON.stringify(evidence ?? {}));
+  const artifacts = Array.isArray(merged.artifacts) ? merged.artifacts : [];
+  const withoutCli = artifacts.filter((item) => canonicalArtifactName(stringValue(item?.artifact) || stringValue(item?.name)) !== 'cli');
+  merged.artifacts = [
+    ...withoutCli,
+    cliInstallEvidence,
+  ];
+
+  if (merged.local_product_source_checkouts_used === undefined) {
+    merged.local_product_source_checkouts_used = false;
+  }
+
+  return merged;
+}
+
+function outputSample(output) {
+  return stringValue(output).slice(0, 1000);
 }
 
 function countTasksForRun(polls, runId) {
