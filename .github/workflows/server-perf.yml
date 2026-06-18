@@ -86,7 +86,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Checkout workflow package
-        run: git clone --depth=1 --branch 2.0.0-alpha.202 https://github.com/durable-workflow/workflow.git workflow-package
+        run: git clone --depth=1 --branch 2.0.0-alpha.205 https://github.com/durable-workflow/workflow.git workflow-package
 
       - name: Run bounded-growth contract tests
         run: |
