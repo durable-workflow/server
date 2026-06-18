@@ -39,6 +39,13 @@ Environment overrides:
                               When unset, this runner attempts to generate a Python
                               replay/cache shard and a PHP/Python cross-language shard
                               from published PyPI and Packagist artifacts.
+  DW_WV_SERVER_BIND_HOST       Docker host interface for the published server port.
+                              Defaults to 0.0.0.0.
+  DW_WV_SERVER_CONNECT_HOST    Hostname/address used by the probe for the self-started
+                              server URL. Defaults to 127.0.0.1.
+  DW_WV_SERVER_READINESS_TIMEOUT_SECONDS
+                              Seconds to wait for the server namespace setup
+                              prerequisite. Defaults to 120.
   DW_WV_WATERLINE_URL         Existing published Waterline URL for the same run database.
                               When unset, a disposable Packagist-installed Waterline
                               app is booted against the server run database when
@@ -170,28 +177,163 @@ server.listen(0, '127.0.0.1', () => {
 NODE
 }
 
-wait_for_server() {
+wait_for_server_namespace_setup() {
   local url="$1"
+  local namespace="$2"
+  local token="$3"
+  local timeout_seconds="$4"
 
-  node - <<'NODE' "$url"
+  node - <<'NODE' "$url" "$namespace" "$token" "$timeout_seconds" "${DW_WV_BOOTSTRAP_NAMESPACE:-default}"
 const baseUrl = process.argv[2].replace(/\/+$/, '');
+const namespace = process.argv[3];
+const token = process.argv[4];
+const timeoutSeconds = Number.parseInt(process.argv[5] ?? '120', 10);
+const bootstrapNamespace = process.argv[6] || 'default';
 const readyUrl = `${baseUrl}/api/ready`;
+const namespacePath = `/api/namespaces/${encodeURIComponent(namespace)}`;
+const namespaceUrl = `${baseUrl}${namespacePath}`;
+const createNamespaceUrl = `${baseUrl}/api/namespaces`;
+const deadline = Date.now() + Math.max(1, Number.isFinite(timeoutSeconds) ? timeoutSeconds : 120) * 1000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+let lastError = '';
+
+function controlHeaders(currentNamespace) {
+  return {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token}`,
+    'X-Namespace': currentNamespace,
+    'X-Durable-Workflow-Control-Plane-Version': '2',
+  };
+}
+
+async function requestJson(method, url, headers, body, expectedStatuses) {
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch (error) {
+    lastError = formatFetchFailure(method, url, error);
+    return null;
+  }
+
+  const text = await response.text();
+  if (!expectedStatuses.includes(response.status)) {
+    lastError = `${method} ${url} returned ${response.status}: ${text.slice(0, 500)}`;
+    return null;
+  }
+
+  if (text.trim() === '') {
+    return { __http_status: response.status };
+  }
+
+  try {
+    const json = JSON.parse(text);
+    if (json && typeof json === 'object' && !Array.isArray(json)) {
+      json.__http_status = response.status;
+    }
+    return json;
+  } catch {
+    return { __http_status: response.status, raw_body: text };
+  }
+}
+
+function formatFetchFailure(method, url, error) {
+  const reason = error instanceof Error ? error.message : String(error);
+  const cause = fetchFailureCause(error);
+  const details = orderedUnique([reason, cause].filter((value) => value !== ''));
+
+  return `${method} ${url} failed: ${details.join('; ') || 'request failed'}`;
+}
+
+function fetchFailureCause(error) {
+  const cause = error && typeof error === 'object' ? error.cause : null;
+  if (!cause || typeof cause !== 'object') {
+    return '';
+  }
+
+  if (Array.isArray(cause.errors)) {
+    return cause.errors
+      .map((nested) => fetchFailureCause({ cause: nested }) || errorMessage(nested))
+      .filter(Boolean)
+      .join('; ');
+  }
+
+  const fields = [
+    stringValue(cause.code),
+    stringValue(cause.errno),
+    stringValue(cause.syscall),
+    stringValue(cause.address),
+    stringValue(cause.port),
+    errorMessage(cause),
+  ].filter(Boolean);
+
+  return orderedUnique(fields).join(' ');
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : stringValue(error);
+}
+
+function stringValue(value) {
+  return typeof value === 'string' ? value : String(value ?? '');
+}
+
+function orderedUnique(values) {
+  const seen = [];
+  for (const value of values) {
+    const normalized = stringValue(value).trim();
+    if (normalized !== '' && !seen.includes(normalized)) {
+      seen.push(normalized);
+    }
+  }
+
+  return seen;
+}
 
 (async () => {
-  for (let attempt = 0; attempt < 120; attempt += 1) {
-    try {
-      const response = await fetch(readyUrl);
-      if (response.ok) {
-        process.exit(0);
-      }
-    } catch {
+  while (Date.now() <= deadline) {
+    const ready = await requestJson('GET', readyUrl, controlHeaders(bootstrapNamespace), undefined, [200]);
+    if (!ready) {
+      await sleep(1000);
+      continue;
+    }
+
+    const show = await requestJson('GET', namespaceUrl, controlHeaders(namespace), undefined, [200, 404]);
+    if (!show) {
+      await sleep(1000);
+      continue;
+    }
+    if (show.__http_status === 200 && show.name === namespace) {
+      console.log(`published server namespace setup prerequisite satisfied at ${namespaceUrl}`);
+      process.exit(0);
+    }
+
+    const created = await requestJson(
+      'POST',
+      createNamespaceUrl,
+      controlHeaders(bootstrapNamespace),
+      {
+        name: namespace,
+        description: 'Worker-versioning conformance namespace',
+        retention_days: 7,
+      },
+      [201, 409],
+    );
+    if (created) {
+      console.log(`published server namespace setup prerequisite satisfied at ${namespaceUrl}`);
+      process.exit(0);
     }
 
     await sleep(1000);
   }
 
-  console.error(`published server did not become ready at ${readyUrl}`);
+  console.error(
+    `published server namespace setup did not become reachable before worker-versioning matrix; expected ${namespaceUrl}; readiness ${readyUrl}; last_error=${lastError || 'none'}`,
+  );
   process.exit(1);
 })();
 NODE
@@ -219,6 +361,7 @@ compose_cleanup_needed=0
 server_image="${DW_SERVER_IMAGE:-}"
 server_artifact_source="published_server_url"
 waterline_container=""
+namespace_setup_verified=0
 
 cleanup() {
   local code=$?
@@ -252,7 +395,50 @@ write_blocked_result() {
   DW_WV_RESULT_DIR="$result_dir" \
   DW_WV_RUN_ROOT="$run_root" \
   DW_WV_REPO_ROOT="$repo_root" \
+  DW_WV_SERVER_URL="$server_url" \
+  DW_WV_SERVER_ARTIFACT_SOURCE="$server_artifact_source" \
   node "$script_dir/worker-versioning-published-artifacts.mjs"
+}
+
+server_state_summary() {
+  local summary=""
+
+  if [[ "$server_started" == "1" || "$compose_cleanup_needed" == "1" ]]; then
+    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" ps >"$result_dir/docker-compose-ps.log" 2>&1 || true
+    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" logs server >"$result_dir/server.log" 2>&1 || true
+    summary="$(docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" ps server --format json 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c1-700 || true)"
+    if [[ -z "$summary" ]]; then
+      summary="$(docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" ps server 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c1-700 || true)"
+    fi
+  fi
+
+  if [[ -z "$summary" ]]; then
+    summary='server process/container state is not managed by this runner'
+  fi
+
+  printf '%s\n' "$summary"
+}
+
+verify_server_namespace_setup() {
+  local namespace="${DW_WV_NAMESPACE:-worker-versioning-conformance}"
+  local token="${DW_WV_AUTH_TOKEN:-dev-token}"
+  local timeout_seconds="${DW_WV_SERVER_READINESS_TIMEOUT_SECONDS:-120}"
+  local expected_url="${server_url%/}/api/namespaces/${namespace}"
+  local state
+
+  if [[ "$namespace_setup_verified" == "1" ]]; then
+    return 0
+  fi
+
+  if wait_for_server_namespace_setup "$server_url" "$namespace" "$token" "$timeout_seconds" >"$result_dir/server-namespace-setup.log" 2>&1; then
+    namespace_setup_verified=1
+    printf '%s\n' "$expected_url" >"$result_dir/server-namespace-url.txt"
+    return 0
+  fi
+
+  state="$(server_state_summary)"
+  write_blocked_result "published server namespace setup prerequisite failed before worker-versioning matrix; expected ${expected_url}; server state: ${state}; see server-namespace-setup.log, docker-compose-ps.log, and server.log"
+  exit 0
 }
 
 write_published_worker_fallback_evidence() {
@@ -386,7 +572,13 @@ if [[ -z "$server_url" ]]; then
   fi
 
   server_port="${DW_WV_SERVER_PORT:-$(free_port)}"
-  server_url="http://127.0.0.1:${server_port}"
+  server_bind_host="${DW_WV_SERVER_BIND_HOST:-0.0.0.0}"
+  server_connect_host="${DW_WV_SERVER_CONNECT_HOST:-127.0.0.1}"
+  server_url="http://${server_connect_host}:${server_port}"
+  compose_server_port="${server_port}"
+  if [[ -n "$server_bind_host" ]]; then
+    compose_server_port="${server_bind_host}:${server_port}"
+  fi
   if [[ -z "$server_image" ]]; then
     if [[ -z "${DW_SERVER_VERSION:-}" ]]; then
       write_blocked_result 'DW_SERVER_VERSION or DW_SERVER_IMAGE is required so worker-versioning conformance can run an exact published server artifact'
@@ -422,7 +614,7 @@ if [[ -z "$server_url" ]]; then
 
   docker image inspect "$server_image" >"$result_dir/docker-image-inspect.json" 2>&1 || true
 
-  if ! SERVER_PORT="$server_port" \
+  if ! SERVER_PORT="$compose_server_port" \
     DW_SERVER_IMAGE="$server_image" \
     DW_SERVER_TAG="${DW_SERVER_VERSION:-}" \
     DW_AUTH_TOKEN="${DW_WV_AUTH_TOKEN:-dev-token}" \
@@ -434,10 +626,7 @@ if [[ -z "$server_url" ]]; then
   fi
   server_started=1
 
-  if ! wait_for_server "$server_url"; then
-    write_blocked_result "published server did not become ready at ${server_url}/api/ready"
-    exit 0
-  fi
+  verify_server_namespace_setup
 fi
 
 export DW_WV_SERVER_URL="$server_url"
@@ -642,6 +831,7 @@ YAML
   printf '%s\n' "$waterline_url" > "$result_dir/waterline-url.txt"
 fi
 
+verify_server_namespace_setup
 run_published_worker_shard
 
 node "$script_dir/worker-versioning-published-artifacts.mjs"

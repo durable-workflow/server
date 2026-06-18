@@ -144,6 +144,31 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             $node,
             'direct Node host invocations must respect the same skip override as the shell handoff',
         );
+        foreach ([
+            'DW_WV_SERVER_BIND_HOST',
+            'DW_WV_SERVER_CONNECT_HOST',
+            'DW_WV_SERVER_READINESS_TIMEOUT_SECONDS',
+            'wait_for_server_namespace_setup',
+            'verify_server_namespace_setup',
+            'server_state_summary',
+            'server-namespace-setup.log',
+            'docker-compose-ps.log',
+            'server-namespace-url.txt',
+            'published server namespace setup prerequisite failed before worker-versioning matrix',
+            'SERVER_PORT="$compose_server_port"',
+        ] as $token) {
+            $this->assertStringContainsString($token, $shell);
+        }
+        $this->assertLessThan(
+            strpos($shell, 'run_published_worker_shard'),
+            strpos($shell, 'verify_server_namespace_setup'),
+            'the runner must verify/create the namespace before starting the broad published-worker matrix',
+        );
+        $this->assertLessThan(
+            strpos($node, 'maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions, artifactSources);'),
+            strpos($node, 'await ensureNamespace(serverUrl, namespace, bootstrapControlHeaders, controlHeaders);'),
+            'direct Node invocations must bootstrap namespace reachability before generating the published-worker shard',
+        );
         $this->assertStringContainsString(
             'DW_WV_PUBLISHED_WORKER_SHARD_TIMEOUT_SECONDS',
             $shell,
@@ -573,12 +598,16 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         }
 
         foreach ([
+            'DW_WV_SERVER_BIND_HOST',
+            'DW_WV_SERVER_CONNECT_HOST',
+            'DW_WV_SERVER_READINESS_TIMEOUT_SECONDS',
             'DW_WV_WATERLINE_URL',
             'DW_WV_WATERLINE_CONNECT_HOST',
             'DW_WV_WATERLINE_DB_HOST',
             'DW_WV_WATERLINE_DOCKER_NETWORK',
             'DW_WV_SKIP_WATERLINE_SHARD',
             'published_waterline_worker_workflow_view_capture',
+            'server-namespace-url.txt',
             'waterline-url.txt',
         ] as $token) {
             $this->assertStringContainsString($token, $manifest);
@@ -667,6 +696,93 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             $this->assertSame($reason, $result['scenario_results']['operator_visibility_surfaces']['observed_outputs']['blocked_reason']);
             $this->assertSame('non_passing_runner_blocked', $record['outcome']);
             $this->assertTrue($record['runner_blocked']);
+        } finally {
+            $this->removeDirectory($resultDir);
+            $this->removeDirectory($runRoot);
+        }
+    }
+
+    public function test_shell_fails_fast_when_namespace_setup_url_is_unreachable(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the worker-versioning shell handoff.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $suffix = bin2hex(random_bytes(4));
+        $resultDir = $repoRoot.'/storage/framework/worker-versioning-server-reachability-result-'.$suffix;
+        $runRoot = $repoRoot.'/storage/framework/worker-versioning-server-reachability-run-'.$suffix;
+        mkdir($resultDir, 0777, true);
+        mkdir($runRoot, 0777, true);
+
+        try {
+            $process = proc_open(
+                [
+                    'bash',
+                    $repoRoot.'/scripts/conformance/worker-versioning-published-artifacts.sh',
+                    '--result-dir',
+                    $resultDir,
+                    '--keep-run-root',
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_WV_RESULT_DIR' => $resultDir,
+                    'DW_WV_RUN_ROOT' => $runRoot,
+                    'DW_WV_SERVER_URL' => 'http://127.0.0.1:65534',
+                    'DW_WV_WATERLINE_URL' => 'http://127.0.0.1:65534',
+                    'DW_WV_SERVER_READINESS_TIMEOUT_SECONDS' => '1',
+                    'DW_WV_SKIP_PUBLISHED_WORKER_SHARD' => '1',
+                    'DW_SERVER_VERSION' => '0.2.422',
+                    'DW_CLI_VERSION' => '0.1.80',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.88',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.205',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.96',
+                    'DW_WV_SERVER_ARTIFACT_SOURCE' => 'published_server_url',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stdout.$stderr);
+
+            $resultPath = $resultDir.'/worker-versioning-result.json';
+            $this->assertFileExists($resultPath);
+            $this->assertFileExists($resultDir.'/server-namespace-setup.log');
+            $this->assertFileDoesNotExist($resultDir.'/published-worker-shard-direct.log');
+
+            $result = json_decode((string) file_get_contents($resultPath), true, 512, JSON_THROW_ON_ERROR);
+            $reason = $result['scenario_results']['worker_registration_build_ids']['observed_outputs']['blocked_reason'];
+
+            $this->assertSame('non_passing_runner_blocked', $result['outcome']);
+            $this->assertTrue($result['runner_blocked']);
+            $this->assertStringContainsString(
+                'published server namespace setup prerequisite failed before worker-versioning matrix',
+                $reason,
+            );
+            $this->assertStringContainsString(
+                'expected http://127.0.0.1:65534/api/namespaces/worker-versioning-conformance',
+                $reason,
+            );
+            $this->assertStringContainsString(
+                'server process/container state is not managed by this runner',
+                $reason,
+            );
+            $this->assertStringContainsString(
+                'published server namespace setup did not become reachable before worker-versioning matrix',
+                (string) file_get_contents($resultDir.'/server-namespace-setup.log'),
+            );
         } finally {
             $this->removeDirectory($resultDir);
             $this->removeDirectory($runRoot);

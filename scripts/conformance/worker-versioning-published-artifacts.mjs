@@ -135,9 +135,6 @@ async function main() {
     return;
   }
 
-  maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions, artifactSources);
-  const publishedWorkerEvidence = publishedWorkerExecutionEvidence(artifactVersions, artifactSources);
-
   const token = process.env.DW_WV_AUTH_TOKEN ?? 'dev-token';
   const namespace = process.env.DW_WV_NAMESPACE ?? 'worker-versioning-conformance';
   const suffix = runSuffix();
@@ -166,6 +163,8 @@ async function main() {
   };
 
   await ensureNamespace(serverUrl, namespace, bootstrapControlHeaders, controlHeaders);
+  maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions, artifactSources);
+  const publishedWorkerEvidence = publishedWorkerExecutionEvidence(artifactVersions, artifactSources);
 
   const topology = {
     namespace,
