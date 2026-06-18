@@ -34,8 +34,8 @@ Environment overrides:
                               and Waterline installs from published artifact channels.
   DW_WV_PUBLISHED_WORKER_EVIDENCE
                               Optional JSON report from a host topology that executed
-                              replay/cache/no-compatible/cross-language/adversarial
-                              cells with published workers.
+                              registration/replay/cache/no-compatible/cross-language/
+                              adversarial cells with published workers.
                               When unset, this runner attempts to generate a Python
                               replay/cache shard and a PHP/Python cross-language shard
                               from published PyPI and Packagist artifacts.

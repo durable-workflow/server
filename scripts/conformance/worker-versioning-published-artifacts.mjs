@@ -581,14 +581,53 @@ async function main() {
     worker_execution_mode: SERVER_PROTOCOL_PROBE,
     published_artifact_worker_execution: false,
   };
-  addNotCovered('worker_registration_build_ids', workerRegistrationOutputs, {
-    scenario_id: 'worker_registration_build_ids',
-    owning_surface: 'conformance_harness',
-    artifact_versions: artifactVersions,
-    observed_behavior: 'The runner registered worker records through the server HTTP protocol but did not execute published workflow-php, sdk-python, or CLI worker artifacts for registration evidence.',
-    expected_behavior: 'Worker registration build-id coverage is produced by live published worker artifacts on the same task queue and verified through public worker-list and task-queue build-id surfaces.',
-    next_acceptance_criterion: 'run published workflow-php and sdk-python worker processes and record their registration responses plus active build-id cohorts before marking this scenario pass',
-  });
+  const publishedRegistrationEvidence = workerRegistrationPublishedWorkerEvidenceResult(publishedWorkerEvidence);
+  const publishedRegistrationOutputs = mergeScenarioOutputs(
+    workerRegistrationOutputs,
+    publishedRegistrationEvidence.outputs,
+  );
+  if (publishedRegistrationEvidence.passes) {
+    addPass('worker_registration_build_ids', publishedRegistrationOutputs);
+  } else if (publishedRegistrationEvidence.worker_executed) {
+    addFail('worker_registration_build_ids', publishedRegistrationOutputs, {
+      scenario_id: 'worker_registration_build_ids',
+      owning_surface: publishedRegistrationEvidence.public_surfaces_cover_build_ids
+        ? 'conformance_harness'
+        : 'server',
+      artifact_versions: artifactVersions,
+      observed_behavior: 'Published PHP/Python worker registration evidence did not prove registration responses and active build-id cohorts through both public worker-list and task-queue build-id surfaces.',
+      expected_behavior: 'Worker registration build-id coverage is produced by live published worker artifacts on the same task queue and verified through public worker-list and task-queue build-id surfaces.',
+      next_acceptance_criterion: 'rerun the published worker-versioning shard and record PHP and Python registration responses plus positive active build-id cohorts in both public surfaces',
+      missing_registration_evidence: publishedRegistrationEvidence.missing,
+      worker_list_build_ids: publishedRegistrationEvidence.worker_list_build_ids,
+      task_queue_build_ids: publishedRegistrationEvidence.task_queue_build_ids,
+      active_worker_counts_per_cohort: publishedRegistrationEvidence.active_worker_counts_per_cohort,
+    });
+  } else {
+    addNotCovered('worker_registration_build_ids', workerRegistrationOutputs, {
+      scenario_id: 'worker_registration_build_ids',
+      owning_surface: 'conformance_harness',
+      artifact_versions: artifactVersions,
+      observed_behavior: 'The runner registered worker records through the server HTTP protocol but did not execute published workflow-php, sdk-python, or CLI worker artifacts for registration evidence.',
+      expected_behavior: 'Worker registration build-id coverage is produced by live published worker artifacts on the same task queue and verified through public worker-list and task-queue build-id surfaces.',
+      next_acceptance_criterion: 'run published workflow-php and sdk-python worker processes and record their registration responses plus active build-id cohorts before marking this scenario pass',
+    });
+  }
+  if (publishedRegistrationEvidence.worker_executed) {
+    runtimeMatrix.runtimes = unique([
+      ...runtimeMatrix.runtimes,
+      PUBLISHED_CROSS_LANGUAGE_WORKER_EXECUTION,
+    ]);
+    runtimeMatrix.client_paths = unique([
+      ...runtimeMatrix.client_paths,
+      'published workflow-php worker registration client',
+      'published sdk-python worker registration client',
+    ]);
+    runtimeMatrix.uncovered_required_runtimes = runtimeMatrix.uncovered_required_runtimes
+      .filter((runtime) => !['workflow-php', 'sdk-python'].includes(runtime));
+    runtimeMatrix.uncovered_required_client_paths = runtimeMatrix.uncovered_required_client_paths
+      .filter((clientPath) => !['sdk-python', 'workflow-php-sdk'].includes(clientPath));
+  }
   const operatorRolloutOutputs = {
     worker_cohorts: unique((workerList.workers ?? []).map((worker) => worker.build_id).filter(Boolean)),
     rollout_state: buildIds,
@@ -1936,6 +1975,279 @@ function focusedCrossLanguageNotCoveredFinding(publishedFindings, artifactVersio
   };
 }
 
+export function workerRegistrationPublishedWorkerEvidenceResult(publishedWorkerEvidence) {
+  const outputs = publishedWorkerScenarioOutputs(
+    publishedWorkerEvidence,
+    'worker_registration_build_ids',
+  );
+  const entries = normalizedWorkerRegistrationEntries(outputs);
+  const phpEntry = entries.find((entry) => entry.artifact === 'workflow-php') ?? null;
+  const pythonEntry = entries.find((entry) => entry.artifact === 'sdk-python') ?? null;
+  const requiredEntries = [phpEntry, pythonEntry].filter(Boolean);
+  const requiredBuildIds = unique(requiredEntries.map((entry) => entry.build_id).filter(Boolean));
+  const taskQueues = unique(requiredEntries.map((entry) => entry.task_queue).filter(Boolean));
+  const workerListBuildIds = workerListBuildIdsFromOutputs(outputs);
+  const taskQueueBuildIds = taskQueueBuildIdsFromOutputs(outputs);
+  const activeWorkerCounts = activeWorkerCountsFromOutputs(outputs);
+  const workerExecuted = publishedWorkerArtifactsExecuted(
+    outputs,
+    ['sdk-python', 'workflow-php'],
+    true,
+  );
+  const scenarioStatusPasses = publishedWorkerScenarioPasses(
+    outputs,
+    ['sdk-python', 'workflow-php'],
+    true,
+  );
+  const responsesRetainBuildIds = requiredEntries.length === 2
+    && requiredEntries.every((entry) => (
+      entry.response_build_id !== ''
+      && entry.build_id !== ''
+      && entry.response_build_id === entry.build_id
+    ));
+  const sameTaskQueue = taskQueues.length === 1;
+  const workerListCoversBuildIds = requiredBuildIds.length === 2
+    && requiredBuildIds.every((buildId) => workerListBuildIds.includes(buildId));
+  const taskQueueCoversBuildIds = requiredBuildIds.length === 2
+    && requiredBuildIds.every((buildId) => taskQueueBuildIds.includes(buildId));
+  const activeCountsCoverBuildIds = requiredBuildIds.length === 2
+    && requiredBuildIds.every((buildId) => (numberValue(activeWorkerCounts[buildId]) ?? 0) > 0);
+  const publicSurfacesCoverBuildIds = workerListCoversBuildIds
+    && taskQueueCoversBuildIds
+    && activeCountsCoverBuildIds;
+  const missing = [];
+
+  if (!workerExecuted) {
+    missing.push('published_artifact_worker_execution');
+  }
+  if (!phpEntry) {
+    missing.push('workflow_php_registration_response');
+  }
+  if (!pythonEntry) {
+    missing.push('sdk_python_registration_response');
+  }
+  if (!responsesRetainBuildIds) {
+    missing.push('registration_response_build_ids');
+  }
+  if (!sameTaskQueue) {
+    missing.push('same_task_queue');
+  }
+  if (!workerListCoversBuildIds) {
+    missing.push('worker_list_build_ids');
+  }
+  if (!taskQueueCoversBuildIds) {
+    missing.push('task_queue_build_ids');
+  }
+  if (!activeCountsCoverBuildIds) {
+    missing.push('active_worker_counts_per_cohort');
+  }
+
+  const normalizedOutputs = {
+    ...outputs,
+    published_worker_registration_entries: entries,
+    worker_list_build_ids: workerListBuildIds,
+    task_queue_build_ids: taskQueueBuildIds,
+    active_worker_counts_per_cohort: activeWorkerCounts,
+    public_outcome: {
+      ...firstObjectValue(outputs.public_outcome, outputs.publicOutcome),
+      verification_surface: 'published worker registration responses plus worker-list and task-queue build-id APIs',
+      passed: scenarioStatusPasses
+        && responsesRetainBuildIds
+        && sameTaskQueue
+        && publicSurfacesCoverBuildIds,
+      missing,
+    },
+  };
+  if (sameTaskQueue) {
+    normalizedOutputs.task_queue = taskQueues[0];
+  }
+
+  return {
+    outputs: normalizedOutputs,
+    worker_executed: workerExecuted,
+    registration_entries: entries,
+    worker_list_build_ids: workerListBuildIds,
+    task_queue_build_ids: taskQueueBuildIds,
+    active_worker_counts_per_cohort: activeWorkerCounts,
+    public_surfaces_cover_build_ids: publicSurfacesCoverBuildIds,
+    responses_retain_build_ids: responsesRetainBuildIds,
+    same_task_queue: sameTaskQueue,
+    missing,
+    passes: scenarioStatusPasses
+      && responsesRetainBuildIds
+      && sameTaskQueue
+      && publicSurfacesCoverBuildIds,
+  };
+}
+
+function normalizedWorkerRegistrationEntries(outputs) {
+  const registeredBuildIds = firstObjectValue(
+    outputs.registered_build_ids,
+    outputs.registeredBuildIds,
+  );
+  const responses = firstObjectValue(
+    outputs.worker_registration_responses,
+    outputs.workerRegistrationResponses,
+    outputs.registration_responses,
+    outputs.registrationResponses,
+  );
+  const entries = [];
+
+  for (const [key, value] of Object.entries(responses)) {
+    const responseEntry = objectValue(value);
+    if (Object.keys(responseEntry).length === 0) {
+      continue;
+    }
+
+    const rawResponse = registrationResponseObject(responseEntry);
+    const artifact = canonicalArtifactName(
+      stringValue(responseEntry.artifact)
+        || stringValue(responseEntry.name)
+        || stringValue(responseEntry.runtime)
+        || stringValue(responseEntry.language)
+        || key,
+    );
+    const buildId = stringValue(responseEntry.build_id)
+      || stringValue(responseEntry.buildId)
+      || stringValue(responseEntry.requested_build_id)
+      || stringValue(responseEntry.requestedBuildId)
+      || stringValue(registeredBuildIds[key])
+      || stringValue(rawResponse.build_id)
+      || stringValue(rawResponse.buildId)
+      || stringValue(rawResponse.worker?.build_id)
+      || stringValue(rawResponse.worker?.buildId);
+    const responseBuildId = stringValue(rawResponse.build_id)
+      || stringValue(rawResponse.buildId)
+      || stringValue(rawResponse.worker?.build_id)
+      || stringValue(rawResponse.worker?.buildId);
+    const workerId = stringValue(responseEntry.worker_id)
+      || stringValue(responseEntry.workerId)
+      || stringValue(rawResponse.worker_id)
+      || stringValue(rawResponse.workerId)
+      || stringValue(rawResponse.worker?.worker_id)
+      || stringValue(rawResponse.worker?.workerId)
+      || key;
+    const taskQueue = stringValue(responseEntry.task_queue)
+      || stringValue(responseEntry.taskQueue)
+      || stringValue(rawResponse.task_queue)
+      || stringValue(rawResponse.taskQueue)
+      || stringValue(rawResponse.worker?.task_queue)
+      || stringValue(rawResponse.worker?.taskQueue)
+      || stringValue(outputs.task_queue)
+      || stringValue(outputs.taskQueue);
+
+    entries.push({
+      key,
+      artifact,
+      worker_id: workerId,
+      task_queue: taskQueue,
+      build_id: buildId,
+      response_build_id: responseBuildId,
+      response: rawResponse,
+    });
+  }
+
+  return entries.filter((entry) => ['workflow-php', 'sdk-python'].includes(entry.artifact));
+}
+
+function registrationResponseObject(entry) {
+  return firstObjectValue(
+    entry.response,
+    entry.registration_response,
+    entry.registrationResponse,
+    entry.raw_response?.response,
+    entry.rawResponse?.response,
+  );
+}
+
+function workerListBuildIdsFromOutputs(outputs) {
+  const values = [
+    ...buildIdValuesFromSurface(outputs.worker_list_build_ids),
+    ...buildIdValuesFromSurface(outputs.workerListBuildIds),
+  ];
+  for (const surface of [
+    outputs.worker_list,
+    outputs.workerList,
+    outputs.worker_list_surface,
+    outputs.workerListSurface,
+  ]) {
+    for (const worker of arrayValue(objectValue(surface).workers)) {
+      const buildId = stringValue(worker?.build_id) || stringValue(worker?.buildId);
+      if (buildId) {
+        values.push(buildId);
+      }
+    }
+  }
+
+  return unique(values);
+}
+
+function taskQueueBuildIdsFromOutputs(outputs) {
+  return unique([
+    ...buildIdValuesFromSurface(outputs.task_queue_build_ids),
+    ...buildIdValuesFromSurface(outputs.taskQueueBuildIds),
+    ...buildIdValuesFromSurface(outputs.task_queue_build_id_surface),
+    ...buildIdValuesFromSurface(outputs.taskQueueBuildIdSurface),
+  ]);
+}
+
+function activeWorkerCountsFromOutputs(outputs) {
+  const counts = {};
+  for (const [buildId, count] of Object.entries(firstObjectValue(
+    outputs.active_worker_counts_per_cohort,
+    outputs.activeWorkerCountsPerCohort,
+  ))) {
+    if (stringValue(buildId) !== '') {
+      counts[buildId] = numberValue(count) ?? 0;
+    }
+  }
+
+  for (const surface of [
+    outputs.task_queue_build_ids,
+    outputs.taskQueueBuildIds,
+    outputs.task_queue_build_id_surface,
+    outputs.taskQueueBuildIdSurface,
+  ]) {
+    for (const entry of buildIdEntriesFromSurface(surface)) {
+      const buildId = stringValue(entry?.build_id) || stringValue(entry?.buildId);
+      if (buildId) {
+        counts[buildId] = numberValue(entry?.active_worker_count ?? entry?.activeWorkerCount) ?? 0;
+      }
+    }
+  }
+
+  return counts;
+}
+
+function buildIdValuesFromSurface(surface) {
+  return buildIdEntriesFromSurface(surface)
+    .map((entry) => (
+      typeof entry === 'string'
+        ? entry
+        : stringValue(entry?.build_id) || stringValue(entry?.buildId)
+    ))
+    .filter(Boolean);
+}
+
+function buildIdEntriesFromSurface(surface) {
+  if (Array.isArray(surface)) {
+    return surface;
+  }
+
+  const object = objectValue(surface);
+  if (Array.isArray(object.build_ids)) {
+    return object.build_ids;
+  }
+  if (Array.isArray(object.buildIds)) {
+    return object.buildIds;
+  }
+  if (stringValue(object.build_id) || stringValue(object.buildId)) {
+    return [object];
+  }
+
+  return [];
+}
+
 export function noCompatiblePublishedWorkerEvidenceResult(publishedWorkerEvidence) {
   const outputs = publishedWorkerScenarioOutputs(
     publishedWorkerEvidence,
@@ -2434,6 +2746,10 @@ function publishedWorkerScenarioPasses(outputs, requiredArtifacts, requireAllArt
     return false;
   }
 
+  return publishedWorkerArtifactsExecuted(outputs, requiredArtifacts, requireAllArtifacts);
+}
+
+function publishedWorkerArtifactsExecuted(outputs, requiredArtifacts, requireAllArtifacts) {
   if (outputs?.supplied_shard_local_product_source_checkouts_used !== false) {
     return false;
   }
@@ -2700,6 +3016,16 @@ function topLevelPublishedWorkerScenarios(evidence) {
   }
 
   const aliases = {
+    worker_registration_build_ids: [
+      'worker_registration_build_ids',
+      'workerRegistrationBuildIds',
+      'worker_registration',
+      'workerRegistration',
+      'published_worker_registration',
+      'publishedWorkerRegistration',
+      'published_worker_registrations',
+      'publishedWorkerRegistrations',
+    ],
     no_compatible_worker_behavior: [
       'no_compatible_worker_behavior',
       'noCompatibleWorkerBehavior',

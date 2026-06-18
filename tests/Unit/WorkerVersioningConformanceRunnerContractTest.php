@@ -35,6 +35,11 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'workflow_runs',
             'rollout_state',
             'public_outcome',
+            'worker_registration_build_ids',
+            'worker_registration_responses',
+            'worker_list_surface',
+            'task_queue_build_id_surface',
+            'published_worker_registration_entries',
         ] as $field) {
             $this->assertStringContainsString($field, $node);
             $this->assertStringContainsString($field, $publishedWorkers);
@@ -80,7 +85,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'the shell handoff must document the published worker evidence input',
         );
         $this->assertStringContainsString(
-            'replay/cache/no-compatible/cross-language/adversarial',
+            'registration/replay/cache/no-compatible/cross-language/',
             $shell,
             'the shell handoff must document every published-worker evidence cell required by the gate',
         );
@@ -98,6 +103,21 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'publishedWorkerScenarioFindings(',
             $node,
             'the aggregate result must preserve focused findings from the published PHP/Python worker shard',
+        );
+        $this->assertStringContainsString(
+            'workerRegistrationPublishedWorkerEvidenceResult(',
+            $node,
+            'the worker registration cell must pass only through parsed published PHP/Python registration evidence',
+        );
+        $this->assertStringContainsString(
+            'const registrationWorkerList = await workerList();',
+            $publishedWorkers,
+            'the published worker shard must capture the public worker-list surface on the same task queue as registration',
+        );
+        $this->assertStringContainsString(
+            'const registrationBuildIds = await taskQueueBuildIds();',
+            $publishedWorkers,
+            'the published worker shard must capture the public task-queue build-id surface on the same task queue as registration',
         );
         $this->assertStringContainsString(
             'focusedCrossLanguageNotCoveredFinding(',
@@ -186,26 +206,33 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'pythonReplay = await runPythonReplayShardSafely(python);',
             'pythonNoCompatible = await runPythonNoCompatibleShardSafely(python);',
             'pythonAdversarial = await runPythonAdversarialShardSafely(python);',
-            'writeShard(pythonScenarioShard(python, shardRoot, pythonReplay, pythonNoCompatible, pythonAdversarial));',
+            'const publishedPhpPythonShard = {',
+            'const baseShard = writeShard(publishedPhpPythonShard);',
+            'const supplementalShard = pythonScenarioShard(',
+            'writeJson(outputPath, mergeShardValues(baseShard, supplementalShard));',
             "if (!workflowPhpVersion) crossLanguageMissing.push('DW_WORKFLOW_PHP_VERSION');",
             "if (!commandExists('docker')) crossLanguageMissing.push('docker');",
             'published PHP/Python cross-language worker shard prerequisites are missing',
             'function emptySupplementalShard()',
             'function pythonScenarioShard(python, shardRoot, pythonReplay, pythonNoCompatible, pythonAdversarial)',
+            'export function mergeShardValues(existing, value)',
         ] as $token) {
             $this->assertStringContainsString($token, $publishedWorkers);
         }
 
-        $crossLanguageEvidenceWrite = strpos(
-            $publishedWorkers,
-            "scenario_results: {\n      [CROSS_LANGUAGE_SCENARIO]: {",
-        );
-        $pythonEvidenceWrite = strpos($publishedWorkers, 'writeShard(pythonScenarioShard(');
+        $registrationEvidence = strpos($publishedWorkers, '[REGISTRATION_SCENARIO]: {');
+        $crossLanguageEvidence = strpos($publishedWorkers, '[CROSS_LANGUAGE_SCENARIO]: {');
+        $baseEvidenceWrite = strpos($publishedWorkers, 'const baseShard = writeShard(publishedPhpPythonShard);');
+        $pythonSupplementalRun = strpos($publishedWorkers, 'pythonReplay = await runPythonReplayShardSafely(python);');
+        $finalEvidenceWrite = strpos($publishedWorkers, 'writeJson(outputPath, mergeShardValues(baseShard, supplementalShard));');
         $crossLanguagePrerequisiteGate = strpos($publishedWorkers, 'const crossLanguageMissing = [];');
         $phpInstall = strpos($publishedWorkers, 'const php = installPhpWorker(shardRoot);');
 
-        $this->assertIsInt($crossLanguageEvidenceWrite);
-        $this->assertIsInt($pythonEvidenceWrite);
+        $this->assertIsInt($registrationEvidence);
+        $this->assertIsInt($crossLanguageEvidence);
+        $this->assertIsInt($baseEvidenceWrite);
+        $this->assertIsInt($pythonSupplementalRun);
+        $this->assertIsInt($finalEvidenceWrite);
         $this->assertIsInt($crossLanguagePrerequisiteGate);
         $this->assertIsInt($phpInstall);
         $this->assertLessThan(
@@ -214,15 +241,191 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'PHP installation must remain scoped to the cross-language cell after prerequisite checks.',
         );
         $this->assertLessThan(
-            $crossLanguageEvidenceWrite,
+            $registrationEvidence,
             $phpInstall,
-            'Published PHP/Python cross-language evidence must be written before supplemental Python-only cells start.',
+            'Published PHP/Python registration evidence must be assembled after published PHP installation is available.',
         );
         $this->assertLessThan(
-            $pythonEvidenceWrite,
-            $crossLanguageEvidenceWrite,
-            'Supplemental Python replay/no-compatible/adversarial evidence must append after the acceptance-critical cross-language shard.',
+            $crossLanguageEvidence,
+            $registrationEvidence,
+            'Published registration and cross-language scenarios must be part of the same base shard.',
         );
+        $this->assertLessThan(
+            $pythonSupplementalRun,
+            $baseEvidenceWrite,
+            'Published PHP/Python evidence must be written before supplemental Python-only cells start.',
+        );
+        $this->assertLessThan(
+            $finalEvidenceWrite,
+            $pythonSupplementalRun,
+            'Supplemental Python replay/no-compatible/adversarial evidence must be merged into the final shard after it runs.',
+        );
+    }
+
+    public function test_published_worker_final_shard_keeps_registration_scenario_after_supplemental_merge(): void
+    {
+        $finalShard = $this->mergePublishedWorkerShardValues(
+            [
+                'schema' => 'durable-workflow.v2.worker-versioning-runtime.published-worker-execution-evidence',
+                'local_product_source_checkouts_used' => false,
+                'artifact_versions' => [
+                    'server' => '0.2.416',
+                    'sdk-python' => '0.4.88',
+                    'workflow-php' => '2.0.0-alpha.204',
+                ],
+                'artifact_sources' => [
+                    'server' => 'published_server_url',
+                    'sdk-python' => 'pypi_release',
+                    'workflow-php' => 'packagist_release',
+                ],
+                'topology' => [
+                    'namespace' => 'worker-versioning-conformance',
+                    'task_queue' => 'worker-versioning-shared',
+                    'workers' => [
+                        ['worker_id' => 'php-v1', 'runtime' => 'php', 'build_id' => 'php-build-v1'],
+                        ['worker_id' => 'python-v2', 'runtime' => 'python', 'build_id' => 'python-build-v2'],
+                    ],
+                ],
+                'scenario_results' => [
+                    'worker_registration_build_ids' => [
+                        'scenario_id' => 'worker_registration_build_ids',
+                        'status' => 'pass',
+                        'observed_outputs' => [
+                            'task_queue' => 'worker-versioning-shared',
+                            'worker_registration_responses' => [
+                                'workflow_php' => [
+                                    'artifact' => 'workflow-php',
+                                    'worker_id' => 'php-v1',
+                                    'task_queue' => 'worker-versioning-shared',
+                                    'build_id' => 'php-build-v1',
+                                    'response' => ['build_id' => 'php-build-v1'],
+                                ],
+                                'sdk_python' => [
+                                    'artifact' => 'sdk-python',
+                                    'worker_id' => 'python-v2',
+                                    'task_queue' => 'worker-versioning-shared',
+                                    'build_id' => 'python-build-v2',
+                                    'response' => ['build_id' => 'python-build-v2'],
+                                ],
+                            ],
+                            'worker_list_build_ids' => ['php-build-v1', 'python-build-v2'],
+                            'task_queue_build_ids' => ['php-build-v1', 'python-build-v2'],
+                            'active_worker_counts_per_cohort' => [
+                                'php-build-v1' => 1,
+                                'python-build-v2' => 1,
+                            ],
+                            'worker_list_surface' => [
+                                'workers' => [
+                                    ['worker_id' => 'php-v1', 'build_id' => 'php-build-v1'],
+                                    ['worker_id' => 'python-v2', 'build_id' => 'python-build-v2'],
+                                ],
+                            ],
+                            'task_queue_build_id_surface' => [
+                                'build_ids' => [
+                                    ['build_id' => 'php-build-v1', 'active_worker_count' => 1],
+                                    ['build_id' => 'python-build-v2', 'active_worker_count' => 1],
+                                ],
+                            ],
+                            'published_artifact_worker_execution' => [
+                                'local_product_source_checkouts_used' => false,
+                                'artifacts' => [
+                                    [
+                                        'artifact' => 'workflow-php',
+                                        'version' => '2.0.0-alpha.204',
+                                        'source' => 'packagist_release',
+                                        'status' => 'pass',
+                                    ],
+                                    [
+                                        'artifact' => 'sdk-python',
+                                        'version' => '0.4.88',
+                                        'source' => 'pypi_release',
+                                        'status' => 'pass',
+                                    ],
+                                ],
+                            ],
+                            'local_product_source_checkouts_used' => false,
+                        ],
+                        'linked_findings' => [],
+                    ],
+                    'cross_language_php_python_pinning' => [
+                        'scenario_id' => 'cross_language_php_python_pinning',
+                        'status' => 'pass',
+                        'observed_outputs' => [
+                            'local_product_source_checkouts_used' => false,
+                            'published_artifact_worker_execution' => [
+                                'local_product_source_checkouts_used' => false,
+                                'artifacts' => [
+                                    [
+                                        'artifact' => 'workflow-php',
+                                        'version' => '2.0.0-alpha.204',
+                                        'source' => 'packagist_release',
+                                        'status' => 'pass',
+                                    ],
+                                    [
+                                        'artifact' => 'sdk-python',
+                                        'version' => '0.4.88',
+                                        'source' => 'pypi_release',
+                                        'status' => 'pass',
+                                    ],
+                                ],
+                            ],
+                        ],
+                        'linked_findings' => [],
+                    ],
+                ],
+                'findings' => [],
+                'logs' => ['php_install' => 'php-install.log'],
+            ],
+            [
+                'schema' => 'durable-workflow.v2.worker-versioning-runtime.published-worker-execution-evidence',
+                'local_product_source_checkouts_used' => false,
+                'topology' => [
+                    'namespace' => 'worker-versioning-conformance',
+                    'task_queue' => 'worker-versioning-shared',
+                    'workers' => [
+                        ['worker_id' => 'python-replay-v1', 'runtime' => 'python', 'build_id' => 'python-replay-build-v1'],
+                    ],
+                ],
+                'scenario_results' => [
+                    'replay_only_by_compatible_workers' => [
+                        'scenario_id' => 'replay_only_by_compatible_workers',
+                        'status' => 'not_covered',
+                        'observed_outputs' => [
+                            'worker_execution_mode' => 'published_python_worker_protocol_client',
+                            'local_product_source_checkouts_used' => false,
+                        ],
+                        'linked_findings' => [],
+                    ],
+                ],
+                'findings' => [],
+                'logs' => ['python_install' => 'python-install.log'],
+            ],
+        );
+
+        $this->assertArrayHasKey('worker_registration_build_ids', $finalShard['scenario_results']);
+        $this->assertArrayHasKey('cross_language_php_python_pinning', $finalShard['scenario_results']);
+        $this->assertArrayHasKey('replay_only_by_compatible_workers', $finalShard['scenario_results']);
+        $this->assertSame(
+            'pass',
+            $finalShard['scenario_results']['worker_registration_build_ids']['status'],
+        );
+        $registrationOutputs = $finalShard['scenario_results']['worker_registration_build_ids']['observed_outputs'];
+        $this->assertSame('worker-versioning-shared', $registrationOutputs['task_queue']);
+        $this->assertSame(['php-build-v1', 'python-build-v2'], $registrationOutputs['worker_list_build_ids']);
+        $this->assertSame(['php-build-v1', 'python-build-v2'], $registrationOutputs['task_queue_build_ids']);
+        $this->assertSame(1, $registrationOutputs['active_worker_counts_per_cohort']['php-build-v1']);
+        $this->assertSame(1, $registrationOutputs['active_worker_counts_per_cohort']['python-build-v2']);
+        $this->assertSame(
+            'php-build-v1',
+            $registrationOutputs['worker_registration_responses']['workflow_php']['response']['build_id'],
+        );
+        $this->assertSame(
+            'python-build-v2',
+            $registrationOutputs['worker_registration_responses']['sdk_python']['response']['build_id'],
+        );
+        $this->assertCount(3, $finalShard['topology']['workers']);
+        $this->assertSame('php-install.log', $finalShard['logs']['php_install']);
+        $this->assertSame('python-install.log', $finalShard['logs']['python_install']);
     }
 
     public function test_published_artifact_install_cell_requires_install_evidence(): void
@@ -657,6 +860,162 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             0,
             $result['outputs']['cross_language_delivery']['cells'][0]['incompatible_delivery_count'],
         );
+    }
+
+    public function test_worker_registration_published_shard_accepts_public_surface_evidence(): void
+    {
+        $result = $this->evaluateWorkerRegistrationPublishedWorkerEvidence([
+            'localProductSourceCheckoutsUsed' => false,
+            'suppliedShardLocalProductSourceCheckoutsUsed' => false,
+            'source_path' => 'published-worker-execution-evidence.json',
+            'scenarioResults' => [
+                [
+                    'id' => 'worker_registration_build_ids',
+                    'status' => 'pass',
+                    'observedOutputs' => [
+                        'taskQueue' => 'worker-versioning-shared',
+                        'localProductSourceCheckoutsUsed' => false,
+                        'workerRegistrationResponses' => [
+                            'workflowPhp' => [
+                                'artifact' => 'workflow-php',
+                                'workerId' => 'php-v1',
+                                'taskQueue' => 'worker-versioning-shared',
+                                'buildId' => 'php-build-v1',
+                                'response' => [
+                                    'workerId' => 'php-v1',
+                                    'taskQueue' => 'worker-versioning-shared',
+                                    'buildId' => 'php-build-v1',
+                                ],
+                            ],
+                            'sdkPython' => [
+                                'artifact' => 'sdk-python',
+                                'workerId' => 'python-v2',
+                                'taskQueue' => 'worker-versioning-shared',
+                                'buildId' => 'python-build-v2',
+                                'response' => [
+                                    'workerId' => 'python-v2',
+                                    'taskQueue' => 'worker-versioning-shared',
+                                    'buildId' => 'python-build-v2',
+                                ],
+                            ],
+                        ],
+                        'workerListSurface' => [
+                            'workers' => [
+                                ['workerId' => 'php-v1', 'buildId' => 'php-build-v1'],
+                                ['workerId' => 'python-v2', 'buildId' => 'python-build-v2'],
+                            ],
+                        ],
+                        'taskQueueBuildIdSurface' => [
+                            'buildIds' => [
+                                ['buildId' => 'php-build-v1', 'activeWorkerCount' => 1],
+                                ['buildId' => 'python-build-v2', 'activeWorkerCount' => 1],
+                            ],
+                        ],
+                        'publishedArtifactWorkerExecution' => [
+                            'localProductSourceCheckoutsUsed' => false,
+                            'artifacts' => [
+                                [
+                                    'artifact' => 'sdk-python',
+                                    'version' => '0.4.88',
+                                    'source' => 'pypi_release',
+                                    'status' => 'pass',
+                                    'localProductSourceCheckoutsUsed' => false,
+                                ],
+                                [
+                                    'artifact' => 'workflow-php',
+                                    'version' => '2.0.0-alpha.203',
+                                    'source' => 'packagist_release',
+                                    'status' => 'pass',
+                                    'localProductSourceCheckoutsUsed' => false,
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->assertTrue($result['worker_executed']);
+        $this->assertTrue($result['passes']);
+        $this->assertSame('worker-versioning-shared', $result['outputs']['task_queue']);
+        $this->assertSame(
+            ['php-build-v1', 'python-build-v2'],
+            $result['worker_list_build_ids'],
+        );
+        $this->assertSame(
+            ['php-build-v1', 'python-build-v2'],
+            $result['task_queue_build_ids'],
+        );
+        $this->assertSame(1, $result['active_worker_counts_per_cohort']['php-build-v1']);
+        $this->assertSame(1, $result['active_worker_counts_per_cohort']['python-build-v2']);
+        $this->assertSame(
+            'workflow-php',
+            $result['outputs']['published_worker_registration_entries'][0]['artifact'],
+        );
+        $this->assertSame(
+            'php-build-v1',
+            $result['outputs']['published_worker_registration_entries'][0]['response_build_id'],
+        );
+        $this->assertTrue($result['outputs']['public_outcome']['passed']);
+    }
+
+    public function test_worker_registration_published_shard_requires_task_queue_build_id_surface(): void
+    {
+        $result = $this->evaluateWorkerRegistrationPublishedWorkerEvidence([
+            'local_product_source_checkouts_used' => false,
+            'supplied_shard_local_product_source_checkouts_used' => false,
+            'source_path' => 'published-worker-execution-evidence.json',
+            'scenario_results' => [
+                'worker_registration_build_ids' => [
+                    'status' => 'pass',
+                    'observed_outputs' => [
+                        'task_queue' => 'worker-versioning-shared',
+                        'local_product_source_checkouts_used' => false,
+                        'worker_registration_responses' => [
+                            'workflow_php' => [
+                                'artifact' => 'workflow-php',
+                                'worker_id' => 'php-v1',
+                                'task_queue' => 'worker-versioning-shared',
+                                'build_id' => 'php-build-v1',
+                                'response' => ['build_id' => 'php-build-v1'],
+                            ],
+                            'sdk_python' => [
+                                'artifact' => 'sdk-python',
+                                'worker_id' => 'python-v2',
+                                'task_queue' => 'worker-versioning-shared',
+                                'build_id' => 'python-build-v2',
+                                'response' => ['build_id' => 'python-build-v2'],
+                            ],
+                        ],
+                        'worker_list_build_ids' => ['php-build-v1', 'python-build-v2'],
+                        'published_artifact_worker_execution' => [
+                            'local_product_source_checkouts_used' => false,
+                            'artifacts' => [
+                                [
+                                    'artifact' => 'sdk-python',
+                                    'version' => '0.4.88',
+                                    'source' => 'pypi_release',
+                                    'status' => 'pass',
+                                ],
+                                [
+                                    'artifact' => 'workflow-php',
+                                    'version' => '2.0.0-alpha.203',
+                                    'source' => 'packagist_release',
+                                    'status' => 'pass',
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->assertTrue($result['worker_executed']);
+        $this->assertFalse($result['passes']);
+        $this->assertContains('task_queue_build_ids', $result['missing']);
+        $this->assertContains('active_worker_counts_per_cohort', $result['missing']);
+        $this->assertFalse($result['public_surfaces_cover_build_ids']);
+        $this->assertSame([], $result['task_queue_build_ids']);
     }
 
     public function test_no_compatible_published_shard_accepts_camel_case_outputs(): void
@@ -1588,6 +1947,115 @@ JS;
                 'import-runner-helper',
                 $repoRoot.'/scripts/conformance/worker-versioning-published-artifacts.mjs',
                 json_encode($evidence, JSON_THROW_ON_ERROR),
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            $repoRoot,
+            ['PATH' => getenv('PATH') ?: '/usr/bin:/bin'],
+        );
+
+        $this->assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stderr);
+
+        return json_decode((string) $stdout, true, 512, JSON_THROW_ON_ERROR);
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     * @return array<string, mixed>
+     */
+    private function evaluateWorkerRegistrationPublishedWorkerEvidence(array $evidence): array
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the worker-versioning runner shard gate.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $script = <<<'JS'
+import { pathToFileURL } from 'node:url';
+
+const moduleUrl = pathToFileURL(process.argv[2]).href;
+const evidence = JSON.parse(process.argv[3]);
+const { workerRegistrationPublishedWorkerEvidenceResult } = await import(moduleUrl);
+
+console.log(JSON.stringify(workerRegistrationPublishedWorkerEvidenceResult(evidence)));
+JS;
+
+        $process = proc_open(
+            [
+                $nodeBinary,
+                '--input-type=module',
+                '-e',
+                $script,
+                'import-runner-helper',
+                $repoRoot.'/scripts/conformance/worker-versioning-published-artifacts.mjs',
+                json_encode($evidence, JSON_THROW_ON_ERROR),
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            $repoRoot,
+            ['PATH' => getenv('PATH') ?: '/usr/bin:/bin'],
+        );
+
+        $this->assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stderr);
+
+        return json_decode((string) $stdout, true, 512, JSON_THROW_ON_ERROR);
+    }
+
+    /**
+     * @param array<string, mixed> $baseShard
+     * @param array<string, mixed> $supplementalShard
+     * @return array<string, mixed>
+     */
+    private function mergePublishedWorkerShardValues(array $baseShard, array $supplementalShard): array
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the published worker shard merge contract.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $script = <<<'JS'
+import { pathToFileURL } from 'node:url';
+
+const moduleUrl = pathToFileURL(process.argv[2]).href;
+const existing = JSON.parse(process.argv[3]);
+const incoming = JSON.parse(process.argv[4]);
+const { mergeShardValues } = await import(moduleUrl);
+
+console.log(JSON.stringify(mergeShardValues(existing, incoming)));
+JS;
+
+        $process = proc_open(
+            [
+                $nodeBinary,
+                '--input-type=module',
+                '-e',
+                $script,
+                'import-published-worker-helper',
+                $repoRoot.'/scripts/conformance/worker-versioning-published-workers.mjs',
+                json_encode($baseShard, JSON_THROW_ON_ERROR),
+                json_encode($supplementalShard, JSON_THROW_ON_ERROR),
             ],
             [
                 1 => ['pipe', 'w'],

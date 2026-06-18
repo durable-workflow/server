@@ -5,6 +5,7 @@ import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 
 const SHARD_SCHEMA = 'durable-workflow.v2.worker-versioning-runtime.published-worker-execution-evidence';
+const REGISTRATION_SCENARIO = 'worker_registration_build_ids';
 const REPLAY_SCENARIO = 'replay_only_by_compatible_workers';
 const CACHE_EVICTION_SCENARIO = 'replay_across_cache_eviction';
 const NO_COMPATIBLE_SCENARIO = 'no_compatible_worker_behavior';
@@ -91,18 +92,20 @@ async function main() {
   const pythonV1WorkerId = `python-v1-${suffix}`;
   const phpV2WorkerId = `php-v2-${suffix}`;
 
-  runPhpWorker(php, {
+  const phpV1Registration = runPhpWorker(php, {
     action: 'register',
     worker_id: phpV1WorkerId,
     build_id: phpV1BuildId,
     fingerprint: `sequence-php-v1-${suffix}`,
   });
-  runPythonWorker(python, {
+  const pythonV2Registration = runPythonWorker(python, {
     action: 'register',
     worker_id: pythonV2WorkerId,
     build_id: pythonV2BuildId,
     fingerprint: `sequence-python-v2-${suffix}`,
   });
+  const registrationWorkerList = await workerList();
+  const registrationBuildIds = await taskQueueBuildIds();
 
   await promoteBuildId(phpV1BuildId);
   const phpV1RolloutState = await taskQueueBuildIds();
@@ -165,6 +168,119 @@ async function main() {
     && pythonToPhpIncompatible === 0
     && phpCompatible > 0
     && pythonCompatible > 0;
+  const registrationBuildIdValues = unique([
+    ...arrayValue(registrationBuildIds.build_ids).map((entry) => stringValue(entry?.build_id)),
+  ].filter(Boolean));
+  const registrationWorkerListBuildIds = unique([
+    ...arrayValue(registrationWorkerList.workers).map((worker) => stringValue(worker?.build_id)),
+  ].filter(Boolean));
+  const registrationActiveWorkerCounts = Object.fromEntries(
+    arrayValue(registrationBuildIds.build_ids)
+      .map((entry) => [
+        stringValue(entry?.build_id),
+        numberValue(entry?.active_worker_count) ?? 0,
+      ])
+      .filter(([buildId]) => buildId !== ''),
+  );
+  const registrationWorkerExecution = {
+    local_product_source_checkouts_used: false,
+    artifacts: [
+      {
+        artifact: 'sdk-python',
+        version: pythonVersion,
+        source: 'pypi_release',
+        status: 'pass',
+        command: `python3 -m pip install durable-workflow==${pythonVersion}`,
+      },
+      {
+        artifact: 'workflow-php',
+        version: workflowPhpVersion,
+        source: 'packagist_release',
+        status: 'pass',
+        command: `composer require durable-workflow/workflow:${workflowPhpVersion}`,
+      },
+    ],
+  };
+  const registrationOutputs = {
+    task_queue: taskQueue,
+    registered_build_ids: {
+      workflow_php: phpV1BuildId,
+      sdk_python: pythonV2BuildId,
+      [phpV1WorkerId]: phpV1BuildId,
+      [pythonV2WorkerId]: pythonV2BuildId,
+    },
+    worker_registration_responses: {
+      workflow_php: {
+        artifact: 'workflow-php',
+        runtime: 'php',
+        worker_id: phpV1WorkerId,
+        task_queue: taskQueue,
+        build_id: phpV1BuildId,
+        response: phpV1Registration.response,
+        raw_response: phpV1Registration,
+      },
+      sdk_python: {
+        artifact: 'sdk-python',
+        runtime: 'python',
+        worker_id: pythonV2WorkerId,
+        task_queue: taskQueue,
+        build_id: pythonV2BuildId,
+        response: pythonV2Registration.response,
+        raw_response: pythonV2Registration,
+      },
+    },
+    published_worker_registration_entries: [
+      {
+        artifact: 'workflow-php',
+        runtime: 'php',
+        worker_id: phpV1WorkerId,
+        task_queue: taskQueue,
+        build_id: phpV1BuildId,
+        response_build_id: stringValue(phpV1Registration.response?.build_id),
+      },
+      {
+        artifact: 'sdk-python',
+        runtime: 'python',
+        worker_id: pythonV2WorkerId,
+        task_queue: taskQueue,
+        build_id: pythonV2BuildId,
+        response_build_id: stringValue(pythonV2Registration.response?.build_id),
+      },
+    ],
+    php_worker_registration_response: phpV1Registration,
+    python_worker_registration_response: pythonV2Registration,
+    worker_list_build_ids: registrationWorkerListBuildIds,
+    task_queue_build_ids: registrationBuildIdValues,
+    active_worker_counts_per_cohort: registrationActiveWorkerCounts,
+    worker_list_surface: registrationWorkerList,
+    task_queue_build_id_surface: registrationBuildIds,
+    public_outcome: {
+      verification_surface: 'published worker registration responses plus worker-list and task-queue build-id APIs',
+      passed: registrationWorkerListBuildIds.includes(phpV1BuildId)
+        && registrationWorkerListBuildIds.includes(pythonV2BuildId)
+        && registrationBuildIdValues.includes(phpV1BuildId)
+        && registrationBuildIdValues.includes(pythonV2BuildId)
+        && (registrationActiveWorkerCounts[phpV1BuildId] ?? 0) > 0
+        && (registrationActiveWorkerCounts[pythonV2BuildId] ?? 0) > 0,
+    },
+    published_artifact_worker_execution: registrationWorkerExecution,
+    local_product_source_checkouts_used: false,
+    worker_execution_mode: 'published_php_python_worker_protocol_clients',
+  };
+  const registrationPasses = registrationOutputs.public_outcome.passed
+    && stringValue(phpV1Registration.response?.build_id) === phpV1BuildId
+    && stringValue(pythonV2Registration.response?.build_id) === pythonV2BuildId;
+  const registrationFinding = registrationPasses ? null : {
+    scenario_id: REGISTRATION_SCENARIO,
+    owning_surface: registrationOutputs.public_outcome.passed ? 'conformance_harness' : 'server',
+    artifact_versions: artifactVersions(),
+    observed_behavior: 'Published PHP/Python worker registration evidence did not prove both registered build-id cohorts through the public worker-list and task-queue build-id surfaces.',
+    expected_behavior: 'Published workflow-php and sdk-python worker artifacts register on the same task queue, echo the requested build IDs, and appear as active cohorts through public operator surfaces.',
+    next_acceptance_criterion: 'rerun the published worker-versioning shard and record PHP and Python registration responses, worker-list build IDs, task-queue build IDs, and positive active worker counts for both cohorts on the same task queue',
+    worker_list_build_ids: registrationWorkerListBuildIds,
+    task_queue_build_ids: registrationBuildIdValues,
+    active_worker_counts_per_cohort: registrationActiveWorkerCounts,
+  };
 
   const observedOutputs = {
     php_worker_build_id: phpV1BuildId,
@@ -288,7 +404,7 @@ async function main() {
     python_v1_compatible_delivery_count: pythonCompatible,
   };
 
-  writeShard({
+  const publishedPhpPythonShard = {
     schema: SHARD_SCHEMA,
     local_product_source_checkouts_used: false,
     generated_at: timestamp(),
@@ -309,6 +425,12 @@ async function main() {
       ],
     },
     scenario_results: {
+      [REGISTRATION_SCENARIO]: {
+        scenario_id: REGISTRATION_SCENARIO,
+        status: registrationPasses ? 'pass' : 'fail',
+        observed_outputs: registrationOutputs,
+        linked_findings: registrationFinding ? [registrationFinding] : [],
+      },
       [CROSS_LANGUAGE_SCENARIO]: {
         scenario_id: CROSS_LANGUAGE_SCENARIO,
         status: passes ? 'pass' : 'fail',
@@ -317,6 +439,7 @@ async function main() {
       },
     },
     findings: [
+      ...(registrationFinding ? [registrationFinding] : []),
       ...(finding ? [finding] : []),
     ],
     logs: {
@@ -324,12 +447,20 @@ async function main() {
       php_install: php.install_log,
       shard_root: shardRoot,
     },
-  });
+  };
+  const baseShard = writeShard(publishedPhpPythonShard);
 
   pythonReplay = await runPythonReplayShardSafely(python);
   pythonNoCompatible = await runPythonNoCompatibleShardSafely(python);
   pythonAdversarial = await runPythonAdversarialShardSafely(python);
-  writeShard(pythonScenarioShard(python, shardRoot, pythonReplay, pythonNoCompatible, pythonAdversarial));
+  const supplementalShard = pythonScenarioShard(
+    python,
+    shardRoot,
+    pythonReplay,
+    pythonNoCompatible,
+    pythonAdversarial,
+  );
+  writeJson(outputPath, mergeShardValues(baseShard, supplementalShard));
 }
 
 function emptySupplementalShard() {
@@ -1156,6 +1287,16 @@ async function taskQueueBuildIds() {
   );
 }
 
+async function workerList() {
+  return requestJson(
+    'GET',
+    `/api/workers?task_queue=${encodeURIComponent(taskQueue)}`,
+    undefined,
+    controlHeaders(namespace),
+    [200],
+  );
+}
+
 function taskQueueBuildIdEntry(snapshot, buildId) {
   const wanted = stringValue(buildId);
   const entries = Array.isArray(snapshot?.build_ids) ? snapshot.build_ids : [];
@@ -1342,6 +1483,10 @@ function numberValue(value) {
   return null;
 }
 
+function unique(values) {
+  return Array.from(new Set(values));
+}
+
 function notCoveredShard(reason, observedOutputs) {
   const finding = {
     scenario_id: CROSS_LANGUAGE_SCENARIO,
@@ -1408,7 +1553,10 @@ function artifactSources() {
 }
 
 function writeShard(value) {
-  writeJson(outputPath, mergeExistingShard(value));
+  const merged = mergeExistingShard(value);
+  writeJson(outputPath, merged);
+
+  return merged;
 }
 
 function mergeExistingShard(value) {
@@ -1417,6 +1565,10 @@ function mergeExistingShard(value) {
     return value;
   }
 
+  return mergeShardValues(existing, value);
+}
+
+export function mergeShardValues(existing, value) {
   const existingScenarios = objectValue(existing.scenario_results);
   const incomingScenarios = objectValue(value.scenario_results);
   const scenarioResults = {
@@ -1448,13 +1600,64 @@ function mergeExistingShard(value) {
     topology: {
       ...objectValue(existing.topology),
       ...objectValue(value.topology),
+      workers: mergeWorkerEntries(
+        arrayValue(existing.topology?.workers),
+        arrayValue(value.topology?.workers),
+      ),
     },
     scenario_results: scenarioResults,
-    findings: [
+    findings: uniqueJsonEntries([
       ...arrayValue(existing.findings),
       ...arrayValue(value.findings),
-    ],
+    ]),
+    logs: {
+      ...objectValue(existing.logs),
+      ...objectValue(value.logs),
+    },
   };
+}
+
+function mergeWorkerEntries(existingWorkers, incomingWorkers) {
+  const seen = new Set();
+  const workers = [];
+
+  for (const worker of [...existingWorkers, ...incomingWorkers]) {
+    if (!worker || typeof worker !== 'object' || Array.isArray(worker)) {
+      continue;
+    }
+
+    const key = [
+      stringValue(worker.worker_id) || stringValue(worker.workerId),
+      stringValue(worker.runtime),
+      stringValue(worker.build_id) || stringValue(worker.buildId),
+    ].join('|');
+    const dedupeKey = key === '||' ? JSON.stringify(worker) : key;
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+
+    seen.add(dedupeKey);
+    workers.push(worker);
+  }
+
+  return workers;
+}
+
+function uniqueJsonEntries(entries) {
+  const seen = new Set();
+  const unique = [];
+
+  for (const entry of entries) {
+    const key = JSON.stringify(entry);
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    unique.push(entry);
+  }
+
+  return unique;
 }
 
 function writeJson(filePath, value) {
