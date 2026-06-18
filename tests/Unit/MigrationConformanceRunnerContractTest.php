@@ -23,6 +23,9 @@ class MigrationConformanceRunnerContractTest extends TestCase
         );
         $this->assertStringContainsString('DW_MIGRATION_EVIDENCE_JSON', $shell);
         $this->assertStringContainsString('DW_MIGRATION_EVIDENCE_DIR', $shell);
+        $this->assertStringContainsString('DW_MIGRATION_FOUNDATION_PLAN_FILE', $shell);
+        $this->assertStringContainsString('DW_MIGRATION_FOUNDATION_PLAN_JSON', $shell);
+        $this->assertStringContainsString('DW_MIGRATION_RUN_FOUNDATION_PLAN', $shell);
         $this->assertStringContainsString('DW_MIGRATION_STORAGE_SMOKE_JSON', $shell);
         $this->assertStringContainsString('DW_MIGRATION_RUN_PUBLIC_GUIDE_AUDIT', $shell);
         $this->assertStringContainsString('DW_MIGRATION_GUIDE_AUDIT_TEXT', $shell);
@@ -63,6 +66,9 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'latestGithubBranchCommit',
             'pinV1ServerBaselineFromWorkflowRuntime',
             'embedded-v1-server-runtime',
+            'maybeExecuteFoundationPlan',
+            'executeFoundationPlan',
+            'host_executed_migration_foundation_plan',
             'maybeRunPublicGuideAudit',
             'public_migration_guide_audit',
             'migrationGuideCommandExecutability',
@@ -818,6 +824,225 @@ class MigrationConformanceRunnerContractTest extends TestCase
         $this->assertNotContains('preupgrade_state_snapshot', $missingRunRecordFields);
         $this->assertNotContains('postupgrade_state_snapshot', $missingRunRecordFields);
         $this->assertContains('history_dumps', $missingRunRecordFields);
+    }
+
+    public function test_runner_executes_foundation_plan_for_first_migration_cells(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner foundation plan.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $command = static fn (string $label): array => [
+            'command' => 'printf "%s\n" '.escapeshellarg($label),
+            'public_api_surface' => $label,
+        ];
+        $snapshotWithCommands = function (string $phase) use ($command): array {
+            $snapshot = $this->stateSnapshotEvidence($phase);
+            foreach ($snapshot['observed_states'] as $index => $state) {
+                $snapshot['observed_states'][$index] = $state + $command(
+                    'GET /api/migration-conformance/'.$phase.'/'.$state['state_kind'],
+                );
+            }
+
+            return $snapshot;
+        };
+        $guideCommands = [
+            'composer update durable-workflow/workflow',
+            'php artisan migrate',
+            'php artisan queue:restart',
+            'php artisan workflow:v1:list',
+        ];
+        $plan = [
+            'source' => 'published_artifact_foundation_plan',
+            'source_release_versions' => $artifactVersions,
+            'migration_guide_revision' => [
+                'url' => 'https://durable-workflow.github.io/docs/2.0/migration/',
+                'sha256' => 'foundation-plan-guide-sha',
+            ],
+            'v1_state_setup' => [
+                'seeded_workflows' => [
+                    'completed_workflow' => $command('php artisan workflow:start MigrationCompletedWorkflow'),
+                    'running_workflow_waiting_on_signal' => $command('php artisan workflow:signal migration-awaiting-signal approve'),
+                    'workflow_with_activity' => $command('php artisan workflow:start MigrationActivityWorkflow'),
+                    'workflow_mid_activity_retry' => $command('php artisan workflow:start MigrationRetryWorkflow'),
+                ],
+                'seeded_schedules' => [
+                    'active_schedule' => $command('php artisan schedule:list --name=migration-cross-upgrade-schedule'),
+                ],
+                'seeded_worker_registrations' => [
+                    'registered_workers' => $command('GET /api/workers?task_queue=migration-v1'),
+                ],
+                'queryable_history' => [
+                    'queryable_history' => $command('GET /api/workflows/migration-completed/runs/latest/history'),
+                ],
+            ],
+            'migration_plan' => [
+                'commands' => array_map(
+                    static fn (string $guideCommand): array => [
+                        'command' => 'printf "%s\n" '.escapeshellarg('executed '.$guideCommand),
+                        'public_guide_command' => $guideCommand,
+                    ],
+                    $guideCommands,
+                ),
+                'schema_or_storage_migration_output' => $command('php artisan migrate output: Nothing to migrate'),
+            ],
+            'preupgrade_state_snapshot' => $snapshotWithCommands('preupgrade'),
+            'postupgrade_state_snapshot' => $snapshotWithCommands('postupgrade'),
+        ];
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            [],
+            'dw-migration-foundation-plan-',
+            $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources) + [
+                'DW_MIGRATION_FOUNDATION_PLAN_JSON' => json_encode($plan, JSON_THROW_ON_ERROR),
+                'DW_MIGRATION_RUN_FOUNDATION_PLAN' => '1',
+            ],
+        );
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame('pass', $result['scenario_results']['latest_supported_v1_state_setup']['status']);
+        $this->assertSame('pass', $result['scenario_results']['documented_migration_steps_execute']['status']);
+        $this->assertSame(
+            'published_artifact_foundation_plan',
+            $result['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['source'],
+        );
+        $this->assertSame(
+            'pass',
+            $result['migration_plan']['guide_command_executability']['status'],
+        );
+        $this->assertSame(
+            $guideCommands,
+            $result['migration_plan']['guide_command_executability']['checked_commands'],
+        );
+        $this->assertCount(4, $result['migration_plan']['commands_executed']);
+        $this->assertSame([0, 0, 0, 0], $result['migration_plan']['exit_codes']);
+        $this->assertSame(
+            'pass',
+            $result['migration_plan']['command_outputs'][0]['status'],
+        );
+        $this->assertSame(
+            $guideCommands[0],
+            $result['migration_plan']['command_outputs'][0]['public_guide_command'],
+        );
+        $this->assertStringContainsString(
+            'executed '.$guideCommands[0],
+            $result['migration_plan']['command_outputs'][0]['stdout'],
+        );
+        $this->assertSame(
+            'pass',
+            $result['preupgrade_state_snapshot']['status'],
+        );
+        $this->assertSame(
+            'pass',
+            $result['postupgrade_state_snapshot']['status'],
+        );
+
+        $missingRunRecordFields = array_column($result['finding_links']['run_record'] ?? [], 'missing_run_record_field');
+        $this->assertNotContains('migration_plan', $missingRunRecordFields);
+        $this->assertNotContains('preupgrade_state_snapshot', $missingRunRecordFields);
+        $this->assertNotContains('postupgrade_state_snapshot', $missingRunRecordFields);
+        $this->assertContains('history_dumps', $missingRunRecordFields);
+    }
+
+    public function test_runner_keeps_foundation_plan_command_failures_sticky(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner foundation plan.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $plan = [
+            'source' => 'published_artifact_foundation_plan',
+            'source_release_versions' => $artifactVersions,
+            'migration_guide_revision' => [
+                'url' => 'https://durable-workflow.github.io/docs/2.0/migration/',
+                'sha256' => 'foundation-plan-guide-sha',
+            ],
+            'migration_plan' => [
+                'commands' => [
+                    [
+                        'command' => 'printf "failing migration step\n"; exit 7',
+                        'public_guide_command' => 'php artisan migrate',
+                    ],
+                ],
+                'schema_or_storage_migration_output' => [
+                    'command' => 'printf "schema migration output\n"',
+                ],
+            ],
+        ];
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            $this->completeRunnerEvidence(),
+            'dw-migration-foundation-plan-failure-',
+            $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources) + [
+                'DW_MIGRATION_FOUNDATION_PLAN_JSON' => json_encode($plan, JSON_THROW_ON_ERROR),
+                'DW_MIGRATION_RUN_FOUNDATION_PLAN' => '1',
+            ],
+        );
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame('pass', $result['scenario_results']['latest_supported_v1_state_setup']['status']);
+        $this->assertSame('fail', $result['scenario_results']['documented_migration_steps_execute']['status']);
+        $this->assertSame('fail', $result['migration_plan']['command_outputs'][0]['status']);
+        $this->assertSame(7, $result['migration_plan']['command_outputs'][0]['exit_code']);
+        $this->assertContains(
+            'documented_migration_steps_execute',
+            array_keys($result['finding_links']),
+        );
+    }
+
+    public function test_runner_keeps_signaled_foundation_plan_commands_failed(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner foundation plan.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $plan = [
+            'source' => 'published_artifact_foundation_plan',
+            'source_release_versions' => $artifactVersions,
+            'migration_guide_revision' => [
+                'url' => 'https://durable-workflow.github.io/docs/2.0/migration/',
+                'sha256' => 'foundation-plan-guide-sha',
+            ],
+            'migration_plan' => [
+                'commands' => [
+                    [
+                        'command' => 'kill -TERM $$',
+                        'public_guide_command' => 'php artisan migrate',
+                    ],
+                ],
+                'schema_or_storage_migration_output' => [
+                    'command' => 'printf "schema migration output\n"',
+                ],
+            ],
+        ];
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            $this->completeRunnerEvidence(),
+            'dw-migration-foundation-plan-signal-',
+            $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources) + [
+                'DW_MIGRATION_FOUNDATION_PLAN_JSON' => json_encode($plan, JSON_THROW_ON_ERROR),
+                'DW_MIGRATION_RUN_FOUNDATION_PLAN' => '1',
+            ],
+        );
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame('fail', $result['scenario_results']['documented_migration_steps_execute']['status']);
+        $this->assertSame('fail', $result['migration_plan']['command_outputs'][0]['status']);
+        $this->assertSame(143, $result['migration_plan']['command_outputs'][0]['exit_code']);
+        $this->assertSame('SIGTERM', $result['migration_plan']['command_outputs'][0]['signal']);
+        $this->assertTrue($result['migration_plan']['commands_failed']);
     }
 
     public function test_runner_downgrades_shallow_rollback_and_skew_pass_evidence(): void

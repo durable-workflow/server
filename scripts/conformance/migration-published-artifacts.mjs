@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import childProcess from 'node:child_process';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
@@ -21,11 +22,14 @@ const evidenceDirPath = process.env.DW_MIGRATION_EVIDENCE_DIR
   ?? path.join(resultDir, 'migration-evidence.d');
 const storageSmokePath = process.env.DW_MIGRATION_STORAGE_SMOKE_JSON
   ?? path.join(resultDir, 'storage-connection-smoke.json');
+const foundationPlanPath = process.env.DW_MIGRATION_FOUNDATION_PLAN_FILE
+  ?? path.join(resultDir, 'migration-foundation-plan.json');
 const publicArtifactsPath = process.env.DW_MIGRATION_PUBLIC_ARTIFACTS_JSON
   ?? path.join(resultDir, 'migration-public-artifacts.json');
 const migrationGuideUrl = process.env.DW_MIGRATION_GUIDE_URL
   ?? 'https://durable-workflow.github.io/docs/2.0/migration/';
 const publicGuideAuditMode = stringValue(process.env.DW_MIGRATION_RUN_PUBLIC_GUIDE_AUDIT || 'auto').toLowerCase();
+const foundationPlanMode = stringValue(process.env.DW_MIGRATION_RUN_FOUNDATION_PLAN || 'auto').toLowerCase();
 
 const FALLBACK_REQUIRED_ARTIFACTS = [
   'server-v1',
@@ -113,6 +117,23 @@ const PLACEHOLDER_EVIDENCE_TOKENS = [
   'not_available',
   'placeholder',
 ];
+const SIGNAL_EXIT_CODES = {
+  SIGHUP: 129,
+  SIGINT: 130,
+  SIGQUIT: 131,
+  SIGILL: 132,
+  SIGTRAP: 133,
+  SIGABRT: 134,
+  SIGBUS: 135,
+  SIGFPE: 136,
+  SIGKILL: 137,
+  SIGUSR1: 138,
+  SIGSEGV: 139,
+  SIGUSR2: 140,
+  SIGPIPE: 141,
+  SIGALRM: 142,
+  SIGTERM: 143,
+};
 const EVIDENCE_METADATA_FIELDS = [
   'status',
   'kind',
@@ -292,6 +313,15 @@ async function main() {
     ),
     ...artifactSourceMapsFromEvidence(evidence),
   ), true);
+  const foundationPlanEvidence = maybeExecuteFoundationPlan(
+    startedAt,
+    resolvedArtifactVersions,
+    publishedArtifactVersions,
+    artifactSources,
+  );
+  if (foundationPlanEvidence !== null) {
+    evidence = mergeEvidenceObjects(foundationPlanEvidence, evidence);
+  }
   let storageSmoke = normalizeStorageSmoke(evidence);
   const storageFoundationEvidence = migrationFoundationEvidenceFromStorageSmoke(
     storageSmoke,
@@ -701,7 +731,11 @@ function normalizeScenarioResult(scenarioId, scenario, artifactVersions) {
     ?? nonEmptyObject(scenario.observedOutputs)
     ?? nonEmptyObject(scenario.evidence)
     ?? {};
-  const status = normalizedStatus(scenario.status);
+  const commandFailure = containsFoundationCommandFailure({
+    ...objectValue(scenario),
+    observed_outputs: observedOutputs,
+  });
+  const status = commandFailure ? 'fail' : normalizedStatus(scenario.status);
   const missingRequiredFields = status === 'pass'
     ? missingRequiredFieldsForScenario(scenarioId, scenario, observedOutputs)
     : [];
@@ -1916,6 +1950,7 @@ function resultPasses(result) {
     || localProductSourceCheckoutsUsedIn(result, objectValue(result.scenario_results))
     || arrayValue(result.artifact_prerequisite_failures).length > 0
     || artifactSourceFailuresForEvidence(result).length > 0
+    || containsFoundationCommandFailure(result)
   ) {
     return false;
   }
@@ -2733,6 +2768,623 @@ function observedOutputsForRunbookScenario(scenarioId, source) {
   return Object.fromEntries(
     Object.entries(observed).filter(([, value]) => !isEmptyEvidence(value)),
   );
+}
+
+function maybeExecuteFoundationPlan(
+  startedAt,
+  resolvedArtifactVersions,
+  publishedArtifactVersions,
+  artifactSources,
+) {
+  if (foundationPlanDisabled()) {
+    return null;
+  }
+
+  const plan = readFoundationPlan();
+  if (plan === null) {
+    if (foundationPlanForced()) {
+      throw new Error('DW_MIGRATION_RUN_FOUNDATION_PLAN forced execution, but no foundation plan JSON was supplied.');
+    }
+    return null;
+  }
+
+  return executeFoundationPlan(
+    plan,
+    startedAt,
+    resolvedArtifactVersions,
+    publishedArtifactVersions,
+    artifactSources,
+  );
+}
+
+function foundationPlanDisabled() {
+  return ['0', 'false', 'no', 'off', 'disabled'].includes(foundationPlanMode);
+}
+
+function foundationPlanForced() {
+  return ['1', 'true', 'yes', 'force'].includes(foundationPlanMode);
+}
+
+function readFoundationPlan() {
+  const inline = stringValue(process.env.DW_MIGRATION_FOUNDATION_PLAN_JSON);
+  if (inline !== '') {
+    const trimmed = inline.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      return objectValue(JSON.parse(trimmed));
+    }
+
+    return readJsonIfExists(trimmed);
+  }
+
+  return readJsonIfExists(foundationPlanPath);
+}
+
+function executeFoundationPlan(
+  rawPlan,
+  startedAt,
+  resolvedArtifactVersions,
+  publishedArtifactVersions,
+  artifactSources,
+) {
+  const plan = objectValue(rawPlan);
+  const defaults = {
+    cwd: stringValue(plan.working_directory)
+      || stringValue(plan.workingDirectory)
+      || stringValue(plan.cwd)
+      || resultDir,
+    env: objectOfStrings(plan.environment ?? plan.env),
+    timeoutMs: positiveInteger(plan.command_timeout_ms ?? plan.commandTimeoutMs, 120000),
+  };
+  const source = stringValue(plan.source) || 'host_executed_migration_foundation_plan';
+  const planStartedAt = stringValue(plan.started_at) || stringValue(plan.startedAt) || startedAt;
+  const guideRevision = objectValue(plan.migration_guide_revision ?? plan.migrationGuideRevision);
+  const sourceReleaseVersions = nonEmptyObject(
+    plan.source_release_versions
+      ?? plan.sourceReleaseVersions
+      ?? plan.v1_artifact_versions
+      ?? plan.v1ArtifactVersions,
+  ) ?? resolvedArtifactVersions;
+  const v1SetupSource = firstNonEmptyObject(plan, [
+    'latest_supported_v1_state_setup',
+    'latestSupportedV1StateSetup',
+    'v1_state_setup',
+    'v1StateSetup',
+    'realistic_v1_state_setup',
+    'realisticV1StateSetup',
+    'realistic_v1_state_snapshot',
+    'realisticV1StateSnapshot',
+  ]);
+  let migrationStepSource = firstNonEmptyObject(plan, [
+    'documented_migration_steps_execute',
+    'documentedMigrationStepsExecute',
+    'migration_plan',
+    'migrationPlan',
+    'guide_execution',
+    'guideExecution',
+  ]);
+  if (Object.keys(migrationStepSource).length === 0 && Array.isArray(plan.migration_steps)) {
+    migrationStepSource = { commands: plan.migration_steps };
+  }
+  if (Object.keys(migrationStepSource).length === 0 && Array.isArray(plan.migrationSteps)) {
+    migrationStepSource = { commands: plan.migrationSteps };
+  }
+  const preupgradeSource = firstNonEmptyObject(plan, [
+    'preupgrade_state_snapshot',
+    'preupgradeStateSnapshot',
+    'pre_upgrade_state_snapshot',
+    'preUpgradeStateSnapshot',
+  ]);
+  const postupgradeSource = firstNonEmptyObject(plan, [
+    'postupgrade_state_snapshot',
+    'postupgradeStateSnapshot',
+    'post_upgrade_state_snapshot',
+    'postUpgradeStateSnapshot',
+  ]);
+  const executedAt = timestamp();
+  const v1Setup = buildFoundationV1SetupEvidence(
+    v1SetupSource,
+    sourceReleaseVersions,
+    source,
+    defaults,
+  );
+  const migrationExecution = buildFoundationMigrationStepEvidence(
+    migrationStepSource,
+    guideRevision,
+    source,
+    defaults,
+  );
+  const preupgradeSnapshot = buildFoundationSnapshotEvidence(
+    'preupgrade_state_snapshot',
+    preupgradeSource,
+    source,
+    defaults,
+  );
+  const postupgradeSnapshot = buildFoundationSnapshotEvidence(
+    'postupgrade_state_snapshot',
+    postupgradeSource,
+    source,
+    defaults,
+  );
+  const anyCommandFailed = [
+    v1Setup,
+    migrationExecution,
+    preupgradeSnapshot,
+    postupgradeSnapshot,
+  ].some((section) => section.commands_failed);
+  const evidence = {
+    migration_plan: foundationTopLevelObservation(
+      'migration_plan',
+      {
+        status: migrationExecution.status,
+        source,
+        migration_guide_revision: migrationExecution.migration_guide_revision,
+        guide_command_executability: migrationExecution.guide_command_executability,
+        commands_executed: migrationExecution.commands_executed,
+        exit_codes: migrationExecution.exit_codes,
+        command_timings: migrationExecution.command_timings,
+        command_outputs: migrationExecution.command_outputs,
+        schema_or_storage_migration_output: migrationExecution.schema_or_storage_migration_output,
+        observed_behavior: migrationExecution.observed_behavior,
+        foundation_plan_executed_at: executedAt,
+        commands_failed: migrationExecution.commands_failed,
+      },
+      resolvedArtifactVersions,
+      publishedArtifactVersions,
+      artifactSources,
+    ),
+    preupgrade_state_snapshot: foundationTopLevelObservation(
+      'preupgrade_state_snapshot',
+      {
+        status: preupgradeSnapshot.status,
+        source,
+        state_kinds: preupgradeSnapshot.state_kinds,
+        observed_states: preupgradeSnapshot.observed_states,
+        observed_behavior: preupgradeSnapshot.observed_behavior,
+        commands_failed: preupgradeSnapshot.commands_failed,
+      },
+      resolvedArtifactVersions,
+      publishedArtifactVersions,
+      artifactSources,
+    ),
+    postupgrade_state_snapshot: foundationTopLevelObservation(
+      'postupgrade_state_snapshot',
+      {
+        status: postupgradeSnapshot.status,
+        source,
+        state_kinds: postupgradeSnapshot.state_kinds,
+        observed_states: postupgradeSnapshot.observed_states,
+        observed_behavior: postupgradeSnapshot.observed_behavior,
+        commands_failed: postupgradeSnapshot.commands_failed,
+      },
+      resolvedArtifactVersions,
+      publishedArtifactVersions,
+      artifactSources,
+    ),
+    scenario_results: {
+      latest_supported_v1_state_setup: {
+        scenario_id: 'latest_supported_v1_state_setup',
+        status: v1Setup.status,
+        started_at: planStartedAt,
+        finished_at: timestamp(),
+        observed_outputs: {
+          source,
+          local_product_source_checkouts_used: false,
+          source_release_versions: sourceReleaseVersions,
+          seeded_workflows: v1Setup.seeded_workflows,
+          seeded_schedules: v1Setup.seeded_schedules,
+          seeded_worker_registrations: v1Setup.seeded_worker_registrations,
+          queryable_history: v1Setup.queryable_history,
+          observed_behavior: v1Setup.observed_behavior,
+        },
+      },
+      documented_migration_steps_execute: {
+        scenario_id: 'documented_migration_steps_execute',
+        status: migrationExecution.status,
+        started_at: planStartedAt,
+        finished_at: timestamp(),
+        observed_outputs: {
+          source,
+          local_product_source_checkouts_used: false,
+          migration_guide_revision: migrationExecution.migration_guide_revision,
+          guide_command_executability: migrationExecution.guide_command_executability,
+          commands_executed: migrationExecution.commands_executed,
+          exit_codes: migrationExecution.exit_codes,
+          command_timings: migrationExecution.command_timings,
+          schema_or_storage_migration_output: migrationExecution.schema_or_storage_migration_output,
+          command_outputs: migrationExecution.command_outputs,
+          observed_behavior: migrationExecution.observed_behavior,
+        },
+      },
+    },
+  };
+
+  if (anyCommandFailed) {
+    evidence.finding_links = {
+      latest_supported_v1_state_setup: v1Setup.commands_failed ? [
+        foundationCommandFailureFinding(
+          'latest_supported_v1_state_setup',
+          resolvedArtifactVersions,
+          v1Setup.observed_behavior,
+        ),
+      ] : [],
+      documented_migration_steps_execute: migrationExecution.commands_failed ? [
+        foundationCommandFailureFinding(
+          'documented_migration_steps_execute',
+          resolvedArtifactVersions,
+          migrationExecution.observed_behavior,
+        ),
+      ] : [],
+    };
+  }
+
+  return evidence;
+}
+
+function buildFoundationV1SetupEvidence(source, sourceReleaseVersions, evidenceSource, defaults) {
+  const setup = objectValue(source);
+  const seededWorkflows = executeCommandEvidenceValue(
+    firstNonEmptyObject(setup, ['seeded_workflows', 'seededWorkflows']),
+    defaults,
+  );
+  const seededSchedules = executeCommandEvidenceValue(
+    firstNonEmptyObject(setup, ['seeded_schedules', 'seededSchedules']),
+    defaults,
+  );
+  const seededWorkerRegistrations = executeCommandEvidenceValue(
+    firstNonEmptyObject(setup, ['seeded_worker_registrations', 'seededWorkerRegistrations']),
+    defaults,
+  );
+  const queryableHistory = executeCommandEvidenceValue(
+    firstNonEmptyObject(setup, ['queryable_history', 'queryableHistory']),
+    defaults,
+  );
+  const commandsFailed = [
+    seededWorkflows,
+    seededSchedules,
+    seededWorkerRegistrations,
+    queryableHistory,
+  ].some((entry) => containsFailedCommand(entry));
+  const missingEvidence = scenarioSpecificMissingRequiredFields(
+    'latest_supported_v1_state_setup',
+    {},
+    {
+      source_release_versions: sourceReleaseVersions,
+      seeded_workflows: seededWorkflows,
+      seeded_schedules: seededSchedules,
+      seeded_worker_registrations: seededWorkerRegistrations,
+      queryable_history: queryableHistory,
+    },
+  );
+  const status = commandsFailed || missingEvidence.length > 0 ? 'fail' : 'pass';
+
+  return {
+    status,
+    seeded_workflows: seededWorkflows,
+    seeded_schedules: seededSchedules,
+    seeded_worker_registrations: seededWorkerRegistrations,
+    queryable_history: queryableHistory,
+    commands_failed: commandsFailed,
+    observed_behavior: status === 'pass'
+      ? 'Executed published-artifact v1 setup commands and captured completed, in-flight, activity, retry, schedule, worker, and history observations.'
+      : foundationFailureSummary('latest_supported_v1_state_setup', commandsFailed, missingEvidence, evidenceSource),
+  };
+}
+
+function buildFoundationMigrationStepEvidence(source, guideRevision, evidenceSource, defaults) {
+  const execution = objectValue(source);
+  const effectiveGuideRevision = Object.keys(guideRevision).length > 0
+    ? guideRevision
+    : { url: migrationGuideUrl, source: 'foundation_plan' };
+  const commandDescriptors = migrationCommandDescriptors(execution);
+  const commandOutputs = commandDescriptors.map((descriptor) => executeCommandDescriptor(descriptor, defaults));
+  const commandsExecuted = commandOutputs.map((entry) => entry.command).filter(Boolean);
+  const exitCodes = commandOutputs.map((entry) => entry.exit_code);
+  const commandTimings = Object.fromEntries(
+    commandOutputs
+      .filter((entry) => stringValue(entry.command) !== '')
+      .map((entry) => [entry.command, entry.duration_ms]),
+  );
+  const guideCommands = commandDescriptors
+    .map((descriptor) => stringValue(objectValue(descriptor).public_guide_command) || stringValue(descriptor))
+    .filter(Boolean);
+  const guideCommandExecutability = nonEmptyObject(
+    execution.guide_command_executability ?? execution.guideCommandExecutability,
+  ) ?? migrationGuideCommandExecutability(guideCommands.length > 0 ? guideCommands : commandsExecuted);
+  const schemaOutput = executeCommandEvidenceValue(
+    firstNonEmptyObject(execution, [
+      'schema_or_storage_migration_output',
+      'schemaOrStorageMigrationOutput',
+      'migration_output',
+      'migrationOutput',
+    ]),
+    defaults,
+  );
+  const commandsFailed = commandOutputs.some((entry) => entry.status !== 'pass')
+    || containsFailedCommand(schemaOutput);
+  const missingEvidence = scenarioSpecificMissingRequiredFields(
+    'documented_migration_steps_execute',
+    {},
+    {
+      migration_guide_revision: effectiveGuideRevision,
+      guide_command_executability: guideCommandExecutability,
+      commands_executed: commandsExecuted,
+      exit_codes: exitCodes,
+      command_timings: commandTimings,
+      schema_or_storage_migration_output: schemaOutput,
+    },
+  );
+  const status = commandsFailed || missingEvidence.length > 0 ? 'fail' : 'pass';
+
+  return {
+    status,
+    migration_guide_revision: effectiveGuideRevision,
+    guide_command_executability: guideCommandExecutability,
+    commands_executed: commandsExecuted,
+    exit_codes: exitCodes,
+    command_timings: commandTimings,
+    command_outputs: commandOutputs,
+    schema_or_storage_migration_output: schemaOutput,
+    commands_failed: commandsFailed,
+    observed_behavior: status === 'pass'
+      ? 'Executed the documented migration command plan and captured command output, exit codes, timings, and schema or storage migration observations.'
+      : foundationFailureSummary('documented_migration_steps_execute', commandsFailed, missingEvidence, evidenceSource),
+  };
+}
+
+function migrationCommandDescriptors(execution) {
+  for (const field of [
+    'commands',
+    'commands_executed',
+    'commandsExecuted',
+    'documented_steps',
+    'documentedSteps',
+    'migration_steps',
+    'migrationSteps',
+  ]) {
+    const value = execution[field];
+    if (Array.isArray(value) && value.length > 0) {
+      return value;
+    }
+  }
+
+  return [];
+}
+
+function buildFoundationSnapshotEvidence(kind, source, evidenceSource, defaults) {
+  const snapshot = objectValue(source);
+  const observedStates = executeCommandEvidenceValue(
+    snapshot.observed_states
+      ?? snapshot.observedStates
+      ?? snapshot.state_entries
+      ?? snapshot.stateEntries
+      ?? [],
+    defaults,
+  );
+  const stateKinds = arrayOfStrings(snapshot.state_kinds ?? snapshot.stateKinds);
+  const observed = {
+    status: normalizedStatus(snapshot.status || snapshot.outcome || 'pass'),
+    state_kinds: stateKinds.length > 0
+      ? stateKinds
+      : arrayOfStrings(scenarioManifest?.required_matrix?.state_kinds),
+    observed_states: observedStates,
+  };
+  const commandsFailed = containsFailedCommand(observedStates);
+  const missingStates = stateSnapshotFailuresFor({
+    [kind]: observed,
+  });
+  const status = commandsFailed || missingStates.length > 0 ? 'fail' : observed.status;
+
+  return {
+    ...observed,
+    status,
+    commands_failed: commandsFailed,
+    observed_behavior: status === 'pass'
+      ? `Executed ${kind} observation commands and captured state cells for every required migration state kind.`
+      : foundationFailureSummary(
+        kind,
+        commandsFailed,
+        missingStates.map((failure) => failure.state_kind || failure.code || failure.field).filter(Boolean),
+        evidenceSource,
+      ),
+  };
+}
+
+function foundationFailureSummary(scenarioId, commandsFailed, missingEvidence, evidenceSource) {
+  const reasons = [];
+  if (commandsFailed) {
+    reasons.push('one or more foundation commands exited non-zero or timed out');
+  }
+  if (missingEvidence.length > 0) {
+    reasons.push(`missing required evidence: ${missingEvidence.join(', ')}`);
+  }
+
+  return `Foundation evidence plan ${evidenceSource} did not satisfy ${scenarioId}: ${reasons.join('; ')}.`;
+}
+
+function foundationCommandFailureFinding(scenarioId, artifactVersions, observedBehavior) {
+  const policy = SCENARIO_FINDING_POLICIES[scenarioId] ?? SCENARIO_FINDING_POLICIES.documented_migration_steps_execute;
+
+  return {
+    scenario_id: scenarioId,
+    owning_surface: policy.owning_surface,
+    finding_type: policy.finding_type,
+    artifact_versions: artifactVersions,
+    observed_behavior: observedBehavior,
+    expected_behavior: policy.expected_behavior,
+    next_acceptance_criterion: policy.next_acceptance_criterion,
+  };
+}
+
+function executeCommandEvidenceValue(value, defaults) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => executeCommandEvidenceValue(entry, defaults));
+  }
+
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+
+  const object = objectValue(value);
+  if (stringValue(object.command) !== '') {
+    return executeCommandDescriptor(object, defaults);
+  }
+
+  return Object.fromEntries(
+    Object.entries(object).map(([key, entry]) => [key, executeCommandEvidenceValue(entry, defaults)]),
+  );
+}
+
+function executeCommandDescriptor(rawDescriptor, defaults) {
+  const descriptor = typeof rawDescriptor === 'string'
+    ? { command: rawDescriptor }
+    : objectValue(rawDescriptor);
+  const command = stringValue(descriptor.command);
+  const cwd = stringValue(descriptor.cwd)
+    || stringValue(descriptor.working_directory)
+    || stringValue(descriptor.workingDirectory)
+    || defaults.cwd
+    || resultDir;
+  const shell = stringValue(descriptor.shell) || '/bin/sh';
+  const timeoutMs = positiveInteger(descriptor.timeout_ms ?? descriptor.timeoutMs, defaults.timeoutMs || 120000);
+  const env = {
+    ...process.env,
+    ...objectOfStrings(defaults.env),
+    ...objectOfStrings(descriptor.environment ?? descriptor.env),
+  };
+  const metadata = Object.fromEntries(
+    Object.entries(descriptor).filter(([key]) => ![
+      'command',
+      'cwd',
+      'working_directory',
+      'workingDirectory',
+      'shell',
+      'timeout_ms',
+      'timeoutMs',
+      'environment',
+      'env',
+      'expected_exit_code',
+      'expectedExitCode',
+    ].includes(key)),
+  );
+  const started = timestamp();
+  const startedMs = Date.now();
+  const result = command === ''
+    ? {
+        status: 127,
+        stdout: '',
+        stderr: 'foundation command descriptor did not include a command',
+        error: null,
+        signal: null,
+      }
+    : childProcess.spawnSync(shell, ['-lc', command], {
+        cwd,
+        env,
+        encoding: 'utf8',
+        timeout: timeoutMs,
+        maxBuffer: 1024 * 1024 * 5,
+      });
+  const durationMs = Date.now() - startedMs;
+  const signal = result.signal ?? null;
+  const exitCode = result.status === null || result.status === undefined
+    ? (result.error ? 124 : exitCodeForSignal(signal))
+    : result.status;
+  const expectedExitCode = Number.isInteger(descriptor.expected_exit_code)
+    ? descriptor.expected_exit_code
+    : Number.isInteger(descriptor.expectedExitCode)
+      ? descriptor.expectedExitCode
+      : 0;
+  const status = result.error || signal !== null || exitCode !== expectedExitCode ? 'fail' : 'pass';
+  const stderr = outputString(result.stderr);
+  const stdout = outputString(result.stdout);
+
+  return {
+    ...metadata,
+    command,
+    cwd,
+    started_at: started,
+    finished_at: timestamp(),
+    duration_ms: durationMs,
+    timeout_ms: timeoutMs,
+    exit_code: exitCode,
+    expected_exit_code: expectedExitCode,
+    status,
+    stdout,
+    stderr: result.error ? [stderr, errorMessage(result.error)].filter(Boolean).join('\n') : stderr,
+    timed_out: result.error?.code === 'ETIMEDOUT',
+    signal,
+  };
+}
+
+function exitCodeForSignal(signal) {
+  if (signal === null || signal === undefined) {
+    return 0;
+  }
+
+  return SIGNAL_EXIT_CODES[stringValue(signal).toUpperCase()] ?? 1;
+}
+
+function containsFailedCommand(value) {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  if (Array.isArray(value)) {
+    return value.some((entry) => containsFailedCommand(entry));
+  }
+
+  const object = objectValue(value);
+  if (stringValue(object.command) !== '' && stringValue(object.status) !== 'pass') {
+    return true;
+  }
+
+  return Object.values(object).some((entry) => containsFailedCommand(entry));
+}
+
+function containsFoundationCommandFailure(value) {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  if (Array.isArray(value)) {
+    return value.some((entry) => containsFoundationCommandFailure(entry));
+  }
+
+  const object = objectValue(value);
+  if (truthy(object.commands_failed) || truthy(object.commandsFailed)) {
+    return true;
+  }
+  const status = stringValue(object.status);
+  const hasCommandExecutionMetadata = [
+    'exit_code',
+    'exitCode',
+    'expected_exit_code',
+    'expectedExitCode',
+    'duration_ms',
+    'durationMs',
+    'timed_out',
+    'timedOut',
+  ].some((key) => Object.hasOwn(object, key));
+  if (stringValue(object.command) !== '' && hasCommandExecutionMetadata && status !== '' && status !== 'pass') {
+    return true;
+  }
+
+  return Object.values(object).some((entry) => containsFoundationCommandFailure(entry));
+}
+
+function outputString(value) {
+  const text = stringValue(value);
+  return text.length > 20000 ? `${text.slice(0, 20000)}\n[truncated]` : text;
+}
+
+function objectOfStrings(value) {
+  return Object.fromEntries(
+    Object.entries(objectValue(value))
+      .map(([key, entry]) => [key, stringValue(entry)])
+      .filter(([, entry]) => entry !== ''),
+  );
+}
+
+function positiveInteger(value, fallback) {
+  const number = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
 }
 
 function runbookFieldValue(container, field) {
