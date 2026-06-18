@@ -22,7 +22,10 @@ Environment overrides:
   DW_MIGRATION_KEEP_RUN_ROOT=1       Keep scratch directory after success.
   DW_MIGRATION_EVIDENCE_JSON         Full-result, runbook-shaped, or scenario-shard JSON from the host migration runner.
   DW_MIGRATION_EVIDENCE_DIR          Directory of sorted JSON evidence shards from the host migration runner.
-  DW_MIGRATION_STORAGE_SMOKE_JSON    Advisory storage-connection smoke JSON.
+  DW_MIGRATION_STORAGE_SMOKE_JSON    Storage-connection smoke JSON. Detailed
+                                      foundation runs may include migration_plan,
+                                      latest_supported_v1_state_setup, and
+                                      before/after state snapshots here.
   DW_MIGRATION_RUN_PUBLIC_GUIDE_AUDIT
                                       Auto-audit the live public migration guide
                                       when storage smoke passed but no full

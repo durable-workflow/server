@@ -655,6 +655,171 @@ class MigrationConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_runner_records_foundation_evidence_from_detailed_storage_smoke(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner foundation evidence gate.');
+        }
+
+        $artifactVersions = $this->artifactVersions();
+        $artifactSources = $this->artifactSources();
+        $commands = [
+            'composer require durable-workflow/workflow:'.$artifactVersions['workflow-php-v2'],
+            'php artisan migrate --force',
+            'php artisan queue:restart',
+        ];
+        $preupgradeSnapshot = $this->stateSnapshotEvidence('preupgrade') + [
+            'workflow_status_counts' => ['completed' => 1, 'running' => 2],
+            'api_operations' => [
+                'GET /api/workflows/migration-completed',
+                'GET /api/workflows/migration-awaiting-signal/runs/latest/history',
+            ],
+        ];
+        $postupgradeSnapshot = $this->stateSnapshotEvidence('postupgrade') + [
+            'workflow_status_counts' => ['completed' => 3, 'running' => 0],
+            'api_operations' => [
+                'GET /api/workflows/migration-completed',
+                'GET /api/workflows/migration-awaiting-signal/runs/latest/history',
+            ],
+        ];
+
+        $result = $this->runRunnerEvidence(
+            $nodeBinary,
+            [],
+            'dw-migration-foundation-storage-smoke-',
+            $this->publicGuideAuditArtifactEnvironment($artifactVersions, $artifactSources),
+            [
+                'status' => 'pass',
+                'source' => 'published-server-migration-contract',
+                'storage_connection' => 'workflow_storage',
+                'migration_foundation_evidence' => [
+                    'source' => 'published-server-migration-contract',
+                    'migration_plan' => [
+                        'source' => 'published-server-migration-contract',
+                        'migration_guide_revision' => [
+                            'url' => 'https://durable-workflow.github.io/docs/2.0/migration/',
+                            'sha256' => 'foundation-guide-sha',
+                        ],
+                        'guide_command_executability' => [
+                            'status' => 'pass',
+                            'checked_commands' => $commands,
+                            'unexecutable_commands' => [],
+                        ],
+                        'commands_executed' => $commands,
+                        'exit_codes' => [0, 0, 0],
+                        'command_timings' => [
+                            $commands[0] => 1410,
+                            $commands[1] => 380,
+                            $commands[2] => 90,
+                        ],
+                        'schema_or_storage_migration_output' => [
+                            'workflow_storage_tables_preserved' => true,
+                            'preupgrade_rows_visible_after_migrate' => true,
+                        ],
+                        'api_operations' => [
+                            'GET /api/workflows/migration-completed',
+                            'GET /api/workflows/migration-awaiting-signal/runs/latest/history',
+                        ],
+                    ],
+                    'latest_supported_v1_state_setup' => [
+                        'source_release_versions' => $artifactVersions,
+                        'seeded_workflows' => [
+                            'completed_workflow' => [
+                                'workflow_id' => 'migration-completed',
+                                'status' => 'completed',
+                                'history_event_count' => 8,
+                            ],
+                            'running_workflow_waiting_on_signal' => [
+                                'workflow_id' => 'migration-awaiting-signal',
+                                'status' => 'running',
+                                'signal_name' => 'approve',
+                            ],
+                            'workflow_with_activity' => [
+                                'workflow_id' => 'migration-activity',
+                                'activity_type' => 'migration_sample_activity',
+                                'activity_completed' => true,
+                            ],
+                            'workflow_mid_activity_retry' => [
+                                'workflow_id' => 'migration-retrying-activity',
+                                'attempt' => 2,
+                                'next_retry_at' => '2026-05-31T22:42:00Z',
+                            ],
+                        ],
+                        'seeded_schedules' => [
+                            'active_schedule' => [
+                                'schedule_id' => 'migration-cross-upgrade-schedule',
+                                'next_fire_at' => '2026-05-31T22:45:00Z',
+                            ],
+                        ],
+                        'seeded_worker_registrations' => [
+                            'registered_workers' => [
+                                [
+                                    'worker_id' => 'migration-v1-worker',
+                                    'task_queue' => 'migration-v1',
+                                ],
+                            ],
+                        ],
+                        'queryable_history' => [
+                            'queryable_history' => [
+                                'workflow_ids' => ['migration-completed', 'migration-awaiting-signal'],
+                                'history_exported' => true,
+                            ],
+                        ],
+                        'commands' => [
+                            'composer require durable-workflow/workflow:'.$artifactVersions['workflow-php-v1'],
+                            'php artisan workflow:start MigrationCompletedWorkflow',
+                            'php artisan workflow:signal migration-awaiting-signal approve',
+                        ],
+                    ],
+                    'preupgrade_state_snapshot' => $preupgradeSnapshot,
+                    'postupgrade_state_snapshot' => $postupgradeSnapshot,
+                ],
+            ],
+        );
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame(
+            'pass',
+            $result['scenario_results']['latest_supported_v1_state_setup']['status'],
+        );
+        $this->assertSame(
+            'pass',
+            $result['scenario_results']['documented_migration_steps_execute']['status'],
+        );
+        $this->assertSame(
+            'not_covered',
+            $result['scenario_results']['completed_history_preservation_and_replay']['status'],
+        );
+        $this->assertSame(
+            'not_covered',
+            $result['scenario_results']['schedule_cross_upgrade_cadence_preserved']['status'],
+        );
+        $this->assertSame(
+            'not_covered',
+            $result['scenario_results']['waterline_operator_visibility_preserved']['status'],
+        );
+        $this->assertSame(
+            'published-server-migration-contract',
+            $result['migration_plan']['source'],
+        );
+        $this->assertSame($commands, $result['migration_plan']['commands_executed']);
+        $this->assertSame(
+            $preupgradeSnapshot['observed_states'],
+            $result['preupgrade_state_snapshot']['observed_states'],
+        );
+        $this->assertSame(
+            $postupgradeSnapshot['observed_states'],
+            $result['postupgrade_state_snapshot']['observed_states'],
+        );
+
+        $missingRunRecordFields = array_column($result['finding_links']['run_record'] ?? [], 'missing_run_record_field');
+        $this->assertNotContains('migration_plan', $missingRunRecordFields);
+        $this->assertNotContains('preupgrade_state_snapshot', $missingRunRecordFields);
+        $this->assertNotContains('postupgrade_state_snapshot', $missingRunRecordFields);
+        $this->assertContains('history_dumps', $missingRunRecordFields);
+    }
+
     public function test_runner_downgrades_shallow_rollback_and_skew_pass_evidence(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -1201,6 +1366,43 @@ COMMAND;
                 $runRecordFindings,
                 static fn (array $finding): bool => ($finding['missing_run_record_field'] ?? null) === $field
                     && ($finding['missing_state_kind'] ?? null) === 'completed_history',
+            ));
+        }
+    }
+
+    public function test_runner_keeps_non_pass_state_snapshots_from_passing(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner state snapshot status gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['preupgrade_state_snapshot'] = [
+            'status' => 'fail',
+            'observed_behavior' => 'v1 state APIs returned an error before observed state cells were captured',
+        ];
+        $evidence['postupgrade_state_snapshot'] = [
+            'status' => 'fail',
+            'observed_behavior' => 'v2 state APIs returned an error before observed state cells were captured',
+        ];
+
+        $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-failed-state-snapshots-');
+        $runRecordFindings = $result['finding_links']['run_record'] ?? [];
+
+        $this->assertSame(
+            'non_passing',
+            $result['outcome'],
+            'failed state snapshots must not allow the migration runner to emit pass',
+        );
+        $this->assertSame('fail', $result['preupgrade_state_snapshot']['status']);
+        $this->assertSame('fail', $result['postupgrade_state_snapshot']['status']);
+        foreach (['preupgrade_state_snapshot', 'postupgrade_state_snapshot'] as $field) {
+            $this->assertNotEmpty(array_filter(
+                $runRecordFindings,
+                static fn (array $finding): bool => ($finding['missing_run_record_field'] ?? null) === $field
+                    && ($finding['state_snapshot_failure'] ?? null) === 'non_pass_state_snapshot'
+                    && ($finding['state_snapshot_status'] ?? null) === 'fail',
             ));
         }
     }

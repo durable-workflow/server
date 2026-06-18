@@ -292,6 +292,17 @@ async function main() {
     ),
     ...artifactSourceMapsFromEvidence(evidence),
   ), true);
+  let storageSmoke = normalizeStorageSmoke(evidence);
+  const storageFoundationEvidence = migrationFoundationEvidenceFromStorageSmoke(
+    storageSmoke,
+    startedAt,
+    resolvedArtifactVersions,
+    publishedArtifactVersions,
+    artifactSources,
+  );
+  if (Object.keys(storageFoundationEvidence).length > 0) {
+    evidence = mergeEvidenceObjects(storageFoundationEvidence, evidence);
+  }
   const publicGuideAudit = await maybeRunPublicGuideAudit(
     evidence,
     startedAt,
@@ -302,7 +313,7 @@ async function main() {
   if (publicGuideAudit !== null) {
     evidence = mergeEvidenceObjects(publicGuideAudit, evidence);
   }
-  const storageSmoke = normalizeStorageSmoke(evidence);
+  storageSmoke = normalizeStorageSmoke(evidence);
   const storageSmokeOnlyProductEvidence = storageSmokeProvidesProductEvidence(storageSmoke)
     && !hasSuppliedFullMigrationEvidence(evidence);
 
@@ -902,6 +913,166 @@ function normalizeStorageSmoke(evidence) {
     advisory_only: true,
     required_context_not_passing_by_itself: true,
     observed_behavior: 'No storage-connection smoke result was supplied to this migration run.',
+  };
+}
+
+function migrationFoundationEvidenceFromStorageSmoke(
+  storageSmoke,
+  startedAt,
+  resolvedArtifactVersions,
+  publishedArtifactVersions,
+  artifactSources,
+) {
+  if (!storageSmokeProvidesProductEvidence(storageSmoke)) {
+    return {};
+  }
+
+  const smoke = objectValue(storageSmoke);
+  const source = firstNonEmptyEvidenceObject(smoke, [
+    'migration_foundation_evidence',
+    'migrationFoundationEvidence',
+    'foundation_evidence',
+    'foundationEvidence',
+    'v1_to_v2_foundation',
+    'v1ToV2Foundation',
+  ]);
+  const foundation = Object.keys(source).length > 0 ? source : smoke;
+  const result = {};
+
+  const migrationPlan = firstNonEmptyEvidenceObject(foundation, [
+    'migration_plan',
+    'migrationPlan',
+    'migration_guide_execution',
+    'migrationGuideExecution',
+    'guide_execution',
+    'guideExecution',
+    'step_by_step_guide',
+    'stepByStepGuide',
+  ]);
+  const latestSupportedV1StateSetup = firstNonEmptyEvidenceObject(foundation, [
+    'latest_supported_v1_state_setup',
+    'latestSupportedV1StateSetup',
+    'realistic_v1_state_setup',
+    'realisticV1StateSetup',
+    'realistic_v1_state_snapshot',
+    'realisticV1StateSnapshot',
+    'v1_state_setup',
+    'v1StateSetup',
+    'v1_state_snapshot',
+    'v1StateSnapshot',
+  ]);
+  const preupgradeSnapshot = firstNonEmptyEvidenceObject(foundation, [
+    'preupgrade_state_snapshot',
+    'preupgradeStateSnapshot',
+    'pre_upgrade_state_snapshot',
+    'preUpgradeStateSnapshot',
+    'realistic_v1_state_snapshot',
+    'realisticV1StateSnapshot',
+    'v1_state_snapshot',
+    'v1StateSnapshot',
+  ]);
+  const postupgradeSnapshot = firstNonEmptyEvidenceObject(foundation, [
+    'postupgrade_state_snapshot',
+    'postupgradeStateSnapshot',
+    'post_upgrade_state_snapshot',
+    'postUpgradeStateSnapshot',
+    'post_upgrade_verification',
+    'postUpgradeVerification',
+    'v2_state_snapshot',
+    'v2StateSnapshot',
+  ]);
+
+  if (Object.keys(migrationPlan).length > 0) {
+    result.migration_plan = foundationTopLevelObservation(
+      'migration_plan',
+      migrationPlan,
+      resolvedArtifactVersions,
+      publishedArtifactVersions,
+      artifactSources,
+    );
+  }
+  if (Object.keys(preupgradeSnapshot).length > 0) {
+    result.preupgrade_state_snapshot = foundationTopLevelObservation(
+      'preupgrade_state_snapshot',
+      preupgradeSnapshot,
+      resolvedArtifactVersions,
+      publishedArtifactVersions,
+      artifactSources,
+    );
+  }
+  if (Object.keys(postupgradeSnapshot).length > 0) {
+    result.postupgrade_state_snapshot = foundationTopLevelObservation(
+      'postupgrade_state_snapshot',
+      postupgradeSnapshot,
+      resolvedArtifactVersions,
+      publishedArtifactVersions,
+      artifactSources,
+    );
+  }
+
+  const scenarioResults = {};
+  const v1SetupOutputs = observedOutputsForRunbookScenario(
+    'latest_supported_v1_state_setup',
+    latestSupportedV1StateSetup,
+  );
+  if (Object.keys(v1SetupOutputs).length > 0) {
+    scenarioResults.latest_supported_v1_state_setup = foundationScenarioResult(
+      'latest_supported_v1_state_setup',
+      latestSupportedV1StateSetup,
+      v1SetupOutputs,
+      startedAt,
+    );
+  }
+
+  const guideOutputs = observedOutputsForRunbookScenario(
+    'documented_migration_steps_execute',
+    migrationPlan,
+  );
+  if (Object.keys(guideOutputs).length > 0) {
+    scenarioResults.documented_migration_steps_execute = foundationScenarioResult(
+      'documented_migration_steps_execute',
+      migrationPlan,
+      guideOutputs,
+      startedAt,
+    );
+  }
+
+  if (Object.keys(scenarioResults).length > 0) {
+    result.scenario_results = scenarioResults;
+  }
+
+  return result;
+}
+
+function foundationTopLevelObservation(
+  kind,
+  observation,
+  resolvedArtifactVersions,
+  publishedArtifactVersions,
+  artifactSources,
+) {
+  return {
+    status: normalizedStatus(observation.status || observation.outcome || 'pass'),
+    kind,
+    source: stringValue(observation.source) || 'published_artifact_foundation_run',
+    published_artifact_versions: publishedArtifactVersions,
+    resolved_artifact_versions: resolvedArtifactVersions,
+    artifact_sources: artifactSources,
+    ...observation,
+  };
+}
+
+function foundationScenarioResult(scenarioId, source, observedOutputs, startedAt) {
+  return {
+    scenario_id: scenarioId,
+    status: normalizedStatus(source.status || source.outcome || 'pass'),
+    started_at: stringValue(source.started_at) || stringValue(source.startedAt) || startedAt,
+    finished_at: stringValue(source.finished_at) || stringValue(source.finishedAt) || timestamp(),
+    observed_outputs: {
+      source: stringValue(source.source) || 'published_artifact_foundation_run',
+      local_product_source_checkouts_used: false,
+      ...observedOutputs,
+    },
   };
 }
 
@@ -1799,6 +1970,15 @@ function stateSnapshotFailuresFor(result) {
     if (isEmptyEvidence(snapshot)) {
       continue;
     }
+    const snapshotStatus = stringValue(snapshot.status || snapshot.outcome);
+    if (snapshotStatus !== '' && normalizedStatus(snapshotStatus) !== 'pass') {
+      failures.push({
+        field,
+        status: normalizedStatus(snapshotStatus),
+        observed_status: snapshotStatus,
+        code: 'non_pass_state_snapshot',
+      });
+    }
 
     const stateKinds = observedStateKindsForSnapshot(snapshot, requiredStateKinds);
     for (const stateKind of requiredStateKinds) {
@@ -1977,6 +2157,18 @@ function missingRunRecordFindingsFor(result, artifactVersions) {
   }
 
   for (const failure of stateSnapshotFailuresFor(result)) {
+    if (failure.code === 'non_pass_state_snapshot') {
+      findings.push(coverageGapFinding('run_record', artifactVersions, {
+        observed_behavior: `Migration run record ${failure.field} reported ${failure.observed_status || failure.status} instead of pass.`,
+        expected_behavior: 'Passing migration conformance records successful before/after state snapshots with observed state cells for every required migration state kind.',
+        next_acceptance_criterion: `rerun migration conformance until ${failure.field} reports pass and includes observed state evidence`,
+        missing_run_record_field: failure.field,
+        state_snapshot_status: failure.status,
+        state_snapshot_failure: failure.code,
+      }));
+      continue;
+    }
+
     findings.push(coverageGapFinding('run_record', artifactVersions, {
       observed_behavior: `Migration run record ${failure.field} did not include observed state evidence for ${failure.state_kind}.`,
       expected_behavior: 'Passing migration conformance records observed before/after state cells for every required migration state kind, not just the expected state-kind list.',
@@ -2565,6 +2757,18 @@ function firstNonEmptyObject(container, fields) {
   for (const field of fields) {
     const value = objectValue(object[field]);
     if (Object.keys(value).length > 0) {
+      return value;
+    }
+  }
+
+  return {};
+}
+
+function firstNonEmptyEvidenceObject(container, fields) {
+  const object = objectValue(container);
+  for (const field of fields) {
+    const value = objectValue(object[field]);
+    if (Object.keys(value).length > 0 && !isEmptyEvidence(value)) {
       return value;
     }
   }
