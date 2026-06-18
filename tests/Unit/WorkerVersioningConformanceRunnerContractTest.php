@@ -514,6 +514,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'DW_WV_WATERLINE_URL',
             'DW_WV_WATERLINE_CONNECT_HOST',
             'DW_WV_WATERLINE_RUNTIME_IMAGE',
+            'DW_WV_WATERLINE_DB_HOST',
+            'DW_WV_WATERLINE_DOCKER_NETWORK',
             'DW_WV_SKIP_WATERLINE_SHARD',
             'durable-workflow/waterline:${DW_WATERLINE_VERSION}',
             'waterline-compose.yml',
@@ -525,6 +527,11 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'wait_for_waterline',
             'WATERLINE_NAMESPACE: ${DW_WV_NAMESPACE:-worker-versioning-conformance}',
             'packagist://durable-workflow/waterline@${DW_WATERLINE_VERSION}',
+            'DW_WV_SERVER_URL was provided without DW_WV_WATERLINE_URL or DW_WV_WATERLINE_DB_HOST',
+            'DW_WV_SKIP_WATERLINE_SHARD=1 was set without DW_WV_WATERLINE_URL',
+            'waterline_container="dw-worker-versioning-waterline-${run_label}"',
+            '--add-host=host.docker.internal:host-gateway',
+            'waterline-docker-run.log',
         ] as $token) {
             $this->assertStringContainsString($token, $shell);
         }
@@ -542,6 +549,13 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'mergeWaterlineInstallEvidence',
             'Published Waterline worker/workflow views',
             "'Waterline worker and workflow views'",
+            'waterline_artifact_version',
+            'reachability_status',
+            'rollout_state_observed',
+            'worker_view_capture',
+            'workflow_view_capture',
+            'directNodeWaterlineAttachBlocker',
+            'direct Node invocation cannot boot Waterline',
         ] as $token) {
             $this->assertStringContainsString($token, $node);
         }
@@ -549,6 +563,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         foreach ([
             'DW_WV_WATERLINE_URL',
             'DW_WV_WATERLINE_CONNECT_HOST',
+            'DW_WV_WATERLINE_DB_HOST',
+            'DW_WV_WATERLINE_DOCKER_NETWORK',
             'DW_WV_SKIP_WATERLINE_SHARD',
             'published_waterline_worker_workflow_view_capture',
             'waterline-url.txt',
@@ -566,6 +582,78 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             $shell,
             'the disposable Waterline service must not run under composer:2 because it lacks pdo_mysql',
         );
+    }
+
+    public function test_shell_reports_external_waterline_attach_prerequisite(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the worker-versioning shell handoff.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $suffix = bin2hex(random_bytes(4));
+        $resultDir = $repoRoot.'/storage/framework/worker-versioning-waterline-result-'.$suffix;
+        $runRoot = $repoRoot.'/storage/framework/worker-versioning-waterline-run-'.$suffix;
+        mkdir($resultDir, 0777, true);
+        mkdir($runRoot, 0777, true);
+
+        try {
+            $process = proc_open(
+                [
+                    'bash',
+                    $repoRoot.'/scripts/conformance/worker-versioning-published-artifacts.sh',
+                    '--result-dir',
+                    $resultDir,
+                    '--keep-run-root',
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_WV_RESULT_DIR' => $resultDir,
+                    'DW_WV_RUN_ROOT' => $runRoot,
+                    'DW_WV_SERVER_URL' => 'http://127.0.0.1:9',
+                    'DW_SERVER_VERSION' => '0.2.419',
+                    'DW_CLI_VERSION' => '0.1.80',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.88',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.204',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.96',
+                    'DW_WV_SERVER_ARTIFACT_SOURCE' => 'published_server_url',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stdout.$stderr);
+
+            $resultPath = $resultDir.'/worker-versioning-result.json';
+            $recordPath = $resultDir.'/worker-versioning-record.json';
+            $this->assertFileExists($resultPath);
+            $this->assertFileExists($recordPath);
+
+            $result = json_decode((string) file_get_contents($resultPath), true, 512, JSON_THROW_ON_ERROR);
+            $record = json_decode((string) file_get_contents($recordPath), true, 512, JSON_THROW_ON_ERROR);
+            $reason = 'DW_WV_SERVER_URL was provided without DW_WV_WATERLINE_URL or DW_WV_WATERLINE_DB_HOST; the runner cannot attach published Waterline to the same worker-versioning run database';
+
+            $this->assertSame('non_passing_runner_blocked', $result['outcome']);
+            $this->assertTrue($result['runner_blocked']);
+            $this->assertSame($reason, $result['scenario_results']['operator_visibility_surfaces']['observed_outputs']['blocked_reason']);
+            $this->assertSame('non_passing_runner_blocked', $record['outcome']);
+            $this->assertTrue($record['runner_blocked']);
+        } finally {
+            $this->removeDirectory($resultDir);
+            $this->removeDirectory($runRoot);
+        }
     }
 
     public function test_published_artifact_runner_gates_replay_cells_on_zero_incompatible_delivery(): void

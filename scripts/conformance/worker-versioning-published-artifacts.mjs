@@ -109,8 +109,6 @@ async function main() {
   let artifactSources = artifactSourcesFromEnv();
   let installEvidence = artifactInstallEvidence(artifactVersions, artifactSources);
   artifactSources = mergeArtifactSources(artifactSources, installEvidence);
-  maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions, artifactSources);
-  const publishedWorkerEvidence = publishedWorkerExecutionEvidence(artifactVersions, artifactSources);
   writePublishedArtifacts(artifactVersions, artifactSources, installEvidence);
 
   const versionFailures = artifactVersionFailures(artifactVersions);
@@ -124,6 +122,21 @@ async function main() {
     ));
     return;
   }
+
+  const waterlineAttachBlocker = directNodeWaterlineAttachBlocker();
+  if (waterlineAttachBlocker) {
+    writeResult(blockedResult(
+      waterlineAttachBlocker,
+      startedAt,
+      timestamp(),
+      artifactVersions,
+      artifactSources,
+    ));
+    return;
+  }
+
+  maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions, artifactSources);
+  const publishedWorkerEvidence = publishedWorkerExecutionEvidence(artifactVersions, artifactSources);
 
   const token = process.env.DW_WV_AUTH_TOKEN ?? 'dev-token';
   const namespace = process.env.DW_WV_NAMESPACE ?? 'worker-versioning-conformance';
@@ -1446,6 +1459,22 @@ function blockedResult(reason, startedAt, finishedAt, artifactVersions = {}, art
   };
 }
 
+function directNodeWaterlineAttachBlocker() {
+  if (configuredWaterlineUrl()) {
+    return '';
+  }
+
+  if (['1', 'true', 'yes'].includes(String(process.env.DW_WV_SKIP_WATERLINE_SHARD ?? '').toLowerCase())) {
+    return 'DW_WV_SKIP_WATERLINE_SHARD=1 was set without DW_WV_WATERLINE_URL; provide a Packagist-installed Waterline URL for the same worker-versioning topology or allow the shell runner to boot Waterline';
+  }
+
+  if (trim(process.env.DW_WV_WATERLINE_DB_HOST) || trim(process.env.DW_WATERLINE_DB_HOST)) {
+    return 'DW_WV_WATERLINE_DB_HOST was provided without DW_WV_WATERLINE_URL, but direct Node invocation cannot boot Waterline; run worker-versioning-published-artifacts.sh so the Packagist Waterline shard is attached to the same database';
+  }
+
+  return 'DW_WV_SERVER_URL was provided without DW_WV_WATERLINE_URL or DW_WV_WATERLINE_DB_HOST; the runner cannot attach published Waterline to the same worker-versioning run database';
+}
+
 async function ensureNamespace(serverUrl, namespace, bootstrapHeaders, namespaceHeaders) {
   const show = await getJson(
     serverUrl,
@@ -2254,7 +2283,9 @@ async function capturePublishedWaterlineOperatorVisibility({
     surface: 'waterline',
     artifact_versions: { waterline: stringValue(artifactVersions.waterline) },
     artifact_sources: { waterline: stringValue(artifactSources.waterline) || 'packagist_release' },
+    waterline_artifact_version: stringValue(artifactVersions.waterline),
     waterline_url: waterlineUrl,
+    reachability_status: health.ok ? 'reachable' : 'unreachable',
     namespace,
     task_queue: taskQueue,
     worker_cohorts: workerCohorts,
@@ -2271,6 +2302,15 @@ async function capturePublishedWaterlineOperatorVisibility({
         : {}),
     },
     rollout_state: rolloutState,
+    rollout_state_observed: Object.keys(queueVisibility).length > 0 || Object.keys(routingDrains).length > 0,
+    worker_view_capture: workerRows,
+    workflow_view_capture: {
+      [v1RunId]: waterlineRunSummary(v1RunDetail.body, completedV1Item),
+      [promotedRunId]: waterlineRunSummary(promotedRunDetail.body, completedPromotedItem),
+      ...(noCompatibleWorkflowId && noCompatibleRunId
+        ? { [noCompatibleRunId]: waterlineRunSummary(noCompatibleRunDetail.body, runningItem) }
+        : {}),
+    },
     api_captures: {
       health,
       running_list: runningList,

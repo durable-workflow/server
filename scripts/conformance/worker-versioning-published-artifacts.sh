@@ -40,9 +40,10 @@ Environment overrides:
                               replay/cache shard and a PHP/Python cross-language shard
                               from published PyPI and Packagist artifacts.
   DW_WV_WATERLINE_URL         Existing published Waterline URL for the same run database.
-                              When unset and this runner starts the server compose
-                              topology, a disposable Packagist-installed Waterline
-                              app is booted against that database.
+                              When unset, a disposable Packagist-installed Waterline
+                              app is booted against the server run database when
+                              the topology is self-started or external DB attach
+                              coordinates are supplied.
   DW_WV_WATERLINE_RUNTIME_IMAGE
                               PHP runtime image used for the disposable Waterline app.
                               Must provide pdo_mysql. Defaults to the published
@@ -51,6 +52,16 @@ Environment overrides:
   DW_WV_WATERLINE_BIND_HOST   Host interface for the Waterline port. Defaults to 127.0.0.1.
   DW_WV_WATERLINE_CONNECT_HOST
                               Hostname used by the probe for the Waterline URL. Defaults to 127.0.0.1.
+  DW_WV_WATERLINE_DB_HOST     Required when DW_WV_SERVER_URL points at an external
+                              server and DW_WV_WATERLINE_URL is unset. It must name
+                              the same MySQL run database used by that server.
+  DW_WV_WATERLINE_DB_PORT     External database port. Defaults to DB_PORT or 3306.
+  DW_WV_WATERLINE_DB_DATABASE External database name. Defaults to DB_DATABASE or durable_workflow.
+  DW_WV_WATERLINE_DB_USERNAME External database user. Defaults to DB_USERNAME or workflow.
+  DW_WV_WATERLINE_DB_PASSWORD External database password. Defaults to DB_PASSWORD or workflow.
+  DW_WV_WATERLINE_DOCKER_NETWORK
+                              Optional Docker network for the disposable Waterline
+                              container when attaching to an external server topology.
   DW_WV_SKIP_WATERLINE_SHARD=1
                               Skip automatic Waterline bootstrapping.
   DW_WV_WORKER_POLL_CLIENT_TIMEOUT_SECONDS
@@ -180,10 +191,17 @@ compose_project="dw-worker-versioning-${run_label}"
 server_url="${DW_WV_SERVER_URL:-}"
 server_started=0
 compose_cleanup_needed=0
+server_image="${DW_SERVER_IMAGE:-}"
 server_artifact_source="published_server_url"
+waterline_container=""
 
 cleanup() {
   local code=$?
+
+  if [[ -n "$waterline_container" ]]; then
+    docker logs "$waterline_container" >"$result_dir/waterline.log" 2>&1 || true
+    docker rm -f "$waterline_container" >/dev/null 2>&1 || true
+  fi
 
   if [[ "$server_started" == "1" || "$compose_cleanup_needed" == "1" ]]; then
     if [[ -f "$run_root/waterline-compose.yml" ]]; then
@@ -268,6 +286,32 @@ fs.writeFileSync(
 NODE
 }
 
+run_published_worker_shard() {
+  if [[ -z "${DW_WV_PUBLISHED_WORKER_EVIDENCE:-}" ]]; then
+    export DW_WV_PUBLISHED_WORKER_EVIDENCE="$result_dir/published-worker-execution-evidence.json"
+  fi
+
+  if [[ "${DW_WV_SKIP_PUBLISHED_WORKER_SHARD:-0}" != "1" ]]; then
+    if require_command timeout; then
+      shard_timeout_seconds="${DW_WV_PUBLISHED_WORKER_SHARD_TIMEOUT_SECONDS:-90}"
+      shard_status=0
+      timeout "${shard_timeout_seconds}s" node "$script_dir/worker-versioning-published-workers.mjs" >"$result_dir/published-worker-shard-direct.log" 2>&1 || shard_status=$?
+      if [[ "$shard_status" -ne 0 ]]; then
+        printf 'published worker shard did not complete during direct shell handoff; aggregating available evidence\n' >>"$result_dir/published-worker-shard-direct.log"
+        if [[ ! -s "${DW_WV_PUBLISHED_WORKER_EVIDENCE:-}" ]]; then
+          shard_timed_out=0
+          if [[ "$shard_status" -eq 124 || "$shard_status" -eq 137 ]]; then
+            shard_timed_out=1
+          fi
+          write_published_worker_fallback_evidence "$shard_status" "$shard_timed_out"
+        fi
+      fi
+
+      export DW_WV_SKIP_PUBLISHED_WORKER_SHARD=1
+    fi
+  fi
+}
+
 wait_for_waterline() {
   local url="$1"
 
@@ -318,7 +362,6 @@ if [[ -z "$server_url" ]]; then
 
   server_port="${DW_WV_SERVER_PORT:-$(free_port)}"
   server_url="http://127.0.0.1:${server_port}"
-  server_image="${DW_SERVER_IMAGE:-}"
   if [[ -z "$server_image" ]]; then
     if [[ -z "${DW_SERVER_VERSION:-}" ]]; then
       write_blocked_result 'DW_SERVER_VERSION or DW_SERVER_IMAGE is required so worker-versioning conformance can run an exact published server artifact'
@@ -378,15 +421,32 @@ export DW_WV_RESULT_DIR="$result_dir"
 export DW_WV_RUN_ROOT="$run_root"
 export DW_WV_REPO_ROOT="$repo_root"
 
-if [[ -z "${DW_WV_WATERLINE_URL:-}" && "${DW_WV_SKIP_WATERLINE_SHARD:-0}" != "1" && "$server_started" == "1" ]]; then
-  if ! require_command docker; then
-    write_blocked_result 'worker-versioning Waterline visibility requires docker unless DW_WV_WATERLINE_URL points at an already running published Waterline app'
+if [[ -n "${DW_WV_BLOCKED_REASON:-}" ]]; then
+  run_published_worker_shard
+  node "$script_dir/worker-versioning-published-artifacts.mjs"
+  exit 0
+fi
+
+if [[ -z "${DW_WV_WATERLINE_URL:-}" ]]; then
+  if [[ "${DW_WV_SKIP_WATERLINE_SHARD:-0}" == "1" ]]; then
+    write_blocked_result 'DW_WV_SKIP_WATERLINE_SHARD=1 was set without DW_WV_WATERLINE_URL; provide a Packagist-installed Waterline URL for the same worker-versioning topology or allow the runner to boot Waterline'
     exit 0
   fi
 
   workflow_php_version="${DW_WORKFLOW_PHP_VERSION:-${DW_WORKFLOW_VERSION:-}}"
   if [[ -z "${DW_WATERLINE_VERSION:-}" || -z "$workflow_php_version" ]]; then
     write_blocked_result 'DW_WATERLINE_VERSION and DW_WORKFLOW_PHP_VERSION are required to boot the published Waterline visibility shard'
+    exit 0
+  fi
+
+  waterline_db_host="${DW_WV_WATERLINE_DB_HOST:-${DW_WATERLINE_DB_HOST:-}}"
+  if [[ "$server_started" != "1" && -z "$waterline_db_host" ]]; then
+    write_blocked_result 'DW_WV_SERVER_URL was provided without DW_WV_WATERLINE_URL or DW_WV_WATERLINE_DB_HOST; the runner cannot attach published Waterline to the same worker-versioning run database'
+    exit 0
+  fi
+
+  if ! require_command docker; then
+    write_blocked_result 'worker-versioning Waterline visibility requires docker unless DW_WV_WATERLINE_URL points at an already running published Waterline app'
     exit 0
   fi
 
@@ -405,7 +465,14 @@ if [[ -z "${DW_WV_WATERLINE_URL:-}" && "${DW_WV_SKIP_WATERLINE_SHARD:-0}" != "1"
   waterline_connect_host="${DW_WV_WATERLINE_CONNECT_HOST:-127.0.0.1}"
   waterline_port="${DW_WV_WATERLINE_PORT:-$(free_port)}"
   waterline_url="http://${waterline_connect_host}:${waterline_port}"
+  if [[ -z "$server_image" && -n "${DW_SERVER_VERSION:-}" ]]; then
+    server_image="durableworkflow/server:${DW_SERVER_VERSION}"
+  fi
   waterline_runtime_image="${DW_WV_WATERLINE_RUNTIME_IMAGE:-$server_image}"
+  if [[ -z "$waterline_runtime_image" ]]; then
+    write_blocked_result 'DW_WV_WATERLINE_RUNTIME_IMAGE, DW_SERVER_IMAGE, or DW_SERVER_VERSION is required to run the disposable published Waterline app'
+    exit 0
+  fi
   if ! docker run --rm --entrypoint php "$waterline_runtime_image" -m >"$result_dir/waterline-runtime-php-modules.txt" 2>&1; then
     write_blocked_result "published Waterline runtime image ${waterline_runtime_image} could not report PHP modules; see waterline-runtime-php-modules.txt"
     exit 0
@@ -415,7 +482,8 @@ if [[ -z "${DW_WV_WATERLINE_URL:-}" && "${DW_WV_SKIP_WATERLINE_SHARD:-0}" != "1"
     exit 0
   fi
 
-  cat > "$run_root/waterline-compose.yml" <<YAML
+  if [[ "$server_started" == "1" ]]; then
+    cat > "$run_root/waterline-compose.yml" <<YAML
 services:
   waterline:
     image: "${waterline_runtime_image}"
@@ -452,20 +520,72 @@ services:
         condition: service_healthy
 YAML
 
-  if ! docker compose -p "$compose_project" \
-    -f "$repo_root/docker-compose.published.yml" \
-    -f "$run_root/waterline-compose.yml" \
-    up -d waterline >"$result_dir/waterline-compose-up.log" 2>&1; then
-    write_blocked_result "published Waterline app failed to start; see waterline-compose-up.log"
-    exit 0
+    if ! docker compose -p "$compose_project" \
+      -f "$repo_root/docker-compose.published.yml" \
+      -f "$run_root/waterline-compose.yml" \
+      up -d waterline >"$result_dir/waterline-compose-up.log" 2>&1; then
+      write_blocked_result "published Waterline app failed to start; see waterline-compose-up.log"
+      exit 0
+    fi
+  else
+    waterline_db_port="${DW_WV_WATERLINE_DB_PORT:-${DB_PORT:-3306}}"
+    waterline_db_database="${DW_WV_WATERLINE_DB_DATABASE:-${DB_DATABASE:-durable_workflow}}"
+    waterline_db_username="${DW_WV_WATERLINE_DB_USERNAME:-${DB_USERNAME:-workflow}}"
+    waterline_db_password="${DW_WV_WATERLINE_DB_PASSWORD:-${DB_PASSWORD:-workflow}}"
+    waterline_docker_network="${DW_WV_WATERLINE_DOCKER_NETWORK:-}"
+    waterline_container="dw-worker-versioning-waterline-${run_label}"
+    network_args=()
+    if [[ -n "$waterline_docker_network" ]]; then
+      network_args=(--network "$waterline_docker_network")
+    fi
+
+    if ! docker run -d \
+      --name "$waterline_container" \
+      --add-host=host.docker.internal:host-gateway \
+      "${network_args[@]}" \
+      -p "${waterline_bind_host}:${waterline_port}:8090" \
+      -v "$run_root/waterline-app:/app" \
+      -w /app \
+      -e APP_ENV=local \
+      -e APP_DEBUG=false \
+      -e APP_KEY="base64:UTyp33UhGolgzCK5CJmT+hNHcA+dJyp3+oINtX+VoPI=" \
+      -e APP_URL="http://localhost:${waterline_port}" \
+      -e DB_CONNECTION=mysql \
+      -e DB_HOST="$waterline_db_host" \
+      -e DB_PORT="$waterline_db_port" \
+      -e DB_DATABASE="$waterline_db_database" \
+      -e DB_USERNAME="$waterline_db_username" \
+      -e DB_PASSWORD="$waterline_db_password" \
+      -e QUEUE_CONNECTION=sync \
+      -e CACHE_STORE=array \
+      -e SESSION_DRIVER=array \
+      -e WATERLINE_ALLOW_UNAUTHENTICATED=true \
+      -e WATERLINE_ENGINE_SOURCE=v2 \
+      -e WATERLINE_HEALTH_TASK_DISPATCH_MODE=poll \
+      -e WATERLINE_NAMESPACE="${DW_WV_NAMESPACE:-worker-versioning-conformance}" \
+      -e DW_V2_TASK_DISPATCH_MODE=poll \
+      "$waterline_runtime_image" \
+      php artisan serve --host=0.0.0.0 --port=8090 \
+      >"$result_dir/waterline-container-id.txt" 2>"$result_dir/waterline-docker-run.log"; then
+      write_blocked_result "published Waterline app failed to start against external database host ${waterline_db_host}; see waterline-docker-run.log"
+      exit 0
+    fi
   fi
 
   if ! wait_for_waterline "$waterline_url"; then
-    docker compose -p "$compose_project" \
-      -f "$repo_root/docker-compose.published.yml" \
-      -f "$run_root/waterline-compose.yml" \
-      logs waterline > "$result_dir/waterline.log" 2>&1 || true
-    write_blocked_result "published Waterline app was installed but did not become reachable at ${waterline_url}; see waterline.log"
+    if [[ "$server_started" == "1" ]]; then
+      docker compose -p "$compose_project" \
+        -f "$repo_root/docker-compose.published.yml" \
+        -f "$run_root/waterline-compose.yml" \
+        logs waterline > "$result_dir/waterline.log" 2>&1 || true
+    elif [[ -n "$waterline_container" ]]; then
+      docker logs "$waterline_container" >"$result_dir/waterline.log" 2>&1 || true
+    fi
+    if [[ "$server_started" == "1" ]]; then
+      write_blocked_result "published Waterline app was installed but did not become reachable at ${waterline_url}; see waterline.log"
+    else
+      write_blocked_result "published Waterline app was installed but did not become reachable at ${waterline_url} while attached to external database host ${waterline_db_host}; see waterline.log"
+    fi
     exit 0
   fi
 
@@ -474,28 +594,6 @@ YAML
   printf '%s\n' "$waterline_url" > "$result_dir/waterline-url.txt"
 fi
 
-if [[ -z "${DW_WV_PUBLISHED_WORKER_EVIDENCE:-}" ]]; then
-  export DW_WV_PUBLISHED_WORKER_EVIDENCE="$result_dir/published-worker-execution-evidence.json"
-fi
-
-if [[ "${DW_WV_SKIP_PUBLISHED_WORKER_SHARD:-0}" != "1" ]]; then
-  if require_command timeout; then
-    shard_timeout_seconds="${DW_WV_PUBLISHED_WORKER_SHARD_TIMEOUT_SECONDS:-90}"
-    shard_status=0
-    timeout "${shard_timeout_seconds}s" node "$script_dir/worker-versioning-published-workers.mjs" >"$result_dir/published-worker-shard-direct.log" 2>&1 || shard_status=$?
-    if [[ "$shard_status" -ne 0 ]]; then
-      printf 'published worker shard did not complete during direct shell handoff; aggregating available evidence\n' >>"$result_dir/published-worker-shard-direct.log"
-      if [[ ! -s "${DW_WV_PUBLISHED_WORKER_EVIDENCE:-}" ]]; then
-        shard_timed_out=0
-        if [[ "$shard_status" -eq 124 || "$shard_status" -eq 137 ]]; then
-          shard_timed_out=1
-        fi
-        write_published_worker_fallback_evidence "$shard_status" "$shard_timed_out"
-      fi
-    fi
-
-    export DW_WV_SKIP_PUBLISHED_WORKER_SHARD=1
-  fi
-fi
+run_published_worker_shard
 
 node "$script_dir/worker-versioning-published-artifacts.mjs"
