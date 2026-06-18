@@ -173,6 +173,7 @@ jobs:
           DOCS_RELEASE_AUDIT_ARTIFACT: server
           DOCS_RELEASE_AUDIT_VERSION: ${{ steps.release_publish.outputs.tag || github.event.inputs.tag || github.ref_name }}
           DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json
+          DOCS_RELEASE_AUDIT_HANDOFF: docs-release-audit-handoff.json
         run: scripts/ci/check-docs-release-audit.sh
 
       - name: Upload release image publish evidence
@@ -183,4 +184,5 @@ jobs:
           path: |
             release-image-publish-evidence.json
             docs-release-audit-evidence.json
+            docs-release-audit-handoff.json
           if-no-files-found: error

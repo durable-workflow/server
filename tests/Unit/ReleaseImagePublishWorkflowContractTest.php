@@ -235,8 +235,10 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
             'DOCS_RELEASE_AUDIT_ARTIFACT: server',
             'DOCS_RELEASE_AUDIT_VERSION: ${{ steps.release_publish.outputs.tag || github.event.inputs.tag || github.ref_name }}',
             'DOCS_RELEASE_AUDIT_EVIDENCE: docs-release-audit-evidence.json',
+            'DOCS_RELEASE_AUDIT_HANDOFF: docs-release-audit-handoff.json',
             'scripts/ci/check-docs-release-audit.sh',
             'docs-release-audit-evidence.json',
+            'docs-release-audit-handoff.json',
         ] as $needle) {
             $this->assertStringContainsString($needle, $workflow);
         }
@@ -244,9 +246,13 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringContainsString('contents: read', $workflow);
         $this->assertStringNotContainsString('contents: write', $workflow);
         $this->assertStringContainsString('durable-workflow.release.docs-release-audit-evidence', $auditor);
+        $this->assertStringContainsString('durable-workflow.release.docs-artifact-tuple-handoff', $auditor);
+        $this->assertStringContainsString('DOCS_RELEASE_AUDIT_HANDOFF', $auditor);
         $this->assertStringContainsString("schema: 'durable-workflow.docs.refresh-request'", $auditor);
         $this->assertStringContainsString("repository: 'durable-workflow.github.io'", $auditor);
         $this->assertStringContainsString("refresh_command: 'npm run refresh:public-artifact-versions'", $auditor);
+        $this->assertStringContainsString('refresh_files: refreshFiles', $auditor);
+        $this->assertStringContainsString('docs_artifact_tuple_handoff: handoff', $auditor);
         $this->assertStringContainsString('observed_artifact_versions: versions', $auditor);
 
         $buildOffset = strpos($workflow, 'Build and push exact image tags');
