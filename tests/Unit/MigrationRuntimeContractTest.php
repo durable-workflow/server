@@ -433,6 +433,42 @@ class MigrationRuntimeContractTest extends TestCase
         ));
     }
 
+    public function test_result_gate_rejects_declared_only_realistic_state_item_lists(): void
+    {
+        $result = $this->completeMigrationResult();
+        $result['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_workflows'] = [
+            'completed_workflow',
+            'running_workflow_waiting_on_signal',
+            'workflow_with_activity',
+            'workflow_mid_activity_retry',
+        ];
+        $result['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_schedules'] = [
+            'active_schedule',
+        ];
+        $result['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_worker_registrations'] = [
+            'registered_workers',
+        ];
+        $result['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['queryable_history'] = [
+            'queryable_history',
+        ];
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+        $missingFields = $this->missingScenarioRequiredFields($evaluation, 'latest_supported_v1_state_setup');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        foreach ([
+            'seeded_workflows.completed_workflow',
+            'seeded_workflows.running_workflow_waiting_on_signal',
+            'seeded_workflows.workflow_with_activity',
+            'seeded_workflows.workflow_mid_activity_retry',
+            'seeded_schedules.active_schedule',
+            'seeded_worker_registrations.registered_workers',
+            'queryable_history.queryable_history',
+        ] as $field) {
+            $this->assertContains($field, $missingFields);
+        }
+    }
+
     public function test_result_gate_rejects_expected_state_kind_snapshots_without_observed_state(): void
     {
         $result = $this->completeMigrationResult();
@@ -584,6 +620,33 @@ class MigrationRuntimeContractTest extends TestCase
         foreach (['migration_plan', 'rollback_observations'] as $field) {
             $this->assertContains($field, $this->missingRunRecordFields($evaluation));
         }
+    }
+
+    public function test_result_gate_rejects_placeholder_string_required_evidence(): void
+    {
+        $result = $this->completeMigrationResult();
+        $result['scenario_results']['completed_history_preservation_and_replay']['observed_outputs']['replay_result'] =
+            'not_executed_by_public_guide_audit';
+        $result['scenario_results']['documented_migration_steps_execute']['observed_outputs']['commands_executed'] = [
+            'not_executed_by_public_guide_audit',
+        ];
+        $result['history_dumps'] = [
+            'status' => 'pass',
+            'completed_history' => 'not_executed_by_public_guide_audit',
+        ];
+
+        $evaluation = MigrationRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'replay_result',
+            $this->missingScenarioRequiredFields($evaluation, 'completed_history_preservation_and_replay'),
+        );
+        $this->assertContains(
+            'commands_executed',
+            $this->missingScenarioRequiredFields($evaluation, 'documented_migration_steps_execute'),
+        );
+        $this->assertContains('history_dumps', $this->missingRunRecordFields($evaluation));
     }
 
     public function test_result_gate_accepts_false_and_zero_scenario_required_field_values(): void

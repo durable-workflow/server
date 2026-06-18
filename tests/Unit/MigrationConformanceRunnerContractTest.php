@@ -74,6 +74,8 @@ class MigrationConformanceRunnerContractTest extends TestCase
             'missingRollbackClassificationFields',
             'cli-v1-to-server-v2',
             'worker-v2-to-server-v1',
+            'PLACEHOLDER_EVIDENCE_TOKENS',
+            'isPlaceholderEvidenceString',
         ] as $token) {
             $this->assertStringContainsString($token, $node);
         }
@@ -1022,6 +1024,51 @@ COMMAND;
         }
     }
 
+    public function test_runner_rejects_placeholder_required_evidence_before_passing(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the migration runner placeholder evidence gate.');
+        }
+
+        $evidence = $this->completeRunnerEvidence();
+        $evidence['scenario_results']['completed_history_preservation_and_replay']['observed_outputs']['replay_result'] =
+            'not_executed_by_public_guide_audit';
+        $evidence['scenario_results']['documented_migration_steps_execute']['observed_outputs']['commands_executed'] = [
+            'not_executed_by_public_guide_audit',
+        ];
+        $evidence['history_dumps'] = [
+            'status' => 'pass',
+            'completed_history' => 'not_executed_by_public_guide_audit',
+        ];
+
+        $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-placeholder-evidence-');
+
+        $this->assertSame('non_passing', $result['outcome']);
+        $this->assertSame(
+            'not_covered',
+            $result['scenario_results']['completed_history_preservation_and_replay']['status'],
+        );
+        $this->assertContains(
+            'replay_result',
+            $result['scenario_results']['completed_history_preservation_and_replay']['observed_outputs']['missing_required_fields'],
+        );
+        $this->assertSame(
+            'not_covered',
+            $result['scenario_results']['documented_migration_steps_execute']['status'],
+        );
+        $this->assertContains(
+            'commands_executed',
+            $result['scenario_results']['documented_migration_steps_execute']['observed_outputs']['missing_required_fields'],
+        );
+
+        $runRecordFindings = $result['finding_links']['run_record'] ?? [];
+        $this->assertNotEmpty(array_filter(
+            $runRecordFindings,
+            static fn (array $finding): bool => ($finding['missing_run_record_field'] ?? null) === 'history_dumps',
+        ));
+    }
+
     public function test_runner_downgrades_supplied_pass_scenario_with_missing_required_fields(): void
     {
         $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
@@ -1059,9 +1106,18 @@ COMMAND;
 
         $evidence = $this->completeRunnerEvidence();
         $evidence['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_workflows'] =
-            'seeded_workflows-observed';
+            [
+                'completed_workflow',
+                'running_workflow_waiting_on_signal',
+                'workflow_with_activity',
+                'workflow_mid_activity_retry',
+            ];
+        $evidence['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_schedules'] =
+            ['active_schedule'];
+        $evidence['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['seeded_worker_registrations'] =
+            ['registered_workers'];
         $evidence['scenario_results']['latest_supported_v1_state_setup']['observed_outputs']['queryable_history'] =
-            'queryable_history-observed';
+            ['queryable_history'];
 
         $result = $this->runRunnerEvidence($nodeBinary, $evidence, 'dw-migration-shallow-state-');
         $scenario = $result['scenario_results']['latest_supported_v1_state_setup'];
@@ -1073,6 +1129,8 @@ COMMAND;
             'seeded_workflows.running_workflow_waiting_on_signal',
             'seeded_workflows.workflow_with_activity',
             'seeded_workflows.workflow_mid_activity_retry',
+            'seeded_schedules.active_schedule',
+            'seeded_worker_registrations.registered_workers',
             'queryable_history.queryable_history',
         ] as $field) {
             $this->assertContains($field, $scenario['observed_outputs']['missing_required_fields']);

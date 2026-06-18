@@ -12,6 +12,34 @@ final class MigrationRuntimeResultGate
 
     public const VERSION = 1;
 
+    private const PLACEHOLDER_EVIDENCE_TOKENS = [
+        'not_executed',
+        'not_executed_by_public_guide_audit',
+        'not_documented_by_public_guide_audit',
+        'documented_but_not_executed',
+        'blocked_before_execution_by_unexecutable_public_guide_commands',
+        'not_exercised',
+        'not_supplied',
+        'not_available',
+        'placeholder',
+    ];
+
+    private const EVIDENCE_METADATA_FIELDS = [
+        'status',
+        'kind',
+        'source',
+        'phase',
+        'state_kind',
+        'stateKind',
+        'state_kinds',
+        'stateKinds',
+        'expected_state_kinds',
+        'expectedStateKinds',
+        'type',
+        'name',
+        'scenario',
+    ];
+
     /**
      * @return array<string, mixed>
      */
@@ -1198,18 +1226,57 @@ final class MigrationRuntimeResultGate
 
     private static function isEmptyEvidence(mixed $value): bool
     {
-        if ($value === null || $value === [] || (is_string($value) && trim($value) === '')) {
+        if ($value === null) {
             return true;
+        }
+
+        if (is_string($value)) {
+            return trim($value) === '' || self::isPlaceholderEvidenceString($value);
         }
 
         if (! is_array($value)) {
             return false;
         }
 
-        $status = strtolower(self::stringValue($value['status'] ?? null));
+        if ($value === []) {
+            return true;
+        }
 
-        return in_array($status, ['not_covered', 'runner_blocked'], true)
-            || self::boolValue($value['coverage_gap'] ?? false);
+        $status = strtolower(self::stringValue($value['status'] ?? null));
+        if (
+            in_array($status, ['not_covered', 'runner_blocked'], true)
+            || self::boolValue($value['coverage_gap'] ?? false)
+        ) {
+            return true;
+        }
+
+        foreach ($value as $key => $entry) {
+            if (is_string($key) && in_array($key, self::EVIDENCE_METADATA_FIELDS, true)) {
+                continue;
+            }
+
+            if (! self::isEmptyEvidence($entry)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static function isPlaceholderEvidenceString(string $value): bool
+    {
+        $normalized = strtolower(trim($value));
+        if ($normalized === '') {
+            return true;
+        }
+
+        foreach (self::PLACEHOLDER_EVIDENCE_TOKENS as $token) {
+            if ($normalized === $token || str_contains($normalized, $token)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1363,10 +1430,6 @@ final class MigrationRuntimeResultGate
         }
 
         foreach ($value as $entry) {
-            if (self::stringValue($entry) === $item) {
-                return true;
-            }
-
             if (! is_array($entry)) {
                 continue;
             }

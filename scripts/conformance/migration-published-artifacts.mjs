@@ -102,6 +102,32 @@ const FALLBACK_PLACEHOLDER_VERSION_EXAMPLES = [
   '${VERSION}',
   '{{ version }}',
 ];
+const PLACEHOLDER_EVIDENCE_TOKENS = [
+  'not_executed',
+  'not_executed_by_public_guide_audit',
+  'not_documented_by_public_guide_audit',
+  'documented_but_not_executed',
+  'blocked_before_execution_by_unexecutable_public_guide_commands',
+  'not_exercised',
+  'not_supplied',
+  'not_available',
+  'placeholder',
+];
+const EVIDENCE_METADATA_FIELDS = [
+  'status',
+  'kind',
+  'source',
+  'phase',
+  'state_kind',
+  'stateKind',
+  'state_kinds',
+  'stateKinds',
+  'expected_state_kinds',
+  'expectedStateKinds',
+  'type',
+  'name',
+  'scenario',
+];
 const FORBIDDEN_SOURCE_TOKENS = [
   'not_exercised',
   'local_product_source_checkout',
@@ -3183,10 +3209,6 @@ function evidenceContainsItem(value, item) {
   }
 
   for (const entry of Array.isArray(value) ? value : Object.values(object)) {
-    if (stringValue(entry) === item) {
-      return true;
-    }
-
     if (!entry || typeof entry !== 'object') {
       continue;
     }
@@ -3247,10 +3269,10 @@ function isEmptyEvidence(value) {
     return true;
   }
   if (typeof value === 'string') {
-    return value.trim() === '';
+    return value.trim() === '' || isPlaceholderEvidenceString(value);
   }
   if (Array.isArray(value)) {
-    return value.length === 0;
+    return value.length === 0 || value.every((entry) => isEmptyEvidence(entry));
   }
   if (typeof value === 'object') {
     const status = stringValue(value.status).toLowerCase();
@@ -3258,9 +3280,26 @@ function isEmptyEvidence(value) {
       return true;
     }
 
-    return Object.keys(value).length === 0;
+    const entries = Object.entries(value);
+    if (entries.length === 0) {
+      return true;
+    }
+
+    return entries.every(([key, entry]) => EVIDENCE_METADATA_FIELDS.includes(key) || isEmptyEvidence(entry));
   }
   return false;
+}
+
+function isPlaceholderEvidenceString(value) {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === '') {
+    return true;
+  }
+
+  return PLACEHOLDER_EVIDENCE_TOKENS.some((token) => {
+    const candidate = token.toLowerCase();
+    return normalized === candidate || normalized.includes(candidate);
+  });
 }
 
 function fieldValue(container, field) {
