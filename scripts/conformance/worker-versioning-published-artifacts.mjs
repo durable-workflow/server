@@ -55,6 +55,11 @@ const cliCommandTimeoutMs = timeoutMsFromEnv(
   'DW_WV_CLI_COMMAND_TIMEOUT_SECONDS',
   30000,
 );
+const waterlineRequestTimeoutMs = timeoutMsFromEnv(
+  'DW_WV_WATERLINE_REQUEST_TIMEOUT_MS',
+  'DW_WV_WATERLINE_REQUEST_TIMEOUT_SECONDS',
+  20000,
+);
 
 const scenarioManifest = readJsonIfExists(scenarioManifestPath) ?? {};
 const requiredScenarios = Array.isArray(scenarioManifest.scenarios)
@@ -555,6 +560,37 @@ async function main() {
       ].includes(pathName));
   }
 
+  const waterlineOperatorVisibility = await publishedWaterlineOperatorVisibility({
+    namespace,
+    taskQueue,
+    buildV1,
+    buildV2,
+    v1WorkflowId,
+    v1RunId,
+    promotedWorkflowId: stringValue(promotedRun.workflow_id),
+    promotedRunId: stringValue(promotedRun.run_id),
+    noCompatibleWorkflowId,
+    noCompatibleRunId,
+    artifactVersions,
+    artifactSources,
+    drain,
+    resume,
+  });
+  installEvidence = mergeWaterlineInstallEvidence(
+    installEvidence,
+    waterlineOperatorVisibility.waterline_install_evidence,
+  );
+  artifactSources = mergeArtifactSources(artifactSources, installEvidence);
+  writePublishedArtifacts(artifactVersions, artifactSources, installEvidence);
+  if (waterlineOperatorVisibility.status === 'pass') {
+    runtimeMatrix.operator_visibility_paths = unique([
+      ...runtimeMatrix.operator_visibility_paths,
+      'Waterline worker and workflow views',
+    ]);
+    runtimeMatrix.uncovered_required_operator_visibility_paths = runtimeMatrix.uncovered_required_operator_visibility_paths
+      .filter((pathName) => pathName !== 'Waterline worker and workflow views');
+  }
+
   const adversarial = await postJson(serverUrl, '/api/worker/register', {
     worker_id: v1WorkerId,
     task_queue: taskQueue,
@@ -695,7 +731,6 @@ async function main() {
   }
   const cliRolloutVisibility = objectValue(cliOperatorEvidence.rollout_visibility);
   const cliDrainResumeControls = objectValue(cliOperatorEvidence.drain_resume_controls);
-  const waterlineOperatorVisibility = { status: 'not_exercised_by_server_handoff' };
   const operatorRolloutOutputs = {
     worker_cohorts: unique([
       ...(workerList.workers ?? []).map((worker) => worker.build_id),
@@ -718,12 +753,27 @@ async function main() {
     cli_rollout_visibility_gap: cliOperatorEvidence.rollout_visibility_gap,
     cli_output: cliRolloutVisibility,
   };
-  if (cliOperatorEvidence.rollout_visibility_passes) {
+  if (cliOperatorEvidence.rollout_visibility_passes && waterlineOperatorVisibility.status === 'pass') {
+    addPass('operator_rollout_visibility', operatorRolloutOutputs);
+  } else if (waterlineOperatorVisibility.status === 'fail') {
+    addFail('operator_rollout_visibility', operatorRolloutOutputs, {
+      scenario_id: 'operator_rollout_visibility',
+      owning_surface: 'waterline',
+      artifact_versions: artifactVersions,
+      observed_behavior: waterlineOperatorVisibility.gap
+        || `Published Waterline worker/workflow views did not expose the worker-versioning rollout evidence: ${arrayValue(waterlineOperatorVisibility.missing).join(', ')}`,
+      expected_behavior: 'Operators can distinguish v1 and v2 cohorts, rollout state, and per-run compatibility through published Waterline worker and workflow views.',
+      next_acceptance_criterion: 'publish a Waterline surface that exposes worker cohorts, build IDs, rollout state, and selected-run compatibility for the worker-versioning topology, then rerun this conformance cell',
+      waterline_missing: waterlineOperatorVisibility.missing,
+      waterline_url: waterlineOperatorVisibility.waterline_url,
+    });
+  } else if (cliOperatorEvidence.rollout_visibility_passes) {
     addNotCovered('operator_rollout_visibility', operatorRolloutOutputs, {
       scenario_id: 'operator_rollout_visibility',
       owning_surface: 'waterline',
       artifact_versions: artifactVersions,
-      observed_behavior: 'Published CLI rollout controls were exercised and recorded, but Waterline worker/workflow views are not attached to the worker-versioning rollout evidence.',
+      observed_behavior: waterlineOperatorVisibility.gap
+        || 'Published CLI rollout controls were exercised and recorded, but Waterline worker/workflow views are not attached to the worker-versioning rollout evidence.',
       expected_behavior: 'Operators can distinguish v1 and v2 cohorts, new-start build IDs, and per-run compatibility through both published CLI and Waterline surfaces.',
       next_acceptance_criterion: 'attach published Waterline worker/workflow view captures for the same worker-versioning topology before marking this combined rollout visibility scenario pass',
     });
@@ -1034,20 +1084,38 @@ async function main() {
       operator_visible_signal: noCompatibleSignal,
     });
   }
-  addNotCovered('operator_visibility_surfaces', {
+  const operatorVisibilitySurfacesOutputs = {
     worker_list: workerList,
     task_queue_build_ids: buildIds,
     workflow_visibility: v1RunShow,
     cli_operator_visibility: cliOperatorEvidence.rollout_visibility,
-    waterline_operator_visibility: { status: 'not_exercised_by_server_handoff' },
-  }, {
-    scenario_id: 'operator_visibility_surfaces',
-    owning_surface: 'waterline',
-    artifact_versions: artifactVersions,
-    observed_behavior: 'Server handoff captured worker, task-queue, workflow, and history surfaces but did not boot Waterline.',
-    expected_behavior: 'Full worker-versioning conformance includes Waterline worker and workflow views.',
-    next_acceptance_criterion: 'Attach a published Waterline shard for the same run database or run the full host topology with Waterline enabled.',
-  });
+    waterline_operator_visibility: waterlineOperatorVisibility,
+  };
+  if (waterlineOperatorVisibility.status === 'pass') {
+    addPass('operator_visibility_surfaces', operatorVisibilitySurfacesOutputs);
+  } else if (waterlineOperatorVisibility.status === 'fail') {
+    addFail('operator_visibility_surfaces', operatorVisibilitySurfacesOutputs, {
+      scenario_id: 'operator_visibility_surfaces',
+      owning_surface: 'waterline',
+      artifact_versions: artifactVersions,
+      observed_behavior: waterlineOperatorVisibility.gap
+        || `Published Waterline was booted but did not expose the required worker-versioning views: ${arrayValue(waterlineOperatorVisibility.missing).join(', ')}`,
+      expected_behavior: 'Full worker-versioning conformance includes published Waterline worker and workflow views for the same run database.',
+      next_acceptance_criterion: 'publish a Waterline worker/workflow view that exposes worker cohorts, build IDs, rollout state, and selected-run compatibility, then rerun this conformance cell',
+      waterline_missing: waterlineOperatorVisibility.missing,
+      waterline_url: waterlineOperatorVisibility.waterline_url,
+    });
+  } else {
+    addNotCovered('operator_visibility_surfaces', operatorVisibilitySurfacesOutputs, {
+      scenario_id: 'operator_visibility_surfaces',
+      owning_surface: 'waterline',
+      artifact_versions: artifactVersions,
+      observed_behavior: waterlineOperatorVisibility.gap
+        || 'Server handoff captured worker, task-queue, workflow, and history surfaces but did not boot Waterline.',
+      expected_behavior: 'Full worker-versioning conformance includes Waterline worker and workflow views.',
+      next_acceptance_criterion: 'Attach a published Waterline shard for the same run database or run the full host topology with Waterline enabled.',
+    });
+  }
   const crossLanguageOutputs = {
     php_worker_build_id: `${buildV1}-php`,
     python_worker_build_id: `${buildV2}-python`,
@@ -2012,6 +2080,438 @@ function cliEvidenceGap(checks) {
     .join('; ');
 }
 
+async function publishedWaterlineOperatorVisibility(options) {
+  try {
+    return await capturePublishedWaterlineOperatorVisibility(options);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+
+    return {
+      status: 'not_covered',
+      ok: false,
+      visible: false,
+      gap: `Published Waterline rollout visibility could not be exercised: ${reason}`,
+      missing: ['waterline_capture'],
+      artifact_versions: { waterline: stringValue(options.artifactVersions.waterline) },
+      artifact_sources: { waterline: stringValue(options.artifactSources.waterline) || 'not_exercised' },
+      waterline_install_evidence: waterlineInstallEvidence(
+        options.artifactVersions,
+        options.artifactSources,
+        'not_covered',
+        reason,
+      ),
+      local_product_source_checkouts_used: false,
+    };
+  }
+}
+
+async function capturePublishedWaterlineOperatorVisibility({
+  namespace,
+  taskQueue,
+  buildV1,
+  buildV2,
+  v1WorkflowId,
+  v1RunId,
+  promotedWorkflowId,
+  promotedRunId,
+  noCompatibleWorkflowId,
+  noCompatibleRunId,
+  artifactVersions,
+  artifactSources,
+  drain,
+  resume,
+}) {
+  const waterlineUrl = configuredWaterlineUrl();
+  if (!waterlineUrl) {
+    return {
+      status: 'not_covered',
+      ok: false,
+      visible: false,
+      gap: 'DW_WV_WATERLINE_URL was not provided, so the published Waterline worker/workflow views were not queried.',
+      missing: ['waterline_url'],
+      artifact_versions: { waterline: stringValue(artifactVersions.waterline) },
+      artifact_sources: { waterline: stringValue(artifactSources.waterline) || 'not_exercised' },
+      waterline_install_evidence: waterlineInstallEvidence(
+        artifactVersions,
+        artifactSources,
+        'not_covered',
+        'No running published Waterline URL was supplied.',
+      ),
+      local_product_source_checkouts_used: false,
+    };
+  }
+  writeTextIfNotEmpty(path.join(resultDir, 'waterline-url.txt'), `${waterlineUrl}\n`);
+
+  const health = await waterlineApiSnapshot(
+    waterlineUrl,
+    'GET /waterline/api/v2/health',
+    '/waterline/api/v2/health',
+  );
+  const runningList = await waterlineApiSnapshot(
+    waterlineUrl,
+    'GET /waterline/api/flows/running',
+    '/waterline/api/flows/running',
+  );
+  const completedList = await waterlineApiSnapshot(
+    waterlineUrl,
+    'GET /waterline/api/flows/completed',
+    '/waterline/api/flows/completed',
+  );
+  const v1RunDetail = await waterlineApiSnapshot(
+    waterlineUrl,
+    'GET /waterline/api/instances/{workflowId}/runs/{runId}#v1',
+    waterlineRunDetailPath(v1WorkflowId, v1RunId),
+  );
+  const promotedRunDetail = await waterlineApiSnapshot(
+    waterlineUrl,
+    'GET /waterline/api/instances/{workflowId}/runs/{runId}#promoted',
+    waterlineRunDetailPath(promotedWorkflowId, promotedRunId),
+  );
+  const noCompatibleRunDetail = noCompatibleWorkflowId && noCompatibleRunId
+    ? await waterlineApiSnapshot(
+      waterlineUrl,
+      'GET /waterline/api/instances/{workflowId}/runs/{runId}#no-compatible',
+      waterlineRunDetailPath(noCompatibleWorkflowId, noCompatibleRunId),
+    )
+    : {
+        label: 'GET /waterline/api/instances/{workflowId}/runs/{runId}#no-compatible',
+        ok: false,
+        skipped: true,
+        reason: 'no no-compatible run id was recorded',
+      };
+
+  const healthBody = objectValue(health.body);
+  const workerRows = waterlineWorkerRows(healthBody, taskQueue);
+  const workerCohorts = unique(workerRows.map((worker) => worker.build_id));
+  const queueVisibility = waterlineQueueVisibilityForTaskQueue(healthBody, taskQueue);
+  const routingDrains = objectValue(healthBody.routing_drains ?? healthBody.routingDrains);
+  const v1Compatibility = waterlineRunCompatibility(v1RunDetail.body);
+  const promotedCompatibility = waterlineRunCompatibility(promotedRunDetail.body);
+  const noCompatibleCompatibility = waterlineRunCompatibility(noCompatibleRunDetail.body);
+  const runningItem = waterlineListItem(runningList.body, noCompatibleWorkflowId, noCompatibleRunId);
+  const completedV1Item = waterlineListItem(completedList.body, v1WorkflowId, v1RunId);
+  const completedPromotedItem = waterlineListItem(completedList.body, promotedWorkflowId, promotedRunId);
+  const workflowRunCompatibility = Object.fromEntries(Object.entries({
+    [v1RunId]: v1Compatibility,
+    [promotedRunId]: promotedCompatibility,
+    [noCompatibleRunId]: noCompatibleCompatibility,
+  }).filter(([runId, compatibility]) => stringValue(runId) !== '' && stringValue(compatibility) !== ''));
+  const rolloutState = {
+    routing_drains: routingDrains,
+    queue_visibility: queueVisibility,
+    drain_command_result: objectValue(drain),
+    resume_command_result: objectValue(resume),
+    selected_new_start_build_id_visible: waterlineSelectedNewStartBuildId(healthBody, taskQueue),
+  };
+
+  const missing = [];
+  if (!health.ok) {
+    missing.push('health');
+  }
+  if (!runningList.ok) {
+    missing.push('running_list');
+  }
+  if (!completedList.ok) {
+    missing.push('completed_list');
+  }
+  if (!v1RunDetail.ok) {
+    missing.push('v1_run_detail');
+  }
+  if (!promotedRunDetail.ok) {
+    missing.push('promoted_run_detail');
+  }
+  if (workerRows.length === 0) {
+    missing.push('worker_registrations');
+  }
+  if (!workerCohorts.includes(buildV1)) {
+    missing.push('v1_worker_cohort');
+  }
+  if (!workerCohorts.includes(buildV2)) {
+    missing.push('v2_worker_cohort');
+  }
+  if (Object.keys(queueVisibility).length === 0) {
+    missing.push('queue_visibility');
+  }
+  if (Object.keys(routingDrains).length === 0) {
+    missing.push('rollout_state');
+  }
+  if (v1Compatibility !== buildV1) {
+    missing.push('v1_run_compatibility');
+  }
+  if (promotedCompatibility !== buildV2) {
+    missing.push('promoted_run_compatibility');
+  }
+  if (noCompatibleWorkflowId && noCompatibleRunId && !runningItem && !noCompatibleRunDetail.ok) {
+    missing.push('no_compatible_run_visibility');
+  }
+
+  const status = missing.length === 0 ? 'pass' : 'fail';
+
+  return {
+    status,
+    ok: status === 'pass',
+    visible: status === 'pass',
+    surface: 'waterline',
+    artifact_versions: { waterline: stringValue(artifactVersions.waterline) },
+    artifact_sources: { waterline: stringValue(artifactSources.waterline) || 'packagist_release' },
+    waterline_url: waterlineUrl,
+    namespace,
+    task_queue: taskQueue,
+    worker_cohorts: workerCohorts,
+    worker_view_visible: workerRows.length > 0,
+    workflow_view_visible: v1RunDetail.ok && promotedRunDetail.ok,
+    workflow_compatibility: v1Compatibility,
+    workflow_run_compatibility: workflowRunCompatibility,
+    worker_list: workerRows,
+    workflow_visibility: {
+      [v1RunId]: waterlineRunSummary(v1RunDetail.body, completedV1Item),
+      [promotedRunId]: waterlineRunSummary(promotedRunDetail.body, completedPromotedItem),
+      ...(noCompatibleWorkflowId && noCompatibleRunId
+        ? { [noCompatibleRunId]: waterlineRunSummary(noCompatibleRunDetail.body, runningItem) }
+        : {}),
+    },
+    rollout_state: rolloutState,
+    api_captures: {
+      health,
+      running_list: runningList,
+      completed_list: completedList,
+      v1_run_detail: v1RunDetail,
+      promoted_run_detail: promotedRunDetail,
+      no_compatible_run_detail: noCompatibleRunDetail,
+    },
+    missing,
+    gap: missing.length === 0
+      ? ''
+      : `Published Waterline did not expose required worker-versioning fields: ${missing.join(', ')}`,
+    waterline_install_evidence: waterlineInstallEvidence(
+      artifactVersions,
+      artifactSources,
+      health.ok ? 'pass' : 'fail',
+      health.ok
+        ? 'Published Waterline app served /waterline/api/v2/health from the Packagist-installed app.'
+        : `Published Waterline health did not return a successful response: ${missing.join(', ')}`,
+      waterlineUrl,
+    ),
+    local_product_source_checkouts_used: false,
+  };
+}
+
+function configuredWaterlineUrl() {
+  return trimTrailingSlash(
+    trim(process.env.DW_WV_WATERLINE_URL)
+      || trim(process.env.DW_WATERLINE_URL),
+  );
+}
+
+async function waterlineApiSnapshot(baseUrl, label, pathName) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), waterlineRequestTimeoutMs);
+  const url = `${baseUrl}${pathName}`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        'X-Durable-Workflow-Control-Plane-Version': '2',
+      },
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let body = null;
+    if (text.trim() !== '') {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = { raw_body: text };
+      }
+    }
+    const snapshot = {
+      label,
+      ok: response.status >= 200 && response.status < 300,
+      path: pathName,
+      http_status: response.status,
+      body,
+    };
+    captures.push({
+      surface: 'waterline',
+      method: 'GET',
+      path: pathName,
+      status: response.status,
+      request_body: null,
+      response_body: body,
+    });
+
+    return snapshot;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    captures.push({
+      surface: 'waterline',
+      method: 'GET',
+      path: pathName,
+      status: null,
+      request_body: null,
+      response_body: { error: message },
+    });
+
+    return {
+      label,
+      ok: false,
+      path: pathName,
+      error: message,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function waterlineRunDetailPath(workflowId, runId) {
+  return `/waterline/api/instances/${encodeURIComponent(stringValue(workflowId))}/runs/${encodeURIComponent(stringValue(runId))}?history_limit=all`;
+}
+
+function waterlineWorkerRows(healthBody, taskQueue) {
+  const workers = [];
+  const metricsWorkers = objectValue(objectValue(healthBody.operator_metrics).workers);
+  workers.push(...arrayValue(metricsWorkers.registrations));
+  workers.push(...arrayValue(metricsWorkers.stale_registrations));
+
+  const queueVisibility = objectValue(healthBody.queue_visibility ?? healthBody.queueVisibility);
+  for (const queue of arrayValue(queueVisibility.task_queues ?? queueVisibility.taskQueues)) {
+    const queueName = stringValue(queue.task_queue) || stringValue(queue.taskQueue) || stringValue(queue.name);
+    if (queueName !== taskQueue) {
+      continue;
+    }
+
+    workers.push(...arrayValue(queue.workers));
+    workers.push(...arrayValue(queue.pollers));
+    workers.push(...arrayValue(queue.active_pollers));
+    workers.push(...arrayValue(queue.activePollers));
+  }
+
+  const byKey = new Map();
+  for (const worker of workers) {
+    const object = objectValue(worker);
+    const workerId = stringValue(object.worker_id) || stringValue(object.workerId);
+    const buildId = stringValue(object.build_id) || stringValue(object.buildId);
+    const queueName = stringValue(object.task_queue)
+      || stringValue(object.taskQueue)
+      || stringValue(object.queue)
+      || taskQueue;
+    if (queueName !== taskQueue || (workerId === '' && buildId === '')) {
+      continue;
+    }
+    const key = `${workerId}:${buildId}`;
+    byKey.set(key, {
+      ...object,
+      worker_id: workerId,
+      task_queue: queueName,
+      build_id: buildId,
+    });
+  }
+
+  return [...byKey.values()];
+}
+
+function waterlineQueueVisibilityForTaskQueue(healthBody, taskQueue) {
+  const queueVisibility = objectValue(healthBody.queue_visibility ?? healthBody.queueVisibility);
+  for (const queue of arrayValue(queueVisibility.task_queues ?? queueVisibility.taskQueues)) {
+    const queueName = stringValue(queue.task_queue) || stringValue(queue.taskQueue) || stringValue(queue.name);
+    if (queueName === taskQueue) {
+      return objectValue(queue);
+    }
+  }
+
+  return {};
+}
+
+function waterlineSelectedNewStartBuildId(healthBody, taskQueue) {
+  const queue = waterlineQueueVisibilityForTaskQueue(healthBody, taskQueue);
+  for (const entry of [
+    ...arrayValue(queue.build_ids),
+    ...arrayValue(queue.buildIds),
+    ...arrayValue(objectValue(queue.rollout_state).build_ids),
+    ...arrayValue(objectValue(queue.rolloutState).buildIds),
+  ]) {
+    const object = objectValue(entry);
+    if (object.new_start_selected === true || object.newStartSelected === true) {
+      return stringValue(object.build_id) || stringValue(object.buildId);
+    }
+  }
+
+  return null;
+}
+
+function waterlineRunCompatibility(body) {
+  const detail = objectValue(body);
+
+  return stringValue(detail.compatibility)
+    || stringValue(objectValue(detail.data).compatibility)
+    || stringValue(detail.run_compatibility)
+    || stringValue(detail.runCompatibility);
+}
+
+function waterlineRunSummary(body, listItem) {
+  const detail = objectValue(body);
+  const item = objectValue(listItem);
+
+  return {
+    workflow_id: stringValue(detail.workflow_instance_id)
+      || stringValue(detail.instance_id)
+      || stringValue(item.workflow_instance_id)
+      || stringValue(item.instance_id),
+    run_id: stringValue(detail.run_id)
+      || stringValue(detail.selected_run_id)
+      || stringValue(detail.id)
+      || stringValue(item.run_id)
+      || stringValue(item.selected_run_id)
+      || stringValue(item.id),
+    compatibility: waterlineRunCompatibility(detail) || waterlineRunCompatibility(item),
+    status: stringValue(detail.status) || stringValue(item.status),
+    status_bucket: stringValue(detail.status_bucket) || stringValue(item.status_bucket),
+    list_item_visible: Object.keys(item).length > 0,
+    detail_visible: Object.keys(detail).length > 0,
+  };
+}
+
+function waterlineListItem(body, workflowId, runId) {
+  const wantedWorkflowId = stringValue(workflowId);
+  const wantedRunId = stringValue(runId);
+  if (!wantedWorkflowId || !wantedRunId) {
+    return null;
+  }
+
+  const data = arrayValue(objectValue(body).data);
+  for (const item of data) {
+    const object = objectValue(item);
+    const itemWorkflowId = stringValue(object.workflow_instance_id)
+      || stringValue(object.instance_id)
+      || stringValue(object.workflowId)
+      || stringValue(object.workflow_id);
+    const itemRunId = stringValue(object.run_id)
+      || stringValue(object.selected_run_id)
+      || stringValue(object.runId)
+      || stringValue(object.id);
+    if (itemWorkflowId === wantedWorkflowId && itemRunId === wantedRunId) {
+      return object;
+    }
+  }
+
+  return null;
+}
+
+function waterlineInstallEvidence(artifactVersions, artifactSources, status, detail, waterlineUrl = '') {
+  return {
+    artifact: 'waterline',
+    version: stringValue(artifactVersions.waterline),
+    source: stringValue(artifactSources.waterline) || 'packagist_release',
+    status,
+    local_product_source_checkouts_used: false,
+    detail,
+    command: waterlineUrl ? 'GET /waterline/api/v2/health' : null,
+    output_sample: waterlineUrl,
+  };
+}
+
 function mergeCliInstallEvidence(evidence, cliInstallEvidence) {
   const cliStatus = normalizedArtifactStatus(cliInstallEvidence?.status);
   if (cliStatus !== 'pass') {
@@ -2032,6 +2532,30 @@ function mergeCliInstallEvidence(evidence, cliInstallEvidence) {
 
   return merged;
 }
+
+function mergeWaterlineInstallEvidence(evidence, waterlineInstallEvidence) {
+  const waterlineStatus = normalizedArtifactStatus(waterlineInstallEvidence?.status);
+  if (!['pass', 'fail'].includes(waterlineStatus)) {
+    return evidence;
+  }
+
+  const merged = JSON.parse(JSON.stringify(evidence ?? {}));
+  const artifacts = Array.isArray(merged.artifacts) ? merged.artifacts : [];
+  const withoutWaterline = artifacts.filter((item) => canonicalArtifactName(
+    stringValue(item?.artifact) || stringValue(item?.name),
+  ) !== 'waterline');
+  merged.artifacts = [
+    ...withoutWaterline,
+    waterlineInstallEvidence,
+  ];
+
+  if (merged.local_product_source_checkouts_used === undefined) {
+    merged.local_product_source_checkouts_used = false;
+  }
+
+  return merged;
+}
+
 
 function outputSample(output) {
   return stringValue(output).slice(0, 1000);

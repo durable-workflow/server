@@ -201,12 +201,17 @@
       "published-artifacts.json",
       "worker-versioning-result.json",
       "worker-versioning-record.json",
-      "worker-versioning-http-captures.json"
+      "worker-versioning-http-captures.json",
+      "waterline-url.txt"
     ],
     "evidence_inputs": {
       "DW_WV_ARTIFACT_INSTALL_EVIDENCE": "Optional JSON report proving required artifacts were installed and smoke-executed from published channels.",
       "DW_WV_PUBLISHED_WORKER_EVIDENCE": "Optional JSON report from the host worker-versioning topology after published worker artifacts executed replay, cache-eviction, no-compatible-worker, cross-language, or adversarial no-version-bump cells. When unset, the runner attempts to generate Python replay/cache/adversarial shards and a PHP/Python cross-language shard from published PyPI and Packagist artifacts.",
-      "DW_WV_SKIP_PUBLISHED_WORKER_SHARD": "Set to 1 to skip automatic published PHP/Python worker shard generation when an external host topology is responsible for the shard."
+      "DW_WV_SKIP_PUBLISHED_WORKER_SHARD": "Set to 1 to skip automatic published PHP/Python worker shard generation when an external host topology is responsible for the shard.",
+      "DW_WV_WATERLINE_URL": "Optional URL for an already running Packagist-installed Waterline app pointed at the same run database. When unset and the runner starts the server topology, it boots a disposable published Waterline app and records worker/workflow view captures.",
+      "DW_WV_WATERLINE_RUNTIME_IMAGE": "Optional PHP runtime image for the disposable Waterline app. Must provide pdo_mysql for the shared MySQL run database; defaults to the published server image under test.",
+      "DW_WV_WATERLINE_CONNECT_HOST": "Optional hostname used by the probe for the disposable Waterline URL when the host bind address is not directly reachable as 127.0.0.1.",
+      "DW_WV_SKIP_WATERLINE_SHARD": "Set to 1 to skip automatic Waterline bootstrapping when an external host topology is responsible for Waterline evidence."
     },
     "evidence_shards": [
       "published_artifact_versions",
@@ -218,7 +223,8 @@
       "published_artifact_worker_execution",
       "published_php_python_worker_protocol_client_shard",
       "cross_language_php_python_delivery_counts",
-      "history_and_visibility_pin_capture"
+      "history_and_visibility_pin_capture",
+      "published_waterline_worker_workflow_view_capture"
     ]
   },
   "scenarios": [

@@ -39,6 +39,20 @@ Environment overrides:
                               When unset, this runner attempts to generate a Python
                               replay/cache shard and a PHP/Python cross-language shard
                               from published PyPI and Packagist artifacts.
+  DW_WV_WATERLINE_URL         Existing published Waterline URL for the same run database.
+                              When unset and this runner starts the server compose
+                              topology, a disposable Packagist-installed Waterline
+                              app is booted against that database.
+  DW_WV_WATERLINE_RUNTIME_IMAGE
+                              PHP runtime image used for the disposable Waterline app.
+                              Must provide pdo_mysql. Defaults to the published
+                              server image under test.
+  DW_WV_WATERLINE_PORT        Host port for the disposable Waterline app. Defaults to a free port.
+  DW_WV_WATERLINE_BIND_HOST   Host interface for the Waterline port. Defaults to 127.0.0.1.
+  DW_WV_WATERLINE_CONNECT_HOST
+                              Hostname used by the probe for the Waterline URL. Defaults to 127.0.0.1.
+  DW_WV_SKIP_WATERLINE_SHARD=1
+                              Skip automatic Waterline bootstrapping.
   DW_WV_WORKER_POLL_CLIENT_TIMEOUT_SECONDS
                               Client-side timeout for published-worker shard polls.
                               Defaults to DW_WV_WORKER_POLL_TIMEOUT,
@@ -172,7 +186,14 @@ cleanup() {
   local code=$?
 
   if [[ "$server_started" == "1" || "$compose_cleanup_needed" == "1" ]]; then
-    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" down -v >/dev/null 2>&1 || true
+    if [[ -f "$run_root/waterline-compose.yml" ]]; then
+      docker compose -p "$compose_project" \
+        -f "$repo_root/docker-compose.published.yml" \
+        -f "$run_root/waterline-compose.yml" \
+        down -v --remove-orphans >/dev/null 2>&1 || true
+    else
+      docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" down -v >/dev/null 2>&1 || true
+    fi
   fi
 
   if [[ "$keep_run_root" != "1" && "$code" -eq 0 && "$result_dir" != "$run_root" ]]; then
@@ -244,6 +265,38 @@ fs.writeFileSync(
   ), null, 2)}\n`,
   'utf8',
 );
+NODE
+}
+
+wait_for_waterline() {
+  local url="$1"
+
+  node - <<'NODE' "$url"
+const baseUrl = process.argv[2].replace(/\/+$/, '');
+const readyUrl = `${baseUrl}/waterline/api/v2/health`;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+(async () => {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    try {
+      const response = await fetch(readyUrl, {
+        headers: {
+          Accept: 'application/json',
+          'X-Durable-Workflow-Control-Plane-Version': '2',
+        },
+      });
+      if (response.status >= 200 && response.status < 600) {
+        process.exit(0);
+      }
+    } catch {
+    }
+
+    await sleep(1000);
+  }
+
+  console.error(`published Waterline did not become reachable at ${readyUrl}`);
+  process.exit(1);
+})();
 NODE
 }
 
@@ -324,6 +377,102 @@ export DW_WV_SERVER_ARTIFACT_SOURCE="$server_artifact_source"
 export DW_WV_RESULT_DIR="$result_dir"
 export DW_WV_RUN_ROOT="$run_root"
 export DW_WV_REPO_ROOT="$repo_root"
+
+if [[ -z "${DW_WV_WATERLINE_URL:-}" && "${DW_WV_SKIP_WATERLINE_SHARD:-0}" != "1" && "$server_started" == "1" ]]; then
+  if ! require_command docker; then
+    write_blocked_result 'worker-versioning Waterline visibility requires docker unless DW_WV_WATERLINE_URL points at an already running published Waterline app'
+    exit 0
+  fi
+
+  workflow_php_version="${DW_WORKFLOW_PHP_VERSION:-${DW_WORKFLOW_VERSION:-}}"
+  if [[ -z "${DW_WATERLINE_VERSION:-}" || -z "$workflow_php_version" ]]; then
+    write_blocked_result 'DW_WATERLINE_VERSION and DW_WORKFLOW_PHP_VERSION are required to boot the published Waterline visibility shard'
+    exit 0
+  fi
+
+  mkdir -p "$run_root/waterline-app"
+  if ! docker run --rm -v "$run_root/waterline-app:/app" composer:2 sh -lc "
+    composer create-project --no-interaction --no-progress laravel/laravel . &&
+    composer require --no-interaction --no-progress \
+      'durable-workflow/workflow:$workflow_php_version' \
+      'durable-workflow/waterline:${DW_WATERLINE_VERSION}'
+  " > "$result_dir/waterline-install.log" 2>&1; then
+    write_blocked_result "published Waterline app install failed for durable-workflow/waterline ${DW_WATERLINE_VERSION} with workflow ${workflow_php_version}; see waterline-install.log"
+    exit 0
+  fi
+
+  waterline_bind_host="${DW_WV_WATERLINE_BIND_HOST:-127.0.0.1}"
+  waterline_connect_host="${DW_WV_WATERLINE_CONNECT_HOST:-127.0.0.1}"
+  waterline_port="${DW_WV_WATERLINE_PORT:-$(free_port)}"
+  waterline_url="http://${waterline_connect_host}:${waterline_port}"
+  waterline_runtime_image="${DW_WV_WATERLINE_RUNTIME_IMAGE:-$server_image}"
+  if ! docker run --rm --entrypoint php "$waterline_runtime_image" -m >"$result_dir/waterline-runtime-php-modules.txt" 2>&1; then
+    write_blocked_result "published Waterline runtime image ${waterline_runtime_image} could not report PHP modules; see waterline-runtime-php-modules.txt"
+    exit 0
+  fi
+  if ! grep -qi '^pdo_mysql$' "$result_dir/waterline-runtime-php-modules.txt"; then
+    write_blocked_result "published Waterline runtime image ${waterline_runtime_image} does not provide pdo_mysql for the shared MySQL run database; see waterline-runtime-php-modules.txt"
+    exit 0
+  fi
+
+  cat > "$run_root/waterline-compose.yml" <<YAML
+services:
+  waterline:
+    image: "${waterline_runtime_image}"
+    entrypoint: []
+    working_dir: /app
+    command: ["php", "artisan", "serve", "--host=0.0.0.0", "--port=8090"]
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "false"
+      APP_KEY: "base64:UTyp33UhGolgzCK5CJmT+hNHcA+dJyp3+oINtX+VoPI="
+      APP_URL: "http://localhost:${waterline_port}"
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: ${DB_DATABASE:-durable_workflow}
+      DB_USERNAME: ${DB_USERNAME:-workflow}
+      DB_PASSWORD: ${DB_PASSWORD:-workflow}
+      QUEUE_CONNECTION: sync
+      CACHE_STORE: array
+      SESSION_DRIVER: array
+      WATERLINE_ALLOW_UNAUTHENTICATED: "true"
+      WATERLINE_ENGINE_SOURCE: v2
+      WATERLINE_HEALTH_TASK_DISPATCH_MODE: poll
+      WATERLINE_NAMESPACE: ${DW_WV_NAMESPACE:-worker-versioning-conformance}
+      DW_V2_TASK_DISPATCH_MODE: poll
+    ports:
+      - "${waterline_bind_host}:${waterline_port}:8090"
+    volumes:
+      - "$run_root/waterline-app:/app"
+    depends_on:
+      server:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+YAML
+
+  if ! docker compose -p "$compose_project" \
+    -f "$repo_root/docker-compose.published.yml" \
+    -f "$run_root/waterline-compose.yml" \
+    up -d waterline >"$result_dir/waterline-compose-up.log" 2>&1; then
+    write_blocked_result "published Waterline app failed to start; see waterline-compose-up.log"
+    exit 0
+  fi
+
+  if ! wait_for_waterline "$waterline_url"; then
+    docker compose -p "$compose_project" \
+      -f "$repo_root/docker-compose.published.yml" \
+      -f "$run_root/waterline-compose.yml" \
+      logs waterline > "$result_dir/waterline.log" 2>&1 || true
+    write_blocked_result "published Waterline app was installed but did not become reachable at ${waterline_url}; see waterline.log"
+    exit 0
+  fi
+
+  export DW_WV_WATERLINE_URL="$waterline_url"
+  export DW_WATERLINE_ARTIFACT_SOURCE="packagist://durable-workflow/waterline@${DW_WATERLINE_VERSION}"
+  printf '%s\n' "$waterline_url" > "$result_dir/waterline-url.txt"
+fi
 
 if [[ -z "${DW_WV_PUBLISHED_WORKER_EVIDENCE:-}" ]]; then
   export DW_WV_PUBLISHED_WORKER_EVIDENCE="$result_dir/published-worker-execution-evidence.json"

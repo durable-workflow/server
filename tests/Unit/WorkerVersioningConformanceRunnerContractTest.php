@@ -504,6 +504,70 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertStringNotContainsString('draining_worker_claim_count: 0,', $node);
     }
 
+    public function test_worker_versioning_runner_records_published_waterline_visibility(): void
+    {
+        $shell = $this->read('scripts/conformance/worker-versioning-published-artifacts.sh');
+        $node = $this->read('scripts/conformance/worker-versioning-published-artifacts.mjs');
+        $manifest = $this->read('static/platform-conformance/worker-versioning-runtime-scenarios.json');
+
+        foreach ([
+            'DW_WV_WATERLINE_URL',
+            'DW_WV_WATERLINE_CONNECT_HOST',
+            'DW_WV_WATERLINE_RUNTIME_IMAGE',
+            'DW_WV_SKIP_WATERLINE_SHARD',
+            'durable-workflow/waterline:${DW_WATERLINE_VERSION}',
+            'waterline-compose.yml',
+            'waterline-runtime-php-modules.txt',
+            'grep -qi \'^pdo_mysql$\'',
+            'waterline_runtime_image="${DW_WV_WATERLINE_RUNTIME_IMAGE:-$server_image}"',
+            'image: "${waterline_runtime_image}"',
+            'entrypoint: []',
+            'wait_for_waterline',
+            'WATERLINE_NAMESPACE: ${DW_WV_NAMESPACE:-worker-versioning-conformance}',
+            'packagist://durable-workflow/waterline@${DW_WATERLINE_VERSION}',
+        ] as $token) {
+            $this->assertStringContainsString($token, $shell);
+        }
+
+        foreach ([
+            'publishedWaterlineOperatorVisibility',
+            'capturePublishedWaterlineOperatorVisibility',
+            '/waterline/api/v2/health',
+            '/waterline/api/flows/running',
+            'waterlineRunDetailPath',
+            'waterlineWorkerRows',
+            'waterline_operator_visibility: waterlineOperatorVisibility',
+            "if (cliOperatorEvidence.rollout_visibility_passes && waterlineOperatorVisibility.status === 'pass')",
+            "addPass('operator_visibility_surfaces'",
+            'mergeWaterlineInstallEvidence',
+            'Published Waterline worker/workflow views',
+            "'Waterline worker and workflow views'",
+        ] as $token) {
+            $this->assertStringContainsString($token, $node);
+        }
+
+        foreach ([
+            'DW_WV_WATERLINE_URL',
+            'DW_WV_WATERLINE_CONNECT_HOST',
+            'DW_WV_SKIP_WATERLINE_SHARD',
+            'published_waterline_worker_workflow_view_capture',
+            'waterline-url.txt',
+        ] as $token) {
+            $this->assertStringContainsString($token, $manifest);
+        }
+
+        $this->assertStringNotContainsString(
+            "const waterlineOperatorVisibility = { status: 'not_exercised_by_server_handoff' };",
+            $node,
+            'Waterline visibility must come from the published Waterline shard, not a placeholder.',
+        );
+        $this->assertStringNotContainsString(
+            "image: composer:2\n    working_dir: /app",
+            $shell,
+            'the disposable Waterline service must not run under composer:2 because it lacks pdo_mysql',
+        );
+    }
+
     public function test_published_artifact_runner_gates_replay_cells_on_zero_incompatible_delivery(): void
     {
         $node = $this->read('scripts/conformance/worker-versioning-published-artifacts.mjs');
