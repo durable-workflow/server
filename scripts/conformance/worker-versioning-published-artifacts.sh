@@ -46,8 +46,14 @@ Environment overrides:
                               coordinates are supplied.
   DW_WV_WATERLINE_RUNTIME_IMAGE
                               PHP runtime image used for the disposable Waterline app.
-                              Must provide pdo_mysql. Defaults to the published
-                              server image under test.
+                              Must provide PHP >= 8.4.1 and pdo_mysql. When unset,
+                              the runner builds a disposable PHP 8.4 runtime.
+  DW_WV_WATERLINE_PHP_BASE_IMAGE
+                              Base image for the default disposable Waterline
+                              runtime. Defaults to php:8.4-cli.
+  DW_WV_WATERLINE_BUILT_RUNTIME_IMAGE
+                              Tag to assign the default disposable Waterline
+                              runtime image. Defaults to a run-scoped local tag.
   DW_WV_WATERLINE_PORT        Host port for the disposable Waterline app. Defaults to a free port.
   DW_WV_WATERLINE_BIND_HOST   Host interface for the Waterline port. Defaults to 127.0.0.1.
   DW_WV_WATERLINE_CONNECT_HOST
@@ -131,6 +137,25 @@ is_exact_semver() {
   local version="$1"
 
   [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+}
+
+php_version_at_least() {
+  local version="$1"
+  local min_major="$2"
+  local min_minor="$3"
+  local min_patch="$4"
+
+  if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+    return 1
+  fi
+
+  local major="${BASH_REMATCH[1]}"
+  local minor="${BASH_REMATCH[2]}"
+  local patch="${BASH_REMATCH[3]}"
+  local current=$((10#$major * 10000 + 10#$minor * 100 + 10#$patch))
+  local minimum=$((10#$min_major * 10000 + 10#$min_minor * 100 + 10#$min_patch))
+
+  [[ "$current" -ge "$minimum" ]]
 }
 
 free_port() {
@@ -450,27 +475,39 @@ if [[ -z "${DW_WV_WATERLINE_URL:-}" ]]; then
     exit 0
   fi
 
-  mkdir -p "$run_root/waterline-app"
-  if ! docker run --rm -v "$run_root/waterline-app:/app" composer:2 sh -lc "
-    composer create-project --no-interaction --no-progress laravel/laravel . &&
-    composer require --no-interaction --no-progress \
-      'durable-workflow/workflow:$workflow_php_version' \
-      'durable-workflow/waterline:${DW_WATERLINE_VERSION}'
-  " > "$result_dir/waterline-install.log" 2>&1; then
-    write_blocked_result "published Waterline app install failed for durable-workflow/waterline ${DW_WATERLINE_VERSION} with workflow ${workflow_php_version}; see waterline-install.log"
-    exit 0
-  fi
-
   waterline_bind_host="${DW_WV_WATERLINE_BIND_HOST:-127.0.0.1}"
   waterline_connect_host="${DW_WV_WATERLINE_CONNECT_HOST:-127.0.0.1}"
   waterline_port="${DW_WV_WATERLINE_PORT:-$(free_port)}"
   waterline_url="http://${waterline_connect_host}:${waterline_port}"
-  if [[ -z "$server_image" && -n "${DW_SERVER_VERSION:-}" ]]; then
-    server_image="durableworkflow/server:${DW_SERVER_VERSION}"
-  fi
-  waterline_runtime_image="${DW_WV_WATERLINE_RUNTIME_IMAGE:-$server_image}"
+  waterline_runtime_image="${DW_WV_WATERLINE_RUNTIME_IMAGE:-}"
   if [[ -z "$waterline_runtime_image" ]]; then
-    write_blocked_result 'DW_WV_WATERLINE_RUNTIME_IMAGE, DW_SERVER_IMAGE, or DW_SERVER_VERSION is required to run the disposable published Waterline app'
+    waterline_php_base_image="${DW_WV_WATERLINE_PHP_BASE_IMAGE:-php:8.4-cli}"
+    waterline_runtime_image="${DW_WV_WATERLINE_BUILT_RUNTIME_IMAGE:-${compose_project}-waterline-runtime:php84}"
+    mkdir -p "$run_root/waterline-runtime"
+    cat > "$run_root/waterline-runtime/Dockerfile" <<'DOCKERFILE'
+ARG PHP_BASE_IMAGE=php:8.4-cli
+FROM ${PHP_BASE_IMAGE}
+RUN docker-php-ext-install pdo_mysql
+DOCKERFILE
+
+    if ! docker build \
+      --pull \
+      --build-arg "PHP_BASE_IMAGE=${waterline_php_base_image}" \
+      -t "$waterline_runtime_image" \
+      "$run_root/waterline-runtime" \
+      >"$result_dir/waterline-runtime-build.log" 2>&1; then
+      write_blocked_result "published Waterline default PHP runtime could not be built from ${waterline_php_base_image} with pdo_mysql; see waterline-runtime-build.log"
+      exit 0
+    fi
+    printf '%s\n' "$waterline_runtime_image" >"$result_dir/waterline-runtime-image.txt"
+  fi
+  if ! docker run --rm --entrypoint php "$waterline_runtime_image" -r 'echo PHP_VERSION, PHP_EOL;' >"$result_dir/waterline-runtime-php-version.txt" 2>&1; then
+    write_blocked_result "published Waterline runtime image ${waterline_runtime_image} could not report PHP_VERSION; see waterline-runtime-php-version.txt"
+    exit 0
+  fi
+  waterline_php_version="$(tr -d '\r\n' <"$result_dir/waterline-runtime-php-version.txt")"
+  if ! php_version_at_least "$waterline_php_version" 8 4 1; then
+    write_blocked_result "published Waterline runtime image ${waterline_runtime_image} reports PHP ${waterline_php_version}; durable-workflow/waterline ${DW_WATERLINE_VERSION} requires PHP >= 8.4.1"
     exit 0
   fi
   if ! docker run --rm --entrypoint php "$waterline_runtime_image" -m >"$result_dir/waterline-runtime-php-modules.txt" 2>&1; then
@@ -479,6 +516,17 @@ if [[ -z "${DW_WV_WATERLINE_URL:-}" ]]; then
   fi
   if ! grep -qi '^pdo_mysql$' "$result_dir/waterline-runtime-php-modules.txt"; then
     write_blocked_result "published Waterline runtime image ${waterline_runtime_image} does not provide pdo_mysql for the shared MySQL run database; see waterline-runtime-php-modules.txt"
+    exit 0
+  fi
+
+  mkdir -p "$run_root/waterline-app"
+  if ! docker run --rm -v "$run_root/waterline-app:/app" composer:2 sh -lc "
+    composer create-project --no-interaction --no-progress laravel/laravel . &&
+    composer require --no-interaction --no-progress \
+      'durable-workflow/workflow:$workflow_php_version' \
+      'durable-workflow/waterline:${DW_WATERLINE_VERSION}'
+  " > "$result_dir/waterline-install.log" 2>&1; then
+    write_blocked_result "published Waterline app install failed for durable-workflow/waterline ${DW_WATERLINE_VERSION} with workflow ${workflow_php_version}; see waterline-install.log"
     exit 0
   fi
 

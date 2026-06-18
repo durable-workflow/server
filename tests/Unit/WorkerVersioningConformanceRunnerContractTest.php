@@ -514,14 +514,24 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'DW_WV_WATERLINE_URL',
             'DW_WV_WATERLINE_CONNECT_HOST',
             'DW_WV_WATERLINE_RUNTIME_IMAGE',
+            'DW_WV_WATERLINE_PHP_BASE_IMAGE',
+            'DW_WV_WATERLINE_BUILT_RUNTIME_IMAGE',
             'DW_WV_WATERLINE_DB_HOST',
             'DW_WV_WATERLINE_DOCKER_NETWORK',
             'DW_WV_SKIP_WATERLINE_SHARD',
             'durable-workflow/waterline:${DW_WATERLINE_VERSION}',
             'waterline-compose.yml',
+            'php_version_at_least',
+            'PHP >= 8.4.1',
+            'waterline-runtime-build.log',
+            'waterline-runtime-php-version.txt',
             'waterline-runtime-php-modules.txt',
+            'docker-php-ext-install pdo_mysql',
             'grep -qi \'^pdo_mysql$\'',
-            'waterline_runtime_image="${DW_WV_WATERLINE_RUNTIME_IMAGE:-$server_image}"',
+            'waterline_runtime_image="${DW_WV_WATERLINE_RUNTIME_IMAGE:-}"',
+            'waterline_php_base_image="${DW_WV_WATERLINE_PHP_BASE_IMAGE:-php:8.4-cli}"',
+            'published Waterline default PHP runtime could not be built',
+            'durable-workflow/waterline ${DW_WATERLINE_VERSION} requires PHP >= 8.4.1',
             'image: "${waterline_runtime_image}"',
             'entrypoint: []',
             'wait_for_waterline',
@@ -552,6 +562,8 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'waterline_artifact_version',
             'reachability_status',
             'rollout_state_observed',
+            'request_failures: waterlineRequestFailures',
+            'Published Waterline request failures',
             'worker_view_capture',
             'workflow_view_capture',
             'directNodeWaterlineAttachBlocker',
@@ -581,6 +593,11 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             "image: composer:2\n    working_dir: /app",
             $shell,
             'the disposable Waterline service must not run under composer:2 because it lacks pdo_mysql',
+        );
+        $this->assertStringNotContainsString(
+            'waterline_runtime_image="${DW_WV_WATERLINE_RUNTIME_IMAGE:-$server_image}"',
+            $shell,
+            'the disposable Waterline service must not default to the PHP 8.3 server image',
         );
     }
 
@@ -650,6 +667,77 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             $this->assertSame($reason, $result['scenario_results']['operator_visibility_surfaces']['observed_outputs']['blocked_reason']);
             $this->assertSame('non_passing_runner_blocked', $record['outcome']);
             $this->assertTrue($record['runner_blocked']);
+        } finally {
+            $this->removeDirectory($resultDir);
+            $this->removeDirectory($runRoot);
+        }
+    }
+
+    public function test_runner_reports_fetch_failures_with_request_context(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the worker-versioning runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $suffix = bin2hex(random_bytes(4));
+        $resultDir = $repoRoot.'/storage/framework/worker-versioning-fetch-result-'.$suffix;
+        $runRoot = $repoRoot.'/storage/framework/worker-versioning-fetch-run-'.$suffix;
+        mkdir($resultDir, 0777, true);
+        mkdir($runRoot, 0777, true);
+
+        try {
+            $process = proc_open(
+                [
+                    $nodeBinary,
+                    $repoRoot.'/scripts/conformance/worker-versioning-published-artifacts.mjs',
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                    'DW_WV_RESULT_DIR' => $resultDir,
+                    'DW_WV_RUN_ROOT' => $runRoot,
+                    'DW_WV_SERVER_URL' => 'http://127.0.0.1:65534',
+                    'DW_WV_WATERLINE_URL' => 'http://127.0.0.1:65534',
+                    'DW_WV_SKIP_PUBLISHED_WORKER_SHARD' => '1',
+                    'DW_SERVER_VERSION' => '0.2.421',
+                    'DW_CLI_VERSION' => '0.1.80',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.88',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.205',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.96',
+                    'DW_WV_SERVER_ARTIFACT_SOURCE' => 'published_server_url',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stdout.$stderr);
+
+            $resultPath = $resultDir.'/worker-versioning-result.json';
+            $this->assertFileExists($resultPath);
+
+            $result = json_decode((string) file_get_contents($resultPath), true, 512, JSON_THROW_ON_ERROR);
+            $reason = $result['scenario_results']['worker_registration_build_ids']['observed_outputs']['blocked_reason'];
+
+            $this->assertSame('non_passing_runner_blocked', $result['outcome']);
+            $this->assertTrue($result['runner_blocked']);
+            $this->assertStringContainsString(
+                'GET http://127.0.0.1:65534/api/namespaces/worker-versioning-conformance failed:',
+                $reason,
+            );
+            $this->assertStringContainsString('ECONNREFUSED', $reason);
+            $this->assertNotSame('fetch failed', $reason);
         } finally {
             $this->removeDirectory($resultDir);
             $this->removeDirectory($runRoot);

@@ -1406,11 +1406,17 @@ async function waitForNoCompatibleVisibility(workflowId, runId, buildId) {
 }
 
 async function requestJson(method, pathName, body, headers, expectedStatuses) {
-  const response = await fetch(`${serverUrl}${pathName}`, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  const url = `${serverUrl}${pathName}`;
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch (error) {
+    throw new Error(formatFetchFailure(method, url, error));
+  }
   const text = await response.text();
   const json = text.trim() === '' ? {} : JSON.parse(text);
   if (!expectedStatuses.includes(response.status)) {
@@ -1683,6 +1689,55 @@ function timestamp() {
 
 function trim(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function formatFetchFailure(method, url, error) {
+  const reason = error instanceof Error ? error.message : String(error);
+  const cause = fetchFailureCause(error);
+  const details = orderedUnique([reason, cause].filter((value) => value !== ''));
+
+  return `${method} ${url} failed: ${details.join('; ') || 'request failed'}`;
+}
+
+function fetchFailureCause(error) {
+  const cause = error && typeof error === 'object' ? error.cause : null;
+  if (!cause || typeof cause !== 'object') {
+    return '';
+  }
+
+  if (Array.isArray(cause.errors)) {
+    return cause.errors
+      .map((nested) => fetchFailureCause({ cause: nested }) || errorMessage(nested))
+      .filter(Boolean)
+      .join('; ');
+  }
+
+  const fields = [
+    stringValue(cause.code),
+    stringValue(cause.errno),
+    stringValue(cause.syscall),
+    stringValue(cause.address),
+    stringValue(cause.port),
+    errorMessage(cause),
+  ].filter(Boolean);
+
+  return orderedUnique(fields).join(' ');
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : stringValue(error);
+}
+
+function orderedUnique(values) {
+  const seen = [];
+  for (const value of values) {
+    const normalized = stringValue(value);
+    if (normalized !== '' && !seen.includes(normalized)) {
+      seen.push(normalized);
+    }
+  }
+
+  return seen;
 }
 
 function trimTrailingSlash(value) {

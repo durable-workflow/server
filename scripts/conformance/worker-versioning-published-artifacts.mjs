@@ -1675,11 +1675,16 @@ async function postJson(serverUrl, pathName, body, headers, expectedStatuses) {
 
 async function requestJson(serverUrl, method, pathName, body, headers, expectedStatuses) {
   const url = `${serverUrl}${pathName}`;
-  const response = await fetch(url, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch (error) {
+    throw new Error(formatFetchFailure(method, url, error));
+  }
   const text = await response.text();
   let json = null;
   if (text.trim() !== '') {
@@ -2041,7 +2046,12 @@ async function downloadCliInstaller(cliVersion, installerPath) {
 }
 
 async function downloadUrlToFile(url, filePath) {
-  const response = await fetch(url);
+  let response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    throw new Error(formatFetchFailure('GET', url, error));
+  }
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
@@ -2274,7 +2284,22 @@ async function capturePublishedWaterlineOperatorVisibility({
     missing.push('no_compatible_run_visibility');
   }
 
+  const waterlineRequestFailures = [
+    health,
+    runningList,
+    completedList,
+    v1RunDetail,
+    promotedRunDetail,
+    noCompatibleRunDetail,
+  ]
+    .filter((snapshot) => stringValue(snapshot.error) !== '')
+    .map((snapshot) => `${snapshot.label}: ${snapshot.error}`);
   const status = missing.length === 0 ? 'pass' : 'fail';
+  const gap = missing.length === 0
+    ? ''
+    : waterlineRequestFailures.length > 0
+      ? `Published Waterline request failures: ${waterlineRequestFailures.join('; ')}`
+      : `Published Waterline did not expose required worker-versioning fields: ${missing.join(', ')}`;
 
   return {
     status,
@@ -2320,9 +2345,8 @@ async function capturePublishedWaterlineOperatorVisibility({
       no_compatible_run_detail: noCompatibleRunDetail,
     },
     missing,
-    gap: missing.length === 0
-      ? ''
-      : `Published Waterline did not expose required worker-versioning fields: ${missing.join(', ')}`,
+    request_failures: waterlineRequestFailures,
+    gap,
     waterline_install_evidence: waterlineInstallEvidence(
       artifactVersions,
       artifactSources,
@@ -2384,7 +2408,7 @@ async function waterlineApiSnapshot(baseUrl, label, pathName) {
 
     return snapshot;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = formatFetchFailure('GET', url, error);
     captures.push({
       surface: 'waterline',
       method: 'GET',
@@ -4511,6 +4535,55 @@ function requiredEnv(name) {
 
 function trim(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function formatFetchFailure(method, url, error) {
+  const reason = error instanceof Error ? error.message : String(error);
+  const cause = fetchFailureCause(error);
+  const details = orderedUnique([reason, cause].filter((value) => value !== ''));
+
+  return `${method} ${url} failed: ${details.join('; ') || 'request failed'}`;
+}
+
+function fetchFailureCause(error) {
+  const cause = error && typeof error === 'object' ? error.cause : null;
+  if (!cause || typeof cause !== 'object') {
+    return '';
+  }
+
+  if (Array.isArray(cause.errors)) {
+    return cause.errors
+      .map((nested) => fetchFailureCause({ cause: nested }) || errorMessage(nested))
+      .filter(Boolean)
+      .join('; ');
+  }
+
+  const fields = [
+    stringValue(cause.code),
+    stringValue(cause.errno),
+    stringValue(cause.syscall),
+    stringValue(cause.address),
+    stringValue(cause.port),
+    errorMessage(cause),
+  ].filter(Boolean);
+
+  return orderedUnique(fields).join(' ');
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : stringValue(error);
+}
+
+function orderedUnique(values) {
+  const seen = [];
+  for (const value of values) {
+    const normalized = stringValue(value);
+    if (normalized !== '' && !seen.includes(normalized)) {
+      seen.push(normalized);
+    }
+  }
+
+  return seen;
 }
 
 function trimTrailingSlash(value) {
