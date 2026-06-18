@@ -91,7 +91,15 @@ if (isMainModule()) {
   main().catch((error) => {
     const now = timestamp();
     const reason = error instanceof Error ? error.message : String(error);
-    writeResult(blockedResult(reason, now, now, artifactVersionsFromEnv()));
+    const blockerDetails = error && typeof error === 'object' ? error.runnerBlocker : null;
+    writeResult(blockedResult(
+      reason,
+      now,
+      now,
+      artifactVersionsFromEnv(),
+      artifactSourcesFromEnv(),
+      blockerDetails,
+    ));
     process.exitCode = 0;
   });
 }
@@ -1419,13 +1427,25 @@ async function main() {
   writeResult(result);
 }
 
-function blockedResult(reason, startedAt, finishedAt, artifactVersions = {}, artifactSources = {}) {
+function blockedResult(reason, startedAt, finishedAt, artifactVersions = {}, artifactSources = {}, blockerDetails = blockedDetailsFromEnv()) {
+  const runnerBlocker = normalizeBlockerDetails(reason, blockerDetails);
   const finding = {
     owning_surface: 'conformance_harness',
+    blocker_kind: runnerBlocker.kind,
     observed_behavior: reason,
-    expected_behavior: 'worker-versioning conformance runner can exercise published artifacts and record routing counts',
-    next_acceptance_criterion: 'restore the missing host capability and rerun worker-versioning conformance',
+    expected_behavior: runnerBlocker.expected_behavior,
+    next_acceptance_criterion: runnerBlocker.next_acceptance_criterion,
   };
+  if (runnerBlocker.expected_server_urls.length > 0) {
+    finding.expected_server_urls = runnerBlocker.expected_server_urls;
+  }
+  if (runnerBlocker.server_state !== '') {
+    finding.server_state = runnerBlocker.server_state;
+  }
+  const findingLinks = Object.fromEntries(requiredScenarios.map((scenarioId) => [
+    scenarioId,
+    [finding],
+  ]));
 
   return {
     schema: RESULT_SCHEMA,
@@ -1437,20 +1457,20 @@ function blockedResult(reason, startedAt, finishedAt, artifactVersions = {}, art
     runner_blocked: true,
     artifact_versions: artifactVersions,
     artifact_sources: artifactSources,
+    runner_blocker: runnerBlocker,
     scenario_results: Object.fromEntries(requiredScenarios.map((scenarioId) => [
       scenarioId,
       {
         scenario_id: scenarioId,
         status: 'runner_blocked',
-        observed_outputs: { blocked_reason: reason },
-        linked_findings: [{ ...finding, scenario_id: scenarioId }],
+        observed_outputs: {
+          blocked_reason: reason,
+          runner_blocker: runnerBlocker,
+        },
       },
     ])),
-    findings: requiredScenarios.map((scenarioId) => ({ ...finding, scenario_id: scenarioId })),
-    finding_links: Object.fromEntries(requiredScenarios.map((scenarioId) => [
-      scenarioId,
-      [{ ...finding, scenario_id: scenarioId }],
-    ])),
+    findings: [finding],
+    finding_links: findingLinks,
     topology: {},
     runtime_matrix: {},
     versioning_observations: {},
@@ -1461,6 +1481,43 @@ function blockedResult(reason, startedAt, finishedAt, artifactVersions = {}, art
     cross_language_matrix: {},
     adversarial_outcomes: {},
   };
+}
+
+function blockedDetailsFromEnv() {
+  return {
+    kind: trim(process.env.DW_WV_BLOCKED_KIND),
+    expected_server_urls: delimitedList(process.env.DW_WV_BLOCKED_EXPECTED_SERVER_URLS),
+    server_state: trim(process.env.DW_WV_BLOCKED_SERVER_STATE),
+  };
+}
+
+function normalizeBlockerDetails(reason, details) {
+  const kind = trim(details?.kind) || 'conformance_harness';
+  const expectedServerUrls = arrayValue(details?.expected_server_urls)
+    .map((value) => trim(value))
+    .filter((value) => value !== '');
+  const serverState = trim(details?.server_state);
+  const readinessBlocker = kind === 'server_readiness_topology';
+
+  return {
+    kind,
+    reason,
+    expected_server_urls: expectedServerUrls,
+    server_state: serverState,
+    expected_behavior: readinessBlocker
+      ? 'worker-versioning namespace setup records a non-empty reachable published server URL before the matrix starts'
+      : 'worker-versioning conformance runner can exercise published artifacts and record routing counts',
+    next_acceptance_criterion: readinessBlocker
+      ? 'make the published server reachable at one candidate URL, then rerun worker-versioning conformance'
+      : 'restore the missing host capability and rerun worker-versioning conformance',
+  };
+}
+
+function delimitedList(value) {
+  return stringValue(value)
+    .split(/\s*,\s*/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== '');
 }
 
 function directNodeWaterlineAttachBlocker() {
@@ -1515,6 +1572,17 @@ async function ensureNamespacePrerequisite(serverUrl, namespace, bootstrapHeader
     try {
       await getJson(serverUrl, '/api/ready', bootstrapHeaders, [200]);
       await ensureNamespace(serverUrl, namespace, bootstrapHeaders, namespaceHeaders);
+      const confirmed = await getJson(
+        serverUrl,
+        `/api/namespaces/${encodeURIComponent(namespace)}`,
+        namespaceHeaders,
+        [200],
+      );
+      if (confirmed?.name !== namespace) {
+        throw new Error(`namespace bootstrap did not confirm namespace ${namespace} at ${namespaceUrl}`);
+      }
+      await getJson(serverUrl, '/api/ready', bootstrapHeaders, [200]);
+      recordResolvedServerUrl(serverUrl, namespace);
       return;
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
@@ -1525,9 +1593,37 @@ async function ensureNamespacePrerequisite(serverUrl, namespace, bootstrapHeader
     }
   }
 
-  throw new Error(
+  throw runnerBlockedError(
     `published server namespace setup prerequisite failed before worker-versioning matrix; expected ${namespaceUrl}; readiness ${readyUrl}; last_error=${lastError || 'none'}`,
+    readinessBlockerDetails([namespaceUrl]),
   );
+}
+
+function recordResolvedServerUrl(serverUrl, namespace) {
+  const resolvedPath = path.join(resultDir, 'server-url-resolved.txt');
+  const candidatesPath = path.join(resultDir, 'server-url-candidates.txt');
+  const namespacePath = path.join(resultDir, 'server-namespace-url.txt');
+
+  if (!fs.existsSync(candidatesPath) || fs.readFileSync(candidatesPath, 'utf8').trim() === '') {
+    writeTextIfNotEmpty(candidatesPath, `${serverUrl}\n`);
+  }
+  writeTextIfNotEmpty(resolvedPath, `${serverUrl}\n`);
+  writeTextIfNotEmpty(namespacePath, `${serverUrl}/api/namespaces/${encodeURIComponent(namespace)}\n`);
+}
+
+function runnerBlockedError(message, runnerBlocker) {
+  const error = new Error(message);
+  error.runnerBlocker = runnerBlocker;
+
+  return error;
+}
+
+function readinessBlockerDetails(expectedServerUrls, serverState = 'server process/container state is not managed by direct Node runner') {
+  return {
+    kind: 'server_readiness_topology',
+    expected_server_urls: expectedServerUrls,
+    server_state: serverState,
+  };
 }
 
 async function registerWorker(serverUrl, headers, payload) {
@@ -4488,6 +4584,8 @@ function writeResult(result) {
     artifactVersions: result.artifact_versions ?? {},
     artifact_sources: result.artifact_sources ?? {},
     artifactSources: result.artifact_sources ?? {},
+    runner_blocker: result.runner_blocker ?? null,
+    runnerBlocker: result.runner_blocker ?? null,
     resultPath,
     capturePath,
     result_file: 'worker-versioning-result.json',

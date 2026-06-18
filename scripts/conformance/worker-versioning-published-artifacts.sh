@@ -211,6 +211,7 @@ wait_for_server_namespace_setup() {
 
   node - "$namespace" "$token" "$timeout_seconds" "${DW_WV_BOOTSTRAP_NAMESPACE:-default}" "$resolved_url_path" "$@" <<'NODE'
 const fs = require('node:fs');
+const path = require('node:path');
 
 const namespace = process.argv[2];
 const token = process.argv[3];
@@ -321,8 +322,43 @@ function orderedUnique(values) {
   return seen;
 }
 
-function writeResolvedUrl(baseUrl) {
-  fs.writeFileSync(resolvedUrlPath, `${baseUrl}\n`, 'utf8');
+async function confirmReachableNamespace(baseUrl) {
+  const ready = await requestJson(baseUrl, 'GET', '/api/ready', controlHeaders(bootstrapNamespace), undefined, [200]);
+  if (!ready) {
+    return false;
+  }
+
+  const show = await requestJson(baseUrl, 'GET', namespacePath, controlHeaders(namespace), undefined, [200]);
+  if (show?.name !== namespace) {
+    lastErrors.set(
+      baseUrl,
+      `GET ${baseUrl}${namespacePath} did not confirm namespace ${namespace}: ${JSON.stringify(show ?? null).slice(0, 500)}`,
+    );
+    return false;
+  }
+
+  return true;
+}
+
+async function persistResolvedUrl(baseUrl) {
+  if (!await confirmReachableNamespace(baseUrl)) {
+    return false;
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(resolvedUrlPath), { recursive: true });
+    fs.writeFileSync(resolvedUrlPath, `${baseUrl}\n`, 'utf8');
+    const persisted = fs.readFileSync(resolvedUrlPath, 'utf8').trim();
+    if (persisted !== baseUrl) {
+      lastErrors.set(baseUrl, `resolved server URL file ${resolvedUrlPath} persisted ${persisted || '<empty>'}`);
+      return false;
+    }
+  } catch (error) {
+    lastErrors.set(baseUrl, `resolved server URL file ${resolvedUrlPath} could not be written: ${errorMessage(error)}`);
+    return false;
+  }
+
+  return true;
 }
 
 (async () => {
@@ -342,8 +378,7 @@ function writeResolvedUrl(baseUrl) {
       if (!show) {
         continue;
       }
-      if (show.__http_status === 200 && show.name === namespace) {
-        writeResolvedUrl(baseUrl);
+      if (show.__http_status === 200 && show.name === namespace && await persistResolvedUrl(baseUrl)) {
         console.log(`published server namespace setup prerequisite satisfied at ${baseUrl}${namespacePath}`);
         process.exit(0);
       }
@@ -360,8 +395,7 @@ function writeResolvedUrl(baseUrl) {
         },
         [201, 409],
       );
-      if (created) {
-        writeResolvedUrl(baseUrl);
+      if (created && await persistResolvedUrl(baseUrl)) {
         console.log(`published server namespace setup prerequisite satisfied at ${baseUrl}${namespacePath}`);
         process.exit(0);
       }
@@ -506,8 +540,14 @@ trap cleanup EXIT
 
 write_blocked_result() {
   local reason="$1"
+  local blocker_kind="${2:-conformance_harness}"
+  local expected_urls="${3:-}"
+  local server_state="${4:-}"
 
   DW_WV_BLOCKED_REASON="$reason" \
+  DW_WV_BLOCKED_KIND="$blocker_kind" \
+  DW_WV_BLOCKED_EXPECTED_SERVER_URLS="$expected_urls" \
+  DW_WV_BLOCKED_SERVER_STATE="$server_state" \
   DW_WV_RESULT_DIR="$result_dir" \
   DW_WV_RUN_ROOT="$run_root" \
   DW_WV_REPO_ROOT="$repo_root" \
@@ -535,12 +575,16 @@ server_state_summary() {
   printf '%s\n' "$summary"
 }
 
-block_missing_resolved_server_url() {
+block_server_readiness_prerequisite() {
   local expected_summary="$1"
+  local setup_reason="$2"
   local state
 
   state="$(server_state_summary)"
-  write_blocked_result "published server namespace setup returned success without writing a non-empty server-url-resolved.txt before worker-versioning matrix; expected one of ${expected_summary}; server state: ${state}; see server-namespace-setup.log, server-url-candidates.txt, docker-compose-ps.log, and server.log"
+  write_blocked_result "published server namespace setup did not record a reachable server URL before worker-versioning matrix; expected one of ${expected_summary}; server state: ${state}; ${setup_reason}; see server-namespace-setup.log, server-url-candidates.txt, docker-compose-ps.log, and server.log" \
+    "server_readiness_topology" \
+    "$expected_summary" \
+    "$state"
   exit 0
 }
 
@@ -568,12 +612,12 @@ verify_server_namespace_setup() {
 
   if wait_for_server_namespace_setup "$namespace" "$token" "$timeout_seconds" "$resolved_url_file" "${server_url_candidates[@]}" >"$result_dir/server-namespace-setup.log" 2>&1; then
     if [[ ! -s "$resolved_url_file" ]]; then
-      block_missing_resolved_server_url "$expected_summary"
+      block_server_readiness_prerequisite "$expected_summary" "namespace setup helper exited successfully without a non-empty server-url-resolved.txt"
     fi
 
     server_url="$(tr -d '\r\n' <"$resolved_url_file" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
     if [[ -z "$server_url" ]]; then
-      block_missing_resolved_server_url "$expected_summary"
+      block_server_readiness_prerequisite "$expected_summary" "namespace setup helper wrote an empty server-url-resolved.txt"
     fi
 
     promote_server_url_candidate "$server_url"
@@ -584,7 +628,10 @@ verify_server_namespace_setup() {
   fi
 
   state="$(server_state_summary)"
-  write_blocked_result "published server namespace setup prerequisite failed before worker-versioning matrix; expected one of ${expected_summary}; server state: ${state}; see server-namespace-setup.log, server-url-candidates.txt, docker-compose-ps.log, and server.log"
+  write_blocked_result "published server namespace setup prerequisite failed before worker-versioning matrix; expected one of ${expected_summary}; server state: ${state}; see server-namespace-setup.log, server-url-candidates.txt, docker-compose-ps.log, and server.log" \
+    "server_readiness_topology" \
+    "$expected_summary" \
+    "$state"
   exit 0
 }
 

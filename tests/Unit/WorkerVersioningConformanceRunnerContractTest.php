@@ -156,14 +156,16 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'wait_for_server_namespace_setup',
             'verify_server_namespace_setup',
             'server_state_summary',
-            'block_missing_resolved_server_url',
+            'block_server_readiness_prerequisite',
+            'server_readiness_topology',
+            'runner_blocker',
             'server-namespace-setup.log',
             'server-url-candidates.txt',
             'server-url-resolved.txt',
             'docker-compose-ps.log',
             'server-namespace-url.txt',
             'published server namespace setup prerequisite failed before worker-versioning matrix',
-            'published server namespace setup returned success without writing a non-empty server-url-resolved.txt before worker-versioning matrix',
+            'published server namespace setup did not record a reachable server URL before worker-versioning matrix',
             'if [[ ! -s "$resolved_url_file" ]]',
             'expected one of',
             'host.docker.internal',
@@ -175,6 +177,9 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'ensureNamespacePrerequisite',
             'DW_WV_SERVER_READINESS_TIMEOUT_MS',
             'published server namespace setup prerequisite failed before worker-versioning matrix',
+            'recordResolvedServerUrl',
+            'server_readiness_topology',
+            'runner_blocker',
         ] as $token) {
             $this->assertStringContainsString($token, $node);
         }
@@ -810,7 +815,11 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             $this->assertSame('non_passing_runner_blocked', $record['outcome']);
             $this->assertTrue($record['runner_blocked']);
             $this->assertStringContainsString(
-                'published server namespace setup returned success without writing a non-empty server-url-resolved.txt before worker-versioning matrix',
+                'published server namespace setup did not record a reachable server URL before worker-versioning matrix',
+                $reason,
+            );
+            $this->assertStringContainsString(
+                'namespace setup helper exited successfully without a non-empty server-url-resolved.txt',
                 $reason,
             );
             $this->assertStringContainsString(
@@ -829,6 +838,20 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
                 'simulated namespace setup success without resolved URL',
                 (string) file_get_contents($resultDir.'/server-namespace-setup.log'),
             );
+            $this->assertSame('server_readiness_topology', $result['runner_blocker']['kind']);
+            $this->assertSame(
+                ['http://127.0.0.1:65534/api/namespaces/worker-versioning-conformance'],
+                $result['runner_blocker']['expected_server_urls'],
+            );
+            $this->assertSame('server_readiness_topology', $record['runner_blocker']['kind']);
+            $this->assertCount(1, $result['findings']);
+            $this->assertSame('server_readiness_topology', $result['findings'][0]['blocker_kind']);
+            $this->assertArrayHasKey('worker_registration_build_ids', $result['finding_links']);
+            $this->assertSame(
+                'server_readiness_topology',
+                $result['finding_links']['worker_registration_build_ids'][0]['blocker_kind'],
+            );
+            $this->assertArrayNotHasKey('linked_findings', $result['scenario_results']['worker_registration_build_ids']);
         } finally {
             $this->removeDirectory($resultDir);
             $this->removeDirectory($runRoot);
@@ -922,6 +945,16 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
                 'http://127.0.0.1:65534',
                 (string) file_get_contents($resultDir.'/server-url-candidates.txt'),
             );
+            $this->assertSame('server_readiness_topology', $result['runner_blocker']['kind']);
+            $this->assertSame(
+                ['http://127.0.0.1:65534/api/namespaces/worker-versioning-conformance'],
+                $result['runner_blocker']['expected_server_urls'],
+            );
+            $this->assertStringContainsString(
+                'server process/container state is not managed by this runner',
+                $result['runner_blocker']['server_state'],
+            );
+            $this->assertCount(1, $result['findings']);
         } finally {
             $this->removeDirectory($resultDir);
             $this->removeDirectory($runRoot);
@@ -1002,6 +1035,13 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             );
             $this->assertStringContainsString('ECONNREFUSED', $reason);
             $this->assertNotSame('fetch failed', $reason);
+            $this->assertSame('server_readiness_topology', $result['runner_blocker']['kind']);
+            $this->assertSame(
+                ['http://127.0.0.1:65534/api/namespaces/worker-versioning-conformance'],
+                $result['runner_blocker']['expected_server_urls'],
+            );
+            $this->assertCount(1, $result['findings']);
+            $this->assertFileDoesNotExist($resultDir.'/server-url-resolved.txt');
         } finally {
             $this->removeDirectory($resultDir);
             $this->removeDirectory($runRoot);
