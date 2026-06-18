@@ -147,11 +147,15 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         foreach ([
             'DW_WV_SERVER_BIND_HOST',
             'DW_WV_SERVER_CONNECT_HOST',
+            'DW_WV_DOCKER_HOST_GATEWAY',
             'DW_WV_SERVER_READINESS_TIMEOUT_SECONDS',
             'default_route_gateway',
             'docker_bridge_gateway',
+            'docker_host_from_env',
             'server_url_candidates=()',
             'build_server_url_candidates',
+            'capture_server_port_bindings',
+            'add_compose_port_binding_candidates',
             'promote_server_url_candidate',
             'wait_for_server_namespace_setup',
             'verify_server_namespace_setup',
@@ -162,6 +166,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'server-namespace-setup.log',
             'server-url-candidates.txt',
             'server-url-resolved.txt',
+            'server-port-bindings.txt',
             'docker-compose-ps.log',
             'server-namespace-url.txt',
             'published server namespace setup prerequisite failed before worker-versioning matrix',
@@ -169,6 +174,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'if [[ ! -s "$resolved_url_file" ]]',
             'expected one of',
             'host.docker.internal',
+            'gateway.docker.internal',
             'SERVER_PORT="$compose_server_port"',
         ] as $token) {
             $this->assertStringContainsString($token, $shell);
@@ -624,6 +630,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         foreach ([
             'DW_WV_SERVER_BIND_HOST',
             'DW_WV_SERVER_CONNECT_HOST',
+            'DW_WV_DOCKER_HOST_GATEWAY',
             'DW_WV_SERVER_READINESS_TIMEOUT_SECONDS',
             'DW_WV_WATERLINE_URL',
             'DW_WV_WATERLINE_CONNECT_HOST',
@@ -632,6 +639,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'DW_WV_SKIP_WATERLINE_SHARD',
             'published_waterline_worker_workflow_view_capture',
             'server-url-candidates.txt',
+            'server-port-bindings.txt',
             'server-namespace-url.txt',
             'waterline-url.txt',
         ] as $token) {
@@ -802,6 +810,7 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             $this->assertFileExists($recordPath);
             $this->assertFileExists($resultDir.'/server-namespace-setup.log');
             $this->assertFileExists($resultDir.'/server-url-candidates.txt');
+            $this->assertFileExists($resultDir.'/server-port-bindings.txt');
             $this->assertFileDoesNotExist($resultDir.'/server-url-resolved.txt');
             $this->assertFileDoesNotExist($resultDir.'/server-namespace-url.txt');
             $this->assertFileDoesNotExist($resultDir.'/published-worker-shard-direct.log');
@@ -831,12 +840,16 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
                 $reason,
             );
             $this->assertStringContainsString(
-                'server-namespace-setup.log, server-url-candidates.txt, docker-compose-ps.log, and server.log',
+                'server-namespace-setup.log, server-url-candidates.txt, server-port-bindings.txt, docker-compose-ps.log, and server.log',
                 $reason,
             );
             $this->assertStringContainsString(
                 'simulated namespace setup success without resolved URL',
                 (string) file_get_contents($resultDir.'/server-namespace-setup.log'),
+            );
+            $this->assertStringContainsString(
+                'server port binding evidence is unavailable because the server process/container state is not managed by this runner',
+                (string) file_get_contents($resultDir.'/server-port-bindings.txt'),
             );
             $this->assertSame('server_readiness_topology', $result['runner_blocker']['kind']);
             $this->assertSame(
@@ -852,6 +865,176 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
                 $result['finding_links']['worker_registration_build_ids'][0]['blocker_kind'],
             );
             $this->assertArrayNotHasKey('linked_findings', $result['scenario_results']['worker_registration_build_ids']);
+        } finally {
+            $this->removeDirectory($resultDir);
+            $this->removeDirectory($runRoot);
+            $this->removeDirectory($fakeBin);
+        }
+    }
+
+    public function test_shell_resolves_compose_published_server_url_from_docker_host_topology(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $suffix = bin2hex(random_bytes(4));
+        $resultDir = $repoRoot.'/storage/framework/worker-versioning-compose-url-result-'.$suffix;
+        $runRoot = $repoRoot.'/storage/framework/worker-versioning-compose-url-run-'.$suffix;
+        $fakeBin = $repoRoot.'/storage/framework/worker-versioning-compose-url-bin-'.$suffix;
+        mkdir($resultDir, 0777, true);
+        mkdir($runRoot, 0777, true);
+        mkdir($fakeBin, 0777, true);
+
+        try {
+            $fakeNode = $fakeBin.'/node';
+            file_put_contents($fakeNode, <<<'SH'
+#!/bin/sh
+if [ "${1:-}" = "-" ]; then
+  resolved_url_path="${6:?resolved URL path is required}"
+  shift 6
+  printf '%s\n' "$@" > "${DW_WV_RESULT_DIR}/wait-helper-candidates.txt"
+  printf '%s\n' "http://docker:45678" > "$resolved_url_path"
+  printf '%s\n' "published server namespace setup prerequisite satisfied at http://docker:45678/api/namespaces/worker-versioning-conformance"
+  exit 0
+fi
+
+case "${1:-}" in
+  */worker-versioning-published-artifacts.mjs)
+    printf '%s\n' "${DW_WV_SERVER_URL:-}" > "${DW_WV_RESULT_DIR}/final-server-url.txt"
+    printf '%s\n' '{"outcome":"pass","runner_blocked":false}' > "${DW_WV_RESULT_DIR}/worker-versioning-result.json"
+    printf '%s\n' '{"outcome":"pass","runner_blocked":false}' > "${DW_WV_RESULT_DIR}/worker-versioning-record.json"
+    exit 0
+    ;;
+esac
+
+printf 'unexpected fake node invocation: %s\n' "$*" >&2
+exit 1
+SH);
+            chmod($fakeNode, 0755);
+
+            $fakeDocker = $fakeBin.'/docker';
+            file_put_contents($fakeDocker, <<<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "${DW_WV_RESULT_DIR}/docker-commands.log"
+cmd=" $* "
+
+if [ "${1:-}" = "compose" ] && [ "${2:-}" = "version" ]; then
+  exit 0
+fi
+
+if [ "${1:-}" = "network" ] && [ "${2:-}" = "inspect" ]; then
+  printf '%s\n' '172.17.0.1'
+  exit 0
+fi
+
+if [ "${1:-}" = "image" ]; then
+  case "${2:-}" in
+    pull)
+      exit 0
+      ;;
+    inspect)
+      printf '%s\n' '{"Id":"sha256:fake"}'
+      exit 0
+      ;;
+  esac
+fi
+
+case "$cmd" in
+  *" up -d server "*)
+    exit 0
+    ;;
+  *" port server 8080 "*)
+    printf '%s\n' '0.0.0.0:45678'
+    exit 0
+    ;;
+  *" ps server --format json "*)
+    printf '%s\n' '{"Name":"dw-server","Health":"healthy","Publishers":[{"URL":"0.0.0.0","TargetPort":8080,"PublishedPort":45678,"Protocol":"tcp"}]}'
+    exit 0
+    ;;
+  *" logs server "*)
+    printf '%s\n' 'server log'
+    exit 0
+    ;;
+  *" ps "*)
+    printf '%s\n' 'server healthy 0.0.0.0:45678->8080/tcp'
+    exit 0
+    ;;
+  *" down -v "*)
+    exit 0
+    ;;
+esac
+
+printf 'unexpected fake docker invocation: %s\n' "$*" >&2
+exit 1
+SH);
+            chmod($fakeDocker, 0755);
+
+            $process = proc_open(
+                [
+                    'bash',
+                    $repoRoot.'/scripts/conformance/worker-versioning-published-artifacts.sh',
+                    '--result-dir',
+                    $resultDir,
+                    '--keep-run-root',
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => $fakeBin.PATH_SEPARATOR.(getenv('PATH') ?: '/usr/bin:/bin'),
+                    'DOCKER_HOST' => 'tcp://docker:2375',
+                    'DW_WV_RESULT_DIR' => $resultDir,
+                    'DW_WV_RUN_ROOT' => $runRoot,
+                    'DW_WV_SERVER_PORT' => '45670',
+                    'DW_WV_SERVER_CONNECT_HOST' => '172.24.0.1',
+                    'DW_WV_WATERLINE_URL' => 'http://waterline.test',
+                    'DW_WV_SKIP_PUBLISHED_WORKER_SHARD' => '1',
+                    'DW_SERVER_VERSION' => '0.2.427',
+                    'DW_CLI_VERSION' => '0.1.81',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.89',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.206',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.97',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stdout.$stderr);
+            $this->assertFileExists($resultDir.'/server-port-bindings.txt');
+            $this->assertStringContainsString(
+                '0.0.0.0:45678',
+                (string) file_get_contents($resultDir.'/server-port-bindings.txt'),
+            );
+            $this->assertStringContainsString(
+                'http://docker:45678',
+                (string) file_get_contents($resultDir.'/server-url-candidates.txt'),
+            );
+            $this->assertStringContainsString(
+                'http://docker:45678',
+                (string) file_get_contents($resultDir.'/wait-helper-candidates.txt'),
+            );
+            $this->assertSame(
+                'http://docker:45678',
+                trim((string) file_get_contents($resultDir.'/server-url-resolved.txt')),
+            );
+            $this->assertSame(
+                'http://docker:45678',
+                trim((string) file_get_contents($resultDir.'/final-server-url.txt')),
+            );
+            $this->assertSame(
+                'http://docker:45678/api/namespaces/worker-versioning-conformance',
+                trim((string) file_get_contents($resultDir.'/server-namespace-url.txt')),
+            );
+            $this->assertStringContainsString(
+                'port server 8080',
+                (string) file_get_contents($resultDir.'/docker-commands.log'),
+            );
         } finally {
             $this->removeDirectory($resultDir);
             $this->removeDirectory($runRoot);
@@ -941,9 +1124,14 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
                 (string) file_get_contents($resultDir.'/server-namespace-setup.log'),
             );
             $this->assertFileExists($resultDir.'/server-url-candidates.txt');
+            $this->assertFileExists($resultDir.'/server-port-bindings.txt');
             $this->assertStringContainsString(
                 'http://127.0.0.1:65534',
                 (string) file_get_contents($resultDir.'/server-url-candidates.txt'),
+            );
+            $this->assertStringContainsString(
+                'server port binding evidence is unavailable because the server process/container state is not managed by this runner',
+                (string) file_get_contents($resultDir.'/server-port-bindings.txt'),
             );
             $this->assertSame('server_readiness_topology', $result['runner_blocker']['kind']);
             $this->assertSame(

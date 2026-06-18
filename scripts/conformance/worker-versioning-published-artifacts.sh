@@ -45,6 +45,8 @@ Environment overrides:
                               self-started server URL. Defaults to 127.0.0.1;
                               the runner automatically probes localhost,
                               gateway, and host.docker.internal fallbacks.
+  DW_WV_DOCKER_HOST_GATEWAY    Optional Docker host gateway/daemon hostname for
+                              containerized host runners.
   DW_WV_SERVER_READINESS_TIMEOUT_SECONDS
                               Seconds to wait for the server namespace setup
                               prerequisite. Defaults to 120.
@@ -200,6 +202,30 @@ PY
 
 docker_bridge_gateway() {
   docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true
+}
+
+docker_host_from_env() {
+  local value="${DOCKER_HOST:-}"
+
+  [[ -n "$value" ]] || return 0
+  case "$value" in
+    tcp://*|http://*|https://*)
+      value="${value#tcp://}"
+      value="${value#http://}"
+      value="${value#https://}"
+      value="${value%%/*}"
+      value="${value%:*}"
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  if [[ -n "$value" && "$value" != "127.0.0.1" && "$value" != "localhost" ]]; then
+    printf '%s\n' "$value"
+  fi
+
+  return 0
 }
 
 wait_for_server_namespace_setup() {
@@ -447,7 +473,7 @@ add_server_url_candidate() {
   local candidate="${1%/}"
   local existing
 
-  [[ -n "$candidate" ]] || return
+  [[ -n "$candidate" ]] || return 0
   for existing in "${server_url_candidates[@]}"; do
     if [[ "$existing" == "$candidate" ]]; then
       return
@@ -456,34 +482,132 @@ add_server_url_candidate() {
   server_url_candidates+=("$candidate")
 }
 
-build_server_url_candidates() {
-  local gateway
+is_wildcard_host() {
+  local host="${1#[}"
+  host="${host%]}"
 
+  [[ -z "$host" || "$host" == "0.0.0.0" || "$host" == "::" || "$host" == "*" ]]
+}
+
+host_port_url() {
+  local host="${1#[}"
+  local port="$2"
+
+  host="${host%]}"
+  [[ -n "$host" && "$port" =~ ^[0-9]+$ && "$port" -gt 0 ]] || return
+
+  if [[ "$host" == *:* && "$host" != \[* ]]; then
+    printf 'http://[%s]:%s\n' "$host" "$port"
+  else
+    printf 'http://%s:%s\n' "$host" "$port"
+  fi
+}
+
+add_server_host_port_candidate() {
+  local host="$1"
+  local port="$2"
+  local candidate
+
+  candidate="$(host_port_url "$host" "$port" || true)"
+  add_server_url_candidate "$candidate"
+}
+
+add_server_url_candidates_for_port() {
+  local port="$1"
+  local bind_host="${2:-}"
+  local gateway
+  local docker_host
+
+  [[ "$port" =~ ^[0-9]+$ && "$port" -gt 0 ]] || return 0
+
+  add_server_host_port_candidate "${server_connect_host:-127.0.0.1}" "$port"
+  add_server_host_port_candidate "127.0.0.1" "$port"
+  add_server_host_port_candidate "localhost" "$port"
+
+  if [[ -n "$bind_host" ]] && ! is_wildcard_host "$bind_host" \
+    && [[ "$bind_host" != "127.0.0.1" && "$bind_host" != "localhost" ]]; then
+    add_server_host_port_candidate "$bind_host" "$port"
+  fi
+
+  for gateway in \
+    "${DW_WV_DOCKER_HOST_GATEWAY:-}" \
+    "${DOCKER_HOST_GATEWAY:-}" \
+    "${HOST_DOCKER_INTERNAL:-}"; do
+    add_server_host_port_candidate "$gateway" "$port"
+  done
+
+  docker_host="$(docker_host_from_env)"
+  if [[ -n "$docker_host" ]]; then
+    add_server_host_port_candidate "$docker_host" "$port"
+  fi
+
+  gateway="$(default_route_gateway)"
+  if [[ -n "$gateway" ]]; then
+    add_server_host_port_candidate "$gateway" "$port"
+  fi
+
+  gateway="$(docker_bridge_gateway)"
+  if [[ -n "$gateway" && "$gateway" != "<no value>" ]]; then
+    add_server_host_port_candidate "$gateway" "$port"
+  fi
+
+  add_server_host_port_candidate "host.docker.internal" "$port"
+  add_server_host_port_candidate "gateway.docker.internal" "$port"
+}
+
+build_server_url_candidates() {
   server_url_candidates=()
   if [[ -n "$server_url_override" ]]; then
     add_server_url_candidate "$server_url_override"
     return
   fi
 
-  add_server_url_candidate "http://${server_connect_host}:${server_port}"
-  add_server_url_candidate "http://127.0.0.1:${server_port}"
-  add_server_url_candidate "http://localhost:${server_port}"
+  add_server_url_candidates_for_port "$server_port" "$server_bind_host"
+}
 
-  if [[ "$server_bind_host" != "0.0.0.0" && "$server_bind_host" != "127.0.0.1" && "$server_bind_host" != "localhost" ]]; then
-    add_server_url_candidate "http://${server_bind_host}:${server_port}"
+capture_server_port_bindings() {
+  if [[ "$server_started" != "1" && "$compose_cleanup_needed" != "1" ]]; then
+    return
   fi
 
-  gateway="$(default_route_gateway)"
-  if [[ -n "$gateway" ]]; then
-    add_server_url_candidate "http://${gateway}:${server_port}"
-  fi
+  docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" \
+    port server 8080 >"$result_dir/server-compose-port.txt" 2>"$result_dir/server-compose-port.err" || true
 
-  gateway="$(docker_bridge_gateway)"
-  if [[ -n "$gateway" && "$gateway" != "<no value>" ]]; then
-    add_server_url_candidate "http://${gateway}:${server_port}"
-  fi
+  {
+    printf '%s\n' 'docker compose port server 8080:'
+    if [[ -s "$result_dir/server-compose-port.txt" ]]; then
+      cat "$result_dir/server-compose-port.txt"
+    fi
+    if [[ -s "$result_dir/server-compose-port.err" ]]; then
+      cat "$result_dir/server-compose-port.err"
+    fi
+    printf '\n%s\n' 'docker compose ps server --format json:'
+    docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" \
+      ps server --format json || true
+  } >"$result_dir/server-port-bindings.txt" 2>&1
+}
 
-  add_server_url_candidate "http://host.docker.internal:${server_port}"
+add_compose_port_binding_candidates() {
+  local binding
+  local host
+  local line
+  local port
+
+  [[ -s "$result_dir/server-compose-port.txt" ]] || return 0
+
+  while IFS= read -r line; do
+    binding="${line%%[[:space:]]*}"
+    port="${binding##*:}"
+    host="${binding%:*}"
+    host="${host#[}"
+    host="${host%]}"
+
+    if [[ "$host" == "$binding" || ! "$port" =~ ^[0-9]+$ || "$port" -le 0 ]]; then
+      continue
+    fi
+
+    add_server_url_candidates_for_port "$port" "$host"
+  done <"$result_dir/server-compose-port.txt"
 }
 
 write_server_url_candidates() {
@@ -560,12 +684,17 @@ server_state_summary() {
   local summary=""
 
   if [[ "$server_started" == "1" || "$compose_cleanup_needed" == "1" ]]; then
+    capture_server_port_bindings
     docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" ps >"$result_dir/docker-compose-ps.log" 2>&1 || true
     docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" logs server >"$result_dir/server.log" 2>&1 || true
     summary="$(docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" ps server --format json 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c1-700 || true)"
     if [[ -z "$summary" ]]; then
       summary="$(docker compose -p "$compose_project" -f "$repo_root/docker-compose.published.yml" ps server 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | cut -c1-700 || true)"
     fi
+  fi
+
+  if [[ ! -s "$result_dir/server-port-bindings.txt" ]]; then
+    printf '%s\n' 'server port binding evidence is unavailable because the server process/container state is not managed by this runner' >"$result_dir/server-port-bindings.txt"
   fi
 
   if [[ -z "$summary" ]]; then
@@ -581,7 +710,7 @@ block_server_readiness_prerequisite() {
   local state
 
   state="$(server_state_summary)"
-  write_blocked_result "published server namespace setup did not record a reachable server URL before worker-versioning matrix; expected one of ${expected_summary}; server state: ${state}; ${setup_reason}; see server-namespace-setup.log, server-url-candidates.txt, docker-compose-ps.log, and server.log" \
+  write_blocked_result "published server namespace setup did not record a reachable server URL before worker-versioning matrix; expected one of ${expected_summary}; server state: ${state}; ${setup_reason}; see server-namespace-setup.log, server-url-candidates.txt, server-port-bindings.txt, docker-compose-ps.log, and server.log" \
     "server_readiness_topology" \
     "$expected_summary" \
     "$state"
@@ -628,7 +757,7 @@ verify_server_namespace_setup() {
   fi
 
   state="$(server_state_summary)"
-  write_blocked_result "published server namespace setup prerequisite failed before worker-versioning matrix; expected one of ${expected_summary}; server state: ${state}; see server-namespace-setup.log, server-url-candidates.txt, docker-compose-ps.log, and server.log" \
+  write_blocked_result "published server namespace setup prerequisite failed before worker-versioning matrix; expected one of ${expected_summary}; server state: ${state}; see server-namespace-setup.log, server-url-candidates.txt, server-port-bindings.txt, docker-compose-ps.log, and server.log" \
     "server_readiness_topology" \
     "$expected_summary" \
     "$state"
@@ -821,6 +950,9 @@ if [[ -z "$server_url" ]]; then
     exit 0
   fi
   server_started=1
+  capture_server_port_bindings
+  add_compose_port_binding_candidates
+  write_server_url_candidates
 
   verify_server_namespace_setup
 fi
