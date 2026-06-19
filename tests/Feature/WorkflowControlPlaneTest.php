@@ -288,6 +288,29 @@ class WorkflowControlPlaneTest extends TestCase
 
         $start->assertCreated();
 
+        $preview = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-unknown-signal-diagnostics/signal/missing-signal', [
+                'dry_run' => true,
+            ]);
+
+        $preview->assertNotFound()
+            ->assertJsonPath('workflow_id', 'wf-unknown-signal-diagnostics')
+            ->assertJsonPath('signal_name', 'missing-signal')
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('dry_run', true)
+            ->assertJsonPath('reason', 'unknown_signal')
+            ->assertJsonPath('rejection_reason', 'unknown_signal')
+            ->assertJsonPath('rejection_category', 'admission')
+            ->assertJsonPath('preview.would_record_signal', false)
+            ->assertJsonPath('control_plane.reason', 'unknown_signal')
+            ->assertJsonPath('control_plane.rejection_category', 'admission');
+
+        $this->assertDatabaseMissing('workflow_commands', [
+            'workflow_instance_id' => 'wf-unknown-signal-diagnostics',
+            'command_type' => 'signal',
+            'rejection_reason' => 'unknown_signal',
+        ]);
+
         $signal = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows/wf-unknown-signal-diagnostics/signal/missing-signal');
 
@@ -325,6 +348,78 @@ class WorkflowControlPlaneTest extends TestCase
 
         $runId = (string) $start->json('run_id');
         $this->runReadyWorkflowTask($runId);
+
+        $validPreview = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-invalid-signal-payload/signal/advance', [
+                'input' => ['Ada'],
+                'dry_run' => true,
+            ]);
+
+        $validPreview->assertOk()
+            ->assertJsonPath('workflow_id', 'wf-invalid-signal-payload')
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('signal_name', 'advance')
+            ->assertJsonPath('outcome', 'signal_preview')
+            ->assertJsonPath('command_status', 'preview')
+            ->assertJsonPath('dry_run', true)
+            ->assertJsonPath('preview.would_record_signal', true);
+
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $runId,
+            'event_type' => HistoryEventType::SignalReceived->value,
+        ]);
+
+        $this->assertDatabaseMissing('workflow_commands', [
+            'workflow_instance_id' => 'wf-invalid-signal-payload',
+            'command_type' => 'signal',
+            'status' => 'accepted',
+        ]);
+        $this->assertSame(
+            0,
+            WorkflowCommand::query()
+                ->where('workflow_instance_id', 'wf-invalid-signal-payload')
+                ->where('command_type', 'signal')
+                ->count(),
+        );
+
+        $invalidPreview = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-invalid-signal-payload/signal/advance', [
+                'input' => ['name' => 123],
+                'dry_run' => true,
+            ]);
+
+        $invalidPreview->assertStatus(422)
+            ->assertJsonPath('workflow_id', 'wf-invalid-signal-payload')
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('signal_name', 'advance')
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('dry_run', true)
+            ->assertJsonPath('outcome', 'rejected_invalid_arguments')
+            ->assertJsonPath('reason', 'invalid_signal_arguments')
+            ->assertJsonPath('rejection_reason', 'invalid_signal_arguments')
+            ->assertJsonPath('rejection_category', 'validation')
+            ->assertJsonPath('preview.would_record_signal', false)
+            ->assertJsonPath('control_plane.reason', 'invalid_signal_arguments')
+            ->assertJsonPath('control_plane.rejection_category', 'validation')
+            ->assertJsonPath('validation_errors.name.0', 'The name argument must be of type string.');
+
+        $this->assertDatabaseMissing('workflow_commands', [
+            'workflow_instance_id' => 'wf-invalid-signal-payload',
+            'command_type' => 'signal',
+            'rejection_reason' => 'invalid_signal_arguments',
+        ]);
+        $this->assertSame(
+            0,
+            WorkflowCommand::query()
+                ->where('workflow_instance_id', 'wf-invalid-signal-payload')
+                ->where('command_type', 'signal')
+                ->count(),
+        );
+
+        $this->assertDatabaseMissing('workflow_history_events', [
+            'workflow_run_id' => $runId,
+            'event_type' => HistoryEventType::SignalReceived->value,
+        ]);
 
         $invalidSignal = $this->withHeaders($this->apiHeaders())
             ->postJson('/api/workflows/wf-invalid-signal-payload/signal/advance', [
@@ -395,6 +490,24 @@ class WorkflowControlPlaneTest extends TestCase
             'instance_not_found',
             $signal->json('control_plane.contract.rejection_reasons'),
         );
+
+        $preview = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-missing-signal-contract/signal/advance', [
+                'dry_run' => true,
+            ]);
+
+        $preview->assertNotFound()
+            ->assertJsonPath('workflow_id', 'wf-missing-signal-contract')
+            ->assertJsonPath('signal_name', 'advance')
+            ->assertJsonPath('command_status', 'rejected')
+            ->assertJsonPath('command_source', 'control_plane')
+            ->assertJsonPath('outcome', 'rejected_not_found')
+            ->assertJsonPath('reason', 'instance_not_found')
+            ->assertJsonPath('rejection_reason', 'instance_not_found')
+            ->assertJsonPath('rejection_category', 'admission')
+            ->assertJsonPath('dry_run', true)
+            ->assertJsonPath('preview.would_record_signal', false)
+            ->assertJsonPath('control_plane.rejection_category', 'admission');
     }
 
     public function test_external_worker_command_contract_rejects_malformed_signal_and_query_payloads(): void

@@ -29,8 +29,10 @@ use Workflow\V2\Support\MatchingRoleSnapshot;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\ServiceExecutionContract;
+use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
+use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\WorkflowQueryContract;
 
 /**
@@ -243,6 +245,8 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertContains([ExternalPayloads::class, 'storedEnvelope'], $apis);
 
         $constants = $this->privateConstant($floor, 'REQUIRED_CLASS_CONSTANTS');
+        $this->assertContains([RunCommandContract::class, 'SOURCE_DURABLE_HISTORY'], $constants);
+        $this->assertContains([RunCommandContract::class, 'SOURCE_UNAVAILABLE'], $constants);
         $this->assertContains([WorkerProtocolVersion::class, 'CAPABILITY_QUERY_TASKS'], $constants);
         $this->assertContains([ExternalPayloadReference::class, 'SCHEMA'], $constants);
         $this->assertContains([ExternalPayloads::class, 'STORED_REFERENCE_PREFIX'], $constants);
@@ -269,6 +273,10 @@ class WorkflowPackageApiFloorTest extends TestCase
 
         $apis = $this->privateConstant($floor, 'REQUIRED_APIS');
         $this->assertContains([RunCommandContract::class, 'forRun'], $apis);
+        $this->assertContains([RunCommandContract::class, 'signalContract'], $apis);
+        $this->assertContains([TypeRegistry::class, 'resolveWorkflowClass'], $apis);
+        $this->assertContains([WorkflowDefinition::class, 'hasSignal'], $apis);
+        $this->assertContains([WorkflowDefinition::class, 'signalContract'], $apis);
         $this->assertContains([WorkflowQueryContract::class, 'resolveTargetForRun'], $apis);
         $this->assertContains([WorkflowQueryContract::class, 'validatedArgumentsForRun'], $apis);
     }
@@ -340,6 +348,19 @@ class WorkflowPackageApiFloorTest extends TestCase
             $this->invokeConfirmsRunCommandContractSignature(),
             'RunCommandContract::forRun() no longer matches the server API floor. If this fails, '
             .'the installed workflow package can pass boot and then fail during query routing.'
+        );
+    }
+
+    public function test_signal_preview_validation_signatures_match_api_floor(): void
+    {
+        $this->assertTrue((new ReflectionClass(RunCommandContract::class))->getMethod('signalContract')->isStatic());
+        $this->assertTrue((new ReflectionClass(TypeRegistry::class))->getMethod('resolveWorkflowClass')->isStatic());
+        $this->assertTrue((new ReflectionClass(WorkflowDefinition::class))->getMethod('hasSignal')->isStatic());
+        $this->assertTrue((new ReflectionClass(WorkflowDefinition::class))->getMethod('signalContract')->isStatic());
+
+        $this->assertTrue(
+            $this->invokeConfirmsSignalPreviewValidationSignatures(),
+            'Signal dry-run preview validation APIs no longer match the server API floor.'
         );
     }
 
@@ -517,6 +538,16 @@ class WorkflowPackageApiFloorTest extends TestCase
     private function invokeConfirmsRunCommandContractSignature(): bool
     {
         $reflection = new ReflectionMethod(WorkflowPackageApiFloor::class, 'confirmsRunCommandContractSignature');
+
+        /** @var bool $result */
+        $result = $reflection->invoke(null);
+
+        return $result;
+    }
+
+    private function invokeConfirmsSignalPreviewValidationSignatures(): bool
+    {
+        $reflection = new ReflectionMethod(WorkflowPackageApiFloor::class, 'confirmsSignalPreviewValidationSignatures');
 
         /** @var bool $result */
         $result = $reflection->invoke(null);

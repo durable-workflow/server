@@ -17,8 +17,11 @@ use Tests\Fixtures\ExternalGreetingWorkflow;
 use Tests\Fixtures\InteractiveCommandWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
@@ -169,6 +172,83 @@ class PayloadEnvelopeIntegrationTest extends TestCase
             ->assertOk()
             ->assertJsonPath('result.name', 'ExternalSignal')
             ->assertJsonPath('result.stage', 'waiting-for-finish');
+    }
+
+    public function test_signal_dry_run_preview_does_not_write_external_payload_state(): void
+    {
+        Queue::fake();
+        $this->configureWorkflowTypes();
+        $this->createNamespace('default', [
+            'driver' => 'local',
+            'enabled' => true,
+            'threshold_bytes' => 32,
+            'config' => [
+                'uri' => 'file://'.$this->externalStorageDirectory,
+            ],
+        ]);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows', [
+                'workflow_id' => 'wf-external-storage-signal-preview',
+                'workflow_type' => 'tests.interactive-command-workflow',
+            ])
+            ->assertCreated();
+
+        $runId = $this->withHeaders($this->apiHeaders())
+            ->getJson('/api/workflows/wf-external-storage-signal-preview')
+            ->json('run_id');
+
+        $this->runReadyWorkflowTask($runId);
+
+        $payloadFiles = $this->externalStorageFilePaths();
+        $signalCommandCount = WorkflowCommand::query()
+            ->where('workflow_instance_id', 'wf-external-storage-signal-preview')
+            ->where('command_type', 'signal')
+            ->count();
+        $signalHistoryCount = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::SignalReceived->value)
+            ->count();
+        $signalRecordCount = WorkflowSignal::query()
+            ->where('workflow_run_id', $runId)
+            ->count();
+
+        $preview = $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/workflows/wf-external-storage-signal-preview/signal/advance', [
+                'input' => [str_repeat('S', 2048)],
+                'dry_run' => true,
+            ]);
+
+        $preview->assertOk()
+            ->assertJsonPath('workflow_id', 'wf-external-storage-signal-preview')
+            ->assertJsonPath('run_id', $runId)
+            ->assertJsonPath('signal_name', 'advance')
+            ->assertJsonPath('outcome', 'signal_preview')
+            ->assertJsonPath('command_status', 'preview')
+            ->assertJsonPath('dry_run', true)
+            ->assertJsonPath('preview.would_record_signal', true);
+
+        $this->assertSame($payloadFiles, $this->externalStorageFilePaths());
+        $this->assertSame(
+            $signalCommandCount,
+            WorkflowCommand::query()
+                ->where('workflow_instance_id', 'wf-external-storage-signal-preview')
+                ->where('command_type', 'signal')
+                ->count(),
+        );
+        $this->assertSame(
+            $signalHistoryCount,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::SignalReceived->value)
+                ->count(),
+        );
+        $this->assertSame(
+            $signalRecordCount,
+            WorkflowSignal::query()
+                ->where('workflow_run_id', $runId)
+                ->count(),
+        );
     }
 
     public function test_signal_rejects_undecodable_envelope(): void
@@ -1608,6 +1688,24 @@ class PayloadEnvelopeIntegrationTest extends TestCase
         }
 
         $this->assertStringStartsWith(ExternalPayloads::STORED_REFERENCE_PREFIX, $payload);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function externalStorageFilePaths(): array
+    {
+        if (! File::exists($this->externalStorageDirectory)) {
+            return [];
+        }
+
+        $paths = array_map(
+            static fn ($file): string => $file->getPathname(),
+            File::allFiles($this->externalStorageDirectory),
+        );
+        sort($paths);
+
+        return array_values($paths);
     }
 
     /**

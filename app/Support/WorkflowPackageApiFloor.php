@@ -26,8 +26,10 @@ use Workflow\V2\Support\MatchingRoleSnapshot;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
 use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\ServiceExecutionContract;
+use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
+use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\WorkflowQueryContract;
 
 /**
@@ -92,6 +94,10 @@ final class WorkflowPackageApiFloor
         // Durable command-contract APIs used by server-side signal/query
         // validation for external workers.
         [RunCommandContract::class, 'forRun'],
+        [RunCommandContract::class, 'signalContract'],
+        [TypeRegistry::class, 'resolveWorkflowClass'],
+        [WorkflowDefinition::class, 'hasSignal'],
+        [WorkflowDefinition::class, 'signalContract'],
         [WorkflowQueryContract::class, 'resolveTargetForRun'],
         [WorkflowQueryContract::class, 'validatedArgumentsForRun'],
     ];
@@ -100,6 +106,8 @@ final class WorkflowPackageApiFloor
      * Public constants the server embeds in HTTP/control-plane payloads.
      */
     private const REQUIRED_CLASS_CONSTANTS = [
+        [RunCommandContract::class, 'SOURCE_DURABLE_HISTORY'],
+        [RunCommandContract::class, 'SOURCE_UNAVAILABLE'],
         [WorkerProtocolVersion::class, 'CAPABILITY_QUERY_TASKS'],
         [ExternalPayloadReference::class, 'SCHEMA'],
         [ExternalPayloads::class, 'STORED_REFERENCE_PREFIX'],
@@ -273,6 +281,10 @@ final class WorkflowPackageApiFloor
             $missing[] = RunCommandContract::class.' run command-contract signatures';
         }
 
+        if (! self::confirmsSignalPreviewValidationSignatures()) {
+            $missing[] = 'signal dry-run preview validation signatures';
+        }
+
         if (! self::confirmsWorkflowQueryContractSignature()) {
             $missing[] = WorkflowQueryContract::class.' workflow query-contract signatures';
         }
@@ -301,7 +313,8 @@ final class WorkflowPackageApiFloor
             .'the poll-mode queue capability demotion, the matching-role repair-pass contract, '
             .'the service execution control-plane contract, the worker-session protocol contract, '
             .'the external payload storage protocol APIs, the command payload-envelope contract, '
-            .'the external command/query contract APIs, the typed search-attribute storage '
+            .'the external command/query contract APIs, the signal dry-run preview validation APIs, '
+            .'the typed search-attribute storage '
             .'constants, plus ChildWorkflowNamespaceProjection for package-owned child namespace propagation '
             .'(install the v2 workflow package snapshot that matches this server release).',
             implode(', ', $missing),
@@ -603,6 +616,47 @@ final class WorkflowPackageApiFloor
             ],
             'array',
             false,
+        );
+    }
+
+    private static function confirmsSignalPreviewValidationSignatures(): bool
+    {
+        return self::matchesStaticMethod(
+            RunCommandContract::class,
+            'signalContract',
+            [
+                ['run', WorkflowRun::class, false, false, null],
+                ['target', 'string', false, false, null],
+            ],
+            'array',
+            true,
+        ) && self::matchesStaticMethod(
+            TypeRegistry::class,
+            'resolveWorkflowClass',
+            [
+                ['storedClass', 'string', false, false, null],
+                ['workflowType', 'string', true, false, null],
+            ],
+            'string',
+            false,
+        ) && self::matchesStaticMethod(
+            WorkflowDefinition::class,
+            'hasSignal',
+            [
+                ['class', 'string', false, false, null],
+                ['name', 'string', false, false, null],
+            ],
+            'bool',
+            false,
+        ) && self::matchesStaticMethod(
+            WorkflowDefinition::class,
+            'signalContract',
+            [
+                ['class', 'string', false, false, null],
+                ['target', 'string', false, false, null],
+            ],
+            'array',
+            true,
         );
     }
 

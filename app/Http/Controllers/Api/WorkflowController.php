@@ -31,7 +31,10 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\FailureSnapshots;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
+use Workflow\V2\Support\RunCommandContract;
+use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
+use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Workflow;
 
 class WorkflowController
@@ -488,18 +491,39 @@ class WorkflowController
         $this->validateOperationName($signalName, 'signal');
 
         $namespace = $request->attributes->get('namespace');
+        $dryRun = $request->boolean('dry_run');
 
         if (! NamespaceWorkflowScope::workflowBound($namespace, $workflowId)) {
-            return ControlPlaneProtocol::jsonForRequest($request, [
+            return ControlPlaneProtocol::jsonForRequest($request, array_filter([
                 'message' => 'Workflow not found.',
                 'reason' => 'instance_not_found',
-            ], 404);
+                'signal_name' => $dryRun ? $signalName : null,
+                'command_status' => $dryRun ? 'rejected' : null,
+                'command_source' => $dryRun ? 'control_plane' : null,
+                'outcome' => $dryRun ? 'rejected_not_found' : null,
+                'rejection_reason' => $dryRun ? 'instance_not_found' : null,
+                'rejection_category' => $dryRun ? 'admission' : null,
+                'dry_run' => $dryRun ? true : null,
+                'preview' => $dryRun ? [
+                    'would_record_signal' => false,
+                ] : null,
+            ], static fn (mixed $value): bool => $value !== null), 404);
         }
 
         $validated = $request->validate([
             'input' => ['nullable', 'array'],
             'request_id' => ['nullable', 'string', 'max:255'],
+            'dry_run' => ['nullable', 'boolean'],
         ]);
+
+        if ($dryRun) {
+            return $this->resultMapper->signal(
+                $workflowId,
+                $signalName,
+                $this->signalPreviewPayload($namespace, $workflowId, $signalName, $validated),
+                $this->controlPlaneRunId($request),
+            );
+        }
 
         $externalStorage = $this->externalPayloadStorage->driverFor($namespace);
         $envelope = PayloadEnvelopeResolver::resolve($validated['input'] ?? null, 'input', $externalStorage);
@@ -1311,6 +1335,734 @@ class WorkflowController
     private function withoutNullOrEmptyArrays(array $payload): array
     {
         return array_filter($payload, static fn (mixed $value): bool => $value !== null && $value !== []);
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     * @return array<string, mixed>
+     */
+    private function signalPreviewPayload(
+        string $namespace,
+        string $workflowId,
+        string $signalName,
+        array $validated,
+    ): array {
+        $run = NamespaceWorkflowScope::currentRun($namespace, $workflowId);
+
+        if (! $run instanceof WorkflowRun) {
+            return $this->signalPreviewRejection(
+                $workflowId,
+                null,
+                $namespace,
+                $signalName,
+                'run_not_active',
+                'rejected_not_active',
+                'admission',
+                'Workflow signal preview cannot record a signal because the workflow has no active current run.',
+                409,
+            );
+        }
+
+        if (
+            is_string($run->workflow_type)
+            && ($message = $this->configuredWorkflowValidationMessage($run->workflow_type)) !== null
+        ) {
+            return $this->signalPreviewRejection(
+                $workflowId,
+                $run,
+                $namespace,
+                $signalName,
+                'configured_workflow_type_invalid',
+                'rejected_configured_workflow_type_invalid',
+                'admission',
+                $message,
+                409,
+                [
+                    'workflow_type' => $run->workflow_type,
+                    'blocked_reason' => 'configured_workflow_type_invalid',
+                ],
+            );
+        }
+
+        if (! $this->runIsActiveForSignal($run)) {
+            return $this->signalPreviewRejection(
+                $workflowId,
+                $run,
+                $namespace,
+                $signalName,
+                'run_not_active',
+                'rejected_not_active',
+                'admission',
+                sprintf(
+                    'Workflow signal [%s] cannot be recorded because run [%s] is terminal with status [%s].',
+                    $signalName,
+                    $run->id,
+                    $run->status->value,
+                ),
+                409,
+            );
+        }
+
+        $admission = $this->signalAdmissionForPreview($run, $signalName);
+
+        if (($admission['allowed'] ?? false) !== true) {
+            return $this->signalPreviewRejection(
+                $workflowId,
+                $run,
+                $namespace,
+                $signalName,
+                'unknown_signal',
+                'rejected_unknown_signal',
+                'admission',
+                (string) ($admission['message'] ?? 'Workflow signal is unknown.'),
+                404,
+                is_array($admission['payload'] ?? null) ? $admission['payload'] : [],
+            );
+        }
+
+        $arguments = $this->signalPreviewArguments($namespace, $validated['input'] ?? null);
+        $validatedArguments = $this->validatedSignalArgumentsForPreview($run, $signalName, $arguments);
+        $validationErrors = $this->validationErrors($validatedArguments['validation_errors'] ?? null);
+
+        if ($validationErrors !== []) {
+            return $this->signalPreviewRejection(
+                $workflowId,
+                $run,
+                $namespace,
+                $signalName,
+                'invalid_signal_arguments',
+                'rejected_invalid_arguments',
+                'validation',
+                sprintf('Workflow signal [%s] arguments failed validation.', $signalName),
+                422,
+                [
+                    'validation_errors' => $validationErrors,
+                ],
+            );
+        }
+
+        return [
+            'workflow_id' => $workflowId,
+            'run_id' => $run->id,
+            'namespace' => $namespace,
+            'signal_name' => $signalName,
+            'outcome' => 'signal_preview',
+            'command_status' => 'preview',
+            'command_source' => 'control_plane',
+            'dry_run' => true,
+            'preview' => [
+                'input_present' => array_key_exists('input', $validated),
+                'request_id_present' => isset($validated['request_id']),
+                'would_record_signal' => true,
+            ],
+            'status' => 200,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $extra
+     * @return array<string, mixed>
+     */
+    private function signalPreviewRejection(
+        string $workflowId,
+        ?WorkflowRun $run,
+        string $namespace,
+        string $signalName,
+        string $reason,
+        string $outcome,
+        string $category,
+        string $message,
+        int $status,
+        array $extra = [],
+    ): array {
+        return array_filter([
+            'workflow_id' => $workflowId,
+            'run_id' => $run?->id,
+            'namespace' => $namespace,
+            'signal_name' => $signalName,
+            'outcome' => $outcome,
+            'command_status' => 'rejected',
+            'command_source' => 'control_plane',
+            'dry_run' => true,
+            'reason' => $reason,
+            'rejection_reason' => $reason,
+            'rejection_category' => $category,
+            'message' => $message,
+            'preview' => [
+                'would_record_signal' => false,
+            ],
+            ...$extra,
+            'status' => $status,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    private function runIsActiveForSignal(WorkflowRun $run): bool
+    {
+        return in_array($run->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true);
+    }
+
+    private function configuredWorkflowValidationMessage(string $workflowType): ?string
+    {
+        if (class_exists($workflowType) && is_subclass_of($workflowType, Workflow::class)) {
+            return null;
+        }
+
+        $configured = config('workflows.v2.types.workflows', []);
+
+        if (! is_array($configured) || ! array_key_exists($workflowType, $configured)) {
+            return null;
+        }
+
+        $workflowClass = $configured[$workflowType];
+
+        if (! is_string($workflowClass) || ! class_exists($workflowClass) || ! is_subclass_of(
+            $workflowClass,
+            Workflow::class,
+        )) {
+            return sprintf(
+                'Configured durable workflow type [%s] points to [%s], which is not a loadable workflow class.',
+                $workflowType,
+                is_scalar($workflowClass) ? (string) $workflowClass : get_debug_type($workflowClass),
+            );
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<int|string, mixed>
+     */
+    private function signalPreviewArguments(string $namespace, mixed $input): array
+    {
+        if (! is_array($input) || ! $this->looksLikePayloadEnvelope($input)) {
+            return PayloadEnvelopeResolver::resolveToArray($input, 'input');
+        }
+
+        return PayloadEnvelopeResolver::resolveToArray(
+            $input,
+            'input',
+            $this->externalPayloadStorage->driverFor($namespace),
+        );
+    }
+
+    /**
+     * @param  array<mixed>  $input
+     */
+    private function looksLikePayloadEnvelope(array $input): bool
+    {
+        if ($input === [] || ! array_key_exists('codec', $input)) {
+            return false;
+        }
+
+        $keys = array_keys($input);
+        sort($keys);
+
+        return $keys === ['blob', 'codec'] || $keys === ['codec', 'external_storage'];
+    }
+
+    /**
+     * @return array{
+     *     allowed: bool,
+     *     payload?: array<string, mixed>,
+     *     message?: string
+     * }
+     */
+    private function signalAdmissionForPreview(WorkflowRun $run, string $signalName): array
+    {
+        $contract = RunCommandContract::forRun($run);
+        $diagnostics = $this->signalContractDiagnostics($contract);
+
+        if (in_array($signalName, $contract['signals'] ?? [], true)) {
+            return [
+                'allowed' => true,
+                'payload' => [
+                    ...$diagnostics,
+                    'signal_admission' => 'declared_signal',
+                ],
+            ];
+        }
+
+        if (($contract['source'] ?? null) !== RunCommandContract::SOURCE_DURABLE_HISTORY) {
+            try {
+                $workflowClass = TypeRegistry::resolveWorkflowClass((string) $run->workflow_class, $run->workflow_type);
+            } catch (LogicException) {
+                return [
+                    'allowed' => true,
+                    'payload' => [
+                        ...$diagnostics,
+                        'signal_admission' => 'external_contract_unavailable',
+                    ],
+                ];
+            }
+
+            if (WorkflowDefinition::hasSignal($workflowClass, $signalName)) {
+                return [
+                    'allowed' => true,
+                    'payload' => [
+                        ...$diagnostics,
+                        'signal_admission' => 'loadable_workflow_class',
+                    ],
+                ];
+            }
+
+            $diagnostics = [
+                ...$diagnostics,
+                'signal_admission' => 'handler_not_declared_in_loadable_class',
+            ];
+            $message = $this->unknownSignalPreviewMessage($run, $signalName, $diagnostics);
+
+            return [
+                'allowed' => false,
+                'payload' => [
+                    ...$diagnostics,
+                    'reason' => 'unknown_signal',
+                    'message' => $message,
+                ],
+                'message' => $message,
+            ];
+        }
+
+        $diagnostics = [
+            ...$diagnostics,
+            'signal_admission' => 'handler_not_declared',
+        ];
+        $message = $this->unknownSignalPreviewMessage($run, $signalName, $diagnostics);
+
+        return [
+            'allowed' => false,
+            'payload' => [
+                ...$diagnostics,
+                'reason' => 'unknown_signal',
+                'message' => $message,
+            ],
+            'message' => $message,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $contract
+     * @return array{
+     *     command_contract_source: string|null,
+     *     command_contract_backfill_needed: bool,
+     *     command_contract_backfill_available: bool,
+     *     declared_signals: list<string>
+     * }
+     */
+    private function signalContractDiagnostics(array $contract): array
+    {
+        $signals = $contract['signals'] ?? [];
+
+        return [
+            'command_contract_source' => is_string($contract['source'] ?? null)
+                ? $contract['source']
+                : null,
+            'command_contract_backfill_needed' => ($contract['backfill_needed'] ?? false) === true,
+            'command_contract_backfill_available' => ($contract['backfill_available'] ?? false) === true,
+            'declared_signals' => is_array($signals)
+                ? array_values(array_filter($signals, static fn (mixed $signal): bool => is_string($signal) && $signal !== ''))
+                : [],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $diagnostics
+     */
+    private function unknownSignalPreviewMessage(WorkflowRun $run, string $signalName, array $diagnostics): string
+    {
+        $declaredSignals = $diagnostics['declared_signals'] ?? [];
+        $declaredSummary = is_array($declaredSignals) && $declaredSignals !== []
+            ? implode(', ', $declaredSignals)
+            : 'none';
+        $contractSource = is_string($diagnostics['command_contract_source'] ?? null)
+            ? $diagnostics['command_contract_source']
+            : RunCommandContract::SOURCE_UNAVAILABLE;
+        $admission = is_string($diagnostics['signal_admission'] ?? null)
+            ? $diagnostics['signal_admission']
+            : 'handler_not_declared';
+
+        $detail = $admission === 'handler_not_declared'
+            ? 'the durable command contract does not declare that handler'
+            : 'the server did not receive durable signal declarations and the loadable workflow class does not declare that handler';
+
+        return sprintf(
+            'Workflow signal [%s] is unknown for workflow type [%s]: %s. Command contract source [%s], declared signals [%s].',
+            $signalName,
+            $run->workflow_type,
+            $detail,
+            $contractSource,
+            $declaredSummary,
+        );
+    }
+
+    /**
+     * @param  array<int|string, mixed>  $arguments
+     * @return array{arguments: list<mixed>, validation_errors: array<string, list<string>>}
+     */
+    private function validatedSignalArgumentsForPreview(WorkflowRun $run, string $signalName, array $arguments): array
+    {
+        if (array_is_list($arguments)) {
+            $normalized = array_values($arguments);
+            $contract = RunCommandContract::signalContract($run, $signalName);
+
+            if ($contract === null) {
+                try {
+                    $workflowClass = TypeRegistry::resolveWorkflowClass((string) $run->workflow_class, $run->workflow_type);
+                } catch (LogicException) {
+                    return [
+                        'arguments' => $normalized,
+                        'validation_errors' => [],
+                    ];
+                }
+
+                $contract = WorkflowDefinition::signalContract($workflowClass, $signalName);
+            }
+
+            return $contract === null
+                ? [
+                    'arguments' => $normalized,
+                    'validation_errors' => [],
+                ]
+                : $this->normalizePositionalCommandArguments($contract, $arguments, 'signal');
+        }
+
+        $contract = RunCommandContract::signalContract($run, $signalName);
+
+        if ($contract !== null) {
+            return $this->normalizeNamedCommandArguments($contract, $arguments);
+        }
+
+        try {
+            $workflowClass = TypeRegistry::resolveWorkflowClass((string) $run->workflow_class, $run->workflow_type);
+        } catch (LogicException) {
+            return [
+                'arguments' => [],
+                'validation_errors' => [
+                    'arguments' => ['Named arguments require a durable or loadable workflow signal contract.'],
+                ],
+            ];
+        }
+
+        $contract = WorkflowDefinition::signalContract($workflowClass, $signalName);
+
+        return $contract === null
+            ? [
+                'arguments' => [$arguments],
+                'validation_errors' => [],
+            ]
+            : $this->normalizeNamedCommandArguments($contract, $arguments);
+    }
+
+    /**
+     * @param  array{name: string, parameters: list<array<string, mixed>>}  $contract
+     * @param  array<int, mixed>  $arguments
+     * @return array{arguments: list<mixed>, validation_errors: array<string, list<string>>}
+     */
+    private function normalizePositionalCommandArguments(array $contract, array $arguments, string $commandType): array
+    {
+        $normalized = [];
+        $errors = [];
+        $providedCount = count($arguments);
+        $consumed = 0;
+
+        foreach ($contract['parameters'] as $parameter) {
+            if (($parameter['variadic'] ?? false) === true) {
+                while ($consumed < $providedCount) {
+                    $normalized[] = $arguments[$consumed];
+                    $this->appendParameterValidationErrors($errors, $parameter, $arguments[$consumed]);
+                    $consumed++;
+                }
+
+                continue;
+            }
+
+            if ($consumed < $providedCount) {
+                $normalized[] = $arguments[$consumed];
+                $this->appendParameterValidationErrors($errors, $parameter, $arguments[$consumed]);
+                $consumed++;
+
+                continue;
+            }
+
+            if (($parameter['default_available'] ?? false) === true) {
+                $normalized[] = $parameter['default'] ?? null;
+
+                continue;
+            }
+
+            if (($parameter['required'] ?? false) === true) {
+                $errors[$parameter['name']][] = sprintf('The %s argument is required.', $parameter['name']);
+            }
+        }
+
+        if ($consumed < $providedCount) {
+            $errors['arguments'][] = sprintf(
+                'Too many arguments were provided for %s [%s].',
+                $commandType,
+                $contract['name'],
+            );
+        }
+
+        return [
+            'arguments' => $normalized,
+            'validation_errors' => $errors,
+        ];
+    }
+
+    /**
+     * @param  array{name: string, parameters: list<array<string, mixed>>}  $contract
+     * @param  array<string, mixed>  $arguments
+     * @return array{arguments: list<mixed>, validation_errors: array<string, list<string>>}
+     */
+    private function normalizeNamedCommandArguments(array $contract, array $arguments): array
+    {
+        $normalized = [];
+        $errors = [];
+        $knownParameters = [];
+
+        foreach ($contract['parameters'] as $parameter) {
+            $name = $parameter['name'];
+            $knownParameters[] = $name;
+
+            if (($parameter['variadic'] ?? false) === true) {
+                if (! array_key_exists($name, $arguments)) {
+                    continue;
+                }
+
+                $values = $arguments[$name];
+
+                if (is_array($values)) {
+                    foreach (array_values($values) as $value) {
+                        $normalized[] = $value;
+                        $this->appendParameterValidationErrors($errors, $parameter, $value);
+                    }
+                } else {
+                    $normalized[] = $values;
+                    $this->appendParameterValidationErrors($errors, $parameter, $values);
+                }
+
+                continue;
+            }
+
+            if (array_key_exists($name, $arguments)) {
+                $normalized[] = $arguments[$name];
+                $this->appendParameterValidationErrors($errors, $parameter, $arguments[$name]);
+
+                continue;
+            }
+
+            if (($parameter['default_available'] ?? false) === true) {
+                $normalized[] = $parameter['default'] ?? null;
+
+                continue;
+            }
+
+            if (($parameter['required'] ?? false) === true) {
+                $errors[$name][] = sprintf('The %s argument is required.', $name);
+            }
+        }
+
+        foreach (array_keys($arguments) as $name) {
+            if (in_array($name, $knownParameters, true)) {
+                continue;
+            }
+
+            $errors[(string) $name][] = sprintf('Unknown argument [%s].', (string) $name);
+        }
+
+        return [
+            'arguments' => $normalized,
+            'validation_errors' => $errors,
+        ];
+    }
+
+    /**
+     * @param  array<string, list<string>>  $errors
+     * @param  array<string, mixed>  $parameter
+     */
+    private function appendParameterValidationErrors(array &$errors, array $parameter, mixed $value): void
+    {
+        $name = is_string($parameter['name'] ?? null)
+            ? $parameter['name']
+            : 'argument';
+
+        foreach ($this->validationErrorsForParameterValue($parameter, $value) as $message) {
+            $errors[$name][] = $message;
+        }
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    private function validationErrors(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $errors = [];
+
+        foreach ($value as $field => $messages) {
+            if (! is_array($messages)) {
+                continue;
+            }
+
+            foreach ($messages as $message) {
+                if (is_string($message) && $message !== '') {
+                    $errors[(string) $field][] = $message;
+                }
+            }
+        }
+
+        return $errors;
+    }
+
+    /**
+     * @param  array<string, mixed>  $parameter
+     * @return list<string>
+     */
+    private function validationErrorsForParameterValue(array $parameter, mixed $value): array
+    {
+        $name = is_string($parameter['name'] ?? null)
+            ? $parameter['name']
+            : 'argument';
+
+        if ($value === null) {
+            return $this->parameterAllowsNull($parameter)
+                ? []
+                : [sprintf('The %s argument cannot be null.', $name)];
+        }
+
+        $type = is_string($parameter['type'] ?? null)
+            ? trim($parameter['type'])
+            : null;
+
+        if ($type === null || $type === '' || $type === 'mixed') {
+            return [];
+        }
+
+        if ($this->valueMatchesDeclaredType($value, $type)) {
+            return [];
+        }
+
+        return [sprintf('The %s argument must be of type %s.', $name, $type)];
+    }
+
+    /**
+     * @param  array<string, mixed>  $parameter
+     */
+    private function parameterAllowsNull(array $parameter): bool
+    {
+        if (is_bool($parameter['allows_null'] ?? null)) {
+            return $parameter['allows_null'];
+        }
+
+        $type = is_string($parameter['type'] ?? null)
+            ? trim($parameter['type'])
+            : null;
+
+        if ($type === null || $type === '') {
+            return true;
+        }
+
+        return str_starts_with($type, '?')
+            || in_array('null', $this->splitDeclaredType($type, '|'), true);
+    }
+
+    private function valueMatchesDeclaredType(mixed $value, string $type): bool
+    {
+        $type = trim($type);
+
+        if ($type === '' || $type === 'mixed') {
+            return true;
+        }
+
+        if (str_starts_with($type, '?')) {
+            return $value === null || $this->valueMatchesDeclaredType($value, substr($type, 1));
+        }
+
+        $unionTypes = $this->splitDeclaredType($type, '|');
+
+        if (count($unionTypes) > 1) {
+            foreach ($unionTypes as $unionType) {
+                if ($this->valueMatchesDeclaredType($value, $unionType)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        $intersectionTypes = $this->splitDeclaredType($type, '&');
+
+        if (count($intersectionTypes) > 1) {
+            foreach ($intersectionTypes as $intersectionType) {
+                if (! $this->valueMatchesDeclaredType($value, $intersectionType)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        $type = trim($type, "() \t\n\r\0\x0B");
+
+        return match ($type) {
+            'int' => is_int($value),
+            'float' => is_float($value) || is_int($value),
+            'string' => is_string($value),
+            'bool' => is_bool($value),
+            'array' => is_array($value),
+            'object' => is_object($value),
+            'callable' => is_callable($value),
+            'iterable' => is_iterable($value),
+            'scalar' => is_scalar($value),
+            'true' => $value === true,
+            'false' => $value === false,
+            'null' => $value === null,
+            'mixed' => true,
+            'never', 'void' => false,
+            'self', 'static', 'parent' => is_object($value),
+            default => is_object($value)
+                && (
+                    ! class_exists($type)
+                    && ! interface_exists($type)
+                    && ! enum_exists($type)
+                    || $value instanceof $type
+                ),
+        };
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function splitDeclaredType(string $type, string $delimiter): array
+    {
+        $parts = [];
+        $current = '';
+        $depth = 0;
+
+        for ($index = 0, $length = strlen($type); $index < $length; $index++) {
+            $character = $type[$index];
+
+            if ($character === '(') {
+                $depth++;
+            } elseif ($character === ')' && $depth > 0) {
+                $depth--;
+            }
+
+            if ($character === $delimiter && $depth === 0) {
+                $parts[] = trim($current);
+                $current = '';
+
+                continue;
+            }
+
+            $current .= $character;
+        }
+
+        $parts[] = trim($current);
+
+        return $parts;
     }
 
     private function compatibilityStatus(string $namespace, WorkflowRun $run): string

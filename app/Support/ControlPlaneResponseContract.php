@@ -91,6 +91,7 @@ final class ControlPlaneResponseContract
                 'outcome',
                 'reason',
                 'rejection_reason',
+                'rejection_category',
                 'message',
                 'command_contract_source',
                 'command_contract_backfill_needed',
@@ -106,6 +107,7 @@ final class ControlPlaneResponseContract
                 'run_not_active',
                 'instance_not_started',
                 'selected_run_not_current',
+                'configured_workflow_type_invalid',
             ],
         ],
         'query' => [
@@ -202,6 +204,7 @@ final class ControlPlaneResponseContract
         'outcome',
         'reason',
         'rejection_reason',
+        'rejection_category',
         'validation_errors',
         'result',
         'result_envelope',

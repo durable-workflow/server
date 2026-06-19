@@ -32,6 +32,7 @@ class ControlPlaneResponseContractTest extends TestCase
         $this->assertContains('command_status', ControlPlaneResponseContract::manifest()['projected_fields']);
         $this->assertContains('command_source', ControlPlaneResponseContract::manifest()['projected_fields']);
         $this->assertContains('rejection_reason', ControlPlaneResponseContract::manifest()['projected_fields']);
+        $this->assertContains('rejection_category', ControlPlaneResponseContract::manifest()['projected_fields']);
         $this->assertContains('outcome', ControlPlaneResponseContract::manifest()['projected_fields']);
         $this->assertContains('reason', ControlPlaneResponseContract::manifest()['projected_fields']);
         $this->assertContains('message', ControlPlaneResponseContract::manifest()['projected_fields']);
@@ -45,6 +46,7 @@ class ControlPlaneResponseContractTest extends TestCase
             'instance_not_found',
             'historical_run_command_rejected',
             'unknown_signal',
+            'configured_workflow_type_invalid',
         ] as $reason) {
             $this->assertContains($reason, $signal['rejection_reasons']);
         }
@@ -52,6 +54,7 @@ class ControlPlaneResponseContractTest extends TestCase
         foreach ([
             'run_id',
             'target_scope',
+            'rejection_category',
             'command_contract_source',
             'command_contract_backfill_needed',
             'command_contract_backfill_available',
