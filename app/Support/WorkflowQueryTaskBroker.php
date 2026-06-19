@@ -1263,6 +1263,8 @@ final class WorkflowQueryTaskBroker
                 $supportedWorkflowTypes,
                 $workflowDefinitionFingerprints,
                 $buildId,
+                acceptsQueryTasks: true,
+                leaseOwner: $leaseOwner,
             )) {
                 $remaining[] = $queryTaskId;
 
@@ -1318,6 +1320,7 @@ final class WorkflowQueryTaskBroker
         array $workflowDefinitionFingerprints,
         ?string $buildId,
         bool $acceptsQueryTasks = true,
+        ?string $leaseOwner = null,
     ): bool {
         return $acceptsQueryTasks
             && $this->matchesCompatibility(
@@ -1331,13 +1334,13 @@ final class WorkflowQueryTaskBroker
                 $task['workflow_type'] ?? null,
                 $task['workflow_definition_fingerprint'] ?? null,
             )
-            && ! $this->hasActiveWorkflowTaskLease($task);
+            && ! $this->hasActiveWorkflowTaskLease($task, $leaseOwner);
     }
 
     /**
      * @param  array<string, mixed>  $queryTask
      */
-    private function hasActiveWorkflowTaskLease(array $queryTask): bool
+    private function hasActiveWorkflowTaskLease(array $queryTask, ?string $queryLeaseOwner = null): bool
     {
         $runId = $this->stringValue($queryTask['run_id'] ?? null);
 
@@ -1345,7 +1348,7 @@ final class WorkflowQueryTaskBroker
             return false;
         }
 
-        return WorkflowTask::query()
+        $query = WorkflowTask::query()
             ->where('workflow_run_id', $runId)
             ->where('task_type', TaskType::Workflow->value)
             ->where('status', TaskStatus::Leased->value)
@@ -1353,8 +1356,17 @@ final class WorkflowQueryTaskBroker
                 $query
                     ->whereNull('lease_expires_at')
                     ->orWhere('lease_expires_at', '>', now());
-            })
-            ->exists();
+            });
+
+        if ($queryLeaseOwner !== null) {
+            $query->where(static function ($query) use ($queryLeaseOwner): void {
+                $query
+                    ->whereNull('lease_owner')
+                    ->orWhere('lease_owner', '!=', $queryLeaseOwner);
+            });
+        }
+
+        return $query->exists();
     }
 
     /**

@@ -150,12 +150,46 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         );
     }
 
-    public function test_query_task_poll_waits_for_active_workflow_task_lease_before_claiming(): void
+    public function test_query_task_poll_can_claim_when_same_worker_holds_active_workflow_task_lease(): void
+    {
+        Queue::fake();
+
+        $run = $this->startRemoteWorkflow('wf-query-task-same-worker-replay');
+        $this->registerPythonWorker('python-query-same-worker-replay', 'python-queries', ['python.queryable']);
+
+        $workflowPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'python-query-same-worker-replay',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $workflowPoll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.run_id', $run->id)
+            ->assertJsonPath('task.lease_owner', 'python-query-same-worker-replay');
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
+
+        $queryPoll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-same-worker-replay',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $queryPoll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.query_task_id', $task['query_task_id'])
+            ->assertJsonPath('task.run_id', $run->id)
+            ->assertJsonPath('task.lease_owner', 'python-query-same-worker-replay');
+    }
+
+    public function test_query_task_poll_waits_for_other_worker_active_workflow_task_lease_before_claiming(): void
     {
         Queue::fake();
 
         $run = $this->startRemoteWorkflow('wf-query-task-replay-barrier');
         $this->registerPythonWorker('python-query-replay-barrier-worker', 'python-queries', ['python.queryable']);
+        $this->registerPythonWorker('python-query-replay-barrier-query-worker', 'python-queries', ['python.queryable']);
 
         $workflowPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
             'worker_id' => 'python-query-replay-barrier-worker',
@@ -171,7 +205,7 @@ class WorkflowQueryTaskBrokerTest extends TestCase
         $task = $broker->enqueue('default', $run, 'status', $this->queryArguments());
 
         $duringReplay = $this->postJson('/api/worker/query-tasks/poll', [
-            'worker_id' => 'python-query-replay-barrier-worker',
+            'worker_id' => 'python-query-replay-barrier-query-worker',
             'task_queue' => 'python-queries',
         ], $this->workerHeaders());
 
