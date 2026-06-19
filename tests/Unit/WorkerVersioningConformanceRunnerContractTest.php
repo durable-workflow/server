@@ -622,6 +622,11 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'reachability_status',
             'rollout_state_observed',
             'request_failures: waterlineRequestFailures',
+            'waterlineRequestFailure',
+            'waterlineRequestFailureText',
+            'waterlineInstallEvidenceDetail',
+            'response_summary',
+            'http_status',
             'Published Waterline request failures',
             'worker_view_capture',
             'workflow_view_capture',
@@ -665,6 +670,143 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             $shell,
             'the disposable Waterline service must not default to the PHP 8.3 server image',
         );
+    }
+
+    public function test_waterline_non_2xx_snapshot_reports_request_diagnostics(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the worker-versioning Waterline diagnostic helper.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $suffix = bin2hex(random_bytes(4));
+        $resultDir = $repoRoot.'/storage/framework/worker-versioning-waterline-diagnostic-'.$suffix;
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $script = <<<'JS'
+import { createServer } from 'node:http';
+import { pathToFileURL } from 'node:url';
+
+process.env.DW_WV_RESULT_DIR = process.argv[3];
+process.env.DW_WV_RUN_ROOT = process.argv[3];
+
+const server = createServer((request, response) => {
+  const body = JSON.stringify({
+    error: 'database unavailable',
+    token: 'redaction-sentinel-value',
+    detail: 'x'.repeat(1000),
+    path: request.url,
+  });
+  response.writeHead(503, { 'Content-Type': 'application/json' });
+  response.end(body);
+});
+
+await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+const address = server.address();
+process.env.DW_WV_WATERLINE_URL = `http://127.0.0.1:${address.port}`;
+
+try {
+  const moduleUrl = pathToFileURL(process.argv[2]).href;
+  const { capturePublishedWaterlineOperatorVisibility } = await import(moduleUrl);
+  const result = await capturePublishedWaterlineOperatorVisibility({
+    namespace: 'worker-versioning-conformance',
+    taskQueue: 'worker-versioning-test',
+    buildV1: 'wv-v1',
+    buildV2: 'wv-v2',
+    v1WorkflowId: 'wf-v1',
+    v1RunId: 'run-v1',
+    promotedWorkflowId: 'wf-v2',
+    promotedRunId: 'run-v2',
+    noCompatibleWorkflowId: 'wf-no-compatible',
+    noCompatibleRunId: 'run-no-compatible',
+    artifactVersions: { waterline: '2.0.0-alpha.101' },
+    artifactSources: { waterline: 'packagist_release' },
+    drain: {},
+    resume: {},
+  });
+
+  console.log(JSON.stringify(result));
+} finally {
+  await new Promise((resolve) => server.close(resolve));
+}
+JS;
+
+            $process = proc_open(
+                [
+                    $nodeBinary,
+                    '--input-type=module',
+                    '-e',
+                    $script,
+                    'waterline-diagnostic-helper',
+                    $repoRoot.'/scripts/conformance/worker-versioning-published-artifacts.mjs',
+                    $resultDir,
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                ['PATH' => getenv('PATH') ?: '/usr/bin:/bin'],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(0, $exitCode, $stderr);
+
+            $result = json_decode((string) $stdout, true, 512, JSON_THROW_ON_ERROR);
+            $encodedResult = json_encode($result, JSON_THROW_ON_ERROR);
+            $this->assertIsString($encodedResult);
+
+            $this->assertSame('fail', $result['status']);
+            $this->assertFalse($result['ok']);
+            $this->assertFalse($result['local_product_source_checkouts_used']);
+            $this->assertSame('fail', $result['waterline_install_evidence']['status']);
+            $this->assertStringNotContainsString('redaction-sentinel-value', $encodedResult);
+
+            $healthFailure = null;
+            foreach ($result['request_failures'] as $failure) {
+                if ($failure['request'] === 'GET /waterline/api/v2/health') {
+                    $healthFailure = $failure;
+                    break;
+                }
+            }
+
+            $this->assertNotNull($healthFailure);
+            $this->assertSame('/waterline/api/v2/health', $healthFailure['path']);
+            $this->assertSame(503, $healthFailure['http_status']);
+            $this->assertStringContainsString('HTTP 503', $healthFailure['summary']);
+            $this->assertStringContainsString('database unavailable', $healthFailure['summary']);
+            $this->assertStringContainsString('<redacted>', $healthFailure['summary']);
+            $this->assertLessThanOrEqual(503, strlen($healthFailure['summary']));
+
+            $this->assertStringContainsString(
+                'GET /waterline/api/v2/health status=503',
+                $result['gap'],
+            );
+            $this->assertStringContainsString('database unavailable', $result['gap']);
+            $this->assertStringNotContainsString(
+                'Published Waterline did not expose required worker-versioning fields',
+                $result['gap'],
+            );
+            $this->assertStringContainsString(
+                'GET /waterline/api/v2/health status=503',
+                $result['waterline_install_evidence']['detail'],
+            );
+            $this->assertStringContainsString(
+                'database unavailable',
+                $result['waterline_install_evidence']['detail'],
+            );
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
     }
 
     public function test_shell_reports_external_waterline_attach_prerequisite(): void

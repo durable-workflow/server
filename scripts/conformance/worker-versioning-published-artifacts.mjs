@@ -60,6 +60,7 @@ const waterlineRequestTimeoutMs = timeoutMsFromEnv(
   'DW_WV_WATERLINE_REQUEST_TIMEOUT_SECONDS',
   20000,
 );
+const WATERLINE_RESPONSE_SUMMARY_LIMIT = 500;
 const serverReadinessTimeoutMs = timeoutMsFromEnv(
   'DW_WV_SERVER_READINESS_TIMEOUT_MS',
   'DW_WV_SERVER_READINESS_TIMEOUT_SECONDS',
@@ -2269,7 +2270,7 @@ async function publishedWaterlineOperatorVisibility(options) {
   }
 }
 
-async function capturePublishedWaterlineOperatorVisibility({
+export async function capturePublishedWaterlineOperatorVisibility({
   namespace,
   taskQueue,
   buildV1,
@@ -2417,13 +2418,14 @@ async function capturePublishedWaterlineOperatorVisibility({
     promotedRunDetail,
     noCompatibleRunDetail,
   ]
-    .filter((snapshot) => stringValue(snapshot.error) !== '')
-    .map((snapshot) => `${snapshot.label}: ${snapshot.error}`);
+    .map(waterlineRequestFailure)
+    .filter(Boolean);
+  const waterlineRequestFailureMessages = waterlineRequestFailures.map(waterlineRequestFailureText);
   const status = missing.length === 0 ? 'pass' : 'fail';
   const gap = missing.length === 0
     ? ''
     : waterlineRequestFailures.length > 0
-      ? `Published Waterline request failures: ${waterlineRequestFailures.join('; ')}`
+      ? `Published Waterline request failures: ${waterlineRequestFailureMessages.join('; ')}`
       : `Published Waterline did not expose required worker-versioning fields: ${missing.join(', ')}`;
 
   return {
@@ -2476,9 +2478,7 @@ async function capturePublishedWaterlineOperatorVisibility({
       artifactVersions,
       artifactSources,
       health.ok ? 'pass' : 'fail',
-      health.ok
-        ? 'Published Waterline app served /waterline/api/v2/health from the Packagist-installed app.'
-        : `Published Waterline health did not return a successful response: ${missing.join(', ')}`,
+      waterlineInstallEvidenceDetail(health, waterlineRequestFailureMessages, missing),
       waterlineUrl,
     ),
     local_product_source_checkouts_used: false,
@@ -2508,19 +2508,27 @@ async function waterlineApiSnapshot(baseUrl, label, pathName) {
     });
     const text = await response.text();
     let body = null;
+    let parseError = null;
     if (text.trim() !== '') {
       try {
         body = JSON.parse(text);
       } catch {
+        parseError = true;
         body = { raw_body: text };
       }
     }
+    const failure = waterlineResponseFailure(response.status, text, body, parseError);
+    const safeBody = redactBody(body);
     const snapshot = {
       label,
-      ok: response.status >= 200 && response.status < 300,
+      ok: failure === null,
       path: pathName,
       http_status: response.status,
-      body,
+      body: safeBody,
+      ...(failure === null ? {} : {
+        error: failure.reason,
+        response_summary: failure.summary,
+      }),
     };
     captures.push({
       surface: 'waterline',
@@ -2528,30 +2536,193 @@ async function waterlineApiSnapshot(baseUrl, label, pathName) {
       path: pathName,
       status: response.status,
       request_body: null,
-      response_body: body,
+      response_body: safeBody,
+      ...(failure === null ? {} : {
+        response_error: failure.reason,
+        response_summary: failure.summary,
+      }),
     });
 
     return snapshot;
   } catch (error) {
-    const message = formatFetchFailure('GET', url, error);
+    const summary = waterlineFetchFailureSummary(error);
     captures.push({
       surface: 'waterline',
       method: 'GET',
       path: pathName,
       status: null,
       request_body: null,
-      response_body: { error: message },
+      response_body: { error: summary },
+      response_error: 'request failed',
+      response_summary: summary,
     });
 
     return {
       label,
       ok: false,
       path: pathName,
-      error: message,
+      http_status: null,
+      error: 'request failed',
+      response_summary: summary,
     };
   } finally {
     clearTimeout(timer);
   }
+}
+
+function waterlineResponseFailure(status, text, body, parseError) {
+  const trimmed = stringValue(text);
+  let reason = '';
+
+  if (status < 200 || status >= 300) {
+    reason = `HTTP ${status}`;
+  } else if (parseError) {
+    reason = 'non-JSON response';
+  } else if (trimmed === '') {
+    reason = 'empty response body';
+  } else if (waterlineBodyIsErrorJson(body)) {
+    reason = 'error JSON response';
+  } else if (waterlineBodyIsEmptyJson(body)) {
+    reason = 'empty JSON response';
+  }
+
+  if (reason === '') {
+    return null;
+  }
+
+  return {
+    reason,
+    summary: waterlineResponseSummary(body, text),
+  };
+}
+
+function waterlineBodyIsErrorJson(body) {
+  const object = objectValue(body);
+  if (Object.keys(object).length === 0) {
+    return false;
+  }
+
+  const status = stringValue(object.status).toLowerCase();
+
+  return ['error', 'failed', 'failure'].includes(status)
+    || stringValue(object.error) !== ''
+    || stringValue(object.message).toLowerCase().includes('error')
+    || Object.keys(objectValue(object.error)).length > 0
+    || Object.keys(objectValue(object.errors)).length > 0
+    || arrayValue(object.errors).length > 0;
+}
+
+function waterlineBodyIsEmptyJson(body) {
+  if (Array.isArray(body)) {
+    return body.length === 0;
+  }
+
+  return body && typeof body === 'object' && Object.keys(body).length === 0;
+}
+
+function waterlineResponseSummary(body, rawText = '') {
+  if (body && typeof body === 'object' && !Array.isArray(body)) {
+    const rawBody = stringValue(body.raw_body);
+    if (rawBody !== '') {
+      return safeCappedWaterlineSummary(rawBody);
+    }
+
+    return safeCappedWaterlineSummary(redactBody(body));
+  }
+
+  if (Array.isArray(body)) {
+    return safeCappedWaterlineSummary(redactBody({ data: body }));
+  }
+
+  return safeCappedWaterlineSummary(rawText);
+}
+
+function waterlineFetchFailureSummary(error) {
+  const reason = error instanceof Error ? error.message : String(error);
+  const cause = fetchFailureCause(error);
+
+  return safeCappedWaterlineSummary(orderedUnique([reason, cause].filter(Boolean)).join('; '));
+}
+
+function safeCappedWaterlineSummary(value) {
+  const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+  const normalized = redactSensitiveText(stringValue(serialized).replace(/\s+/g, ' '));
+  if (normalized === '') {
+    return '<empty>';
+  }
+
+  return normalized.length > WATERLINE_RESPONSE_SUMMARY_LIMIT
+    ? `${normalized.slice(0, WATERLINE_RESPONSE_SUMMARY_LIMIT)}...`
+    : normalized;
+}
+
+function redactSensitiveText(value) {
+  return value
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer <redacted>')
+    .replace(/((?:authorization|token|api[_-]?key|password|secret)["']?\s*[:=]\s*["']?)[^"',\s}]+/gi, '$1<redacted>');
+}
+
+function waterlineRequestFailure(snapshot) {
+  if (!snapshot || snapshot.skipped === true) {
+    return null;
+  }
+
+  const reason = stringValue(snapshot.error);
+  const responseSummary = stringValue(snapshot.response_summary);
+  if (reason === '' && responseSummary === '') {
+    return null;
+  }
+
+  return {
+    request: waterlineCompactRequest(snapshot),
+    path: waterlineCompactRequestPath(snapshot),
+    http_status: snapshot.http_status ?? null,
+    summary: safeCappedWaterlineSummary(responseSummary === '' ? reason : `${reason}: ${responseSummary}`),
+  };
+}
+
+function waterlineCompactRequest(snapshot) {
+  const label = stringValue(snapshot.label);
+  if (label !== '') {
+    return label;
+  }
+
+  const pathName = waterlineCompactRequestPath(snapshot);
+  return pathName === 'unknown' ? 'GET unknown' : `GET ${pathName}`;
+}
+
+function waterlineCompactRequestPath(snapshot) {
+  const label = stringValue(snapshot.label).replace(/^[A-Z]+\s+/, '');
+  if (label !== '') {
+    return label;
+  }
+
+  const pathName = stringValue(snapshot.path);
+  if (pathName === '') {
+    return 'unknown';
+  }
+
+  return pathName.split('?')[0];
+}
+
+function waterlineRequestFailureText(failure) {
+  const status = failure.http_status === null || failure.http_status === undefined
+    ? 'status=no_response'
+    : `status=${failure.http_status}`;
+
+  return `${failure.request} ${status} ${failure.summary}`;
+}
+
+function waterlineInstallEvidenceDetail(health, requestFailureText, missing) {
+  if (requestFailureText.length > 0) {
+    return `Published Waterline request diagnostics: ${requestFailureText.join('; ')}`;
+  }
+
+  if (health.ok) {
+    return 'Published Waterline app served /waterline/api/v2/health from the Packagist-installed app.';
+  }
+
+  return `Published Waterline health did not return a successful response: ${missing.join(', ')}`;
 }
 
 function waterlineRunDetailPath(workflowId, runId) {
@@ -4626,13 +4797,20 @@ function readJsonIfExists(filePath) {
 }
 
 function redactBody(body) {
+  if (Array.isArray(body)) {
+    return body.map((item) => redactBody(item));
+  }
+
   if (!body || typeof body !== 'object') {
     return body ?? null;
   }
 
   return JSON.parse(JSON.stringify(body, (key, value) => {
-    if (key.toLowerCase().includes('token') || key.toLowerCase().includes('authorization')) {
+    if (/(authorization|token|api[_-]?key|password|secret)/i.test(key)) {
       return '<redacted>';
+    }
+    if (typeof value === 'string') {
+      return redactSensitiveText(value);
     }
 
     return value;
