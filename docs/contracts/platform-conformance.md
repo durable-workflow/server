@@ -55,11 +55,15 @@ conformance runners can discover that handoff from `GET /api/cluster/info`
 under `signal_query_runtime_contract.host_runner_contract` and invoke it
 against the current published server image, CLI release, Python SDK, PHP
 workflow runtime, and Waterline package versions. The runner records the
-Python/CLI smoke evidence only when an external smoke evidence file carries
-the exact advertised fields for CLI signal/query, SDK signal/query, repeat
-query consistency, and ordered ten-signal delivery. All unexecuted parity
-cells remain non-passing `not_covered` scenario results with focused findings
-for the ordered-delivery proof, dedup contract observation, PHP worker mirror,
+published-artifact install cell only when external install evidence records the
+exact version tuple and the expected source label for each artifact. It records
+the Python worker CLI/SDK baseline only when external smoke evidence carries the
+exact advertised fields for Python worker query routing, CLI signal/query, SDK
+signal/query, and repeat query consistency. Without that evidence,
+`published_artifact_install_only` and `python_worker_cli_and_sdk_baseline`
+remain non-passing `not_covered` scenario results with focused findings. Other
+unexecuted parity cells also remain non-passing with focused findings for the
+ordered-delivery proof, dedup contract observation, PHP worker mirror,
 cross-language client matrix, replay timing, completed-run handling,
 unknown-handler errors, malformed-payload errors, and Waterline observer
 comparison. Product behavior failures route to the owning surface through the

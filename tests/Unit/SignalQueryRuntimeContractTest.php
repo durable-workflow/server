@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(14, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(15, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -55,6 +55,17 @@ class SignalQueryRuntimeContractTest extends TestCase
         foreach (['server', 'cli', 'workflow-php', 'sdk-python', 'waterline'] as $artifact) {
             $this->assertArrayHasKey($artifact, $manifest['artifact_policy']['install_channels']);
         }
+
+        $this->assertSame(
+            [
+                'server' => 'published_docker_image',
+                'cli' => 'published_cli_release',
+                'workflow-php' => 'published_composer_package',
+                'sdk-python' => 'published_pypi_package',
+                'waterline' => 'published_waterline_artifact',
+            ],
+            $manifest['artifact_policy']['expected_sources'],
+        );
 
         $this->assertContains(
             'local_product_source_checkout',
@@ -269,7 +280,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(14, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(15, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -278,6 +289,10 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertSame(
             'signal_query_runtime_contract.artifact_policy.install_channels',
             $resultGate['required_artifact_versions_source'],
+        );
+        $this->assertSame(
+            'signal_query_runtime_contract.artifact_policy.expected_sources',
+            $resultGate['required_artifact_sources_source'],
         );
         $this->assertTrue($resultGate['artifact_version_policy']['requires_recorded_and_pinned_versions']);
         $this->assertTrue($resultGate['artifact_version_policy']['rejects_placeholder_versions']);
@@ -303,6 +318,10 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertContains('overall_outcome_matches_gate_status', $resultGate['pass_requires']);
         $this->assertContains(
             'published_artifact_versions_are_recorded_and_pinned',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'published_artifact_sources_match_expected_channels',
             $resultGate['pass_requires'],
         );
         $this->assertContains(
@@ -352,6 +371,34 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertNotContains('adversarial_error_shapes', $hostRunner['required_execution_scopes']);
         $this->assertContains('unknown_handler_errors', $hostRunner['required_execution_scopes']);
         $this->assertContains('malformed_payload_errors', $hostRunner['required_execution_scopes']);
+        $this->assertSame(
+            [
+                'published_artifact_install_only',
+                'python_worker_cli_and_sdk_baseline',
+            ],
+            $hostRunner['baseline_probe_not_claimed_as_pass'],
+        );
+
+        $this->assertFalse($hostRunner['evidence_shards']['published_artifact_install']['baseline_probe_claims_pass']);
+        $this->assertSame(
+            'external_install_evidence_only',
+            $hostRunner['evidence_shards']['published_artifact_install']['pass_claim_source'],
+        );
+        $this->assertSame(
+            [
+                'server' => 'published_docker_image',
+                'cli' => 'published_cli_release',
+                'workflow-php' => 'published_composer_package',
+                'sdk-python' => 'published_pypi_package',
+                'waterline' => 'published_waterline_artifact',
+            ],
+            $hostRunner['evidence_shards']['published_artifact_install']['expected_artifact_sources'],
+        );
+        $this->assertFalse($hostRunner['evidence_shards']['python_worker_cli_and_sdk_smoke']['baseline_probe_claims_pass']);
+        $this->assertSame(
+            'external_python_worker_cli_sdk_evidence_only',
+            $hostRunner['evidence_shards']['python_worker_cli_and_sdk_smoke']['pass_claim_source'],
+        );
 
         $this->assertSame(
             ['dedup_contract_observation'],
@@ -692,6 +739,39 @@ class SignalQueryRuntimeContractTest extends TestCase
             'published_composer_package',
             $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources']['workflow-php'],
         );
+    }
+
+    public function test_host_runner_rejects_generic_or_mismatched_published_install_sources(): void
+    {
+        foreach ([
+            'generic' => ['server' => 'published'],
+            'mismatched' => ['sdk-python' => 'published_cli_release'],
+        ] as $case => $sourceOverrides) {
+            $result = $this->runSignalQueryHostRunner([
+                'published_artifact_versions' => $this->currentHostRunnerArtifactVersions(),
+                'artifact_sources' => array_replace(
+                    [
+                        'server' => 'published_docker_image',
+                        'cli' => 'published_cli_release',
+                        'sdk-python' => 'published_pypi_package',
+                        'workflow-php' => 'published_composer_package',
+                        'waterline' => 'published_waterline_artifact',
+                    ],
+                    $sourceOverrides,
+                ),
+            ]);
+
+            $this->assertSame(
+                'not_covered',
+                $result['scenario_results']['published_artifact_install_only']['status'],
+                $case,
+            );
+            $this->assertContains(
+                'signal_query_published_artifact_install_uncovered',
+                array_column($result['findings'], 'type'),
+                $case,
+            );
+        }
     }
 
     public function test_host_runner_imports_fractional_second_replay_timing_evidence_as_passing_conformance(): void
@@ -1610,6 +1690,31 @@ class SignalQueryRuntimeContractTest extends TestCase
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertNotEmpty($forbiddenSourceFailures);
+    }
+
+    public function test_result_gate_rejects_install_pass_with_generic_or_mismatched_published_sources(): void
+    {
+        foreach ([
+            'generic' => ['server', 'published', 'published_docker_image'],
+            'mismatched' => ['sdk-python', 'published_cli_release', 'published_pypi_package'],
+        ] as $case => [$artifact, $actualSource, $expectedSource]) {
+            $result = $this->completeSignalQueryResult();
+            $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources'][$artifact] =
+                $actualSource;
+
+            $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+            $sourceFailures = array_values(array_filter(
+                $evaluation['gate_failures'],
+                static fn (array $failure): bool => ($failure['code'] ?? null) === 'unexpected_published_artifact_source'
+                    && ($failure['scenario_id'] ?? null) === 'published_artifact_install_only'
+                    && ($failure['artifact'] ?? null) === $artifact
+                    && ($failure['actual_source'] ?? null) === $actualSource
+                    && ($failure['expected_source'] ?? null) === $expectedSource,
+            ));
+
+            $this->assertSame('non_passing', $evaluation['status'], $case);
+            $this->assertNotEmpty($sourceFailures, $case);
+        }
     }
 
     public function test_result_gate_rejects_forbidden_sources_reported_in_section_evidence(): void

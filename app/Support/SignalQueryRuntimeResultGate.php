@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 14;
+    public const VERSION = 15;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -62,6 +62,7 @@ final class SignalQueryRuntimeResultGate
                 'publishedArtifactVersions',
             ],
             'required_artifact_versions_source' => 'signal_query_runtime_contract.artifact_policy.install_channels',
+            'required_artifact_sources_source' => 'signal_query_runtime_contract.artifact_policy.expected_sources',
             'artifact_version_policy' => [
                 'requires_recorded_and_pinned_versions' => true,
                 'rejects_placeholder_versions' => true,
@@ -107,6 +108,7 @@ final class SignalQueryRuntimeResultGate
                 'run_timestamps_outcome_and_finding_links_are_recorded',
                 'overall_outcome_matches_gate_status',
                 'published_artifact_versions_are_recorded_and_pinned',
+                'published_artifact_sources_match_expected_channels',
                 'scenario_artifact_versions_match_run_tuple',
                 'no_local_product_source_artifacts_are_reported',
             ],
@@ -737,6 +739,26 @@ final class SignalQueryRuntimeResultGate
         return '';
     }
 
+    /**
+     * @param array<mixed> $sources
+     */
+    private static function artifactSourceValue(array $sources, string $artifact): string
+    {
+        $aliases = [
+            'workflow-php' => ['workflow-php', 'workflow_php', 'workflow'],
+            'sdk-python' => ['sdk-python', 'sdk_python', 'python'],
+            'waterline' => ['waterline', 'waterline-ui', 'waterline_ui'],
+        ];
+
+        foreach ($aliases[$artifact] ?? [$artifact] as $key) {
+            if (array_key_exists($key, $sources) && self::stringValue($sources[$key]) !== '') {
+                return self::stringValue($sources[$key]);
+            }
+        }
+
+        return '';
+    }
+
     private static function isPlaceholderVersion(string $version): bool
     {
         $normalized = strtolower(trim($version));
@@ -766,6 +788,7 @@ final class SignalQueryRuntimeResultGate
     {
         $artifactPolicy = self::arrayValue($contract, 'artifact_policy') ?? [];
         $forbiddenSources = self::stringList($artifactPolicy['forbidden_sources'] ?? []);
+        $expectedSources = self::expectedArtifactSources($contract);
         $reportedSourceSets = [];
         foreach (['artifact_sources', 'artifactSources'] as $field) {
             $reportedSources = self::arrayValue($result, $field);
@@ -823,9 +846,110 @@ final class SignalQueryRuntimeResultGate
 
                 $failures[] = $failure;
             }
+
+            if (! self::sourceSetRequiresExpectedPublishedSources($sourceSet)) {
+                continue;
+            }
+
+            array_push(
+                $failures,
+                ...self::expectedPublishedArtifactSourceFailures($sourceSet, $expectedSources),
+            );
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $contract
+     *
+     * @return array<string, string>
+     */
+    private static function expectedArtifactSources(array $contract): array
+    {
+        $artifactPolicy = self::arrayValue($contract, 'artifact_policy') ?? [];
+        $expectedSources = self::arrayValue($artifactPolicy, 'expected_sources') ?? [];
+        $fallback = [
+            'server' => 'published_docker_image',
+            'cli' => 'published_cli_release',
+            'workflow-php' => 'published_composer_package',
+            'sdk-python' => 'published_pypi_package',
+            'waterline' => 'published_waterline_artifact',
+        ];
+
+        if ($expectedSources === []) {
+            return $fallback;
+        }
+
+        $normalized = [];
+        foreach ($fallback as $artifact => $fallbackSource) {
+            $source = self::artifactSourceValue($expectedSources, $artifact);
+            $normalized[$artifact] = $source === '' ? $fallbackSource : $source;
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param array<string, mixed> $sourceSet
+     */
+    private static function sourceSetRequiresExpectedPublishedSources(array $sourceSet): bool
+    {
+        return ($sourceSet['scenario_id'] ?? null) === 'published_artifact_install_only'
+            || in_array($sourceSet['path'] ?? null, ['$.artifact_sources', '$.artifactSources'], true);
+    }
+
+    /**
+     * @param array{sources: array<mixed>, field: string, path: string, scenario_id?: string|null} $sourceSet
+     * @param array<string, string> $expectedSources
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function expectedPublishedArtifactSourceFailures(array $sourceSet, array $expectedSources): array
+    {
+        $failures = [];
+        foreach ($expectedSources as $artifact => $expectedSource) {
+            $actualSource = self::artifactSourceValue($sourceSet['sources'], $artifact);
+            if ($actualSource === '') {
+                $failure = [
+                    'code' => 'missing_expected_published_artifact_source',
+                    'artifact' => $artifact,
+                    'expected_source' => $expectedSource,
+                    'field' => $sourceSet['field'],
+                    'path' => $sourceSet['path'],
+                ];
+            } elseif (self::publishedSourceMatchesArtifact($actualSource, $artifact, $expectedSources)) {
+                continue;
+            } else {
+                $failure = [
+                    'code' => 'unexpected_published_artifact_source',
+                    'artifact' => $artifact,
+                    'expected_source' => $expectedSource,
+                    'actual_source' => $actualSource,
+                    'field' => $sourceSet['field'],
+                    'path' => $sourceSet['path'],
+                ];
+            }
+
+            if (($sourceSet['scenario_id'] ?? null) !== null) {
+                $failure['scenario_id'] = $sourceSet['scenario_id'];
+            }
+
+            $failures[] = $failure;
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, string> $expectedSources
+     */
+    private static function publishedSourceMatchesArtifact(
+        string $source,
+        string $artifact,
+        array $expectedSources,
+    ): bool {
+        return trim($source) === ($expectedSources[$artifact] ?? '');
     }
 
     /**

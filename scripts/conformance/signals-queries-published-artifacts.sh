@@ -1738,6 +1738,13 @@ def artifact_versions_pinned() -> bool:
 
 
 REQUIRED_INSTALL_ARTIFACTS = ("server", "cli", "sdk-python", "workflow-php", "waterline")
+EXPECTED_ARTIFACT_SOURCES = {
+    "server": "published_docker_image",
+    "cli": "published_cli_release",
+    "sdk-python": "published_pypi_package",
+    "workflow-php": "published_composer_package",
+    "waterline": "published_waterline_artifact",
+}
 
 ARTIFACT_VERSION_ALIASES: dict[str, list[str]] = {
     "workflow-php": ["workflow-php", "workflow_php", "workflow"],
@@ -1773,6 +1780,10 @@ def artifact_source_value(sources: dict[str, Any], artifact: str) -> str:
         if normalized:
             return normalized
     return ""
+
+
+def published_source_matches_artifact(source: str, artifact: str) -> bool:
+    return source.strip() == EXPECTED_ARTIFACT_SOURCES.get(artifact, "")
 
 
 def declared_artifact_versions(value: Any) -> dict[str, Any]:
@@ -2115,6 +2126,8 @@ def install_outputs_cover_required_artifacts(observed: dict[str, Any]) -> bool:
         if version == "" or is_placeholder_version(version):
             return False
         if source == "" or is_forbidden_artifact_source(source):
+            return False
+        if not published_source_matches_artifact(source, artifact):
             return False
 
     return True
@@ -2712,13 +2725,7 @@ for scenario in required_scenarios:
         observed.setdefault("published_artifact_versions", artifact_versions)
         observed.setdefault(
             "artifact_sources",
-            {
-                "server": "published_docker_image",
-                "cli": "published_cli_release",
-                "sdk-python": "published_pypi_package",
-                "workflow-php": "published_composer_package",
-                "waterline": "published_waterline_artifact",
-            },
+            dict(EXPECTED_ARTIFACT_SOURCES),
         )
         observed["external_smoke_evidence"] = smoke_descriptor
         result = {
@@ -2793,13 +2800,7 @@ for scenario in required_scenarios:
 
 pins = {
     "artifact_versions": artifact_versions,
-    "artifact_sources": {
-        "server": "published_docker_image",
-        "cli": "published_cli_release",
-        "sdk-python": "published_pypi_package",
-        "workflow-php": "published_composer_package",
-        "waterline": "published_waterline_artifact",
-    },
+    "artifact_sources": dict(EXPECTED_ARTIFACT_SOURCES),
 }
 write_json(result_dir / "pins.json", pins)
 
