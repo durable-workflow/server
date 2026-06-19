@@ -696,7 +696,11 @@ const server = createServer((request, response) => {
   const body = JSON.stringify({
     error: 'database unavailable',
     token: 'redaction-sentinel-value',
-    detail: 'x'.repeat(1000),
+    detail: 'x'.repeat(900),
+    engine_source: {
+      storage_connection: 'mysql://waterline-primary:3306/durable_workflow',
+      migration_state: 'v2 tables unavailable',
+    },
     path: request.url,
   });
   response.writeHead(503, { 'Content-Type': 'application/json' });
@@ -784,14 +788,22 @@ JS;
             $this->assertSame(503, $healthFailure['http_status']);
             $this->assertStringContainsString('HTTP 503', $healthFailure['summary']);
             $this->assertStringContainsString('database unavailable', $healthFailure['summary']);
+            $this->assertStringContainsString('storage_connection', $healthFailure['summary']);
+            $this->assertStringContainsString('v2 tables unavailable', $healthFailure['summary']);
             $this->assertStringContainsString('<redacted>', $healthFailure['summary']);
-            $this->assertLessThanOrEqual(503, strlen($healthFailure['summary']));
+            $this->assertGreaterThan(
+                500,
+                strlen($healthFailure['summary']),
+                'Waterline diagnostics after the old 500-character cap must remain visible.',
+            );
+            $this->assertLessThanOrEqual(4099, strlen($healthFailure['summary']));
 
             $this->assertStringContainsString(
                 'GET /waterline/api/v2/health status=503',
                 $result['gap'],
             );
             $this->assertStringContainsString('database unavailable', $result['gap']);
+            $this->assertStringContainsString('storage_connection', $result['gap']);
             $this->assertStringNotContainsString(
                 'Published Waterline did not expose required worker-versioning fields',
                 $result['gap'],
@@ -802,6 +814,10 @@ JS;
             );
             $this->assertStringContainsString(
                 'database unavailable',
+                $result['waterline_install_evidence']['detail'],
+            );
+            $this->assertStringContainsString(
+                'storage_connection',
                 $result['waterline_install_evidence']['detail'],
             );
         } finally {
