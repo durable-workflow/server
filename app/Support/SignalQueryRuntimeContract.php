@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 15;
+    public const VERSION = 16;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -173,10 +173,14 @@ final class SignalQueryRuntimeContract
                     'evidence' => [
                         'published_artifact_versions',
                         'artifact_sources',
+                        'artifact_install_evidence',
                     ],
                 ],
                 'python_worker_cli_and_sdk_baseline' => [
                     'evidence' => [
+                        'worker_runtime',
+                        'python_worker_artifact_source',
+                        'python_worker_sdk_version',
                         'python_worker_query_task_routing',
                         'cli_signal_and_query',
                         'sdk_python_signal_and_query',
@@ -355,6 +359,8 @@ final class SignalQueryRuntimeContract
                     'waterline_observer_comparison_reported',
                     'artifact_versions_match_latest_published_set',
                     'published_artifact_sources_match_expected_channels',
+                    'published_artifact_install_only_includes_per_artifact_install_proof',
+                    'python_worker_baseline_identifies_a_published_python_sdk_worker',
                     'no_local_product_source_artifacts',
                     'findings_linked_for_non_pass_scenarios',
                     'omitted_required_scenarios_link_findings',
@@ -387,6 +393,7 @@ final class SignalQueryRuntimeContract
                     'sh',
                 ],
                 'adversarial_probe_overrides' => [
+                    'DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE',
                     'DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE',
                     'DW_SIGNALS_QUERIES_SERVER_URL',
                     'DW_SIGNALS_QUERIES_AUTH_TOKEN',
@@ -420,6 +427,7 @@ final class SignalQueryRuntimeContract
                         'current_evidence_fields' => [
                             'published_artifact_versions',
                             'artifact_sources',
+                            'artifact_install_evidence',
                             'external_smoke_evidence',
                         ],
                         'expected_artifact_sources' => [
@@ -439,6 +447,9 @@ final class SignalQueryRuntimeContract
                             'python_worker_cli_and_sdk_baseline',
                         ],
                         'current_evidence_fields' => [
+                            'worker_runtime',
+                            'python_worker_artifact_source',
+                            'python_worker_sdk_version',
                             'python_worker_query_task_routing',
                             'cli_signal_and_query',
                             'sdk_python_signal_and_query',

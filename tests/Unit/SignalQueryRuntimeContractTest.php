@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(15, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(16, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -280,7 +280,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(15, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(16, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -325,6 +325,14 @@ class SignalQueryRuntimeContractTest extends TestCase
             $resultGate['pass_requires'],
         );
         $this->assertContains(
+            'published_artifact_install_only_includes_per_artifact_install_proof',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
+            'python_worker_baseline_identifies_a_published_python_sdk_worker',
+            $resultGate['pass_requires'],
+        );
+        $this->assertContains(
             'scenario_artifact_versions_match_run_tuple',
             $resultGate['pass_requires'],
         );
@@ -352,6 +360,10 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertTrue($hostRunner['must_record_runner_blocked_false_for_product_evidence']);
         $this->assertTrue($hostRunner['must_emit_focused_findings_for_uncovered_cells']);
         $this->assertSame(['bash', 'python3', 'docker', 'sh'], $hostRunner['required_host_commands']);
+        $this->assertContains(
+            'DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE',
+            $hostRunner['adversarial_probe_overrides'],
+        );
         $this->assertContains(
             'DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE',
             $hostRunner['adversarial_probe_overrides'],
@@ -394,6 +406,10 @@ class SignalQueryRuntimeContractTest extends TestCase
             ],
             $hostRunner['evidence_shards']['published_artifact_install']['expected_artifact_sources'],
         );
+        $this->assertContains(
+            'artifact_install_evidence',
+            $hostRunner['evidence_shards']['published_artifact_install']['current_evidence_fields'],
+        );
         $this->assertFalse($hostRunner['evidence_shards']['python_worker_cli_and_sdk_smoke']['baseline_probe_claims_pass']);
         $this->assertSame(
             'external_python_worker_cli_sdk_evidence_only',
@@ -432,6 +448,9 @@ class SignalQueryRuntimeContractTest extends TestCase
         );
         $this->assertSame(
             [
+                'worker_runtime',
+                'python_worker_artifact_source',
+                'python_worker_sdk_version',
                 'python_worker_query_task_routing',
                 'cli_signal_and_query',
                 'sdk_python_signal_and_query',
@@ -578,6 +597,9 @@ class SignalQueryRuntimeContractTest extends TestCase
             'signal_query_adversarial_error_shapes_uncovered',
             'signal_query_waterline_observer_comparison_uncovered',
             'runner_blocked": False',
+            'DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE',
+            'run_baseline_probe(result_dir)',
+            '"not_claimed_as_pass"',
             'signals-queries-result.json',
             'signals-queries-findings.json',
         ] as $needle) {
@@ -607,6 +629,9 @@ class SignalQueryRuntimeContractTest extends TestCase
     public function test_host_runner_requires_exact_history_signal_order_before_marking_ordered_delivery_pass(): void
     {
         $result = $this->runSignalQueryHostRunner([
+            'worker_runtime' => 'sdk-python',
+            'python_worker_artifact_source' => 'published_pypi_package',
+            'python_worker_sdk_version' => '0.4.84',
             'python_worker_query_task_routing' => true,
             'cli_signal_and_query' => true,
             'sdk_python_signal_and_query' => true,
@@ -624,6 +649,9 @@ class SignalQueryRuntimeContractTest extends TestCase
     public function test_host_runner_marks_only_complete_smoke_fields_as_covered(): void
     {
         $result = $this->runSignalQueryHostRunner([
+            'worker_runtime' => 'sdk-python',
+            'python_worker_artifact_source' => 'published_pypi_package',
+            'python_worker_sdk_version' => '0.4.84',
             'python_worker_query_task_routing' => true,
             'cli_signal_and_query' => true,
             'sdk_python_signal_and_query' => true,
@@ -643,6 +671,32 @@ class SignalQueryRuntimeContractTest extends TestCase
         );
         $this->assertContains('signal_query_published_artifact_install_uncovered', array_column($result['findings'], 'type'));
         $this->assertContains('signal_query_dedup_contract_uncovered', array_column($result['findings'], 'type'));
+    }
+
+    public function test_host_runner_rejects_package_labels_as_python_worker_runtime(): void
+    {
+        foreach (['python-sdk', 'durable-workflow-python'] as $runtime) {
+            $result = $this->runSignalQueryHostRunner([
+                'worker_runtime' => $runtime,
+                'python_worker_artifact_source' => 'published_pypi_package',
+                'python_worker_sdk_version' => '0.4.84',
+                'python_worker_query_task_routing' => true,
+                'cli_signal_and_query' => true,
+                'sdk_python_signal_and_query' => true,
+                'immediate_repeat_query_consistency' => true,
+            ]);
+
+            $this->assertSame(
+                'not_covered',
+                $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status'],
+                $runtime,
+            );
+            $this->assertContains(
+                'signal_query_python_smoke_uncovered',
+                array_column($result['findings'], 'type'),
+                $runtime,
+            );
+        }
     }
 
     public function test_host_runner_imports_complete_matrix_evidence_as_passing_conformance(): void
@@ -674,6 +728,49 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertSame('pass', $result['scenario_results']['unknown_signal_and_query_errors']['status']);
         $this->assertSame('pass', $result['scenario_results']['malformed_signal_and_query_payloads']['status']);
         $this->assertContains('signal_query_published_artifact_install_uncovered', array_column($result['findings'], 'type'));
+    }
+
+    public function test_host_runner_preserves_focused_baseline_cells_when_install_source_is_not_proved(): void
+    {
+        $complete = $this->completeSignalQueryResultForCurrentHostRunner();
+        $versions = $this->currentHostRunnerArtifactVersions();
+        $badSources = [
+            'server' => 'published',
+            'cli' => 'published_cli_release',
+            'sdk-python' => 'published_pypi_package',
+            'workflow-php' => 'published_composer_package',
+            'waterline' => 'published_waterline_artifact',
+        ];
+        $evidence = [
+            'artifact_versions' => $versions,
+            'scenario_results' => [
+                'published_artifact_install_only' => [
+                    'scenario_id' => 'published_artifact_install_only',
+                    'status' => 'pass',
+                    'observed_outputs' => [
+                        'published_artifact_versions' => $versions,
+                        'artifact_sources' => $badSources,
+                    ],
+                ],
+                'ordered_signal_delivery' => $complete['scenario_results']['ordered_signal_delivery'],
+                'dedup_contract_observation' => $complete['scenario_results']['dedup_contract_observation'],
+                'unknown_signal_and_query_errors' => $complete['scenario_results']['unknown_signal_and_query_errors'],
+            ],
+        ];
+
+        $result = $this->runSignalQueryHostRunner($evidence);
+        $findingTypes = array_column($result['findings'], 'type');
+
+        $this->assertSame('not_covered', $result['scenario_results']['published_artifact_install_only']['status']);
+        $this->assertSame('not_covered', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
+        $this->assertSame('pass', $result['scenario_results']['ordered_signal_delivery']['status']);
+        $this->assertSame('pass', $result['scenario_results']['dedup_contract_observation']['status']);
+        $this->assertSame('pass', $result['scenario_results']['unknown_signal_and_query_errors']['status']);
+        $this->assertContains('signal_query_published_artifact_install_uncovered', $findingTypes);
+        $this->assertContains('signal_query_python_smoke_uncovered', $findingTypes);
+        $this->assertNotContains('signal_query_ordered_delivery_uncovered', $findingTypes);
+        $this->assertNotContains('signal_query_dedup_contract_uncovered', $findingTypes);
+        $this->assertNotContains('signal_query_unknown_handler_errors_uncovered', $findingTypes);
     }
 
     public function test_probe_merge_preserves_sources_only_external_install_evidence(): void
@@ -721,7 +818,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertArrayNotHasKey('malformed_signal_and_query_payloads', $result['base']['scenario_results']);
     }
 
-    public function test_host_runner_accepts_flat_explicit_install_evidence(): void
+    public function test_host_runner_rejects_flat_explicit_install_evidence_without_install_proof(): void
     {
         $result = $this->runSignalQueryHostRunner([
             'published_artifact_versions' => $this->currentHostRunnerArtifactVersions(),
@@ -732,6 +829,27 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'workflow-php' => 'published_composer_package',
                 'waterline' => 'published_waterline_artifact',
             ],
+        ]);
+
+        $this->assertSame('not_covered', $result['scenario_results']['published_artifact_install_only']['status']);
+        $this->assertContains('signal_query_published_artifact_install_uncovered', array_column($result['findings'], 'type'));
+    }
+
+    public function test_host_runner_accepts_structured_explicit_install_evidence(): void
+    {
+        $versions = $this->currentHostRunnerArtifactVersions();
+        $sources = [
+            'server' => 'published_docker_image',
+            'cli' => 'published_cli_release',
+            'sdk-python' => 'published_pypi_package',
+            'workflow-php' => 'published_composer_package',
+            'waterline' => 'published_waterline_artifact',
+        ];
+
+        $result = $this->runSignalQueryHostRunner([
+            'published_artifact_versions' => $versions,
+            'artifact_sources' => $sources,
+            'artifact_install_evidence' => $this->installEvidenceForVersions($versions, $sources),
         ]);
 
         $this->assertSame('pass', $result['scenario_results']['published_artifact_install_only']['status']);
@@ -747,18 +865,22 @@ class SignalQueryRuntimeContractTest extends TestCase
             'generic' => ['server' => 'published'],
             'mismatched' => ['sdk-python' => 'published_cli_release'],
         ] as $case => $sourceOverrides) {
+            $versions = $this->currentHostRunnerArtifactVersions();
+            $sources = array_replace(
+                [
+                    'server' => 'published_docker_image',
+                    'cli' => 'published_cli_release',
+                    'sdk-python' => 'published_pypi_package',
+                    'workflow-php' => 'published_composer_package',
+                    'waterline' => 'published_waterline_artifact',
+                ],
+                $sourceOverrides,
+            );
+
             $result = $this->runSignalQueryHostRunner([
-                'published_artifact_versions' => $this->currentHostRunnerArtifactVersions(),
-                'artifact_sources' => array_replace(
-                    [
-                        'server' => 'published_docker_image',
-                        'cli' => 'published_cli_release',
-                        'sdk-python' => 'published_pypi_package',
-                        'workflow-php' => 'published_composer_package',
-                        'waterline' => 'published_waterline_artifact',
-                    ],
-                    $sourceOverrides,
-                ),
+                'published_artifact_versions' => $versions,
+                'artifact_sources' => $sources,
+                'artifact_install_evidence' => $this->installEvidenceForVersions($versions, $sources),
             ]);
 
             $this->assertSame(
@@ -844,6 +966,19 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertTrue(
             $evidence['scenario_results']['python_worker_php_facing_and_cli_clients']['observed_outputs']['cli_signal_and_query'],
         );
+
+        $result = $this->runSignalQueryHostRunner($evidence);
+
+        $this->assertSame('not_covered', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
+        $this->assertContains('signal_query_python_smoke_uncovered', array_column($result['findings'], 'type'));
+        $this->assertSame('non_passing', $result['outcome']);
+    }
+
+    public function test_host_runner_does_not_satisfy_python_baseline_with_external_worker_identity(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        $evidence['scenario_results']['python_worker_cli_and_sdk_baseline']['observed_outputs']['worker_runtime'] =
+            'external-http';
 
         $result = $this->runSignalQueryHostRunner($evidence);
 
@@ -1701,6 +1836,16 @@ class SignalQueryRuntimeContractTest extends TestCase
             $result = $this->completeSignalQueryResult();
             $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources'][$artifact] =
                 $actualSource;
+            foreach (
+                $result['scenario_results']['published_artifact_install_only']['observed_outputs'][
+                    'artifact_install_evidence'
+                ]['artifacts'] as &$installArtifact
+            ) {
+                if (($installArtifact['artifact'] ?? null) === $artifact) {
+                    $installArtifact['source'] = $actualSource;
+                }
+            }
+            unset($installArtifact);
 
             $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
             $sourceFailures = array_values(array_filter(
@@ -1714,7 +1859,75 @@ class SignalQueryRuntimeContractTest extends TestCase
 
             $this->assertSame('non_passing', $evaluation['status'], $case);
             $this->assertNotEmpty($sourceFailures, $case);
+            $this->assertContains(
+                'invalid_published_artifact_install_evidence_source',
+                array_column($evaluation['gate_failures'], 'code'),
+                $case,
+            );
         }
+    }
+
+    public function test_result_gate_rejects_install_pass_without_per_artifact_install_evidence(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        unset($result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_install_evidence']);
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'missing_published_artifact_install_evidence',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_python_baseline_pass_with_external_worker_identity(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['python_worker_cli_and_sdk_baseline']['observed_outputs']['worker_runtime'] =
+            'external-http';
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'python_worker_baseline_runtime_not_sdk_python',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_package_labels_as_python_worker_runtime(): void
+    {
+        foreach (['python-sdk', 'durable-workflow-python'] as $runtime) {
+            $result = $this->completeSignalQueryResult();
+            $result['scenario_results']['python_worker_cli_and_sdk_baseline']['observed_outputs']['worker_runtime'] =
+                $runtime;
+
+            $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+            $this->assertSame('non_passing', $evaluation['status'], $runtime);
+            $this->assertContains(
+                'python_worker_baseline_runtime_not_sdk_python',
+                array_column($evaluation['gate_failures'], 'code'),
+                $runtime,
+            );
+        }
+    }
+
+    public function test_result_gate_rejects_python_baseline_pass_with_generic_worker_source(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['python_worker_cli_and_sdk_baseline']['observed_outputs'][
+            'python_worker_artifact_source'
+        ] = 'published';
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'python_worker_baseline_source_not_published_sdk',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
     }
 
     public function test_result_gate_rejects_forbidden_sources_reported_in_section_evidence(): void
@@ -1789,6 +2002,7 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'DW_PYTHON_SDK_VERSION=0.4.84',
                 'DW_WORKFLOW_PHP_VERSION=2.0.0-alpha.187',
                 'DW_WATERLINE_VERSION=2.0.0-alpha.69',
+                'DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE=0',
                 'DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE=0',
                 'DW_SIGNALS_QUERIES_SMOKE_EVIDENCE=' . escapeshellarg($smokePath),
                 escapeshellarg($root . '/scripts/conformance/signals-queries-published-artifacts.sh'),
@@ -1909,6 +2123,32 @@ class SignalQueryRuntimeContractTest extends TestCase
     }
 
     /**
+     * @param array<string, string> $versions
+     * @param array<string, string> $sources
+     *
+     * @return array<string, mixed>
+     */
+    private function installEvidenceForVersions(array $versions, array $sources): array
+    {
+        $artifacts = [];
+        foreach (['server', 'cli', 'sdk-python', 'workflow-php', 'waterline'] as $artifact) {
+            $version = $versions[$artifact] ?? ($artifact === 'workflow-php' ? ($versions['workflow'] ?? '') : '');
+            $artifacts[] = [
+                'artifact' => $artifact,
+                'status' => 'pass',
+                'version' => $version,
+                'source' => $sources[$artifact],
+                'local_product_source_checkouts_used' => false,
+            ];
+        }
+
+        return [
+            'local_product_source_checkouts_used' => false,
+            'artifacts' => $artifacts,
+        ];
+    }
+
+    /**
      * @return array<string, string>
      */
     private function currentHostRunnerArtifactVersions(): array
@@ -1968,6 +2208,15 @@ class SignalQueryRuntimeContractTest extends TestCase
         $result['scenario_results']['published_artifact_install_only']['observed_outputs'][
             'published_artifact_versions'
         ] = $versions;
+        $result['scenario_results']['published_artifact_install_only']['observed_outputs'][
+            'artifact_install_evidence'
+        ] = $this->installEvidenceForVersions(
+            $versions,
+            $result['scenario_results']['published_artifact_install_only']['observed_outputs']['artifact_sources'],
+        );
+        $result['scenario_results']['python_worker_cli_and_sdk_baseline']['observed_outputs'][
+            'python_worker_sdk_version'
+        ] = $versions['sdk-python'];
 
         return $result;
     }
@@ -1988,24 +2237,30 @@ class SignalQueryRuntimeContractTest extends TestCase
             ];
         }
 
+        $publishedVersions = [
+            'server' => '0.2.140',
+            'cli' => '0.1.45',
+            'sdk-python' => '0.4.58',
+            'workflow' => '2.0.0-alpha.161',
+            'workflow-php' => '2.0.0-alpha.161',
+            'waterline' => '2.0.0-alpha.54',
+        ];
+        $artifactSources = [
+            'server' => 'published_docker_image',
+            'cli' => 'published_cli_release',
+            'sdk-python' => 'published_pypi_package',
+            'workflow-php' => 'published_composer_package',
+            'waterline' => 'published_waterline_artifact',
+        ];
         $scenarioResults['published_artifact_install_only']['observed_outputs'] = [
-            'published_artifact_versions' => [
-                'server' => '0.2.140',
-                'cli' => '0.1.45',
-                'sdk-python' => '0.4.58',
-                'workflow' => '2.0.0-alpha.161',
-                'workflow-php' => '2.0.0-alpha.161',
-                'waterline' => '2.0.0-alpha.54',
-            ],
-            'artifact_sources' => [
-                'server' => 'published_docker_image',
-                'cli' => 'published_cli_release',
-                'sdk-python' => 'published_pypi_package',
-                'workflow-php' => 'published_composer_package',
-                'waterline' => 'published_waterline_artifact',
-            ],
+            'published_artifact_versions' => $publishedVersions,
+            'artifact_sources' => $artifactSources,
+            'artifact_install_evidence' => $this->installEvidenceForVersions($publishedVersions, $artifactSources),
         ];
         $scenarioResults['python_worker_cli_and_sdk_baseline']['observed_outputs'] = [
+            'worker_runtime' => 'sdk-python',
+            'python_worker_artifact_source' => 'published_pypi_package',
+            'python_worker_sdk_version' => '0.4.58',
             'python_worker_query_task_routing' => true,
             'cli_signal_and_query' => true,
             'sdk_python_signal_and_query' => true,

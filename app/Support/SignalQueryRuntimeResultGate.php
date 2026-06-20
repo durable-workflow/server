@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 15;
+    public const VERSION = 16;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -101,6 +101,8 @@ final class SignalQueryRuntimeResultGate
                 'replay_terminal_adversarial_and_waterline_sections_are_reported',
                 'each_pass_scenario_has_observed_outputs',
                 'each_pass_scenario_includes_required_evidence',
+                'published_artifact_install_only_includes_per_artifact_install_proof',
+                'python_worker_baseline_identifies_a_published_python_sdk_worker',
                 'replay_timing_timestamps_are_ordered',
                 'terminal_run_status_codes_and_reasons_are_typed',
                 'each_non_pass_scenario_has_linked_findings',
@@ -215,6 +217,9 @@ final class SignalQueryRuntimeResultGate
 
         $sourceFailures = self::sourcePolicyFailures($result, $contract, $scenarioResults);
         array_push($failures, ...$sourceFailures);
+
+        $installEvidenceFailures = self::publishedArtifactInstallEvidenceFailures($result, $contract, $scenarioResults);
+        array_push($failures, ...$installEvidenceFailures);
 
         $matrixFailures = self::matrixFailures($result, $contract);
         array_push($failures, ...$matrixFailures);
@@ -942,6 +947,170 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     * @param array<string, array<string, mixed>> $scenarioResults
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function publishedArtifactInstallEvidenceFailures(
+        array $result,
+        array $contract,
+        array $scenarioResults,
+    ): array {
+        $scenarioId = 'published_artifact_install_only';
+        $scenarioResult = $scenarioResults[$scenarioId] ?? null;
+        if (! is_array($scenarioResult) || self::stringValue($scenarioResult['status'] ?? null) !== 'pass') {
+            return [];
+        }
+
+        $artifactPolicy = self::arrayValue($contract, 'artifact_policy') ?? [];
+        $installChannels = self::arrayValue($artifactPolicy, 'install_channels') ?? [];
+        $forbiddenSources = self::stringList($artifactPolicy['forbidden_sources'] ?? []);
+        $expectedSources = self::expectedArtifactSources($contract);
+        $versions = self::artifactVersions($result);
+        $installEvidence = self::arrayEvidenceValue(
+            $result,
+            $scenarioResult,
+            $scenarioId,
+            'artifact_install_evidence',
+            'artifactInstallEvidence',
+            'install_evidence',
+            'installEvidence',
+        );
+
+        if ($installEvidence === null) {
+            return [[
+                'code' => 'missing_published_artifact_install_evidence',
+                'scenario_id' => $scenarioId,
+                'field' => 'artifact_install_evidence',
+            ]];
+        }
+
+        $failures = [];
+        if (! self::explicitFalseField($installEvidence, 'local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed')) {
+            $failures[] = [
+                'code' => 'local_product_source_checkouts_used_must_be_false',
+                'scenario_id' => $scenarioId,
+                'field' => 'artifact_install_evidence.local_product_source_checkouts_used',
+                'value' => $installEvidence['local_product_source_checkouts_used']
+                    ?? $installEvidence['localProductSourceCheckoutsUsed']
+                    ?? null,
+            ];
+        }
+
+        foreach (array_keys($installChannels) as $artifact) {
+            $artifact = (string) $artifact;
+            $entry = self::artifactInstallEvidenceEntry($installEvidence, $artifact);
+            if ($entry === null) {
+                $failures[] = [
+                    'code' => 'missing_published_artifact_install_evidence_artifact',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => $artifact,
+                    'field' => 'artifact_install_evidence.artifacts',
+                ];
+                continue;
+            }
+
+            $status = strtolower(self::firstString($entry, 'status', 'result', 'outcome'));
+            if ($status !== 'pass') {
+                $failures[] = [
+                    'code' => 'published_artifact_install_evidence_not_pass',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => $artifact,
+                    'status' => $status,
+                    'field' => 'artifact_install_evidence.artifacts.status',
+                ];
+            }
+
+            $version = self::firstString(
+                $entry,
+                'version',
+                'resolved_version',
+                'resolvedVersion',
+                'artifact_version',
+                'artifactVersion',
+            );
+            if ($version === '') {
+                $failures[] = [
+                    'code' => 'missing_published_artifact_install_evidence_version',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => $artifact,
+                    'field' => 'artifact_install_evidence.artifacts.version',
+                ];
+            } elseif (self::isPlaceholderVersion($version)) {
+                $failures[] = [
+                    'code' => 'placeholder_published_artifact_install_evidence_version',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => $artifact,
+                    'version' => $version,
+                    'field' => 'artifact_install_evidence.artifacts.version',
+                ];
+            } else {
+                $expectedVersion = self::artifactVersionValue($versions, $artifact);
+                if ($expectedVersion !== '' && $version !== $expectedVersion) {
+                    $failures[] = [
+                        'code' => 'published_artifact_install_evidence_version_mismatch',
+                        'scenario_id' => $scenarioId,
+                        'artifact' => $artifact,
+                        'version' => $version,
+                        'expected_version' => $expectedVersion,
+                        'field' => 'artifact_install_evidence.artifacts.version',
+                    ];
+                }
+            }
+
+            $source = self::firstString(
+                $entry,
+                'source',
+                'install_source',
+                'installSource',
+                'artifact_source',
+                'artifactSource',
+            );
+            if ($source === '') {
+                $failures[] = [
+                    'code' => 'missing_published_artifact_install_evidence_source',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => $artifact,
+                    'field' => 'artifact_install_evidence.artifacts.source',
+                ];
+            } elseif (self::isForbiddenArtifactSource($source, $forbiddenSources)) {
+                $failures[] = [
+                    'code' => 'forbidden_published_artifact_install_evidence_source',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => $artifact,
+                    'source' => $source,
+                    'field' => 'artifact_install_evidence.artifacts.source',
+                ];
+            } elseif (! self::publishedSourceMatchesArtifact($source, $artifact, $expectedSources)) {
+                $failures[] = [
+                    'code' => 'invalid_published_artifact_install_evidence_source',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => $artifact,
+                    'expected_source' => $expectedSources[$artifact] ?? null,
+                    'source' => $source,
+                    'field' => 'artifact_install_evidence.artifacts.source',
+                ];
+            }
+
+            if (self::truthyField($entry, 'local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed')) {
+                $failures[] = [
+                    'code' => 'local_product_source_checkouts_used_must_be_false',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => $artifact,
+                    'field' => 'artifact_install_evidence.artifacts.local_product_source_checkouts_used',
+                    'value' => $entry['local_product_source_checkouts_used']
+                        ?? $entry['localProductSourceCheckoutsUsed']
+                        ?? null,
+                ];
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
      * @param array<string, string> $expectedSources
      */
     private static function publishedSourceMatchesArtifact(
@@ -950,6 +1119,14 @@ final class SignalQueryRuntimeResultGate
         array $expectedSources,
     ): bool {
         return trim($source) === ($expectedSources[$artifact] ?? '');
+    }
+
+    /**
+     * @param array<string, string> $expectedSources
+     */
+    private static function publishedPythonSdkSource(string $source, array $expectedSources): bool
+    {
+        return self::publishedSourceMatchesArtifact($source, 'sdk-python', $expectedSources);
     }
 
     /**
@@ -1225,6 +1402,13 @@ final class SignalQueryRuntimeResultGate
                 }
             }
 
+            if ($scenarioId === 'python_worker_cli_and_sdk_baseline') {
+                array_push(
+                    $failures,
+                    ...self::pythonWorkerBaselineFailures($result, $contract, $scenarioResult, $scenarioId),
+                );
+            }
+
             if ($scenarioId === 'signal_during_replay') {
                 array_push(
                     $failures,
@@ -1300,6 +1484,68 @@ final class SignalQueryRuntimeResultGate
                     ...self::malformedPayloadReasonFailures($result, $scenarioResult, $scenarioId),
                 );
             }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function pythonWorkerBaselineFailures(
+        array $result,
+        array $contract,
+        array $scenarioResult,
+        string $scenarioId,
+    ): array {
+        $failures = [];
+        $runtime = self::stringValue(
+            self::evidenceValue($result, $scenarioResult, $scenarioId, 'worker_runtime'),
+        );
+        if (! self::sameRuntime($runtime, 'sdk-python')) {
+            $failures[] = [
+                'code' => 'python_worker_baseline_runtime_not_sdk_python',
+                'scenario_id' => $scenarioId,
+                'field' => 'worker_runtime',
+                'runtime' => $runtime,
+            ];
+        }
+
+        $source = self::stringValue(
+            self::evidenceValue($result, $scenarioResult, $scenarioId, 'python_worker_artifact_source'),
+        );
+        if (! self::publishedPythonSdkSource($source, self::expectedArtifactSources($contract))) {
+            $failures[] = [
+                'code' => 'python_worker_baseline_source_not_published_sdk',
+                'scenario_id' => $scenarioId,
+                'field' => 'python_worker_artifact_source',
+                'source' => $source,
+            ];
+        }
+
+        $version = self::stringValue(
+            self::evidenceValue($result, $scenarioResult, $scenarioId, 'python_worker_sdk_version'),
+        );
+        $expectedVersion = self::artifactVersionValue(self::artifactVersions($result), 'sdk-python');
+        if ($version === '' || self::isPlaceholderVersion($version)) {
+            $failures[] = [
+                'code' => 'python_worker_baseline_missing_sdk_version',
+                'scenario_id' => $scenarioId,
+                'field' => 'python_worker_sdk_version',
+                'version' => $version,
+            ];
+        } elseif ($expectedVersion !== '' && $version !== $expectedVersion) {
+            $failures[] = [
+                'code' => 'python_worker_baseline_sdk_version_mismatch',
+                'scenario_id' => $scenarioId,
+                'field' => 'python_worker_sdk_version',
+                'version' => $version,
+                'expected_version' => $expectedVersion,
+            ];
         }
 
         return $failures;
@@ -1847,6 +2093,106 @@ final class SignalQueryRuntimeResultGate
         }
 
         return true;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     */
+    private static function arrayEvidenceValue(
+        array $result,
+        array $scenarioResult,
+        string $scenarioId,
+        string ...$fields,
+    ): ?array {
+        foreach ($fields as $field) {
+            $value = self::evidenceValue($result, $scenarioResult, $scenarioId, $field);
+            if (is_array($value)) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $installEvidence
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function artifactInstallEvidenceEntry(array $installEvidence, string $artifact): ?array
+    {
+        $artifacts = self::arrayValue($installEvidence, 'artifacts');
+        if ($artifacts !== null) {
+            foreach ($artifacts as $entry) {
+                if (! is_array($entry)) {
+                    continue;
+                }
+
+                $entryArtifact = self::stringValue(
+                    $entry['artifact'] ?? $entry['name'] ?? $entry['id'] ?? $entry['package'] ?? null,
+                );
+                if ($entryArtifact === $artifact) {
+                    return $entry;
+                }
+            }
+        }
+
+        $direct = self::arrayValue($installEvidence, $artifact);
+
+        return $direct === null ? null : $direct;
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private static function firstString(array $value, string ...$fields): string
+    {
+        foreach ($fields as $field) {
+            $candidate = self::stringValue($value[$field] ?? null);
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private static function explicitFalseField(array $value, string ...$fields): bool
+    {
+        foreach ($fields as $field) {
+            if (array_key_exists($field, $value) && $value[$field] === false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     */
+    private static function truthyField(array $value, string ...$fields): bool
+    {
+        foreach ($fields as $field) {
+            if (! array_key_exists($field, $value)) {
+                continue;
+            }
+
+            $fieldValue = $value[$field];
+            if ($fieldValue === true) {
+                return true;
+            }
+
+            if (is_string($fieldValue) && in_array(strtolower(trim($fieldValue)), ['1', 'true', 'yes'], true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static function pathFor(string $base, int|string $field): string
