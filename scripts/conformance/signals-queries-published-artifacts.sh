@@ -1489,24 +1489,45 @@ def answer_next_query_task(
     poll_timeout: float = 45.0,
 ) -> None:
     try:
-        poll = http_json(
-            base_url,
-            api_path("worker", "query-tasks", "poll"),
-            method="POST",
-            body={
-                "worker_id": worker_id,
-                "task_queue": task_queue,
-                "poll_request_id": f"adversarial-{int(time.time() * 1000)}",
-            },
-            token=token,
-            namespace=namespace,
-            worker=True,
-            timeout=poll_timeout,
-        )
-        holder["poll"] = poll
-        task = poll.get("body", {}).get("task") if isinstance(poll.get("body"), dict) else None
-        if not isinstance(task, dict):
-            holder["error"] = "query task poll returned no task"
+        deadline = time.time() + poll_timeout
+        poll_attempt = 0
+        empty_polls: list[dict[str, Any]] = []
+        task: dict[str, Any] | None = None
+
+        while time.time() < deadline:
+            poll_attempt += 1
+            remaining = max(0.2, deadline - time.time())
+            poll = http_json(
+                base_url,
+                api_path("worker", "query-tasks", "poll"),
+                method="POST",
+                body={
+                    "worker_id": worker_id,
+                    "task_queue": task_queue,
+                    "poll_request_id": f"query-{int(time.time() * 1000)}-{poll_attempt}",
+                },
+                token=token,
+                namespace=namespace,
+                worker=True,
+                timeout=min(5.0, remaining),
+            )
+            holder["poll"] = poll
+            task_candidate = poll.get("body", {}).get("task") if isinstance(poll.get("body"), dict) else None
+            if isinstance(task_candidate, dict):
+                task = task_candidate
+                break
+
+            empty_polls.append(response_sample(poll))
+            holder["empty_polls"] = empty_polls
+
+            if int(poll.get("status_code") or 0) >= 400:
+                holder["error"] = f"query task poll failed: {poll}"
+                return
+
+            time.sleep(min(0.1, max(0.0, deadline - time.time())))
+
+        if task is None:
+            holder["error"] = "query task poll returned no task before timeout"
             return
 
         holder["query_handler_invoked_at"] = now()
@@ -1516,7 +1537,7 @@ def answer_next_query_task(
             api_path("worker", "query-tasks", str(task["query_task_id"]), "complete"),
             method="POST",
             body={
-                "lease_owner": worker_id,
+                "lease_owner": task.get("lease_owner") or worker_id,
                 "query_task_attempt": task["query_task_attempt"],
                 "result": result,
             },
@@ -3237,11 +3258,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 raise RuntimeError(
                     f"ordered query responder failed: {ordered_query_holder.get('error', 'timeout')}"
                 )
-            ordered_query_result = (
-                ordered_query.get("body", {}).get("result")
-                if isinstance(ordered_query.get("body"), dict)
-                else None
-            )
+            ordered_query_result = sample_result_value(ordered_query)
             ordered_outputs["queried_total"] = ordered_query_result
             ordered_outputs["ten_signal_ordered_delivery_total"] = ordered_query_result
             ordered_outputs["expected_total"] = expected_total

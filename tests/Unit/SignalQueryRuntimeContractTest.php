@@ -881,6 +881,71 @@ PY);
         $this->assertSame([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], $result['task_signal_amounts']);
     }
 
+    public function test_host_runner_query_responder_waits_for_query_task_after_empty_poll(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+poll_paths = []
+complete_bodies = []
+sleep_intervals = []
+original_sleep = time.sleep
+time.sleep = lambda seconds: sleep_intervals.append(seconds)
+
+try:
+    def fake_http_json(base_url, path, **kwargs):
+        if path.endswith("/worker/query-tasks/poll"):
+            poll_paths.append(path)
+            if len(poll_paths) == 1:
+                return {"status_code": 200, "body": {"task": None, "poll_status": "empty"}}
+            return {
+                "status_code": 200,
+                "body": {
+                    "task": {
+                        "query_task_id": "query-task-1",
+                        "query_task_attempt": 1,
+                        "lease_owner": "leased-worker",
+                    },
+                },
+            }
+
+        if path.endswith("/worker/query-tasks/query-task-1/complete"):
+            complete_bodies.append(kwargs.get("body"))
+            return {"status_code": 200, "body": {"outcome": "completed"}}
+
+        raise AssertionError(f"unexpected path {path}")
+
+    globals()["http_json"] = fake_http_json
+    holder = {}
+    answer_next_query_task(
+        "http://unused",
+        "token",
+        "default",
+        "polling-worker",
+        "queue-1",
+        55,
+        Path("/tmp/signals-queries-query-test.log"),
+        holder,
+        poll_timeout=2,
+    )
+finally:
+    time.sleep = original_sleep
+
+print(json.dumps({
+    "poll_count": len(poll_paths),
+    "complete_bodies": complete_bodies,
+    "empty_poll_count": len(holder.get("empty_polls", [])),
+    "error": holder.get("error"),
+    "completed_at_present": "query_completed_at" in holder,
+}, sort_keys=True))
+PY);
+
+        $this->assertSame(2, $result['poll_count']);
+        $this->assertSame(1, $result['empty_poll_count']);
+        $this->assertNull($result['error']);
+        $this->assertTrue($result['completed_at_present']);
+        $this->assertSame('leased-worker', $result['complete_bodies'][0]['lease_owner']);
+        $this->assertSame(55, $result['complete_bodies'][0]['result']);
+    }
+
     public function test_host_runner_accepts_single_observed_duplicate_signal_when_no_second_task_arrives(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
