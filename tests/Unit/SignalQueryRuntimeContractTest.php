@@ -608,12 +608,15 @@ class SignalQueryRuntimeContractTest extends TestCase
             'signal_query_published_artifact_install_uncovered',
             'signal_query_python_smoke_uncovered',
             'signal_query_ordered_delivery_uncovered',
+            'signal_query_ordered_delivery_current_evidence_missing',
             'signal_query_dedup_contract_uncovered',
+            'signal_query_dedup_contract_current_evidence_missing',
             'signal_query_php_worker_mirror_uncovered',
             'signal_query_cross_language_client_matrix_uncovered',
             'signal_query_replay_timing_uncovered',
             'signal_query_completed_run_handling_uncovered',
             'signal_query_unknown_handler_errors_uncovered',
+            'signal_query_unknown_handler_errors_current_evidence_missing',
             'signal_query_adversarial_error_shapes_uncovered',
             'signal_query_waterline_observer_comparison_uncovered',
             'runner_blocked": False',
@@ -742,7 +745,10 @@ PY);
         $this->assertSame('not_covered', $result['scenario_results']['ordered_signal_delivery']['status']);
         $this->assertContains('signal_query_published_artifact_install_uncovered', array_column($result['findings'], 'type'));
         $this->assertContains('signal_query_python_smoke_uncovered', array_column($result['findings'], 'type'));
-        $this->assertContains('signal_query_ordered_delivery_uncovered', array_column($result['findings'], 'type'));
+        $this->assertContains(
+            'signal_query_ordered_delivery_current_evidence_missing',
+            array_column($result['findings'], 'type'),
+        );
     }
 
     public function test_host_runner_requires_exact_history_signal_order_before_marking_ordered_delivery_pass(): void
@@ -762,7 +768,10 @@ PY);
 
         $this->assertSame('pass', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
         $this->assertSame('not_covered', $result['scenario_results']['ordered_signal_delivery']['status']);
-        $this->assertContains('signal_query_ordered_delivery_uncovered', array_column($result['findings'], 'type'));
+        $this->assertContains(
+            'signal_query_ordered_delivery_current_evidence_missing',
+            array_column($result['findings'], 'type'),
+        );
     }
 
     public function test_host_runner_marks_only_complete_smoke_fields_as_covered(): void
@@ -789,7 +798,10 @@ PY);
             $result['scenario_results']['ordered_signal_delivery']['observed_outputs']['history_signal_order'],
         );
         $this->assertContains('signal_query_published_artifact_install_uncovered', array_column($result['findings'], 'type'));
-        $this->assertContains('signal_query_dedup_contract_uncovered', array_column($result['findings'], 'type'));
+        $this->assertContains(
+            'signal_query_dedup_contract_current_evidence_missing',
+            array_column($result['findings'], 'type'),
+        );
     }
 
     public function test_host_runner_rejects_package_labels_as_python_worker_runtime(): void
@@ -970,6 +982,115 @@ PY);
             $orderedFindings[0]['current_evidence']['missing_current_evidence'] ?? [],
         );
         $this->assertStringContainsString('history_signal_order', $orderedFindings[0]['title'] ?? '');
+    }
+
+    public function test_host_runner_names_missing_current_baseline_evidence_without_current_candidates(): void
+    {
+        $result = $this->runSignalQueryHostRunner([
+            'artifact_versions' => $this->currentHostRunnerArtifactVersions(),
+        ]);
+
+        $expectedMissing = [
+            'ordered_signal_delivery' => [
+                'rapid_increment_inputs',
+                'queried_total',
+                'history_signal_order',
+            ],
+            'dedup_contract_observation' => [
+                'client_side_key_support',
+                'documented_contract',
+                'handler_observation_count',
+            ],
+            'unknown_signal_and_query_errors' => [
+                'unknown_signal',
+                'missing_workflow_signal',
+                'missing_workflow_query',
+                'query_not_found',
+                'rejected_unknown_query',
+                'known_query_after_unknown_errors',
+            ],
+        ];
+        $expectedTypes = [
+            'ordered_signal_delivery' => 'signal_query_ordered_delivery_current_evidence_missing',
+            'dedup_contract_observation' => 'signal_query_dedup_contract_current_evidence_missing',
+            'unknown_signal_and_query_errors' => 'signal_query_unknown_handler_errors_current_evidence_missing',
+        ];
+
+        foreach ($expectedMissing as $scenarioId => $missingFields) {
+            $this->assertSame('not_covered', $result['scenario_results'][$scenarioId]['status']);
+            $findings = $this->findingsForScenario($result, $scenarioId);
+            $this->assertNotEmpty($findings);
+            $this->assertSame($expectedTypes[$scenarioId], $findings[0]['type'] ?? null);
+            $this->assertSame(
+                $missingFields,
+                $findings[0]['current_evidence']['missing_current_evidence'] ?? null,
+            );
+            $this->assertFalse($findings[0]['current_evidence']['current_evidence_candidate_present'] ?? true);
+            $this->assertSame(
+                'missing',
+                $findings[0]['current_evidence']['current_evidence_candidate_status'] ?? null,
+            );
+            foreach ($missingFields as $field) {
+                $this->assertStringContainsString($field, $findings[0]['title'] ?? '');
+            }
+        }
+    }
+
+    public function test_host_runner_routes_observed_current_baseline_behavior_failures_as_product_findings(): void
+    {
+        $complete = $this->completeSignalQueryResultForCurrentHostRunner();
+        $versions = $this->currentHostRunnerArtifactVersions();
+        $sources = $this->expectedHostRunnerArtifactSources();
+        $ordered = $complete['scenario_results']['ordered_signal_delivery'];
+        $ordered['observed_outputs']['published_artifact_versions'] = $versions;
+        $ordered['observed_outputs']['artifact_sources'] = $sources;
+        $ordered['observed_outputs']['queried_total'] = 54;
+        $dedup = $complete['scenario_results']['dedup_contract_observation'];
+        $dedup['observed_outputs']['published_artifact_versions'] = $versions;
+        $dedup['observed_outputs']['artifact_sources'] = $sources;
+        $dedup['observed_outputs']['handler_observation_count'] = 0;
+        $unknown = $complete['scenario_results']['unknown_signal_and_query_errors'];
+        $unknown['observed_outputs']['published_artifact_versions'] = $versions;
+        $unknown['observed_outputs']['artifact_sources'] = $sources;
+        $unknown['observed_outputs']['unknown_signal']['status_code'] = 500;
+
+        $result = $this->runSignalQueryHostRunner([
+            'artifact_versions' => $versions,
+            'scenario_results' => [
+                'ordered_signal_delivery' => $ordered,
+                'dedup_contract_observation' => $dedup,
+                'unknown_signal_and_query_errors' => $unknown,
+            ],
+        ]);
+        $orderedFindings = $this->findingsForScenario($result, 'ordered_signal_delivery');
+        $dedupFindings = $this->findingsForScenario($result, 'dedup_contract_observation');
+        $unknownFindings = $this->findingsForScenario($result, 'unknown_signal_and_query_errors');
+
+        $this->assertSame('fail', $result['scenario_results']['ordered_signal_delivery']['status']);
+        $this->assertNotEmpty($orderedFindings);
+        $this->assertSame('signal_query_ordered_delivery_failed', $orderedFindings[0]['type'] ?? null);
+        $this->assertSame(
+            'unexpected_ordered_signal_total',
+            $orderedFindings[0]['current_evidence']['current_behavior_failures'][0]['code'] ?? null,
+        );
+        $this->assertSame(
+            54,
+            $orderedFindings[0]['current_evidence']['current_behavior_failures'][0]['actual'] ?? null,
+        );
+        $this->assertSame('fail', $result['scenario_results']['dedup_contract_observation']['status']);
+        $this->assertNotEmpty($dedupFindings);
+        $this->assertSame('signal_query_dedup_contract_failed', $dedupFindings[0]['type'] ?? null);
+        $this->assertSame(
+            'duplicate_signal_not_observed',
+            $dedupFindings[0]['current_evidence']['current_behavior_failures'][0]['code'] ?? null,
+        );
+        $this->assertSame('fail', $result['scenario_results']['unknown_signal_and_query_errors']['status']);
+        $this->assertNotEmpty($unknownFindings);
+        $this->assertSame('signal_query_unknown_handler_errors_failed', $unknownFindings[0]['type'] ?? null);
+        $this->assertSame(
+            'unexpected_unknown_handler_status_code',
+            $unknownFindings[0]['current_evidence']['current_behavior_failures'][0]['code'] ?? null,
+        );
     }
 
     public function test_host_runner_accepts_server_unknown_handler_evidence_without_optional_client_samples(): void
@@ -2422,6 +2543,19 @@ PY);
         } finally {
             $this->removeDirectory($resultDir);
         }
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function findingsForScenario(array $result, string $scenarioId): array
+    {
+        return array_values(array_filter(
+            $result['findings'] ?? [],
+            static fn (array $finding): bool => ($finding['scenario_id'] ?? null) === $scenarioId,
+        ));
     }
 
     private function removeDirectory(string $directory): void

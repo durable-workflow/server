@@ -4196,6 +4196,12 @@ def imported_scenario_result(scenario: str) -> dict[str, Any] | None:
         status = "pass"
 
     if status == "pass":
+        if current_behavior_failures_for(scenario, observed):
+            return {
+                "scenario_id": scenario,
+                "status": "fail",
+                "observed_outputs": observed,
+            }
         if not has_required_evidence(scenario, observed):
             return None
         return {
@@ -4225,6 +4231,57 @@ SERVER_BASELINE_SCENARIOS = {
     "unknown_signal_and_query_errors",
 }
 
+BASELINE_CURRENT_EVIDENCE_FIELDS = {
+    "ordered_signal_delivery": [
+        "rapid_increment_inputs",
+        "queried_total",
+        "history_signal_order",
+    ],
+    "dedup_contract_observation": [
+        "client_side_key_support",
+        "documented_contract",
+        "handler_observation_count",
+    ],
+    "unknown_signal_and_query_errors": [
+        "unknown_signal",
+        "missing_workflow_signal",
+        "missing_workflow_query",
+        "query_not_found",
+        "rejected_unknown_query",
+        "known_query_after_unknown_errors",
+    ],
+}
+
+BASELINE_PRODUCT_FAILURE_ROUTES = {
+    "ordered_signal_delivery": {
+        "type": "signal_query_ordered_delivery_failed",
+        "title": "Signals/queries ordered delivery behavior failed",
+    },
+    "dedup_contract_observation": {
+        "type": "signal_query_dedup_contract_failed",
+        "title": "Signals/queries duplicate signal contract behavior failed",
+    },
+    "unknown_signal_and_query_errors": {
+        "type": "signal_query_unknown_handler_errors_failed",
+        "title": "Signals/queries unknown-handler error behavior failed",
+    },
+}
+
+BASELINE_CURRENT_MISSING_ROUTES = {
+    "ordered_signal_delivery": {
+        "type": "signal_query_ordered_delivery_current_evidence_missing",
+        "title": "Signals/queries ordered delivery current evidence missing",
+    },
+    "dedup_contract_observation": {
+        "type": "signal_query_dedup_contract_current_evidence_missing",
+        "title": "Signals/queries duplicate signal contract current evidence missing",
+    },
+    "unknown_signal_and_query_errors": {
+        "type": "signal_query_unknown_handler_errors_current_evidence_missing",
+        "title": "Signals/queries unknown-handler current evidence missing",
+    },
+}
+
 
 def unique_strings(values: list[str]) -> list[str]:
     seen: set[str] = set()
@@ -4237,6 +4294,40 @@ def unique_strings(values: list[str]) -> list[str]:
     return unique
 
 
+def required_current_evidence_for(scenario: str) -> list[str]:
+    return list(BASELINE_CURRENT_EVIDENCE_FIELDS.get(
+        scenario,
+        SCENARIO_REQUIRED_EVIDENCE.get(scenario, []),
+    ))
+
+
+def current_candidate_and_observed(scenario: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    candidate = scenario_evidence_candidate(scenario)
+    if candidate is None:
+        return None, {}
+
+    observed = scenario_observed_outputs(candidate)
+    if not candidate_matches_current_tuple(candidate, observed):
+        return None, {}
+
+    return candidate, observed
+
+
+def current_evidence_candidate_status(scenario: str) -> str:
+    candidate = scenario_evidence_candidate(scenario)
+    if candidate is None:
+        return "missing"
+
+    observed = scenario_observed_outputs(candidate)
+    if evidence_source_policy_violations(candidate, observed):
+        return "source_policy_violation"
+
+    if not candidate_matches_current_tuple(candidate, observed):
+        return "not_current_tuple"
+
+    return "current"
+
+
 def ordered_delivery_missing_current_evidence(observed: dict[str, Any]) -> list[str]:
     missing = []
     rapid_inputs = evidence_lookup(observed, "rapid_increment_inputs")
@@ -4245,11 +4336,11 @@ def ordered_delivery_missing_current_evidence(observed: dict[str, Any]) -> list[
         queried_total = evidence_lookup(observed, "ten_signal_ordered_delivery_total")
     history_signal_order = evidence_lookup(observed, "history_signal_order")
 
-    if rapid_inputs != list(range(1, 11)):
+    if rapid_inputs is MISSING:
         missing.append("rapid_increment_inputs")
-    if queried_total != 55:
+    if queried_total is MISSING:
         missing.append("queried_total")
-    if history_signal_order != list(range(1, 11)):
+    if history_signal_order is MISSING:
         missing.append("history_signal_order")
 
     return missing
@@ -4269,7 +4360,7 @@ def unknown_handler_missing_current_evidence(observed: dict[str, Any]) -> list[s
         ("query_not_found.status_code", 404, 404),
         ("known_query_after_unknown_errors.status_code", 200, 299),
     ):
-        if not status_code_in_range(observed, evidence_key, minimum, maximum):
+        if evidence_lookup(observed, evidence_key) is MISSING:
             missing.append(evidence_key)
 
     for evidence_key, reasons in (
@@ -4279,13 +4370,16 @@ def unknown_handler_missing_current_evidence(observed: dict[str, Any]) -> list[s
         ("query_not_found.reason", query_reasons),
         ("rejected_unknown_query.reason", query_reasons),
     ):
-        if not reason_in(observed, evidence_key, reasons):
+        if evidence_lookup(observed, evidence_key) is MISSING:
             missing.append(evidence_key)
 
     return unique_strings(missing)
 
 
 def missing_current_evidence_for(scenario: str, observed: dict[str, Any]) -> list[str]:
+    if not observed:
+        return required_current_evidence_for(scenario)
+
     if scenario == "ordered_signal_delivery":
         return ordered_delivery_missing_current_evidence(observed)
 
@@ -4303,15 +4397,131 @@ def current_evidence_gaps(scenario: str) -> list[str]:
     if scenario not in SERVER_BASELINE_SCENARIOS:
         return []
 
-    candidate = scenario_evidence_candidate(scenario)
-    if candidate is None:
-        return []
-
-    observed = scenario_observed_outputs(candidate)
-    if not candidate_matches_current_tuple(candidate, observed):
-        return []
+    _, observed = current_candidate_and_observed(scenario)
 
     return missing_current_evidence_for(scenario, observed)
+
+
+def behavior_failure(code: str, evidence_key: str, expected: Any, actual: Any) -> dict[str, Any]:
+    return {
+        "code": code,
+        "evidence_key": evidence_key,
+        "expected": expected,
+        "actual": actual,
+    }
+
+
+def ordered_delivery_behavior_failures(observed: dict[str, Any]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    expected_order = list(range(1, 11))
+    rapid_inputs = evidence_lookup(observed, "rapid_increment_inputs")
+    queried_total = evidence_lookup(observed, "queried_total")
+    queried_total_key = "queried_total"
+    if queried_total is MISSING:
+        queried_total = evidence_lookup(observed, "ten_signal_ordered_delivery_total")
+        queried_total_key = "ten_signal_ordered_delivery_total"
+    history_signal_order = evidence_lookup(observed, "history_signal_order")
+
+    if rapid_inputs is not MISSING and rapid_inputs != expected_order:
+        failures.append(behavior_failure(
+            "unexpected_ordered_signal_inputs",
+            "rapid_increment_inputs",
+            expected_order,
+            rapid_inputs,
+        ))
+    if queried_total is not MISSING and queried_total != 55:
+        failures.append(behavior_failure(
+            "unexpected_ordered_signal_total",
+            queried_total_key,
+            55,
+            queried_total,
+        ))
+    if history_signal_order is not MISSING and history_signal_order != expected_order:
+        failures.append(behavior_failure(
+            "unexpected_ordered_signal_history_order",
+            "history_signal_order",
+            expected_order,
+            history_signal_order,
+        ))
+
+    return failures
+
+
+def dedup_contract_behavior_failures(observed: dict[str, Any]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    handler_observation_count = evidence_lookup(observed, "handler_observation_count")
+    count = integer_value(handler_observation_count)
+    if handler_observation_count is not MISSING and (count is None or count < 1):
+        failures.append(behavior_failure(
+            "duplicate_signal_not_observed",
+            "handler_observation_count",
+            "at least one delivered duplicate/repeated signal observation",
+            handler_observation_count,
+        ))
+
+    return failures
+
+
+def unknown_handler_behavior_failures(observed: dict[str, Any]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    query_reasons = {"query_not_found", "rejected_unknown_query"}
+    for evidence_key, minimum, maximum in (
+        ("unknown_signal.status_code", 404, 404),
+        ("missing_workflow_signal.status_code", 404, 404),
+        ("missing_workflow_query.status_code", 404, 404),
+        ("query_not_found.status_code", 404, 404),
+        ("known_query_after_unknown_errors.status_code", 200, 299),
+    ):
+        actual = evidence_lookup(observed, evidence_key)
+        if actual is not MISSING and not status_code_in_range(observed, evidence_key, minimum, maximum):
+            failures.append(behavior_failure(
+                "unexpected_unknown_handler_status_code",
+                evidence_key,
+                f"{minimum}..{maximum}",
+                actual,
+            ))
+
+    for evidence_key, reasons in (
+        ("unknown_signal.reason", {"unknown_signal"}),
+        ("missing_workflow_signal.reason", {"instance_not_found"}),
+        ("missing_workflow_query.reason", {"instance_not_found"}),
+        ("query_not_found.reason", query_reasons),
+        ("rejected_unknown_query.reason", query_reasons),
+    ):
+        actual = evidence_lookup(observed, evidence_key)
+        if actual is not MISSING and not reason_in(observed, evidence_key, reasons):
+            failures.append(behavior_failure(
+                "unexpected_unknown_handler_reason",
+                evidence_key,
+                sorted(reasons),
+                actual,
+            ))
+
+    return failures
+
+
+def current_behavior_failures_for(scenario: str, observed: dict[str, Any]) -> list[dict[str, Any]]:
+    if scenario == "ordered_signal_delivery":
+        return ordered_delivery_behavior_failures(observed)
+
+    if scenario == "dedup_contract_observation":
+        return dedup_contract_behavior_failures(observed)
+
+    if scenario == "unknown_signal_and_query_errors":
+        return unknown_handler_behavior_failures(observed)
+
+    return []
+
+
+def current_behavior_failures(scenario: str) -> list[dict[str, Any]]:
+    if scenario not in SERVER_BASELINE_SCENARIOS:
+        return []
+
+    _, observed = current_candidate_and_observed(scenario)
+    if not observed:
+        return []
+
+    return current_behavior_failures_for(scenario, observed)
 
 
 result_dir = Path(os.environ["RESULT_DIR"])
@@ -4617,8 +4827,30 @@ for scenario in required_scenarios:
             findings.extend([item for item in linked_findings if isinstance(item, dict)])
         else:
             route = scenario_routes[scenario]
+            behavior_failures = current_behavior_failures(scenario)
+            if behavior_failures:
+                failure_route = BASELINE_PRODUCT_FAILURE_ROUTES.get(scenario)
+                if failure_route is not None:
+                    route = {
+                        **route,
+                        "type": failure_route["type"],
+                        "title": failure_route["title"],
+                    }
+                status = "fail"
+                result["status"] = status
+
             finding_id = route["type"]
             missing_current_evidence = current_evidence_gaps(scenario)
+            candidate_status = current_evidence_candidate_status(scenario)
+            if missing_current_evidence and not behavior_failures:
+                current_missing_route = BASELINE_CURRENT_MISSING_ROUTES.get(scenario)
+                if current_missing_route is not None:
+                    route = {
+                        **route,
+                        "type": current_missing_route["type"],
+                        "title": current_missing_route["title"],
+                    }
+                    finding_id = route["type"]
             finding = {
                 "id": finding_id,
                 "type": route["type"],
@@ -4631,12 +4863,17 @@ for scenario in required_scenarios:
                 },
                 "acceptance": route["acceptance"],
             }
+            if behavior_failures:
+                finding["current_evidence"]["current_evidence_candidate_status"] = candidate_status
+                finding["current_evidence"]["current_behavior_failures"] = behavior_failures
+                finding["observed_behavior"] = "current published artifacts produced behavior outside the signals/queries contract"
             if missing_current_evidence:
                 finding["title"] = (
                     f"{route['title']}: missing current evidence "
                     f"{', '.join(missing_current_evidence)}"
                 )
-                finding["current_evidence"]["current_evidence_candidate_present"] = True
+                finding["current_evidence"]["current_evidence_candidate_present"] = candidate_status == "current"
+                finding["current_evidence"]["current_evidence_candidate_status"] = candidate_status
                 finding["current_evidence"]["missing_current_evidence"] = missing_current_evidence
             result["linked_findings"] = [finding_id]
             findings.append(finding)
