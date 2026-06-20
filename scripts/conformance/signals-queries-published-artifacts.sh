@@ -32,6 +32,8 @@ Environment overrides:
   DW_SIGNALS_QUERIES_RUN_REPLAY_TERMINAL_PROBE
                                              Set to 0 to skip the live replay/terminal shard.
   DW_SIGNALS_QUERIES_SERVER_URL             Reuse an already-running published server for the adversarial shard.
+  DW_SIGNALS_QUERIES_SERVER_READY_TIMEOUT_SECONDS
+                                             Host /api/ready timeout for published-server probes.
   DW_SIGNALS_QUERIES_AUTH_TOKEN             Bearer token for the adversarial shard. Defaults to dev-token.
   DW_SIGNALS_QUERIES_NAMESPACE              Namespace for the adversarial shard. Defaults to default.
   DW_SIGNALS_QUERIES_CLI_BIN                Optional configured dw binary path; does not prove published install.
@@ -297,18 +299,114 @@ def run_command(
     return completed
 
 
-def wait_for_ready(base_url: str, log_file: Path, timeout_seconds: float = 90.0) -> None:
+class ServerReadinessTopologyError(RuntimeError):
+    def __init__(self, message: str, details: dict[str, Any]):
+        super().__init__(message)
+        self.details = details
+
+
+def env_float(name: str, default: float) -> float:
+    value = env_text(name)
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except ValueError:
+        return default
+    if parsed <= 0:
+        return default
+    return parsed
+
+
+def diagnostic_path(value: str) -> str:
+    repo_root = os.environ.get("REPO_ROOT", "").rstrip(os.sep)
+    if repo_root and value.startswith(repo_root + os.sep):
+        return value[len(repo_root) + 1:]
+    return value
+
+
+def diagnostic_command(command: list[str]) -> list[str]:
+    return [diagnostic_path(part) for part in command]
+
+
+def command_summary(command: list[str], completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    return {
+        "command": diagnostic_command(command),
+        "exit_code": completed.returncode,
+        "stdout": completed.stdout.strip(),
+        "stderr": completed.stderr.strip(),
+    }
+
+
+def capture_command_summary(
+    command: list[str],
+    *,
+    log_file: Path,
+    env: dict[str, str] | None = None,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    try:
+        return command_summary(
+            command,
+            run_command(command, log_file=log_file, env=env, timeout=timeout),
+        )
+    except Exception as exc:  # noqa: BLE001 - diagnostic capture must not hide the readiness failure.
+        log_line(log_file, f"diagnostic command failed: {' '.join(command)}: {type(exc).__name__}: {exc}")
+        return {
+            "command": diagnostic_command(command),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def server_ready_timeout_seconds(default: float) -> float:
+    return env_float("DW_SIGNALS_QUERIES_SERVER_READY_TIMEOUT_SECONDS", default)
+
+
+def wait_for_ready(
+    base_url: str,
+    log_file: Path,
+    timeout_seconds: float = 90.0,
+    diagnostics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     deadline = time.time() + timeout_seconds
-    last_error = ""
+    ready_url = url_join(base_url, "/api/ready")
+    details: dict[str, Any] = {
+        "kind": "server_readiness_topology",
+        "effective_host_endpoint": base_url.rstrip("/"),
+        "ready_url": ready_url,
+        "timeout_seconds": timeout_seconds,
+        "readiness_attempts": 0,
+        "last_readiness_error": None,
+    }
+    if diagnostics:
+        details.update(diagnostics)
+
     while time.time() < deadline:
+        details["readiness_attempts"] = int(details["readiness_attempts"]) + 1
         try:
-            with urllib.request.urlopen(url_join(base_url, "/api/ready"), timeout=5) as response:
+            with urllib.request.urlopen(ready_url, timeout=min(5, max(0.2, deadline - time.time()))) as response:
+                details["last_readiness_status_code"] = response.status
                 if 200 <= response.status < 300:
-                    return
+                    details["ready_at"] = now()
+                    log_line(log_file, f"published server ready at {ready_url}")
+                    return details
+                details["last_readiness_error"] = f"HTTPStatus: {response.status}"
+        except urllib.error.HTTPError as exc:
+            details["last_readiness_status_code"] = exc.code
+            body = exc.read().decode("utf-8", errors="replace")
+            details["last_readiness_error"] = f"HTTPError: {exc.code} {body[:500]}"
         except Exception as exc:  # noqa: BLE001 - diagnostic best effort for conformance logs.
-            last_error = f"{type(exc).__name__}: {exc}"
-        time.sleep(1)
-    raise RuntimeError(f"published server did not become ready: {last_error}")
+            details["last_readiness_error"] = f"{type(exc).__name__}: {exc}"
+        log_line(log_file, f"readiness probe failed at {ready_url}: {details['last_readiness_error']}")
+        time.sleep(min(1, max(0, deadline - time.time())))
+
+    if not details.get("last_readiness_error"):
+        details["last_readiness_error"] = "readiness probe did not run before timeout"
+
+    raise ServerReadinessTopologyError(
+        f"published server did not become ready from host endpoint {base_url}: {details['last_readiness_error']}",
+        details,
+    )
 
 
 SERVER_PATCH_TAG_RE = re.compile(r"^\d+\.\d+\.\d+$")
@@ -408,7 +506,73 @@ def server_image_for_compose(server_version: str) -> str:
     return f"durableworkflow/server:{server_version}"
 
 
-def start_published_server(run_root: Path, log_file: Path) -> tuple[str, list[list[str]]]:
+def compose_published_server_diagnostics(
+    *,
+    project: str,
+    compose: Path,
+    env: dict[str, str],
+    base_url: str,
+    port: int,
+    image: str,
+    cleanup_command: list[str],
+    log_file: Path,
+) -> dict[str, Any]:
+    compose_prefix = ["docker", "compose", "-p", project, "-f", str(compose)]
+
+    return {
+        "kind": "server_readiness_topology",
+        "effective_host_endpoint": base_url,
+        "compose_project": project,
+        "compose_file": diagnostic_path(str(compose)),
+        "compose_server_port": port,
+        "server_image": image,
+        "cleanup_commands": [cleanup_command],
+        "compose_published_port": capture_command_summary(
+            [*compose_prefix, "port", "server", "8080"],
+            log_file=log_file,
+            env=env,
+            timeout=30,
+        ),
+        "compose_ps": capture_command_summary(
+            [*compose_prefix, "ps"],
+            log_file=log_file,
+            env=env,
+            timeout=30,
+        ),
+        "docker_containers": capture_command_summary(
+            ["docker", "container", "ls", "-a", "--filter", f"label=com.docker.compose.project={project}"],
+            log_file=log_file,
+            env=env,
+            timeout=30,
+        ),
+    }
+
+
+def configured_server_diagnostics(base_url: str) -> dict[str, Any]:
+    return {
+        "kind": "server_readiness_topology",
+        "effective_host_endpoint": base_url.rstrip("/"),
+        "endpoint_source": "configured_server_url",
+    }
+
+
+def cleanup_commands_from_blocker(details: dict[str, Any]) -> list[list[str]]:
+    commands = details.get("cleanup_commands")
+    if not isinstance(commands, list):
+        return []
+
+    normalized: list[list[str]] = []
+    for command in commands:
+        if not isinstance(command, list):
+            continue
+        normalized_command = [str(part) for part in command if isinstance(part, str)]
+        if normalized_command:
+            normalized.append(normalized_command)
+
+    return normalized
+
+
+def start_published_server(run_root: Path, log_file: Path) -> tuple[str, list[list[str]], dict[str, Any]]:
     if not command_available("docker"):
         raise RuntimeError("docker is required to start the published server")
 
@@ -424,11 +588,12 @@ def start_published_server(run_root: Path, log_file: Path) -> tuple[str, list[li
     token = env_text("DW_SIGNALS_QUERIES_AUTH_TOKEN") or env_text("DURABLE_WORKFLOW_AUTH_TOKEN") or "dev-token"
     project = "dw-signals-queries-" + run_root.name.lower().replace(".", "-").replace("_", "-")
     env = os.environ.copy()
+    image = server_image_for_compose(server_version)
     env.update(
         {
             "SERVER_PORT": str(port),
             "DW_SERVER_TAG": server_version,
-            "DW_SERVER_IMAGE": server_image_for_compose(server_version),
+            "DW_SERVER_IMAGE": image,
             "DW_AUTH_TOKEN": token,
             "DW_AUTH_BACKWARD_COMPATIBLE": "true",
         }
@@ -438,6 +603,7 @@ def start_published_server(run_root: Path, log_file: Path) -> tuple[str, list[li
         ["docker", "compose", "-p", project, "-f", str(compose), "down", "-v"],
         ["docker", "compose", "-p", project, "-f", str(compose), "up", "-d", "--wait", "server"],
     ]
+    cleanup_command = commands[0]
 
     run_command(commands[0], log_file=log_file, env=env, timeout=120)
     up = run_command(commands[1], log_file=log_file, env=env, timeout=240)
@@ -445,8 +611,29 @@ def start_published_server(run_root: Path, log_file: Path) -> tuple[str, list[li
         raise RuntimeError("docker compose failed to start the published server")
 
     base_url = f"http://127.0.0.1:{port}"
-    wait_for_ready(base_url, log_file)
-    return base_url, [["docker", "compose", "-p", project, "-f", str(compose), "down", "-v"]]
+    compose_diagnostics = compose_published_server_diagnostics(
+        project=project,
+        compose=compose,
+        env=env,
+        base_url=base_url,
+        port=port,
+        image=image,
+        cleanup_command=cleanup_command,
+        log_file=log_file,
+    )
+    try:
+        readiness = wait_for_ready(
+            base_url,
+            log_file,
+            timeout_seconds=server_ready_timeout_seconds(90),
+            diagnostics=compose_diagnostics,
+        )
+    except ServerReadinessTopologyError as exc:
+        details = dict(compose_diagnostics)
+        details.update(exc.details)
+        raise ServerReadinessTopologyError(str(exc), details) from exc
+
+    return base_url, [cleanup_command], readiness
 
 
 def artifact_install_evidence_entry(
@@ -2176,13 +2363,19 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
         or "dev-token"
     )
     base_url = env_text("DW_SIGNALS_QUERIES_SERVER_URL") or env_text("DURABLE_WORKFLOW_SERVER_URL")
+    readiness_probe: dict[str, Any] | None = None
 
     try:
         if not isinstance(base_url, str) or base_url.strip() == "":
-            base_url, cleanup_commands = start_published_server(run_root, log_file)
+            base_url, cleanup_commands, readiness_probe = start_published_server(run_root, log_file)
         else:
             base_url = base_url.rstrip("/")
-            wait_for_ready(base_url, log_file, timeout_seconds=30)
+            readiness_probe = wait_for_ready(
+                base_url,
+                log_file,
+                timeout_seconds=server_ready_timeout_seconds(30),
+                diagnostics=configured_server_diagnostics(base_url),
+            )
 
         server_install = server_install_entry(cleanup_commands)
         versions = probe_artifact_versions()
@@ -2806,6 +2999,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 "optional_public_client_error_samples": sorted(optional_unknown_outputs),
                 "python_worker_cli_and_sdk_baseline": python_sdk_descriptor,
                 "install_probes": install_descriptors,
+                "server_readiness": readiness_probe,
                 "published_artifact_sources_observed": sorted(sources),
                 "not_claimed_as_pass": (
                     ([] if install_status == "pass" else ["published_artifact_install_only"])
@@ -2825,6 +3019,16 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             ],
         }
         return evidence, descriptor
+    except ServerReadinessTopologyError as exc:
+        details = dict(exc.details)
+        details.setdefault("kind", "server_readiness_topology")
+        cleanup_commands = cleanup_commands_from_blocker(details)
+        log_line(log_file, f"baseline readiness topology blocked: {type(exc).__name__}: {exc}")
+        return None, {
+            "file": log_file.name,
+            "error": f"{type(exc).__name__}: {exc}",
+            "runner_blocker": details,
+        }
     except Exception as exc:  # noqa: BLE001 - failed probe becomes uncovered evidence.
         log_line(log_file, f"baseline probe failed: {type(exc).__name__}: {exc}")
         return None, {
@@ -2868,13 +3072,19 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             if isinstance(candidate, str) and candidate.strip() != "":
                 base_url = candidate.strip()
                 break
+    readiness_probe: dict[str, Any] | None = None
 
     try:
         if not isinstance(base_url, str) or base_url.strip() == "":
-            base_url, cleanup_commands = start_published_server(run_root, log_file)
+            base_url, cleanup_commands, readiness_probe = start_published_server(run_root, log_file)
         else:
             base_url = base_url.rstrip("/")
-            wait_for_ready(base_url, log_file, timeout_seconds=30)
+            readiness_probe = wait_for_ready(
+                base_url,
+                log_file,
+                timeout_seconds=server_ready_timeout_seconds(30),
+                diagnostics=configured_server_diagnostics(base_url),
+            )
 
         server_install = server_install_entry(cleanup_commands)
         cli_bin, cli_install = install_cli(run_root, log_file)
@@ -3270,9 +3480,20 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             "run_id": run_id,
             "server_base_url": base_url,
             "generated_scenarios": generated_scenarios,
+            "server_readiness": readiness_probe,
             "replay_terminal_probe": replay_terminal_descriptor,
         }
         return evidence, descriptor
+    except ServerReadinessTopologyError as exc:
+        details = dict(exc.details)
+        details.setdefault("kind", "server_readiness_topology")
+        cleanup_commands = cleanup_commands_from_blocker(details)
+        log_line(log_file, f"adversarial readiness topology blocked: {type(exc).__name__}: {exc}")
+        return None, {
+            "file": log_file.name,
+            "error": f"{type(exc).__name__}: {exc}",
+            "runner_blocker": details,
+        }
     except Exception as exc:  # noqa: BLE001 - failed probe becomes uncovered evidence.
         log_line(log_file, f"adversarial probe failed: {type(exc).__name__}: {exc}")
         return None, {
@@ -4720,6 +4941,20 @@ def current_behavior_failures(scenario: str) -> list[dict[str, Any]]:
     return current_behavior_failures_for(scenario, observed)
 
 
+def runner_blocker_from_descriptor(descriptor: Any) -> dict[str, Any] | None:
+    if not isinstance(descriptor, dict):
+        return None
+
+    blocker = descriptor.get("runner_blocker")
+    if not isinstance(blocker, dict):
+        return None
+
+    if blocker.get("kind") != "server_readiness_topology":
+        return None
+
+    return blocker
+
+
 result_dir = Path(os.environ["RESULT_DIR"])
 started_at = os.environ["STARTED_AT"]
 finished_at = now()
@@ -4774,6 +5009,8 @@ elif probe_descriptor is not None:
     if smoke_descriptor is None:
         smoke_descriptor = {}
     smoke_descriptor["adversarial_probe"] = probe_descriptor
+
+baseline_readiness_blocker = runner_blocker_from_descriptor(baseline_descriptor)
 
 required_scenarios = [
     "published_artifact_install_only",
@@ -5023,7 +5260,31 @@ for scenario in required_scenarios:
             findings.extend([item for item in linked_findings if isinstance(item, dict)])
         else:
             route = scenario_routes[scenario]
-            behavior_failures = current_behavior_failures(scenario)
+            behavior_failures: list[dict[str, Any]] = []
+            missing_current_evidence: list[str] = []
+            candidate_status = current_evidence_candidate_status(scenario)
+
+            if baseline_readiness_blocker is not None and scenario in SERVER_BASELINE_SCENARIOS:
+                status = "runner_blocked"
+                result["status"] = status
+                result["observed_outputs"] = {
+                    "server_readiness_topology": baseline_readiness_blocker,
+                }
+                route = {
+                    **route,
+                    "type": f"signal_query_{scenario}_server_readiness_topology",
+                    "owner": "conformance_harness",
+                    "title": "Signals/queries published server readiness topology blocked baseline evidence",
+                    "acceptance": [
+                        "make the published server /api/ready endpoint reachable from the host runner",
+                        "record the effective host endpoint and compose port/container diagnostics",
+                        "rerun the baseline signals/queries scenarios after readiness is reachable",
+                    ],
+                }
+                finding_id = route["type"]
+            else:
+                behavior_failures = current_behavior_failures(scenario)
+
             if behavior_failures:
                 failure_route = BASELINE_PRODUCT_FAILURE_ROUTES.get(scenario)
                 if failure_route is not None:
@@ -5036,8 +5297,8 @@ for scenario in required_scenarios:
                 result["status"] = status
 
             finding_id = route["type"]
-            missing_current_evidence = current_evidence_gaps(scenario)
-            candidate_status = current_evidence_candidate_status(scenario)
+            if status != "runner_blocked":
+                missing_current_evidence = current_evidence_gaps(scenario)
             if missing_current_evidence and not behavior_failures:
                 current_missing_route = BASELINE_CURRENT_MISSING_ROUTES.get(scenario)
                 if current_missing_route is not None:
@@ -5063,6 +5324,13 @@ for scenario in required_scenarios:
                 finding["current_evidence"]["current_evidence_candidate_status"] = candidate_status
                 finding["current_evidence"]["current_behavior_failures"] = behavior_failures
                 finding["observed_behavior"] = "current published artifacts produced behavior outside the signals/queries contract"
+            if status == "runner_blocked":
+                finding["blocker_kind"] = "server_readiness_topology"
+                finding["runner_blocker"] = baseline_readiness_blocker
+                finding["current_evidence"]["server_readiness_topology"] = baseline_readiness_blocker
+                finding["observed_behavior"] = (
+                    "published server endpoint was not reachable from the host before baseline scenario generation"
+                )
             if missing_current_evidence:
                 finding["title"] = (
                     f"{route['title']}: missing current evidence "
@@ -5083,6 +5351,8 @@ pins = {
 }
 write_json(result_dir / "pins.json", pins)
 
+runner_blocked = any(item["status"] == "runner_blocked" for item in scenario_results.values())
+
 run_metadata = {
     "schema": "durable-workflow.v2.signal-query-runtime.run-metadata",
     "started_at": started_at,
@@ -5091,6 +5361,8 @@ run_metadata = {
     "local_product_source_checkouts_used": False,
     "smoke_evidence": smoke_descriptor,
 }
+if runner_blocked and baseline_readiness_blocker is not None:
+    run_metadata["runner_blocker"] = baseline_readiness_blocker
 write_json(result_dir / "run-metadata.json", run_metadata)
 write_json(result_dir / "signals-queries-findings.json", findings)
 
@@ -5105,13 +5377,18 @@ def section_for(*scenario_ids: str) -> dict[str, dict[str, Any]]:
     }
 
 
-outcome = "pass" if not findings and all(item["status"] == "pass" for item in scenario_results.values()) else "non_passing"
+if runner_blocked:
+    outcome = "non_passing_runner_blocked"
+elif not findings and all(item["status"] == "pass" for item in scenario_results.values()):
+    outcome = "pass"
+else:
+    outcome = "non_passing"
 result = {
     "schema": "durable-workflow.v2.signal-query-runtime.result",
     "started_at": started_at,
     "finished_at": finished_at,
     "outcome": outcome,
-    "runner_blocked": False,
+    "runner_blocked": runner_blocked,
     "artifactVersions": artifact_versions,
     "artifact_sources": pins["artifact_sources"],
     "runtime_matrix": {
@@ -5152,16 +5429,20 @@ result = {
     "findings": findings,
     "finding_links": finding_links,
 }
+if runner_blocked and baseline_readiness_blocker is not None:
+    result["runner_blocker"] = baseline_readiness_blocker
 write_json(result_dir / "signals-queries-result.json", result)
 
 record = {
     "experiment": "signals-queries",
-    "outcome": "pass" if outcome == "pass" else "fail",
-    "runnerBlocked": False,
+    "outcome": outcome,
+    "runnerBlocked": runner_blocked,
     "artifactVersions": artifact_versions,
     "result_file": "signals-queries-result.json",
     "findings_file": "signals-queries-findings.json",
 }
+if runner_blocked and baseline_readiness_blocker is not None:
+    record["runner_blocker"] = baseline_readiness_blocker
 write_json(result_dir / "signals-queries-record.json", record)
 
 print(json.dumps({"outcome": outcome, "result_dir": str(result_dir)}, sort_keys=True))

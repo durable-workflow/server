@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 18;
+    public const VERSION = 19;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -409,6 +409,7 @@ final class SignalQueryRuntimeContract
                     'DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE',
                     'DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE',
                     'DW_SIGNALS_QUERIES_SERVER_URL',
+                    'DW_SIGNALS_QUERIES_SERVER_READY_TIMEOUT_SECONDS',
                     'DW_SIGNALS_QUERIES_AUTH_TOKEN',
                     'DW_SIGNALS_QUERIES_NAMESPACE',
                     'DW_SIGNALS_QUERIES_CLI_BIN',

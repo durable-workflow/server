@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(18, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(19, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -381,6 +381,10 @@ class SignalQueryRuntimeContractTest extends TestCase
             'DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE',
             $hostRunner['adversarial_probe_overrides'],
         );
+        $this->assertContains(
+            'DW_SIGNALS_QUERIES_SERVER_READY_TIMEOUT_SECONDS',
+            $hostRunner['adversarial_probe_overrides'],
+        );
         $this->assertContains('DW_SIGNALS_QUERIES_CLI_BIN', $hostRunner['adversarial_probe_overrides']);
         $this->assertContains('DW_SIGNALS_QUERIES_PYTHON', $hostRunner['adversarial_probe_overrides']);
 
@@ -619,7 +623,10 @@ class SignalQueryRuntimeContractTest extends TestCase
             'signal_query_unknown_handler_errors_current_evidence_missing',
             'signal_query_adversarial_error_shapes_uncovered',
             'signal_query_waterline_observer_comparison_uncovered',
-            'runner_blocked": False',
+            '"runner_blocked": runner_blocked',
+            'server_readiness_topology',
+            'runner_blocker',
+            'DW_SIGNALS_QUERIES_SERVER_READY_TIMEOUT_SECONDS',
             'DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE',
             'run_baseline_probe(result_dir)',
             'run_python_sdk_baseline(',
@@ -1103,6 +1110,59 @@ PY);
                 $this->assertStringContainsString($field, $findings[0]['title'] ?? '');
             }
         }
+    }
+
+    public function test_host_runner_routes_readiness_topology_separately_from_current_evidence_missing(): void
+    {
+        $run = $this->runSignalQueryHostRunnerWithEnvironment([
+            'DW_SIGNALS_QUERIES_RUN_ADVERSARIAL_PROBE' => '0',
+            'DW_SIGNALS_QUERIES_SERVER_URL' => 'http://127.0.0.1:9',
+            'DW_SIGNALS_QUERIES_SERVER_READY_TIMEOUT_SECONDS' => '0.1',
+        ]);
+        $result = $run['result'];
+        $record = $run['record'];
+        $metadata = $run['metadata'];
+
+        $this->assertTrue($result['runner_blocked']);
+        $this->assertTrue($record['runnerBlocked']);
+        $this->assertSame('non_passing_runner_blocked', $result['outcome']);
+        $this->assertSame('non_passing_runner_blocked', $record['outcome']);
+        $this->assertSame('server_readiness_topology', $result['runner_blocker']['kind'] ?? null);
+        $this->assertSame('server_readiness_topology', $record['runner_blocker']['kind'] ?? null);
+        $this->assertSame('server_readiness_topology', $metadata['runner_blocker']['kind'] ?? null);
+        $this->assertSame('http://127.0.0.1:9', $result['runner_blocker']['effective_host_endpoint'] ?? null);
+        $this->assertArrayHasKey('last_readiness_error', $result['runner_blocker']);
+        $this->assertArrayHasKey('ready_url', $result['runner_blocker']);
+
+        foreach ([
+            'ordered_signal_delivery',
+            'dedup_contract_observation',
+            'unknown_signal_and_query_errors',
+        ] as $scenarioId) {
+            $this->assertSame('runner_blocked', $result['scenario_results'][$scenarioId]['status']);
+            $findings = $this->findingsForScenario($result, $scenarioId);
+
+            $this->assertNotEmpty($findings);
+            $this->assertSame(
+                'signal_query_'.$scenarioId.'_server_readiness_topology',
+                $findings[0]['type'] ?? null,
+            );
+            $this->assertSame('server_readiness_topology', $findings[0]['blocker_kind'] ?? null);
+            $this->assertArrayHasKey(
+                'server_readiness_topology',
+                $findings[0]['current_evidence'] ?? [],
+            );
+            $this->assertArrayNotHasKey(
+                'missing_current_evidence',
+                $findings[0]['current_evidence'] ?? [],
+            );
+            $this->assertStringNotContainsString('missing current evidence', $findings[0]['title'] ?? '');
+        }
+
+        $findingTypes = array_column($result['findings'], 'type');
+        $this->assertNotContains('signal_query_ordered_delivery_current_evidence_missing', $findingTypes);
+        $this->assertNotContains('signal_query_dedup_contract_current_evidence_missing', $findingTypes);
+        $this->assertNotContains('signal_query_unknown_handler_errors_current_evidence_missing', $findingTypes);
     }
 
     public function test_host_runner_routes_observed_current_baseline_behavior_failures_as_product_findings(): void
@@ -2609,6 +2669,71 @@ PY);
             $this->assertFileExists($resultPath);
 
             return json_decode((string) file_get_contents($resultPath), true, 512, JSON_THROW_ON_ERROR);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
+    /**
+     * @param array<string, string> $environment
+     *
+     * @return array{result: array<string, mixed>, record: array<string, mixed>, metadata: array<string, mixed>}
+     */
+    private function runSignalQueryHostRunnerWithEnvironment(array $environment): array
+    {
+        $root = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir() . '/dw-signals-queries-test-' . bin2hex(random_bytes(6));
+        mkdir($resultDir);
+
+        try {
+            $assignments = [
+                'DW_SERVER_VERSION' => '0.2.224',
+                'DW_CLI_VERSION' => '0.1.74',
+                'DW_PYTHON_SDK_VERSION' => '0.4.84',
+                'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.187',
+                'DW_WATERLINE_VERSION' => '2.0.0-alpha.69',
+            ];
+            foreach ($environment as $key => $value) {
+                $assignments[$key] = $value;
+            }
+
+            $command = implode(' ', array_map(
+                static fn (string $key, string $value): string => $key . '=' . escapeshellarg($value),
+                array_keys($assignments),
+                array_values($assignments),
+            ));
+            $command .= ' ' . implode(' ', [
+                escapeshellarg($root . '/scripts/conformance/signals-queries-published-artifacts.sh'),
+                '--result-dir',
+                escapeshellarg($resultDir),
+            ]);
+
+            $output = [];
+            $exitCode = 0;
+            exec($command . ' 2>&1', $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+
+            return [
+                'result' => json_decode(
+                    (string) file_get_contents($resultDir . '/signals-queries-result.json'),
+                    true,
+                    512,
+                    JSON_THROW_ON_ERROR,
+                ),
+                'record' => json_decode(
+                    (string) file_get_contents($resultDir . '/signals-queries-record.json'),
+                    true,
+                    512,
+                    JSON_THROW_ON_ERROR,
+                ),
+                'metadata' => json_decode(
+                    (string) file_get_contents($resultDir . '/run-metadata.json'),
+                    true,
+                    512,
+                    JSON_THROW_ON_ERROR,
+                ),
+            ];
         } finally {
             $this->removeDirectory($resultDir);
         }
