@@ -3188,6 +3188,10 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             rapid_inputs = list(range(1, 11))
             ordered_outputs["rapid_increment_inputs"] = rapid_inputs
             ordered_signal_responses = []
+            ordered_signal_failures = []
+            history_signal_order: list[int] = []
+            ordered_outputs["history_signal_order"] = history_signal_order
+            ordered_signal_tasks: list[dict[str, Any]] = []
             for amount in rapid_inputs:
                 response = http_json(
                     base_url,
@@ -3198,36 +3202,53 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     namespace=namespace,
                     timeout=30,
                 )
-                ordered_signal_responses.append(response_sample(response))
+                signal_sample = response_sample(response)
+                ordered_signal_responses.append(signal_sample)
                 if int(response["status_code"]) >= 400:
-                    raise RuntimeError(f"ordered signal {amount} failed: {response}")
+                    ordered_signal_failures.append({
+                        "amount": amount,
+                        "response": signal_sample,
+                    })
 
-            history_signal_order: list[int] = []
-            ordered_outputs["history_signal_order"] = history_signal_order
-            ordered_signal_tasks: list[dict[str, Any]] = []
-            ordered_seen_signals: set[str] = set()
-            collect_increment_signal_observations(
-                base_url,
-                token,
-                namespace,
-                worker_id,
-                task_queue,
-                ordered_seen_signals,
-                history_signal_order,
-                ordered_signal_tasks,
-                f"{ordered_workflow_id}-after",
-                "ordered",
-                len(rapid_inputs),
-                log_file,
-            )
-
-            ordered_outputs["history_signal_order"] = history_signal_order
             ordered_outputs["signal_api_samples"] = ordered_signal_responses
-            ordered_outputs["signal_tasks"] = ordered_signal_tasks
-            if history_signal_order != rapid_inputs:
-                raise RuntimeError(f"ordered signal history order {history_signal_order}, expected {rapid_inputs}")
+            ordered_outputs["signal_status_codes"] = [
+                sample.get("status_code")
+                for sample in ordered_signal_responses
+            ]
+            if ordered_signal_failures:
+                ordered_outputs["signal_api_failures"] = ordered_signal_failures
 
-            expected_total = sum(history_signal_order)
+            accepted_signal_count = sum(
+                1
+                for sample in ordered_signal_responses
+                if isinstance(sample.get("status_code"), int) and int(sample["status_code"]) < 400
+            )
+            if accepted_signal_count > 0:
+                ordered_seen_signals: set[str] = set()
+                try:
+                    collect_increment_signal_observations(
+                        base_url,
+                        token,
+                        namespace,
+                        worker_id,
+                        task_queue,
+                        ordered_seen_signals,
+                        history_signal_order,
+                        ordered_signal_tasks,
+                        f"{ordered_workflow_id}-after",
+                        "ordered",
+                        accepted_signal_count,
+                        log_file,
+                    )
+                except Exception as exc:  # noqa: BLE001 - keep partial public ordered evidence.
+                    log_line(log_file, f"ordered delivery history collection failed: {type(exc).__name__}: {exc}")
+                    ordered_outputs["history_collection_error"] = probe_error_payload(exc)
+
+            ordered_outputs["history_signal_order"] = history_signal_order
+            ordered_outputs["signal_tasks"] = ordered_signal_tasks
+            delivered_signal_total = sum(history_signal_order)
+            ordered_outputs["delivered_signal_total"] = delivered_signal_total
+            ordered_outputs["contract_expected_total"] = sum(rapid_inputs)
             ordered_query_holder: dict[str, Any] = {}
             ordered_responder = threading.Thread(
                 target=answer_next_query_task,
@@ -3237,32 +3258,50 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     namespace,
                     worker_id,
                     task_queue,
-                    expected_total,
+                    delivered_signal_total,
                     log_file,
                     ordered_query_holder,
                 ),
                 daemon=True,
             )
             ordered_responder.start()
-            ordered_query = http_json(
-                base_url,
-                api_path("workflows", ordered_workflow_id, "query", "state"),
-                method="POST",
-                body={},
-                token=token,
-                namespace=namespace,
-                timeout=60,
-            )
+            ordered_query: dict[str, Any] | None = None
+            ordered_query_error: Exception | None = None
+            try:
+                ordered_query = http_json(
+                    base_url,
+                    api_path("workflows", ordered_workflow_id, "query", "state"),
+                    method="POST",
+                    body={},
+                    token=token,
+                    namespace=namespace,
+                    timeout=60,
+                )
+            except Exception as exc:  # noqa: BLE001 - record the exact public query failure.
+                ordered_query_error = exc
             ordered_responder.join(timeout=20)
             if ordered_responder.is_alive() or ordered_query_holder.get("error"):
-                raise RuntimeError(
-                    f"ordered query responder failed: {ordered_query_holder.get('error', 'timeout')}"
+                responder_error = ordered_query_holder.get("error", "timeout")
+                log_line(log_file, f"ordered query responder failed: {responder_error}")
+                ordered_outputs["query_responder_error"] = {"message": str(responder_error)}
+            if ordered_query_error is not None:
+                log_line(
+                    log_file,
+                    f"ordered query request failed: {type(ordered_query_error).__name__}: {ordered_query_error}",
                 )
-            ordered_query_result = sample_result_value(ordered_query)
+                ordered_outputs["query_error"] = probe_error_payload(ordered_query_error)
+                ordered_query_result = None
+            else:
+                ordered_query_result = sample_result_value(ordered_query or {})
             ordered_outputs["queried_total"] = ordered_query_result
             ordered_outputs["ten_signal_ordered_delivery_total"] = ordered_query_result
-            ordered_outputs["expected_total"] = expected_total
-            ordered_outputs["query_api_sample"] = response_sample(ordered_query)
+            ordered_outputs["expected_total"] = delivered_signal_total
+            if ordered_query is not None:
+                ordered_outputs["query_api_sample"] = response_sample(ordered_query)
+            if ordered_signal_failures:
+                raise RuntimeError(f"ordered signal API failures: {ordered_signal_failures}")
+            if history_signal_order != rapid_inputs:
+                raise RuntimeError(f"ordered signal history order {history_signal_order}, expected {rapid_inputs}")
             if ordered_query_result != 55:
                 raise RuntimeError(f"ordered query returned {ordered_query_result}, expected 55")
         except Exception as exc:  # noqa: BLE001 - retain partial order proof for focused findings.
@@ -5734,7 +5773,7 @@ for scenario in required_scenarios:
                 finding["observed_behavior"] = (
                     "published server endpoint was not reachable from the host before baseline scenario generation"
                 )
-            if missing_current_evidence:
+            if missing_current_evidence and not behavior_failures:
                 finding["title"] = (
                     f"{route['title']}: missing current evidence "
                     f"{', '.join(missing_current_evidence)}"

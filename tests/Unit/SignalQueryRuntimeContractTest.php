@@ -1436,6 +1436,39 @@ PY);
         );
     }
 
+    public function test_host_runner_keeps_ordered_delivery_behavior_findings_focused_when_evidence_is_partial(): void
+    {
+        $complete = $this->completeSignalQueryResultForCurrentHostRunner();
+        $versions = $this->currentHostRunnerArtifactVersions();
+        $sources = $this->expectedHostRunnerArtifactSources();
+        $ordered = $complete['scenario_results']['ordered_signal_delivery'];
+        $ordered['observed_outputs']['published_artifact_versions'] = $versions;
+        $ordered['observed_outputs']['artifact_sources'] = $sources;
+        $ordered['observed_outputs']['history_signal_order'] = [1, 2, 3];
+        unset($ordered['observed_outputs']['queried_total']);
+
+        $result = $this->runSignalQueryHostRunner([
+            'artifact_versions' => $versions,
+            'scenario_results' => [
+                'ordered_signal_delivery' => $ordered,
+            ],
+        ]);
+        $orderedFindings = $this->findingsForScenario($result, 'ordered_signal_delivery');
+
+        $this->assertSame('fail', $result['scenario_results']['ordered_signal_delivery']['status']);
+        $this->assertNotEmpty($orderedFindings);
+        $this->assertSame('signal_query_ordered_delivery_failed', $orderedFindings[0]['type'] ?? null);
+        $this->assertSame(
+            'unexpected_ordered_signal_history_order',
+            $orderedFindings[0]['current_evidence']['current_behavior_failures'][0]['code'] ?? null,
+        );
+        $this->assertArrayNotHasKey(
+            'missing_current_evidence',
+            $orderedFindings[0]['current_evidence'] ?? [],
+        );
+        $this->assertStringNotContainsString('missing current evidence', $orderedFindings[0]['title'] ?? '');
+    }
+
     public function test_host_runner_routes_known_query_after_unknown_result_drift_as_product_finding(): void
     {
         $complete = $this->completeSignalQueryResultForCurrentHostRunner();
