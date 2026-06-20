@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 20;
+    public const VERSION = 21;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -219,11 +219,11 @@ final class SignalQueryRuntimeContract
                 'ordered_signal_delivery' => [
                     'evidence' => [
                         'rapid_increment_inputs',
+                        'accepted_signal_inputs',
                         'queried_total',
                         'history_signal_order',
                     ],
-                    'expected_total_for_1_through_10' => 55,
-                    'expected_history_signal_order' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                    'expected_rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                 ],
                 'dedup_contract_observation' => [
                     'evidence' => [
@@ -482,6 +482,7 @@ final class SignalQueryRuntimeContract
                         ],
                         'current_evidence_fields' => [
                             'rapid_increment_inputs',
+                            'accepted_signal_inputs',
                             'queried_total',
                             'history_signal_order',
                         ],

@@ -3189,6 +3189,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             ordered_outputs["rapid_increment_inputs"] = rapid_inputs
             ordered_signal_responses = []
             ordered_signal_failures = []
+            accepted_signal_inputs: list[int] = []
             history_signal_order: list[int] = []
             ordered_outputs["history_signal_order"] = history_signal_order
             ordered_signal_tasks: list[dict[str, Any]] = []
@@ -3203,7 +3204,14 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     timeout=30,
                 )
                 signal_sample = response_sample(response)
+                signal_sample["amount"] = amount
+                signal_sample["accepted"] = (
+                    isinstance(signal_sample.get("status_code"), int)
+                    and int(signal_sample["status_code"]) < 400
+                )
                 ordered_signal_responses.append(signal_sample)
+                if signal_sample["accepted"]:
+                    accepted_signal_inputs.append(amount)
                 if int(response["status_code"]) >= 400:
                     ordered_signal_failures.append({
                         "amount": amount,
@@ -3211,6 +3219,8 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     })
 
             ordered_outputs["signal_api_samples"] = ordered_signal_responses
+            ordered_outputs["accepted_signal_inputs"] = accepted_signal_inputs
+            ordered_outputs["accepted_signal_total"] = sum(accepted_signal_inputs)
             ordered_outputs["signal_status_codes"] = [
                 sample.get("status_code")
                 for sample in ordered_signal_responses
@@ -3218,11 +3228,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             if ordered_signal_failures:
                 ordered_outputs["signal_api_failures"] = ordered_signal_failures
 
-            accepted_signal_count = sum(
-                1
-                for sample in ordered_signal_responses
-                if isinstance(sample.get("status_code"), int) and int(sample["status_code"]) < 400
-            )
+            accepted_signal_count = len(accepted_signal_inputs)
             if accepted_signal_count > 0:
                 ordered_seen_signals: set[str] = set()
                 try:
@@ -3249,6 +3255,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             delivered_signal_total = sum(history_signal_order)
             ordered_outputs["delivered_signal_total"] = delivered_signal_total
             ordered_outputs["contract_expected_total"] = sum(rapid_inputs)
+            ordered_outputs["expected_total"] = sum(accepted_signal_inputs)
             ordered_query_holder: dict[str, Any] = {}
             ordered_responder = threading.Thread(
                 target=answer_next_query_task,
@@ -3295,15 +3302,22 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 ordered_query_result = sample_result_value(ordered_query or {})
             ordered_outputs["queried_total"] = ordered_query_result
             ordered_outputs["ten_signal_ordered_delivery_total"] = ordered_query_result
-            ordered_outputs["expected_total"] = delivered_signal_total
             if ordered_query is not None:
                 ordered_outputs["query_api_sample"] = response_sample(ordered_query)
             if ordered_signal_failures:
                 raise RuntimeError(f"ordered signal API failures: {ordered_signal_failures}")
-            if history_signal_order != rapid_inputs:
-                raise RuntimeError(f"ordered signal history order {history_signal_order}, expected {rapid_inputs}")
-            if ordered_query_result != 55:
-                raise RuntimeError(f"ordered query returned {ordered_query_result}, expected 55")
+            if accepted_signal_inputs != rapid_inputs:
+                raise RuntimeError(
+                    f"ordered signal accepted inputs {accepted_signal_inputs}, expected {rapid_inputs}"
+                )
+            if history_signal_order != accepted_signal_inputs:
+                raise RuntimeError(
+                    f"ordered signal history order {history_signal_order}, expected {accepted_signal_inputs}"
+                )
+            if ordered_query_result != sum(accepted_signal_inputs):
+                raise RuntimeError(
+                    f"ordered query returned {ordered_query_result}, expected {sum(accepted_signal_inputs)}"
+                )
         except Exception as exc:  # noqa: BLE001 - retain partial order proof for focused findings.
             log_line(log_file, f"ordered delivery baseline probe failed: {type(exc).__name__}: {exc}")
             ordered_outputs["run_id"] = ordered_run_id
@@ -4332,14 +4346,14 @@ def exact_python_smoke_present() -> bool:
 
 
 def exact_ordered_delivery_smoke_present() -> bool:
-    rapid_inputs = smoke_field("rapid_increment_inputs", "ordered_signal_delivery")
-    queried_total = smoke_field("queried_total", "ordered_signal_delivery")
-    history_signal_order = smoke_field("history_signal_order", "ordered_signal_delivery")
-    return (
-        rapid_inputs == list(range(1, 11))
-        and queried_total == 55
-        and history_signal_order == list(range(1, 11))
-    )
+    observed = {
+        "rapid_increment_inputs": smoke_field("rapid_increment_inputs", "ordered_signal_delivery"),
+        "accepted_signal_inputs": smoke_field("accepted_signal_inputs", "ordered_signal_delivery"),
+        "queried_total": smoke_field("queried_total", "ordered_signal_delivery"),
+        "history_signal_order": smoke_field("history_signal_order", "ordered_signal_delivery"),
+    }
+
+    return ordered_delivery_observations_agree(observed)
 
 
 ALLOWED_SCENARIO_STATUSES = {"pass", "fail", "unsupported", "not_covered", "runner_blocked"}
@@ -4379,6 +4393,7 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
     ],
     "ordered_signal_delivery": [
         "rapid_increment_inputs",
+        "accepted_signal_inputs",
         "queried_total",
         "history_signal_order",
     ],
@@ -4533,6 +4548,44 @@ def integer_value(value: Any) -> int | None:
     if isinstance(value, str) and value.strip().lstrip("-").isdigit():
         return int(value.strip())
     return None
+
+
+def integer_sequence(value: Any) -> list[int] | None:
+    if not isinstance(value, list):
+        return None
+
+    sequence: list[int] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int):
+            return None
+        sequence.append(item)
+    return sequence
+
+
+def expected_rapid_signal_inputs() -> list[int]:
+    return list(range(1, 11))
+
+
+def ordered_delivery_reference_inputs(observed: dict[str, Any]) -> list[int] | None:
+    accepted_inputs = integer_sequence(evidence_lookup(observed, "accepted_signal_inputs"))
+    if accepted_inputs is not None:
+        return accepted_inputs
+
+    return integer_sequence(evidence_lookup(observed, "rapid_increment_inputs"))
+
+
+def ordered_delivery_observations_agree(observed: dict[str, Any]) -> bool:
+    rapid_inputs = integer_sequence(evidence_lookup(observed, "rapid_increment_inputs"))
+    accepted_inputs = integer_sequence(evidence_lookup(observed, "accepted_signal_inputs"))
+    queried_total = integer_value(evidence_lookup(observed, "queried_total"))
+    history_signal_order = integer_sequence(evidence_lookup(observed, "history_signal_order"))
+
+    return (
+        rapid_inputs == expected_rapid_signal_inputs()
+        and accepted_inputs == rapid_inputs
+        and queried_total == sum(accepted_inputs)
+        and history_signal_order == accepted_inputs
+    )
 
 
 def status_code_in_range(observed: dict[str, Any], key: str, minimum: int, maximum: int) -> bool:
@@ -4728,15 +4781,7 @@ def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
         )
 
     if scenario == "ordered_signal_delivery":
-        rapid_inputs = evidence_lookup(observed, "rapid_increment_inputs")
-        queried_total = evidence_lookup(observed, "queried_total")
-        history_signal_order = evidence_lookup(observed, "history_signal_order")
-
-        return (
-            rapid_inputs == list(range(1, 11))
-            and queried_total == 55
-            and history_signal_order == list(range(1, 11))
-        )
+        return ordered_delivery_observations_agree(observed)
 
     if scenario == "signal_during_replay":
         return (
@@ -5078,6 +5123,7 @@ SERVER_BASELINE_SCENARIOS = {
 BASELINE_CURRENT_EVIDENCE_FIELDS = {
     "ordered_signal_delivery": [
         "rapid_increment_inputs",
+        "accepted_signal_inputs",
         "queried_total",
         "history_signal_order",
     ],
@@ -5175,11 +5221,14 @@ def current_evidence_candidate_status(scenario: str) -> str:
 def ordered_delivery_missing_current_evidence(observed: dict[str, Any]) -> list[str]:
     missing = []
     rapid_inputs = evidence_lookup(observed, "rapid_increment_inputs")
+    accepted_inputs = evidence_lookup(observed, "accepted_signal_inputs")
     queried_total = evidence_lookup(observed, "queried_total")
     history_signal_order = evidence_lookup(observed, "history_signal_order")
 
     if rapid_inputs is MISSING:
         missing.append("rapid_increment_inputs")
+    if accepted_inputs is MISSING:
+        missing.append("accepted_signal_inputs")
     if queried_total is MISSING:
         missing.append("queried_total")
     if history_signal_order is MISSING:
@@ -5255,30 +5304,53 @@ def behavior_failure(code: str, evidence_key: str, expected: Any, actual: Any) -
 
 def ordered_delivery_behavior_failures(observed: dict[str, Any]) -> list[dict[str, Any]]:
     failures: list[dict[str, Any]] = []
-    expected_order = list(range(1, 11))
+    expected_inputs = expected_rapid_signal_inputs()
     rapid_inputs = evidence_lookup(observed, "rapid_increment_inputs")
+    accepted_inputs = evidence_lookup(observed, "accepted_signal_inputs")
     queried_total = evidence_lookup(observed, "queried_total")
     history_signal_order = evidence_lookup(observed, "history_signal_order")
+    rapid_sequence = integer_sequence(rapid_inputs)
+    accepted_sequence = integer_sequence(accepted_inputs)
+    reference_sequence = ordered_delivery_reference_inputs(observed)
 
-    if rapid_inputs is not MISSING and rapid_inputs != expected_order:
+    if rapid_inputs is not MISSING and rapid_sequence != expected_inputs:
         failures.append(behavior_failure(
             "unexpected_ordered_signal_inputs",
             "rapid_increment_inputs",
-            expected_order,
+            expected_inputs,
             rapid_inputs,
         ))
-    if queried_total is not MISSING and queried_total != 55:
+    if (
+        accepted_inputs is not MISSING
+        and rapid_sequence is not None
+        and accepted_sequence != rapid_sequence
+    ):
+        failures.append(behavior_failure(
+            "unexpected_ordered_signal_acceptance",
+            "accepted_signal_inputs",
+            rapid_sequence,
+            accepted_inputs,
+        ))
+    if (
+        queried_total is not MISSING
+        and reference_sequence is not None
+        and integer_value(queried_total) != sum(reference_sequence)
+    ):
         failures.append(behavior_failure(
             "unexpected_ordered_signal_total",
             "queried_total",
-            55,
+            sum(reference_sequence),
             queried_total,
         ))
-    if history_signal_order is not MISSING and history_signal_order != expected_order:
+    if (
+        history_signal_order is not MISSING
+        and reference_sequence is not None
+        and integer_sequence(history_signal_order) != reference_sequence
+    ):
         failures.append(behavior_failure(
             "unexpected_ordered_signal_history_order",
             "history_signal_order",
-            expected_order,
+            reference_sequence,
             history_signal_order,
         ))
 
@@ -5489,8 +5561,9 @@ scenario_routes = {
         "title": "Signals/queries ordered delivery evidence remains unproved",
         "acceptance": [
             "send increment(1) through increment(10) rapidly",
-            "query total 55",
-            "record history signal order matching submission order",
+            "record the accepted signal sequence",
+            "query total matching the accepted signal sequence",
+            "record history signal order matching the accepted signal sequence",
         ],
     },
     "dedup_contract_observation": {
@@ -5673,6 +5746,7 @@ for scenario in required_scenarios:
         status = "pass"
         observed = {
             "rapid_increment_inputs": smoke_field("rapid_increment_inputs", scenario),
+            "accepted_signal_inputs": smoke_field("accepted_signal_inputs", scenario),
             "queried_total": smoke_field("queried_total", scenario),
             "history_signal_order": smoke_field("history_signal_order", scenario),
             "external_smoke_evidence": smoke_descriptor,

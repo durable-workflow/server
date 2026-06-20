@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(20, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(21, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -293,7 +293,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(18, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(19, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -485,6 +485,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertSame(
             [
                 'rapid_increment_inputs',
+                'accepted_signal_inputs',
                 'queried_total',
                 'history_signal_order',
             ],
@@ -1052,6 +1053,7 @@ PY);
             'sdk_python_signal_and_query' => true,
             'immediate_repeat_query_consistency' => true,
             'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            'accepted_signal_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             'queried_total' => 55,
             'history_signal_order' => [1, 2, 3, 5, 4, 6, 7, 8, 9, 10],
         ]);
@@ -1075,6 +1077,7 @@ PY);
             'sdk_python_signal_and_query' => true,
             'immediate_repeat_query_consistency' => true,
             'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            'accepted_signal_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             'queried_total' => 55,
             'history_signal_order' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         ]);
@@ -1283,6 +1286,7 @@ PY);
         $expectedMissing = [
             'ordered_signal_delivery' => [
                 'rapid_increment_inputs',
+                'accepted_signal_inputs',
                 'queried_total',
                 'history_signal_order',
             ],
@@ -2478,6 +2482,52 @@ PY);
         );
     }
 
+    public function test_result_gate_reports_accepted_signal_sequence_mismatch_before_total_or_order_drift(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $observed = &$result['scenario_results']['ordered_signal_delivery']['observed_outputs'];
+        $observed['accepted_signal_inputs'] = [1, 2, 3];
+        $observed['queried_total'] = 6;
+        $observed['history_signal_order'] = [1, 2, 3];
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $codes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('unexpected_ordered_signal_acceptance', $codes);
+        $this->assertNotContains('unexpected_ordered_signal_total', $codes);
+        $this->assertNotContains('unexpected_ordered_signal_history_order', $codes);
+    }
+
+    public function test_result_gate_requires_ordered_delivery_sequences_to_be_integer_lists(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $observed = &$result['scenario_results']['ordered_signal_delivery']['observed_outputs'];
+        $observed['accepted_signal_inputs'] = ['1', 2, 3];
+        $observed['history_signal_order'] = [
+            'first' => 1,
+            'second' => 2,
+            'third' => 3,
+        ];
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+        $sequenceFailures = array_values(array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null)
+                === 'invalid_ordered_signal_sequence_evidence',
+        ));
+        $codes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertCount(2, $sequenceFailures);
+        $this->assertSame(
+            ['accepted_signal_inputs', 'history_signal_order'],
+            array_column($sequenceFailures, 'evidence_key'),
+        );
+        $this->assertNotContains('unexpected_ordered_signal_total', $codes);
+        $this->assertNotContains('unexpected_ordered_signal_history_order', $codes);
+    }
+
     public function test_result_gate_rejects_malformed_payloads_without_documented_status_reason_or_integrity(): void
     {
         $result = $this->completeSignalQueryResult();
@@ -3350,6 +3400,7 @@ PY);
         ];
         $scenarioResults['ordered_signal_delivery']['observed_outputs'] = [
             'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            'accepted_signal_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             'queried_total' => 55,
             'history_signal_order' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         ];

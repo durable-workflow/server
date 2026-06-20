@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 18;
+    public const VERSION = 19;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -1383,26 +1383,90 @@ final class SignalQueryRuntimeResultGate
             }
 
             if ($scenarioId === 'ordered_signal_delivery') {
-                $expectedTotal = $requirement['expected_total_for_1_through_10'] ?? null;
-                $queriedTotal = self::evidenceValue($result, $scenarioResult, $scenarioId, 'queried_total');
-                $expectedHistoryOrder = self::arrayValue($requirement, 'expected_history_signal_order');
-                $historyOrder = self::evidenceValue($result, $scenarioResult, $scenarioId, 'history_signal_order');
+                $expectedRapidInputs = self::arrayValue($requirement, 'expected_rapid_increment_inputs')
+                    ?? range(1, 10);
+                $rapidInputsValue = self::evidenceValue(
+                    $result,
+                    $scenarioResult,
+                    $scenarioId,
+                    'rapid_increment_inputs',
+                );
+                $rapidInputs = self::integerList($rapidInputsValue);
+                $acceptedInputsValue = self::evidenceValue(
+                    $result,
+                    $scenarioResult,
+                    $scenarioId,
+                    'accepted_signal_inputs',
+                );
+                $acceptedInputs = self::integerList($acceptedInputsValue);
+                $queriedTotal = self::integerValue(self::evidenceValue(
+                    $result,
+                    $scenarioResult,
+                    $scenarioId,
+                    'queried_total',
+                ));
+                $historyOrderValue = self::evidenceValue(
+                    $result,
+                    $scenarioResult,
+                    $scenarioId,
+                    'history_signal_order',
+                );
+                $historyOrder = self::integerList($historyOrderValue);
 
-                if (is_numeric($expectedTotal) && is_numeric($queriedTotal)
-                    && (int) $queriedTotal !== (int) $expectedTotal) {
+                foreach ([
+                    'rapid_increment_inputs' => [$rapidInputsValue, $rapidInputs],
+                    'accepted_signal_inputs' => [$acceptedInputsValue, $acceptedInputs],
+                    'history_signal_order' => [$historyOrderValue, $historyOrder],
+                ] as $evidenceKey => [$rawValue, $sequence]) {
+                    if ($rawValue === null || $sequence !== null) {
+                        continue;
+                    }
+
                     $failures[] = [
-                        'code' => 'unexpected_ordered_signal_total',
+                        'code' => 'invalid_ordered_signal_sequence_evidence',
                         'scenario_id' => $scenarioId,
-                        'expected_total' => (int) $expectedTotal,
-                        'actual_total' => (int) $queriedTotal,
+                        'evidence_key' => $evidenceKey,
+                        'expected_shape' => 'list<int>',
+                        'actual_value' => $rawValue,
                     ];
                 }
 
-                if ($expectedHistoryOrder !== null && $historyOrder !== null && $historyOrder !== $expectedHistoryOrder) {
+                $referenceInputs = $acceptedInputsValue === null ? $rapidInputs : $acceptedInputs;
+
+                if ($rapidInputs !== null && $rapidInputs !== $expectedRapidInputs) {
+                    $failures[] = [
+                        'code' => 'unexpected_ordered_signal_inputs',
+                        'scenario_id' => $scenarioId,
+                        'expected_inputs' => $expectedRapidInputs,
+                        'actual_inputs' => $rapidInputs,
+                    ];
+                }
+
+                if ($acceptedInputs !== null && $rapidInputs !== null && $acceptedInputs !== $rapidInputs) {
+                    $failures[] = [
+                        'code' => 'unexpected_ordered_signal_acceptance',
+                        'scenario_id' => $scenarioId,
+                        'expected_inputs' => $rapidInputs,
+                        'actual_inputs' => $acceptedInputs,
+                    ];
+                }
+
+                if ($referenceInputs !== null
+                    && $queriedTotal !== null
+                    && $queriedTotal !== array_sum($referenceInputs)) {
+                    $failures[] = [
+                        'code' => 'unexpected_ordered_signal_total',
+                        'scenario_id' => $scenarioId,
+                        'expected_total' => array_sum($referenceInputs),
+                        'actual_total' => $queriedTotal,
+                    ];
+                }
+
+                if ($referenceInputs !== null && $historyOrder !== null && $historyOrder !== $referenceInputs) {
                     $failures[] = [
                         'code' => 'unexpected_ordered_signal_history_order',
                         'scenario_id' => $scenarioId,
-                        'expected_order' => $expectedHistoryOrder,
+                        'expected_order' => $referenceInputs,
                         'actual_order' => $historyOrder,
                     ];
                 }
@@ -2317,6 +2381,27 @@ final class SignalQueryRuntimeResultGate
         }
 
         return null;
+    }
+
+    /**
+     * @return list<int>|null
+     */
+    private static function integerList(mixed $value): ?array
+    {
+        if (! is_array($value) || ! array_is_list($value)) {
+            return null;
+        }
+
+        $integers = [];
+        foreach ($value as $item) {
+            if (! is_int($item)) {
+                return null;
+            }
+
+            $integers[] = $item;
+        }
+
+        return $integers;
     }
 
     private static function timestampMicroseconds(mixed $value): ?int
