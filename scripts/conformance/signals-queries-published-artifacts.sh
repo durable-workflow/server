@@ -32,6 +32,7 @@ Environment overrides:
   DW_SIGNALS_QUERIES_RUN_REPLAY_TERMINAL_PROBE
                                              Set to 0 to skip the live replay/terminal shard.
   DW_SIGNALS_QUERIES_SERVER_URL             Reuse an already-running published server for the adversarial shard.
+  DW_SIGNALS_QUERIES_SERVER_CONNECT_HOST    Preferred host/address to probe for a self-started published server.
   DW_SIGNALS_QUERIES_SERVER_READY_TIMEOUT_SECONDS
                                              Host /api/ready timeout for published-server probes.
   DW_SIGNALS_QUERIES_AUTH_TOKEN             Bearer token for the adversarial shard. Defaults to dev-token.
@@ -362,49 +363,258 @@ def server_ready_timeout_seconds(default: float) -> float:
     return env_float("DW_SIGNALS_QUERIES_SERVER_READY_TIMEOUT_SECONDS", default)
 
 
+def ordered_unique(values: list[str]) -> list[str]:
+    seen: list[str] = []
+    for value in values:
+        normalized = value.strip().rstrip("/")
+        if normalized and normalized not in seen:
+            seen.append(normalized)
+    return seen
+
+
+def is_wildcard_host(host: str | None) -> bool:
+    if host is None:
+        return True
+    normalized = host.strip().strip("[]")
+    return normalized in {"", "0.0.0.0", "::", "*"}
+
+
+def host_port_url(host: str, port: int) -> str | None:
+    host = host.strip().strip("[]")
+    if not host or port <= 0:
+        return None
+    if ":" in host:
+        return f"http://[{host}]:{port}"
+    return f"http://{host}:{port}"
+
+
+def docker_host_from_env() -> str | None:
+    value = env_text("DOCKER_HOST")
+    if value is None:
+        return None
+    if value.startswith(("tcp://", "http://", "https://")):
+        value = value.split("://", 1)[1].split("/", 1)[0]
+        if value.startswith("[") and "]" in value:
+            value = value[1:].split("]", 1)[0]
+        else:
+            value = value.rsplit(":", 1)[0]
+        if value not in {"127.0.0.1", "localhost"}:
+            return value
+    return None
+
+
+def default_route_gateway() -> str | None:
+    try:
+        with Path("/proc/net/route").open("r", encoding="utf-8") as route_file:
+            next(route_file, None)
+            for line in route_file:
+                fields = line.strip().split()
+                if len(fields) < 3 or fields[1] != "00000000" or fields[2] == "00000000":
+                    continue
+                return socket.inet_ntoa(bytes.fromhex(fields[2])[::-1])
+    except OSError:
+        return None
+    return None
+
+
+def docker_bridge_gateway(log_file: Path, env: dict[str, str] | None = None) -> str | None:
+    try:
+        completed = run_command(
+            ["docker", "network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}"],
+            log_file=log_file,
+            env=env,
+            timeout=30,
+        )
+    except Exception as exc:  # noqa: BLE001 - best-effort topology diagnostics.
+        log_line(log_file, f"docker bridge gateway discovery failed: {type(exc).__name__}: {exc}")
+        return None
+
+    value = completed.stdout.strip()
+    if completed.returncode == 0 and value and value != "<no value>":
+        return value
+    return None
+
+
+def server_url_candidates_for_port(
+    port: int,
+    *,
+    bind_host: str | None = None,
+    log_file: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> list[str]:
+    candidates: list[str] = []
+    preferred_host = env_text("DW_SIGNALS_QUERIES_SERVER_CONNECT_HOST") or "127.0.0.1"
+
+    for host in (preferred_host, "127.0.0.1", "localhost"):
+        candidate = host_port_url(host, port)
+        if candidate is not None:
+            candidates.append(candidate)
+
+    if not is_wildcard_host(bind_host) and bind_host not in {"127.0.0.1", "localhost"}:
+        candidate = host_port_url(str(bind_host), port)
+        if candidate is not None:
+            candidates.append(candidate)
+
+    for host in (
+        env_text("DW_SIGNALS_QUERIES_DOCKER_HOST_GATEWAY"),
+        env_text("DOCKER_HOST_GATEWAY"),
+        env_text("HOST_DOCKER_INTERNAL"),
+        docker_host_from_env(),
+        default_route_gateway(),
+    ):
+        if host:
+            candidate = host_port_url(host, port)
+            if candidate is not None:
+                candidates.append(candidate)
+
+    if log_file is not None:
+        gateway = docker_bridge_gateway(log_file, env)
+        if gateway:
+            candidate = host_port_url(gateway, port)
+            if candidate is not None:
+                candidates.append(candidate)
+
+    for host in ("host.docker.internal", "gateway.docker.internal"):
+        candidate = host_port_url(host, port)
+        if candidate is not None:
+            candidates.append(candidate)
+
+    return ordered_unique(candidates)
+
+
+def parse_host_port_binding(line: str) -> tuple[str, int] | None:
+    binding = line.strip().split(maxsplit=1)[0] if line.strip() else ""
+    if not binding:
+        return None
+
+    if binding.startswith("[") and "]:" in binding:
+        host, port_text = binding[1:].split("]:", 1)
+    else:
+        host, separator, port_text = binding.rpartition(":")
+        if not separator:
+            return None
+
+    if not port_text.isdigit():
+        return None
+
+    return host.strip("[]"), int(port_text)
+
+
+def server_url_candidates_from_published_port(
+    published_port_output: str,
+    *,
+    fallback_port: int,
+    log_file: Path,
+    env: dict[str, str],
+) -> list[str]:
+    candidates: list[str] = []
+    for line in published_port_output.splitlines():
+        parsed = parse_host_port_binding(line)
+        if parsed is None:
+            continue
+        bind_host, mapped_port = parsed
+        candidates.extend(
+            server_url_candidates_for_port(
+                mapped_port,
+                bind_host=bind_host,
+                log_file=log_file,
+                env=env,
+            )
+        )
+
+    if not candidates:
+        candidates.extend(server_url_candidates_for_port(fallback_port, log_file=log_file, env=env))
+
+    return ordered_unique(candidates)
+
+
+def readiness_error_summary(errors: dict[str, str], candidates: list[str]) -> str:
+    if not errors:
+        return "no response before timeout"
+    return " | ".join(
+        f"{candidate}: {errors.get(candidate, 'no response before timeout')}"
+        for candidate in candidates
+    )
+
+
 def wait_for_ready(
-    base_url: str,
+    base_url: str | list[str],
     log_file: Path,
     timeout_seconds: float = 90.0,
     diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    candidates = ordered_unique([base_url] if isinstance(base_url, str) else base_url)
+    if not candidates:
+        candidates = ["http://127.0.0.1:8080"]
+
     deadline = time.time() + timeout_seconds
-    ready_url = url_join(base_url, "/api/ready")
     details: dict[str, Any] = {
         "kind": "server_readiness_topology",
-        "effective_host_endpoint": base_url.rstrip("/"),
-        "ready_url": ready_url,
+        "effective_host_endpoint": candidates[0],
+        "ready_url": url_join(candidates[0], "/api/ready"),
+        "ready_urls": [url_join(candidate, "/api/ready") for candidate in candidates],
+        "server_url_candidates": candidates,
         "timeout_seconds": timeout_seconds,
         "readiness_attempts": 0,
         "last_readiness_error": None,
+        "candidate_readiness_errors": {},
     }
     if diagnostics:
         details.update(diagnostics)
+        details["kind"] = "server_readiness_topology"
+        details["effective_host_endpoint"] = candidates[0]
+        details["ready_url"] = url_join(candidates[0], "/api/ready")
+        details["ready_urls"] = [url_join(candidate, "/api/ready") for candidate in candidates]
+        details["server_url_candidates"] = candidates
+        details.setdefault("candidate_readiness_errors", {})
+
+    candidate_errors: dict[str, str] = {}
+    candidate_status_codes: dict[str, int] = {}
 
     while time.time() < deadline:
-        details["readiness_attempts"] = int(details["readiness_attempts"]) + 1
-        try:
-            with urllib.request.urlopen(ready_url, timeout=min(5, max(0.2, deadline - time.time()))) as response:
-                details["last_readiness_status_code"] = response.status
-                if 200 <= response.status < 300:
-                    details["ready_at"] = now()
-                    log_line(log_file, f"published server ready at {ready_url}")
-                    return details
-                details["last_readiness_error"] = f"HTTPStatus: {response.status}"
-        except urllib.error.HTTPError as exc:
-            details["last_readiness_status_code"] = exc.code
-            body = exc.read().decode("utf-8", errors="replace")
-            details["last_readiness_error"] = f"HTTPError: {exc.code} {body[:500]}"
-        except Exception as exc:  # noqa: BLE001 - diagnostic best effort for conformance logs.
-            details["last_readiness_error"] = f"{type(exc).__name__}: {exc}"
-        log_line(log_file, f"readiness probe failed at {ready_url}: {details['last_readiness_error']}")
+        for candidate in candidates:
+            if time.time() >= deadline:
+                break
+            ready_url = url_join(candidate, "/api/ready")
+            details["readiness_attempts"] = int(details["readiness_attempts"]) + 1
+            details["effective_host_endpoint"] = candidate
+            details["ready_url"] = ready_url
+            try:
+                request_timeout = min(2, max(0.2, deadline - time.time()))
+                with urllib.request.urlopen(ready_url, timeout=request_timeout) as response:
+                    details["last_readiness_status_code"] = response.status
+                    candidate_status_codes[candidate] = response.status
+                    if 200 <= response.status < 300:
+                        details["ready_at"] = now()
+                        details["candidate_readiness_errors"] = dict(candidate_errors)
+                        details["candidate_readiness_status_codes"] = dict(candidate_status_codes)
+                        log_line(log_file, f"published server ready at {ready_url}")
+                        return details
+                    candidate_errors[candidate] = f"HTTPStatus: {response.status}"
+            except urllib.error.HTTPError as exc:
+                details["last_readiness_status_code"] = exc.code
+                candidate_status_codes[candidate] = exc.code
+                body = exc.read().decode("utf-8", errors="replace")
+                candidate_errors[candidate] = f"HTTPError: {exc.code} {body[:500]}"
+            except Exception as exc:  # noqa: BLE001 - diagnostic best effort for conformance logs.
+                candidate_errors[candidate] = f"{type(exc).__name__}: {exc}"
+
+            details["candidate_readiness_errors"] = dict(candidate_errors)
+            details["candidate_readiness_status_codes"] = dict(candidate_status_codes)
+            details["last_readiness_error"] = readiness_error_summary(candidate_errors, candidates)
+            log_line(log_file, f"readiness probe failed at {ready_url}: {candidate_errors[candidate]}")
         time.sleep(min(1, max(0, deadline - time.time())))
 
     if not details.get("last_readiness_error"):
         details["last_readiness_error"] = "readiness probe did not run before timeout"
+    else:
+        details["last_readiness_error"] = readiness_error_summary(candidate_errors, candidates)
+    details["candidate_readiness_errors"] = dict(candidate_errors)
+    details["candidate_readiness_status_codes"] = dict(candidate_status_codes)
 
     raise ServerReadinessTopologyError(
-        f"published server did not become ready from host endpoint {base_url}: {details['last_readiness_error']}",
+        "published server did not become ready from host endpoints "
+        f"{', '.join(candidates)}: {details['last_readiness_error']}",
         details,
     )
 
@@ -518,6 +728,24 @@ def compose_published_server_diagnostics(
     log_file: Path,
 ) -> dict[str, Any]:
     compose_prefix = ["docker", "compose", "-p", project, "-f", str(compose)]
+    compose_published_port = capture_command_summary(
+        [*compose_prefix, "port", "server", "8080"],
+        log_file=log_file,
+        env=env,
+        timeout=30,
+    )
+    mapped_port = str(compose_published_port.get("stdout") or "").strip()
+    port_state = "reported" if mapped_port else "not_reported"
+    if compose_published_port.get("exit_code") not in (0, None):
+        port_state = "command_failed"
+    if compose_published_port.get("error"):
+        port_state = "command_error"
+    server_url_candidates = server_url_candidates_from_published_port(
+        mapped_port,
+        fallback_port=port,
+        log_file=log_file,
+        env=env,
+    )
 
     return {
         "kind": "server_readiness_topology",
@@ -525,14 +753,12 @@ def compose_published_server_diagnostics(
         "compose_project": project,
         "compose_file": diagnostic_path(str(compose)),
         "compose_server_port": port,
+        "mapped_server_port": mapped_port or None,
+        "published_port_state": port_state,
+        "server_url_candidates": server_url_candidates,
         "server_image": image,
         "cleanup_commands": [cleanup_command],
-        "compose_published_port": capture_command_summary(
-            [*compose_prefix, "port", "server", "8080"],
-            log_file=log_file,
-            env=env,
-            timeout=30,
-        ),
+        "compose_published_port": compose_published_port,
         "compose_ps": capture_command_summary(
             [*compose_prefix, "ps"],
             log_file=log_file,
@@ -622,12 +848,18 @@ def start_published_server(run_root: Path, log_file: Path) -> tuple[str, list[li
         log_file=log_file,
     )
     try:
+        server_url_candidates = [
+            str(candidate)
+            for candidate in compose_diagnostics.get("server_url_candidates", [])
+            if isinstance(candidate, str)
+        ] or [base_url]
         readiness = wait_for_ready(
-            base_url,
+            server_url_candidates,
             log_file,
             timeout_seconds=server_ready_timeout_seconds(90),
             diagnostics=compose_diagnostics,
         )
+        base_url = str(readiness.get("effective_host_endpoint") or base_url).rstrip("/")
     except ServerReadinessTopologyError as exc:
         details = dict(compose_diagnostics)
         details.update(exc.details)
