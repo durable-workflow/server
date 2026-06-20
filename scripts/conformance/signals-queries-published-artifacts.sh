@@ -16,6 +16,10 @@ The runner writes these files to the result directory:
 
 Environment overrides:
   DW_SERVER_VERSION                         Published server version under test.
+  DW_SERVER_IMAGE                           Optional server image for compose. Only exact
+                                             durableworkflow/server tags or digest-pinned
+                                             references matching DW_SERVER_VERSION prove
+                                             published install evidence.
   DW_CLI_VERSION                            Published CLI version under test.
   DW_PYTHON_SDK_VERSION                     Published Python SDK version under test.
   DW_WORKFLOW_PHP_VERSION                   Published PHP workflow version under test.
@@ -30,8 +34,8 @@ Environment overrides:
   DW_SIGNALS_QUERIES_SERVER_URL             Reuse an already-running published server for the adversarial shard.
   DW_SIGNALS_QUERIES_AUTH_TOKEN             Bearer token for the adversarial shard. Defaults to dev-token.
   DW_SIGNALS_QUERIES_NAMESPACE              Namespace for the adversarial shard. Defaults to default.
-  DW_SIGNALS_QUERIES_CLI_BIN                Optional explicit published dw binary path.
-  DW_SIGNALS_QUERIES_PYTHON                 Optional Python executable with the published SDK installed.
+  DW_SIGNALS_QUERIES_CLI_BIN                Optional configured dw binary path; does not prove published install.
+  DW_SIGNALS_QUERIES_PYTHON                 Optional configured Python executable; does not prove published install.
   DW_SIGNALS_QUERIES_KEEP_RUN_ROOT          Set to 1 to keep the adversarial shard scratch directory.
 USAGE
 }
@@ -96,6 +100,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -306,6 +311,103 @@ def wait_for_ready(base_url: str, log_file: Path, timeout_seconds: float = 90.0)
     raise RuntimeError(f"published server did not become ready: {last_error}")
 
 
+SERVER_PATCH_TAG_RE = re.compile(r"^\d+\.\d+\.\d+$")
+PUBLISHED_SERVER_IMAGE_REPOSITORIES = {
+    "durableworkflow/server",
+    "docker.io/durableworkflow/server",
+    "index.docker.io/durableworkflow/server",
+    "registry-1.docker.io/durableworkflow/server",
+}
+
+
+def normalize_docker_image_reference(image: str) -> str:
+    return image.strip().removeprefix("docker://")
+
+
+def server_repository_from_image(image: str) -> str:
+    image = normalize_docker_image_reference(image)
+    without_digest = image.split("@", 1)[0]
+    tail = without_digest.rsplit("/", 1)[-1]
+    if ":" in tail:
+        without_digest = without_digest.rsplit(":", 1)[0]
+    return without_digest
+
+
+def server_tag_from_image(image: str) -> str | None:
+    image = normalize_docker_image_reference(image)
+    without_digest = image.split("@", 1)[0]
+    tail = without_digest.rsplit("/", 1)[-1]
+    if ":" not in tail:
+        return None
+    return tail.rsplit(":", 1)[1]
+
+
+def is_exact_server_patch_tag(version: str) -> bool:
+    return SERVER_PATCH_TAG_RE.match(version.strip()) is not None
+
+
+def is_digest_pinned_server_image(image: str) -> bool:
+    image = normalize_docker_image_reference(image)
+    if "@" not in image:
+        return False
+    digest = image.rsplit("@", 1)[1]
+    return re.match(r"^sha256:[0-9a-fA-F]{64}$", digest) is not None
+
+
+def published_server_image_install_proven(image: str, version: str) -> bool:
+    image = normalize_docker_image_reference(image)
+    version = version.strip()
+    if not is_exact_server_patch_tag(version):
+        return False
+    if server_repository_from_image(image) not in PUBLISHED_SERVER_IMAGE_REPOSITORIES:
+        return False
+
+    tag = server_tag_from_image(image)
+    if is_digest_pinned_server_image(image):
+        return tag is None or not is_exact_server_patch_tag(tag) or tag == version
+
+    if tag is not None:
+        if not is_exact_server_patch_tag(tag) or tag != version:
+            return False
+        return True
+
+    return False
+
+
+def server_image_not_proved_reason(image: str, version: str) -> str:
+    image = normalize_docker_image_reference(image)
+    version = version.strip()
+    if not is_exact_server_patch_tag(version):
+        return "DW_SERVER_VERSION must be an exact patch semver Docker tag"
+    if server_repository_from_image(image) not in PUBLISHED_SERVER_IMAGE_REPOSITORIES:
+        return "DW_SERVER_IMAGE is not a durableworkflow/server published image reference"
+
+    tag = server_tag_from_image(image)
+    if "@" in image and not is_digest_pinned_server_image(image):
+        return "DW_SERVER_IMAGE digest must be a sha256 digest-pinned reference"
+
+    if tag is None:
+        return "DW_SERVER_IMAGE must use an exact patch semver tag or an image digest"
+
+    if tag is not None:
+        if not is_exact_server_patch_tag(tag) and not is_digest_pinned_server_image(image):
+            return "DW_SERVER_IMAGE must use an exact patch semver tag or an image digest"
+        if tag != version:
+            return f"DW_SERVER_VERSION {version!r} does not match DW_SERVER_IMAGE tag {tag!r}"
+
+    return (
+        "DW_SERVER_IMAGE must be an exact durableworkflow/server tag or digest-pinned reference "
+        "matching DW_SERVER_VERSION to prove published server install evidence"
+    )
+
+
+def server_image_for_compose(server_version: str) -> str:
+    explicit = env_text("DW_SERVER_IMAGE")
+    if explicit:
+        return normalize_docker_image_reference(explicit)
+    return f"durableworkflow/server:{server_version}"
+
+
 def start_published_server(run_root: Path, log_file: Path) -> tuple[str, list[list[str]]]:
     if not command_available("docker"):
         raise RuntimeError("docker is required to start the published server")
@@ -326,7 +428,7 @@ def start_published_server(run_root: Path, log_file: Path) -> tuple[str, list[li
         {
             "SERVER_PORT": str(port),
             "DW_SERVER_TAG": server_version,
-            "DW_SERVER_IMAGE": env_text("DW_SERVER_IMAGE") or f"durableworkflow/server:{server_version}",
+            "DW_SERVER_IMAGE": server_image_for_compose(server_version),
             "DW_AUTH_TOKEN": token,
             "DW_AUTH_BACKWARD_COMPATIBLE": "true",
         }
@@ -347,14 +449,94 @@ def start_published_server(run_root: Path, log_file: Path) -> tuple[str, list[li
     return base_url, [["docker", "compose", "-p", project, "-f", str(compose), "down", "-v"]]
 
 
-def install_cli(run_root: Path, log_file: Path) -> str:
+def artifact_install_evidence_entry(
+    *,
+    artifact: str,
+    version: str,
+    source: str,
+    status: str,
+    install_method: str,
+    installed_from_public_artifact: bool,
+) -> dict[str, Any]:
+    return {
+        "artifact": artifact,
+        "status": status,
+        "version": version,
+        "source": source,
+        "install_method": install_method,
+        "installed_from_public_artifact": installed_from_public_artifact,
+        "local_product_source_checkouts_used": False,
+    }
+
+
+def configured_artifact_entry(artifact: str, version: str, source: str, install_method: str) -> dict[str, Any]:
+    return artifact_install_evidence_entry(
+        artifact=artifact,
+        version=version,
+        source=source,
+        status="not_proved",
+        install_method=install_method,
+        installed_from_public_artifact=False,
+    )
+
+
+def installed_public_artifact_entry(artifact: str, version: str, source: str, install_method: str) -> dict[str, Any]:
+    return artifact_install_evidence_entry(
+        artifact=artifact,
+        version=version,
+        source=source,
+        status="pass",
+        install_method=install_method,
+        installed_from_public_artifact=True,
+    )
+
+
+def server_install_entry(cleanup_commands: list[list[str]]) -> dict[str, Any]:
+    version = artifact_version_value(artifact_versions, "server")
+    if cleanup_commands:
+        image = server_image_for_compose(version)
+        if published_server_image_install_proven(image, version):
+            entry = installed_public_artifact_entry(
+                "server",
+                version,
+                EXPECTED_ARTIFACT_SOURCES["server"],
+                "docker_compose_published_image",
+            )
+            entry["image"] = image
+            entry["image_provenance"] = "durableworkflow_server_exact_tag_or_digest"
+            return entry
+
+        entry = configured_artifact_entry(
+            "server",
+            version,
+            "configured_server_image",
+            "docker_compose_configured_image_override",
+        )
+        entry["image"] = image
+        entry["not_proved_reason"] = server_image_not_proved_reason(image, version)
+        return entry
+
+    return configured_artifact_entry(
+        "server",
+        version,
+        "configured_server_endpoint",
+        "configured_server_url",
+    )
+
+
+def install_cli(run_root: Path, log_file: Path) -> tuple[str, dict[str, Any]]:
+    cli_version = artifact_version_value(artifact_versions, "cli")
     explicit = env_text("DW_SIGNALS_QUERIES_CLI_BIN") or env_text("DW_CLI_BIN")
     if explicit:
         if Path(explicit).is_file() and os.access(explicit, os.X_OK):
-            return explicit
+            return explicit, configured_artifact_entry(
+                "cli",
+                cli_version,
+                "configured_cli_binary",
+                "configured_cli_binary_override",
+            )
         raise RuntimeError(f"configured CLI binary is not executable: {explicit}")
 
-    cli_version = artifact_version_value(artifact_versions, "cli")
     if is_placeholder_version(cli_version):
         raise RuntimeError("DW_CLI_VERSION must be concrete to install the public CLI")
 
@@ -397,7 +579,12 @@ def install_cli(run_root: Path, log_file: Path) -> str:
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise RuntimeError("official CLI installer did not create an executable dw binary")
 
-    return str(binary)
+    return str(binary), installed_public_artifact_entry(
+        "cli",
+        cli_version,
+        EXPECTED_ARTIFACT_SOURCES["cli"],
+        "github_release_installer",
+    )
 
 
 def cli_json_sample(
@@ -437,12 +624,17 @@ def cli_json_sample(
     }
 
 
-def ensure_python_sdk(run_root: Path, log_file: Path) -> str:
+def ensure_python_sdk(run_root: Path, log_file: Path) -> tuple[str, dict[str, Any]]:
+    sdk_version = artifact_version_value(artifact_versions, "sdk-python")
     explicit = env_text("DW_SIGNALS_QUERIES_PYTHON")
     if explicit:
-        return explicit
+        return explicit, configured_artifact_entry(
+            "sdk-python",
+            sdk_version,
+            "configured_python_environment",
+            "configured_python_executable_override",
+        )
 
-    sdk_version = artifact_version_value(artifact_versions, "sdk-python")
     if is_placeholder_version(sdk_version):
         raise RuntimeError("DW_PYTHON_SDK_VERSION must be concrete to install the public Python SDK")
 
@@ -464,7 +656,26 @@ def ensure_python_sdk(run_root: Path, log_file: Path) -> str:
     if install.returncode != 0:
         raise RuntimeError("could not install the public Python SDK artifact")
 
-    return str(python_bin)
+    return str(python_bin), installed_public_artifact_entry(
+        "sdk-python",
+        sdk_version,
+        EXPECTED_ARTIFACT_SOURCES["sdk-python"],
+        "pypi_package_install",
+    )
+
+
+def python_sdk_distribution_version(python_bin: str, log_file: Path) -> str:
+    code = r'''
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version
+
+try:
+    print(version("durable-workflow"))
+except PackageNotFoundError:
+    print("")
+'''
+    completed = run_command([python_bin, "-c", code], log_file=log_file, timeout=30)
+    return completed.stdout.strip()
 
 
 def sdk_error_sample(
@@ -1408,12 +1619,425 @@ def probe_artifact_versions() -> dict[str, str]:
     }
 
 
-def probe_artifact_sources(cleanup_commands: list[list[str]]) -> dict[str, str]:
+def probe_artifact_sources(
+    cleanup_commands: list[list[str]],
+    install_entries: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, str]:
+    sources = dict(EXPECTED_ARTIFACT_SOURCES)
+    if not cleanup_commands:
+        sources["server"] = "configured_server_endpoint"
+    for artifact, entry in (install_entries or {}).items():
+        source = str(entry.get("source") or "").strip()
+        if source:
+            sources[artifact] = source
+    return sources
+
+
+def write_python_sdk_counter_worker(run_root: Path) -> Path:
+    worker_script = run_root / "python-sdk-counter-worker.py"
+    worker_script.write_text(
+        r'''
+from __future__ import annotations
+
+import asyncio
+import logging
+import signal
+import sys
+
+from durable_workflow import Client, Worker, workflow
+
+
+@workflow.defn(name="conformance.counter")
+class CounterWorkflow:
+    def __init__(self) -> None:
+        self.count = 0
+
+    @workflow.signal("increment")
+    def increment(self, amount: int) -> None:
+        self.count += amount
+
+    @workflow.query("state")
+    def state(self) -> int:
+        return self.count
+
+    @workflow.query("current")
+    def current(self) -> int:
+        return self.count
+
+    @workflow.query("count-at-least")
+    def count_at_least(self, minimum: int) -> bool:
+        return self.count >= minimum
+
+    def run(self, ctx):  # type: ignore[no-untyped-def]
+        yield ctx.wait_condition(lambda: False, key="signals-queries-baseline-open", timeout=3600)
+
+
+async def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    base_url, token, namespace, task_queue, worker_id = sys.argv[1:6]
+
+    async with Client(base_url, token=token, namespace=namespace, timeout=30.0) as client:
+        worker = Worker(
+            client,
+            task_queue=task_queue,
+            workflows=[CounterWorkflow],
+            worker_id=worker_id,
+            poll_timeout=5.0,
+            max_concurrent_workflow_tasks=2,
+            max_concurrent_activity_tasks=1,
+            heartbeat_interval=5.0,
+        )
+
+        stop_task = asyncio.create_task(worker.run())
+
+        def request_stop(_signum, _frame):  # type: ignore[no-untyped-def]
+            worker._stop.set()  # noqa: SLF001 - conformance worker process owns this lifecycle.
+
+        signal.signal(signal.SIGTERM, request_stop)
+        signal.signal(signal.SIGINT, request_stop)
+
+        await stop_task
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(asyncio.run(main()))
+'''.lstrip(),
+        encoding="utf-8",
+    )
+    return worker_script
+
+
+def start_python_sdk_counter_worker(
+    *,
+    python_bin: str,
+    base_url: str,
+    token: str,
+    namespace: str,
+    task_queue: str,
+    worker_id: str,
+    run_root: Path,
+    log_file: Path,
+) -> subprocess.Popen[str]:
+    script = write_python_sdk_counter_worker(run_root)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PYTHONUNBUFFERED": "1",
+            "DURABLE_WORKFLOW_SERVER_URL": base_url,
+            "DURABLE_WORKFLOW_AUTH_TOKEN": token,
+            "DURABLE_WORKFLOW_NAMESPACE": namespace,
+        }
+    )
+    log_line(log_file, f"starting Python SDK worker {worker_id} on {task_queue}")
+    worker_output = log_file.open("a", encoding="utf-8")
+    try:
+        worker_output.write(f"{now()} python-sdk-worker-output-begin\n")
+        worker_output.flush()
+        return subprocess.Popen(
+            [python_bin, str(script), base_url, token, namespace, task_queue, worker_id],
+            cwd=str(run_root),
+            env=env,
+            text=True,
+            stdout=worker_output,
+            stderr=worker_output,
+        )
+    finally:
+        worker_output.close()
+
+
+def stop_python_sdk_counter_worker(process: subprocess.Popen[str], log_file: Path) -> None:
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+
+
+def wait_for_worker_registered(
+    *,
+    base_url: str,
+    token: str,
+    namespace: str,
+    worker_id: str,
+    process: subprocess.Popen[str],
+    log_file: Path,
+    timeout_seconds: float = 45.0,
+) -> dict[str, Any]:
+    deadline = time.time() + timeout_seconds
+    last_response: dict[str, Any] | None = None
+    while time.time() < deadline:
+        return_code = process.poll()
+        if return_code is not None:
+            raise RuntimeError(
+                f"Python SDK worker exited before registration with code {return_code}; "
+                f"see {log_file.name}"
+            )
+
+        response = http_json(
+            base_url,
+            api_path("workers", worker_id),
+            token=token,
+            namespace=namespace,
+            timeout=5,
+        )
+        last_response = response
+        if int(response.get("status_code") or 0) == 200 and isinstance(response.get("body"), dict):
+            return response["body"]
+        time.sleep(0.5)
+
+    log_line(log_file, f"last worker registration probe response: {last_response}")
+    raise RuntimeError(f"Python SDK worker {worker_id} did not register within {timeout_seconds}s")
+
+
+def wait_for_query_result(
+    *,
+    sample_factory: Any,
+    expected: Any,
+    label: str,
+    log_file: Path,
+    timeout_seconds: float = 60.0,
+) -> dict[str, Any]:
+    deadline = time.time() + timeout_seconds
+    last_sample: dict[str, Any] | None = None
+    while time.time() < deadline:
+        sample = sample_factory()
+        last_sample = sample
+        if public_sample_ok(sample) and sample_result_value(sample) == expected:
+            return sample
+        time.sleep(0.5)
+
+    log_line(log_file, f"{label} last sample: {last_sample}")
+    raise RuntimeError(f"{label} did not return {expected!r} within {timeout_seconds}s")
+
+
+def install_evidence_for_artifacts(
+    versions: dict[str, str],
+    sources: dict[str, str],
+    artifacts: tuple[str, ...],
+    install_entries: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    entries = install_entries or {}
     return {
-        "server": "published_docker_image" if cleanup_commands else "published_server_endpoint",
-        "cli": "published_cli_release",
-        "sdk-python": "published_pypi_package",
+        "local_product_source_checkouts_used": False,
+        "artifacts": [
+            dict(entries[artifact])
+            if artifact in entries
+            else {
+                "artifact": artifact,
+                "status": "pass",
+                "version": artifact_version_value(versions, artifact),
+                "source": artifact_source_value(sources, artifact),
+                "local_product_source_checkouts_used": False,
+            }
+            for artifact in artifacts
+        ],
     }
+
+
+def run_python_sdk_baseline(
+    *,
+    base_url: str,
+    token: str,
+    namespace: str,
+    cli_bin: str,
+    python_bin: str,
+    versions: dict[str, str],
+    sources: dict[str, str],
+    run_root: Path,
+    log_file: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    suffix = hashlib.sha1(f"{time.time()}-python-sdk-baseline".encode("utf-8")).hexdigest()[:10]
+    task_queue = f"signals-queries-python-sdk-{suffix}"
+    worker_id = f"signals-queries-python-sdk-worker-{suffix}"
+    workflow_type = "conformance.counter"
+    workflow_id = f"wf-sq-python-sdk-{suffix}"
+    worker_process = start_python_sdk_counter_worker(
+        python_bin=python_bin,
+        base_url=base_url,
+        token=token,
+        namespace=namespace,
+        task_queue=task_queue,
+        worker_id=worker_id,
+        run_root=run_root,
+        log_file=log_file,
+    )
+
+    try:
+        worker_registration = wait_for_worker_registered(
+            base_url=base_url,
+            token=token,
+            namespace=namespace,
+            worker_id=worker_id,
+            process=worker_process,
+            log_file=log_file,
+        )
+
+        start = http_json(
+            base_url,
+            api_path("workflows"),
+            method="POST",
+            body={
+                "workflow_id": workflow_id,
+                "workflow_type": workflow_type,
+                "task_queue": task_queue,
+            },
+            token=token,
+            namespace=namespace,
+            timeout=30,
+        )
+        if int(start["status_code"]) >= 400:
+            raise RuntimeError(f"Python SDK baseline workflow start failed: {start}")
+
+        run_id = str(start["body"].get("run_id", ""))
+        initial_query = wait_for_query_result(
+            label="initial Python SDK worker CLI query",
+            expected=0,
+            log_file=log_file,
+            sample_factory=lambda: cli_json_sample(
+                cli_bin,
+                base_url,
+                token,
+                namespace,
+                [
+                    "workflow:query",
+                    workflow_id,
+                    "state",
+                    "--output=json",
+                ],
+                log_file,
+            ),
+        )
+
+        cli_signal = cli_json_sample(
+            cli_bin,
+            base_url,
+            token,
+            namespace,
+            [
+                "workflow:signal",
+                workflow_id,
+                "increment",
+                "--input",
+                "[3]",
+                "--output=json",
+            ],
+            log_file,
+        )
+        if not public_sample_ok(cli_signal):
+            raise RuntimeError(f"Python SDK baseline CLI signal failed: {cli_signal}")
+
+        cli_query = wait_for_query_result(
+            label="Python SDK worker CLI query after CLI signal",
+            expected=3,
+            log_file=log_file,
+            sample_factory=lambda: cli_json_sample(
+                cli_bin,
+                base_url,
+                token,
+                namespace,
+                [
+                    "workflow:query",
+                    workflow_id,
+                    "state",
+                    "--output=json",
+                ],
+                log_file,
+            ),
+        )
+
+        sdk_signal = sdk_success_sample(
+            python_bin,
+            base_url,
+            token,
+            namespace,
+            workflow_id,
+            "signal",
+            "increment",
+            log_file,
+            args=[5],
+        )
+        if not public_sample_ok(sdk_signal):
+            raise RuntimeError(f"Python SDK baseline SDK signal failed: {sdk_signal}")
+
+        sdk_query = wait_for_query_result(
+            label="Python SDK worker SDK query after SDK signal",
+            expected=8,
+            log_file=log_file,
+            sample_factory=lambda: sdk_success_sample(
+                python_bin,
+                base_url,
+                token,
+                namespace,
+                workflow_id,
+                "query",
+                "state",
+                log_file,
+            ),
+        )
+
+        repeat_query = wait_for_query_result(
+            label="Python SDK worker repeat CLI query",
+            expected=8,
+            log_file=log_file,
+            sample_factory=lambda: cli_json_sample(
+                cli_bin,
+                base_url,
+                token,
+                namespace,
+                [
+                    "workflow:query",
+                    workflow_id,
+                    "state",
+                    "--output=json",
+                ],
+                log_file,
+            ),
+        )
+
+        installed_sdk_version = python_sdk_distribution_version(python_bin, log_file)
+        outputs = {
+            "worker_runtime": "sdk-python",
+            "python_worker_artifact_source": sources["sdk-python"],
+            "python_worker_sdk_version": installed_sdk_version or versions["sdk-python"],
+            "python_worker_query_task_routing": True,
+            "cli_signal_and_query": public_sample_ok(cli_signal)
+            and public_sample_ok(cli_query)
+            and sample_result_value(cli_query) == 3,
+            "sdk_python_signal_and_query": public_sample_ok(sdk_signal)
+            and public_sample_ok(sdk_query)
+            and sample_result_value(sdk_query) == 8,
+            "immediate_repeat_query_consistency": sample_result_value(repeat_query) == sample_result_value(sdk_query),
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "task_queue": task_queue,
+            "worker_id": worker_id,
+            "worker_registration": worker_registration,
+            "initial_query_sample": initial_query,
+            "cli_signal_sample": cli_signal,
+            "cli_query_sample": cli_query,
+            "sdk_python_signal_sample": sdk_signal,
+            "sdk_python_query_sample": sdk_query,
+            "repeat_query_sample": repeat_query,
+            "published_artifact_versions": versions,
+            "artifact_sources": sources,
+        }
+        descriptor = {
+            "worker_id": worker_id,
+            "task_queue": task_queue,
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "worker_runtime": "sdk-python",
+            "worker_source": sources["sdk-python"],
+            "worker_sdk_version": outputs["python_worker_sdk_version"],
+            "log_file": log_file.name,
+        }
+        return outputs, descriptor
+    finally:
+        stop_python_sdk_counter_worker(worker_process, log_file)
 
 
 def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -1448,10 +2072,54 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             base_url = base_url.rstrip("/")
             wait_for_ready(base_url, log_file, timeout_seconds=30)
 
-        cli_bin = install_cli(run_root, log_file)
-        python_bin = ensure_python_sdk(run_root, log_file)
+        server_install = server_install_entry(cleanup_commands)
+        cli_bin, cli_install = install_cli(run_root, log_file)
+        python_bin, python_install = ensure_python_sdk(run_root, log_file)
         versions = probe_artifact_versions()
-        sources = probe_artifact_sources(cleanup_commands)
+        install_entries = {
+            "server": server_install,
+            "cli": cli_install,
+            "sdk-python": python_install,
+        }
+        sources = probe_artifact_sources(cleanup_commands, install_entries)
+        install_outputs = {
+            "published_artifact_versions": versions,
+            "artifact_sources": sources,
+            "artifact_install_evidence": install_evidence_for_artifacts(
+                versions,
+                sources,
+                REQUIRED_INSTALL_PROOF_ARTIFACTS,
+                install_entries,
+            ),
+            "local_product_source_checkouts_used": False,
+        }
+        install_status = "pass" if install_outputs_cover_required_artifacts(install_outputs) else "not_covered"
+        python_sdk_outputs: dict[str, Any] | None = None
+        python_sdk_descriptor: dict[str, Any] | None = None
+        python_sdk_status = "not_covered"
+        try:
+            python_sdk_outputs, python_sdk_descriptor = run_python_sdk_baseline(
+                base_url=base_url,
+                token=token,
+                namespace=namespace,
+                cli_bin=cli_bin,
+                python_bin=python_bin,
+                versions=versions,
+                sources=sources,
+                run_root=run_root,
+                log_file=log_file,
+            )
+            if (
+                install_status == "pass"
+                and has_required_evidence("python_worker_cli_and_sdk_baseline", python_sdk_outputs)
+            ):
+                python_sdk_status = "pass"
+        except Exception as exc:  # noqa: BLE001 - keep the older shards routed when the SDK baseline is missing.
+            log_line(log_file, f"Python SDK baseline probe failed: {type(exc).__name__}: {exc}")
+            python_sdk_descriptor = {
+                "error": f"{type(exc).__name__}: {exc}",
+                "log_file": log_file.name,
+            }
 
         suffix = hashlib.sha1(f"{time.time()}-baseline".encode("utf-8")).hexdigest()[:10]
         task_queue = f"signals-queries-baseline-{suffix}"
@@ -1944,7 +2612,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             )
         )
 
-        python_outputs = {
+        external_baseline_outputs = {
             "python_worker_query_task_routing": True,
             "worker_runtime": "external-http",
             "python_worker_artifact_source": sources["sdk-python"],
@@ -2024,6 +2692,10 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
         evidence = {
             "artifact_versions": versions,
             "scenario_results": {
+                "published_artifact_install_only": {
+                    "status": install_status,
+                    "observed_outputs": install_outputs,
+                },
                 "ordered_signal_delivery": {
                     "status": "pass",
                     "observed_outputs": ordered_outputs,
@@ -2038,6 +2710,11 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 },
             },
         }
+        if python_sdk_outputs is not None:
+            evidence["scenario_results"]["python_worker_cli_and_sdk_baseline"] = {
+                "status": python_sdk_status,
+                "observed_outputs": python_sdk_outputs,
+            }
         descriptor = {
             "file": log_file.name,
             "server_base_url": base_url,
@@ -2049,14 +2726,21 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 "dedup": dedup_workflow_id,
             },
             "partial_baseline_observations": {
-                "python_worker_cli_and_sdk_baseline": python_outputs,
+                "external_worker_cli_and_sdk_observation": external_baseline_outputs,
+                "python_worker_cli_and_sdk_baseline": python_sdk_descriptor,
                 "published_artifact_sources_observed": sorted(sources),
-                "not_claimed_as_pass": [
-                    "published_artifact_install_only",
-                    "python_worker_cli_and_sdk_baseline",
-                ],
+                "not_claimed_as_pass": (
+                    ([] if install_status == "pass" else ["published_artifact_install_only"])
+                    + ([] if python_sdk_status == "pass" else ["python_worker_cli_and_sdk_baseline"])
+                ),
             },
             "generated_scenarios": [
+                "published_artifact_install_only",
+                *(
+                    ["python_worker_cli_and_sdk_baseline"]
+                    if python_sdk_outputs is not None
+                    else []
+                ),
                 "ordered_signal_delivery",
                 "dedup_contract_observation",
                 "unknown_signal_and_query_errors",
@@ -2114,8 +2798,14 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             base_url = base_url.rstrip("/")
             wait_for_ready(base_url, log_file, timeout_seconds=30)
 
-        cli_bin = install_cli(run_root, log_file)
-        python_bin = ensure_python_sdk(run_root, log_file)
+        server_install = server_install_entry(cleanup_commands)
+        cli_bin, cli_install = install_cli(run_root, log_file)
+        python_bin, python_install = ensure_python_sdk(run_root, log_file)
+        install_entries = {
+            "server": server_install,
+            "cli": cli_install,
+            "sdk-python": python_install,
+        }
 
         workflow_id = "wf-sq-adversarial-" + hashlib.sha1(str(time.time()).encode("utf-8")).hexdigest()[:10]
         task_queue = "signals-queries-adversarial"
@@ -2407,13 +3097,7 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             "workflow-php": artifact_version_value(artifact_versions, "workflow-php"),
             "waterline": artifact_version_value(artifact_versions, "waterline"),
         }
-        sources = {
-            "server": "published_docker_image" if cleanup_commands else "published_server_endpoint",
-            "cli": "published_cli_release",
-            "sdk-python": "published_pypi_package",
-            "workflow-php": "published_composer_package",
-            "waterline": "published_waterline_artifact",
-        }
+        sources = probe_artifact_sources(cleanup_commands, install_entries)
         replay_terminal_evidence, replay_terminal_descriptor = run_replay_terminal_probe(
             base_url,
             token,
@@ -2712,6 +3396,7 @@ def artifact_versions_pinned() -> bool:
 
 
 REQUIRED_INSTALL_ARTIFACTS = ("server", "cli", "sdk-python", "workflow-php", "waterline")
+REQUIRED_INSTALL_PROOF_ARTIFACTS = ("server", "cli", "sdk-python")
 EXPECTED_ARTIFACT_SOURCES = {
     "server": "published_docker_image",
     "cli": "published_cli_release",
@@ -3234,7 +3919,7 @@ def install_outputs_cover_required_artifacts(observed: dict[str, Any]) -> bool:
     if not explicit_false_local_checkout(install_evidence):
         return False
 
-    for artifact in REQUIRED_INSTALL_ARTIFACTS:
+    for artifact in REQUIRED_INSTALL_PROOF_ARTIFACTS:
         version = artifact_version_value(versions, artifact)
         source = artifact_source_value(sources, artifact)
         if version == "" or is_placeholder_version(version):
@@ -3270,6 +3955,13 @@ def install_outputs_cover_required_artifacts(observed: dict[str, Any]) -> bool:
         if entry_source == "" or not published_source_matches_artifact(entry_source, artifact):
             return False
         if entry_has_local_checkout(entry):
+            return False
+
+    for artifact in REQUIRED_INSTALL_ARTIFACTS:
+        source = artifact_source_value(sources, artifact)
+        if source == "" or is_forbidden_artifact_source(source):
+            return False
+        if not published_source_matches_artifact(source, artifact):
             return False
 
     return True

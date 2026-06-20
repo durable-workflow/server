@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 16;
+    public const VERSION = 17;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -60,6 +60,11 @@ final class SignalQueryRuntimeContract
                     'workflow-php' => 'Composer package durable-workflow/workflow:2.0.0-alpha.<latest>',
                     'sdk-python' => 'PyPI package durable-workflow==<latest>',
                     'waterline' => 'published Waterline package or image matching the latest release tag',
+                ],
+                'install_proof_artifacts' => [
+                    'server',
+                    'cli',
+                    'sdk-python',
                 ],
                 'expected_sources' => [
                     'server' => 'published_docker_image',
@@ -415,10 +420,7 @@ final class SignalQueryRuntimeContract
                     'malformed_payload_errors',
                     'waterline_observer_comparison',
                 ],
-                'baseline_probe_not_claimed_as_pass' => [
-                    'published_artifact_install_only',
-                    'python_worker_cli_and_sdk_baseline',
-                ],
+                'baseline_probe_not_claimed_as_pass' => [],
                 'evidence_shards' => [
                     'published_artifact_install' => [
                         'must_cover_scenarios' => [
@@ -437,8 +439,13 @@ final class SignalQueryRuntimeContract
                             'sdk-python' => 'published_pypi_package',
                             'waterline' => 'published_waterline_artifact',
                         ],
-                        'baseline_probe_claims_pass' => false,
-                        'pass_claim_source' => 'external_install_evidence_only',
+                        'install_proof_artifacts' => [
+                            'server',
+                            'cli',
+                            'sdk-python',
+                        ],
+                        'baseline_probe_claims_pass' => true,
+                        'pass_claim_source' => 'published_artifact_install_probe',
                         'finding_type_when_missing' => 'signal_query_published_artifact_install_uncovered',
                         'owning_surface' => 'conformance_harness',
                     ],
@@ -455,8 +462,8 @@ final class SignalQueryRuntimeContract
                             'sdk_python_signal_and_query',
                             'immediate_repeat_query_consistency',
                         ],
-                        'baseline_probe_claims_pass' => false,
-                        'pass_claim_source' => 'external_python_worker_cli_sdk_evidence_only',
+                        'baseline_probe_claims_pass' => true,
+                        'pass_claim_source' => 'published_python_sdk_worker_baseline_probe',
                         'finding_type_when_missing' => 'signal_query_python_smoke_uncovered',
                         'owning_surface' => 'sdk-python, cli, server',
                     ],

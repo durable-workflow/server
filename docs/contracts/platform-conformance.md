@@ -55,24 +55,25 @@ conformance runners can discover that handoff from `GET /api/cluster/info`
 under `signal_query_runtime_contract.host_runner_contract` and invoke it
 against the current published server image, CLI release, Python SDK, PHP
 workflow runtime, and Waterline package versions. The runner records the
-published-artifact install cell only when external install evidence contains
-passing per-artifact install entries, explicitly reports no local product
-source checkouts, and records the exact version tuple and expected source label
-for each artifact. It records the Python worker CLI/SDK baseline only when
-external smoke evidence identifies a Python SDK worker from the published
-Python package, matches that SDK version to the run tuple, and carries the
-exact advertised fields for Python worker query routing, CLI signal/query, SDK
-signal/query, and repeat query consistency. Without that evidence,
-`published_artifact_install_only` and `python_worker_cli_and_sdk_baseline`
-remain non-passing `not_covered` scenario results with focused findings. The
-runner's baseline probe may independently record ordered delivery, dedup
-contract observation, and unknown signal/query error evidence when those
-behaviors are exercised. Remaining unexecuted parity cells also remain
-non-passing with focused findings for the PHP worker mirror, cross-language
-client matrix, replay timing, completed-run handling, malformed-payload errors,
-and Waterline observer comparison. Product behavior failures route to the
-owning surface through the manifest's `finding_policy`; coverage gaps route to
-the conformance harness instead of being counted as product passes.
+published-artifact install cell only when install evidence contains passing
+source-free proof entries for the server image, official CLI release, and PyPI
+Python SDK, explicitly reports no local product source checkouts, and records
+the exact version tuple and expected source label for every artifact in the
+tuple. It records the Python worker CLI/SDK baseline when the baseline probe
+starts a real worker from the published Python SDK, matches that SDK version to
+the run tuple, and carries the exact advertised fields for Python worker query
+routing, CLI signal/query, SDK signal/query, and repeat query consistency.
+Without that evidence, `published_artifact_install_only` and
+`python_worker_cli_and_sdk_baseline` remain non-passing `not_covered` scenario
+results with focused findings. The runner's baseline probe may independently
+record ordered delivery, dedup contract observation, and unknown signal/query
+error evidence when those behaviors are exercised. Remaining unexecuted parity
+cells also remain non-passing with focused findings for the PHP worker mirror,
+cross-language client matrix, replay timing, completed-run handling,
+malformed-payload errors, and Waterline observer comparison. Product behavior
+failures route to the owning surface through the manifest's `finding_policy`;
+coverage gaps route to the conformance harness instead of being counted as
+product passes.
 
 The server repo also ships a source-free saga runner at
 `scripts/conformance/sagas-published-artifacts.sh`. Host conformance

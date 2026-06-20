@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 16;
+    public const VERSION = 17;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -824,6 +824,7 @@ final class SignalQueryRuntimeResultGate
                     $container['recursive'],
                 ) as $sourceSet) {
                     $sourceSet['scenario_id'] = $scenarioId;
+                    $sourceSet['scenario_status'] = self::stringValue($scenarioResult['status'] ?? null);
                     $reportedSourceSets[] = $sourceSet;
                 }
             }
@@ -900,7 +901,10 @@ final class SignalQueryRuntimeResultGate
      */
     private static function sourceSetRequiresExpectedPublishedSources(array $sourceSet): bool
     {
-        return ($sourceSet['scenario_id'] ?? null) === 'published_artifact_install_only'
+        return (
+            ($sourceSet['scenario_id'] ?? null) === 'published_artifact_install_only'
+            && ($sourceSet['scenario_status'] ?? null) === 'pass'
+        )
             || in_array($sourceSet['path'] ?? null, ['$.artifact_sources', '$.artifactSources'], true);
     }
 
@@ -966,6 +970,7 @@ final class SignalQueryRuntimeResultGate
 
         $artifactPolicy = self::arrayValue($contract, 'artifact_policy') ?? [];
         $installChannels = self::arrayValue($artifactPolicy, 'install_channels') ?? [];
+        $installProofArtifacts = self::installProofArtifacts($artifactPolicy, $installChannels);
         $forbiddenSources = self::stringList($artifactPolicy['forbidden_sources'] ?? []);
         $expectedSources = self::expectedArtifactSources($contract);
         $versions = self::artifactVersions($result);
@@ -999,8 +1004,7 @@ final class SignalQueryRuntimeResultGate
             ];
         }
 
-        foreach (array_keys($installChannels) as $artifact) {
-            $artifact = (string) $artifact;
+        foreach ($installProofArtifacts as $artifact) {
             $entry = self::artifactInstallEvidenceEntry($installEvidence, $artifact);
             if ($entry === null) {
                 $failures[] = [
@@ -1108,6 +1112,22 @@ final class SignalQueryRuntimeResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $artifactPolicy
+     * @param array<mixed> $installChannels
+     *
+     * @return list<string>
+     */
+    private static function installProofArtifacts(array $artifactPolicy, array $installChannels): array
+    {
+        $proofArtifacts = self::stringList($artifactPolicy['install_proof_artifacts'] ?? []);
+        if ($proofArtifacts !== []) {
+            return $proofArtifacts;
+        }
+
+        return array_values(array_map('strval', array_keys($installChannels)));
     }
 
     /**
