@@ -3401,14 +3401,14 @@ def candidate_artifact_versions(candidate: dict[str, Any], observed: dict[str, A
 
 
 def candidate_matches_current_tuple(candidate: dict[str, Any], observed: dict[str, Any]) -> bool:
-    if not smoke_evidence_matches_current_tuple():
-        return False
-
     if evidence_source_policy_violations(candidate, observed):
         return False
 
     versions = candidate_artifact_versions(candidate, observed)
-    return not versions or artifact_version_mismatches(versions) == {}
+    if versions:
+        return artifact_version_mismatches(versions) == {}
+
+    return smoke_evidence_matches_current_tuple()
 
 
 def output_field(observed: dict[str, Any], *keys: str) -> Any:
@@ -4219,6 +4219,101 @@ def imported_scenario_result(scenario: str) -> dict[str, Any] | None:
     return None
 
 
+SERVER_BASELINE_SCENARIOS = {
+    "ordered_signal_delivery",
+    "dedup_contract_observation",
+    "unknown_signal_and_query_errors",
+}
+
+
+def unique_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    unique = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
+
+
+def ordered_delivery_missing_current_evidence(observed: dict[str, Any]) -> list[str]:
+    missing = []
+    rapid_inputs = evidence_lookup(observed, "rapid_increment_inputs")
+    queried_total = evidence_lookup(observed, "queried_total")
+    if queried_total is MISSING:
+        queried_total = evidence_lookup(observed, "ten_signal_ordered_delivery_total")
+    history_signal_order = evidence_lookup(observed, "history_signal_order")
+
+    if rapid_inputs != list(range(1, 11)):
+        missing.append("rapid_increment_inputs")
+    if queried_total != 55:
+        missing.append("queried_total")
+    if history_signal_order != list(range(1, 11)):
+        missing.append("history_signal_order")
+
+    return missing
+
+
+def unknown_handler_missing_current_evidence(observed: dict[str, Any]) -> list[str]:
+    missing = [
+        evidence_key
+        for evidence_key in SCENARIO_REQUIRED_EVIDENCE["unknown_signal_and_query_errors"]
+        if not required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
+    ]
+    query_reasons = {"query_not_found", "rejected_unknown_query"}
+    for evidence_key, minimum, maximum in (
+        ("unknown_signal.status_code", 404, 404),
+        ("missing_workflow_signal.status_code", 404, 404),
+        ("missing_workflow_query.status_code", 404, 404),
+        ("query_not_found.status_code", 404, 404),
+        ("known_query_after_unknown_errors.status_code", 200, 299),
+    ):
+        if not status_code_in_range(observed, evidence_key, minimum, maximum):
+            missing.append(evidence_key)
+
+    for evidence_key, reasons in (
+        ("unknown_signal.reason", {"unknown_signal"}),
+        ("missing_workflow_signal.reason", {"instance_not_found"}),
+        ("missing_workflow_query.reason", {"instance_not_found"}),
+        ("query_not_found.reason", query_reasons),
+        ("rejected_unknown_query.reason", query_reasons),
+    ):
+        if not reason_in(observed, evidence_key, reasons):
+            missing.append(evidence_key)
+
+    return unique_strings(missing)
+
+
+def missing_current_evidence_for(scenario: str, observed: dict[str, Any]) -> list[str]:
+    if scenario == "ordered_signal_delivery":
+        return ordered_delivery_missing_current_evidence(observed)
+
+    if scenario == "unknown_signal_and_query_errors":
+        return unknown_handler_missing_current_evidence(observed)
+
+    return [
+        evidence_key
+        for evidence_key in SCENARIO_REQUIRED_EVIDENCE.get(scenario, [])
+        if not required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
+    ]
+
+
+def current_evidence_gaps(scenario: str) -> list[str]:
+    if scenario not in SERVER_BASELINE_SCENARIOS:
+        return []
+
+    candidate = scenario_evidence_candidate(scenario)
+    if candidate is None:
+        return []
+
+    observed = scenario_observed_outputs(candidate)
+    if not candidate_matches_current_tuple(candidate, observed):
+        return []
+
+    return missing_current_evidence_for(scenario, observed)
+
+
 result_dir = Path(os.environ["RESULT_DIR"])
 started_at = os.environ["STARTED_AT"]
 finished_at = now()
@@ -4523,6 +4618,7 @@ for scenario in required_scenarios:
         else:
             route = scenario_routes[scenario]
             finding_id = route["type"]
+            missing_current_evidence = current_evidence_gaps(scenario)
             finding = {
                 "id": finding_id,
                 "type": route["type"],
@@ -4535,6 +4631,13 @@ for scenario in required_scenarios:
                 },
                 "acceptance": route["acceptance"],
             }
+            if missing_current_evidence:
+                finding["title"] = (
+                    f"{route['title']}: missing current evidence "
+                    f"{', '.join(missing_current_evidence)}"
+                )
+                finding["current_evidence"]["current_evidence_candidate_present"] = True
+                finding["current_evidence"]["missing_current_evidence"] = missing_current_evidence
             result["linked_findings"] = [finding_id]
             findings.append(finding)
             finding_links[scenario] = [finding_id]

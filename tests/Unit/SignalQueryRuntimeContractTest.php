@@ -892,6 +892,86 @@ PY);
         $this->assertNotContains('signal_query_unknown_handler_errors_uncovered', $findingTypes);
     }
 
+    public function test_host_runner_promotes_current_probe_baseline_cells_when_external_smoke_tuple_is_stale(): void
+    {
+        $complete = $this->completeSignalQueryResultForCurrentHostRunner();
+        $versions = $this->currentHostRunnerArtifactVersions();
+        $sources = $this->expectedHostRunnerArtifactSources();
+        $staleVersions = [
+            'server' => '0.2.140',
+            'cli' => '0.1.45',
+            'sdk-python' => '0.4.58',
+            'workflow' => '2.0.0-alpha.161',
+            'workflow-php' => '2.0.0-alpha.161',
+            'waterline' => '2.0.0-alpha.54',
+        ];
+        $evidence = [
+            'artifactVersions' => $staleVersions,
+            'scenario_results' => [
+                'ordered_signal_delivery' => $complete['scenario_results']['ordered_signal_delivery'],
+                'dedup_contract_observation' => $complete['scenario_results']['dedup_contract_observation'],
+                'unknown_signal_and_query_errors' => $complete['scenario_results']['unknown_signal_and_query_errors'],
+            ],
+        ];
+
+        foreach (array_keys($evidence['scenario_results']) as $scenario) {
+            $evidence['scenario_results'][$scenario]['observed_outputs']['published_artifact_versions'] = $versions;
+            $evidence['scenario_results'][$scenario]['observed_outputs']['artifact_sources'] = $sources;
+        }
+
+        $result = $this->runSignalQueryHostRunner($evidence);
+        $findingTypes = array_column($result['findings'], 'type');
+
+        $this->assertSame('pass', $result['scenario_results']['ordered_signal_delivery']['status']);
+        $this->assertSame('pass', $result['scenario_results']['dedup_contract_observation']['status']);
+        $this->assertSame('pass', $result['scenario_results']['unknown_signal_and_query_errors']['status']);
+        $this->assertSame(
+            $versions,
+            $result['scenario_results']['ordered_signal_delivery']['observed_outputs']['published_artifact_versions'],
+        );
+        $this->assertNotContains('signal_query_ordered_delivery_uncovered', $findingTypes);
+        $this->assertNotContains('signal_query_dedup_contract_uncovered', $findingTypes);
+        $this->assertNotContains('signal_query_unknown_handler_errors_uncovered', $findingTypes);
+    }
+
+    public function test_host_runner_names_missing_current_baseline_evidence_when_external_smoke_tuple_is_stale(): void
+    {
+        $complete = $this->completeSignalQueryResultForCurrentHostRunner();
+        $versions = $this->currentHostRunnerArtifactVersions();
+        $sources = $this->expectedHostRunnerArtifactSources();
+        $evidence = [
+            'artifactVersions' => [
+                'server' => '0.2.140',
+                'cli' => '0.1.45',
+                'sdk-python' => '0.4.58',
+                'workflow' => '2.0.0-alpha.161',
+                'workflow-php' => '2.0.0-alpha.161',
+                'waterline' => '2.0.0-alpha.54',
+            ],
+            'scenario_results' => [
+                'ordered_signal_delivery' => $complete['scenario_results']['ordered_signal_delivery'],
+            ],
+        ];
+        $evidence['scenario_results']['ordered_signal_delivery']['observed_outputs']['published_artifact_versions'] =
+            $versions;
+        $evidence['scenario_results']['ordered_signal_delivery']['observed_outputs']['artifact_sources'] = $sources;
+        unset($evidence['scenario_results']['ordered_signal_delivery']['observed_outputs']['history_signal_order']);
+
+        $result = $this->runSignalQueryHostRunner($evidence);
+        $orderedFindings = array_values(array_filter(
+            $result['findings'],
+            static fn (array $finding): bool => ($finding['scenario_id'] ?? null) === 'ordered_signal_delivery',
+        ));
+
+        $this->assertSame('not_covered', $result['scenario_results']['ordered_signal_delivery']['status']);
+        $this->assertNotEmpty($orderedFindings);
+        $this->assertContains(
+            'history_signal_order',
+            $orderedFindings[0]['current_evidence']['missing_current_evidence'] ?? [],
+        );
+        $this->assertStringContainsString('history_signal_order', $orderedFindings[0]['title'] ?? '');
+    }
+
     public function test_host_runner_accepts_server_unknown_handler_evidence_without_optional_client_samples(): void
     {
         $complete = $this->completeSignalQueryResultForCurrentHostRunner();
@@ -2527,6 +2607,20 @@ PY);
             'workflow' => '2.0.0-alpha.187',
             'workflow-php' => '2.0.0-alpha.187',
             'waterline' => '2.0.0-alpha.69',
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function expectedHostRunnerArtifactSources(): array
+    {
+        return [
+            'server' => 'published_docker_image',
+            'cli' => 'published_cli_release',
+            'sdk-python' => 'published_pypi_package',
+            'workflow-php' => 'published_composer_package',
+            'waterline' => 'published_waterline_artifact',
         ];
     }
 
