@@ -1601,6 +1601,128 @@ def complete_open_wait(
     )
 
 
+def append_new_increment_observations(
+    observations: list[dict[str, Any]],
+    seen_signals: set[str],
+    observed_amounts: list[int],
+) -> list[int]:
+    new_amounts: list[int] = []
+    for observation in observations:
+        key = signal_observation_key(observation)
+        if key in seen_signals:
+            continue
+        seen_signals.add(key)
+        amount = observation.get("signal_amount")
+        if isinstance(amount, int):
+            new_amounts.append(amount)
+            observed_amounts.append(amount)
+    return new_amounts
+
+
+def signal_task_observation_summary(
+    task: dict[str, Any],
+    observations: list[dict[str, Any]],
+    history_events: list[dict[str, Any]],
+    new_amounts: list[int],
+    poll_index: int,
+) -> dict[str, Any]:
+    return {
+        "poll_index": poll_index,
+        "task_id": task.get("task_id"),
+        "signal_name": signal_name_from_task(task),
+        "signal_amounts": new_amounts,
+        "history_signal_amounts": [
+            observation.get("signal_amount")
+            for observation in observations
+            if isinstance(observation.get("signal_amount"), int)
+        ],
+        "history_event_types": [
+            event.get("event_type")
+            for event in history_events
+            if isinstance(event.get("event_type"), str)
+        ],
+    }
+
+
+def collect_increment_signal_observations(
+    base_url: str,
+    token: str,
+    namespace: str,
+    worker_id: str,
+    task_queue: str,
+    seen_signals: set[str],
+    observed_amounts: list[int],
+    signal_tasks: list[dict[str, Any]],
+    condition_key_prefix: str,
+    label: str,
+    expected_count: int,
+    log_file: Path,
+    poll_timeout: float = 45.0,
+    allow_exhausted_after_observation: bool = False,
+) -> None:
+    poll_index = 0
+    while len(observed_amounts) < expected_count and poll_index < expected_count:
+        poll_index += 1
+        try:
+            poll = poll_workflow_task(
+                base_url,
+                token,
+                namespace,
+                worker_id,
+                task_queue,
+                timeout=poll_timeout,
+            )
+        except Exception as exc:  # noqa: BLE001 - dedup evidence may be complete after one delivered task.
+            if allow_exhausted_after_observation and observed_amounts:
+                log_line(log_file, f"{label} signal poll stopped: {type(exc).__name__}: {exc}")
+                break
+            raise
+
+        task = poll.get("body", {}).get("task") if isinstance(poll.get("body"), dict) else None
+        if not isinstance(task, dict):
+            if allow_exhausted_after_observation and observed_amounts:
+                log_line(log_file, f"{label} signal poll stopped: no further workflow task in {poll}")
+                break
+            raise RuntimeError(f"{label} signal poll {poll_index} returned no task: {poll}")
+
+        observations, history_events = increment_signal_observations_from_task(
+            base_url,
+            token,
+            namespace,
+            task,
+        )
+        new_amounts = append_new_increment_observations(
+            observations,
+            seen_signals,
+            observed_amounts,
+        )
+        if not new_amounts:
+            if allow_exhausted_after_observation and observed_amounts:
+                log_line(log_file, f"{label} signal poll stopped: no new increment signals in {task}")
+                break
+            raise RuntimeError(f"{label} signal poll {poll_index} did not expose new increment signals: {task}")
+
+        complete = complete_open_wait(
+            base_url,
+            token,
+            namespace,
+            task,
+            f"{condition_key_prefix}-{len(observed_amounts)}",
+        )
+        if int(complete["status_code"]) >= 400:
+            raise RuntimeError(f"{label} signal poll {poll_index} task completion failed: {complete}")
+
+        signal_tasks.append(
+            signal_task_observation_summary(
+                task,
+                observations,
+                history_events,
+                new_amounts,
+                poll_index,
+            )
+        )
+
+
 def start_waiting_workflow(
     base_url: str,
     token: str,
@@ -2571,6 +2693,27 @@ def run_python_sdk_baseline(
         stop_python_sdk_counter_worker(worker_process, log_file)
 
 
+def baseline_scenario_result(scenario: str, observed: dict[str, Any]) -> dict[str, Any]:
+    if current_behavior_failures_for(scenario, observed):
+        status = "fail"
+    elif has_required_evidence(scenario, observed):
+        status = "pass"
+    else:
+        status = "not_covered"
+
+    return {
+        "status": status,
+        "observed_outputs": observed,
+    }
+
+
+def probe_error_payload(exc: Exception) -> dict[str, str]:
+    return {
+        "type": type(exc).__name__,
+        "message": str(exc),
+    }
+
+
 def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     if not env_flag("DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE", True):
         return None, {"skipped": "disabled_by_env"}
@@ -2726,496 +2869,506 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
         if int(register["status_code"]) >= 400:
             raise RuntimeError(f"baseline worker registration failed: {register}")
 
+        scenario_results: dict[str, dict[str, Any]] = {
+            "published_artifact_install_only": {
+                "status": install_status,
+                "observed_outputs": install_outputs,
+            },
+        }
+        generated_scenarios = ["published_artifact_install_only"]
+
+        def optional_sample(field: str, callback: Any) -> Any:
+            try:
+                return callback()
+            except Exception as exc:  # noqa: BLE001 - optional client samples must not erase server evidence.
+                log_line(log_file, f"{field} optional public client sample failed: {type(exc).__name__}: {exc}")
+                return MISSING
+
         baseline_workflow_id = f"wf-sq-baseline-{suffix}"
-        baseline_run_id = start_waiting_workflow(
-            base_url,
-            token,
-            namespace,
-            worker_id,
-            task_queue,
-            baseline_workflow_id,
-            workflow_type,
-            f"{baseline_workflow_id}-initial",
-        )
-
-        counter = 0
-
-        unknown_signal = http_json(
-            base_url,
-            api_path("workflows", baseline_workflow_id, "signal", "missing"),
-            method="POST",
-            body={},
-            token=token,
-            namespace=namespace,
-            timeout=30,
-        )
-        query_not_found = http_json(
-            base_url,
-            api_path("workflows", baseline_workflow_id, "query", "missing"),
-            method="POST",
-            body={},
-            token=token,
-            namespace=namespace,
-            timeout=30,
-        )
-        missing_workflow_signal = http_json(
-            base_url,
-            api_path("workflows", baseline_workflow_id + "-missing", "signal", "increment"),
-            method="POST",
-            body={},
-            token=token,
-            namespace=namespace,
-            timeout=30,
-        )
-        missing_workflow_query = http_json(
-            base_url,
-            api_path("workflows", baseline_workflow_id + "-missing", "query", "state"),
-            method="POST",
-            body={},
-            token=token,
-            namespace=namespace,
-            timeout=30,
-        )
+        baseline_run_id: str | None = None
+        ordered_workflow_id = f"wf-sq-ordered-{suffix}"
+        ordered_run_id: str | None = None
+        dedup_workflow_id = f"wf-sq-dedup-{suffix}"
+        dedup_run_id: str | None = None
         optional_unknown_outputs: dict[str, Any] = {}
-        if cli_bin is not None:
-            optional_unknown_outputs.update(
-                {
-                    "cli_unknown_signal_sample": cli_json_sample(
-                        cli_bin,
-                        base_url,
-                        token,
-                        namespace,
-                        [
-                            "workflow:signal",
-                            baseline_workflow_id,
-                            "missing",
-                            "--output=json",
-                        ],
-                        log_file,
-                    ),
-                    "cli_unknown_query_sample": cli_json_sample(
-                        cli_bin,
-                        base_url,
-                        token,
-                        namespace,
-                        [
-                            "workflow:query",
-                            baseline_workflow_id,
-                            "missing",
-                            "--output=json",
-                        ],
-                        log_file,
-                    ),
-                    "cli_missing_workflow_signal_sample": cli_json_sample(
-                        cli_bin,
-                        base_url,
-                        token,
-                        namespace,
-                        [
-                            "workflow:signal",
-                            baseline_workflow_id + "-missing",
-                            "increment",
-                            "--output=json",
-                        ],
-                        log_file,
-                    ),
-                    "cli_missing_workflow_query_sample": cli_json_sample(
-                        cli_bin,
-                        base_url,
-                        token,
-                        namespace,
-                        [
-                            "workflow:query",
-                            baseline_workflow_id + "-missing",
-                            "state",
-                            "--output=json",
-                        ],
-                        log_file,
-                    ),
-                }
-            )
-        if python_bin is not None:
-            optional_unknown_outputs.update(
-                {
-                    "sdk_python_unknown_signal_sample": sdk_error_sample(
-                        python_bin,
-                        base_url,
-                        token,
-                        namespace,
-                        baseline_workflow_id,
-                        "signal",
-                        "missing",
-                        log_file,
-                    ),
-                    "sdk_python_unknown_query_sample": sdk_error_sample(
-                        python_bin,
-                        base_url,
-                        token,
-                        namespace,
-                        baseline_workflow_id,
-                        "query",
-                        "missing",
-                        log_file,
-                    ),
-                    "sdk_python_missing_workflow_signal_sample": sdk_error_sample(
-                        python_bin,
-                        base_url,
-                        token,
-                        namespace,
-                        baseline_workflow_id + "-missing",
-                        "signal",
-                        "increment",
-                        log_file,
-                    ),
-                    "sdk_python_missing_workflow_query_sample": sdk_error_sample(
-                        python_bin,
-                        base_url,
-                        token,
-                        namespace,
-                        baseline_workflow_id + "-missing",
-                        "query",
-                        "state",
-                        log_file,
-                    ),
-                }
-            )
-        known_query_after_unknown_errors = query_with_worker_result(
-            base_url,
-            token,
-            namespace,
-            worker_id,
-            task_queue,
-            baseline_workflow_id,
-            "state",
-            counter,
-            log_file,
-            lambda: http_json(
+        server_baseline_outputs: dict[str, Any] = {
+            "worker_runtime": "external-http",
+            "workflow_id": baseline_workflow_id,
+            "published_artifact_versions": versions,
+            "artifact_sources": sources,
+        }
+
+        try:
+            baseline_run_id = start_waiting_workflow(
                 base_url,
-                api_path("workflows", baseline_workflow_id, "query", "state"),
+                token,
+                namespace,
+                worker_id,
+                task_queue,
+                baseline_workflow_id,
+                workflow_type,
+                f"{baseline_workflow_id}-initial",
+            )
+            counter = 0
+
+            unknown_signal = http_json(
+                base_url,
+                api_path("workflows", baseline_workflow_id, "signal", "missing"),
                 method="POST",
                 body={},
                 token=token,
                 namespace=namespace,
-                timeout=60,
-            ),
-        )
-        known_query_after_unknown_result = sample_result_value(known_query_after_unknown_errors)
-        if known_query_after_unknown_result != counter:
-            raise RuntimeError(
-                f"known query after unknown errors returned {known_query_after_unknown_result}, expected {counter}"
+                timeout=30,
             )
-
-        ordered_workflow_id = f"wf-sq-ordered-{suffix}"
-        ordered_run_id = start_waiting_workflow(
-            base_url,
-            token,
-            namespace,
-            worker_id,
-            task_queue,
-            ordered_workflow_id,
-            workflow_type,
-            f"{ordered_workflow_id}-initial",
-        )
-        rapid_inputs = list(range(1, 11))
-        ordered_signal_responses = []
-        for amount in rapid_inputs:
-            response = http_json(
+            query_not_found = http_json(
                 base_url,
-                api_path("workflows", ordered_workflow_id, "signal", "increment"),
+                api_path("workflows", baseline_workflow_id, "query", "missing"),
                 method="POST",
-                body={"input": {"amount": amount}, "request_id": f"{ordered_workflow_id}-{amount}"},
+                body={},
                 token=token,
                 namespace=namespace,
                 timeout=30,
             )
-            if int(response["status_code"]) >= 400:
-                raise RuntimeError(f"ordered signal {amount} failed: {response}")
-            ordered_signal_responses.append(response_sample(response))
-
-        history_signal_order: list[int] = []
-        ordered_signal_tasks: list[dict[str, Any]] = []
-        ordered_seen_signals: set[str] = set()
-        for poll_index in range(len(rapid_inputs)):
-            poll = poll_workflow_task(
+            missing_workflow_signal = http_json(
+                base_url,
+                api_path("workflows", baseline_workflow_id + "-missing", "signal", "increment"),
+                method="POST",
+                body={},
+                token=token,
+                namespace=namespace,
+                timeout=30,
+            )
+            missing_workflow_query = http_json(
+                base_url,
+                api_path("workflows", baseline_workflow_id + "-missing", "query", "state"),
+                method="POST",
+                body={},
+                token=token,
+                namespace=namespace,
+                timeout=30,
+            )
+            if cli_bin is not None:
+                optional_unknown_outputs.update(
+                    {
+                        "cli_unknown_signal_sample": optional_sample(
+                            "cli_unknown_signal_sample",
+                            lambda: cli_json_sample(
+                                cli_bin,
+                                base_url,
+                                token,
+                                namespace,
+                                [
+                                    "workflow:signal",
+                                    baseline_workflow_id,
+                                    "missing",
+                                    "--output=json",
+                                ],
+                                log_file,
+                            ),
+                        ),
+                        "cli_unknown_query_sample": optional_sample(
+                            "cli_unknown_query_sample",
+                            lambda: cli_json_sample(
+                                cli_bin,
+                                base_url,
+                                token,
+                                namespace,
+                                [
+                                    "workflow:query",
+                                    baseline_workflow_id,
+                                    "missing",
+                                    "--output=json",
+                                ],
+                                log_file,
+                            ),
+                        ),
+                        "cli_missing_workflow_signal_sample": optional_sample(
+                            "cli_missing_workflow_signal_sample",
+                            lambda: cli_json_sample(
+                                cli_bin,
+                                base_url,
+                                token,
+                                namespace,
+                                [
+                                    "workflow:signal",
+                                    baseline_workflow_id + "-missing",
+                                    "increment",
+                                    "--output=json",
+                                ],
+                                log_file,
+                            ),
+                        ),
+                        "cli_missing_workflow_query_sample": optional_sample(
+                            "cli_missing_workflow_query_sample",
+                            lambda: cli_json_sample(
+                                cli_bin,
+                                base_url,
+                                token,
+                                namespace,
+                                [
+                                    "workflow:query",
+                                    baseline_workflow_id + "-missing",
+                                    "state",
+                                    "--output=json",
+                                ],
+                                log_file,
+                            ),
+                        ),
+                    }
+                )
+            if python_bin is not None:
+                optional_unknown_outputs.update(
+                    {
+                        "sdk_python_unknown_signal_sample": optional_sample(
+                            "sdk_python_unknown_signal_sample",
+                            lambda: sdk_error_sample(
+                                python_bin,
+                                base_url,
+                                token,
+                                namespace,
+                                baseline_workflow_id,
+                                "signal",
+                                "missing",
+                                log_file,
+                            ),
+                        ),
+                        "sdk_python_unknown_query_sample": optional_sample(
+                            "sdk_python_unknown_query_sample",
+                            lambda: sdk_error_sample(
+                                python_bin,
+                                base_url,
+                                token,
+                                namespace,
+                                baseline_workflow_id,
+                                "query",
+                                "missing",
+                                log_file,
+                            ),
+                        ),
+                        "sdk_python_missing_workflow_signal_sample": optional_sample(
+                            "sdk_python_missing_workflow_signal_sample",
+                            lambda: sdk_error_sample(
+                                python_bin,
+                                base_url,
+                                token,
+                                namespace,
+                                baseline_workflow_id + "-missing",
+                                "signal",
+                                "increment",
+                                log_file,
+                            ),
+                        ),
+                        "sdk_python_missing_workflow_query_sample": optional_sample(
+                            "sdk_python_missing_workflow_query_sample",
+                            lambda: sdk_error_sample(
+                                python_bin,
+                                base_url,
+                                token,
+                                namespace,
+                                baseline_workflow_id + "-missing",
+                                "query",
+                                "state",
+                                log_file,
+                            ),
+                        ),
+                    }
+                )
+            optional_unknown_outputs = {
+                field: sample
+                for field, sample in optional_unknown_outputs.items()
+                if sample is not MISSING
+            }
+            known_query_after_unknown_errors = query_with_worker_result(
                 base_url,
                 token,
                 namespace,
                 worker_id,
                 task_queue,
-            )
-            task = task_from_poll(poll, f"ordered signal poll {poll_index + 1}")
-            observations, history_events = increment_signal_observations_from_task(
-                base_url,
-                token,
-                namespace,
-                task,
-            )
-            new_amounts = []
-            for observation in observations:
-                key = signal_observation_key(observation)
-                if key in ordered_seen_signals:
-                    continue
-                ordered_seen_signals.add(key)
-                amount = observation.get("signal_amount")
-                if isinstance(amount, int):
-                    new_amounts.append(amount)
-                    history_signal_order.append(amount)
-
-            if not new_amounts:
-                raise RuntimeError(f"ordered signal poll {poll_index + 1} did not expose new increment signals: {task}")
-
-            complete = complete_open_wait(
-                base_url,
-                token,
-                namespace,
-                task,
-                f"{ordered_workflow_id}-after-{len(history_signal_order)}",
-            )
-            if int(complete["status_code"]) >= 400:
-                raise RuntimeError(f"ordered signal poll {poll_index + 1} task completion failed: {complete}")
-            ordered_signal_tasks.append(
-                {
-                    "task_id": task.get("task_id"),
-                    "signal_name": signal_name_from_task(task),
-                    "signal_amounts": new_amounts,
-                    "history_signal_amounts": [
-                        observation.get("signal_amount")
-                        for observation in observations
-                        if isinstance(observation.get("signal_amount"), int)
-                    ],
-                    "history_event_types": [
-                        event.get("event_type")
-                        for event in history_events
-                        if isinstance(event.get("event_type"), str)
-                    ],
-                }
-            )
-            if len(history_signal_order) >= len(rapid_inputs):
-                break
-
-        if history_signal_order != rapid_inputs:
-            raise RuntimeError(f"ordered signal history order {history_signal_order}, expected {rapid_inputs}")
-
-        queried_total = sum(history_signal_order)
-        ordered_query_holder: dict[str, Any] = {}
-        ordered_responder = threading.Thread(
-            target=answer_next_query_task,
-            args=(
-                base_url,
-                token,
-                namespace,
-                worker_id,
-                task_queue,
-                queried_total,
+                baseline_workflow_id,
+                "state",
+                counter,
                 log_file,
-                ordered_query_holder,
-            ),
-            daemon=True,
-        )
-        ordered_responder.start()
-        ordered_query = http_json(
-            base_url,
-            api_path("workflows", ordered_workflow_id, "query", "state"),
-            method="POST",
-            body={},
-            token=token,
-            namespace=namespace,
-            timeout=60,
-        )
-        ordered_responder.join(timeout=20)
-        if ordered_responder.is_alive() or ordered_query_holder.get("error"):
-            raise RuntimeError(
-                f"ordered query responder failed: {ordered_query_holder.get('error', 'timeout')}"
+                lambda: http_json(
+                    base_url,
+                    api_path("workflows", baseline_workflow_id, "query", "state"),
+                    method="POST",
+                    body={},
+                    token=token,
+                    namespace=namespace,
+                    timeout=60,
+                ),
             )
-        ordered_query_result = (
-            ordered_query.get("body", {}).get("result")
-            if isinstance(ordered_query.get("body"), dict)
-            else None
-        )
-        if ordered_query_result != 55:
-            raise RuntimeError(f"ordered query returned {ordered_query_result}, expected 55")
+            known_query_after_unknown_result = sample_result_value(known_query_after_unknown_errors)
 
-        dedup_workflow_id = f"wf-sq-dedup-{suffix}"
-        dedup_run_id = start_waiting_workflow(
-            base_url,
-            token,
-            namespace,
-            worker_id,
-            task_queue,
-            dedup_workflow_id,
-            workflow_type,
-            f"{dedup_workflow_id}-initial",
+            unknown_outputs = {
+                "unknown_signal": response_sample(unknown_signal),
+                "missing_workflow_signal": response_sample(missing_workflow_signal),
+                "missing_workflow_query": response_sample(missing_workflow_query),
+                "query_not_found": response_sample(query_not_found),
+                "rejected_unknown_query": response_sample(query_not_found),
+                "known_query_after_unknown_errors": known_query_after_unknown_errors,
+                "known_query_after_unknown_result": known_query_after_unknown_result,
+                "known_query_after_unknown_expected": counter,
+                "workflow_id": baseline_workflow_id,
+                "run_id": baseline_run_id,
+                "published_artifact_versions": versions,
+                "artifact_sources": sources,
+            }
+            unknown_outputs.update(optional_unknown_outputs)
+            server_baseline_outputs = {
+                "worker_runtime": "external-http",
+                "workflow_id": baseline_workflow_id,
+                "run_id": baseline_run_id,
+                "known_query_after_unknown_errors": response_sample(known_query_after_unknown_errors),
+                "known_query_after_unknown_result": known_query_after_unknown_result,
+                "published_artifact_versions": versions,
+                "artifact_sources": sources,
+            }
+        except Exception as exc:  # noqa: BLE001 - record the missing proof without dropping sibling cells.
+            log_line(log_file, f"unknown-handler baseline probe failed: {type(exc).__name__}: {exc}")
+            unknown_outputs = {
+                "workflow_id": baseline_workflow_id,
+                "run_id": baseline_run_id,
+                "probe_error": probe_error_payload(exc),
+                "published_artifact_versions": versions,
+                "artifact_sources": sources,
+            }
+            server_baseline_outputs = {
+                "worker_runtime": "external-http",
+                "workflow_id": baseline_workflow_id,
+                "run_id": baseline_run_id,
+                "probe_error": probe_error_payload(exc),
+                "published_artifact_versions": versions,
+                "artifact_sources": sources,
+            }
+        scenario_results["unknown_signal_and_query_errors"] = baseline_scenario_result(
+            "unknown_signal_and_query_errors",
+            unknown_outputs,
         )
-        duplicate_request_id = f"{dedup_workflow_id}-duplicate-key"
-        duplicate_signal_responses = []
-        for index in range(2):
-            response = http_json(
+        generated_scenarios.append("unknown_signal_and_query_errors")
+
+        ordered_outputs: dict[str, Any] = {
+            "workflow_id": ordered_workflow_id,
+            "published_artifact_versions": versions,
+            "artifact_sources": sources,
+        }
+        try:
+            ordered_run_id = start_waiting_workflow(
                 base_url,
-                api_path("workflows", dedup_workflow_id, "signal", "increment"),
-                method="POST",
-                body={"input": {"amount": 7}, "request_id": duplicate_request_id},
-                token=token,
-                namespace=namespace,
-                timeout=30,
+                token,
+                namespace,
+                worker_id,
+                task_queue,
+                ordered_workflow_id,
+                workflow_type,
+                f"{ordered_workflow_id}-initial",
             )
-            if int(response["status_code"]) >= 400:
-                raise RuntimeError(f"duplicate signal {index + 1} failed: {response}")
-            duplicate_signal_responses.append(response_sample(response))
+            ordered_outputs["run_id"] = ordered_run_id
+            rapid_inputs = list(range(1, 11))
+            ordered_outputs["rapid_increment_inputs"] = rapid_inputs
+            ordered_signal_responses = []
+            for amount in rapid_inputs:
+                response = http_json(
+                    base_url,
+                    api_path("workflows", ordered_workflow_id, "signal", "increment"),
+                    method="POST",
+                    body={"input": {"amount": amount}, "request_id": f"{ordered_workflow_id}-{amount}"},
+                    token=token,
+                    namespace=namespace,
+                    timeout=30,
+                )
+                ordered_signal_responses.append(response_sample(response))
+                if int(response["status_code"]) >= 400:
+                    raise RuntimeError(f"ordered signal {amount} failed: {response}")
 
-        duplicate_observations: list[int] = []
-        duplicate_tasks: list[dict[str, Any]] = []
-        duplicate_seen_signals: set[str] = set()
-        for index in range(2):
-            try:
-                poll = poll_workflow_task(
+            history_signal_order: list[int] = []
+            ordered_outputs["history_signal_order"] = history_signal_order
+            ordered_signal_tasks: list[dict[str, Any]] = []
+            ordered_seen_signals: set[str] = set()
+            collect_increment_signal_observations(
+                base_url,
+                token,
+                namespace,
+                worker_id,
+                task_queue,
+                ordered_seen_signals,
+                history_signal_order,
+                ordered_signal_tasks,
+                f"{ordered_workflow_id}-after",
+                "ordered",
+                len(rapid_inputs),
+                log_file,
+            )
+
+            ordered_outputs["history_signal_order"] = history_signal_order
+            ordered_outputs["signal_api_samples"] = ordered_signal_responses
+            ordered_outputs["signal_tasks"] = ordered_signal_tasks
+            if history_signal_order != rapid_inputs:
+                raise RuntimeError(f"ordered signal history order {history_signal_order}, expected {rapid_inputs}")
+
+            expected_total = sum(history_signal_order)
+            ordered_query_holder: dict[str, Any] = {}
+            ordered_responder = threading.Thread(
+                target=answer_next_query_task,
+                args=(
                     base_url,
                     token,
                     namespace,
                     worker_id,
                     task_queue,
-                    timeout=5,
+                    expected_total,
+                    log_file,
+                    ordered_query_holder,
+                ),
+                daemon=True,
+            )
+            ordered_responder.start()
+            ordered_query = http_json(
+                base_url,
+                api_path("workflows", ordered_workflow_id, "query", "state"),
+                method="POST",
+                body={},
+                token=token,
+                namespace=namespace,
+                timeout=60,
+            )
+            ordered_responder.join(timeout=20)
+            if ordered_responder.is_alive() or ordered_query_holder.get("error"):
+                raise RuntimeError(
+                    f"ordered query responder failed: {ordered_query_holder.get('error', 'timeout')}"
                 )
-            except Exception as exc:  # noqa: BLE001 - a timeout means no further duplicate delivery was observed.
-                log_line(log_file, f"duplicate signal poll stopped: {type(exc).__name__}: {exc}")
-                break
-            task = poll.get("body", {}).get("task") if isinstance(poll.get("body"), dict) else None
-            if not isinstance(task, dict):
-                log_line(log_file, f"duplicate signal poll stopped: no further workflow task in {poll}")
-                break
-            observations, history_events = increment_signal_observations_from_task(
+            ordered_query_result = (
+                ordered_query.get("body", {}).get("result")
+                if isinstance(ordered_query.get("body"), dict)
+                else None
+            )
+            ordered_outputs["queried_total"] = ordered_query_result
+            ordered_outputs["ten_signal_ordered_delivery_total"] = ordered_query_result
+            ordered_outputs["expected_total"] = expected_total
+            ordered_outputs["query_api_sample"] = response_sample(ordered_query)
+            if ordered_query_result != 55:
+                raise RuntimeError(f"ordered query returned {ordered_query_result}, expected 55")
+        except Exception as exc:  # noqa: BLE001 - retain partial order proof for focused findings.
+            log_line(log_file, f"ordered delivery baseline probe failed: {type(exc).__name__}: {exc}")
+            ordered_outputs["run_id"] = ordered_run_id
+            ordered_outputs["probe_error"] = probe_error_payload(exc)
+        scenario_results["ordered_signal_delivery"] = baseline_scenario_result(
+            "ordered_signal_delivery",
+            ordered_outputs,
+        )
+        generated_scenarios.append("ordered_signal_delivery")
+
+        dedup_outputs: dict[str, Any] = {
+            "workflow_id": dedup_workflow_id,
+            "published_artifact_versions": versions,
+            "artifact_sources": sources,
+        }
+        try:
+            dedup_run_id = start_waiting_workflow(
                 base_url,
                 token,
                 namespace,
-                task,
+                worker_id,
+                task_queue,
+                dedup_workflow_id,
+                workflow_type,
+                f"{dedup_workflow_id}-initial",
             )
-            new_amounts = []
-            for observation in observations:
-                key = signal_observation_key(observation)
-                if key in duplicate_seen_signals:
-                    continue
-                duplicate_seen_signals.add(key)
-                amount = observation.get("signal_amount")
-                if isinstance(amount, int):
-                    new_amounts.append(amount)
-                    duplicate_observations.append(amount)
+            dedup_outputs["run_id"] = dedup_run_id
+            duplicate_request_id = f"{dedup_workflow_id}-duplicate-key"
+            duplicate_signal_responses = []
+            for index in range(2):
+                response = http_json(
+                    base_url,
+                    api_path("workflows", dedup_workflow_id, "signal", "increment"),
+                    method="POST",
+                    body={"input": {"amount": 7}, "request_id": duplicate_request_id},
+                    token=token,
+                    namespace=namespace,
+                    timeout=30,
+                )
+                duplicate_signal_responses.append(response_sample(response))
+                if int(response["status_code"]) >= 400:
+                    raise RuntimeError(f"duplicate signal {index + 1} failed: {response}")
 
-            if not new_amounts:
-                raise RuntimeError(f"duplicate signal poll {index + 1} did not expose new increment signals: {task}")
-
-            complete = complete_open_wait(
+            duplicate_observations: list[int] = []
+            duplicate_tasks: list[dict[str, Any]] = []
+            duplicate_seen_signals: set[str] = set()
+            collect_increment_signal_observations(
                 base_url,
                 token,
                 namespace,
-                task,
-                f"{dedup_workflow_id}-after-{len(duplicate_observations)}",
+                worker_id,
+                task_queue,
+                duplicate_seen_signals,
+                duplicate_observations,
+                duplicate_tasks,
+                f"{dedup_workflow_id}-after",
+                "duplicate",
+                2,
+                log_file,
+                poll_timeout=5,
+                allow_exhausted_after_observation=True,
             )
-            if int(complete["status_code"]) >= 400:
-                raise RuntimeError(f"duplicate signal poll {index + 1} task completion failed: {complete}")
-            duplicate_tasks.append(
+
+            handler_observation_count = len([amount for amount in duplicate_observations if amount == 7])
+            client_side_key_support = handler_observation_count == 1
+            documented_contract = (
+                "the public control-plane signal request_id behaved as an idempotency key for duplicate signal calls"
+                if client_side_key_support
+                else (
+                    "no signal deduplication key is documented on the public control-plane signal API; "
+                    "duplicate accepted signal calls are delivered independently"
+                    if handler_observation_count > 1
+                    else "duplicate accepted signal calls were not observed by the external handler"
+                )
+            )
+            dedup_outputs.update(
                 {
-                    "task_id": task.get("task_id"),
-                    "signal_name": signal_name_from_task(task),
-                    "signal_amounts": new_amounts,
-                    "history_signal_amounts": [
-                        observation.get("signal_amount")
-                        for observation in observations
-                        if isinstance(observation.get("signal_amount"), int)
-                    ],
-                    "history_event_types": [
-                        event.get("event_type")
-                        for event in history_events
-                        if isinstance(event.get("event_type"), str)
-                    ],
+                    "client_side_key_support": client_side_key_support,
+                    "documented_contract": documented_contract,
+                    "handler_observation_count": handler_observation_count,
+                    "duplicate_request_id_used": duplicate_request_id,
+                    "duplicate_signal_api_samples": duplicate_signal_responses,
+                    "handler_observed_amounts": duplicate_observations,
+                    "signal_tasks": duplicate_tasks,
                 }
             )
-            if len(duplicate_observations) >= 2:
-                break
-
-        handler_observation_count = len([amount for amount in duplicate_observations if amount == 7])
-        if handler_observation_count == 0:
-            raise RuntimeError("duplicate signal probe did not observe any delivered increment signals")
-        client_side_key_support = handler_observation_count == 1
-        documented_contract = (
-            "the public control-plane signal request_id behaved as an idempotency key for duplicate signal calls"
-            if client_side_key_support
-            else (
-                "no signal deduplication key is documented on the public control-plane signal API; "
-                "duplicate accepted signal calls are delivered independently"
-            )
+            if handler_observation_count == 0:
+                raise RuntimeError("duplicate signal probe did not observe any delivered increment signals")
+        except Exception as exc:  # noqa: BLE001 - retain partial dedup proof for focused findings.
+            log_line(log_file, f"dedup baseline probe failed: {type(exc).__name__}: {exc}")
+            dedup_outputs["run_id"] = dedup_run_id
+            dedup_outputs["probe_error"] = probe_error_payload(exc)
+        scenario_results["dedup_contract_observation"] = baseline_scenario_result(
+            "dedup_contract_observation",
+            dedup_outputs,
         )
-
-        server_baseline_outputs = {
-            "worker_runtime": "external-http",
-            "workflow_id": baseline_workflow_id,
-            "run_id": baseline_run_id,
-            "known_query_after_unknown_errors": response_sample(known_query_after_unknown_errors),
-            "published_artifact_versions": versions,
-            "artifact_sources": sources,
-        }
-        ordered_outputs = {
-            "rapid_increment_inputs": rapid_inputs,
-            "queried_total": queried_total,
-            "ten_signal_ordered_delivery_total": ordered_query_result,
-            "history_signal_order": history_signal_order,
-            "workflow_id": ordered_workflow_id,
-            "run_id": ordered_run_id,
-            "signal_api_samples": ordered_signal_responses,
-            "signal_tasks": ordered_signal_tasks,
-            "query_api_sample": response_sample(ordered_query),
-            "published_artifact_versions": versions,
-            "artifact_sources": sources,
-        }
-        unknown_outputs = {
-            "unknown_signal": response_sample(unknown_signal),
-            "missing_workflow_signal": response_sample(missing_workflow_signal),
-            "missing_workflow_query": response_sample(missing_workflow_query),
-            "query_not_found": response_sample(query_not_found),
-            "rejected_unknown_query": response_sample(query_not_found),
-            "known_query_after_unknown_errors": known_query_after_unknown_errors,
-            "published_artifact_versions": versions,
-            "artifact_sources": sources,
-        }
-        unknown_outputs.update(optional_unknown_outputs)
-        dedup_outputs = {
-            "client_side_key_support": client_side_key_support,
-            "documented_contract": documented_contract,
-            "handler_observation_count": handler_observation_count,
-            "duplicate_request_id_used": duplicate_request_id,
-            "duplicate_signal_api_samples": duplicate_signal_responses,
-            "handler_observed_amounts": duplicate_observations,
-            "workflow_id": dedup_workflow_id,
-            "run_id": dedup_run_id,
-            "signal_tasks": duplicate_tasks,
-            "published_artifact_versions": versions,
-            "artifact_sources": sources,
-        }
+        generated_scenarios.append("dedup_contract_observation")
 
         evidence = {
             "artifact_versions": versions,
-            "scenario_results": {
-                "published_artifact_install_only": {
-                    "status": install_status,
-                    "observed_outputs": install_outputs,
-                },
-                "ordered_signal_delivery": {
-                    "status": "pass",
-                    "observed_outputs": ordered_outputs,
-                },
-                "dedup_contract_observation": {
-                    "status": "pass",
-                    "observed_outputs": dedup_outputs,
-                },
-                "unknown_signal_and_query_errors": {
-                    "status": "pass",
-                    "observed_outputs": unknown_outputs,
-                },
-            },
+            "scenario_results": scenario_results,
         }
         if python_sdk_outputs is not None:
             evidence["scenario_results"]["python_worker_cli_and_sdk_baseline"] = {
                 "status": python_sdk_status,
                 "observed_outputs": python_sdk_outputs,
             }
+            generated_scenarios.append("python_worker_cli_and_sdk_baseline")
+        not_claimed_as_pass = (
+            ([] if install_status == "pass" else ["published_artifact_install_only"])
+            + ([] if python_sdk_status == "pass" else ["python_worker_cli_and_sdk_baseline"])
+            + [
+                scenario
+                for scenario in (
+                    "ordered_signal_delivery",
+                    "dedup_contract_observation",
+                    "unknown_signal_and_query_errors",
+                )
+                if scenario_results.get(scenario, {}).get("status") != "pass"
+            ]
+        )
         descriptor = {
             "file": log_file.name,
             "server_base_url": base_url,
@@ -3233,22 +3386,9 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 "install_probes": install_descriptors,
                 "server_readiness": readiness_probe,
                 "published_artifact_sources_observed": sorted(sources),
-                "not_claimed_as_pass": (
-                    ([] if install_status == "pass" else ["published_artifact_install_only"])
-                    + ([] if python_sdk_status == "pass" else ["python_worker_cli_and_sdk_baseline"])
-                ),
+                "not_claimed_as_pass": not_claimed_as_pass,
             },
-            "generated_scenarios": [
-                "published_artifact_install_only",
-                *(
-                    ["python_worker_cli_and_sdk_baseline"]
-                    if python_sdk_outputs is not None
-                    else []
-                ),
-                "ordered_signal_delivery",
-                "dedup_contract_observation",
-                "unknown_signal_and_query_errors",
-            ],
+            "generated_scenarios": generated_scenarios,
         }
         return evidence, descriptor
     except ServerReadinessTopologyError as exc:
@@ -5145,6 +5285,20 @@ def unknown_handler_behavior_failures(observed: dict[str, Any]) -> list[dict[str
                 sorted(reasons),
                 actual,
             ))
+
+    expected_known_result = evidence_lookup(observed, "known_query_after_unknown_expected")
+    actual_known_result = evidence_lookup(observed, "known_query_after_unknown_result")
+    if (
+        expected_known_result is not MISSING
+        and actual_known_result is not MISSING
+        and actual_known_result != expected_known_result
+    ):
+        failures.append(behavior_failure(
+            "unexpected_known_query_after_unknown_result",
+            "known_query_after_unknown_result",
+            expected_known_result,
+            actual_known_result,
+        ))
 
     return failures
 

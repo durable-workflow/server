@@ -629,10 +629,16 @@ class SignalQueryRuntimeContractTest extends TestCase
             'DW_SIGNALS_QUERIES_SERVER_READY_TIMEOUT_SECONDS',
             'DW_SIGNALS_QUERIES_RUN_BASELINE_PROBE',
             'run_baseline_probe(result_dir)',
+            'baseline_scenario_result(',
             'run_python_sdk_baseline(',
             'Worker(',
             'workflow_task_history_events(',
             'increment_signal_observations_from_task(',
+            'optional public client sample failed',
+            'unknown-handler baseline probe failed',
+            'ordered delivery baseline probe failed',
+            'dedup baseline probe failed',
+            'known_query_after_unknown_result',
             '"signal_amounts"',
             '"not_claimed_as_pass"',
             'signals-queries-result.json',
@@ -803,6 +809,149 @@ PY);
             ['WorkflowStarted', 'SignalReceived', 'SignalReceived', 'SignalReceived'],
             $result['event_types'],
         );
+    }
+
+    public function test_host_runner_collects_ordered_signal_evidence_from_one_batched_task(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+poll_calls = []
+completed_conditions = []
+
+def fake_poll_workflow_task(base_url, token, namespace, worker_id, task_queue, timeout=45.0):
+    poll_calls.append(timeout)
+    return {
+        "status_code": 200,
+        "body": {
+            "task": {
+                "task_id": "ordered-task-1",
+                "lease_owner": "worker-1",
+                "workflow_task_attempt": 1,
+                "history_events": [
+                    {
+                        "event_type": "SignalReceived",
+                        "payload": {
+                            "signal_name": "increment",
+                            "signal_id": f"ordered-{amount}",
+                            "workflow_sequence": amount,
+                            "arguments": {"payload": {"amount": amount}},
+                        },
+                    }
+                    for amount in range(1, 11)
+                ],
+            },
+        },
+    }
+
+def fake_complete_open_wait(base_url, token, namespace, task, condition_key):
+    completed_conditions.append(condition_key)
+    return {"status_code": 200, "body": {}}
+
+globals()["poll_workflow_task"] = fake_poll_workflow_task
+globals()["complete_open_wait"] = fake_complete_open_wait
+
+seen = set()
+amounts = []
+tasks = []
+collect_increment_signal_observations(
+    "http://unused",
+    "token",
+    "default",
+    "worker-1",
+    "queue-1",
+    seen,
+    amounts,
+    tasks,
+    "ordered-after",
+    "ordered",
+    10,
+    Path("/tmp/signals-queries-test.log"),
+)
+
+print(json.dumps({
+    "amounts": amounts,
+    "poll_count": len(poll_calls),
+    "completed_conditions": completed_conditions,
+    "task_signal_amounts": tasks[0]["signal_amounts"],
+}, sort_keys=True))
+PY);
+
+        $this->assertSame([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], $result['amounts']);
+        $this->assertSame(1, $result['poll_count']);
+        $this->assertSame(['ordered-after-10'], $result['completed_conditions']);
+        $this->assertSame([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], $result['task_signal_amounts']);
+    }
+
+    public function test_host_runner_accepts_single_observed_duplicate_signal_when_no_second_task_arrives(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+poll_calls = []
+completed_conditions = []
+
+def fake_poll_workflow_task(base_url, token, namespace, worker_id, task_queue, timeout=45.0):
+    poll_calls.append(timeout)
+    if len(poll_calls) == 1:
+        return {
+            "status_code": 200,
+            "body": {
+                "task": {
+                    "task_id": "dedup-task-1",
+                    "lease_owner": "worker-1",
+                    "workflow_task_attempt": 1,
+                    "history_events": [
+                        {
+                            "event_type": "SignalReceived",
+                            "payload": {
+                                "signal_name": "increment",
+                                "signal_id": "dedup-1",
+                                "workflow_sequence": 1,
+                                "arguments": {"payload": {"amount": 7}},
+                            },
+                        },
+                    ],
+                },
+            },
+        }
+    return {"status_code": 204, "body": {}}
+
+def fake_complete_open_wait(base_url, token, namespace, task, condition_key):
+    completed_conditions.append(condition_key)
+    return {"status_code": 200, "body": {}}
+
+globals()["poll_workflow_task"] = fake_poll_workflow_task
+globals()["complete_open_wait"] = fake_complete_open_wait
+
+seen = set()
+amounts = []
+tasks = []
+collect_increment_signal_observations(
+    "http://unused",
+    "token",
+    "default",
+    "worker-1",
+    "queue-1",
+    seen,
+    amounts,
+    tasks,
+    "dedup-after",
+    "duplicate",
+    2,
+    Path("/tmp/signals-queries-test.log"),
+    poll_timeout=5,
+    allow_exhausted_after_observation=True,
+)
+
+print(json.dumps({
+    "amounts": amounts,
+    "poll_count": len(poll_calls),
+    "completed_conditions": completed_conditions,
+    "task_signal_amounts": tasks[0]["signal_amounts"],
+}, sort_keys=True))
+PY);
+
+        $this->assertSame([7], $result['amounts']);
+        $this->assertSame(2, $result['poll_count']);
+        $this->assertSame(['dedup-after-1'], $result['completed_conditions']);
+        $this->assertSame([7], $result['task_signal_amounts']);
     }
 
     public function test_host_runner_requires_exact_smoke_fields_before_marking_smoke_scenarios_pass(): void
@@ -1218,6 +1367,34 @@ PY);
         $this->assertSame('signal_query_unknown_handler_errors_failed', $unknownFindings[0]['type'] ?? null);
         $this->assertSame(
             'unexpected_unknown_handler_status_code',
+            $unknownFindings[0]['current_evidence']['current_behavior_failures'][0]['code'] ?? null,
+        );
+    }
+
+    public function test_host_runner_routes_known_query_after_unknown_result_drift_as_product_finding(): void
+    {
+        $complete = $this->completeSignalQueryResultForCurrentHostRunner();
+        $versions = $this->currentHostRunnerArtifactVersions();
+        $sources = $this->expectedHostRunnerArtifactSources();
+        $unknown = $complete['scenario_results']['unknown_signal_and_query_errors'];
+        $unknown['observed_outputs']['published_artifact_versions'] = $versions;
+        $unknown['observed_outputs']['artifact_sources'] = $sources;
+        $unknown['observed_outputs']['known_query_after_unknown_expected'] = 0;
+        $unknown['observed_outputs']['known_query_after_unknown_result'] = 1;
+
+        $result = $this->runSignalQueryHostRunner([
+            'artifact_versions' => $versions,
+            'scenario_results' => [
+                'unknown_signal_and_query_errors' => $unknown,
+            ],
+        ]);
+        $unknownFindings = $this->findingsForScenario($result, 'unknown_signal_and_query_errors');
+
+        $this->assertSame('fail', $result['scenario_results']['unknown_signal_and_query_errors']['status']);
+        $this->assertNotEmpty($unknownFindings);
+        $this->assertSame('signal_query_unknown_handler_errors_failed', $unknownFindings[0]['type'] ?? null);
+        $this->assertSame(
+            'unexpected_known_query_after_unknown_result',
             $unknownFindings[0]['current_evidence']['current_behavior_failures'][0]['code'] ?? null,
         );
     }
