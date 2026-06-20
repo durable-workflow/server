@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(19, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(20, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -485,7 +485,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $this->assertSame(
             [
                 'rapid_increment_inputs',
-                'ten_signal_ordered_delivery_total',
+                'queried_total',
                 'history_signal_order',
             ],
             $hostRunner['evidence_shards']['ordered_signal_delivery']['current_evidence_fields'],
@@ -1052,7 +1052,7 @@ PY);
             'sdk_python_signal_and_query' => true,
             'immediate_repeat_query_consistency' => true,
             'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-            'ten_signal_ordered_delivery_total' => 55,
+            'queried_total' => 55,
             'history_signal_order' => [1, 2, 3, 5, 4, 6, 7, 8, 9, 10],
         ]);
 
@@ -1075,7 +1075,7 @@ PY);
             'sdk_python_signal_and_query' => true,
             'immediate_repeat_query_consistency' => true,
             'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-            'ten_signal_ordered_delivery_total' => 55,
+            'queried_total' => 55,
             'history_signal_order' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         ]);
 

@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 19;
+    public const VERSION = 20;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -482,7 +482,7 @@ final class SignalQueryRuntimeContract
                         ],
                         'current_evidence_fields' => [
                             'rapid_increment_inputs',
-                            'ten_signal_ordered_delivery_total',
+                            'queried_total',
                             'history_signal_order',
                         ],
                         'finding_type_when_missing' => 'signal_query_ordered_delivery_uncovered',

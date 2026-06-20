@@ -4333,10 +4333,11 @@ def exact_python_smoke_present() -> bool:
 
 def exact_ordered_delivery_smoke_present() -> bool:
     rapid_inputs = smoke_field("rapid_increment_inputs", "ordered_signal_delivery")
+    queried_total = smoke_field("queried_total", "ordered_signal_delivery")
     history_signal_order = smoke_field("history_signal_order", "ordered_signal_delivery")
     return (
         rapid_inputs == list(range(1, 11))
-        and smoke_field("ten_signal_ordered_delivery_total", "ordered_signal_delivery") == 55
+        and queried_total == 55
         and history_signal_order == list(range(1, 11))
     )
 
@@ -4729,8 +4730,6 @@ def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
     if scenario == "ordered_signal_delivery":
         rapid_inputs = evidence_lookup(observed, "rapid_increment_inputs")
         queried_total = evidence_lookup(observed, "queried_total")
-        if queried_total is MISSING:
-            queried_total = evidence_lookup(observed, "ten_signal_ordered_delivery_total")
         history_signal_order = evidence_lookup(observed, "history_signal_order")
 
         return (
@@ -5177,8 +5176,6 @@ def ordered_delivery_missing_current_evidence(observed: dict[str, Any]) -> list[
     missing = []
     rapid_inputs = evidence_lookup(observed, "rapid_increment_inputs")
     queried_total = evidence_lookup(observed, "queried_total")
-    if queried_total is MISSING:
-        queried_total = evidence_lookup(observed, "ten_signal_ordered_delivery_total")
     history_signal_order = evidence_lookup(observed, "history_signal_order")
 
     if rapid_inputs is MISSING:
@@ -5261,10 +5258,6 @@ def ordered_delivery_behavior_failures(observed: dict[str, Any]) -> list[dict[st
     expected_order = list(range(1, 11))
     rapid_inputs = evidence_lookup(observed, "rapid_increment_inputs")
     queried_total = evidence_lookup(observed, "queried_total")
-    queried_total_key = "queried_total"
-    if queried_total is MISSING:
-        queried_total = evidence_lookup(observed, "ten_signal_ordered_delivery_total")
-        queried_total_key = "ten_signal_ordered_delivery_total"
     history_signal_order = evidence_lookup(observed, "history_signal_order")
 
     if rapid_inputs is not MISSING and rapid_inputs != expected_order:
@@ -5277,7 +5270,7 @@ def ordered_delivery_behavior_failures(observed: dict[str, Any]) -> list[dict[st
     if queried_total is not MISSING and queried_total != 55:
         failures.append(behavior_failure(
             "unexpected_ordered_signal_total",
-            queried_total_key,
+            "queried_total",
             55,
             queried_total,
         ))
@@ -5680,7 +5673,7 @@ for scenario in required_scenarios:
         status = "pass"
         observed = {
             "rapid_increment_inputs": smoke_field("rapid_increment_inputs", scenario),
-            "queried_total": smoke_field("ten_signal_ordered_delivery_total", scenario),
+            "queried_total": smoke_field("queried_total", scenario),
             "history_signal_order": smoke_field("history_signal_order", scenario),
             "external_smoke_evidence": smoke_descriptor,
         }
