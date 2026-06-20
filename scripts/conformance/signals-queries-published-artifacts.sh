@@ -928,6 +928,118 @@ def signal_amount_from_task(task: dict[str, Any]) -> int | None:
     return None
 
 
+def workflow_task_history_events(
+    base_url: str,
+    token: str,
+    namespace: str,
+    task: dict[str, Any],
+) -> list[dict[str, Any]]:
+    events = [
+        event
+        for event in task.get("history_events", [])
+        if isinstance(event, dict)
+    ]
+    next_token = task.get("next_history_page_token")
+    seen_tokens: set[str] = set()
+
+    while isinstance(next_token, str) and next_token.strip() != "":
+        if next_token in seen_tokens:
+            raise RuntimeError(f"workflow task history pagination repeated token {next_token!r}")
+        seen_tokens.add(next_token)
+
+        response = http_json(
+            base_url,
+            api_path("worker", "workflow-tasks", str(task["task_id"]), "history"),
+            method="POST",
+            body={
+                "lease_owner": task["lease_owner"],
+                "workflow_task_attempt": task["workflow_task_attempt"],
+                "next_history_page_token": next_token,
+                "history_page_size": 1000,
+            },
+            token=token,
+            namespace=namespace,
+            worker=True,
+            timeout=30,
+        )
+        if int(response["status_code"]) >= 400:
+            raise RuntimeError(f"workflow task history page failed: {response}")
+
+        body = response.get("body")
+        if not isinstance(body, dict):
+            break
+        page_events = body.get("history_events")
+        if isinstance(page_events, list):
+            events.extend(event for event in page_events if isinstance(event, dict))
+        next_token = body.get("next_history_page_token")
+
+    return events
+
+
+def signal_observations_from_events(events: list[dict[str, Any]], signal_name: str) -> list[dict[str, Any]]:
+    observations: list[dict[str, Any]] = []
+    for index, event in enumerate(events):
+        if event.get("event_type") != "SignalReceived":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict) or payload.get("signal_name") != signal_name:
+            continue
+        amount = amount_from_arguments(decode_signal_arguments(payload.get("arguments")))
+        if amount is None:
+            continue
+
+        observation = {
+            "signal_name": signal_name,
+            "signal_amount": amount,
+            "history_event_index": index,
+        }
+        signal_id = payload.get("signal_id")
+        if isinstance(signal_id, str) and signal_id:
+            observation["signal_id"] = signal_id
+        sequence = payload.get("workflow_sequence")
+        if isinstance(sequence, int):
+            observation["workflow_sequence"] = sequence
+        observations.append(observation)
+
+    return observations
+
+
+def signal_observation_key(observation: dict[str, Any]) -> str:
+    signal_id = observation.get("signal_id")
+    if isinstance(signal_id, str) and signal_id:
+        return f"signal:{signal_id}"
+    sequence = observation.get("workflow_sequence")
+    if isinstance(sequence, int):
+        return f"sequence:{sequence}"
+    return f"history-index:{observation.get('history_event_index')}"
+
+
+def increment_signal_observations_from_task(
+    base_url: str,
+    token: str,
+    namespace: str,
+    task: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    events = workflow_task_history_events(base_url, token, namespace, task)
+    observations = signal_observations_from_events(events, "increment")
+    if observations:
+        return observations, events
+
+    amount = signal_amount_from_task(task)
+    if signal_name_from_task(task) == "increment" and amount is not None:
+        return [
+            {
+                "signal_name": "increment",
+                "signal_amount": amount,
+                "signal_id": task.get("workflow_signal_id"),
+                "workflow_sequence": task.get("workflow_sequence"),
+                "history_event_index": f"task:{task.get('task_id')}:signal_arguments",
+            }
+        ], events
+
+    return [], events
+
+
 def count_signal_received(events_response: dict[str, Any], signal_name: str) -> int:
     body = events_response.get("body")
     if not isinstance(body, dict):
@@ -2397,25 +2509,67 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
 
         history_signal_order: list[int] = []
         ordered_signal_tasks: list[dict[str, Any]] = []
-        for expected in rapid_inputs:
-            amount, task = complete_next_increment_task(
+        ordered_seen_signals: set[str] = set()
+        for poll_index in range(len(rapid_inputs)):
+            poll = poll_workflow_task(
                 base_url,
                 token,
                 namespace,
                 worker_id,
                 task_queue,
-                f"{ordered_workflow_id}-after-{expected}",
-                f"ordered signal {expected}",
             )
-            history_signal_order.append(amount)
+            task = task_from_poll(poll, f"ordered signal poll {poll_index + 1}")
+            observations, history_events = increment_signal_observations_from_task(
+                base_url,
+                token,
+                namespace,
+                task,
+            )
+            new_amounts = []
+            for observation in observations:
+                key = signal_observation_key(observation)
+                if key in ordered_seen_signals:
+                    continue
+                ordered_seen_signals.add(key)
+                amount = observation.get("signal_amount")
+                if isinstance(amount, int):
+                    new_amounts.append(amount)
+                    history_signal_order.append(amount)
+
+            if not new_amounts:
+                raise RuntimeError(f"ordered signal poll {poll_index + 1} did not expose new increment signals: {task}")
+
+            complete = complete_open_wait(
+                base_url,
+                token,
+                namespace,
+                task,
+                f"{ordered_workflow_id}-after-{len(history_signal_order)}",
+            )
+            if int(complete["status_code"]) >= 400:
+                raise RuntimeError(f"ordered signal poll {poll_index + 1} task completion failed: {complete}")
             ordered_signal_tasks.append(
                 {
                     "task_id": task.get("task_id"),
                     "signal_name": signal_name_from_task(task),
-                    "signal_amount": amount,
-                    "history_event_types": history_event_types_from_task(task),
+                    "signal_amounts": new_amounts,
+                    "history_signal_amounts": [
+                        observation.get("signal_amount")
+                        for observation in observations
+                        if isinstance(observation.get("signal_amount"), int)
+                    ],
+                    "history_event_types": [
+                        event.get("event_type")
+                        for event in history_events
+                        if isinstance(event.get("event_type"), str)
+                    ],
                 }
             )
+            if len(history_signal_order) >= len(rapid_inputs):
+                break
+
+        if history_signal_order != rapid_inputs:
+            raise RuntimeError(f"ordered signal history order {history_signal_order}, expected {rapid_inputs}")
 
         queried_total = sum(history_signal_order)
         ordered_query_holder: dict[str, Any] = {}
@@ -2485,30 +2639,72 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
 
         duplicate_observations: list[int] = []
         duplicate_tasks: list[dict[str, Any]] = []
+        duplicate_seen_signals: set[str] = set()
         for index in range(2):
             try:
-                amount, task = complete_next_increment_task(
+                poll = poll_workflow_task(
                     base_url,
                     token,
                     namespace,
                     worker_id,
                     task_queue,
-                    f"{dedup_workflow_id}-after-{index + 1}",
-                    f"duplicate signal {index + 1}",
                     timeout=5,
                 )
             except Exception as exc:  # noqa: BLE001 - a timeout means no further duplicate delivery was observed.
                 log_line(log_file, f"duplicate signal poll stopped: {type(exc).__name__}: {exc}")
                 break
-            duplicate_observations.append(amount)
+            task = poll.get("body", {}).get("task") if isinstance(poll.get("body"), dict) else None
+            if not isinstance(task, dict):
+                log_line(log_file, f"duplicate signal poll stopped: no further workflow task in {poll}")
+                break
+            observations, history_events = increment_signal_observations_from_task(
+                base_url,
+                token,
+                namespace,
+                task,
+            )
+            new_amounts = []
+            for observation in observations:
+                key = signal_observation_key(observation)
+                if key in duplicate_seen_signals:
+                    continue
+                duplicate_seen_signals.add(key)
+                amount = observation.get("signal_amount")
+                if isinstance(amount, int):
+                    new_amounts.append(amount)
+                    duplicate_observations.append(amount)
+
+            if not new_amounts:
+                raise RuntimeError(f"duplicate signal poll {index + 1} did not expose new increment signals: {task}")
+
+            complete = complete_open_wait(
+                base_url,
+                token,
+                namespace,
+                task,
+                f"{dedup_workflow_id}-after-{len(duplicate_observations)}",
+            )
+            if int(complete["status_code"]) >= 400:
+                raise RuntimeError(f"duplicate signal poll {index + 1} task completion failed: {complete}")
             duplicate_tasks.append(
                 {
                     "task_id": task.get("task_id"),
                     "signal_name": signal_name_from_task(task),
-                    "signal_amount": amount,
-                    "history_event_types": history_event_types_from_task(task),
+                    "signal_amounts": new_amounts,
+                    "history_signal_amounts": [
+                        observation.get("signal_amount")
+                        for observation in observations
+                        if isinstance(observation.get("signal_amount"), int)
+                    ],
+                    "history_event_types": [
+                        event.get("event_type")
+                        for event in history_events
+                        if isinstance(event.get("event_type"), str)
+                    ],
                 }
             )
+            if len(duplicate_observations) >= 2:
+                break
 
         handler_observation_count = len([amount for amount in duplicate_observations if amount == 7])
         if handler_observation_count == 0:

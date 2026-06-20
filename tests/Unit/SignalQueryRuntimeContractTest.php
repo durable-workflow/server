@@ -624,6 +624,9 @@ class SignalQueryRuntimeContractTest extends TestCase
             'run_baseline_probe(result_dir)',
             'run_python_sdk_baseline(',
             'Worker(',
+            'workflow_task_history_events(',
+            'increment_signal_observations_from_task(',
+            '"signal_amounts"',
             '"not_claimed_as_pass"',
             'signals-queries-result.json',
             'signals-queries-findings.json',
@@ -726,6 +729,72 @@ PY);
         $this->assertSame(
             'DW_SERVER_IMAGE must use an exact patch semver tag or an image digest',
             $entries['rolling']['not_proved_reason'],
+        );
+    }
+
+    public function test_host_runner_extracts_batched_signal_observations_from_task_history_pages(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+def fake_http_json(base_url, path, **kwargs):
+    return {
+        "status_code": 200,
+        "body": {
+            "history_events": [
+                {
+                    "event_type": "SignalReceived",
+                    "payload": {
+                        "signal_name": "increment",
+                        "signal_id": "sig-2",
+                        "workflow_sequence": 2,
+                        "arguments": {"payload": {"amount": 2}},
+                    },
+                },
+                {
+                    "event_type": "SignalReceived",
+                    "payload": {
+                        "signal_name": "increment",
+                        "signal_id": "sig-3",
+                        "workflow_sequence": 3,
+                        "arguments": {"payload": {"amount": 3}},
+                    },
+                },
+            ],
+            "next_history_page_token": None,
+        },
+    }
+
+globals()["http_json"] = fake_http_json
+task = {
+    "task_id": "task-1",
+    "lease_owner": "worker-1",
+    "workflow_task_attempt": 1,
+    "history_events": [
+        {"event_type": "WorkflowStarted", "payload": {}},
+        {
+            "event_type": "SignalReceived",
+            "payload": {
+                "signal_name": "increment",
+                "signal_id": "sig-1",
+                "workflow_sequence": 1,
+                "arguments": {"payload": {"amount": 1}},
+            },
+        },
+    ],
+    "next_history_page_token": "page-2",
+}
+observations, events = increment_signal_observations_from_task("http://unused", "token", "default", task)
+print(json.dumps({
+    "amounts": [item["signal_amount"] for item in observations],
+    "keys": [signal_observation_key(item) for item in observations],
+    "event_types": [event["event_type"] for event in events],
+}, sort_keys=True))
+PY);
+
+        $this->assertSame([1, 2, 3], $result['amounts']);
+        $this->assertSame(['signal:sig-1', 'signal:sig-2', 'signal:sig-3'], $result['keys']);
+        $this->assertSame(
+            ['WorkflowStarted', 'SignalReceived', 'SignalReceived', 'SignalReceived'],
+            $result['event_types'],
         );
     }
 
