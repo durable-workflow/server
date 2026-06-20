@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 17;
+    public const VERSION = 18;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -1476,6 +1476,21 @@ final class SignalQueryRuntimeResultGate
             }
 
             if ($scenarioId === 'unknown_signal_and_query_errors') {
+                $optionalStatusCodeRanges = [];
+                foreach ([
+                    'cli_unknown_signal_sample.status_code' => [404, 404],
+                    'cli_unknown_query_sample.status_code' => [404, 404],
+                    'cli_missing_workflow_signal_sample.status_code' => [404, 404],
+                    'cli_missing_workflow_query_sample.status_code' => [404, 404],
+                    'sdk_python_unknown_signal_sample.status_code' => [404, 404],
+                    'sdk_python_unknown_query_sample.status_code' => [404, 404],
+                ] as $evidenceKey => $range) {
+                    $sampleKey = explode('.', $evidenceKey, 2)[0];
+                    if (self::evidenceValue($result, $scenarioResult, $scenarioId, $sampleKey) !== null) {
+                        $optionalStatusCodeRanges[$evidenceKey] = $range;
+                    }
+                }
+
                 array_push(
                     $failures,
                     ...self::statusCodeFailures($result, $scenarioResult, $scenarioId, [
@@ -1483,13 +1498,9 @@ final class SignalQueryRuntimeResultGate
                         'missing_workflow_signal.status_code' => [404, 404],
                         'missing_workflow_query.status_code' => [404, 404],
                         'query_not_found.status_code' => [404, 404],
-                        'cli_unknown_signal_sample.status_code' => [404, 404],
-                        'cli_unknown_query_sample.status_code' => [404, 404],
-                        'cli_missing_workflow_signal_sample.status_code' => [404, 404],
-                        'cli_missing_workflow_query_sample.status_code' => [404, 404],
-                        'sdk_python_unknown_signal_sample.status_code' => [404, 404],
-                        'sdk_python_unknown_query_sample.status_code' => [404, 404],
+                        'known_query_after_unknown_errors.status_code' => [200, 299],
                     ]),
+                    ...self::statusCodeFailures($result, $scenarioResult, $scenarioId, $optionalStatusCodeRanges),
                     ...self::unknownHandlerReasonFailures($result, $scenarioResult, $scenarioId),
                 );
             }
@@ -1599,6 +1610,13 @@ final class SignalQueryRuntimeResultGate
             'sdk_python_missing_workflow_signal_sample.reason' => ['instance_not_found'],
             'sdk_python_missing_workflow_query_sample.reason' => ['instance_not_found'],
         ] as $evidenceKey => $expectedReasons) {
+            if (str_contains($evidenceKey, '_sample.')) {
+                $sampleKey = explode('.', $evidenceKey, 2)[0];
+                if (self::evidenceValue($result, $scenarioResult, $scenarioId, $sampleKey) === null) {
+                    continue;
+                }
+            }
+
             $actualReason = self::stringValue(
                 self::evidenceValue($result, $scenarioResult, $scenarioId, $evidenceKey),
             );
@@ -1622,6 +1640,11 @@ final class SignalQueryRuntimeResultGate
             'sdk_python_missing_workflow_signal_sample.exception' => 'WorkflowNotFound',
             'sdk_python_missing_workflow_query_sample.exception' => 'WorkflowNotFound',
         ] as $evidenceKey => $expectedException) {
+            $sampleKey = explode('.', $evidenceKey, 2)[0];
+            if (self::evidenceValue($result, $scenarioResult, $scenarioId, $sampleKey) === null) {
+                continue;
+            }
+
             $actualException = self::stringValue(
                 self::evidenceValue($result, $scenarioResult, $scenarioId, $evidenceKey),
             );

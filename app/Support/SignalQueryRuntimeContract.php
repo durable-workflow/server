@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 17;
+    public const VERSION = 18;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -296,6 +296,14 @@ final class SignalQueryRuntimeContract
                         'rejected_unknown_query',
                     ],
                     'evidence' => [
+                        'unknown_signal',
+                        'missing_workflow_signal',
+                        'missing_workflow_query',
+                        'query_not_found',
+                        'rejected_unknown_query',
+                        'known_query_after_unknown_errors',
+                    ],
+                    'optional_public_client_error_samples' => [
                         'cli_unknown_signal_sample',
                         'cli_unknown_query_sample',
                         'cli_missing_workflow_signal_sample',
@@ -574,6 +582,9 @@ final class SignalQueryRuntimeContract
                             'missing_workflow_query',
                             'query_not_found',
                             'rejected_unknown_query',
+                            'known_query_after_unknown_errors',
+                        ],
+                        'optional_evidence_fields' => [
                             'cli_unknown_signal_sample',
                             'cli_unknown_query_sample',
                             'cli_missing_workflow_signal_sample',

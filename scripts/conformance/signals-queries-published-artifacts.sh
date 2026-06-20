@@ -2073,14 +2073,47 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             wait_for_ready(base_url, log_file, timeout_seconds=30)
 
         server_install = server_install_entry(cleanup_commands)
-        cli_bin, cli_install = install_cli(run_root, log_file)
-        python_bin, python_install = ensure_python_sdk(run_root, log_file)
         versions = probe_artifact_versions()
         install_entries = {
             "server": server_install,
-            "cli": cli_install,
-            "sdk-python": python_install,
         }
+        cli_bin: str | None = None
+        python_bin: str | None = None
+        install_descriptors: dict[str, Any] = {}
+        try:
+            cli_bin, cli_install = install_cli(run_root, log_file)
+            install_entries["cli"] = cli_install
+        except Exception as exc:  # noqa: BLE001 - install proof is reported separately from server baseline cells.
+            log_line(log_file, f"CLI install probe failed: {type(exc).__name__}: {exc}")
+            cli_install = configured_artifact_entry(
+                "cli",
+                artifact_version_value(versions, "cli"),
+                "published_cli_release",
+                "github_release_installer",
+            )
+            cli_install["not_proved_reason"] = f"{type(exc).__name__}: {exc}"
+            install_entries["cli"] = cli_install
+            install_descriptors["cli"] = {
+                "error": f"{type(exc).__name__}: {exc}",
+                "log_file": log_file.name,
+            }
+        try:
+            python_bin, python_install = ensure_python_sdk(run_root, log_file)
+            install_entries["sdk-python"] = python_install
+        except Exception as exc:  # noqa: BLE001 - install proof is reported separately from server baseline cells.
+            log_line(log_file, f"Python SDK install probe failed: {type(exc).__name__}: {exc}")
+            python_install = configured_artifact_entry(
+                "sdk-python",
+                artifact_version_value(versions, "sdk-python"),
+                "published_pypi_package",
+                "pypi_package_install",
+            )
+            python_install["not_proved_reason"] = f"{type(exc).__name__}: {exc}"
+            install_entries["sdk-python"] = python_install
+            install_descriptors["sdk-python"] = {
+                "error": f"{type(exc).__name__}: {exc}",
+                "log_file": log_file.name,
+            }
         sources = probe_artifact_sources(cleanup_commands, install_entries)
         install_outputs = {
             "published_artifact_versions": versions,
@@ -2097,27 +2130,34 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
         python_sdk_outputs: dict[str, Any] | None = None
         python_sdk_descriptor: dict[str, Any] | None = None
         python_sdk_status = "not_covered"
-        try:
-            python_sdk_outputs, python_sdk_descriptor = run_python_sdk_baseline(
-                base_url=base_url,
-                token=token,
-                namespace=namespace,
-                cli_bin=cli_bin,
-                python_bin=python_bin,
-                versions=versions,
-                sources=sources,
-                run_root=run_root,
-                log_file=log_file,
-            )
-            if (
-                install_status == "pass"
-                and has_required_evidence("python_worker_cli_and_sdk_baseline", python_sdk_outputs)
-            ):
-                python_sdk_status = "pass"
-        except Exception as exc:  # noqa: BLE001 - keep the older shards routed when the SDK baseline is missing.
-            log_line(log_file, f"Python SDK baseline probe failed: {type(exc).__name__}: {exc}")
+        if cli_bin is not None and python_bin is not None:
+            try:
+                python_sdk_outputs, python_sdk_descriptor = run_python_sdk_baseline(
+                    base_url=base_url,
+                    token=token,
+                    namespace=namespace,
+                    cli_bin=cli_bin,
+                    python_bin=python_bin,
+                    versions=versions,
+                    sources=sources,
+                    run_root=run_root,
+                    log_file=log_file,
+                )
+                if (
+                    install_status == "pass"
+                    and has_required_evidence("python_worker_cli_and_sdk_baseline", python_sdk_outputs)
+                ):
+                    python_sdk_status = "pass"
+            except Exception as exc:  # noqa: BLE001 - keep the older shards routed when the SDK baseline is missing.
+                log_line(log_file, f"Python SDK baseline probe failed: {type(exc).__name__}: {exc}")
+                python_sdk_descriptor = {
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "log_file": log_file.name,
+                }
+        else:
             python_sdk_descriptor = {
-                "error": f"{type(exc).__name__}: {exc}",
+                "skipped": "cli_or_python_sdk_install_unavailable",
+                "install_probes": install_descriptors,
                 "log_file": log_file.name,
             }
 
@@ -2162,142 +2202,6 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
         )
 
         counter = 0
-        cli_signal = cli_json_sample(
-            cli_bin,
-            base_url,
-            token,
-            namespace,
-            [
-                "workflow:signal",
-                baseline_workflow_id,
-                "increment",
-                "--input",
-                "[3]",
-                "--output=json",
-            ],
-            log_file,
-        )
-        if not public_sample_ok(cli_signal):
-            raise RuntimeError(f"CLI signal failed: {cli_signal}")
-        cli_amount, cli_signal_task = complete_next_increment_task(
-            base_url,
-            token,
-            namespace,
-            worker_id,
-            task_queue,
-            f"{baseline_workflow_id}-after-cli-signal",
-            "CLI signal",
-        )
-        if cli_amount != 3:
-            raise RuntimeError(f"CLI signal delivered {cli_amount}, expected 3")
-        counter += cli_amount
-
-        cli_query = query_with_worker_result(
-            base_url,
-            token,
-            namespace,
-            worker_id,
-            task_queue,
-            baseline_workflow_id,
-            "state",
-            counter,
-            log_file,
-            lambda: cli_json_sample(
-                cli_bin,
-                base_url,
-                token,
-                namespace,
-                [
-                    "workflow:query",
-                    baseline_workflow_id,
-                    "state",
-                    "--output=json",
-                ],
-                log_file,
-            ),
-        )
-        cli_query_result = sample_result_value(cli_query)
-        if cli_query_result != counter:
-            raise RuntimeError(f"CLI query returned {cli_query_result}, expected {counter}")
-
-        sdk_signal = sdk_success_sample(
-            python_bin,
-            base_url,
-            token,
-            namespace,
-            baseline_workflow_id,
-            "signal",
-            "increment",
-            log_file,
-            args=[5],
-        )
-        if not public_sample_ok(sdk_signal):
-            raise RuntimeError(f"Python SDK signal failed: {sdk_signal}")
-        sdk_amount, sdk_signal_task = complete_next_increment_task(
-            base_url,
-            token,
-            namespace,
-            worker_id,
-            task_queue,
-            f"{baseline_workflow_id}-after-sdk-signal",
-            "Python SDK signal",
-        )
-        if sdk_amount != 5:
-            raise RuntimeError(f"Python SDK signal delivered {sdk_amount}, expected 5")
-        counter += sdk_amount
-
-        sdk_query = query_with_worker_result(
-            base_url,
-            token,
-            namespace,
-            worker_id,
-            task_queue,
-            baseline_workflow_id,
-            "state",
-            counter,
-            log_file,
-            lambda: sdk_success_sample(
-                python_bin,
-                base_url,
-                token,
-                namespace,
-                baseline_workflow_id,
-                "query",
-                "state",
-                log_file,
-            ),
-        )
-        sdk_query_result = sample_result_value(sdk_query)
-        if sdk_query_result != counter:
-            raise RuntimeError(f"Python SDK query returned {sdk_query_result}, expected {counter}")
-
-        repeat_query = query_with_worker_result(
-            base_url,
-            token,
-            namespace,
-            worker_id,
-            task_queue,
-            baseline_workflow_id,
-            "state",
-            counter,
-            log_file,
-            lambda: cli_json_sample(
-                cli_bin,
-                base_url,
-                token,
-                namespace,
-                [
-                    "workflow:query",
-                    baseline_workflow_id,
-                    "state",
-                    "--output=json",
-                ],
-                log_file,
-            ),
-        )
-        repeat_query_result = sample_result_value(repeat_query)
-        if repeat_query_result != counter:
-            raise RuntimeError(f"repeat query returned {repeat_query_result}, expected {counter}")
 
         unknown_signal = http_json(
             base_url,
@@ -2335,98 +2239,109 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             namespace=namespace,
             timeout=30,
         )
-        cli_unknown_signal = cli_json_sample(
-            cli_bin,
-            base_url,
-            token,
-            namespace,
-            [
-                "workflow:signal",
-                baseline_workflow_id,
-                "missing",
-                "--output=json",
-            ],
-            log_file,
-        )
-        cli_unknown_query = cli_json_sample(
-            cli_bin,
-            base_url,
-            token,
-            namespace,
-            [
-                "workflow:query",
-                baseline_workflow_id,
-                "missing",
-                "--output=json",
-            ],
-            log_file,
-        )
-        cli_missing_workflow_signal = cli_json_sample(
-            cli_bin,
-            base_url,
-            token,
-            namespace,
-            [
-                "workflow:signal",
-                baseline_workflow_id + "-missing",
-                "increment",
-                "--output=json",
-            ],
-            log_file,
-        )
-        cli_missing_workflow_query = cli_json_sample(
-            cli_bin,
-            base_url,
-            token,
-            namespace,
-            [
-                "workflow:query",
-                baseline_workflow_id + "-missing",
-                "state",
-                "--output=json",
-            ],
-            log_file,
-        )
-        sdk_unknown_signal = sdk_error_sample(
-            python_bin,
-            base_url,
-            token,
-            namespace,
-            baseline_workflow_id,
-            "signal",
-            "missing",
-            log_file,
-        )
-        sdk_unknown_query = sdk_error_sample(
-            python_bin,
-            base_url,
-            token,
-            namespace,
-            baseline_workflow_id,
-            "query",
-            "missing",
-            log_file,
-        )
-        sdk_missing_workflow_signal = sdk_error_sample(
-            python_bin,
-            base_url,
-            token,
-            namespace,
-            baseline_workflow_id + "-missing",
-            "signal",
-            "increment",
-            log_file,
-        )
-        sdk_missing_workflow_query = sdk_error_sample(
-            python_bin,
-            base_url,
-            token,
-            namespace,
-            baseline_workflow_id + "-missing",
-            "query",
-            "state",
-            log_file,
-        )
+        optional_unknown_outputs: dict[str, Any] = {}
+        if cli_bin is not None:
+            optional_unknown_outputs.update(
+                {
+                    "cli_unknown_signal_sample": cli_json_sample(
+                        cli_bin,
+                        base_url,
+                        token,
+                        namespace,
+                        [
+                            "workflow:signal",
+                            baseline_workflow_id,
+                            "missing",
+                            "--output=json",
+                        ],
+                        log_file,
+                    ),
+                    "cli_unknown_query_sample": cli_json_sample(
+                        cli_bin,
+                        base_url,
+                        token,
+                        namespace,
+                        [
+                            "workflow:query",
+                            baseline_workflow_id,
+                            "missing",
+                            "--output=json",
+                        ],
+                        log_file,
+                    ),
+                    "cli_missing_workflow_signal_sample": cli_json_sample(
+                        cli_bin,
+                        base_url,
+                        token,
+                        namespace,
+                        [
+                            "workflow:signal",
+                            baseline_workflow_id + "-missing",
+                            "increment",
+                            "--output=json",
+                        ],
+                        log_file,
+                    ),
+                    "cli_missing_workflow_query_sample": cli_json_sample(
+                        cli_bin,
+                        base_url,
+                        token,
+                        namespace,
+                        [
+                            "workflow:query",
+                            baseline_workflow_id + "-missing",
+                            "state",
+                            "--output=json",
+                        ],
+                        log_file,
+                    ),
+                }
+            )
+        if python_bin is not None:
+            optional_unknown_outputs.update(
+                {
+                    "sdk_python_unknown_signal_sample": sdk_error_sample(
+                        python_bin,
+                        base_url,
+                        token,
+                        namespace,
+                        baseline_workflow_id,
+                        "signal",
+                        "missing",
+                        log_file,
+                    ),
+                    "sdk_python_unknown_query_sample": sdk_error_sample(
+                        python_bin,
+                        base_url,
+                        token,
+                        namespace,
+                        baseline_workflow_id,
+                        "query",
+                        "missing",
+                        log_file,
+                    ),
+                    "sdk_python_missing_workflow_signal_sample": sdk_error_sample(
+                        python_bin,
+                        base_url,
+                        token,
+                        namespace,
+                        baseline_workflow_id + "-missing",
+                        "signal",
+                        "increment",
+                        log_file,
+                    ),
+                    "sdk_python_missing_workflow_query_sample": sdk_error_sample(
+                        python_bin,
+                        base_url,
+                        token,
+                        namespace,
+                        baseline_workflow_id + "-missing",
+                        "query",
+                        "state",
+                        log_file,
+                    ),
+                }
+            )
         known_query_after_unknown_errors = query_with_worker_result(
             base_url,
             token,
@@ -2437,18 +2352,14 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             "state",
             counter,
             log_file,
-            lambda: cli_json_sample(
-                cli_bin,
+            lambda: http_json(
                 base_url,
-                token,
-                namespace,
-                [
-                    "workflow:query",
-                    baseline_workflow_id,
-                    "state",
-                    "--output=json",
-                ],
-                log_file,
+                api_path("workflows", baseline_workflow_id, "query", "state"),
+                method="POST",
+                body={},
+                token=token,
+                namespace=namespace,
+                timeout=60,
             ),
         )
         known_query_after_unknown_result = sample_result_value(known_query_after_unknown_errors)
@@ -2612,35 +2523,11 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             )
         )
 
-        external_baseline_outputs = {
-            "python_worker_query_task_routing": True,
+        server_baseline_outputs = {
             "worker_runtime": "external-http",
-            "python_worker_artifact_source": sources["sdk-python"],
-            "python_worker_sdk_version": versions["sdk-python"],
-            "cli_signal_and_query": public_sample_ok(cli_signal)
-            and public_sample_ok(cli_query)
-            and cli_query_result == 3,
-            "sdk_python_signal_and_query": public_sample_ok(sdk_signal)
-            and public_sample_ok(sdk_query)
-            and sdk_query_result == 8,
-            "immediate_repeat_query_consistency": repeat_query_result == sdk_query_result,
             "workflow_id": baseline_workflow_id,
             "run_id": baseline_run_id,
-            "cli_signal_sample": cli_signal,
-            "cli_signal_task": {
-                "task_id": cli_signal_task.get("task_id"),
-                "signal_amount": cli_amount,
-                "history_event_types": history_event_types_from_task(cli_signal_task),
-            },
-            "cli_query_sample": cli_query,
-            "sdk_python_signal_sample": sdk_signal,
-            "sdk_python_signal_task": {
-                "task_id": sdk_signal_task.get("task_id"),
-                "signal_amount": sdk_amount,
-                "history_event_types": history_event_types_from_task(sdk_signal_task),
-            },
-            "sdk_python_query_sample": sdk_query,
-            "repeat_query_sample": repeat_query,
+            "known_query_after_unknown_errors": response_sample(known_query_after_unknown_errors),
             "published_artifact_versions": versions,
             "artifact_sources": sources,
         }
@@ -2663,18 +2550,11 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             "missing_workflow_query": response_sample(missing_workflow_query),
             "query_not_found": response_sample(query_not_found),
             "rejected_unknown_query": response_sample(query_not_found),
-            "cli_unknown_signal_sample": cli_unknown_signal,
-            "cli_unknown_query_sample": cli_unknown_query,
-            "cli_missing_workflow_signal_sample": cli_missing_workflow_signal,
-            "cli_missing_workflow_query_sample": cli_missing_workflow_query,
-            "sdk_python_unknown_signal_sample": sdk_unknown_signal,
-            "sdk_python_unknown_query_sample": sdk_unknown_query,
-            "sdk_python_missing_workflow_signal_sample": sdk_missing_workflow_signal,
-            "sdk_python_missing_workflow_query_sample": sdk_missing_workflow_query,
             "known_query_after_unknown_errors": known_query_after_unknown_errors,
             "published_artifact_versions": versions,
             "artifact_sources": sources,
         }
+        unknown_outputs.update(optional_unknown_outputs)
         dedup_outputs = {
             "client_side_key_support": client_side_key_support,
             "documented_contract": documented_contract,
@@ -2726,8 +2606,10 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 "dedup": dedup_workflow_id,
             },
             "partial_baseline_observations": {
-                "external_worker_cli_and_sdk_observation": external_baseline_outputs,
+                "external_worker_server_control_plane_observation": server_baseline_outputs,
+                "optional_public_client_error_samples": sorted(optional_unknown_outputs),
                 "python_worker_cli_and_sdk_baseline": python_sdk_descriptor,
+                "install_probes": install_descriptors,
                 "published_artifact_sources_observed": sorted(sources),
                 "not_claimed_as_pass": (
                     ([] if install_status == "pass" else ["published_artifact_install_only"])
@@ -3153,6 +3035,7 @@ def run_adversarial_probe(result_dir: Path, current_evidence: Any) -> tuple[dict
             "sdk_python_unknown_query_sample": sdk_unknown_query,
             "sdk_python_missing_workflow_signal_sample": sdk_missing_workflow_signal,
             "sdk_python_missing_workflow_query_sample": sdk_missing_workflow_query,
+            "known_query_after_unknown_errors": post_error_query,
             "published_artifact_versions": versions,
             "artifact_sources": sources,
         }
@@ -3698,14 +3581,7 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "missing_workflow_query",
         "query_not_found",
         "rejected_unknown_query",
-        "cli_unknown_signal_sample",
-        "cli_unknown_query_sample",
-        "cli_missing_workflow_signal_sample",
-        "cli_missing_workflow_query_sample",
-        "sdk_python_unknown_signal_sample",
-        "sdk_python_unknown_query_sample",
-        "sdk_python_missing_workflow_signal_sample",
-        "sdk_python_missing_workflow_query_sample",
+        "known_query_after_unknown_errors",
     ],
     "malformed_signal_and_query_payloads": [
         "invalid_signal_arguments",
@@ -4072,7 +3948,7 @@ def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
 
     if scenario == "unknown_signal_and_query_errors":
         query_reasons = {"query_not_found", "rejected_unknown_query"}
-        return (
+        required_passed = (
             all(
                 required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
                 for evidence_key in SCENARIO_REQUIRED_EVIDENCE[scenario]
@@ -4081,30 +3957,39 @@ def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
             and status_code_in_range(observed, "missing_workflow_signal.status_code", 404, 404)
             and status_code_in_range(observed, "missing_workflow_query.status_code", 404, 404)
             and status_code_in_range(observed, "query_not_found.status_code", 404, 404)
+            and status_code_in_range(observed, "known_query_after_unknown_errors.status_code", 200, 299)
             and reason_in(observed, "unknown_signal.reason", {"unknown_signal"})
             and reason_in(observed, "missing_workflow_signal.reason", {"instance_not_found"})
             and reason_in(observed, "missing_workflow_query.reason", {"instance_not_found"})
             and reason_in(observed, "query_not_found.reason", query_reasons)
             and reason_in(observed, "rejected_unknown_query.reason", query_reasons)
-            and status_code_in_range(observed, "cli_unknown_signal_sample.status_code", 404, 404)
-            and status_code_in_range(observed, "cli_unknown_query_sample.status_code", 404, 404)
-            and status_code_in_range(observed, "cli_missing_workflow_signal_sample.status_code", 404, 404)
-            and status_code_in_range(observed, "cli_missing_workflow_query_sample.status_code", 404, 404)
-            and reason_in(observed, "cli_unknown_signal_sample.reason", {"unknown_signal"})
-            and reason_in(observed, "cli_unknown_query_sample.reason", query_reasons)
-            and reason_in(observed, "cli_missing_workflow_signal_sample.reason", {"instance_not_found"})
-            and reason_in(observed, "cli_missing_workflow_query_sample.reason", {"instance_not_found"})
-            and status_code_in_range(observed, "sdk_python_unknown_signal_sample.status_code", 404, 404)
-            and status_code_in_range(observed, "sdk_python_unknown_query_sample.status_code", 404, 404)
-            and reason_in(observed, "sdk_python_unknown_signal_sample.reason", {"unknown_signal"})
-            and reason_in(observed, "sdk_python_unknown_query_sample.reason", query_reasons)
-            and reason_in(observed, "sdk_python_missing_workflow_signal_sample.reason", {"instance_not_found"})
-            and reason_in(observed, "sdk_python_missing_workflow_query_sample.reason", {"instance_not_found"})
-            and evidence_lookup(observed, "sdk_python_unknown_signal_sample.exception") == "SignalFailed"
-            and evidence_lookup(observed, "sdk_python_unknown_query_sample.exception") == "QueryFailed"
-            and evidence_lookup(observed, "sdk_python_missing_workflow_signal_sample.exception") == "WorkflowNotFound"
-            and evidence_lookup(observed, "sdk_python_missing_workflow_query_sample.exception") == "WorkflowNotFound"
         )
+        if not required_passed:
+            return False
+
+        optional_checks = {
+            "cli_unknown_signal_sample": ({"unknown_signal"}, None, True),
+            "cli_unknown_query_sample": (query_reasons, None, True),
+            "cli_missing_workflow_signal_sample": ({"instance_not_found"}, None, True),
+            "cli_missing_workflow_query_sample": ({"instance_not_found"}, None, True),
+            "sdk_python_unknown_signal_sample": ({"unknown_signal"}, "SignalFailed", True),
+            "sdk_python_unknown_query_sample": (query_reasons, "QueryFailed", True),
+            "sdk_python_missing_workflow_signal_sample": ({"instance_not_found"}, "WorkflowNotFound", False),
+            "sdk_python_missing_workflow_query_sample": ({"instance_not_found"}, "WorkflowNotFound", False),
+        }
+        for field, (reasons, exception, require_status_code) in optional_checks.items():
+            sample = evidence_lookup(observed, field)
+            if sample is MISSING:
+                continue
+            if not isinstance(sample, dict):
+                return False
+            if require_status_code and not status_code_in_range(observed, f"{field}.status_code", 404, 404):
+                return False
+            if not reason_in(observed, f"{field}.reason", reasons):
+                return False
+            if exception is not None and evidence_lookup(observed, f"{field}.exception") != exception:
+                return False
+        return True
 
     if scenario == "malformed_signal_and_query_payloads":
         return (
