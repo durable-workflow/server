@@ -1315,6 +1315,15 @@ print(json.loads(Path(sys.argv[1]).read_text())["artifact_versions"]["server"])
 PY
 )"
 
+# Keep scratch Composer apps removable by the host after containers exit.
+container_user="$(id -u):$(id -g)"
+composer_env_args=(
+  --user "$container_user"
+  -e COMPOSER_HOME=/tmp/composer
+  -e COMPOSER_CACHE_DIR=/tmp/composer-cache
+  -e HOME=/tmp
+)
+
 mkdir -p "$run_root/cli/bin"
 if ! curl -fsSL "$cli_install_url" -o "$run_root/cli/install.sh"; then
   blocked_result "Replay conformance runner could not download the official CLI install asset"
@@ -1624,7 +1633,7 @@ deactivate || true
 waterline_app="$run_root/waterline-app"
 mkdir -p "$waterline_app"
 set +e
-docker run --rm -v "$waterline_app:/app" -w /app composer:2 \
+docker run --rm "${composer_env_args[@]}" -v "$waterline_app:/app" -w /app composer:2 \
   composer require --no-interaction --no-progress \
     "durable-workflow/workflow:${workflow_php_version}" \
     "durable-workflow/waterline:${waterline_version}" \
@@ -1666,6 +1675,7 @@ PHP
 if [[ "$waterline_install_status" -eq 0 ]]; then
   set +e
   docker run --rm \
+    "${composer_env_args[@]}" \
     -v "$waterline_app:/app" \
     -v "$run_root/waterline-probe.php:/probe.php:ro" \
     -w /app \
@@ -1686,7 +1696,7 @@ fi
 php_app="$run_root/php-app"
 mkdir -p "$php_app"
 set +e
-docker run --rm -v "$php_app:/app" -w /app composer:2 \
+docker run --rm "${composer_env_args[@]}" -v "$php_app:/app" -w /app composer:2 \
   composer create-project laravel/laravel . --no-interaction --no-progress \
   > "$result_dir/php-create-project.log" 2>&1
 php_create_status=$?
@@ -1694,7 +1704,7 @@ set -e
 
 if [[ "$php_create_status" -eq 0 ]]; then
   set +e
-  docker run --rm -v "$php_app:/app" -w /app composer:2 \
+  docker run --rm "${composer_env_args[@]}" -v "$php_app:/app" -w /app composer:2 \
     composer require "durable-workflow/workflow:${workflow_php_version}" --no-interaction --no-progress \
     > "$result_dir/php-require-workflow.log" 2>&1
   php_require_status=$?
@@ -1710,7 +1720,7 @@ if [[ "$php_create_status" -eq 0 && "$php_require_status" -eq 0 ]]; then
     php_args+=("$arg")
   done
   set +e
-  docker run --rm -v "$php_app:/app" -w /app composer:2 php artisan list --raw \
+  docker run --rm "${composer_env_args[@]}" -v "$php_app:/app" -w /app composer:2 php artisan list --raw \
     > "$result_dir/php-artisan-list.log" 2>&1
   php_artisan_list_status=$?
   set -e
@@ -1739,6 +1749,7 @@ print(json.dumps({"runtime": "workflow-php", "status": "available", "command": "
 PY
     set +e
     docker run --rm \
+      "${composer_env_args[@]}" \
       -v "$php_app:/app" \
       -v "$result_dir:/result" \
       -w /app \

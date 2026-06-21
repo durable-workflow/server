@@ -82,6 +82,13 @@ class ReplayConformanceRunnerContractTest extends TestCase
     {
         $source = $this->read('scripts/conformance/replay-published-artifacts.sh');
 
+        $this->assertStringContainsString('container_user="$(id -u):$(id -g)"', $source);
+        $this->assertStringContainsString('COMPOSER_HOME=/tmp/composer', $source);
+        $this->assertStringContainsString('COMPOSER_CACHE_DIR=/tmp/composer-cache', $source);
+        $this->assertStringContainsString('docker run --rm "${composer_env_args[@]}" -v "$waterline_app:/app" -w /app composer:2', $source);
+        $this->assertStringContainsString('docker run --rm "${composer_env_args[@]}" -v "$php_app:/app" -w /app composer:2', $source);
+        $this->assertStringNotContainsString('docker run --rm -v "$waterline_app:/app" -w /app composer:2', $source);
+        $this->assertStringNotContainsString('docker run --rm -v "$php_app:/app" -w /app composer:2', $source);
         $this->assertStringContainsString('"durable-workflow/waterline:${waterline_version}"', $source);
         $this->assertStringContainsString('waterline-probe.php', $source);
         $this->assertStringContainsString('\\Waterline\\Waterline::class', $source);
