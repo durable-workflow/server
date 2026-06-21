@@ -74,6 +74,7 @@ final class ActivityRuntimeResultGate
                 'each_pass_scenario_has_observed_outputs',
                 'each_pass_scenario_has_scenario_specific_evidence',
                 'published_artifact_install_evidence_reported',
+                'published_activity_runtime_evidence_executes_the_pinned_server_artifact',
                 'each_non_pass_scenario_has_linked_findings',
                 'run_timestamps_outcome_and_finding_links_are_recorded',
                 'overall_outcome_matches_gate_status',
@@ -172,6 +173,12 @@ final class ActivityRuntimeResultGate
                         'code' => 'missing_pass_scenario_specific_evidence',
                         'scenario_id' => $scenarioId,
                     ];
+                }
+                if ($scenarioId !== 'published_artifact_install_only') {
+                    array_push(
+                        $failures,
+                        ...self::publishedServerExecutionFailures($scenarioId, $scenarioResult, $result),
+                    );
                 }
             } else {
                 $nonPassScenarios[] = $scenarioId;
@@ -822,6 +829,339 @@ final class ActivityRuntimeResultGate
     }
 
     /**
+     * @param  array<string, mixed>  $scenarioResult
+     * @param  array<string, mixed>  $result
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function publishedServerExecutionFailures(string $scenarioId, array $scenarioResult, array $result): array
+    {
+        $outputs = self::arrayField($scenarioResult, [
+            'observed_outputs',
+            'observedOutputs',
+            'activity_evidence',
+            'activityEvidence',
+            'evidence',
+        ]) ?? [];
+        $scenarioEvidence = self::arrayField($scenarioResult, [
+            'scenario_evidence',
+            'scenarioEvidence',
+        ]) ?? [];
+        $execution = self::arrayField($outputs, self::publishedExecutionAliases())
+            ?? self::arrayField($scenarioEvidence, self::publishedExecutionAliases())
+            ?? self::arrayField($result, self::publishedExecutionAliases());
+
+        if ($execution === null || $execution === []) {
+            return [[
+                'code' => 'published_artifact_worker_execution_missing',
+                'scenario_id' => $scenarioId,
+                'field' => 'published_artifact_worker_execution',
+                'expected' => 'object_with_server_artifact_execution',
+                'actual' => $execution,
+            ]];
+        }
+
+        $failures = [];
+        if (self::containsLocalSourceSignal($execution)
+            || self::truthyField($outputs, ['local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed'])
+            || self::truthyField($scenarioEvidence, ['local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed'])) {
+            $failures[] = [
+                'code' => 'local_product_source_checkouts_used_must_be_false',
+                'scenario_id' => $scenarioId,
+                'field' => 'published_artifact_worker_execution',
+                'value' => 'local source checkout probe signal',
+            ];
+        }
+
+        if (! self::explicitFalseField($execution, ['local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed'])) {
+            $failures[] = [
+                'code' => 'local_product_source_checkouts_used_must_be_false',
+                'scenario_id' => $scenarioId,
+                'field' => 'published_artifact_worker_execution.local_product_source_checkouts_used',
+                'value' => $execution['local_product_source_checkouts_used']
+                    ?? $execution['localProductSourceCheckoutsUsed']
+                    ?? null,
+            ];
+        }
+
+        if (! self::executionClaimsContainer($execution)) {
+            $failures[] = [
+                'code' => 'published_artifact_worker_execution_not_containerized',
+                'scenario_id' => $scenarioId,
+                'field' => 'published_artifact_worker_execution.execution_environment',
+                'expected' => 'pinned server container execution',
+            ];
+        }
+
+        $versions = self::arrayField($result, ['published_artifact_versions', 'publishedArtifactVersions'])
+            ?? self::arrayField($result, ['artifact_versions', 'artifactVersions'])
+            ?? [];
+        $sources = self::arrayField($result, ['artifact_sources', 'artifactSources']) ?? [];
+        $serverVersion = self::artifactVersionForInstallChannel($versions, 'server');
+        $pinnedServerSource = self::stringValue(self::artifactSource($sources, 'server'));
+        $serverEntries = array_values(array_filter(
+            self::publishedExecutionEntries($execution),
+            static fn (array $entry): bool => self::canonicalExecutionArtifact(
+                self::stringField($entry, ['artifact', 'name', 'id']) ?: 'server',
+            ) === 'server',
+        ));
+
+        if ($serverEntries === []) {
+            $failures[] = [
+                'code' => 'missing_required_published_worker_execution_artifact',
+                'scenario_id' => $scenarioId,
+                'artifact' => 'server',
+                'field' => 'published_artifact_worker_execution.artifacts',
+            ];
+
+            return $failures;
+        }
+
+        $validServerEntry = false;
+        foreach ($serverEntries as $index => $entry) {
+            $status = strtolower(self::stringField($entry, ['status', 'result', 'outcome']));
+            $source = self::stringField($entry, [
+                'source',
+                'install_source',
+                'installSource',
+                'artifact_source',
+                'artifactSource',
+                'server_image',
+                'serverImage',
+                'image',
+                'dw_server_image',
+                'dwServerImage',
+            ]);
+            $version = self::stringField($entry, [
+                'version',
+                'artifact_version',
+                'artifactVersion',
+                'server_version',
+                'serverVersion',
+            ]);
+            $fieldPrefix = sprintf('published_artifact_worker_execution.artifacts.%d', $index);
+
+            if ($status !== 'pass') {
+                $failures[] = [
+                    'code' => 'published_artifact_worker_execution_not_pass',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => 'server',
+                    'status' => $status,
+                    'field' => $fieldPrefix.'.status',
+                ];
+            }
+
+            if ($version === '') {
+                $failures[] = [
+                    'code' => 'missing_published_artifact_worker_execution_version',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => 'server',
+                    'field' => $fieldPrefix.'.version',
+                ];
+            } elseif ($version !== $serverVersion || ! self::isExactVersion($version)) {
+                $failures[] = [
+                    'code' => 'invalid_published_artifact_worker_execution_version',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => 'server',
+                    'version' => $version,
+                    'expected' => $serverVersion,
+                    'field' => $fieldPrefix.'.version',
+                ];
+            }
+
+            if ($source === '') {
+                $failures[] = [
+                    'code' => 'missing_published_artifact_worker_execution_source',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => 'server',
+                    'field' => $fieldPrefix.'.source',
+                ];
+            } elseif (self::artifactSourceIsForbidden($source)) {
+                $failures[] = [
+                    'code' => 'forbidden_published_artifact_worker_execution_source',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => 'server',
+                    'source' => $source,
+                    'field' => $fieldPrefix.'.source',
+                ];
+            } elseif (! self::sourceMatchesPinnedServerArtifact($source, $serverVersion, $pinnedServerSource)) {
+                $failures[] = [
+                    'code' => 'unrecognized_published_artifact_worker_execution_source',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => 'server',
+                    'source' => $source,
+                    'expected' => $pinnedServerSource,
+                    'field' => $fieldPrefix.'.source',
+                ];
+            }
+
+            if (self::truthyField($entry, ['local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed'])) {
+                $failures[] = [
+                    'code' => 'local_product_source_checkouts_used_must_be_false',
+                    'scenario_id' => $scenarioId,
+                    'artifact' => 'server',
+                    'field' => $fieldPrefix.'.local_product_source_checkouts_used',
+                    'value' => $entry['local_product_source_checkouts_used']
+                        ?? $entry['localProductSourceCheckoutsUsed']
+                        ?? null,
+                ];
+            }
+
+            if ($status === 'pass'
+                && $version === $serverVersion
+                && self::isExactVersion($version)
+                && $source !== ''
+                && ! self::artifactSourceIsForbidden($source)
+                && self::sourceMatchesPinnedServerArtifact($source, $serverVersion, $pinnedServerSource)
+                && ! self::truthyField($entry, ['local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed'])) {
+                $validServerEntry = true;
+            }
+        }
+
+        if (! $validServerEntry) {
+            $failures[] = [
+                'code' => 'missing_required_published_worker_execution_artifact',
+                'scenario_id' => $scenarioId,
+                'artifact' => 'server',
+                'field' => 'published_artifact_worker_execution.artifacts',
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function publishedExecutionAliases(): array
+    {
+        return [
+            'published_artifact_worker_execution',
+            'publishedArtifactWorkerExecution',
+            'published_server_artifact_execution',
+            'publishedServerArtifactExecution',
+            'published_artifact_execution',
+            'publishedArtifactExecution',
+            'published_server_image_activity_runtime_probe',
+            'publishedServerImageActivityRuntimeProbe',
+            'activity_runtime_probe',
+            'activityRuntimeProbe',
+        ];
+    }
+
+    private static function executionClaimsContainer(array $execution): bool
+    {
+        if (self::truthyField($execution, [
+            'executed_in_pinned_server_artifact',
+            'executedInPinnedServerArtifact',
+            'executed_in_container',
+            'executedInContainer',
+            'containerized',
+        ])) {
+            return true;
+        }
+
+        $mode = strtolower(implode(' ', array_filter([
+            self::stringField($execution, ['execution_environment', 'executionEnvironment']),
+            self::stringField($execution, ['runtime_environment', 'runtimeEnvironment']),
+            self::stringField($execution, ['worker_execution_mode', 'workerExecutionMode']),
+        ])));
+
+        return str_contains($mode, 'container')
+            || str_contains($mode, 'docker')
+            || self::stringField($execution, ['container_id', 'containerId']) !== '';
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private static function publishedExecutionEntries(array $execution): array
+    {
+        $entries = self::arrayField($execution, ['artifacts', 'workers', 'executions']);
+        if ($entries !== null && $entries !== []) {
+            return array_values(array_filter(
+                $entries,
+                static fn (mixed $entry): bool => is_array($entry),
+            ));
+        }
+
+        foreach (['artifact', 'name', 'source', 'server_image', 'serverImage', 'image'] as $field) {
+            if (array_key_exists($field, $execution)) {
+                return [$execution];
+            }
+        }
+
+        return [];
+    }
+
+    private static function canonicalExecutionArtifact(string $artifact): string
+    {
+        $normalized = strtolower(str_replace(['_', ' '], '-', trim($artifact)));
+
+        return match ($normalized) {
+            'durableworkflow/server', 'durable-workflow/server' => 'server',
+            default => $normalized,
+        };
+    }
+
+    private static function sourceMatchesPinnedServerArtifact(string $source, string $serverVersion, string $pinnedServerSource): bool
+    {
+        if ($serverVersion === '' || $pinnedServerSource === '') {
+            return false;
+        }
+
+        $normalizedSource = self::normalizeDockerImage($source);
+        $normalizedPinnedSource = self::normalizeDockerImage($pinnedServerSource);
+        if ($normalizedSource === $normalizedPinnedSource) {
+            return true;
+        }
+
+        if (str_contains($normalizedPinnedSource, '@sha256:')) {
+            return false;
+        }
+
+        return self::matchesServerArtifactSource($serverVersion, $source);
+    }
+
+    private static function normalizeDockerImage(string $source): string
+    {
+        return strtolower((string) preg_replace('/^docker:\/\//i', '', trim($source)));
+    }
+
+    private static function containsLocalSourceSignal(mixed $value, int $depth = 0): bool
+    {
+        if ($depth > 8 || $value === null) {
+            return false;
+        }
+
+        if (is_string($value)) {
+            $normalized = strtolower(str_replace('\\', '/', $value));
+
+            return str_contains($normalized, '/workspace/repos/')
+                || str_contains($normalized, 'repo_root')
+                || str_contains($normalized, '$repo_root')
+                || str_contains($normalized, '${repo_root}')
+                || str_contains($normalized, 'workspace_repo_as_artifact_under_test')
+                || str_contains($normalized, 'local_product_source_checkout')
+                || str_contains($normalized, 'local_checkout')
+                || str_contains($normalized, 'local_source_checkout')
+                || str_contains($normalized, 'source_checkout');
+        }
+
+        if (! is_array($value)) {
+            return false;
+        }
+
+        foreach ($value as $item) {
+            if (self::containsLocalSourceSignal($item, $depth + 1)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * @param  array<string, mixed>  $result
      *
      * @return list<array<string, mixed>>
@@ -891,6 +1231,22 @@ final class ActivityRuntimeResultGate
 
     /**
      * @param  array<string, mixed>  $array
+     * @param  list<string>  $keys
+     */
+    private static function stringField(array $array, array $keys): string
+    {
+        foreach ($keys as $key) {
+            $value = self::stringValue($array[$key] ?? null);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param  array<string, mixed>  $array
      *
      * @return array<string, mixed>|null
      */
@@ -926,5 +1282,44 @@ final class ActivityRuntimeResultGate
         }
 
         return is_string($value) && in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
+    }
+
+    /**
+     * @param  array<string, mixed>  $array
+     * @param  list<string>  $keys
+     */
+    private static function truthyField(array $array, array $keys): bool
+    {
+        foreach ($keys as $key) {
+            if (array_key_exists($key, $array) && self::truthy($array[$key])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function explicitFalse(mixed $value): bool
+    {
+        if ($value === false || $value === 0) {
+            return true;
+        }
+
+        return is_string($value) && in_array(strtolower(trim($value)), ['0', 'false', 'no', 'off'], true);
+    }
+
+    /**
+     * @param  array<string, mixed>  $array
+     * @param  list<string>  $keys
+     */
+    private static function explicitFalseField(array $array, array $keys): bool
+    {
+        foreach ($keys as $key) {
+            if (array_key_exists($key, $array) && self::explicitFalse($array[$key])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

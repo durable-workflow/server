@@ -240,6 +240,12 @@ final class ActivityRuntimeContract
                 ],
                 'must_execute_against_published_artifacts' => true,
                 'must_record_runner_blocked_false_for_product_evidence' => true,
+                'must_prove_activity_runtime_executes_pinned_server_artifact' => true,
+                'published_server_execution_evidence_fields' => [
+                    'published_artifact_worker_execution',
+                    'published_server_artifact_execution',
+                    'published_artifact_execution',
+                ],
                 'must_emit_result_for_every_required_scenario' => true,
                 'smoke_summary_only_outcome' => 'non_passing',
                 'unexecuted_required_scenario_status' => 'not_covered',
@@ -247,6 +253,7 @@ final class ActivityRuntimeContract
                 'coverage_gap_owner' => 'conformance_harness',
                 'required_execution_scopes' => [
                     'published-artifact-install',
+                    'published-server-artifact-execution',
                     'workflow-embedded-activity-shard',
                     'standalone-activity-shard',
                     'worker-restart-durability-shard',

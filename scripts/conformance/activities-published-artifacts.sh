@@ -189,8 +189,11 @@ const NON_PASS_CLASSIFICATIONS = new Set([
 const FORBIDDEN_INSTALL_SOURCE_TOKENS = [
   'local_product_source_checkout',
   'workspace_repo_as_artifact_under_test',
+  'local_checkout_artifact',
+  'local_source_checkout',
   'local_checkout',
   'source_checkout',
+  'workspace_repo',
   '/workspace/repos/',
 ];
 const PUBLISHED_SERVER_IMAGE_REPOSITORIES = [
@@ -454,7 +457,11 @@ function normalizeArtifactInstallEvidence(evidenceLoad, artifactVersions) {
 
 function installSourceIsForbidden(source) {
   const normalized = source.toLowerCase();
-  return FORBIDDEN_INSTALL_SOURCE_TOKENS.some((token) => normalized.includes(token));
+  const decoded = decodeURIComponentSafe(normalized);
+  return [normalized, decoded].some((candidate) => {
+    return FORBIDDEN_INSTALL_SOURCE_TOKENS.some((token) => candidate.includes(token))
+      || sourceLooksLocal(candidate);
+  });
 }
 
 function installSourceMatchesArtifact(artifact, version, source) {
@@ -495,6 +502,29 @@ function matchesServerArtifactSource(version, source) {
       || new RegExp(`^${escapedRepository}@sha256:[0-9a-f]{64}$`, 'i').test(image)
       || new RegExp(`^${escapedRepository}:${escapedVersion}@sha256:[0-9a-f]{64}$`, 'i').test(image);
   });
+}
+
+function decodeURIComponentSafe(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch (_error) {
+    return value;
+  }
+}
+
+function sourceLooksLocal(source) {
+  const normalized = source.replace(/\\/g, '/').trim().toLowerCase();
+  return normalized.startsWith('file:')
+    || /^local(?::|\/|$)/.test(normalized)
+    || /^~(?:[^/]*)?(?:\/|$)/.test(normalized)
+    || /^\$(?:home|userprofile)(?:\/|$)/.test(normalized)
+    || /^\$\{(?:home|userprofile)\}(?:\/|$)/.test(normalized)
+    || /^%(?:home|userprofile|homedrive|homepath)%/.test(normalized)
+    || /^\/[^/]+/.test(normalized)
+    || /^[a-z]:\//.test(normalized)
+    || /^\.\.?(?:\/|$)/.test(normalized)
+    || /(^|[^a-z0-9])\/?workspace\/repos\//.test(normalized)
+    || /^repos\/(?:server|workflow|waterline|cli|cloud|sample-app|sdk-python|durable-workflow\.github\.io)(?:\/|$)/.test(normalized);
 }
 
 function matchesCliArtifactSource(version, source) {
@@ -660,6 +690,239 @@ function nonEmptyObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0;
 }
 
+function firstObjectValue(...values) {
+  for (const value of values) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value;
+    }
+  }
+  return {};
+}
+
+function publishedRuntimeExecutionEvidence(evidence) {
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) {
+    return {};
+  }
+
+  return firstObjectValue(
+    evidence.published_artifact_worker_execution,
+    evidence.publishedArtifactWorkerExecution,
+    evidence.published_server_artifact_execution,
+    evidence.publishedServerArtifactExecution,
+    evidence.published_artifact_execution,
+    evidence.publishedArtifactExecution,
+    evidence.published_server_image_activity_runtime_probe,
+    evidence.publishedServerImageActivityRuntimeProbe,
+    evidence.activity_runtime_probe,
+    evidence.activityRuntimeProbe,
+  );
+}
+
+function executionEntries(execution) {
+  if (!execution || typeof execution !== 'object' || Array.isArray(execution)) {
+    return [];
+  }
+
+  const entries = Array.isArray(execution.artifacts)
+    ? execution.artifacts
+    : (
+        Array.isArray(execution.workers)
+          ? execution.workers
+          : (Array.isArray(execution.executions) ? execution.executions : [])
+      );
+
+  if (entries.length > 0) {
+    return entries.filter((entry) => entry && typeof entry === 'object' && !Array.isArray(entry));
+  }
+
+  if (execution.artifact || execution.name || execution.source || execution.server_image || execution.image) {
+    return [execution];
+  }
+
+  return [];
+}
+
+function canonicalExecutionArtifact(value) {
+  const normalized = stringValue(value).toLowerCase().replace(/[_\s]/g, '-');
+  if (['server', 'durableworkflow/server', 'durable-workflow/server'].includes(normalized)) {
+    return 'server';
+  }
+  return normalized;
+}
+
+function executionSource(entry) {
+  return entrySource(entry)
+    || stringValue(entry.server_image)
+    || stringValue(entry.serverImage)
+    || stringValue(entry.image)
+    || stringValue(entry.dw_server_image)
+    || stringValue(entry.dwServerImage);
+}
+
+function executionVersion(entry) {
+  return stringValue(
+    entry.version
+    || entry.artifact_version
+    || entry.artifactVersion
+    || entry.server_version
+    || entry.serverVersion,
+  );
+}
+
+function normalizeDockerImage(value) {
+  return stringValue(value).replace(/^docker:\/\//i, '').toLowerCase();
+}
+
+function imageSourceMatchesPinned(source, serverVersion, serverImage) {
+  const normalizedSource = normalizeDockerImage(source);
+  const normalizedPinned = normalizeDockerImage(serverImage);
+
+  if (!normalizedSource || !normalizedPinned) {
+    return false;
+  }
+
+  if (normalizedPinned.includes('@sha256:')) {
+    return normalizedSource === normalizedPinned;
+  }
+
+  return normalizedSource === normalizedPinned || matchesServerArtifactSource(serverVersion, source);
+}
+
+function executionClaimsContainer(execution) {
+  if (truthy(execution.executed_in_pinned_server_artifact)
+    || truthy(execution.executedInPinnedServerArtifact)
+    || truthy(execution.executed_in_container)
+    || truthy(execution.executedInContainer)
+    || truthy(execution.containerized)) {
+    return true;
+  }
+
+  const mode = [
+    execution.execution_environment,
+    execution.executionEnvironment,
+    execution.runtime_environment,
+    execution.runtimeEnvironment,
+    execution.worker_execution_mode,
+    execution.workerExecutionMode,
+  ].map(stringValue).join(' ').toLowerCase();
+
+  return mode.includes('container') || mode.includes('docker') || stringValue(execution.container_id || execution.containerId) !== '';
+}
+
+function localSourceSignals(value, signals = [], depth = 0) {
+  if (depth > 8 || value === null || value === undefined) {
+    return signals;
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.replace(/\\/g, '/').toLowerCase();
+    if (normalized.includes('/workspace/repos/')
+      || normalized.includes('repo_root')
+      || normalized.includes('$repo_root')
+      || normalized.includes('${repo_root}')
+      || normalized.includes('workspace_repo_as_artifact_under_test')
+      || normalized.includes('local_product_source_checkout')
+      || normalized.includes('local_checkout')
+      || normalized.includes('local_source_checkout')
+      || normalized.includes('source_checkout')) {
+      signals.push(value);
+    }
+    return signals;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      localSourceSignals(item, signals, depth + 1);
+    }
+    return signals;
+  }
+
+  if (typeof value === 'object') {
+    for (const item of Object.values(value)) {
+      localSourceSignals(item, signals, depth + 1);
+    }
+  }
+
+  return signals;
+}
+
+function runtimeExecutionFailures(execution, activityEvidence, serverImage, serverVersion) {
+  const failures = [];
+
+  if (!nonEmptyObject(execution)) {
+    failures.push('published_artifact_worker_execution missing');
+    const localSignals = localSourceSignals(activityEvidence).slice(0, 3);
+    if (localSignals.length > 0) {
+      failures.push(`activity evidence contains local product source probe signals: ${localSignals.join('; ')}`);
+    }
+    return failures;
+  }
+
+  const localSignals = localSourceSignals(execution).slice(0, 3);
+  if (localSignals.length > 0) {
+    failures.push(`published_artifact_worker_execution contains local product source probe signals: ${localSignals.join('; ')}`);
+  }
+
+  if (!explicitFalse(execution.local_product_source_checkouts_used)
+    && !explicitFalse(execution.localProductSourceCheckoutsUsed)) {
+    failures.push('published_artifact_worker_execution.local_product_source_checkouts_used=false missing');
+  }
+
+  if (!executionClaimsContainer(execution)) {
+    failures.push('published_artifact_worker_execution must prove execution inside the pinned server container');
+  }
+
+  const entries = executionEntries(execution);
+  const serverEntries = entries.filter((entry) => {
+    const artifact = canonicalExecutionArtifact(entry.artifact || entry.name || entry.id || 'server');
+    return artifact === 'server';
+  });
+  if (serverEntries.length === 0) {
+    failures.push('published_artifact_worker_execution.artifacts.server missing');
+    return failures;
+  }
+
+  let sawValidServerEntry = false;
+  for (const entry of serverEntries) {
+    const status = normalizedStatus(entry.status || entry.result || entry.outcome);
+    const source = executionSource(entry);
+    const version = executionVersion(entry);
+
+    if (status !== 'pass') {
+      failures.push(`published_artifact_worker_execution.server.status=${status || 'missing'}`);
+    }
+    if (version !== serverVersion) {
+      failures.push(`published_artifact_worker_execution.server.version=${version || 'missing'} does not match ${serverVersion || 'missing'}`);
+    }
+    if (!source) {
+      failures.push('published_artifact_worker_execution.server.source=missing');
+    } else if (installSourceIsForbidden(source)) {
+      failures.push(`published_artifact_worker_execution.server.source is local or forbidden: ${source}`);
+    } else if (!imageSourceMatchesPinned(source, serverVersion, serverImage)) {
+      failures.push(`published_artifact_worker_execution.server.source=${source} does not match pinned DW_SERVER_IMAGE ${serverImage || 'missing'}`);
+    }
+    if (truthy(entry.local_product_source_checkouts_used) || truthy(entry.localProductSourceCheckoutsUsed)) {
+      failures.push('published_artifact_worker_execution.server.local_product_source_checkouts_used=true');
+    }
+
+    if (status === 'pass'
+      && version === serverVersion
+      && source
+      && !installSourceIsForbidden(source)
+      && imageSourceMatchesPinned(source, serverVersion, serverImage)
+      && !truthy(entry.local_product_source_checkouts_used)
+      && !truthy(entry.localProductSourceCheckoutsUsed)) {
+      sawValidServerEntry = true;
+    }
+  }
+
+  if (!sawValidServerEntry) {
+    failures.push('published_artifact_worker_execution lacks a passing server artifact entry for the pinned DW_SERVER_IMAGE');
+  }
+
+  return failures;
+}
+
 function normalizeClassification(value, fallback) {
   const classification = stringValue(value);
   if (NON_PASS_CLASSIFICATIONS.has(classification)) {
@@ -813,6 +1076,14 @@ function main() {
     ? activityEvidenceLoad.value
     : {};
   const activityEvidenceById = scenarioEvidenceById(activityEvidence);
+  const runtimeExecution = publishedRuntimeExecutionEvidence(activityEvidence);
+  const runtimeExecutionFailureList = runtimeExecutionFailures(
+    runtimeExecution,
+    activityEvidence,
+    serverImage,
+    artifactVersions.server,
+  );
+  const runtimeExecutionPass = runtimeExecutionFailureList.length === 0;
   const evidenceLoadFailure = stringValue(activityEvidence.load_error);
 
   const runnerBlocked = pinFailures.length > 0;
@@ -820,9 +1091,12 @@ function main() {
   const missingEvidenceReason = activityEvidenceLoad.supplied
     ? evidenceLoadFailure
     : 'activity host evidence missing';
+  const runtimeExecutionReason = runtimeExecutionFailureList.length > 0
+    ? `activity host evidence did not prove execution inside the pinned published server artifact: ${runtimeExecutionFailureList.join('; ')}`
+    : '';
   const defaultNonPassStatus = runnerBlocked ? 'runner_blocked' : 'not_covered';
   const defaultClassification = runnerBlocked ? 'runner-gap' : 'coverage-gap';
-  const defaultReason = runnerBlocked ? blockedReason : missingEvidenceReason;
+  const defaultReason = runnerBlocked ? blockedReason : (runtimeExecutionReason || missingEvidenceReason);
   const findings = [];
   const scenarioResults = [];
 
@@ -899,32 +1173,46 @@ function main() {
       if (status === 'pass' && !nonEmptyObject(observedOutputs)) {
         status = 'fail';
       }
+      if (status === 'pass' && !runtimeExecutionPass) {
+        status = 'not_covered';
+      }
 
       if (status === 'pass') {
+        const passObservedOutputs = {
+          ...observedOutputs,
+          published_artifact_worker_execution: runtimeExecution,
+        };
         scenarioResults.push({
           scenario_id: scenarioId,
           status,
           expected_behavior: expectedBehavior,
           classification: null,
-          observed_outputs: observedOutputs,
+          observed_outputs: passObservedOutputs,
           scenario_evidence: nonEmptyObject(supplied.scenario_evidence || supplied.scenarioEvidence)
-            ? (supplied.scenario_evidence || supplied.scenarioEvidence)
-            : observedOutputs,
+            ? {
+              ...(supplied.scenario_evidence || supplied.scenarioEvidence),
+              published_artifact_worker_execution: runtimeExecution,
+            }
+            : passObservedOutputs,
         });
         continue;
       }
 
       const classification = normalizeClassification(
         supplied.classification || supplied.root_cause_classification || supplied.rootCauseClassification,
-        status === 'runner_blocked' ? 'runner-gap' : 'product-gap',
+        status === 'runner_blocked' ? 'runner-gap' : (runtimeExecutionPass ? 'product-gap' : 'coverage-gap'),
       );
       const scenarioFinding = finding(scenarioId, expectedBehavior, publishedArtifactVersions, {
         runnerBlocked: status === 'runner_blocked',
         classification,
         findingType: supplied.finding_type || supplied.findingType,
         owner: supplied.owning_surface || supplied.owner,
-        reason: stringValue(supplied.reason || supplied.observed_behavior || supplied.observedBehavior),
-        observedBehavior: stringValue(supplied.observed_behavior || supplied.observedBehavior),
+        reason: runtimeExecutionPass
+          ? stringValue(supplied.reason || supplied.observed_behavior || supplied.observedBehavior)
+          : runtimeExecutionReason,
+        observedBehavior: runtimeExecutionPass
+          ? stringValue(supplied.observed_behavior || supplied.observedBehavior)
+          : '',
       });
       findings.push(scenarioFinding);
       scenarioResults.push({
@@ -938,6 +1226,7 @@ function main() {
             coverage_status: status,
             observed_behavior: scenarioFinding.observed_behavior,
             next_acceptance_criterion: scenarioFinding.next_acceptance_criterion,
+            runtime_execution_failures: runtimeExecutionFailureList,
           },
         linked_findings: [scenarioFinding],
       });
@@ -1034,6 +1323,8 @@ function main() {
     artifact_install_evidence: artifactInstallEvidence,
     activity_evidence_source: activityEvidenceLoad.source,
     activity_evidence_supplied: activityEvidenceLoad.supplied,
+    published_artifact_worker_execution: runtimeExecutionPass ? runtimeExecution : null,
+    published_artifact_worker_execution_failures: runtimeExecutionFailureList,
     published_artifact_install: {
       ...sectionFromEvidence(activityEvidence, 'published_artifact_install', {}),
       ...publishedArtifactInstall,
@@ -1068,6 +1359,9 @@ function main() {
     artifact_install_evidence_supplied: artifactInstallEvidence.supplied,
     activity_evidence_source: activityEvidenceLoad.source,
     activity_evidence_supplied: activityEvidenceLoad.supplied,
+    published_artifact_worker_execution_supplied: nonEmptyObject(runtimeExecution),
+    published_artifact_worker_execution_pass: runtimeExecutionPass,
+    published_artifact_worker_execution_failures: runtimeExecutionFailureList,
     scenario_manifest: MANIFEST_PATH,
   };
 
