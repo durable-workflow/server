@@ -76,6 +76,7 @@ final class SagaRuntimeResultGate
                 'each_pass_scenario_has_scenario_specific_evidence',
                 'each_non_pass_scenario_has_linked_findings',
                 'run_timestamps_outcome_and_findings_are_recorded',
+                'runner_exit_status_zero_for_passing_record',
                 'overall_outcome_matches_gate_status',
                 'published_artifact_versions_are_recorded_and_pinned',
                 'published_artifact_install_sources_are_complete',
@@ -177,6 +178,7 @@ final class SagaRuntimeResultGate
         array_push($failures, ...self::sourcePolicyFailures($result, $contract, $scenarioResults));
         array_push($failures, ...self::matrixFailures($result));
         array_push($failures, ...self::requiredSectionFailures($result));
+        array_push($failures, ...self::runnerExitStatusFailures($result));
 
         $smokeSubsetDetected = self::isSmokeSubset($scenarioStatuses, $contract);
         if ($smokeSubsetDetected) {
@@ -786,6 +788,70 @@ final class SagaRuntimeResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function runnerExitStatusFailures(array $result): array
+    {
+        $declaresPassingOutcome = self::declaresPassingOutcome($result);
+
+        foreach (['runner_exit_status', 'runnerExitStatus', 'exit_status', 'exitStatus', 'exit_code', 'exitCode'] as $field) {
+            if (! array_key_exists($field, $result)) {
+                continue;
+            }
+
+            $value = $result[$field];
+            if (is_int($value)) {
+                return $value === 0 ? [] : [[
+                    'code' => 'runner_exit_status_nonzero',
+                    'field' => $field,
+                    'exit_status' => $value,
+                ]];
+            }
+
+            if (is_string($value) && preg_match('/^-?\d+$/', trim($value)) === 1) {
+                $exitStatus = (int) trim($value);
+
+                return $exitStatus === 0 ? [] : [[
+                    'code' => 'runner_exit_status_nonzero',
+                    'field' => $field,
+                    'exit_status' => $exitStatus,
+                ]];
+            }
+
+            return [[
+                'code' => 'invalid_runner_exit_status',
+                'field' => $field,
+                'value' => $value,
+            ]];
+        }
+
+        if ($declaresPassingOutcome) {
+            return [[
+                'code' => 'missing_runner_exit_status',
+                'field' => 'runner_exit_status',
+            ]];
+        }
+
+        return [];
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     */
+    private static function declaresPassingOutcome(array $result): bool
+    {
+        foreach (self::declaredOutcomeTokens($result) as $outcome) {
+            if (self::declaredOutcomeStatus($outcome) === 'pass') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

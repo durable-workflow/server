@@ -799,6 +799,108 @@ class SagaConformanceRunnerContractTest extends TestCase
         );
     }
 
+    public function test_nonzero_runner_exit_downgrades_passing_record_before_returning(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            'finalize_saga_record_for_exit()',
+            $source,
+            'the shell runner must reconcile generated evidence with the final process exit status',
+        );
+        $this->assertStringContainsString(
+            'finalize_saga_record_for_exit "$code"',
+            $source,
+            'the EXIT trap cleanup must run the record finalizer before returning an original non-zero status',
+        );
+        $this->assertStringContainsString(
+            'finalize_saga_record_for_exit 1',
+            $source,
+            'cleanup-induced non-zero exits after a passing run must also downgrade the record',
+        );
+        $this->assertStringContainsString(
+            'exit "$code"',
+            $source,
+            'the cleanup trap must preserve the runner exit status after finalizing the record',
+        );
+        $this->assertStringContainsString(
+            'if not declares_pass(result) and not declares_pass(record):',
+            $source,
+            'non-passing saga records should retain their existing focused scenario findings',
+        );
+        $this->assertStringContainsString(
+            '"id": "sagas-runner-exit-status-mismatch"',
+            $source,
+            'a passing record paired with a non-zero process exit must emit a routable mismatch finding',
+        );
+        $this->assertStringContainsString(
+            '"scenario_id": "runner_exit_status"',
+            $source,
+            'the mismatch finding must name the runner-exit diagnostic scenario',
+        );
+        $this->assertStringContainsString(
+            '"owning_surface": "conformance_harness"',
+            $source,
+            'exit-status mismatches route to the conformance harness rather than a product surface',
+        );
+        $this->assertStringContainsString(
+            'result["outcome"] = "error"',
+            $source,
+            'sagas-result.json must not keep outcome=pass when the runner returns a non-zero status',
+        );
+        $this->assertStringContainsString(
+            'record["outcome"] = "error"',
+            $source,
+            'sagas-record.json must not keep outcome=pass when the runner returns a non-zero status',
+        );
+        $this->assertStringContainsString(
+            'replace_pass_aliases(record)',
+            $source,
+            'pass-valued record aliases must be cleared when the final runner exit is non-zero',
+        );
+        $this->assertStringContainsString(
+            'record["runnerExitStatus"] = exit_code',
+            $source,
+            'the ledger record must preserve the observed runner exit status',
+        );
+    }
+
+    public function test_success_and_scenario_failure_records_include_runner_exit_status(): void
+    {
+        $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');
+
+        $this->assertStringContainsString(
+            'runner_exit_status = 0 if outcome == "pass" else 1',
+            $source,
+            'the orchestrator must derive result exit-status evidence from the outcome it is about to return',
+        );
+        $this->assertStringContainsString(
+            '"runner_exit_status": runner_exit_status',
+            $source,
+            'the normal sagas-result.json path must record runner_exit_status=0 for pass records',
+        );
+        $this->assertStringContainsString(
+            '"runnerExitStatus": runner_exit_status',
+            $source,
+            'the normal sagas-record.json path must preserve the runner exit status for ledger ingestion',
+        );
+        $this->assertStringContainsString(
+            'local exit_status="${3:-1}"',
+            $source,
+            'runner-blocked records must default to a non-zero status while allowing the error trap to preserve a concrete status',
+        );
+        $this->assertStringContainsString(
+            '"runner_exit_status": $exit_status',
+            $source,
+            'runner-blocked records must also preserve their non-zero process exit status',
+        );
+        $this->assertStringContainsString(
+            '"runnerExitStatus": $exit_status',
+            $source,
+            'runner-blocked ledger records must expose their non-zero process exit status',
+        );
+    }
+
     public function test_php_runner_uses_published_workflow_fiber_runner(): void
     {
         $source = $this->read('scripts/conformance/sagas-published-artifacts.sh');

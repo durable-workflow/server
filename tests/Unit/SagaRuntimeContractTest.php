@@ -31,6 +31,8 @@ class SagaRuntimeContractTest extends TestCase
             $manifest['host_runner_contract']['runner_path'],
         );
         $this->assertTrue($manifest['host_runner_contract']['must_execute_against_published_artifacts']);
+        $this->assertTrue($manifest['host_runner_contract']['pass_record_requires_zero_exit_status']);
+        $this->assertSame('error', $manifest['host_runner_contract']['nonzero_runner_exit_record_outcome']);
         $this->assertTrue($manifest['host_runner_contract']['must_record_runner_blocked_false_for_product_evidence']);
         $this->assertTrue($manifest['artifact_policy']['release_records_without_assets_are_rejected']);
 
@@ -86,6 +88,10 @@ class SagaRuntimeContractTest extends TestCase
         );
         $this->assertContains(
             'runner_blocked_false_for_product_evidence',
+            $manifest['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertContains(
+            'runner_exit_status_zero_for_passing_record',
             $manifest['coverage_gate']['passing_outcome_requires'],
         );
         $this->assertContains(
@@ -160,6 +166,14 @@ class SagaRuntimeContractTest extends TestCase
             $scenarioManifest['host_runner_contract']['runner_path'],
         );
         $this->assertSame(
+            $manifest['host_runner_contract']['pass_record_requires_zero_exit_status'],
+            $scenarioManifest['host_runner_contract']['pass_record_requires_zero_exit_status'],
+        );
+        $this->assertSame(
+            $manifest['host_runner_contract']['nonzero_runner_exit_record_outcome'],
+            $scenarioManifest['host_runner_contract']['nonzero_runner_exit_record_outcome'],
+        );
+        $this->assertSame(
             $manifest['host_runner_contract']['required_execution_scopes'],
             $scenarioManifest['host_runner_contract']['required_execution_scopes'],
         );
@@ -170,6 +184,7 @@ class SagaRuntimeContractTest extends TestCase
         );
 
         $this->assertContains('worker_restart_observations', $scenarioManifest['common_result_evidence']);
+        $this->assertContains('runner_exit_status', $scenarioManifest['common_result_evidence']);
     }
 
     public function test_result_gate_keeps_runner_blocked_evidence_non_passing(): void
@@ -286,6 +301,48 @@ class SagaRuntimeContractTest extends TestCase
         $this->assertNotContains('missing_non_pass_finding', $failureCodes);
         $this->assertNotContains('unstructured_non_pass_finding', $failureCodes);
         $this->assertNotContains('missing_non_pass_finding_field', $failureCodes);
+    }
+
+    public function test_result_gate_treats_nonzero_runner_exit_record_as_non_passing_without_erasing_scenario_evidence(): void
+    {
+        $result = $this->completeSagaResult();
+        $result['outcome'] = 'error';
+        $result['runner_exit_status'] = 1;
+        $result['findings'] = [
+            [
+                'id' => 'sagas-runner-exit-status-mismatch',
+                'severity' => 'P0',
+                'surface' => 'conformance-runner',
+                'scenario_id' => 'runner_exit_status',
+                'owning_surface' => 'conformance_harness',
+                'artifact_versions' => $result['published_artifact_versions'],
+                'observed_behavior' => 'The runner process exited with status 1 while sagas-result.json declared outcome=pass.',
+                'expected_behavior' => 'A sagas conformance record declares outcome=pass only when the final runner process exit status is 0.',
+                'next_acceptance_criterion' => 'make the runner exit path agree with the recorded outcome',
+            ],
+        ];
+
+        $evaluation = SagaRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertSame('pass', $evaluation['scenario_statuses']['operator_visible_mid_compensation_status']);
+        $this->assertContains('runner_exit_status_nonzero', $failureCodes);
+        $this->assertNotContains('declared_outcome_status_mismatch', $failureCodes);
+        $this->assertSame([], $evaluation['non_pass_scenarios']);
+    }
+
+    public function test_result_gate_requires_zero_runner_exit_status_for_passing_record(): void
+    {
+        $result = $this->completeSagaResult();
+        unset($result['runner_exit_status']);
+
+        $evaluation = SagaRuntimeResultGate::evaluate($result);
+        $failureCodes = array_column($evaluation['gate_failures'], 'code');
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('missing_runner_exit_status', $failureCodes);
+        $this->assertContains('declared_outcome_status_mismatch', $failureCodes);
     }
 
     public function test_result_gate_requires_scenario_specific_evidence(): void
@@ -544,6 +601,7 @@ class SagaRuntimeContractTest extends TestCase
             'category' => 'saga_runtime_contract',
             'outcome' => 'pass',
             'runner_blocked' => false,
+            'runner_exit_status' => 0,
             'started_at' => '2026-05-24T21:00:00Z',
             'finished_at' => '2026-05-24T21:05:00Z',
             'generated_at' => '2026-05-24T21:05:00Z',

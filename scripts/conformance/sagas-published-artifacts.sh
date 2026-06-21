@@ -129,8 +129,132 @@ if [[ -z "$result_dir" ]]; then
 fi
 mkdir -p "$result_dir"
 
+finalize_saga_record_for_exit() {
+  local code="$1"
+
+  if [[ "$code" -eq 0 || ! -f "$result_dir/sagas-result.json" ]]; then
+    return
+  fi
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    return
+  fi
+
+  python3 - "$result_dir" "$code" <<'PY' || true
+from __future__ import annotations
+
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    try:
+        decoded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def write_json(path: Path, value: dict[str, Any]) -> None:
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def outcome_token(value: Any) -> str:
+    return str(value).strip().lower() if value is not None else ""
+
+
+def declares_pass(value: dict[str, Any]) -> bool:
+    return any(outcome_token(value.get(field)) in {"pass", "passed", "success", "full"} for field in ("outcome", "status", "verdict"))
+
+
+def artifact_versions(result: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
+    for container in (result, record):
+        for field in (
+            "published_artifact_versions",
+            "publishedArtifactVersions",
+            "resolved_artifact_versions",
+            "resolvedArtifactVersions",
+            "artifactVersions",
+            "artifact_versions",
+        ):
+            value = container.get(field)
+            if isinstance(value, dict) and value:
+                return value
+    return {}
+
+
+def append_unique(items: Any, item: Any, key: str) -> list[Any]:
+    values = list(items) if isinstance(items, list) else []
+    if isinstance(item, dict):
+        identity = item.get(key)
+        if not any(isinstance(existing, dict) and existing.get(key) == identity for existing in values):
+            values.append(item)
+    elif item not in values:
+        values.append(item)
+    return values
+
+
+def replace_pass_aliases(value: dict[str, Any]) -> None:
+    for field in ("status", "verdict"):
+        if outcome_token(value.get(field)) in {"pass", "passed", "success", "full"}:
+            value[field] = "error"
+
+
+result_dir = Path(sys.argv[1])
+exit_code = int(sys.argv[2])
+result_path = result_dir / "sagas-result.json"
+record_path = result_dir / "sagas-record.json"
+result = read_json(result_path)
+record = read_json(record_path)
+
+if not declares_pass(result) and not declares_pass(record):
+    raise SystemExit(0)
+
+now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+summary = f"runner_exit_status: saga conformance runner exited with status {exit_code} after writing a passing record"
+finding = {
+    "id": "sagas-runner-exit-status-mismatch",
+    "severity": "P0",
+    "surface": "conformance-runner",
+    "scenario_id": "runner_exit_status",
+    "owning_surface": "conformance_harness",
+    "diagnostic_surface": "runner_process_exit_status",
+    "next_routed_owner": "conformance_harness",
+    "artifact_versions": artifact_versions(result, record),
+    "observed_behavior": f"The runner process exited with status {exit_code} while sagas-result.json or sagas-record.json declared outcome=pass.",
+    "expected_behavior": "A sagas conformance record declares outcome=pass only when the final runner process exit status is 0.",
+    "next_acceptance_criterion": "make the runner exit path agree with the recorded outcome, or record the concrete failed saga scenario as non-passing before returning a non-zero exit",
+    "summary": summary,
+}
+
+result["outcome"] = "error"
+replace_pass_aliases(result)
+result["runner_blocked"] = bool(result.get("runner_blocked") is True)
+result["runner_exit_status"] = exit_code
+result["runner_exit_status_recorded_at"] = now
+result["findings"] = append_unique(result.get("findings"), finding, "id")
+result["linked_findings"] = append_unique(result.get("linked_findings"), finding, "id")
+write_json(result_path, result)
+
+record["experiment"] = record.get("experiment") or "sagas"
+record["outcome"] = "error"
+replace_pass_aliases(record)
+record["runnerBlocked"] = bool(record.get("runnerBlocked") is True)
+record["artifactVersions"] = artifact_versions(result, record)
+record["runnerExitStatus"] = exit_code
+record["findings"] = append_unique(record.get("findings"), summary, "id")
+record["linkedFindings"] = append_unique(record.get("linkedFindings"), finding, "id")
+record["resultPath"] = str(result_path)
+write_json(record_path, record)
+PY
+}
+
 cleanup() {
   local code=$?
+  local cleanup_status=0
 
   if [[ -n "${python_worker_pid:-}" ]]; then
     kill "$python_worker_pid" >/dev/null 2>&1 || true
@@ -140,8 +264,19 @@ cleanup() {
     docker compose -f "$run_root/compose.yml" down -v >/dev/null 2>&1 || true
   fi
   if [[ "$keep_run_root" != "1" && "$code" -eq 0 && "$result_dir" != "$run_root" ]]; then
-    rm -rf "$run_root"
+    if ! rm -rf "$run_root"; then
+      cleanup_status=1
+    fi
   fi
+
+  if [[ "$code" -ne 0 ]]; then
+    finalize_saga_record_for_exit "$code"
+  elif [[ "$cleanup_status" -ne 0 ]]; then
+    finalize_saga_record_for_exit 1
+    exit 1
+  fi
+
+  exit "$code"
 }
 trap cleanup EXIT
 
@@ -370,6 +505,7 @@ emit_blocked_scenario_results() {
 blocked_result() {
   local reason="$1"
   local started="$2"
+  local exit_status="${3:-1}"
   local finished
   local artifact_versions_json="{}"
   local artifact_sources_json="{}"
@@ -393,6 +529,7 @@ blocked_result() {
   "category": "saga_runtime_contract",
   "outcome": "error",
   "runner_blocked": true,
+  "runner_exit_status": $exit_status,
   "started_at": "$started",
   "finished_at": "$finished",
   "generated_at": "$finished",
@@ -428,6 +565,7 @@ JSON
   "experiment": "sagas",
   "outcome": "error",
   "runnerBlocked": true,
+  "runnerExitStatus": $exit_status,
   "artifactVersions": $artifact_versions_json,
   "findings": [
     $(json_string "$reason")
@@ -448,7 +586,7 @@ on_error() {
   command="${command//$result_dir/<result-dir>}"
 
   if [[ "$code" -ne 0 && ! -f "$result_dir/sagas-result.json" ]]; then
-    blocked_result "saga conformance runner exited before producing sagas-result.json (exit $code at line $line while running: $command)" "$started_at"
+    blocked_result "saga conformance runner exited before producing sagas-result.json (exit $code at line $line while running: $command)" "$started_at" "$code"
   fi
 
   exit "$code"
@@ -3659,6 +3797,7 @@ async def main() -> None:
                 findings.append(finding(f"{missing}: {missing_finding}", "coverage", scenario_id=missing))
 
     outcome = "pass" if all(item.get("status") == "pass" for item in scenario_results) else "fail"
+    runner_exit_status = 0 if outcome == "pass" else 1
     finished_at = ts()
     report = {
         "schema": "durable-workflow.v2.saga-runtime-conformance.result",
@@ -3668,6 +3807,8 @@ async def main() -> None:
         "category": "saga_runtime_contract",
         "outcome": outcome,
         "runner_blocked": False,
+        "runner_exit_status": runner_exit_status,
+        "runner_exit_status_recorded_at": finished_at,
         "started_at": started_at,
         "finished_at": finished_at,
         "generated_at": finished_at,
@@ -3728,6 +3869,7 @@ async def main() -> None:
                 "experiment": "sagas",
                 "outcome": outcome,
                 "runnerBlocked": False,
+                "runnerExitStatus": runner_exit_status,
                 "artifactVersions": metadata["published_artifact_versions"],
                 "findings": [item["summary"] for item in findings],
                 "resultPath": str(RESULT_DIR / "sagas-result.json"),
