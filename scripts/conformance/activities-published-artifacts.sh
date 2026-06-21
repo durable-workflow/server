@@ -24,6 +24,8 @@ Environment overrides:
                                          Defaults to artifact-install-evidence.json in the result directory.
   DW_ACTIVITIES_EVIDENCE                Optional JSON activity evidence from a real host matrix run.
   DW_ACTIVITIES_EVIDENCE_PATH           Optional path to JSON activity evidence from a real host matrix run.
+  DW_ACTIVITIES_RUNNER_SOURCE           Optional exact image source for the runner process. Defaults to
+                                         DW_SERVER_IMAGE when the handoff runs from the release image root.
   DW_SERVER_IMAGE                       Exact server image tag or digest to test.
   DW_SERVER_VERSION                     Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
   DW_CLI_VERSION                        Exact CLI release version.
@@ -120,6 +122,7 @@ fi
 RESULT_DIR="$result_dir" \
 STARTED_AT="$started_at" \
 SCENARIO_MANIFEST="$scenario_manifest" \
+RUNNER_REPO_ROOT="$repo_root" \
 node <<'JS'
 const fs = require('fs');
 const path = require('path');
@@ -203,6 +206,7 @@ const PUBLISHED_SERVER_IMAGE_REPOSITORIES = [
   'registry-1.docker.io/durableworkflow/server',
   'ghcr.io/durable-workflow/server',
 ];
+const SOURCE_FREE_RUNNER_STATEMENT = 'Activities conformance ran from the pinned published server container; local product checkouts, branch source, and local vendor trees were not used as pass evidence.';
 
 function now() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -718,6 +722,129 @@ function publishedRuntimeExecutionEvidence(evidence) {
   );
 }
 
+function resolvePublishedRuntimeExecutionEvidence(evidence, serverImage, serverVersion) {
+  const supplied = publishedRuntimeExecutionEvidence(evidence);
+  if (nonEmptyObject(supplied)) {
+    return {
+      evidence: supplied,
+      source: 'host_evidence',
+      derived: false,
+      derivation_reason: '',
+    };
+  }
+
+  const derived = derivedPublishedRuntimeExecutionEvidence(evidence, serverImage, serverVersion);
+  if (nonEmptyObject(derived.evidence)) {
+    return derived;
+  }
+
+  return {
+    evidence: {},
+    source: 'missing',
+    derived: false,
+    derivation_reason: derived.derivation_reason,
+  };
+}
+
+function derivedPublishedRuntimeExecutionEvidence(evidence, serverImage, serverVersion) {
+  const runnerSource = env('DW_ACTIVITIES_RUNNER_SOURCE')
+    || env('DW_ACTIVITIES_PUBLISHED_SERVER_RUNNER_SOURCE')
+    || serverImage;
+  const runnerRoot = stringValue(process.env.RUNNER_REPO_ROOT);
+  const localSignals = localSourceSignals(evidence).slice(0, 3);
+
+  if (!serverImage || !serverVersion) {
+    return {
+      evidence: {},
+      derivation_reason: 'DW_SERVER_IMAGE and DW_SERVER_VERSION are required to derive pinned published server execution evidence',
+    };
+  }
+  if (!runnerSource || !imageSourceMatchesPinned(runnerSource, serverVersion, serverImage)) {
+    return {
+      evidence: {},
+      derivation_reason: `activities runner source ${runnerSource || 'missing'} does not match pinned DW_SERVER_IMAGE ${serverImage || 'missing'}`,
+    };
+  }
+  if (localSignals.length > 0) {
+    return {
+      evidence: {},
+      derivation_reason: `activity evidence contains local product source probe signals: ${localSignals.join('; ')}`,
+    };
+  }
+  if (!runnerRootLooksLikePublishedImageRoot(runnerRoot)) {
+    return {
+      evidence: {},
+      derivation_reason: `activities runner did not execute from the published server image root: ${runnerRoot || 'missing'}`,
+    };
+  }
+
+  return {
+    evidence: {
+      schema: 'durable-workflow.v2.activity-runtime.published-server-execution',
+      status: 'pass',
+      execution_environment: 'docker_container',
+      worker_execution_mode: 'published_server_image_conformance_handoff',
+      executed_in_pinned_server_artifact: true,
+      local_product_source_checkouts_used: false,
+      source_integrity_statement: SOURCE_FREE_RUNNER_STATEMENT,
+      image_identity: {
+        pinned_server_image: serverImage,
+        runner_source: runnerSource,
+        matches_pinned_server_image: true,
+      },
+      artifacts: [
+        {
+          artifact: 'server',
+          version: serverVersion,
+          source: runnerSource,
+          status: 'pass',
+          execution_context: 'published_server_image_conformance_handoff',
+          local_product_source_checkouts_used: false,
+          source_integrity_statement: SOURCE_FREE_RUNNER_STATEMENT,
+        },
+      ],
+    },
+    source: 'published_server_image_runtime',
+    derived: true,
+    derivation_reason: '',
+  };
+}
+
+function runnerRootLooksLikePublishedImageRoot(runnerRoot) {
+  if (!runnerRoot) {
+    return false;
+  }
+
+  const normalizedRoot = path.resolve(runnerRoot);
+  if (normalizedRoot !== '/app') {
+    return false;
+  }
+  if (fs.existsSync(path.join(normalizedRoot, '.git'))) {
+    return false;
+  }
+  if (!fs.existsSync(path.join(normalizedRoot, 'artisan'))) {
+    return false;
+  }
+  if (!fs.existsSync(path.join(normalizedRoot, 'scripts/conformance/activities-published-artifacts.sh'))) {
+    return false;
+  }
+
+  return containerRuntimeDetected();
+}
+
+function containerRuntimeDetected() {
+  if (fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv')) {
+    return true;
+  }
+
+  try {
+    const cgroup = fs.readFileSync('/proc/self/cgroup', 'utf8');
+    return /(docker|kubepods|containerd|podman|libpod)/i.test(cgroup);
+  } catch (_error) {
+    return false;
+  }
+}
+
 function executionEntries(execution) {
   if (!execution || typeof execution !== 'object' || Array.isArray(execution)) {
     return [];
@@ -867,6 +994,9 @@ function runtimeExecutionFailures(execution, activityEvidence, serverImage, serv
     && !explicitFalse(execution.localProductSourceCheckoutsUsed)) {
     failures.push('published_artifact_worker_execution.local_product_source_checkouts_used=false missing');
   }
+  if (!sourceIntegrityStatementPresent(execution)) {
+    failures.push('published_artifact_worker_execution.source_integrity_statement must state local product checkouts, branch source, and local vendor trees were not used as pass evidence');
+  }
 
   if (!executionClaimsContainer(execution)) {
     failures.push('published_artifact_worker_execution must prove execution inside the pinned server container');
@@ -921,6 +1051,19 @@ function runtimeExecutionFailures(execution, activityEvidence, serverImage, serv
   }
 
   return failures;
+}
+
+function sourceIntegrityStatementPresent(execution) {
+  const statement = stringValue(
+    execution.source_integrity_statement
+    || execution.sourceIntegrityStatement
+    || execution.no_local_source_statement
+    || execution.noLocalSourceStatement,
+  ).toLowerCase();
+
+  return statement.includes('local product checkout')
+    && statement.includes('branch source')
+    && statement.includes('local vendor');
 }
 
 function normalizeClassification(value, fallback) {
@@ -1025,6 +1168,17 @@ function sectionFromEvidence(evidence, key, fallback) {
   return fallback;
 }
 
+function observedOutputsWithRuntimeExecution(outputs, runtimeExecutionPass, runtimeExecution) {
+  if (!runtimeExecutionPass) {
+    return outputs;
+  }
+
+  return {
+    ...outputs,
+    published_artifact_worker_execution: runtimeExecution,
+  };
+}
+
 function main() {
   const manifest = loadManifest();
   const scenarios = scenarioDefs(manifest);
@@ -1076,7 +1230,12 @@ function main() {
     ? activityEvidenceLoad.value
     : {};
   const activityEvidenceById = scenarioEvidenceById(activityEvidence);
-  const runtimeExecution = publishedRuntimeExecutionEvidence(activityEvidence);
+  const runtimeExecutionLoad = resolvePublishedRuntimeExecutionEvidence(
+    activityEvidence,
+    serverImage,
+    artifactVersions.server,
+  );
+  const runtimeExecution = runtimeExecutionLoad.evidence;
   const runtimeExecutionFailureList = runtimeExecutionFailures(
     runtimeExecution,
     activityEvidence,
@@ -1221,12 +1380,15 @@ function main() {
         expected_behavior: expectedBehavior,
         classification,
         observed_outputs: nonEmptyObject(observedOutputs)
-          ? observedOutputs
+          ? observedOutputsWithRuntimeExecution(observedOutputs, runtimeExecutionPass, runtimeExecution)
           : {
             coverage_status: status,
             observed_behavior: scenarioFinding.observed_behavior,
             next_acceptance_criterion: scenarioFinding.next_acceptance_criterion,
             runtime_execution_failures: runtimeExecutionFailureList,
+            ...(runtimeExecutionPass
+              ? { published_artifact_worker_execution: runtimeExecution }
+              : {}),
           },
         linked_findings: [scenarioFinding],
       });
@@ -1251,6 +1413,9 @@ function main() {
         coverage_status: status,
         observed_behavior: scenarioFinding.observed_behavior,
         next_acceptance_criterion: scenarioFinding.next_acceptance_criterion,
+        ...(runtimeExecutionPass
+          ? { published_artifact_worker_execution: runtimeExecution }
+          : {}),
         ...(scenarioId === 'published_artifact_install_only'
           ? {
             artifact_install_evidence: artifactInstallEvidence,
@@ -1324,6 +1489,9 @@ function main() {
     activity_evidence_source: activityEvidenceLoad.source,
     activity_evidence_supplied: activityEvidenceLoad.supplied,
     published_artifact_worker_execution: runtimeExecutionPass ? runtimeExecution : null,
+    published_artifact_worker_execution_source: runtimeExecutionLoad.source,
+    published_artifact_worker_execution_derived: runtimeExecutionLoad.derived,
+    published_artifact_worker_execution_derivation_reason: runtimeExecutionLoad.derivation_reason,
     published_artifact_worker_execution_failures: runtimeExecutionFailureList,
     published_artifact_install: {
       ...sectionFromEvidence(activityEvidence, 'published_artifact_install', {}),
@@ -1360,6 +1528,9 @@ function main() {
     activity_evidence_source: activityEvidenceLoad.source,
     activity_evidence_supplied: activityEvidenceLoad.supplied,
     published_artifact_worker_execution_supplied: nonEmptyObject(runtimeExecution),
+    published_artifact_worker_execution_source: runtimeExecutionLoad.source,
+    published_artifact_worker_execution_derived: runtimeExecutionLoad.derived,
+    published_artifact_worker_execution_derivation_reason: runtimeExecutionLoad.derivation_reason,
     published_artifact_worker_execution_pass: runtimeExecutionPass,
     published_artifact_worker_execution_failures: runtimeExecutionFailureList,
     scenario_manifest: MANIFEST_PATH,

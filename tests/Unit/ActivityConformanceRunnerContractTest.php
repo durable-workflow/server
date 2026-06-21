@@ -23,6 +23,8 @@ class ActivityConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('DW_ACTIVITIES_ARTIFACT_INSTALL_EVIDENCE', $source);
         $this->assertStringContainsString('DW_ACTIVITIES_EVIDENCE', $source);
         $this->assertStringContainsString('DW_ACTIVITIES_EVIDENCE_PATH', $source);
+        $this->assertStringContainsString('DW_ACTIVITIES_RUNNER_SOURCE', $source);
+        $this->assertStringContainsString('RUNNER_REPO_ROOT', $source);
 
         foreach ([
             'DW_SERVER_VERSION',
@@ -58,8 +60,12 @@ class ActivityConformanceRunnerContractTest extends TestCase
             'local_product_source_checkouts_used',
             'FORBIDDEN_INSTALL_SOURCE_TOKENS',
             'published_artifact_worker_execution',
+            'published_artifact_worker_execution_derived',
             'published_server_image_activity_runtime_probe',
             'published_artifact_worker_execution must prove execution inside the pinned server container',
+            'SOURCE_FREE_RUNNER_STATEMENT',
+            'published_server_image_conformance_handoff',
+            'local vendor trees were not used as pass evidence',
             'outcome === \'pass\' ? 0 : 1',
         ] as $token) {
             $this->assertStringContainsString($token, $source);
@@ -405,6 +411,103 @@ class ActivityConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_does_not_derive_published_execution_from_workspace_checkout_even_with_runner_source(): void
+    {
+        if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
+            || trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('bash and node are required to exercise the activities runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = $repoRoot.'/storage/framework/activities-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($resultDir, 0777, true));
+
+        try {
+            $version = '9.9.9';
+            $serverImage = 'durableworkflow/server:'.$version;
+            $activityEvidence = $this->completeRunnerActivityEvidence($version, $serverImage);
+            unset($activityEvidence['published_artifact_worker_execution']);
+
+            file_put_contents(
+                $resultDir.'/artifact-install-evidence.json',
+                json_encode($this->completeRunnerInstallEvidence($version), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+            file_put_contents(
+                $resultDir.'/activity-evidence.json',
+                json_encode($activityEvidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+
+            $env = [
+                'DW_SERVER_IMAGE' => $serverImage,
+                'DW_SERVER_VERSION' => $version,
+                'DW_CLI_VERSION' => $version,
+                'DW_PYTHON_SDK_VERSION' => $version,
+                'DW_WORKFLOW_PHP_VERSION' => $version,
+                'DW_WATERLINE_VERSION' => $version,
+                'DW_ACTIVITIES_RUNNER_SOURCE' => $serverImage,
+            ];
+            $envPrefix = implode(' ', array_map(
+                static fn (string $name, string $value): string => $name.'='.escapeshellarg($value),
+                array_keys($env),
+                array_values($env),
+            ));
+            $command = sprintf(
+                '%s bash %s --result-dir %s >/dev/null 2>&1',
+                $envPrefix,
+                escapeshellarg($repoRoot.'/scripts/conformance/activities-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+            $this->assertSame(1, $exitCode);
+
+            $result = json_decode(
+                file_get_contents($resultDir.'/activities-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertNull($result['published_artifact_worker_execution']);
+            $this->assertFalse($result['published_artifact_worker_execution_derived']);
+            $this->assertSame('missing', $result['published_artifact_worker_execution_source']);
+            $this->assertStringContainsString(
+                'published server image root',
+                $result['published_artifact_worker_execution_derivation_reason'] ?? '',
+            );
+            $this->assertContains(
+                'published_artifact_worker_execution missing',
+                $result['published_artifact_worker_execution_failures'] ?? [],
+            );
+
+            $byScenario = [];
+            foreach ($result['scenario_results'] ?? [] as $scenario) {
+                $byScenario[$scenario['scenario_id']] = $scenario;
+            }
+
+            $this->assertSame('pass', $byScenario['published_artifact_install_only']['status'] ?? null);
+            foreach (ActivityRuntimeContract::manifest()['required_scenarios'] as $scenarioId) {
+                if ($scenarioId === 'published_artifact_install_only') {
+                    continue;
+                }
+
+                $this->assertSame('not_covered', $byScenario[$scenarioId]['status'] ?? null);
+                $this->assertSame('coverage-gap', $byScenario[$scenarioId]['classification'] ?? null);
+                $this->assertNotEmpty($byScenario[$scenarioId]['linked_findings'] ?? []);
+            }
+        } finally {
+            foreach (glob($resultDir.'/*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($resultDir)) {
+                rmdir($resultDir);
+            }
+        }
+    }
+
     public function test_runner_rejects_unofficial_cli_install_source_when_behavior_evidence_passes(): void
     {
         if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
@@ -516,6 +619,29 @@ class ActivityConformanceRunnerContractTest extends TestCase
 
         $this->assertSame('pass', $evaluation['status']);
         $this->assertSame([], $evaluation['gate_failures']);
+    }
+
+    public function test_result_gate_requires_source_free_statement_for_published_execution_evidence(): void
+    {
+        $result = $this->completeActivityResult();
+        unset($result['published_artifact_worker_execution']['source_integrity_statement']);
+        foreach ($result['published_artifact_worker_execution']['artifacts'] as &$artifact) {
+            unset($artifact['source_integrity_statement']);
+        }
+        unset($artifact);
+        foreach ($result['scenario_results'] as &$scenario) {
+            unset($scenario['observed_outputs']['published_artifact_worker_execution']['source_integrity_statement']);
+            unset($scenario['scenario_evidence']['published_artifact_worker_execution']['source_integrity_statement']);
+        }
+        unset($scenario);
+
+        $evaluation = ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest());
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'missing_published_artifact_worker_execution_source_integrity_statement',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
     }
 
     public function test_result_gate_rejects_local_runtime_probe_as_pass_evidence(): void
@@ -835,15 +961,24 @@ class ActivityConformanceRunnerContractTest extends TestCase
             'schema' => 'durable-workflow.v2.activity-runtime.published-server-execution',
             'status' => 'pass',
             'execution_environment' => 'docker_container',
+            'worker_execution_mode' => 'published_server_image_conformance_handoff',
             'executed_in_pinned_server_artifact' => true,
             'local_product_source_checkouts_used' => false,
+            'source_integrity_statement' => 'Activities conformance ran from the pinned published server container; local product checkouts, branch source, and local vendor trees were not used as pass evidence.',
+            'image_identity' => [
+                'pinned_server_image' => $serverImage,
+                'runner_source' => $serverImage,
+                'matches_pinned_server_image' => true,
+            ],
             'artifacts' => [
                 [
                     'artifact' => 'server',
                     'version' => $version,
                     'source' => $serverImage,
                     'status' => 'pass',
+                    'execution_context' => 'published_server_image_conformance_handoff',
                     'local_product_source_checkouts_used' => false,
+                    'source_integrity_statement' => 'Activities conformance ran from the pinned published server container; local product checkouts, branch source, and local vendor trees were not used as pass evidence.',
                 ],
             ],
         ];

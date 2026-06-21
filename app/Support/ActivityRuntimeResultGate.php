@@ -884,6 +884,15 @@ final class ActivityRuntimeResultGate
             ];
         }
 
+        if (! self::sourceIntegrityStatementPresent($execution)) {
+            $failures[] = [
+                'code' => 'missing_published_artifact_worker_execution_source_integrity_statement',
+                'scenario_id' => $scenarioId,
+                'field' => 'published_artifact_worker_execution.source_integrity_statement',
+                'expected' => 'statement that local product checkouts, branch source, and local vendor trees were not used as pass evidence',
+            ];
+        }
+
         if (! self::executionClaimsContainer($execution)) {
             $failures[] = [
                 'code' => 'published_artifact_worker_execution_not_containerized',
@@ -1159,6 +1168,20 @@ final class ActivityRuntimeResultGate
         }
 
         return false;
+    }
+
+    private static function sourceIntegrityStatementPresent(array $execution): bool
+    {
+        $statement = strtolower(self::stringField($execution, [
+            'source_integrity_statement',
+            'sourceIntegrityStatement',
+            'no_local_source_statement',
+            'noLocalSourceStatement',
+        ]));
+
+        return str_contains($statement, 'local product checkout')
+            && str_contains($statement, 'branch source')
+            && str_contains($statement, 'local vendor');
     }
 
     /**
