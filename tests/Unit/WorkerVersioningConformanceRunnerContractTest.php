@@ -214,9 +214,44 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'the aggregate runner must emit structured not-covered evidence when the published-worker shard times out',
         );
         $this->assertStringContainsString(
-            'write_published_worker_fallback_evidence',
+            'write_published_worker_exit_status_evidence',
             $shell,
             'the shell timeout handoff must write structured fallback evidence before skipping aggregate shard generation',
+        );
+        $this->assertStringContainsString(
+            'finalize_worker_versioning_record_for_exit',
+            $shell,
+            'the shell handoff must rewrite pass records when the final runner exit status is non-zero',
+        );
+        $this->assertStringContainsString(
+            'worker-versioning-runner-exit-status-mismatch',
+            $shell,
+            'non-zero runner exits after a pass record must leave a focused mismatch finding',
+        );
+        $this->assertStringContainsString(
+            'cleanup_status=1',
+            $shell,
+            'cleanup failures must be promoted to non-passing evidence instead of leaving a pass record behind',
+        );
+        $this->assertStringContainsString(
+            'write_published_worker_exit_status_evidence',
+            $shell,
+            'the shell handoff must annotate non-zero published worker shard exits even when JSON evidence exists',
+        );
+        $this->assertStringContainsString(
+            'publishedWorkerShardExitStatusEvidence',
+            $node,
+            'non-zero published worker shard exits must invalidate pass evidence before aggregation',
+        );
+        $this->assertStringContainsString(
+            'const supplied = readJsonIfExists(publishedWorkerEvidencePath);',
+            $node,
+            'direct Node aggregation must read any evidence emitted before a non-zero shard exit',
+        );
+        $this->assertStringContainsString(
+            'publishedWorkerShardExitStatusEvidence(generated, artifactVersions, artifactSources, supplied)',
+            $node,
+            'direct Node aggregation must rewrite pass-looking shard evidence after a non-zero shard exit',
         );
         $this->assertStringContainsString(
             'DW_WV_PUBLISHED_WORKER_SHARD_EXIT_STATUS',
@@ -229,9 +264,14 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
             'the shell fallback must use the same artifact version normalization as the aggregate runner',
         );
         $this->assertStringContainsString(
+            'write_published_worker_exit_status_evidence "$shard_status" "$shard_timed_out"',
+            $shell,
+            'the shell fallback must annotate every non-zero shard exit, including when the shard already wrote JSON evidence',
+        );
+        $this->assertStringNotContainsString(
             'if [[ ! -s "${DW_WV_PUBLISHED_WORKER_EVIDENCE:-}" ]]',
             $shell,
-            'the shell fallback must only synthesize evidence when the shard did not write its own file',
+            'non-zero shard exits must not be hidden behind a pre-existing evidence file guard',
         );
         foreach ([
             'durable-workflow==${pythonVersion}',
@@ -485,6 +525,291 @@ final class WorkerVersioningConformanceRunnerContractTest extends TestCase
         $this->assertCount(3, $finalShard['topology']['workers']);
         $this->assertSame('php-install.log', $finalShard['logs']['php_install']);
         $this->assertSame('python-install.log', $finalShard['logs']['python_install']);
+    }
+
+    public function test_nonzero_published_worker_shard_exit_invalidates_pass_evidence(): void
+    {
+        $evidence = [
+            'schema' => 'durable-workflow.v2.worker-versioning-runtime.published-worker-execution-evidence',
+            'local_product_source_checkouts_used' => false,
+            'artifact_versions' => [
+                'server' => '0.2.452',
+                'sdk-python' => '0.4.89',
+                'workflow-php' => '2.0.0-alpha.210',
+            ],
+            'artifact_sources' => [
+                'server' => 'docker',
+                'sdk-python' => 'pypi_release',
+                'workflow-php' => 'packagist_release',
+            ],
+            'scenario_results' => [
+                'worker_registration_build_ids' => [
+                    'scenario_id' => 'worker_registration_build_ids',
+                    'status' => 'pass',
+                    'observed_outputs' => [
+                        'task_queue' => 'worker-versioning-shared',
+                        'worker_registration_responses' => [
+                            'workflow_php' => [
+                                'artifact' => 'workflow-php',
+                                'worker_id' => 'php-v1',
+                                'task_queue' => 'worker-versioning-shared',
+                                'build_id' => 'php-build-v1',
+                                'response' => ['build_id' => 'php-build-v1'],
+                            ],
+                            'sdk_python' => [
+                                'artifact' => 'sdk-python',
+                                'worker_id' => 'python-v2',
+                                'task_queue' => 'worker-versioning-shared',
+                                'build_id' => 'python-build-v2',
+                                'response' => ['build_id' => 'python-build-v2'],
+                            ],
+                        ],
+                        'worker_list_build_ids' => ['php-build-v1', 'python-build-v2'],
+                        'task_queue_build_ids' => ['php-build-v1', 'python-build-v2'],
+                        'active_worker_counts_per_cohort' => [
+                            'php-build-v1' => 1,
+                            'python-build-v2' => 1,
+                        ],
+                        'published_artifact_worker_execution' => $this->publishedWorkerExecutionEvidence(),
+                        'local_product_source_checkouts_used' => false,
+                    ],
+                    'linked_findings' => [],
+                ],
+                'cross_language_php_python_pinning' => [
+                    'scenario_id' => 'cross_language_php_python_pinning',
+                    'status' => 'pass',
+                    'observed_outputs' => [
+                        'local_product_source_checkouts_used' => false,
+                        'published_artifact_worker_execution' => $this->publishedWorkerExecutionEvidence(),
+                        'php_v1_to_python_v2_incompatible_delivery_count' => 0,
+                        'python_v1_to_php_v2_incompatible_delivery_count' => 0,
+                        'php_v1_compatible_delivery_count' => 2,
+                        'python_v1_compatible_delivery_count' => 2,
+                    ],
+                    'linked_findings' => [],
+                ],
+            ],
+            'findings' => [],
+        ];
+
+        $annotated = $this->annotatePublishedWorkerShardExitStatus($evidence, 1);
+        $registration = $this->evaluateWorkerRegistrationPublishedWorkerEvidence($annotated);
+        $crossLanguage = $this->evaluateCrossLanguagePublishedWorkerEvidence($annotated);
+
+        $this->assertSame('fail', $annotated['status']);
+        $this->assertSame('fail', $annotated['outcome']);
+        $this->assertSame(1, $annotated['published_worker_shard_exit_status']);
+        $this->assertSame(
+            'not_covered',
+            $annotated['scenario_results']['cross_language_php_python_pinning']['status'],
+        );
+        $this->assertSame(
+            'not_covered',
+            $annotated['scenario_results']['worker_registration_build_ids']['status'],
+        );
+        $this->assertSame(
+            0,
+            $annotated['scenario_results']['cross_language_php_python_pinning']['observed_outputs']['php_v1_to_python_v2_incompatible_delivery_count'],
+        );
+        $this->assertStringContainsString(
+            'published PHP/Python worker shard exited with status=1 after writing evidence',
+            $annotated['findings'][0]['observed_behavior'],
+        );
+        $this->assertSame('conformance_harness', $annotated['findings'][0]['owning_surface']);
+        $this->assertFalse(
+            $registration['passes'],
+            'registration pass evidence from a failed shard process must not satisfy the aggregate cell',
+        );
+        $this->assertFalse(
+            $crossLanguage['passes'],
+            'cross-language pass evidence from a failed shard process must not satisfy the aggregate cell',
+        );
+        $this->assertSame(0, $crossLanguage['php_v1_to_python_v2_incompatible_delivery_count']);
+        $this->assertSame(2, $crossLanguage['php_v1_compatible_delivery_count']);
+    }
+
+    public function test_cleanup_failure_after_pass_record_rewrites_ledger_to_non_passing(): void
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the worker-versioning shell handoff.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $suffix = bin2hex(random_bytes(4));
+        $resultDir = $repoRoot.'/storage/framework/worker-versioning-cleanup-result-'.$suffix;
+        $runRoot = $repoRoot.'/storage/framework/worker-versioning-cleanup-run-'.$suffix;
+        $fakeBin = $repoRoot.'/storage/framework/worker-versioning-cleanup-bin-'.$suffix;
+        mkdir($resultDir, 0777, true);
+        mkdir($runRoot, 0777, true);
+        mkdir($fakeBin, 0777, true);
+
+        try {
+            $fakeNode = $fakeBin.'/node';
+            $fakeNodeScript = <<<'SH'
+#!/bin/sh
+if [ "${1:-}" = "-" ]; then
+  if [ "$#" -ge 6 ]; then
+    resolved_url_path="${6:?resolved URL path is required}"
+    printf '%s\n' 'http://127.0.0.1:65534' > "$resolved_url_path"
+  fi
+  exit 0
+fi
+
+case "${1:-}" in
+  */worker-versioning-published-artifacts.mjs)
+    cat > "${DW_WV_RESULT_DIR}/worker-versioning-result.json" <<'JSON'
+{
+  "outcome": "pass",
+  "runner_blocked": false,
+  "artifact_versions": {
+    "server": "0.2.452",
+    "cli": "0.1.81",
+    "sdk-python": "0.4.89",
+    "workflow": "2.0.0-alpha.210",
+    "waterline": "2.0.0-alpha.111"
+  },
+  "scenario_results": {
+    "cross_language_php_python_pinning": {
+      "scenario_id": "cross_language_php_python_pinning",
+      "status": "pass",
+      "observed_outputs": {
+        "php_v1_to_python_v2_incompatible_delivery_count": 0,
+        "python_v1_to_php_v2_incompatible_delivery_count": 0
+      },
+      "linked_findings": []
+    }
+  },
+  "finding_links": {},
+  "findings": []
+}
+JSON
+    cat > "${DW_WV_RESULT_DIR}/worker-versioning-record.json" <<'JSON'
+{
+  "experiment": "worker-versioning",
+  "outcome": "pass",
+  "runner_blocked": false,
+  "runnerBlocked": false,
+  "artifact_versions": {
+    "server": "0.2.452",
+    "cli": "0.1.81",
+    "sdk-python": "0.4.89",
+    "workflow": "2.0.0-alpha.210",
+    "waterline": "2.0.0-alpha.111"
+  },
+  "artifactVersions": {
+    "server": "0.2.452",
+    "cli": "0.1.81",
+    "sdk-python": "0.4.89",
+    "workflow": "2.0.0-alpha.210",
+    "waterline": "2.0.0-alpha.111"
+  },
+  "scenario_results": {
+    "cross_language_php_python_pinning": {
+      "scenario_id": "cross_language_php_python_pinning",
+      "status": "pass",
+      "observed_outputs": {}
+    }
+  },
+  "findings": []
+}
+JSON
+    exit 0
+    ;;
+esac
+
+exec __NODE_BINARY__ "$@"
+SH;
+            file_put_contents($fakeNode, str_replace('__NODE_BINARY__', escapeshellarg($nodeBinary), $fakeNodeScript));
+            chmod($fakeNode, 0755);
+
+            $realRm = trim((string) shell_exec('command -v rm 2>/dev/null')) ?: '/bin/rm';
+            $fakeRm = $fakeBin.'/rm';
+            $fakeRmScript = <<<'SH'
+#!/bin/sh
+case " $* " in
+  *" ${DW_WV_RUN_ROOT} "*)
+    printf 'rm: cannot remove %s: Permission denied\n' "$*" >&2
+    exit 1
+    ;;
+esac
+exec __REAL_RM__ "$@"
+SH;
+            file_put_contents($fakeRm, str_replace('__REAL_RM__', escapeshellarg($realRm), $fakeRmScript));
+            chmod($fakeRm, 0755);
+
+            $process = proc_open(
+                [
+                    'bash',
+                    $repoRoot.'/scripts/conformance/worker-versioning-published-artifacts.sh',
+                    '--result-dir',
+                    $resultDir,
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                [
+                    'PATH' => $fakeBin.PATH_SEPARATOR.(getenv('PATH') ?: '/usr/bin:/bin'),
+                    'DW_WV_RESULT_DIR' => $resultDir,
+                    'DW_WV_RUN_ROOT' => $runRoot,
+                    'DW_WV_SERVER_URL' => 'http://127.0.0.1:65534',
+                    'DW_WV_WATERLINE_URL' => 'http://127.0.0.1:65534',
+                    'DW_WV_SKIP_PUBLISHED_WORKER_SHARD' => '1',
+                    'DW_SERVER_VERSION' => '0.2.452',
+                    'DW_CLI_VERSION' => '0.1.81',
+                    'DW_PYTHON_SDK_VERSION' => '0.4.89',
+                    'DW_WORKFLOW_PHP_VERSION' => '2.0.0-alpha.210',
+                    'DW_WATERLINE_VERSION' => '2.0.0-alpha.111',
+                    'DW_WV_SERVER_ARTIFACT_SOURCE' => 'published_server_url',
+                ],
+            );
+
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(1, $exitCode, $stdout.$stderr);
+
+            $result = json_decode(
+                (string) file_get_contents($resultDir.'/worker-versioning-result.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                (string) file_get_contents($resultDir.'/worker-versioning-record.json'),
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame(1, $result['runner_exit_status']);
+            $this->assertSame('fail', $result['scenario_results']['runner_exit_status']['status']);
+            $this->assertSame(
+                'worker-versioning-runner-exit-status-mismatch',
+                $result['findings'][0]['id'],
+            );
+            $this->assertStringContainsString(
+                'worker-versioning conformance runner exited with status 1 after writing a passing record',
+                $result['findings'][0]['summary'],
+            );
+            $this->assertSame('non_passing', $record['outcome']);
+            $this->assertFalse($record['runnerBlocked']);
+            $this->assertSame(1, $record['runnerExitStatus']);
+            $this->assertContains('runner_exit_status', $record['nonPassScenarios']);
+        } finally {
+            $this->removeDirectory($resultDir);
+            $this->removeDirectory($runRoot);
+            $this->removeDirectory($fakeBin);
+        }
     }
 
     public function test_published_artifact_install_cell_requires_install_evidence(): void
@@ -2888,6 +3213,106 @@ JS;
         }
 
         @rmdir($path);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function publishedWorkerExecutionEvidence(): array
+    {
+        return [
+            'local_product_source_checkouts_used' => false,
+            'artifacts' => [
+                [
+                    'artifact' => 'workflow-php',
+                    'version' => '2.0.0-alpha.210',
+                    'source' => 'packagist_release',
+                    'status' => 'pass',
+                    'local_product_source_checkouts_used' => false,
+                ],
+                [
+                    'artifact' => 'sdk-python',
+                    'version' => '0.4.89',
+                    'source' => 'pypi_release',
+                    'status' => 'pass',
+                    'local_product_source_checkouts_used' => false,
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $evidence
+     * @return array<string, mixed>
+     */
+    private function annotatePublishedWorkerShardExitStatus(array $evidence, int $status): array
+    {
+        $nodeBinary = trim((string) shell_exec('command -v node 2>/dev/null'));
+        if ($nodeBinary === '') {
+            $this->markTestSkipped('node is required to exercise the worker-versioning runner shard exit gate.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $script = <<<'JS'
+import { pathToFileURL } from 'node:url';
+
+const moduleUrl = pathToFileURL(process.argv[2]).href;
+const evidence = JSON.parse(process.argv[3]);
+const status = Number.parseInt(process.argv[4], 10);
+const { publishedWorkerShardExitStatusEvidence } = await import(moduleUrl);
+
+console.log(JSON.stringify(publishedWorkerShardExitStatusEvidence(
+  { status, signal: null, error: null },
+  {
+    server: '0.2.452',
+    cli: '0.1.81',
+    'sdk-python': '0.4.89',
+    workflow: '2.0.0-alpha.210',
+    'workflow-php': '2.0.0-alpha.210',
+    waterline: '2.0.0-alpha.111',
+  },
+  {
+    server: 'docker',
+    cli: 'github_release',
+    'sdk-python': 'pypi_release',
+    workflow: 'packagist_release',
+    'workflow-php': 'packagist_release',
+    waterline: 'packagist_release',
+  },
+  evidence,
+)));
+JS;
+
+        $process = proc_open(
+            [
+                $nodeBinary,
+                '--input-type=module',
+                '-e',
+                $script,
+                'import-runner-exit-helper',
+                $repoRoot.'/scripts/conformance/worker-versioning-published-artifacts.mjs',
+                json_encode($evidence, JSON_THROW_ON_ERROR),
+                (string) $status,
+            ],
+            [
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w'],
+            ],
+            $pipes,
+            $repoRoot,
+            ['PATH' => getenv('PATH') ?: '/usr/bin:/bin'],
+        );
+
+        $this->assertIsResource($process);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        $this->assertSame(0, $exitCode, $stderr);
+
+        return json_decode((string) $stdout, true, 512, JSON_THROW_ON_ERROR);
     }
 
     /**

@@ -3241,11 +3241,11 @@ function maybeGeneratePublishedWorkerEvidence(serverUrl, artifactVersions, artif
 
   writeTextIfNotEmpty(path.join(resultDir, 'published-worker-execution.stdout.log'), generated.stdout);
   writeTextIfNotEmpty(path.join(resultDir, 'published-worker-execution.stderr.log'), generated.stderr);
-  if (!fs.existsSync(publishedWorkerEvidencePath)
-    && (generated.error || generated.signal || generated.status !== 0)) {
+  if (generated.error || generated.signal || generated.status !== 0) {
+    const supplied = readJsonIfExists(publishedWorkerEvidencePath);
     writeJson(
       publishedWorkerEvidencePath,
-      publishedWorkerShardFallbackEvidence(generated, artifactVersions, artifactSources),
+      publishedWorkerShardExitStatusEvidence(generated, artifactVersions, artifactSources, supplied),
     );
   }
 }
@@ -3287,6 +3287,125 @@ export function publishedWorkerShardFallbackEvidence(generated, artifactVersions
     },
     findings: [finding],
   };
+}
+
+export function publishedWorkerShardExitStatusEvidence(
+  generated,
+  artifactVersions,
+  artifactSources,
+  supplied = null,
+) {
+  if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied)) {
+    return publishedWorkerShardFallbackEvidence(generated, artifactVersions, artifactSources);
+  }
+
+  const status = Number.isFinite(generated.status) ? generated.status : null;
+  const timedOut = generated.error?.code === 'ETIMEDOUT';
+  const detail = timedOut
+    ? `published PHP/Python worker shard exceeded ${publishedWorkerShardTimeoutMs}ms after or while writing evidence`
+    : `published PHP/Python worker shard exited with status=${status ?? 'unknown'} after writing evidence; signal=${generated.signal ?? 'none'}; error=${generated.error?.message ?? 'none'}`;
+  const finding = {
+    id: 'worker-versioning-published-worker-shard-exit-status',
+    severity: 'P0',
+    scenario_id: 'cross_language_php_python_pinning',
+    owning_surface: 'conformance_harness',
+    diagnostic_surface: 'published_php_python_worker_shard_exit_status',
+    artifact_versions: {
+      ...artifactVersions,
+      ...objectValue(supplied.artifact_versions),
+      ...objectValue(supplied.artifactVersions),
+    },
+    observed_behavior: `${detail}. The shard process must exit successfully before its published-worker evidence can contribute to a passing worker-versioning record.`,
+    expected_behavior: 'The published PHP/Python worker shard exits 0 after worker execution, cleanup, and evidence writing succeed.',
+    next_acceptance_criterion: 'fix the published PHP/Python worker shard execution or cleanup failure, then rerun worker-versioning conformance and require a zero shard exit status before accepting its pass evidence',
+  };
+  const scenarioResults = publishedWorkerScenarioResults(supplied);
+  const scenarioIds = Object.keys(scenarioResults).length > 0
+    ? Object.keys(scenarioResults)
+    : ['cross_language_php_python_pinning'];
+  const normalizedScenarioResults = {};
+
+  for (const scenarioId of scenarioIds) {
+    const scenario = objectValue(scenarioResults[scenarioId]);
+    const observedOutputs = firstObjectValue(
+      scenario.observed_outputs,
+      scenario.observedOutputs,
+      scenario.evidence,
+      scenario.outputs,
+      scenario,
+    );
+    const currentStatus = normalizedArtifactStatus(scenario.status);
+    const linkedFindings = [
+      ...arrayValue(scenario.linked_findings),
+      ...arrayValue(scenario.linkedFindings),
+      finding,
+    ];
+
+    normalizedScenarioResults[scenarioId] = {
+      ...scenario,
+      scenario_id: scenarioId,
+      status: currentStatus === 'pass' ? 'not_covered' : currentStatus,
+      observed_outputs: {
+        ...observedOutputs,
+        published_worker_shard_exit_status: status,
+        published_worker_shard_signal: generated.signal ?? null,
+        published_worker_shard_error: generated.error?.message ?? null,
+        published_worker_shard_timed_out: timedOut,
+      },
+      linked_findings: uniqueFindings(linkedFindings),
+    };
+  }
+
+  return {
+    ...supplied,
+    schema: stringValue(supplied.schema)
+      || 'durable-workflow.v2.worker-versioning-runtime.published-worker-execution-evidence',
+    status: 'fail',
+    outcome: 'fail',
+    local_product_source_checkouts_used: truthyEvidenceFlag(supplied.local_product_source_checkouts_used)
+      || truthyEvidenceFlag(supplied.localProductSourceCheckoutsUsed),
+    generated_at: stringValue(supplied.generated_at) || stringValue(supplied.generatedAt) || timestamp(),
+    artifact_versions: {
+      ...artifactVersions,
+      ...objectValue(supplied.artifact_versions),
+      ...objectValue(supplied.artifactVersions),
+    },
+    artifact_sources: {
+      ...artifactSources,
+      ...objectValue(supplied.artifact_sources),
+      ...objectValue(supplied.artifactSources),
+    },
+    published_worker_shard_exit_status: status,
+    published_worker_shard_signal: generated.signal ?? null,
+    published_worker_shard_error: generated.error?.message ?? null,
+    published_worker_shard_timed_out: timedOut,
+    scenario_results: normalizedScenarioResults,
+    findings: uniqueFindings([
+      ...arrayValue(supplied.findings),
+      finding,
+    ]),
+  };
+}
+
+function uniqueFindings(findings) {
+  const values = [];
+  const seen = new Set();
+
+  for (const finding of findings) {
+    if (!finding || typeof finding !== 'object' || Array.isArray(finding)) {
+      continue;
+    }
+    const key = stringValue(finding.id)
+      || stringValue(finding.scenario_id)
+      || JSON.stringify(finding);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    values.push(finding);
+  }
+
+  return values;
 }
 
 function skipPublishedWorkerShard() {

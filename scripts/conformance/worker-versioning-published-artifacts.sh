@@ -458,6 +458,190 @@ if [[ -z "$result_dir" ]]; then
 fi
 mkdir -p "$result_dir"
 
+finalize_worker_versioning_record_for_exit() {
+  local code="$1"
+
+  if [[ "$code" -eq 0 || ! -f "$result_dir/worker-versioning-result.json" ]]; then
+    return
+  fi
+
+  if ! command -v node >/dev/null 2>&1; then
+    return
+  fi
+
+  node --input-type=module - "$result_dir" "$code" <<'NODE' || true
+import fs from 'node:fs';
+import path from 'node:path';
+
+const resultDir = process.argv[2];
+const exitCode = Number.parseInt(process.argv[3] ?? '', 10);
+const resultPath = path.join(resultDir, 'worker-versioning-result.json');
+const recordPath = path.join(resultDir, 'worker-versioning-record.json');
+
+function readJson(filePath) {
+  try {
+    const decoded = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return decoded && typeof decoded === 'object' && !Array.isArray(decoded) ? decoded : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeJson(filePath, value) {
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+function token(value) {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function declaresPass(value) {
+  return ['outcome', 'status', 'verdict'].some((field) => (
+    ['pass', 'passed', 'success', 'full'].includes(token(value[field]))
+  ));
+}
+
+function objectValue(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function artifactVersions(result, record) {
+  for (const container of [result, record]) {
+    for (const field of [
+      'published_artifact_versions',
+      'publishedArtifactVersions',
+      'resolved_artifact_versions',
+      'resolvedArtifactVersions',
+      'artifactVersions',
+      'artifact_versions',
+    ]) {
+      const value = objectValue(container[field]);
+      if (Object.keys(value).length > 0) {
+        return value;
+      }
+    }
+  }
+
+  return {};
+}
+
+function appendUnique(items, item, key) {
+  const values = Array.isArray(items) ? [...items] : [];
+  if (item && typeof item === 'object' && !Array.isArray(item)) {
+    const identity = item[key];
+    if (!values.some((existing) => (
+      existing && typeof existing === 'object' && !Array.isArray(existing) && existing[key] === identity
+    ))) {
+      values.push(item);
+    }
+  } else if (!values.includes(item)) {
+    values.push(item);
+  }
+
+  return values;
+}
+
+function replacePassAliases(value) {
+  for (const field of ['status', 'verdict']) {
+    if (['pass', 'passed', 'success', 'full'].includes(token(value[field]))) {
+      value[field] = 'non_passing';
+    }
+  }
+}
+
+function recomputeRecordScenarios(record, scenarioResults) {
+  const scenarioStatuses = Object.fromEntries(
+    Object.entries(scenarioResults).map(([scenarioId, scenario]) => [
+      scenarioId,
+      objectValue(scenario).status ?? null,
+    ]),
+  );
+  const nonPassScenarios = Object.entries(scenarioStatuses)
+    .filter(([, status]) => status !== 'pass')
+    .map(([scenarioId]) => scenarioId);
+  const reportedScenarios = Object.keys(scenarioResults);
+
+  record.scenario_results = scenarioResults;
+  record.scenarioResults = scenarioResults;
+  record.scenario_statuses = scenarioStatuses;
+  record.scenarioStatuses = scenarioStatuses;
+  record.non_pass_scenarios = nonPassScenarios;
+  record.nonPassScenarios = nonPassScenarios;
+  record.reported_scenarios = reportedScenarios;
+  record.reportedScenarios = reportedScenarios;
+}
+
+const result = readJson(resultPath);
+const record = readJson(recordPath);
+if (!declaresPass(result) && !declaresPass(record)) {
+  process.exit(0);
+}
+
+const now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+const summary = `runner_exit_status: worker-versioning conformance runner exited with status ${Number.isFinite(exitCode) ? exitCode : 'unknown'} after writing a passing record`;
+const versions = artifactVersions(result, record);
+const finding = {
+  id: 'worker-versioning-runner-exit-status-mismatch',
+  severity: 'P0',
+  surface: 'conformance-runner',
+  scenario_id: 'runner_exit_status',
+  owning_surface: 'conformance_harness',
+  diagnostic_surface: 'runner_process_exit_status',
+  next_routed_owner: 'conformance_harness',
+  artifact_versions: versions,
+  observed_behavior: `The runner process exited with status ${Number.isFinite(exitCode) ? exitCode : 'unknown'} while worker-versioning-result.json or worker-versioning-record.json declared outcome=pass.`,
+  expected_behavior: 'A worker-versioning conformance record declares outcome=pass only when the final runner process exit status is 0.',
+  next_acceptance_criterion: 'make the runner cleanup and shard execution paths exit successfully, or record the concrete failed worker-versioning scenario or infrastructure step as non-passing before returning a non-zero exit',
+  summary,
+};
+const scenarioResult = {
+  scenario_id: 'runner_exit_status',
+  status: 'fail',
+  observed_outputs: {
+    runner_exit_status: Number.isFinite(exitCode) ? exitCode : null,
+    runner_exit_status_recorded_at: now,
+  },
+  linked_findings: [finding],
+};
+
+result.outcome = 'non_passing';
+replacePassAliases(result);
+result.runner_blocked = result.runner_blocked === true;
+result.runner_exit_status = Number.isFinite(exitCode) ? exitCode : null;
+result.runner_exit_status_recorded_at = now;
+result.findings = appendUnique(result.findings, finding, 'id');
+result.linked_findings = appendUnique(result.linked_findings, finding, 'id');
+result.scenario_results = {
+  ...objectValue(result.scenario_results),
+  runner_exit_status: scenarioResult,
+};
+result.finding_links = {
+  ...objectValue(result.finding_links),
+  runner_exit_status: [finding],
+};
+writeJson(resultPath, result);
+
+record.experiment = record.experiment || 'worker-versioning';
+record.outcome = 'non_passing';
+replacePassAliases(record);
+record.runner_blocked = record.runner_blocked === true;
+record.runnerBlocked = record.runner_blocked;
+record.artifactVersions = versions;
+record.artifact_versions = versions;
+record.runner_exit_status = Number.isFinite(exitCode) ? exitCode : null;
+record.runnerExitStatus = Number.isFinite(exitCode) ? exitCode : null;
+record.runner_exit_status_recorded_at = now;
+record.runnerExitStatusRecordedAt = now;
+record.findings = appendUnique(record.findings, finding, 'id');
+record.structured_findings = appendUnique(record.structured_findings, finding, 'id');
+record.structuredFindings = appendUnique(record.structuredFindings, finding, 'id');
+record.linkedFindings = appendUnique(record.linkedFindings, finding, 'id');
+record.resultPath = resultPath;
+recomputeRecordScenarios(record, result.scenario_results);
+writeJson(recordPath, record);
+NODE
+}
+
 run_label="$(printf '%s' "$(basename "$run_root")" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_-' '-')"
 compose_project="dw-worker-versioning-${run_label}"
 server_url_override="${DW_WV_SERVER_URL:-}"
@@ -685,6 +869,7 @@ fi
 
 cleanup() {
   local code=$?
+  local cleanup_status=0
 
   if [[ -n "$waterline_container" ]]; then
     docker logs "$waterline_container" >"$result_dir/waterline.log" 2>&1 || true
@@ -696,8 +881,19 @@ cleanup() {
   fi
 
   if [[ "$keep_run_root" != "1" && "$code" -eq 0 && "$result_dir" != "$run_root" ]]; then
-    rm -rf "$run_root"
+    if ! rm -rf "$run_root"; then
+      cleanup_status=1
+    fi
   fi
+
+  if [[ "$code" -ne 0 ]]; then
+    finalize_worker_versioning_record_for_exit "$code"
+  elif [[ "$cleanup_status" -ne 0 ]]; then
+    finalize_worker_versioning_record_for_exit 1
+    exit 1
+  fi
+
+  exit "$code"
 }
 trap cleanup EXIT
 
@@ -801,7 +997,7 @@ verify_server_namespace_setup() {
   exit 0
 }
 
-write_published_worker_fallback_evidence() {
+write_published_worker_exit_status_evidence() {
   local shard_status="$1"
   local timed_out="$2"
 
@@ -818,7 +1014,7 @@ const {
   artifactSourcesFromEnv,
   artifactVersionsFromEnv,
   mergeArtifactSources,
-  publishedWorkerShardFallbackEvidence,
+  publishedWorkerShardExitStatusEvidence,
 } = await import(moduleUrl);
 
 const outputPath = process.env.DW_WV_PUBLISHED_WORKER_EVIDENCE;
@@ -843,14 +1039,23 @@ const generated = {
     ? { code: 'ETIMEDOUT', message: 'published worker shard exceeded shell timeout before emitting evidence' }
     : null,
 };
+let supplied = null;
+if (fs.existsSync(outputPath)) {
+  try {
+    supplied = JSON.parse(fs.readFileSync(outputPath, 'utf8'));
+  } catch {
+    supplied = null;
+  }
+}
 
 fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 fs.writeFileSync(
   outputPath,
-  `${JSON.stringify(publishedWorkerShardFallbackEvidence(
+  `${JSON.stringify(publishedWorkerShardExitStatusEvidence(
     generated,
     artifactVersions,
     artifactSources,
+    supplied,
   ), null, 2)}\n`,
   'utf8',
 );
@@ -869,13 +1074,11 @@ run_published_worker_shard() {
       timeout "${shard_timeout_seconds}s" node "$script_dir/worker-versioning-published-workers.mjs" >"$result_dir/published-worker-shard-direct.log" 2>&1 || shard_status=$?
       if [[ "$shard_status" -ne 0 ]]; then
         printf 'published worker shard did not complete during direct shell handoff; aggregating available evidence\n' >>"$result_dir/published-worker-shard-direct.log"
-        if [[ ! -s "${DW_WV_PUBLISHED_WORKER_EVIDENCE:-}" ]]; then
-          shard_timed_out=0
-          if [[ "$shard_status" -eq 124 || "$shard_status" -eq 137 ]]; then
-            shard_timed_out=1
-          fi
-          write_published_worker_fallback_evidence "$shard_status" "$shard_timed_out"
+        shard_timed_out=0
+        if [[ "$shard_status" -eq 124 || "$shard_status" -eq 137 ]]; then
+          shard_timed_out=1
         fi
+        write_published_worker_exit_status_evidence "$shard_status" "$shard_timed_out"
       fi
 
       export DW_WV_SKIP_PUBLISHED_WORKER_SHARD=1
