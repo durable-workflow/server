@@ -486,6 +486,7 @@ class SignalQueryRuntimeContractTest extends TestCase
             [
                 'rapid_increment_inputs',
                 'accepted_signal_inputs',
+                'accepted_signal_total',
                 'queried_total',
                 'history_signal_order',
             ],
@@ -1054,15 +1055,26 @@ PY);
             'immediate_repeat_query_consistency' => true,
             'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             'accepted_signal_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            'accepted_signal_total' => 55,
             'queried_total' => 55,
             'history_signal_order' => [1, 2, 3, 5, 4, 6, 7, 8, 9, 10],
         ]);
 
         $this->assertSame('pass', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
-        $this->assertSame('not_covered', $result['scenario_results']['ordered_signal_delivery']['status']);
-        $this->assertContains(
-            'signal_query_ordered_delivery_current_evidence_missing',
-            array_column($result['findings'], 'type'),
+        $this->assertSame('fail', $result['scenario_results']['ordered_signal_delivery']['status']);
+        $this->assertSame(
+            [1, 2, 3, 5, 4, 6, 7, 8, 9, 10],
+            $result['scenario_results']['ordered_signal_delivery']['observed_outputs']['history_signal_order'],
+        );
+        $orderedFindings = $this->findingsForScenario($result, 'ordered_signal_delivery');
+        $this->assertSame('signal_query_ordered_delivery_failed', $orderedFindings[0]['type'] ?? null);
+        $this->assertSame(
+            'unexpected_ordered_signal_history_order',
+            $orderedFindings[0]['current_evidence']['current_behavior_failures'][0]['code'] ?? null,
+        );
+        $this->assertSame(
+            55,
+            $orderedFindings[0]['current_evidence']['ordered_delivery_observed_outputs']['accepted_signal_total'] ?? null,
         );
     }
 
@@ -1078,6 +1090,7 @@ PY);
             'immediate_repeat_query_consistency' => true,
             'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             'accepted_signal_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            'accepted_signal_total' => 55,
             'queried_total' => 55,
             'history_signal_order' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         ]);
@@ -1287,6 +1300,7 @@ PY);
             'ordered_signal_delivery' => [
                 'rapid_increment_inputs',
                 'accepted_signal_inputs',
+                'accepted_signal_total',
                 'queried_total',
                 'history_signal_order',
             ],
@@ -2466,6 +2480,20 @@ PY);
         );
     }
 
+    public function test_result_gate_rejects_wrong_ordered_delivery_accepted_total(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['ordered_signal_delivery']['observed_outputs']['accepted_signal_total'] = 54;
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'unexpected_ordered_signal_accepted_total',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
     public function test_result_gate_rejects_wrong_ordered_delivery_history_order(): void
     {
         $result = $this->completeSignalQueryResult();
@@ -2487,6 +2515,7 @@ PY);
         $result = $this->completeSignalQueryResult();
         $observed = &$result['scenario_results']['ordered_signal_delivery']['observed_outputs'];
         $observed['accepted_signal_inputs'] = [1, 2, 3];
+        $observed['accepted_signal_total'] = 6;
         $observed['queried_total'] = 6;
         $observed['history_signal_order'] = [1, 2, 3];
 
@@ -3401,6 +3430,7 @@ PY);
         $scenarioResults['ordered_signal_delivery']['observed_outputs'] = [
             'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             'accepted_signal_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            'accepted_signal_total' => 55,
             'queried_total' => 55,
             'history_signal_order' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         ];

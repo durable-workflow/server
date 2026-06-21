@@ -1399,6 +1399,12 @@ final class SignalQueryRuntimeResultGate
                     'accepted_signal_inputs',
                 );
                 $acceptedInputs = self::integerList($acceptedInputsValue);
+                $acceptedSignalTotal = self::integerValue(self::evidenceValue(
+                    $result,
+                    $scenarioResult,
+                    $scenarioId,
+                    'accepted_signal_total',
+                ));
                 $queriedTotal = self::integerValue(self::evidenceValue(
                     $result,
                     $scenarioResult,
@@ -1448,6 +1454,17 @@ final class SignalQueryRuntimeResultGate
                         'scenario_id' => $scenarioId,
                         'expected_inputs' => $rapidInputs,
                         'actual_inputs' => $acceptedInputs,
+                    ];
+                }
+
+                if ($referenceInputs !== null
+                    && $acceptedSignalTotal !== null
+                    && $acceptedSignalTotal !== array_sum($referenceInputs)) {
+                    $failures[] = [
+                        'code' => 'unexpected_ordered_signal_accepted_total',
+                        'scenario_id' => $scenarioId,
+                        'expected_total' => array_sum($referenceInputs),
+                        'actual_total' => $acceptedSignalTotal,
                     ];
                 }
 

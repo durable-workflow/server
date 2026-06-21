@@ -4349,6 +4349,7 @@ def exact_ordered_delivery_smoke_present() -> bool:
     observed = {
         "rapid_increment_inputs": smoke_field("rapid_increment_inputs", "ordered_signal_delivery"),
         "accepted_signal_inputs": smoke_field("accepted_signal_inputs", "ordered_signal_delivery"),
+        "accepted_signal_total": smoke_field("accepted_signal_total", "ordered_signal_delivery"),
         "queried_total": smoke_field("queried_total", "ordered_signal_delivery"),
         "history_signal_order": smoke_field("history_signal_order", "ordered_signal_delivery"),
     }
@@ -4394,6 +4395,7 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
     "ordered_signal_delivery": [
         "rapid_increment_inputs",
         "accepted_signal_inputs",
+        "accepted_signal_total",
         "queried_total",
         "history_signal_order",
     ],
@@ -4577,12 +4579,14 @@ def ordered_delivery_reference_inputs(observed: dict[str, Any]) -> list[int] | N
 def ordered_delivery_observations_agree(observed: dict[str, Any]) -> bool:
     rapid_inputs = integer_sequence(evidence_lookup(observed, "rapid_increment_inputs"))
     accepted_inputs = integer_sequence(evidence_lookup(observed, "accepted_signal_inputs"))
+    accepted_signal_total = integer_value(evidence_lookup(observed, "accepted_signal_total"))
     queried_total = integer_value(evidence_lookup(observed, "queried_total"))
     history_signal_order = integer_sequence(evidence_lookup(observed, "history_signal_order"))
 
     return (
         rapid_inputs == expected_rapid_signal_inputs()
         and accepted_inputs == rapid_inputs
+        and accepted_signal_total == sum(accepted_inputs)
         and queried_total == sum(accepted_inputs)
         and history_signal_order == accepted_inputs
     )
@@ -5124,6 +5128,7 @@ BASELINE_CURRENT_EVIDENCE_FIELDS = {
     "ordered_signal_delivery": [
         "rapid_increment_inputs",
         "accepted_signal_inputs",
+        "accepted_signal_total",
         "queried_total",
         "history_signal_order",
     ],
@@ -5191,21 +5196,64 @@ def required_current_evidence_for(scenario: str) -> list[str]:
     ))
 
 
+def ordered_delivery_flat_current_observed() -> dict[str, Any]:
+    if not isinstance(smoke_evidence, dict):
+        return {}
+
+    observed: dict[str, Any] = {}
+    for evidence_key in BASELINE_CURRENT_EVIDENCE_FIELDS["ordered_signal_delivery"]:
+        value = flat_smoke_field(evidence_key)
+        if value is not MISSING:
+            observed[evidence_key] = value
+
+    if "queried_total" not in observed:
+        legacy_total = flat_smoke_field("ten_signal_ordered_delivery_total")
+        if legacy_total is not MISSING:
+            observed["queried_total"] = legacy_total
+
+    if observed and smoke_descriptor is not None:
+        observed.setdefault("external_smoke_evidence", smoke_descriptor)
+
+    return observed
+
+
+def flat_current_observed_for(scenario: str) -> dict[str, Any]:
+    if scenario == "ordered_signal_delivery":
+        return ordered_delivery_flat_current_observed()
+
+    return {}
+
+
 def current_candidate_and_observed(scenario: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     candidate = scenario_evidence_candidate(scenario)
-    if candidate is None:
+    if candidate is not None:
+        observed = scenario_observed_outputs(candidate)
+        if candidate_matches_current_tuple(candidate, observed):
+            return candidate, observed
+
+    observed = flat_current_observed_for(scenario)
+    if not observed:
         return None, {}
 
-    observed = scenario_observed_outputs(candidate)
-    if not candidate_matches_current_tuple(candidate, observed):
+    if evidence_source_policy_violations(smoke_evidence):
         return None, {}
 
-    return candidate, observed
+    if not smoke_evidence_matches_current_tuple():
+        return None, {}
+
+    return None, observed
 
 
 def current_evidence_candidate_status(scenario: str) -> str:
     candidate = scenario_evidence_candidate(scenario)
     if candidate is None:
+        observed = flat_current_observed_for(scenario)
+        if observed:
+            if evidence_source_policy_violations(smoke_evidence):
+                return "source_policy_violation"
+            if not smoke_evidence_matches_current_tuple():
+                return "not_current_tuple"
+            return "current"
         return "missing"
 
     observed = scenario_observed_outputs(candidate)
@@ -5222,6 +5270,7 @@ def ordered_delivery_missing_current_evidence(observed: dict[str, Any]) -> list[
     missing = []
     rapid_inputs = evidence_lookup(observed, "rapid_increment_inputs")
     accepted_inputs = evidence_lookup(observed, "accepted_signal_inputs")
+    accepted_signal_total = evidence_lookup(observed, "accepted_signal_total")
     queried_total = evidence_lookup(observed, "queried_total")
     history_signal_order = evidence_lookup(observed, "history_signal_order")
 
@@ -5229,6 +5278,8 @@ def ordered_delivery_missing_current_evidence(observed: dict[str, Any]) -> list[
         missing.append("rapid_increment_inputs")
     if accepted_inputs is MISSING:
         missing.append("accepted_signal_inputs")
+    if accepted_signal_total is MISSING:
+        missing.append("accepted_signal_total")
     if queried_total is MISSING:
         missing.append("queried_total")
     if history_signal_order is MISSING:
@@ -5307,6 +5358,7 @@ def ordered_delivery_behavior_failures(observed: dict[str, Any]) -> list[dict[st
     expected_inputs = expected_rapid_signal_inputs()
     rapid_inputs = evidence_lookup(observed, "rapid_increment_inputs")
     accepted_inputs = evidence_lookup(observed, "accepted_signal_inputs")
+    accepted_signal_total = evidence_lookup(observed, "accepted_signal_total")
     queried_total = evidence_lookup(observed, "queried_total")
     history_signal_order = evidence_lookup(observed, "history_signal_order")
     rapid_sequence = integer_sequence(rapid_inputs)
@@ -5330,6 +5382,17 @@ def ordered_delivery_behavior_failures(observed: dict[str, Any]) -> list[dict[st
             "accepted_signal_inputs",
             rapid_sequence,
             accepted_inputs,
+        ))
+    if (
+        accepted_signal_total is not MISSING
+        and reference_sequence is not None
+        and integer_value(accepted_signal_total) != sum(reference_sequence)
+    ):
+        failures.append(behavior_failure(
+            "unexpected_ordered_signal_accepted_total",
+            "accepted_signal_total",
+            sum(reference_sequence),
+            accepted_signal_total,
         ))
     if (
         queried_total is not MISSING
@@ -5562,6 +5625,7 @@ scenario_routes = {
         "acceptance": [
             "send increment(1) through increment(10) rapidly",
             "record the accepted signal sequence",
+            "record the accepted signal total",
             "query total matching the accepted signal sequence",
             "record history signal order matching the accepted signal sequence",
         ],
@@ -5747,6 +5811,7 @@ for scenario in required_scenarios:
         observed = {
             "rapid_increment_inputs": smoke_field("rapid_increment_inputs", scenario),
             "accepted_signal_inputs": smoke_field("accepted_signal_inputs", scenario),
+            "accepted_signal_total": smoke_field("accepted_signal_total", scenario),
             "queried_total": smoke_field("queried_total", scenario),
             "history_signal_order": smoke_field("history_signal_order", scenario),
             "external_smoke_evidence": smoke_descriptor,
@@ -5808,6 +5873,10 @@ for scenario in required_scenarios:
             finding_id = route["type"]
             if status != "runner_blocked":
                 missing_current_evidence = current_evidence_gaps(scenario)
+                if scenario == "ordered_signal_delivery":
+                    _, current_observed = current_candidate_and_observed(scenario)
+                    if current_observed:
+                        result.setdefault("observed_outputs", current_observed)
             if missing_current_evidence and not behavior_failures:
                 current_missing_route = BASELINE_CURRENT_MISSING_ROUTES.get(scenario)
                 if current_missing_route is not None:
@@ -5832,6 +5901,15 @@ for scenario in required_scenarios:
             if behavior_failures:
                 finding["current_evidence"]["current_evidence_candidate_status"] = candidate_status
                 finding["current_evidence"]["current_behavior_failures"] = behavior_failures
+                if scenario == "ordered_signal_delivery":
+                    _, ordered_observed = current_candidate_and_observed(scenario)
+                    ordered_readout = {
+                        key: ordered_observed[key]
+                        for key in BASELINE_CURRENT_EVIDENCE_FIELDS["ordered_signal_delivery"]
+                        if key in ordered_observed
+                    }
+                    if ordered_readout:
+                        finding["current_evidence"]["ordered_delivery_observed_outputs"] = ordered_readout
                 finding["observed_behavior"] = "current published artifacts produced behavior outside the signals/queries contract"
             if status == "runner_blocked":
                 finding["blocker_kind"] = "server_readiness_topology"

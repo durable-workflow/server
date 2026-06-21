@@ -220,6 +220,7 @@ final class SignalQueryRuntimeContract
                     'evidence' => [
                         'rapid_increment_inputs',
                         'accepted_signal_inputs',
+                        'accepted_signal_total',
                         'queried_total',
                         'history_signal_order',
                     ],
@@ -483,6 +484,7 @@ final class SignalQueryRuntimeContract
                         'current_evidence_fields' => [
                             'rapid_increment_inputs',
                             'accepted_signal_inputs',
+                            'accepted_signal_total',
                             'queried_total',
                             'history_signal_order',
                         ],
