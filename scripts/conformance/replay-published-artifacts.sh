@@ -225,16 +225,36 @@ started_at="$(timestamp)"
 
 cleanup() {
   local code=$?
+  local cleanup_status=0
+  local cleanup_reasons=()
+  local cleanup_reason
 
   if [[ "$compose_cleanup_needed" == "1" ]]; then
-    docker compose -p "$compose_project" -f "$published_compose_file" down -v >/dev/null 2>&1 || true
+    if ! docker compose -p "$compose_project" -f "$published_compose_file" down -v > "$result_dir/docker-compose-cleanup.log" 2>&1; then
+      cleanup_status=1
+      cleanup_reasons+=("published server compose cleanup failed; see docker-compose-cleanup.log")
+    fi
   fi
 
-  if [[ "$keep_run_root" != "1" && "$code" -eq 0 && "$result_dir" != "$run_root" ]]; then
-    rm -rf "$run_root"
+  if [[ "$keep_run_root" != "1" && "$code" -eq 0 && "$result_dir" != "$run_root" && "${result_dir}/" != "${run_root}/"* ]]; then
+    if ! rm -rf "$run_root" > "$result_dir/run-root-cleanup.log" 2>&1; then
+      cleanup_status=1
+      cleanup_reasons+=("replay run-root cleanup failed for $run_root; see run-root-cleanup.log")
+      printf 'kept replay conformance run root: %s\n' "$run_root" >&2
+    fi
   else
     printf 'kept replay conformance run root: %s\n' "$run_root" >&2
   fi
+
+  if [[ "$cleanup_status" -ne 0 ]]; then
+    cleanup_reason="$(IFS='; '; printf '%s' "${cleanup_reasons[*]}")"
+    if command -v python3 >/dev/null 2>&1; then
+      cleanup_failure_result "$cleanup_reason" "$code" || true
+    fi
+    exit 1
+  fi
+
+  exit "$code"
 }
 trap cleanup EXIT
 
@@ -894,6 +914,157 @@ metadata = {
     json.dumps(metadata, indent=2, sort_keys=True) + "\n",
     encoding="utf-8",
 )
+PY
+}
+
+cleanup_failure_result() {
+  local reason="$1"
+  local previous_exit_code="${2:-0}"
+
+  python3 - "$result_dir" "$started_at" "$reason" "$previous_exit_code" "$run_root" "$compose_project" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+result_dir = Path(sys.argv[1])
+started_at = sys.argv[2]
+reason = sys.argv[3]
+previous_exit_code = int(sys.argv[4])
+run_root = sys.argv[5]
+compose_project = sys.argv[6]
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    if not path.exists() or path.stat().st_size == 0:
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def list_value(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+finished_at = now()
+result_path = result_dir / "replay-conformance-result.json"
+record_path = result_dir / "replay-conformance-record.json"
+metadata_path = result_dir / "run-metadata.json"
+pins = load_json(result_dir / "pins.json")
+result = load_json(result_path)
+record = load_json(record_path)
+metadata = load_json(metadata_path)
+versions = dict(
+    result.get("artifact_versions")
+    or result.get("artifactVersions")
+    or record.get("artifactVersions")
+    or pins.get("artifact_versions")
+    or {}
+)
+sources = dict(result.get("artifact_sources") or pins.get("artifact_sources") or {})
+previous_outcome = str(result.get("outcome") or record.get("outcome") or "")
+runner_blocked = bool(result.get("runner_blocked") or record.get("runnerBlocked"))
+if previous_outcome in {"", "pass"}:
+    runner_blocked = True
+
+finding = {
+    "type": "replay_runner_cleanup_failure",
+    "owning_surface": "conformance_harness",
+    "summary": reason,
+    "observed_behavior": {
+        "cleanup_failure": True,
+        "previous_exit_code": previous_exit_code,
+        "previous_outcome": previous_outcome or None,
+        "run_root": run_root,
+        "compose_project": compose_project,
+        "logs": {
+            "docker_compose_cleanup": "docker-compose-cleanup.log",
+            "run_root_cleanup": "run-root-cleanup.log",
+        },
+    },
+    "expected_behavior": "the replay conformance runner exits cleanly after writing passing evidence, or records cleanup failure as non-passing evidence",
+    "next_acceptance_criterion": "rerun replay conformance on a host where cleanup completes, or repair the cleanup step named in this finding",
+}
+
+if not result:
+    result = {
+        "schema": "durable-workflow.v2.replay-conformance.result",
+        "schema_version": 1,
+        "started_at": started_at,
+        "artifact_versions": versions,
+        "artifact_sources": sources,
+        "source_policy": {
+            "artifact_source": "published_artifacts",
+            "local_product_source_checkouts_used": False,
+        },
+        "scenario_results": {},
+    }
+
+findings = list_value(result.get("findings"))
+findings.append(finding)
+finding_links = result.get("finding_links")
+if not isinstance(finding_links, dict):
+    finding_links = {}
+finding_links["runner_cleanup"] = [finding]
+
+result.update({
+    "finished_at": finished_at,
+    "generated_at": finished_at,
+    "outcome": "fail",
+    "runner_blocked": runner_blocked,
+    "artifact_versions": versions,
+    "artifact_sources": sources,
+    "findings": findings,
+    "finding_links": finding_links,
+    "cleanup": {
+        "status": "fail",
+        "reason": reason,
+        "previous_exit_code": previous_exit_code,
+    },
+})
+
+record.update({
+    "schema": "durable-workflow.v2.replay-conformance.record",
+    "outcome": "fail",
+    "runnerBlocked": runner_blocked,
+    "reason": reason,
+    "artifactVersions": versions,
+    "started_at": record.get("started_at") or result.get("started_at") or started_at,
+    "finished_at": finished_at,
+    "result_file": "replay-conformance-result.json",
+    "cleanupFailure": {
+        "reason": reason,
+        "previousExitCode": previous_exit_code,
+    },
+})
+
+metadata.update({
+    "schema": "durable-workflow.v2.replay-conformance.run-metadata",
+    "started_at": metadata.get("started_at") or result.get("started_at") or started_at,
+    "finished_at": finished_at,
+    "runner_blocked": runner_blocked,
+    "cleanup": {
+        "status": "fail",
+        "reason": reason,
+        "previous_exit_code": previous_exit_code,
+        "run_root": run_root,
+        "compose_project": compose_project,
+    },
+})
+
+result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+record_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 }
 

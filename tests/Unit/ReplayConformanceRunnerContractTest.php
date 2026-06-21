@@ -433,6 +433,387 @@ SH);
         }
     }
 
+    public function test_staged_runner_rewrites_pass_record_when_cleanup_fails_after_success(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $workspace = $this->makeTempDir('dw-replay-cleanup-contract');
+        $stagedScript = $workspace . '/scripts/conformance/replay-published-artifacts.sh';
+        $serverCheckout = $workspace . '/repos/server';
+        $binDir = $workspace . '/bin';
+        $runRoot = $workspace . '/tmp/run-root';
+        $resultDir = $workspace . '/tmp/results';
+        $cwd = $workspace . '/tmp/cwd';
+        $dockerLog = $workspace . '/docker-argv.log';
+
+        try {
+            foreach ([
+                dirname($stagedScript),
+                $serverCheckout,
+                $binDir,
+                $runRoot,
+                $resultDir,
+                $cwd,
+            ] as $directory) {
+                $this->mkdirp($directory);
+            }
+
+            copy($repoRoot . '/scripts/conformance/replay-published-artifacts.sh', $stagedScript);
+            chmod($stagedScript, 0755);
+            copy($repoRoot . '/docker-compose.published.yml', $serverCheckout . '/docker-compose.published.yml');
+
+            $realPython = trim((string) shell_exec('command -v python3 2>/dev/null'));
+            if ($realPython === '') {
+                $this->markTestSkipped('python3 is required for the replay runner contract.');
+            }
+
+            $pythonShim = <<<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+real_python=__REAL_PYTHON__
+
+write_python_shard() {
+  local output="$1"
+  mkdir -p "$(dirname "$output")"
+  cat > "$output" <<'JSON'
+{
+  "findings": [],
+  "outcome": "pass",
+  "scenario_results": {
+    "malformed_history_refusal": {"scenario_id": "malformed_history_refusal", "status": "pass"},
+    "python_code_divergence_refusal": {"scenario_id": "python_code_divergence_refusal", "status": "pass"},
+    "python_completed_history_activity_replay": {"scenario_id": "python_completed_history_activity_replay", "status": "pass"},
+    "python_completed_history_saga_compensation_replay": {"scenario_id": "python_completed_history_saga_compensation_replay", "status": "pass"},
+    "python_completed_history_signal_update_replay": {"scenario_id": "python_completed_history_signal_update_replay", "status": "pass"},
+    "python_completed_history_version_marker_replay": {"scenario_id": "python_completed_history_version_marker_replay", "status": "pass"},
+    "python_completed_history_wait_condition_replay": {"scenario_id": "python_completed_history_wait_condition_replay", "status": "pass"},
+    "python_in_flight_signal_restart_timing": {"scenario_id": "python_in_flight_signal_restart_timing", "status": "pass"},
+    "python_worker_restart_activity_state": {"scenario_id": "python_worker_restart_activity_state", "status": "pass"},
+    "python_worker_restart_completed_query": {"scenario_id": "python_worker_restart_completed_query", "status": "pass"},
+    "python_worker_restart_saga_compensation_state": {"scenario_id": "python_worker_restart_saga_compensation_state", "status": "pass"},
+    "python_worker_restart_signal_update_state": {"scenario_id": "python_worker_restart_signal_update_state", "status": "pass"},
+    "python_worker_restart_version_marker_state": {"scenario_id": "python_worker_restart_version_marker_state", "status": "pass"},
+    "python_worker_restart_wait_condition_state": {"scenario_id": "python_worker_restart_wait_condition_state", "status": "pass"},
+    "server_history_mutation_refusal": {"scenario_id": "server_history_mutation_refusal", "status": "pass"}
+  }
+}
+JSON
+}
+
+if [[ "${1:-}" == "-m" && "${2:-}" == "venv" ]]; then
+  venv="${3:?venv path required}"
+  mkdir -p "$venv/bin"
+  cat > "$venv/bin/activate" <<ACT
+deactivate() { :; }
+PATH="$venv/bin:\${PATH}"
+export PATH
+ACT
+  cat > "$venv/bin/python" <<PYTHON
+#!/usr/bin/env bash
+set -euo pipefail
+real_python=$real_python
+if [[ "\${1:-}" == "-m" && "\${2:-}" == "pip" ]]; then
+  exit 0
+fi
+if [[ "\${1:-}" == "-" ]]; then
+  cat >/dev/null
+  printf '%s\n' '{"import_name":"durable_workflow","package":"durable-workflow","status":"pass","version":"0.4.89"}'
+  exit 0
+fi
+exec "\$real_python" "\$@"
+PYTHON
+  chmod +x "$venv/bin/python"
+  cat > "$venv/bin/durable-workflow-replay-conformance" <<'PYSH'
+#!/usr/bin/env bash
+set -euo pipefail
+output=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output)
+      output="$2"
+      shift 2
+      ;;
+    --output=*)
+      output="${1#--output=}"
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [[ -z "$output" ]]; then
+  exit 2
+fi
+write_python_shard() {
+  local output="$1"
+  mkdir -p "$(dirname "$output")"
+  cat > "$output" <<'JSON'
+{
+  "findings": [],
+  "outcome": "pass",
+  "scenario_results": {
+    "malformed_history_refusal": {"scenario_id": "malformed_history_refusal", "status": "pass"},
+    "python_code_divergence_refusal": {"scenario_id": "python_code_divergence_refusal", "status": "pass"},
+    "python_completed_history_activity_replay": {"scenario_id": "python_completed_history_activity_replay", "status": "pass"},
+    "python_completed_history_saga_compensation_replay": {"scenario_id": "python_completed_history_saga_compensation_replay", "status": "pass"},
+    "python_completed_history_signal_update_replay": {"scenario_id": "python_completed_history_signal_update_replay", "status": "pass"},
+    "python_completed_history_version_marker_replay": {"scenario_id": "python_completed_history_version_marker_replay", "status": "pass"},
+    "python_completed_history_wait_condition_replay": {"scenario_id": "python_completed_history_wait_condition_replay", "status": "pass"},
+    "python_in_flight_signal_restart_timing": {"scenario_id": "python_in_flight_signal_restart_timing", "status": "pass"},
+    "python_worker_restart_activity_state": {"scenario_id": "python_worker_restart_activity_state", "status": "pass"},
+    "python_worker_restart_completed_query": {"scenario_id": "python_worker_restart_completed_query", "status": "pass"},
+    "python_worker_restart_saga_compensation_state": {"scenario_id": "python_worker_restart_saga_compensation_state", "status": "pass"},
+    "python_worker_restart_signal_update_state": {"scenario_id": "python_worker_restart_signal_update_state", "status": "pass"},
+    "python_worker_restart_version_marker_state": {"scenario_id": "python_worker_restart_version_marker_state", "status": "pass"},
+    "python_worker_restart_wait_condition_state": {"scenario_id": "python_worker_restart_wait_condition_state", "status": "pass"},
+    "server_history_mutation_refusal": {"scenario_id": "server_history_mutation_refusal", "status": "pass"}
+  }
+}
+JSON
+}
+write_python_shard "$output"
+printf '%s\n' '{"runtime":"sdk-python","status":"pass"}'
+PYSH
+  chmod +x "$venv/bin/durable-workflow-replay-conformance"
+  exit 0
+fi
+
+if [[ "${1:-}" == */resolve-pins.py ]]; then
+  cat <<'JSON'
+{
+  "artifact_sources": {
+    "cli": "github_release_asset",
+    "sdk-python": "pypi_package",
+    "server": "published_docker_image",
+    "waterline": "packagist_package",
+    "workflow-php": "packagist_package"
+  },
+  "artifact_versions": {
+    "cli": "0.1.81",
+    "sdk-python": "0.4.89",
+    "server": "0.2.449",
+    "waterline": "2.0.0-alpha.111",
+    "workflow-php": "2.0.0-alpha.210"
+  },
+  "cli_install_url": "https://example.invalid/install.sh",
+  "schema": "durable-workflow.v2.replay-conformance.pins",
+  "server_image": "durableworkflow/server:0.2.449"
+}
+JSON
+  exit 0
+fi
+
+if [[ "${1:-}" == "-" ]]; then
+  tmp="$(mktemp)"
+  cat > "$tmp"
+  if grep -q 'published server did not become ready' "$tmp"; then
+    printf '%s\n' 'ready 200'
+    /bin/rm -f "$tmp"
+    exit 0
+  fi
+  if grep -q 'GET /api/cluster/info did not expose replay_verification_contract' "$tmp"; then
+    output="${4:?cluster info output path required}"
+    mkdir -p "$(dirname "$output")"
+    printf '%s\n' '{"replay_verification_contract":{}}' > "$output"
+    printf '%s\n' 'cluster info replay_verification_contract exposed'
+    /bin/rm -f "$tmp"
+    exit 0
+  fi
+  "$real_python" "$@" < "$tmp"
+  status=$?
+  /bin/rm -f "$tmp"
+  exit "$status"
+fi
+
+exec "$real_python" "$@"
+SH;
+            $this->writeExecutable(
+                $binDir . '/python3',
+                str_replace('__REAL_PYTHON__', escapeshellarg($realPython), $pythonShim),
+            );
+
+            $this->writeExecutable($binDir . '/curl', <<<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+output=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o)
+      output="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [[ -z "$output" ]]; then
+  exit 2
+fi
+cat > "$output" <<'INSTALL'
+#!/usr/bin/env sh
+set -eu
+bin_name="${DURABLE_WORKFLOW_BIN_NAME:-dw}"
+mkdir -p "$DURABLE_WORKFLOW_INSTALL_DIR"
+cat > "$DURABLE_WORKFLOW_INSTALL_DIR/$bin_name" <<'DW'
+#!/usr/bin/env sh
+if [ "${1:-}" = "--version" ]; then
+  echo "dw version 0.1.81"
+  exit 0
+fi
+if [ "${1:-}" = "server:health" ]; then
+  echo '{"status":"ok"}'
+  exit 0
+fi
+echo "fake dw"
+DW
+chmod +x "$DURABLE_WORKFLOW_INSTALL_DIR/$bin_name"
+INSTALL
+SH);
+
+            $this->writeExecutable($binDir . '/docker', <<<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%q ' "$@" >> "$DW_FAKE_DOCKER_LOG"
+printf '\n' >> "$DW_FAKE_DOCKER_LOG"
+
+write_php_shard() {
+  local output="$1"
+  mkdir -p "$(dirname "$output")"
+  cat > "$output" <<'JSON'
+{
+  "findings": [],
+  "outcome": "pass",
+  "scenario_results": {
+    "malformed_history_refusal": {"scenario_id": "malformed_history_refusal", "status": "pass"},
+    "php_code_divergence_refusal": {"scenario_id": "php_code_divergence_refusal", "status": "pass"},
+    "php_completed_history_activity_replay": {"scenario_id": "php_completed_history_activity_replay", "status": "pass"},
+    "php_completed_history_saga_compensation_replay": {"scenario_id": "php_completed_history_saga_compensation_replay", "status": "pass"},
+    "php_completed_history_signal_update_replay": {"scenario_id": "php_completed_history_signal_update_replay", "status": "pass"},
+    "php_completed_history_version_marker_replay": {"scenario_id": "php_completed_history_version_marker_replay", "status": "pass"},
+    "php_completed_history_wait_condition_replay": {"scenario_id": "php_completed_history_wait_condition_replay", "status": "pass"},
+    "php_in_flight_signal_restart_timing": {"scenario_id": "php_in_flight_signal_restart_timing", "status": "pass"},
+    "php_worker_restart_activity_state": {"scenario_id": "php_worker_restart_activity_state", "status": "pass"},
+    "php_worker_restart_completed_query": {"scenario_id": "php_worker_restart_completed_query", "status": "pass"},
+    "php_worker_restart_saga_compensation_state": {"scenario_id": "php_worker_restart_saga_compensation_state", "status": "pass"},
+    "php_worker_restart_signal_update_state": {"scenario_id": "php_worker_restart_signal_update_state", "status": "pass"},
+    "php_worker_restart_version_marker_state": {"scenario_id": "php_worker_restart_version_marker_state", "status": "pass"},
+    "php_worker_restart_wait_condition_state": {"scenario_id": "php_worker_restart_wait_condition_state", "status": "pass"},
+    "server_history_mutation_refusal": {"scenario_id": "server_history_mutation_refusal", "status": "pass"}
+  }
+}
+JSON
+}
+
+if [[ "${1:-}" == "compose" ]]; then
+  if [[ "${2:-}" == "version" ]]; then
+    exit 0
+  fi
+  exit 0
+fi
+
+if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
+  if [[ "${3:-}" == "--format" ]]; then
+    echo "durableworkflow/server@sha256:fake"
+  else
+    echo '[{"RepoDigests":["durableworkflow/server@sha256:fake"]}]'
+  fi
+  exit 0
+fi
+
+if [[ "${1:-}" == "run" ]]; then
+  joined=" $* "
+  if [[ "$joined" == *" php /probe.php "* ]]; then
+    printf '%s\n' '{"classes_checked":[],"missing_classes":[],"package":"durable-workflow/waterline","status":"pass","workflow_package_api_floor_missing":[]}'
+    exit 0
+  fi
+  if [[ "$joined" == *" php artisan list --raw "* ]]; then
+    printf '%s\n' 'workflow:v2:replay-conformance Replay conformance'
+    exit 0
+  fi
+  if [[ "$joined" == *" workflow:v2:replay-conformance "* ]]; then
+    result_dir=""
+    previous=""
+    for arg in "$@"; do
+      if [[ "$previous" == "-v" && "$arg" == *":/result" ]]; then
+        result_dir="${arg%:/result}"
+      fi
+      previous="$arg"
+    done
+    if [[ -z "$result_dir" ]]; then
+      exit 2
+    fi
+    write_php_shard "$result_dir/php-replay-shard.json"
+    printf '%s\n' '{"runtime":"workflow-php","status":"pass"}'
+    exit 0
+  fi
+  exit 0
+fi
+
+exit 0
+SH);
+
+            $this->writeExecutable($binDir . '/rm', <<<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'fake rm cleanup failure: %s\n' "$*" >&2
+exit 1
+SH);
+
+            $env = array_merge($_ENV, [
+                'PATH' => $binDir . PATH_SEPARATOR . (string) getenv('PATH'),
+                'DW_CONFORMANCE_TMPDIR' => $workspace . '/tmp',
+                'DW_FAKE_DOCKER_LOG' => $dockerLog,
+                'DW_REPLAY_RESULT_DIR' => $resultDir,
+                'DW_REPLAY_RUN_ROOT' => $runRoot,
+                'DW_REPLAY_SERVER_PORT' => '39877',
+                'DW_REPLAY_SKIP_DOCKER_PULL' => '1',
+                'DW_SERVER_REPO_ROOT' => '',
+                'SERVER_REPO_PATH' => '',
+            ]);
+
+            $process = proc_open(
+                [$stagedScript, '--result-dir', $resultDir],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $cwd,
+                $env,
+            );
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $status = proc_close($process);
+
+            $this->assertSame(
+                1,
+                $status,
+                "the fake cleanup failure should make an otherwise passing replay run non-passing\nstdout:\n$stdout\nstderr:\n$stderr",
+            );
+
+            $result = json_decode((string) file_get_contents($resultDir . '/replay-conformance-result.json'), true, flags: JSON_THROW_ON_ERROR);
+            $record = json_decode((string) file_get_contents($resultDir . '/replay-conformance-record.json'), true, flags: JSON_THROW_ON_ERROR);
+
+            $this->assertSame('fail', $result['outcome']);
+            $this->assertSame('fail', $record['outcome']);
+            $this->assertTrue($result['runner_blocked']);
+            $this->assertTrue($record['runnerBlocked']);
+            $this->assertSame('fail', $result['cleanup']['status']);
+            $this->assertSame('pass', $result['findings'][0]['observed_behavior']['previous_outcome']);
+            $this->assertSame('replay_runner_cleanup_failure', $result['findings'][0]['type']);
+            $this->assertStringContainsString('replay run-root cleanup failed', $record['reason']);
+            $this->assertSame('pass', json_decode((string) file_get_contents($resultDir . '/replay-conformance-merge.log'), true, flags: JSON_THROW_ON_ERROR)['outcome']);
+            $this->assertFileExists($resultDir . '/run-root-cleanup.log');
+            $this->assertStringContainsString('fake rm cleanup failure', (string) file_get_contents($resultDir . '/run-root-cleanup.log'));
+        } finally {
+            $this->removeTree($workspace);
+        }
+    }
+
     private function read(string $path): string
     {
         $fullPath = dirname(__DIR__, 2) . '/' . $path;
