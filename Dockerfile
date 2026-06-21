@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     libpq-dev \
     libzip-dev \
+    nodejs \
     unzip \
     && docker-php-ext-install redis pdo pdo_mysql pdo_pgsql pcntl zip bcmath \
     && rm -rf /var/lib/apt/lists/*

@@ -150,6 +150,30 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertStringNotContainsString('pecl.php.net/redis', $dockerfile);
     }
 
+    public function test_dockerfile_installs_node_for_published_conformance_handoffs(): void
+    {
+        $dockerfile = $this->read('Dockerfile');
+        $activitiesRunner = $this->read('scripts/conformance/activities-published-artifacts.sh');
+
+        $this->assertStringContainsString('FROM php:8.3-cli AS base', $dockerfile);
+        $this->assertStringContainsString('nodejs', $dockerfile);
+        $this->assertStringContainsString('if ! require_command node; then', $activitiesRunner);
+        $this->assertStringContainsString("required command not found: node", $activitiesRunner);
+
+        $baseOffset = strpos($dockerfile, 'FROM php:8.3-cli AS base');
+        $nodeOffset = strpos($dockerfile, 'nodejs');
+        $vendorOffset = strpos($dockerfile, 'FROM base AS vendor');
+        $productionOffset = strpos($dockerfile, 'FROM base AS production');
+
+        $this->assertIsInt($baseOffset);
+        $this->assertIsInt($nodeOffset);
+        $this->assertIsInt($vendorOffset);
+        $this->assertIsInt($productionOffset);
+        $this->assertLessThan($nodeOffset, $baseOffset);
+        $this->assertLessThan($vendorOffset, $nodeOffset);
+        $this->assertLessThan($productionOffset, $nodeOffset);
+    }
+
     public function test_docker_build_docs_compose_and_ci_defaults_match_workflow_package_fallback(): void
     {
         $fallback = '2.0.0-alpha.205';

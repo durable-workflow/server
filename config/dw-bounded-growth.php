@@ -1,6 +1,7 @@
 <?php
 
 use App\Services\PrometheusMetricsSummary;
+use App\Support\ActivityRuntimeResultGate;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\LongPollSignalStore;
 use App\Support\LongPollWaitSlotStore;
@@ -315,6 +316,15 @@ return [
             'cardinality' => 'Task-queue runtime series keyed by task_queue are capped by server.metrics.prometheus_task_queue_series_limit, default 100 and hard-clamped to 500; scrape-time discovery reads at most limit + 1 queue label sets and aggregation scans only active or last-minute task rows for reported queues.',
             'selection' => 'task_queue_name_ascending',
             'suppression' => 'The endpoint reports observed, reported, truncated, and suppressed queue series under cardinality.series_limits.task_queues; counts are exact until the cap is exceeded, then disclosed as lower bounds.',
+        ],
+
+        'dw_server_image' => [
+            'owner' => ActivityRuntimeResultGate::class,
+            'surface' => 'Activities conformance published_artifact_worker_execution evidence.',
+            'dimensions' => [],
+            'cardinality' => 'single evidence field per published server artifact execution entry.',
+            'selection' => 'pinned published server artifact execution source accepted by the activities conformance result gate.',
+            'suppression' => 'No labels are exposed; the value remains scoped to the conformance evidence payload.',
         ],
 
         'dw_perf_requests_total' => [

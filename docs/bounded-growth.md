@@ -1,7 +1,8 @@
 # Server Bounded-Growth Policy
 
 The server owns a few cache-backed coordination surfaces, SQL recovery scans,
-JSON metric surfaces, and the perf harness metrics that can be remote-written during soaks.
+JSON metric surfaces, conformance evidence fields, and the perf harness metrics
+that can be remote-written during soaks.
 Each surface must declare a bounded-growth policy in
 `config/dw-bounded-growth.php` before it ships. The policy is intentionally
 machine-readable so tests can fail when new cache prefixes or `dw_*` metrics are
@@ -87,6 +88,7 @@ task records; query-poller markers have TTL-only eviction.
 | `dw_activity_executions_total` | `GET /api/system/prometheus-metrics` | `namespace` is request-scoped rather than a label. `task_queue`/`workflow_type`/`activity_type` series are limited by `server.metrics.prometheus_activity_series_limit`, default 100 and hard-clamped to 500. Scrape-time discovery reads at most `limit + 1` label sets; `cardinality.series_limits.activities` reports exact counts until the cap is exceeded, then lower bounds. |
 | `dw_activity_execution_latency_seconds` | `GET /api/system/prometheus-metrics` | Shares the bounded `task_queue`/`workflow_type`/`activity_type` series set used by `dw_activity_executions_total`; latency buckets are emitted only for reported activity series. |
 | `dw_task_queue_runtime_state` | `GET /api/system/prometheus-metrics` | `namespace` is request-scoped rather than a label. `task_queue` series are limited by `server.metrics.prometheus_task_queue_series_limit`, default 100 and hard-clamped to 500. Scrape-time discovery reads at most `limit + 1` queue label sets, aggregation scans only active or last-minute task rows for reported queues, and `cardinality.series_limits.task_queues` reports exact counts until the cap is exceeded, then lower bounds. |
+| `dw_server_image` | Activities conformance `published_artifact_worker_execution` evidence | No labels; single evidence field per published server artifact execution entry. The value stays scoped to the conformance evidence payload and is matched against the pinned server image source. |
 | `dw_perf_requests_total` | Perf harness `/metrics`; optional remote_write | The only label is `status`, produced from HTTP response codes and load-generator exception buckets, so the series set is finite. |
 | `dw_perf_errors_total` | Perf harness `/metrics`; optional remote_write | No labels; single counter series per soak run. |
 | `dw_perf_latency_seconds_average` | Perf harness `/metrics`; optional remote_write | No labels; single gauge series per soak run. |
