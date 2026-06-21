@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Middleware\Authenticate;
 use App\Models\WorkflowNamespace;
+use App\Support\ActivityRuntimeContract;
 use App\Support\AuthCompositionContract;
 use App\Support\BridgeAdapterOutcomeContract;
 use App\Support\ChildWorkflowRuntimeContract;
@@ -120,6 +121,7 @@ class HealthController
             'namespace_runtime_contract' => true,
             'activity_timeouts' => true,
             'activity_retry_policy' => true,
+            'activity_runtime_contract' => true,
             'child_workflow_retry_policy' => true,
             'child_workflow_timeouts' => true,
             'parent_close_policy' => true,
@@ -189,6 +191,7 @@ class HealthController
             'surface_stability_contract' => SurfaceStabilityContract::manifest(),
             'platform_protocol_specs' => PlatformProtocolSpecs::manifest(),
             'platform_conformance_suite' => PlatformConformanceSuite::manifest(),
+            'activity_runtime_contract' => ActivityRuntimeContract::manifest(),
             'signal_query_runtime_contract' => SignalQueryRuntimeContract::manifest(),
             'search_attribute_runtime_contract' => SearchAttributeRuntimeContract::manifest(),
             'schedules_runtime_contract' => SchedulesRuntimeContract::manifest(),

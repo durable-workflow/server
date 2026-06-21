@@ -1,0 +1,549 @@
+{
+  "schema": "durable-workflow.v2.platform-conformance.runtime-scenarios",
+  "version": 1,
+  "category": "activity_runtime_contract",
+  "suite_schema": "durable-workflow.v2.platform-conformance.suite",
+  "suite_version": 18,
+  "description": "Public scenario manifest for first-class activity conformance. Harnesses use these scenario ids and criteria when evaluating published Durable Workflow artifacts across workflow-embedded and standalone activity execution.",
+  "fixture_type": "published_artifact_runtime_scenario_manifest",
+  "result_schema": "durable-workflow.v2.activity-runtime.result",
+  "result_version": 1,
+  "result_statuses": [
+    "pass",
+    "fail",
+    "unsupported",
+    "not_covered",
+    "runner_blocked"
+  ],
+  "artifact_policy": {
+    "published_artifacts_only": true,
+    "requires_published_artifact_versions": true,
+    "rejects_placeholder_versions": true,
+    "implementation_tests_are_not_sources": true,
+    "required_artifacts": [
+      "server",
+      "cli",
+      "workflow-php",
+      "sdk-python",
+      "waterline"
+    ],
+    "release_artifact_aliases": {
+      "workflow-php": [
+        "workflow"
+      ]
+    },
+    "forbidden_sources": [
+      "local_product_source_checkout",
+      "workspace_repo_as_artifact_under_test"
+    ],
+    "placeholder_version_examples": [
+      "latest",
+      "current",
+      "head",
+      "unresolved",
+      "placeholder",
+      "<latest>",
+      "2.0.0-alpha.<latest>",
+      "${VERSION}",
+      "{{ version }}"
+    ]
+  },
+  "common_result_evidence": [
+    "suite_version",
+    "scenario_id",
+    "status",
+    "started_at",
+    "finished_at",
+    "generated_at",
+    "outcome",
+    "artifact_versions",
+    "published_artifact_install",
+    "runtime_matrix",
+    "workflow_id",
+    "run_id",
+    "activity_id",
+    "activity_execution_id",
+    "activity_attempt_id",
+    "history_events",
+    "operator_visibility",
+    "observed_outputs",
+    "linked_findings",
+    "classification"
+  ],
+  "topology": {
+    "namespace": "activities-conformance",
+    "task_queue": "activities-shared",
+    "required_workers": [
+      "workflow-php",
+      "sdk-python"
+    ],
+    "execution_modes": [
+      "workflow-embedded",
+      "standalone"
+    ]
+  },
+  "required_matrix": {
+    "execution_modes": [
+      "workflow-embedded",
+      "standalone"
+    ],
+    "runtimes": [
+      "workflow-php",
+      "sdk-python"
+    ],
+    "activity_cells": [
+      {
+        "mode": "workflow-embedded",
+        "runtime": "workflow-php",
+        "scenario": "workflow_embedded_activity_result"
+      },
+      {
+        "mode": "workflow-embedded",
+        "runtime": "sdk-python",
+        "scenario": "workflow_embedded_activity_result"
+      },
+      {
+        "mode": "standalone",
+        "runtime": "workflow-php",
+        "scenario": "standalone_activity_result"
+      },
+      {
+        "mode": "standalone",
+        "runtime": "sdk-python",
+        "scenario": "standalone_activity_result"
+      }
+    ],
+    "behavior_cells": [
+      "durable_result_recording_after_worker_restart",
+      "retry_attempt_backoff_behavior",
+      "timeout_behavior",
+      "typed_failure_propagation",
+      "heartbeat_and_cancellation_observation",
+      "idempotent_completion_handling",
+      "php_python_activity_parity",
+      "operator_visible_activity_attempt_state"
+    ]
+  },
+  "host_runner_contract": {
+    "runner_id": "activities",
+    "result_schema": "durable-workflow.v2.activity-runtime.result",
+    "must_execute_against_published_artifacts": true,
+    "must_emit_result_for_every_required_scenario": true,
+    "non_pass_classifications": [
+      "product-gap",
+      "coverage-gap",
+      "runner-gap",
+      "stale-artifact",
+      "pipeline-churn"
+    ]
+  },
+  "scenario_requirements": {
+    "published_artifact_install_only": {
+      "required_fields": [
+        "server_image",
+        "cli_release",
+        "workflow_php_package",
+        "sdk_python_package",
+        "waterline_artifact"
+      ],
+      "expected_behavior": "all artifacts are resolved from published channels and no local product checkout is used as an artifact under test"
+    },
+    "workflow_embedded_activity_result": {
+      "required_modes": [
+        "workflow-embedded"
+      ],
+      "required_runtimes": [
+        "workflow-php",
+        "sdk-python"
+      ],
+      "required_fields": [
+        "workflow_id",
+        "run_id",
+        "activity_execution_id",
+        "activity_type",
+        "result_payload",
+        "history_events"
+      ],
+      "expected_behavior": "a workflow-scheduled activity completes through the worker protocol and the workflow observes the exact typed result"
+    },
+    "standalone_activity_result": {
+      "required_modes": [
+        "standalone"
+      ],
+      "required_runtimes": [
+        "workflow-php",
+        "sdk-python"
+      ],
+      "required_fields": [
+        "activity_id",
+        "activity_execution_id",
+        "workflow_run_id",
+        "activity_type",
+        "result_payload",
+        "handle_response"
+      ],
+      "expected_behavior": "a top-level activity started through POST /api/activities closes its host run with the activity result"
+    },
+    "durable_result_recording_after_worker_restart": {
+      "required_fields": [
+        "first_worker_identity",
+        "restart_worker_identity",
+        "activity_execution_id",
+        "result_recorded_before_restart",
+        "result_observed_after_restart",
+        "duplicate_activity_count"
+      ],
+      "expected_behavior": "activity result recording survives worker restart and replay does not duplicate completion"
+    },
+    "retry_attempt_backoff_behavior": {
+      "required_fields": [
+        "attempts",
+        "failure_payloads",
+        "retry_policy",
+        "scheduled_backoff_seconds",
+        "observed_redelivery_timestamps",
+        "terminal_result"
+      ],
+      "expected_behavior": "failed attempts increment attempt state, respect configured backoff, and complete or fail according to retry policy"
+    },
+    "timeout_behavior": {
+      "allowed_timeout_types": [
+        "start_to_close",
+        "schedule_to_close"
+      ],
+      "required_fields": [
+        "timeout_type",
+        "deadline_at",
+        "enforcement_observed_at",
+        "activity_status",
+        "history_events"
+      ],
+      "expected_behavior": "start-to-close or schedule-to-close deadline is visible to the worker and enforced as a typed timeout"
+    },
+    "typed_failure_propagation": {
+      "required_fields": [
+        "failure_type",
+        "failure_message",
+        "failure_details",
+        "history_exception",
+        "caller_observed_failure"
+      ],
+      "expected_behavior": "activity failures preserve type, message, and details through history and the caller runtime"
+    },
+    "heartbeat_and_cancellation_observation": {
+      "required_fields": [
+        "heartbeat_details",
+        "heartbeat_history_event",
+        "cancel_requested_response",
+        "worker_observed_cancellation"
+      ],
+      "expected_behavior": "activity heartbeat details are recorded and cancellation is observable by a running worker"
+    },
+    "idempotent_completion_handling": {
+      "required_fields": [
+        "first_completion_response",
+        "duplicate_completion_response",
+        "activity_attempt_id",
+        "recorded_once",
+        "stale_attempt_or_idempotent_verdict"
+      ],
+      "expected_behavior": "duplicate completion attempts do not create duplicate terminal records and return a deterministic worker-protocol response"
+    },
+    "php_python_activity_parity": {
+      "required_fields": [
+        "php_activity_result",
+        "python_activity_result",
+        "cross_language_payload_shape",
+        "runtime_matrix"
+      ],
+      "expected_behavior": "PHP and Python activity workers produce compatible payload, failure, retry, timeout, and heartbeat observations where both runtimes support the surface"
+    },
+    "operator_visible_activity_attempt_state": {
+      "required_fields": [
+        "api_run_detail",
+        "history_activity_attempts",
+        "operator_metrics",
+        "waterline_activity_attempt_view"
+      ],
+      "expected_behavior": "operators can see current and historical activity attempt state through API metrics and Waterline"
+    }
+  },
+  "scenarios": [
+    {
+      "id": "published_artifact_install_only",
+      "title": "Published artifact install only",
+      "runtime_scope": "published-artifact-install",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation",
+        "cli_json_client",
+        "waterline_contract_surface"
+      ],
+      "actors": [
+        "server",
+        "workflow_php_runtime",
+        "python_sdk_runtime",
+        "cli",
+        "waterline"
+      ],
+      "operations": [
+        "install the server image, CLI, Python SDK, PHP workflow runtime, and Waterline from published channels",
+        "record the resolved artifact name, version, and source for every actor",
+        "prove local product source checkouts were not used as artifacts under test"
+      ],
+      "pass_criteria": [
+        "all claimed actors start from published artifacts only",
+        "the result document records artifact versions and a generated_at timestamp for every claimed actor",
+        "no scenario step depends on repository-local implementation tests"
+      ]
+    },
+    {
+      "id": "workflow_embedded_activity_result",
+      "title": "Workflow embedded activity result",
+      "runtime_scope": "workflow-embedded-activity-shard",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "workflow_worker",
+        "activity_worker",
+        "sdk_client"
+      ],
+      "operations": [
+        "start a workflow that schedules an ordinary activity on the shared activity task queue",
+        "complete the activity through the worker activity-task protocol",
+        "resume the workflow and capture the final run result plus activity history events"
+      ],
+      "pass_criteria": [
+        "the activity task includes workflow id, run id, activity type, attempt id, and payload codec",
+        "the workflow receives the exact typed result returned by the activity worker",
+        "history records ActivityStarted and ActivityCompleted for the same activity execution id"
+      ]
+    },
+    {
+      "id": "standalone_activity_result",
+      "title": "Standalone activity result",
+      "runtime_scope": "standalone-activity-shard",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "activity_worker",
+        "sdk_client"
+      ],
+      "operations": [
+        "start a top-level activity through the public activity control-plane route",
+        "complete it through the same worker activity-task protocol used by embedded activities",
+        "read the activity handle and host run after completion"
+      ],
+      "pass_criteria": [
+        "the control-plane handle exposes activity_id, activity_execution_id, workflow_run_id, workflow_type, and task queue",
+        "the host run closes with the exact activity result",
+        "the activity listing and detail surfaces show the terminal activity state"
+      ]
+    },
+    {
+      "id": "durable_result_recording_after_worker_restart",
+      "title": "Durable result recording after worker restart",
+      "runtime_scope": "worker-restart-durability-shard",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "activity_worker",
+        "workflow_worker"
+      ],
+      "operations": [
+        "complete an activity and stop the worker process before the caller observes the result",
+        "restart the worker with the same logical task queue",
+        "resume the workflow or standalone host and inspect history for duplicate activity completions"
+      ],
+      "pass_criteria": [
+        "the recorded result survives the worker restart",
+        "the caller observes the original result after restart",
+        "no duplicate activity execution or duplicate completion event is created"
+      ]
+    },
+    {
+      "id": "retry_attempt_backoff_behavior",
+      "title": "Retry attempt and backoff behavior",
+      "runtime_scope": "retry-backoff-shard",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "activity_worker"
+      ],
+      "operations": [
+        "start an activity with an explicit retry policy",
+        "fail the first attempt with a retryable typed failure",
+        "measure redelivery attempt number and backoff timing before completing a later attempt"
+      ],
+      "pass_criteria": [
+        "attempt identifiers change between attempts while the activity execution id remains stable",
+        "observed redelivery respects the configured backoff window",
+        "operator-visible state reports the current attempt and retry state"
+      ]
+    },
+    {
+      "id": "timeout_behavior",
+      "title": "Timeout behavior",
+      "runtime_scope": "timeout-shard",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "activity_worker"
+      ],
+      "operations": [
+        "start an activity with start-to-close or schedule-to-close timeout configuration",
+        "observe the deadline surfaced to the worker or server timeout scanner",
+        "allow the timeout to fire and capture terminal history"
+      ],
+      "pass_criteria": [
+        "the timeout deadline is visible in worker or operator evidence",
+        "the server records a typed timeout rather than an unclassified failure",
+        "the caller observes the documented timeout outcome"
+      ]
+    },
+    {
+      "id": "typed_failure_propagation",
+      "title": "Typed failure propagation",
+      "runtime_scope": "typed-failure-shard",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "activity_worker",
+        "caller_runtime"
+      ],
+      "operations": [
+        "fail an activity with type, message, retryability, stack trace, and encoded details",
+        "read workflow or standalone host history",
+        "read the caller-observed failure"
+      ],
+      "pass_criteria": [
+        "failure type and message are preserved",
+        "failure details remain payload-codec compatible",
+        "non-retryable failures do not silently retry"
+      ]
+    },
+    {
+      "id": "heartbeat_and_cancellation_observation",
+      "title": "Heartbeat and cancellation observation",
+      "runtime_scope": "heartbeat-cancellation-shard",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "activity_worker",
+        "operator_client"
+      ],
+      "operations": [
+        "heartbeat an in-flight activity with structured progress details",
+        "request cancellation of the owning workflow or standalone host",
+        "heartbeat again and capture the worker-observed cancellation flag"
+      ],
+      "pass_criteria": [
+        "heartbeat details are recorded in history or operator state",
+        "the worker receives cancel_requested=true after cancellation",
+        "the activity reaches a documented terminal cancellation or failure state"
+      ]
+    },
+    {
+      "id": "idempotent_completion_handling",
+      "title": "Idempotent completion handling",
+      "runtime_scope": "idempotent-completion-shard",
+      "claim_targets": [
+        "standalone_server",
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "server",
+        "activity_worker"
+      ],
+      "operations": [
+        "complete an activity attempt successfully",
+        "repeat the same completion request after the first terminal record lands",
+        "inspect worker response and terminal history"
+      ],
+      "pass_criteria": [
+        "the first completion records exactly one terminal result",
+        "the duplicate completion receives a deterministic stale-attempt or idempotent response",
+        "history and operator state do not contain duplicate terminal activity records"
+      ]
+    },
+    {
+      "id": "php_python_activity_parity",
+      "title": "PHP and Python activity parity",
+      "runtime_scope": "php-python-parity-shard",
+      "claim_targets": [
+        "official_sdk",
+        "worker_protocol_implementation"
+      ],
+      "actors": [
+        "workflow_php_runtime",
+        "python_sdk_runtime",
+        "server"
+      ],
+      "operations": [
+        "execute equivalent PHP and Python activities with typed payloads",
+        "compare result, failure, retry, timeout, heartbeat, and cancellation observations",
+        "record unsupported cells with focused findings if a published runtime lacks the activity surface"
+      ],
+      "pass_criteria": [
+        "supported PHP and Python activity cells expose compatible payload and failure shapes",
+        "the matrix records every unsupported surface with a root-cause finding",
+        "no runtime-specific source checkout is used as evidence"
+      ]
+    },
+    {
+      "id": "operator_visible_activity_attempt_state",
+      "title": "Operator visible activity attempt state",
+      "runtime_scope": "operator-visibility-shard",
+      "claim_targets": [
+        "standalone_server",
+        "waterline_contract_surface",
+        "cli_json_client"
+      ],
+      "actors": [
+        "server",
+        "cli",
+        "waterline"
+      ],
+      "operations": [
+        "capture in-flight, retrying, timed-out, failed, completed, and cancelled activity attempt state",
+        "compare server API metrics, workflow history, and Waterline selected-run/list evidence",
+        "record activity attempt id, attempt number, status, heartbeat, retry, and deadline fields"
+      ],
+      "pass_criteria": [
+        "operators can see the current attempt and terminal status without reading database tables",
+        "Waterline displays activity attempt state for embedded and standalone activity runs where supported",
+        "missing observer fields are routed to a focused Waterline or server product finding"
+      ]
+    }
+  ]
+}

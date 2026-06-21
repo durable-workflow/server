@@ -28,6 +28,7 @@ categories and runtime contracts:
 | Category | Source path | Status |
 | --- | --- | --- |
 | `worker_task_lifecycle` (server side) | `tests/Fixtures/` plus the per-route examples in `docs/contracts/external-task-input.md` and `docs/contracts/external-task-result.md` | stable |
+| `activity_runtime_contract` (server side handoff) | `GET /api/cluster/info`'s `activity_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/activity-runtime-scenarios.json`, `scripts/conformance/activities-published-artifacts.sh`, the standalone activity routes, worker activity-task poll/complete/fail/heartbeat routes, timeout enforcement routes, and Waterline operator attempt-state evidence | stable |
 | `signal_query_runtime_contract` (server side) | `GET /api/cluster/info`'s `signal_query_runtime_contract` manifest, the public scenario manifest at `static/platform-conformance/signal-query-runtime-scenarios.json`, `scripts/conformance/signals-queries-published-artifacts.sh`, plus the signal/query control-plane routes documented in the protocol catalog | stable |
 | `search_attribute_runtime_contract` (server side) | `GET /api/cluster/info`'s `search_attribute_runtime_contract` manifest, the search-attribute control-plane routes, workflow start metadata, workflow-task upsert command, workflow list query parser, and operator visibility surfaces | stable |
 | `schedules_runtime_contract` (server side) | `GET /api/cluster/info`'s `schedules_runtime_contract` manifest, the schedule control-plane routes, scheduler tick entrypoint, schedule history, CLI/SDK/PHP client surfaces, and cross-language dispatch behavior | stable |
@@ -48,6 +49,23 @@ Several categories the server is graded against also span client,
 runtime, observer, and documentation behavior in the `cli`, `sdk-python`,
 `workflow`, and `durable-workflow.github.io` repositories. The harness
 loads those companion fixtures alongside the server-owned manifests.
+
+The server repo ships a source-free activity runner at
+`scripts/conformance/activities-published-artifacts.sh`. Host conformance
+runners can discover that handoff from `GET /api/cluster/info` under
+`activity_runtime_contract.host_runner_contract` and invoke it against the
+current published server image, CLI release, Python SDK, PHP workflow runtime,
+and Waterline package versions. A passing result must report every activity
+scenario as `pass`: workflow-embedded and standalone execution, durable result
+recording across worker restart, retry attempt and backoff behavior,
+start-to-close or schedule-to-close timeout behavior, typed failure
+propagation, heartbeat and cancellation observation, idempotent completion,
+PHP/Python parity where both published runtimes support the surface, and
+operator-visible activity attempt state. If the host reaches the handoff but
+has not executed a required cell, the result records `not_covered` with a
+`coverage-gap` classification and a focused conformance-harness finding. Product
+failures, stale artifact tuples, runner gaps, and pipeline churn use their own
+classifications instead of being collapsed into a generic non-pass row.
 
 The server repo also ships a source-free signals/queries runner at
 `scripts/conformance/signals-queries-published-artifacts.sh`. Host
@@ -226,6 +244,18 @@ category emits a warning and does not block.
   `Workflow\V2\Support\PlatformConformanceSuite`. Third-party harnesses
   that target this server can read the suite manifest live without
   vendoring the static mirror.
+- Activity runtime contract: `GET /api/cluster/info` re-exports
+  `activity_runtime_contract`, schema
+  `durable-workflow.v2.activity-runtime.contract`. It names the required
+  published-artifact install policy, workflow-embedded and standalone
+  activity modes, PHP/Python runtime matrix, durable result recording across
+  worker restart, retry/backoff behavior, timeout behavior, typed failure
+  propagation, heartbeat and cancellation observation, idempotent completion,
+  PHP/Python parity, and operator-visible activity attempt state. Its
+  `host_runner_contract` names
+  `scripts/conformance/activities-published-artifacts.sh` as the executable
+  handoff and requires every non-pass cell to carry one of the product-gap,
+  coverage-gap, runner-gap, stale-artifact, or pipeline-churn classifications.
 - Signals/queries runtime contract: `GET /api/cluster/info` re-exports
   `signal_query_runtime_contract`, schema
   `durable-workflow.v2.signal-query-runtime.contract`. It names the

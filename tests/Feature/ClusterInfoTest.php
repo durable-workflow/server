@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Models\WorkerBuildIdRollout;
 use App\Models\WorkerRegistration;
 use App\Models\WorkflowNamespace;
+use App\Support\ActivityRuntimeContract;
+use App\Support\ActivityRuntimeResultGate;
 use App\Support\ChildWorkflowRuntimeContract;
 use App\Support\ChildWorkflowRuntimeResultGate;
 use App\Support\CoordinationHealthContract;
@@ -254,6 +256,89 @@ class ClusterInfoTest extends TestCase
             $contract['result_gate']['pass_requires'],
         );
         $this->assertTrue($contract['result_gate']['artifact_version_policy']['rejects_placeholder_versions']);
+    }
+
+    public function test_it_publishes_the_activity_runtime_conformance_contract(): void
+    {
+        $response = $this->getJson('/api/cluster/info')
+            ->assertOk()
+            ->assertJsonPath('capabilities.activity_runtime_contract', true)
+            ->assertJsonPath('activity_runtime_contract.schema', ActivityRuntimeContract::SCHEMA)
+            ->assertJsonPath('activity_runtime_contract.version', ActivityRuntimeContract::VERSION)
+            ->assertJsonPath(
+                'activity_runtime_contract.fixture_category',
+                'activity_runtime_contract',
+            )
+            ->assertJsonPath(
+                'activity_runtime_contract.coverage_gate.smoke_subset_outcome',
+                'non_passing',
+            );
+
+        $contract = $response->json('activity_runtime_contract');
+        $this->assertIsArray($contract);
+        $this->assertSame(
+            'https://durable-workflow.github.io/platform-conformance/activity-runtime-scenarios.json',
+            $contract['scenario_manifest']['public_path'],
+        );
+        $this->assertSame(
+            'static/platform-conformance/activity-runtime-scenarios.json',
+            $contract['scenario_manifest']['source_path'],
+        );
+        $this->assertArrayHasKey('waterline', $contract['artifact_policy']['install_channels']);
+        $this->assertContains('workflow-embedded', $contract['required_matrix']['execution_modes']);
+        $this->assertContains('standalone', $contract['required_matrix']['execution_modes']);
+        $this->assertContains('workflow-php', $contract['required_matrix']['runtimes']);
+        $this->assertContains('sdk-python', $contract['required_matrix']['runtimes']);
+        foreach ([
+            'workflow_embedded_activity_result',
+            'standalone_activity_result',
+            'durable_result_recording_after_worker_restart',
+            'retry_attempt_backoff_behavior',
+            'timeout_behavior',
+            'typed_failure_propagation',
+            'heartbeat_and_cancellation_observation',
+            'idempotent_completion_handling',
+            'php_python_activity_parity',
+            'operator_visible_activity_attempt_state',
+        ] as $scenarioId) {
+            $this->assertContains($scenarioId, $contract['required_scenarios']);
+        }
+        $this->assertContains(
+            'non_pass_cells_classified_by_root_cause',
+            $contract['coverage_gate']['passing_outcome_requires'],
+        );
+        $this->assertSame(
+            'required_for_passing_activities_conformance',
+            $contract['host_runner_contract']['status'],
+        );
+        $this->assertSame(
+            'scripts/conformance/activities-published-artifacts.sh',
+            $contract['host_runner_contract']['runner_path'],
+        );
+        $this->assertSame(
+            'coverage-gap',
+            $contract['host_runner_contract']['routing_policy']['missing_required_scenario']['classification'],
+        );
+        $this->assertSame(
+            ActivityRuntimeResultGate::SCHEMA,
+            $contract['result_gate']['schema'],
+        );
+        $this->assertContains(
+            'workflow_embedded_and_standalone_activity_modes_are_reported',
+            $contract['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'non_pass_cells_are_classified_by_root_cause',
+            $contract['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'published_artifact_install_sources_are_recorded_for_every_required_channel',
+            $contract['result_gate']['pass_requires'],
+        );
+        $this->assertContains(
+            'runner_blocked_false_for_product_evidence',
+            $contract['result_gate']['pass_requires'],
+        );
     }
 
     public function test_it_publishes_the_child_workflow_runtime_conformance_contract(): void
