@@ -35,6 +35,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ExternalPayloads;
 
@@ -147,6 +148,119 @@ class WorkflowQueryTaskBrokerTest extends TestCase
                 'avro',
                 (string) ($stored['result_envelope']['blob'] ?? ''),
             ),
+        );
+    }
+
+    public function test_worker_routed_query_task_history_enriches_signal_received_arguments(): void
+    {
+        Queue::fake();
+
+        $this->registerPythonWorker(
+            'python-query-signal-history-worker',
+            'python-queries',
+            ['python.queryable'],
+            workflowCommandContracts: [
+                'python.queryable' => [
+                    'queries' => ['currentTotal'],
+                    'query_contracts' => [
+                        [
+                            'name' => 'currentTotal',
+                            'parameters' => [],
+                        ],
+                    ],
+                    'signals' => ['increment'],
+                    'signal_contracts' => [
+                        [
+                            'name' => 'increment',
+                            'parameters' => [
+                                $this->typedCommandParameter('amount', 0, 'int'),
+                            ],
+                        ],
+                    ],
+                    'updates' => [],
+                    'update_contracts' => [],
+                ],
+            ],
+        );
+        $run = $this->startRemoteWorkflow('wf-query-task-signal-history');
+
+        foreach ([1, 2] as $sequence => $amount) {
+            $signal = $this->postJson("/api/workflows/{$run->workflow_instance_id}/signal/increment", [
+                'input' => ['amount' => $amount],
+                'request_id' => "query-task-signal-history-{$amount}",
+            ], $this->apiHeaders());
+
+            $signal->assertAccepted()
+                ->assertJsonPath('signal_name', 'increment')
+                ->assertJsonPath('command_status', 'accepted')
+                ->assertJsonPath('outcome', 'signal_received');
+
+            /** @var WorkflowSignal $recordedSignal */
+            $recordedSignal = WorkflowSignal::query()
+                ->where('workflow_command_id', (string) $signal->json('command_id'))
+                ->sole();
+            $recordedSignal->forceFill([
+                'workflow_sequence' => $sequence + 1,
+            ])->save();
+        }
+
+        /** @var WorkflowQueryTaskBroker $broker */
+        $broker = app(WorkflowQueryTaskBroker::class);
+        $task = $broker->enqueue('default', $run->refresh(), 'currentTotal', $this->queryArguments());
+
+        $poll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'python-query-signal-history-worker',
+            'task_queue' => 'python-queries',
+        ], $this->workerHeaders());
+
+        $poll->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.query_task_id', $task['query_task_id'])
+            ->assertJsonPath('task.workflow_id', 'wf-query-task-signal-history')
+            ->assertJsonPath('task.query_name', 'currentTotal');
+
+        $signalReceived = collect($poll->json('task.history_events'))
+            ->filter(static fn (array $event): bool => ($event['event_type'] ?? null) === 'SignalReceived')
+            ->values();
+
+        $this->assertCount(2, $signalReceived);
+        $this->assertSame(
+            [1, 2],
+            $signalReceived
+                ->map(static fn (array $event): mixed => $event['payload']['workflow_sequence'] ?? null)
+                ->all(),
+        );
+        $this->assertSame(
+            [1, 2],
+            $signalReceived
+                ->map(static function (array $event): mixed {
+                    $arguments = $event['payload']['arguments'] ?? null;
+
+                    return is_array($arguments)
+                        ? Serializer::unserializeWithCodec(
+                            (string) ($arguments['codec'] ?? ''),
+                            (string) ($arguments['blob'] ?? ''),
+                        )
+                        : null;
+                })
+                ->map(static function (mixed $arguments): mixed {
+                    if (! is_array($arguments)) {
+                        return null;
+                    }
+
+                    if (array_key_exists('amount', $arguments)) {
+                        return $arguments['amount'];
+                    }
+
+                    $first = $arguments[0] ?? null;
+
+                    if (is_int($first)) {
+                        return $first;
+                    }
+
+                    return is_array($first) ? ($first['amount'] ?? null) : null;
+                })
+                ->all(),
         );
     }
 

@@ -19,6 +19,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\HistoryExport;
@@ -1541,7 +1542,7 @@ final class WorkflowQueryTaskBroker
      */
     private function historyEvents(WorkflowRun $run): array
     {
-        return WorkflowHistoryEvent::query()
+        $events = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $run->id)
             ->orderBy('sequence')
             ->get()
@@ -1563,6 +1564,99 @@ final class WorkflowQueryTaskBroker
             ])
             ->values()
             ->all();
+
+        return $this->historyEventsWithSignalArgumentEnvelopes($events, $run->namespace);
+    }
+
+    /**
+     * @param  array<int, mixed>  $events
+     * @return array<int, mixed>
+     */
+    private function historyEventsWithSignalArgumentEnvelopes(array $events, ?string $namespace): array
+    {
+        $signalIds = [];
+
+        foreach ($events as $event) {
+            if (! is_array($event) || ($event['event_type'] ?? null) !== 'SignalReceived') {
+                continue;
+            }
+
+            $payload = $event['payload'] ?? null;
+            if (! is_array($payload)) {
+                continue;
+            }
+
+            $signalId = $this->stringValue($payload['signal_id'] ?? null);
+            if ($signalId !== null) {
+                $signalIds[] = $signalId;
+            }
+        }
+
+        $signalIds = array_values(array_unique($signalIds));
+        if ($signalIds === []) {
+            return $events;
+        }
+
+        /** @var array<string, WorkflowSignal> $signals */
+        $signals = WorkflowSignal::query()
+            ->whereIn('id', $signalIds)
+            ->get()
+            ->keyBy('id')
+            ->all();
+
+        foreach ($events as $index => $event) {
+            if (! is_array($event) || ($event['event_type'] ?? null) !== 'SignalReceived') {
+                continue;
+            }
+
+            $payload = $event['payload'] ?? [];
+            if (! is_array($payload)) {
+                $payload = [];
+            }
+
+            $signalId = $this->stringValue($payload['signal_id'] ?? null);
+            $signal = $signalId === null ? null : ($signals[$signalId] ?? null);
+            $envelope = $signal instanceof WorkflowSignal
+                ? $this->signalArgumentsEnvelopeFromRecord($signal, $namespace)
+                : null;
+            $changed = false;
+
+            if ($signal instanceof WorkflowSignal && is_int($signal->workflow_sequence)) {
+                $payload['workflow_sequence'] ??= $signal->workflow_sequence;
+                $changed = true;
+            }
+
+            if ($envelope !== null) {
+                $payload['payload_codec'] ??= $envelope['codec'];
+                $payload['arguments'] ??= $envelope;
+                $changed = true;
+            }
+
+            if (! $changed) {
+                continue;
+            }
+
+            $event['payload'] = $payload;
+            $events[$index] = $event;
+        }
+
+        return $events;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function signalArgumentsEnvelopeFromRecord(WorkflowSignal $signal, ?string $namespace): ?array
+    {
+        if (! is_string($signal->arguments) || $signal->arguments === '') {
+            return null;
+        }
+
+        return $this->payloadEnvelopes->workerEnvelope(
+            $namespace,
+            $this->stringValue($signal->payload_codec) ?? CodecRegistry::defaultCodec(),
+            $signal->arguments,
+        );
     }
 
     /**

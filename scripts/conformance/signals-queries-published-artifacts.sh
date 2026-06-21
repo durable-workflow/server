@@ -1423,6 +1423,20 @@ def signal_observations_from_events(events: list[dict[str, Any]], signal_name: s
     return observations
 
 
+def increment_signal_amounts_from_history_events(events: Any) -> list[int]:
+    if not isinstance(events, list):
+        return []
+
+    return [
+        observation["signal_amount"]
+        for observation in signal_observations_from_events(
+            [event for event in events if isinstance(event, dict)],
+            "increment",
+        )
+        if isinstance(observation.get("signal_amount"), int)
+    ]
+
+
 def signal_observation_key(observation: dict[str, Any]) -> str:
     signal_id = observation.get("signal_id")
     if isinstance(signal_id, str) and signal_id:
@@ -1532,6 +1546,11 @@ def answer_next_query_task(
 
         holder["query_handler_invoked_at"] = now()
         holder["query_task"] = task
+        task_history_signal_order = increment_signal_amounts_from_history_events(task.get("history_events"))
+        if task_history_signal_order:
+            holder["history_signal_order"] = task_history_signal_order
+        resolved_result = result(task, holder) if callable(result) else result
+        holder["result"] = resolved_result
         complete = http_json(
             base_url,
             api_path("worker", "query-tasks", str(task["query_task_id"]), "complete"),
@@ -1539,7 +1558,7 @@ def answer_next_query_task(
             body={
                 "lease_owner": task.get("lease_owner") or worker_id,
                 "query_task_attempt": task["query_task_attempt"],
-                "result": result,
+                "result": resolved_result,
             },
             token=token,
             namespace=namespace,
@@ -3257,6 +3276,14 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             ordered_outputs["contract_expected_total"] = sum(rapid_inputs)
             ordered_outputs["expected_total"] = sum(accepted_signal_inputs)
             ordered_query_holder: dict[str, Any] = {}
+            def ordered_query_result_from_task(task: dict[str, Any], holder: dict[str, Any]) -> int:
+                query_history_order = increment_signal_amounts_from_history_events(task.get("history_events"))
+                if query_history_order:
+                    holder["history_signal_order"] = query_history_order
+                    return sum(query_history_order)
+
+                return delivered_signal_total
+
             ordered_responder = threading.Thread(
                 target=answer_next_query_task,
                 args=(
@@ -3265,7 +3292,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     namespace,
                     worker_id,
                     task_queue,
-                    delivered_signal_total,
+                    ordered_query_result_from_task,
                     log_file,
                     ordered_query_holder,
                 ),
@@ -3300,6 +3327,17 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                 ordered_query_result = None
             else:
                 ordered_query_result = sample_result_value(ordered_query or {})
+            query_task_history_order = ordered_query_holder.get("history_signal_order")
+            if (
+                isinstance(query_task_history_order, list)
+                and all(isinstance(item, int) and not isinstance(item, bool) for item in query_task_history_order)
+            ):
+                ordered_outputs["workflow_task_history_signal_order"] = list(history_signal_order)
+                ordered_outputs["query_task_history_signal_order"] = query_task_history_order
+                history_signal_order[:] = query_task_history_order
+                ordered_outputs["history_signal_order"] = history_signal_order
+                delivered_signal_total = sum(history_signal_order)
+                ordered_outputs["delivered_signal_total"] = delivered_signal_total
             ordered_outputs["queried_total"] = ordered_query_result
             ordered_outputs["ten_signal_ordered_delivery_total"] = ordered_query_result
             if ordered_query is not None:

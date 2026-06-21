@@ -948,6 +948,85 @@ PY);
         $this->assertSame(55, $result['complete_bodies'][0]['result']);
     }
 
+    public function test_host_runner_query_responder_can_answer_from_query_task_history(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+complete_bodies = []
+
+def fake_http_json(base_url, path, **kwargs):
+    if path.endswith("/worker/query-tasks/poll"):
+        return {
+            "status_code": 200,
+            "body": {
+                "task": {
+                    "query_task_id": "ordered-query-task-1",
+                    "query_task_attempt": 1,
+                    "lease_owner": "leased-worker",
+                    "history_events": [
+                        {
+                            "event_type": "SignalReceived",
+                            "payload": {
+                                "signal_name": "increment",
+                                "signal_id": "ordered-signal-2",
+                                "workflow_sequence": 2,
+                                "arguments": {"payload": {"amount": 2}},
+                            },
+                        },
+                        {
+                            "event_type": "SignalReceived",
+                            "payload": {
+                                "signal_name": "increment",
+                                "signal_id": "ordered-signal-4",
+                                "workflow_sequence": 4,
+                                "arguments": {"payload": {"amount": 4}},
+                            },
+                        },
+                    ],
+                },
+            },
+        }
+
+    if path.endswith("/worker/query-tasks/ordered-query-task-1/complete"):
+        complete_bodies.append(kwargs.get("body"))
+        return {"status_code": 200, "body": {"outcome": "completed"}}
+
+    raise AssertionError(f"unexpected path {path}")
+
+def result_from_history(task, holder):
+    order = increment_signal_amounts_from_history_events(task.get("history_events"))
+    holder["computed_order"] = order
+    return sum(order)
+
+globals()["http_json"] = fake_http_json
+holder = {}
+answer_next_query_task(
+    "http://unused",
+    "token",
+    "default",
+    "polling-worker",
+    "queue-1",
+    result_from_history,
+    Path("/tmp/signals-queries-query-history-test.log"),
+    holder,
+    poll_timeout=2,
+)
+
+print(json.dumps({
+    "complete_bodies": complete_bodies,
+    "computed_order": holder.get("computed_order"),
+    "history_signal_order": holder.get("history_signal_order"),
+    "result": holder.get("result"),
+    "error": holder.get("error"),
+}, sort_keys=True))
+PY);
+
+        $this->assertNull($result['error']);
+        $this->assertSame([2, 4], $result['computed_order']);
+        $this->assertSame([2, 4], $result['history_signal_order']);
+        $this->assertSame(6, $result['result']);
+        $this->assertSame(6, $result['complete_bodies'][0]['result']);
+    }
+
     public function test_host_runner_accepts_single_observed_duplicate_signal_when_no_second_task_arrives(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
