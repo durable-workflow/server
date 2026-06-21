@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 19;
+    public const VERSION = 20;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [

@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(21, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(22, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -293,7 +293,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(19, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(20, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -489,6 +489,7 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'accepted_signal_total',
                 'queried_total',
                 'history_signal_order',
+                'final_run_status',
             ],
             $hostRunner['evidence_shards']['ordered_signal_delivery']['current_evidence_fields'],
         );
@@ -811,6 +812,55 @@ PY);
             ['WorkflowStarted', 'SignalReceived', 'SignalReceived', 'SignalReceived'],
             $result['event_types'],
         );
+    }
+
+    public function test_host_runner_extracts_signal_amounts_from_avro_history_envelopes(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+def avro_long(value):
+    raw = (value << 1) ^ (value >> 63)
+    encoded = bytearray()
+    while raw & ~0x7F:
+        encoded.append((raw & 0x7F) | 0x80)
+        raw >>= 7
+    encoded.append(raw)
+    return bytes(encoded)
+
+def avro_generic_json(value):
+    payload = json.dumps(value, separators=(",", ":")).encode("utf-8")
+    return base64.b64encode(b"\x00" + avro_long(len(payload)) + payload + avro_long(1)).decode("ascii")
+
+events = [
+    {
+        "event_type": "SignalReceived",
+        "payload": {
+            "signal_name": "increment",
+            "signal_id": "sig-avro-1",
+            "arguments": {
+                "codec": "avro",
+                "blob": avro_generic_json({"amount": 6}),
+            },
+        },
+    },
+    {
+        "event_type": "SignalReceived",
+        "payload": {
+            "signal_name": "increment",
+            "signal_id": "sig-avro-2",
+            "arguments": {
+                "codec": "avro",
+                "blob": avro_generic_json([7]),
+            },
+        },
+    },
+]
+
+print(json.dumps({
+    "amounts": increment_signal_amounts_from_history_events(events),
+}, sort_keys=True))
+PY);
+
+        $this->assertSame([6, 7], $result['amounts']);
     }
 
     public function test_host_runner_collects_ordered_signal_evidence_from_one_batched_task(): void
@@ -1137,6 +1187,7 @@ PY);
             'accepted_signal_total' => 55,
             'queried_total' => 55,
             'history_signal_order' => [1, 2, 3, 5, 4, 6, 7, 8, 9, 10],
+            'final_run_status' => 'waiting',
         ]);
 
         $this->assertSame('pass', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
@@ -1159,7 +1210,7 @@ PY);
 
     public function test_host_runner_marks_only_complete_smoke_fields_as_covered(): void
     {
-        $result = $this->runSignalQueryHostRunner([
+        $run = $this->runSignalQueryHostRunnerArtifacts([
             'worker_runtime' => 'sdk-python',
             'python_worker_artifact_source' => 'published_pypi_package',
             'python_worker_sdk_version' => '0.4.84',
@@ -1172,7 +1223,10 @@ PY);
             'accepted_signal_total' => 55,
             'queried_total' => 55,
             'history_signal_order' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            'final_run_status' => 'waiting',
         ]);
+        $result = $run['result'];
+        $record = $run['record'];
 
         $this->assertSame('not_covered', $result['scenario_results']['published_artifact_install_only']['status']);
         $this->assertSame('pass', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
@@ -1181,6 +1235,17 @@ PY);
         $this->assertSame(
             [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             $result['scenario_results']['ordered_signal_delivery']['observed_outputs']['history_signal_order'],
+        );
+        $this->assertSame(
+            [
+                'rapid_increment_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                'accepted_signal_inputs' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                'accepted_signal_total' => 55,
+                'queried_total' => 55,
+                'history_signal_order' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                'final_run_status' => 'waiting',
+            ],
+            $record['ordered_signal_delivery_evidence'] ?? null,
         );
         $this->assertContains('signal_query_published_artifact_install_uncovered', array_column($result['findings'], 'type'));
         $this->assertContains(
@@ -1382,6 +1447,7 @@ PY);
                 'accepted_signal_total',
                 'queried_total',
                 'history_signal_order',
+                'final_run_status',
             ],
             'dedup_contract_observation' => [
                 'client_side_key_support',
@@ -3070,6 +3136,16 @@ PY);
      */
     private function runSignalQueryHostRunner(array $smokeEvidence): array
     {
+        return $this->runSignalQueryHostRunnerArtifacts($smokeEvidence)['result'];
+    }
+
+    /**
+     * @param array<string, mixed> $smokeEvidence
+     *
+     * @return array{result: array<string, mixed>, record: array<string, mixed>}
+     */
+    private function runSignalQueryHostRunnerArtifacts(array $smokeEvidence): array
+    {
         $root = dirname(__DIR__, 2);
         $resultDir = sys_get_temp_dir() . '/dw-signals-queries-test-' . bin2hex(random_bytes(6));
         mkdir($resultDir);
@@ -3101,7 +3177,13 @@ PY);
             $resultPath = $resultDir . '/signals-queries-result.json';
             $this->assertFileExists($resultPath);
 
-            return json_decode((string) file_get_contents($resultPath), true, 512, JSON_THROW_ON_ERROR);
+            $recordPath = $resultDir . '/signals-queries-record.json';
+            $this->assertFileExists($recordPath);
+
+            return [
+                'result' => json_decode((string) file_get_contents($resultPath), true, 512, JSON_THROW_ON_ERROR),
+                'record' => json_decode((string) file_get_contents($recordPath), true, 512, JSON_THROW_ON_ERROR),
+            ];
         } finally {
             $this->removeDirectory($resultDir);
         }
@@ -3512,6 +3594,7 @@ PY);
             'accepted_signal_total' => 55,
             'queried_total' => 55,
             'history_signal_order' => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            'final_run_status' => 'waiting',
         ];
         $scenarioResults['dedup_contract_observation']['observed_outputs'] = [
             'client_side_key_support' => false,

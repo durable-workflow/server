@@ -1291,8 +1291,44 @@ def decode_json_blob(blob: Any) -> Any:
     except json.JSONDecodeError:
         pass
     try:
-        decoded = base64.b64decode(blob, validate=True).decode("utf-8")
-        return json.loads(decoded)
+        decoded_bytes = base64.b64decode(blob, validate=True)
+    except Exception:
+        return None
+
+    try:
+        return json.loads(decoded_bytes.decode("utf-8"))
+    except Exception:
+        return decode_avro_generic_wrapper(decoded_bytes)
+
+
+def decode_avro_long(data: bytes, offset: int) -> tuple[int, int] | None:
+    raw = 0
+    shift = 0
+    while offset < len(data) and shift <= 63:
+        byte = data[offset]
+        offset += 1
+        raw |= (byte & 0x7F) << shift
+        if (byte & 0x80) == 0:
+            return ((raw >> 1) ^ -(raw & 1), offset)
+        shift += 7
+
+    return None
+
+
+def decode_avro_generic_wrapper(data: bytes) -> Any:
+    if len(data) < 2 or data[0] != 0:
+        return None
+
+    length_result = decode_avro_long(data, 1)
+    if length_result is None:
+        return None
+
+    length, offset = length_result
+    if length < 0 or offset + length > len(data):
+        return None
+
+    try:
+        return json.loads(data[offset:offset + length].decode("utf-8"))
     except Exception:
         return None
 
@@ -3360,6 +3396,11 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             log_line(log_file, f"ordered delivery baseline probe failed: {type(exc).__name__}: {exc}")
             ordered_outputs["run_id"] = ordered_run_id
             ordered_outputs["probe_error"] = probe_error_payload(exc)
+        finally:
+            try:
+                ordered_outputs["final_run_status"] = run_status(base_url, token, namespace, ordered_workflow_id)
+            except Exception as exc:  # noqa: BLE001 - retain ordered evidence even if status readout fails.
+                ordered_outputs["final_run_status_error"] = probe_error_payload(exc)
         scenario_results["ordered_signal_delivery"] = baseline_scenario_result(
             "ordered_signal_delivery",
             ordered_outputs,
@@ -4390,6 +4431,7 @@ def exact_ordered_delivery_smoke_present() -> bool:
         "accepted_signal_total": smoke_field("accepted_signal_total", "ordered_signal_delivery"),
         "queried_total": smoke_field("queried_total", "ordered_signal_delivery"),
         "history_signal_order": smoke_field("history_signal_order", "ordered_signal_delivery"),
+        "final_run_status": smoke_field("final_run_status", "ordered_signal_delivery"),
     }
 
     return ordered_delivery_observations_agree(observed)
@@ -4436,6 +4478,7 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "accepted_signal_total",
         "queried_total",
         "history_signal_order",
+        "final_run_status",
     ],
     "dedup_contract_observation": [
         "client_side_key_support",
@@ -4620,6 +4663,7 @@ def ordered_delivery_observations_agree(observed: dict[str, Any]) -> bool:
     accepted_signal_total = integer_value(evidence_lookup(observed, "accepted_signal_total"))
     queried_total = integer_value(evidence_lookup(observed, "queried_total"))
     history_signal_order = integer_sequence(evidence_lookup(observed, "history_signal_order"))
+    final_run_status = evidence_lookup(observed, "final_run_status")
 
     return (
         rapid_inputs == expected_rapid_signal_inputs()
@@ -4627,6 +4671,7 @@ def ordered_delivery_observations_agree(observed: dict[str, Any]) -> bool:
         and accepted_signal_total == sum(accepted_inputs)
         and queried_total == sum(accepted_inputs)
         and history_signal_order == accepted_inputs
+        and required_evidence_satisfied("final_run_status", final_run_status)
     )
 
 
@@ -5169,6 +5214,7 @@ BASELINE_CURRENT_EVIDENCE_FIELDS = {
         "accepted_signal_total",
         "queried_total",
         "history_signal_order",
+        "final_run_status",
     ],
     "dedup_contract_observation": [
         "client_side_key_support",
@@ -5311,6 +5357,7 @@ def ordered_delivery_missing_current_evidence(observed: dict[str, Any]) -> list[
     accepted_signal_total = evidence_lookup(observed, "accepted_signal_total")
     queried_total = evidence_lookup(observed, "queried_total")
     history_signal_order = evidence_lookup(observed, "history_signal_order")
+    final_run_status = evidence_lookup(observed, "final_run_status")
 
     if rapid_inputs is MISSING:
         missing.append("rapid_increment_inputs")
@@ -5322,6 +5369,8 @@ def ordered_delivery_missing_current_evidence(observed: dict[str, Any]) -> list[
         missing.append("queried_total")
     if history_signal_order is MISSING:
         missing.append("history_signal_order")
+    if not required_evidence_satisfied("final_run_status", final_run_status):
+        missing.append("final_run_status")
 
     return missing
 
@@ -5852,6 +5901,7 @@ for scenario in required_scenarios:
             "accepted_signal_total": smoke_field("accepted_signal_total", scenario),
             "queried_total": smoke_field("queried_total", scenario),
             "history_signal_order": smoke_field("history_signal_order", scenario),
+            "final_run_status": smoke_field("final_run_status", scenario),
             "external_smoke_evidence": smoke_descriptor,
         }
         result = {
@@ -6058,6 +6108,15 @@ if runner_blocked and baseline_readiness_blocker is not None:
     result["runner_blocker"] = baseline_readiness_blocker
 write_json(result_dir / "signals-queries-result.json", result)
 
+ordered_record_outputs = scenario_results.get("ordered_signal_delivery", {}).get("observed_outputs", {})
+ordered_signal_delivery_evidence: dict[str, Any] = {}
+if isinstance(ordered_record_outputs, dict):
+    ordered_signal_delivery_evidence = {
+        key: ordered_record_outputs[key]
+        for key in BASELINE_CURRENT_EVIDENCE_FIELDS["ordered_signal_delivery"]
+        if key in ordered_record_outputs
+    }
+
 record = {
     "experiment": "signals-queries",
     "outcome": outcome,
@@ -6066,6 +6125,8 @@ record = {
     "result_file": "signals-queries-result.json",
     "findings_file": "signals-queries-findings.json",
 }
+if ordered_signal_delivery_evidence:
+    record["ordered_signal_delivery_evidence"] = ordered_signal_delivery_evidence
 if runner_blocked and baseline_readiness_blocker is not None:
     record["runner_blocker"] = baseline_readiness_blocker
 write_json(result_dir / "signals-queries-record.json", record)
