@@ -24,6 +24,11 @@ Environment overrides:
                                          Defaults to artifact-install-evidence.json in the result directory.
   DW_ACTIVITIES_EVIDENCE                Optional JSON activity evidence from a real host matrix run.
   DW_ACTIVITIES_EVIDENCE_PATH           Optional path to JSON activity evidence from a real host matrix run.
+  DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE=1
+                                         Skip the published server container's focused activity host probe.
+  DW_ACTIVITIES_PYTHON_BIN              Optional Python executable for the sdk-python focused activity shard.
+                                         Defaults to a run-root venv installed from DW_PYTHON_SDK_VERSION when
+                                         python3 and pip are available, then falls back to python3.
   DW_ACTIVITIES_RUNNER_SOURCE           Optional exact image source for the runner process. Defaults to
                                          DW_SERVER_IMAGE when the handoff runs from the release image root.
   DW_SERVER_IMAGE                       Exact server image tag or digest to test.
@@ -111,6 +116,813 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+focused_probe_app_key="${APP_KEY:-base64:QUNUSVZJVElFUy1DT05GT1JNQU5DRS1GT0NVU0VELUhPU1QtUFJPQkU=}"
+
+should_run_focused_activity_host_probe() {
+  if [[ "${DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE:-0}" == "1" || "${DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE:-}" == "true" ]]; then
+    return 1
+  fi
+  if [[ -n "${DW_ACTIVITIES_EVIDENCE:-}" || -n "${DW_ACTIVITIES_EVIDENCE_PATH:-}" ]]; then
+    return 1
+  fi
+  if [[ -s "$result_dir/activity-evidence.json" ]]; then
+    return 1
+  fi
+  if [[ "$repo_root" != "/app" || -d "$repo_root/.git" ]]; then
+    return 1
+  fi
+  if [[ ! -f "$repo_root/artisan" || ! -f "$repo_root/vendor/autoload.php" ]]; then
+    return 1
+  fi
+
+  require_command php
+}
+
+prepare_focused_python_sdk() {
+  if [[ -n "${DW_ACTIVITIES_PYTHON_BIN:-}" ]]; then
+    return 0
+  fi
+  if [[ -z "${DW_PYTHON_SDK_VERSION:-}" ]]; then
+    return 0
+  fi
+  if ! require_command python3; then
+    return 0
+  fi
+
+  local venv="$run_root/sdk-python-venv"
+  local install_log="$result_dir/sdk-python-focused-install.log"
+  if python3 -m venv "$venv" >/dev/null 2>"$install_log" \
+    && "$venv/bin/python" -m pip install --disable-pip-version-check --no-input "durable-workflow==${DW_PYTHON_SDK_VERSION}" >>"$install_log" 2>&1; then
+    export DW_ACTIVITIES_PYTHON_BIN="$venv/bin/python"
+  fi
+}
+
+run_focused_activity_host_probe() {
+  local probe_db="$run_root/activities-focused-host-probe.sqlite"
+
+  : > "$probe_db"
+  prepare_focused_python_sdk
+
+  APP_ENV=production \
+  APP_DEBUG=false \
+  APP_KEY="$focused_probe_app_key" \
+  DB_CONNECTION=sqlite \
+  DB_DATABASE="$probe_db" \
+  QUEUE_CONNECTION=database \
+  CACHE_STORE=array \
+  SESSION_DRIVER=array \
+  DW_AUTH_DRIVER=none \
+  DW_TASK_DISPATCH_MODE=poll \
+  DW_V2_TASK_DISPATCH_MODE=poll \
+  RUNNER_REPO_ROOT="$repo_root" \
+  RESULT_DIR="$result_dir" \
+  RUN_ROOT="$run_root" \
+  php <<'PHP' || true
+<?php
+declare(strict_types=1);
+
+use App\Models\WorkflowNamespace;
+use App\Support\ControlPlaneProtocol;
+use App\Support\WorkerProtocol;
+use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
+use Illuminate\Contracts\Http\Kernel as HttpKernel;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
+use Workflow\Serializers\CodecRegistry;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Attributes\Type;
+use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\ActivityOptions;
+use Workflow\V2\Worker\WorkflowFiberRunner;
+use Workflow\V2\Workflow;
+
+const ACTIVITIES_NAMESPACE = 'activities-conformance';
+const ACTIVITIES_TASK_QUEUE = 'activities-shared';
+const EMBEDDED_WORKFLOW_TYPE = 'activities.conformance.workflow-embedded-result';
+const ACTIVITY_TYPE = 'activities.conformance.echo';
+const HOST_EVIDENCE_SCHEMA = 'durable-workflow.v2.activity-runtime.published-artifact-host-evidence';
+const HOST_EVIDENCE_SOURCE = 'published_server_container';
+
+$repoRoot = getenv('RUNNER_REPO_ROOT') ?: '/app';
+if (! is_dir($repoRoot)) {
+    throw new RuntimeException('published server root is not available');
+}
+chdir($repoRoot);
+
+require $repoRoot.'/vendor/autoload.php';
+
+#[Type(EMBEDDED_WORKFLOW_TYPE)]
+final class PublishedActivitiesEmbeddedWorkflow extends Workflow
+{
+    public function handle(array $payload): array
+    {
+        $activityResult = Workflow::activity(
+            ACTIVITY_TYPE,
+            new ActivityOptions(queue: ACTIVITIES_TASK_QUEUE),
+            $payload
+        );
+
+        return [
+            'workflow_runtime' => 'workflow-php',
+            'requested_runtime' => $payload['runtime'] ?? null,
+            'activity_result' => $activityResult,
+            'activity_result_message' => is_array($activityResult) ? ($activityResult['message'] ?? null) : null,
+        ];
+    }
+}
+
+function now_iso(): string
+{
+    return gmdate('Y-m-d\TH:i:s\Z');
+}
+
+function write_json_file(string $path, array $value): void
+{
+    file_put_contents($path, json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+}
+
+function output_path(): string
+{
+    $dir = getenv('RESULT_DIR') ?: sys_get_temp_dir();
+
+    return rtrim($dir, '/').'/activity-evidence.json';
+}
+
+function finding_for_failure(string $scenarioId, string $message): array
+{
+    return [
+        'scenario_id' => $scenarioId,
+        'finding_type' => 'activity_runtime_product_gap',
+        'classification' => 'product-gap',
+        'root_cause_classification' => 'product-gap',
+        'owning_surface' => 'activity_runtime',
+        'observed_behavior' => $message,
+        'next_acceptance_criterion' => 'rerun the focused activity host probe from the pinned published server image and record passing activity host evidence for this scenario',
+        'priority' => 'P0',
+    ];
+}
+
+function failure_scenario(string $scenarioId, string $mode, Throwable $throwable): array
+{
+    $message = $throwable::class.': '.$throwable->getMessage();
+    $hostEvidence = [
+        'schema' => HOST_EVIDENCE_SCHEMA,
+        'scenario_id' => $scenarioId,
+        'status' => 'fail',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'executed_in_pinned_server_artifact' => true,
+        'local_product_source_checkouts_used' => false,
+        'activity_cells' => [
+            [
+                'mode' => $mode,
+                'runtime' => 'workflow-php',
+                'status' => 'fail',
+                'failure' => $message,
+                'execution_source' => HOST_EVIDENCE_SOURCE,
+            ],
+            [
+                'mode' => $mode,
+                'runtime' => 'sdk-python',
+                'status' => 'fail',
+                'failure' => $message,
+                'execution_source' => HOST_EVIDENCE_SOURCE,
+            ],
+        ],
+    ];
+
+    return [
+        'scenario_id' => $scenarioId,
+        'status' => 'fail',
+        'classification' => 'product-gap',
+        'observed_behavior' => $message,
+        'observed_outputs' => [
+            'activity_host_evidence' => $hostEvidence,
+            'execution_source' => HOST_EVIDENCE_SOURCE,
+            'failure' => $message,
+        ],
+        'scenario_evidence' => [
+            'activity_host_evidence' => $hostEvidence,
+        ],
+        'linked_findings' => [finding_for_failure($scenarioId, $message)],
+    ];
+}
+
+function evidence_document(array $scenarioResults, array $activityCells): array
+{
+    $behaviorCells = [
+        'durable_result_recording_after_worker_restart',
+        'retry_attempt_backoff_behavior',
+        'timeout_behavior',
+        'typed_failure_propagation',
+        'heartbeat_and_cancellation_observation',
+        'idempotent_completion_handling',
+        'php_python_activity_parity',
+        'operator_visible_activity_attempt_state',
+    ];
+
+    return [
+        'schema' => 'durable-workflow.v2.activity-runtime.host-evidence',
+        'generated_at' => now_iso(),
+        'evidence_source' => 'focused_published_server_activity_host_probe',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'runner' => 'published-server-activities-focused-host-probe',
+        'local_product_source_checkouts_used' => false,
+        'scenario_results' => $scenarioResults,
+        'runtime_matrix' => [
+            'execution_modes' => ['workflow-embedded', 'standalone'],
+            'runtimes' => ['workflow-php', 'sdk-python'],
+            'activity_cells' => $activityCells,
+            'behavior_cells' => array_map(
+                static fn (string $scenario): array => ['scenario' => $scenario, 'status' => 'not_covered'],
+                $behaviorCells
+            ),
+        ],
+    ];
+}
+
+function bootstrap_application(string $repoRoot): void
+{
+    $app = require $repoRoot.'/bootstrap/app.php';
+    $app->make(ConsoleKernel::class)->bootstrap();
+
+    config([
+        'app.key' => getenv('APP_KEY') ?: 'base64:QUNUSVZJVElFUy1DT05GT1JNQU5DRS1GT0NVU0VELUhPU1QtUFJPQkU=',
+        'database.default' => 'sqlite',
+        'database.connections.sqlite.database' => getenv('DB_DATABASE') ?: ':memory:',
+        'queue.default' => 'database',
+        'cache.default' => 'array',
+        'session.driver' => 'array',
+        'server.auth.driver' => 'none',
+        'server.mode' => 'service',
+        'workflows.v2.task_dispatch_mode' => 'poll',
+    ]);
+
+    Artisan::call('migrate', ['--force' => true]);
+
+    WorkflowNamespace::query()->updateOrCreate(
+        ['name' => ACTIVITIES_NAMESPACE],
+        [
+            'description' => 'Activities conformance namespace',
+            'retention_days' => 30,
+            'status' => 'active',
+        ]
+    );
+}
+
+function header_key(string $name): string
+{
+    return 'HTTP_'.str_replace('-', '_', strtoupper($name));
+}
+
+function request_json(string $method, string $path, ?array $body = null, array $allowed = []): array
+{
+    static $kernel = null;
+    $kernel ??= app(HttpKernel::class);
+
+    $server = [
+        'HTTP_ACCEPT' => 'application/json',
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_X_NAMESPACE' => ACTIVITIES_NAMESPACE,
+        header_key(ControlPlaneProtocol::HEADER) => ControlPlaneProtocol::VERSION,
+        header_key(WorkerProtocol::HEADER) => WorkerProtocol::VERSION,
+    ];
+    $content = $body === null ? null : json_encode($body, JSON_THROW_ON_ERROR);
+    $request = Request::create('/api'.$path, $method, [], [], [], $server, $content);
+    $response = $kernel->handle($request);
+    $kernel->terminate($request, $response);
+    $status = $response->getStatusCode();
+    $payload = (string) $response->getContent();
+
+    if (($status >= 400 || $status === 0) && ! in_array($status, $allowed, true)) {
+        throw new RuntimeException(sprintf('%s %s failed with HTTP %d: %s', $method, $path, $status, $payload));
+    }
+
+    if ($payload === '') {
+        return [];
+    }
+
+    $decoded = json_decode($payload, true, flags: JSON_THROW_ON_ERROR);
+
+    return is_array($decoded) ? $decoded : [];
+}
+
+function envelope(mixed $value, ?string $codec = null): array
+{
+    $codec = $codec ?: CodecRegistry::defaultCodec();
+
+    return [
+        'codec' => $codec,
+        'blob' => Serializer::serializeWithCodec($codec, $value),
+    ];
+}
+
+function decode_payload(mixed $value, ?string $codec = null): mixed
+{
+    if ($value === null) {
+        return null;
+    }
+    if (is_array($value) && isset($value['codec'], $value['blob'])) {
+        return Serializer::unserializeWithCodec((string) $value['codec'], (string) $value['blob']);
+    }
+    if (is_string($value)) {
+        return Serializer::unserializeWithCodec($codec ?: CodecRegistry::defaultCodec(), $value);
+    }
+
+    return $value;
+}
+
+function task_codec(array $task): string
+{
+    $codec = $task['payload_codec'] ?? null;
+    if (! is_string($codec) || $codec === '') {
+        $codec = is_array($task['arguments'] ?? null) ? ($task['arguments']['codec'] ?? null) : null;
+    }
+
+    return is_string($codec) && $codec !== '' ? $codec : CodecRegistry::defaultCodec();
+}
+
+function history_events(array $task): array
+{
+    $events = $task['history_events'] ?? ($task['history']['events'] ?? []);
+
+    return is_array($events) ? $events : [];
+}
+
+function workflow_arguments(array $task, string $codec): array
+{
+    $arguments = decode_payload($task['arguments'] ?? null, $codec);
+    if (is_array($arguments) && array_is_list($arguments)) {
+        return $arguments;
+    }
+
+    return is_array($arguments) ? [$arguments] : [];
+}
+
+function complete_workflow_task_from_runtime(array $task): array
+{
+    $codec = task_codec($task);
+    $runner = WorkflowFiberRunner::forClass(
+        PublishedActivitiesEmbeddedWorkflow::class,
+        (string) ($task['workflow_id'] ?? $task['workflow_instance_id'] ?? ''),
+        (string) ($task['run_id'] ?? $task['workflow_run_id'] ?? ''),
+        workflow_arguments($task, $codec),
+        $codec,
+        history_events($task),
+        ACTIVITIES_NAMESPACE,
+    );
+    $step = $runner->step();
+    if ($step->commands === []) {
+        throw new RuntimeException('workflow runtime produced no commands for the leased task');
+    }
+
+    return request_json('POST', '/worker/workflow-tasks/'.rawurlencode((string) $task['task_id']).'/complete', [
+        'lease_owner' => $task['lease_owner'],
+        'workflow_task_attempt' => $task['workflow_task_attempt'] ?? 1,
+        'commands' => $step->commands,
+    ]);
+}
+
+function register_worker(string $workerId, array $workflowTypes, array $activityTypes, string $runtime): void
+{
+    $workerRuntime = $runtime === 'sdk-python' ? 'python' : 'php';
+    $sdkVersion = $runtime === 'sdk-python'
+        ? 'durable-workflow-python/'.(getenv('DW_PYTHON_SDK_VERSION') ?: 'unknown')
+        : 'durable-workflow/server:published-artifact';
+
+    request_json('POST', '/worker/register', [
+        'worker_id' => $workerId,
+        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'runtime' => $workerRuntime,
+        'sdk_version' => $sdkVersion,
+        'supported_workflow_types' => $workflowTypes,
+        'supported_activity_types' => $activityTypes,
+        'max_concurrent_workflow_tasks' => 1,
+        'max_concurrent_activity_tasks' => 1,
+        'task_slots' => [
+            'workflow_available' => $workflowTypes === [] ? 0 : 1,
+            'activity_available' => $activityTypes === [] ? 0 : 1,
+            'session_available' => 0,
+        ],
+        'process_metrics' => [
+            'memory_bytes' => memory_get_usage(true),
+            'process_uptime_seconds' => 0,
+            'process_id' => getmypid() ?: 0,
+            'host' => gethostname() ?: 'published-server-container',
+            'process_started_at' => now_iso(),
+        ],
+    ]);
+}
+
+function python_activity_executor_script(): string
+{
+    return <<<'PY'
+import importlib.metadata as metadata
+import json
+import os
+import sys
+import time
+
+import durable_workflow
+from durable_workflow import serializer
+
+
+def decode_activity_input(task):
+    codec = task.get("payload_codec") or "avro"
+    arguments = task.get("arguments")
+    if isinstance(arguments, dict) and "codec" in arguments:
+        decoded = serializer.decode_envelope(arguments)
+    elif isinstance(arguments, str):
+        decoded = serializer.decode(arguments, codec)
+    else:
+        decoded = arguments
+    if isinstance(decoded, list):
+        return decoded[0] if decoded else {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+payload = json.load(sys.stdin)
+task = payload["task"]
+mode = payload["mode"]
+expected_version = str(payload.get("expected_version") or "").strip()
+package_version = metadata.version("durable-workflow")
+if expected_version and package_version != expected_version:
+    raise RuntimeError(
+        f"installed durable-workflow package version {package_version} does not match expected {expected_version}"
+    )
+
+input_payload = decode_activity_input(task)
+result = {
+    "message": "published artifact activity completed",
+    "mode": mode,
+    "runtime": "sdk-python",
+    "input_marker": input_payload.get("input_marker"),
+    "activity_type": task.get("activity_type") or "activities.conformance.echo",
+    "sdk_package_version": package_version,
+}
+
+print(json.dumps({
+    "result_payload": result,
+    "result_envelope": serializer.envelope(result, task.get("payload_codec") or "avro"),
+    "worker_artifact": {
+        "artifact": "sdk-python",
+        "package": "durable-workflow",
+        "version": package_version,
+        "source": f"pypi://durable-workflow=={package_version}",
+        "status": "pass",
+        "runtime": "sdk-python",
+        "language": "python",
+        "sdk_module": durable_workflow.__name__,
+        "execution_source": "published_server_container",
+        "execution_method": "durable_workflow.serializer.envelope",
+        "local_product_source_checkouts_used": False,
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    },
+}, separators=(",", ":")))
+PY;
+}
+
+function run_python_activity_executor(array $task, string $mode): array
+{
+    $expectedVersion = getenv('DW_PYTHON_SDK_VERSION') ?: '';
+    $pythonBinary = getenv('DW_ACTIVITIES_PYTHON_BIN') ?: 'python3';
+    $input = json_encode([
+        'task' => $task,
+        'mode' => $mode,
+        'expected_version' => $expectedVersion,
+    ], JSON_THROW_ON_ERROR);
+    $command = escapeshellarg($pythonBinary).' -c '.escapeshellarg(python_activity_executor_script());
+    $process = proc_open($command, [
+        0 => ['pipe', 'r'],
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w'],
+    ], $pipes);
+
+    if (! is_resource($process)) {
+        throw new RuntimeException('failed to start sdk-python activity executor');
+    }
+
+    fwrite($pipes[0], $input);
+    fclose($pipes[0]);
+    $stdout = stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+
+    if ($exitCode !== 0) {
+        throw new RuntimeException('sdk-python activity executor failed: '.trim($stderr ?: $stdout ?: "exit {$exitCode}"));
+    }
+
+    $decoded = json_decode((string) $stdout, true, flags: JSON_THROW_ON_ERROR);
+    if (! is_array($decoded)) {
+        throw new RuntimeException('sdk-python activity executor returned non-object output');
+    }
+    if (($decoded['worker_artifact']['artifact'] ?? null) !== 'sdk-python') {
+        throw new RuntimeException('sdk-python activity executor did not report sdk-python worker artifact evidence');
+    }
+
+    return $decoded;
+}
+
+function poll_task(string $kind, string $workerId): array
+{
+    $path = $kind === 'workflow'
+        ? '/worker/workflow-tasks/poll'
+        : '/worker/activity-tasks/poll';
+    $response = request_json('POST', $path, [
+        'worker_id' => $workerId,
+        'task_queue' => ACTIVITIES_TASK_QUEUE,
+    ]);
+    $task = $response['task'] ?? null;
+    if (! is_array($task)) {
+        throw new RuntimeException("expected {$kind} task but poll returned ".json_encode($response));
+    }
+
+    return $task;
+}
+
+function activity_input(array $task, string $codec): array
+{
+    $arguments = decode_payload($task['arguments'] ?? null, $codec);
+    $payload = is_array($arguments) && array_is_list($arguments) ? ($arguments[0] ?? []) : $arguments;
+
+    return is_array($payload) ? $payload : [];
+}
+
+function complete_activity_task(array $task, string $runtime, string $mode): array
+{
+    $codec = task_codec($task);
+    $payload = activity_input($task, $codec);
+    $result = [
+        'message' => 'published artifact activity completed',
+        'mode' => $mode,
+        'runtime' => $runtime,
+        'input_marker' => $payload['input_marker'] ?? null,
+        'activity_type' => $task['activity_type'] ?? ACTIVITY_TYPE,
+    ];
+    $workerArtifact = [
+        'artifact' => 'workflow-php',
+        'package' => 'durable-workflow/workflow',
+        'version' => getenv('DW_WORKFLOW_PHP_VERSION') ?: 'unknown',
+        'source' => 'packagist://durable-workflow/workflow@'.(getenv('DW_WORKFLOW_PHP_VERSION') ?: 'unknown'),
+        'status' => 'pass',
+        'runtime' => 'workflow-php',
+        'language' => 'php',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'execution_method' => 'Workflow\\Serializers\\Serializer::serializeWithCodec',
+        'local_product_source_checkouts_used' => false,
+    ];
+
+    if ($runtime === 'sdk-python') {
+        $python = run_python_activity_executor($task, $mode);
+        $result = is_array($python['result_payload'] ?? null) ? $python['result_payload'] : [];
+        $workerArtifact = is_array($python['worker_artifact'] ?? null) ? $python['worker_artifact'] : [];
+        if (! is_array($python['result_envelope'] ?? null)) {
+            throw new RuntimeException('sdk-python activity executor did not return a result envelope');
+        }
+        $response = request_json('POST', '/worker/activity-tasks/'.rawurlencode((string) $task['task_id']).'/complete', [
+            'activity_attempt_id' => $task['activity_attempt_id'] ?? '',
+            'lease_owner' => $task['lease_owner'],
+            'result' => $python['result_envelope'],
+        ]);
+
+        return [$result, $response, $workerArtifact];
+    }
+
+    $response = request_json('POST', '/worker/activity-tasks/'.rawurlencode((string) $task['task_id']).'/complete', [
+        'activity_attempt_id' => $task['activity_attempt_id'] ?? '',
+        'lease_owner' => $task['lease_owner'],
+        'result' => envelope($result, $codec),
+    ]);
+
+    return [$result, $response, $workerArtifact];
+}
+
+function event_types(array $history): array
+{
+    $events = $history['history_events'] ?? ($history['events'] ?? []);
+    if (! is_array($events)) {
+        return [];
+    }
+
+    return array_values(array_filter(array_map(
+        static fn (mixed $event): ?string => is_array($event) && is_string($event['event_type'] ?? null) ? $event['event_type'] : null,
+        $events
+    )));
+}
+
+function run_embedded_cell(string $runtime): array
+{
+    $safeRuntime = str_replace(['/', '_'], '-', $runtime);
+    $suffix = bin2hex(random_bytes(3));
+    $workerId = "activities-embedded-{$safeRuntime}-{$suffix}";
+    $workflowId = "activities-embedded-{$safeRuntime}-{$suffix}";
+
+    register_worker($workerId, [EMBEDDED_WORKFLOW_TYPE], [ACTIVITY_TYPE], $runtime);
+    $start = request_json('POST', '/workflows', [
+        'workflow_id' => $workflowId,
+        'workflow_type' => EMBEDDED_WORKFLOW_TYPE,
+        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'input' => [[
+            'scenario_id' => 'workflow_embedded_activity_result',
+            'runtime' => $runtime,
+            'input_marker' => "embedded-{$safeRuntime}",
+        ]],
+    ]);
+    $runId = (string) ($start['run_id'] ?? '');
+
+    $workflowTask = poll_task('workflow', $workerId);
+    complete_workflow_task_from_runtime($workflowTask);
+
+    $activityTask = poll_task('activity', $workerId);
+    [$activityResult, $activityComplete, $workerArtifact] = complete_activity_task($activityTask, $runtime, 'workflow-embedded');
+
+    $resumeTask = poll_task('workflow', $workerId);
+    $workflowComplete = complete_workflow_task_from_runtime($resumeTask);
+
+    $run = request_json('GET', '/workflows/'.rawurlencode($workflowId).'/runs/'.rawurlencode($runId));
+    $history = request_json('GET', '/workflows/'.rawurlencode($workflowId).'/runs/'.rawurlencode($runId).'/history');
+
+    if (($run['status'] ?? null) !== RunStatus::Completed->value) {
+        throw new RuntimeException("workflow embedded cell {$runtime} did not complete");
+    }
+
+    return [
+        'mode' => 'workflow-embedded',
+        'runtime' => $runtime,
+        'status' => 'pass',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'workflow_id' => $workflowId,
+        'run_id' => $runId,
+        'activity_execution_id' => $activityTask['activity_execution_id'] ?? null,
+        'activity_attempt_id' => $activityTask['activity_attempt_id'] ?? null,
+        'activity_type' => $activityTask['activity_type'] ?? ACTIVITY_TYPE,
+        'result_payload' => $activityResult,
+        'workflow_output' => $run['output'] ?? null,
+        'worker_artifact' => $workerArtifact,
+        'local_product_source_checkouts_used' => false,
+        'history_events' => event_types($history),
+        'worker_protocol' => [
+            'workflow_task_completion' => $workflowComplete['outcome'] ?? null,
+            'activity_task_completion' => $activityComplete['outcome'] ?? null,
+            'registered_runtime' => $runtime === 'sdk-python' ? 'python' : 'php',
+        ],
+    ];
+}
+
+function run_standalone_cell(string $runtime): array
+{
+    $safeRuntime = str_replace(['/', '_'], '-', $runtime);
+    $suffix = bin2hex(random_bytes(3));
+    $workerId = "activities-standalone-{$safeRuntime}-{$suffix}";
+    $activityId = "activities-standalone-{$safeRuntime}-{$suffix}";
+
+    register_worker($workerId, [], [ACTIVITY_TYPE], $runtime);
+    $start = request_json('POST', '/activities', [
+        'activity_id' => $activityId,
+        'activity_type' => ACTIVITY_TYPE,
+        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'input' => [[
+            'scenario_id' => 'standalone_activity_result',
+            'runtime' => $runtime,
+            'input_marker' => "standalone-{$safeRuntime}",
+        ]],
+    ]);
+    $runId = (string) ($start['workflow_run_id'] ?? '');
+
+    $activityTask = poll_task('activity', $workerId);
+    [$activityResult, $activityComplete, $workerArtifact] = complete_activity_task($activityTask, $runtime, 'standalone');
+
+    $show = request_json('GET', '/activities/'.rawurlencode($activityId));
+    $history = request_json('GET', '/workflows/'.rawurlencode($activityId).'/runs/'.rawurlencode($runId).'/history');
+
+    if (($show['status'] ?? null) !== RunStatus::Completed->value) {
+        throw new RuntimeException("standalone activity cell {$runtime} did not complete");
+    }
+
+    return [
+        'mode' => 'standalone',
+        'runtime' => $runtime,
+        'status' => 'pass',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'activity_id' => $activityId,
+        'workflow_run_id' => $runId,
+        'activity_execution_id' => $activityTask['activity_execution_id'] ?? ($start['activity_execution_id'] ?? null),
+        'activity_attempt_id' => $activityTask['activity_attempt_id'] ?? null,
+        'activity_type' => $activityTask['activity_type'] ?? ACTIVITY_TYPE,
+        'result_payload' => $activityResult,
+        'worker_artifact' => $workerArtifact,
+        'local_product_source_checkouts_used' => false,
+        'handle_response' => $show,
+        'history_events' => event_types($history),
+        'worker_protocol' => [
+            'activity_task_completion' => $activityComplete['outcome'] ?? null,
+            'registered_runtime' => $runtime === 'sdk-python' ? 'python' : 'php',
+        ],
+    ];
+}
+
+function scenario_from_cells(string $scenarioId, string $mode, array $cells): array
+{
+    $pass = $cells !== [] && array_reduce(
+        $cells,
+        static fn (bool $carry, array $cell): bool => $carry && (($cell['status'] ?? null) === 'pass'),
+        true
+    );
+    $hostEvidence = [
+        'schema' => HOST_EVIDENCE_SCHEMA,
+        'scenario_id' => $scenarioId,
+        'status' => $pass ? 'pass' : 'fail',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'executed_in_pinned_server_artifact' => true,
+        'local_product_source_checkouts_used' => false,
+        'activity_cells' => $cells,
+    ];
+    $firstCell = $cells[0] ?? [];
+    $observed = array_filter([
+        'activity_host_evidence' => $hostEvidence,
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'activity_cells' => $cells,
+        'workflow_id' => $firstCell['workflow_id'] ?? null,
+        'run_id' => $firstCell['run_id'] ?? ($firstCell['workflow_run_id'] ?? null),
+        'activity_id' => $firstCell['activity_id'] ?? null,
+        'activity_execution_id' => $firstCell['activity_execution_id'] ?? null,
+        'activity_attempt_id' => $firstCell['activity_attempt_id'] ?? null,
+        'activity_type' => $firstCell['activity_type'] ?? null,
+        'result_payload' => $firstCell['result_payload'] ?? null,
+        'history_events' => $firstCell['history_events'] ?? null,
+        'handle_response' => $firstCell['handle_response'] ?? null,
+    ], static fn (mixed $value): bool => $value !== null && $value !== []);
+
+    $scenario = [
+        'scenario_id' => $scenarioId,
+        'status' => $pass ? 'pass' : 'fail',
+        'classification' => $pass ? null : 'product-gap',
+        'observed_outputs' => $observed,
+        'scenario_evidence' => $observed,
+    ];
+
+    if (! $pass) {
+        $failures = array_values(array_filter(array_map(
+            static fn (array $cell): ?string => isset($cell['failure']) ? "{$cell['runtime']}: {$cell['failure']}" : null,
+            $cells
+        )));
+        $message = $failures === []
+            ? "{$scenarioId} did not produce passing activity host evidence"
+            : implode('; ', $failures);
+        $scenario['observed_behavior'] = $message;
+        $scenario['linked_findings'] = [finding_for_failure($scenarioId, $message)];
+    }
+
+    return $scenario;
+}
+
+function run_cells_for(string $scenarioId, string $mode): array
+{
+    $cells = [];
+    foreach (['workflow-php', 'sdk-python'] as $runtime) {
+        try {
+            $cells[] = $scenarioId === 'workflow_embedded_activity_result'
+                ? run_embedded_cell($runtime)
+                : run_standalone_cell($runtime);
+        } catch (Throwable $throwable) {
+            $cells[] = [
+                'mode' => $mode,
+                'runtime' => $runtime,
+                'status' => 'fail',
+                'execution_source' => HOST_EVIDENCE_SOURCE,
+                'failure' => $throwable::class.': '.$throwable->getMessage(),
+            ];
+        }
+    }
+
+    return $cells;
+}
+
+try {
+    bootstrap_application($repoRoot);
+
+    $embeddedCells = run_cells_for('workflow_embedded_activity_result', 'workflow-embedded');
+    $standaloneCells = run_cells_for('standalone_activity_result', 'standalone');
+
+    write_json_file(output_path(), evidence_document([
+        scenario_from_cells('workflow_embedded_activity_result', 'workflow-embedded', $embeddedCells),
+        scenario_from_cells('standalone_activity_result', 'standalone', $standaloneCells),
+    ], array_merge($embeddedCells, $standaloneCells)));
+} catch (Throwable $throwable) {
+    write_json_file(output_path(), evidence_document([
+        failure_scenario('workflow_embedded_activity_result', 'workflow-embedded', $throwable),
+        failure_scenario('standalone_activity_result', 'standalone', $throwable),
+    ], []));
+}
+PHP
+}
+
+if should_run_focused_activity_host_probe; then
+  run_focused_activity_host_probe
+fi
 
 started_at="$(timestamp)"
 
@@ -207,6 +1019,11 @@ const PUBLISHED_SERVER_IMAGE_REPOSITORIES = [
   'ghcr.io/durable-workflow/server',
 ];
 const SOURCE_FREE_RUNNER_STATEMENT = 'Activities conformance ran from the pinned published server container; local product checkouts, branch source, and local vendor trees were not used as pass evidence.';
+const PUBLISHED_SERVER_CONTAINER_EXECUTION_SOURCE = 'published_server_container';
+const FOCUSED_ACTIVITY_HOST_SCENARIOS = new Set([
+  'workflow_embedded_activity_result',
+  'standalone_activity_result',
+]);
 
 function now() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -728,6 +1545,7 @@ function resolvePublishedRuntimeExecutionEvidence(evidence, serverImage, serverV
     return {
       evidence: supplied,
       source: 'host_evidence',
+      execution_source: stringValue(supplied.execution_source || supplied.executionSource) || 'host_evidence',
       derived: false,
       derivation_reason: '',
     };
@@ -741,6 +1559,7 @@ function resolvePublishedRuntimeExecutionEvidence(evidence, serverImage, serverV
   return {
     evidence: {},
     source: 'missing',
+    execution_source: 'missing',
     derived: false,
     derivation_reason: derived.derivation_reason,
   };
@@ -782,6 +1601,7 @@ function derivedPublishedRuntimeExecutionEvidence(evidence, serverImage, serverV
     evidence: {
       schema: 'durable-workflow.v2.activity-runtime.published-server-execution',
       status: 'pass',
+      execution_source: PUBLISHED_SERVER_CONTAINER_EXECUTION_SOURCE,
       execution_environment: 'docker_container',
       worker_execution_mode: 'published_server_image_conformance_handoff',
       executed_in_pinned_server_artifact: true,
@@ -798,6 +1618,7 @@ function derivedPublishedRuntimeExecutionEvidence(evidence, serverImage, serverV
           version: serverVersion,
           source: runnerSource,
           status: 'pass',
+          execution_source: PUBLISHED_SERVER_CONTAINER_EXECUTION_SOURCE,
           execution_context: 'published_server_image_conformance_handoff',
           local_product_source_checkouts_used: false,
           source_integrity_statement: SOURCE_FREE_RUNNER_STATEMENT,
@@ -805,6 +1626,7 @@ function derivedPublishedRuntimeExecutionEvidence(evidence, serverImage, serverV
       ],
     },
     source: 'published_server_image_runtime',
+    execution_source: PUBLISHED_SERVER_CONTAINER_EXECUTION_SOURCE,
     derived: true,
     derivation_reason: '',
   };
@@ -1179,6 +2001,176 @@ function observedOutputsWithRuntimeExecution(outputs, runtimeExecutionPass, runt
   };
 }
 
+function activityHostEvidenceFor(supplied, observedOutputs) {
+  const scenarioEvidence = firstObjectValue(
+    supplied?.scenario_evidence,
+    supplied?.scenarioEvidence,
+  );
+
+  return firstObjectValue(
+    observedOutputs?.activity_host_evidence,
+    observedOutputs?.activityHostEvidence,
+    observedOutputs?.published_artifact_activity_host_evidence,
+    observedOutputs?.publishedArtifactActivityHostEvidence,
+    scenarioEvidence?.activity_host_evidence,
+    scenarioEvidence?.activityHostEvidence,
+    supplied?.activity_host_evidence,
+    supplied?.activityHostEvidence,
+  );
+}
+
+function activityHostCells(evidence) {
+  if (!evidence || typeof evidence !== 'object') {
+    return [];
+  }
+  const cells = Array.isArray(evidence.activity_cells)
+    ? evidence.activity_cells
+    : (Array.isArray(evidence.activityCells) ? evidence.activityCells : []);
+
+  return cells.filter((cell) => cell && typeof cell === 'object' && !Array.isArray(cell));
+}
+
+function cellWorkerArtifact(cell) {
+  return firstObjectValue(
+    cell?.worker_artifact,
+    cell?.workerArtifact,
+    cell?.published_artifact_worker_execution,
+    cell?.publishedArtifactWorkerExecution,
+    cell?.sdk_python_worker_artifact,
+    cell?.sdkPythonWorkerArtifact,
+  );
+}
+
+function sdkPythonCellArtifactFailures(cell, artifactVersions) {
+  const failures = [];
+  const artifact = cellWorkerArtifact(cell);
+  if (!nonEmptyObject(artifact)) {
+    return ['sdk-python worker_artifact evidence missing'];
+  }
+
+  const packageVersion = artifactVersionFor(artifactVersions, 'sdk-python');
+  const artifactName = stringValue(artifact.artifact || artifact.name || artifact.package_artifact || artifact.packageArtifact);
+  const version = stringValue(
+    artifact.version
+    || artifact.package_version
+    || artifact.packageVersion
+    || artifact.sdk_version
+    || artifact.sdkVersion,
+  );
+  const source = entrySource(artifact);
+  const status = normalizedStatus(artifact.status || artifact.result || artifact.outcome);
+  const execution = stringValue(artifact.execution_source || artifact.executionSource);
+  const runtime = [
+    artifact.runtime,
+    artifact.language,
+    artifact.worker_runtime,
+    artifact.workerRuntime,
+    artifact.sdk_runtime,
+    artifact.sdkRuntime,
+  ].map(stringValue).join(' ').toLowerCase();
+
+  if (artifactName !== 'sdk-python') {
+    failures.push(`sdk-python worker_artifact.artifact=${artifactName || 'missing'}`);
+  }
+  if (status !== 'pass') {
+    failures.push(`sdk-python worker_artifact.status=${status || 'missing'}`);
+  }
+  if (version !== packageVersion) {
+    failures.push(`sdk-python worker_artifact.version=${version || 'missing'} does not match ${packageVersion || 'missing'}`);
+  }
+  if (!source || installSourceIsForbidden(source) || !matchesPythonArtifactSource(version, source)) {
+    failures.push(`sdk-python worker_artifact.source=${source || 'missing'}`);
+  }
+  if (execution !== PUBLISHED_SERVER_CONTAINER_EXECUTION_SOURCE) {
+    failures.push(`sdk-python worker_artifact.execution_source=${execution || 'missing'}`);
+  }
+  if (!runtime.includes('python')) {
+    failures.push(`sdk-python worker_artifact.runtime=${runtime || 'missing'}`);
+  }
+  if (truthy(artifact.local_product_source_checkouts_used) || truthy(artifact.localProductSourceCheckoutsUsed)) {
+    failures.push('sdk-python worker_artifact.local_product_source_checkouts_used=true');
+  }
+  if (!explicitFalse(artifact.local_product_source_checkouts_used)
+    && !explicitFalse(artifact.localProductSourceCheckoutsUsed)) {
+    failures.push('sdk-python worker_artifact.local_product_source_checkouts_used=false missing');
+  }
+  const localSignals = localSourceSignals(artifact).slice(0, 3);
+  if (localSignals.length > 0) {
+    failures.push(`sdk-python worker_artifact contains local product source probe signals: ${localSignals.join('; ')}`);
+  }
+
+  return failures;
+}
+
+function focusedActivityHostEvidenceFailures(scenarioId, supplied, observedOutputs, artifactVersions) {
+  if (!FOCUSED_ACTIVITY_HOST_SCENARIOS.has(scenarioId)) {
+    return [];
+  }
+
+  const failures = [];
+  const evidence = activityHostEvidenceFor(supplied, observedOutputs);
+  if (!nonEmptyObject(evidence)) {
+    return ['activity_host_evidence missing'];
+  }
+
+  const executionSource = stringValue(evidence.execution_source || evidence.executionSource);
+  if (executionSource !== PUBLISHED_SERVER_CONTAINER_EXECUTION_SOURCE) {
+    failures.push(`activity_host_evidence.execution_source=${executionSource || 'missing'}`);
+  }
+  if (truthy(evidence.local_product_source_checkouts_used) || truthy(evidence.localProductSourceCheckoutsUsed)) {
+    failures.push('activity_host_evidence.local_product_source_checkouts_used=true');
+  }
+  if (!explicitFalse(evidence.local_product_source_checkouts_used)
+    && !explicitFalse(evidence.localProductSourceCheckoutsUsed)) {
+    failures.push('activity_host_evidence.local_product_source_checkouts_used=false missing');
+  }
+  const evidenceLocalSignals = localSourceSignals(evidence).slice(0, 3);
+  if (evidenceLocalSignals.length > 0) {
+    failures.push(`activity_host_evidence contains local product source probe signals: ${evidenceLocalSignals.join('; ')}`);
+  }
+
+  const requiredMode = scenarioId === 'workflow_embedded_activity_result'
+    ? 'workflow-embedded'
+    : 'standalone';
+  const cells = activityHostCells(evidence);
+  cells.forEach((cell, index) => {
+    const localSignals = localSourceSignals(cell).slice(0, 3);
+    if (localSignals.length > 0) {
+      failures.push(`activity_host_evidence.activity_cells.${index} contains local product source probe signals: ${localSignals.join('; ')}`);
+    }
+    if (truthy(cell.local_product_source_checkouts_used) || truthy(cell.localProductSourceCheckoutsUsed)) {
+      failures.push(`activity_host_evidence.activity_cells.${index}.local_product_source_checkouts_used=true`);
+    }
+  });
+  for (const runtime of ['workflow-php', 'sdk-python']) {
+    const matching = cells.find((cell) => stringValue(cell.mode) === requiredMode
+      && stringValue(cell.runtime) === runtime
+      && normalizedStatus(cell.status || cell.outcome || cell.result) === 'pass'
+      && stringValue(cell.execution_source || cell.executionSource) === PUBLISHED_SERVER_CONTAINER_EXECUTION_SOURCE
+      && localSourceSignals(cell).length === 0
+      && !truthy(cell.local_product_source_checkouts_used)
+      && !truthy(cell.localProductSourceCheckoutsUsed)
+      && (runtime !== 'sdk-python' || sdkPythonCellArtifactFailures(cell, artifactVersions).length === 0));
+    if (!matching) {
+      failures.push(`activity_host_evidence missing passing ${requiredMode}/${runtime} cell`);
+    }
+  }
+  cells.forEach((cell, index) => {
+    if (stringValue(cell.mode) !== requiredMode || stringValue(cell.runtime) !== 'sdk-python') {
+      return;
+    }
+    const status = normalizedStatus(cell.status || cell.outcome || cell.result);
+    if (status !== 'pass') {
+      return;
+    }
+    for (const failure of sdkPythonCellArtifactFailures(cell, artifactVersions)) {
+      failures.push(`activity_host_evidence.activity_cells.${index}: ${failure}`);
+    }
+  });
+
+  return failures;
+}
+
 function main() {
   const manifest = loadManifest();
   const scenarios = scenarioDefs(manifest);
@@ -1335,6 +2327,10 @@ function main() {
       if (status === 'pass' && !runtimeExecutionPass) {
         status = 'not_covered';
       }
+      const focusedHostEvidenceFailures = focusedActivityHostEvidenceFailures(scenarioId, supplied, observedOutputs, artifactVersions);
+      if (status === 'pass' && focusedHostEvidenceFailures.length > 0) {
+        status = 'fail';
+      }
 
       if (status === 'pass') {
         const passObservedOutputs = {
@@ -1357,6 +2353,7 @@ function main() {
         continue;
       }
 
+      const focusedHostEvidenceReason = focusedHostEvidenceFailures.join('; ');
       const classification = normalizeClassification(
         supplied.classification || supplied.root_cause_classification || supplied.rootCauseClassification,
         status === 'runner_blocked' ? 'runner-gap' : (runtimeExecutionPass ? 'product-gap' : 'coverage-gap'),
@@ -1367,10 +2364,10 @@ function main() {
         findingType: supplied.finding_type || supplied.findingType,
         owner: supplied.owning_surface || supplied.owner,
         reason: runtimeExecutionPass
-          ? stringValue(supplied.reason || supplied.observed_behavior || supplied.observedBehavior)
+          ? (focusedHostEvidenceReason || stringValue(supplied.reason || supplied.observed_behavior || supplied.observedBehavior))
           : runtimeExecutionReason,
         observedBehavior: runtimeExecutionPass
-          ? stringValue(supplied.observed_behavior || supplied.observedBehavior)
+          ? (focusedHostEvidenceReason || stringValue(supplied.observed_behavior || supplied.observedBehavior))
           : '',
       });
       findings.push(scenarioFinding);
@@ -1380,12 +2377,20 @@ function main() {
         expected_behavior: expectedBehavior,
         classification,
         observed_outputs: nonEmptyObject(observedOutputs)
-          ? observedOutputsWithRuntimeExecution(observedOutputs, runtimeExecutionPass, runtimeExecution)
+          ? {
+            ...observedOutputsWithRuntimeExecution(observedOutputs, runtimeExecutionPass, runtimeExecution),
+            ...(focusedHostEvidenceFailures.length > 0
+              ? { activity_host_evidence_failures: focusedHostEvidenceFailures }
+              : {}),
+          }
           : {
             coverage_status: status,
             observed_behavior: scenarioFinding.observed_behavior,
             next_acceptance_criterion: scenarioFinding.next_acceptance_criterion,
             runtime_execution_failures: runtimeExecutionFailureList,
+            ...(focusedHostEvidenceFailures.length > 0
+              ? { activity_host_evidence_failures: focusedHostEvidenceFailures }
+              : {}),
             ...(runtimeExecutionPass
               ? { published_artifact_worker_execution: runtimeExecution }
               : {}),
@@ -1484,6 +2489,7 @@ function main() {
     artifact_versions: artifactVersions,
     published_artifact_versions: publishedArtifactVersions,
     artifact_sources: artifactSources,
+    execution_source: runtimeExecutionLoad.execution_source,
     local_product_source_checkouts_used: artifactInstallEvidence.local_product_source_checkouts_used,
     artifact_install_evidence: artifactInstallEvidence,
     activity_evidence_source: activityEvidenceLoad.source,
@@ -1527,6 +2533,7 @@ function main() {
     artifact_install_evidence_supplied: artifactInstallEvidence.supplied,
     activity_evidence_source: activityEvidenceLoad.source,
     activity_evidence_supplied: activityEvidenceLoad.supplied,
+    execution_source: runtimeExecutionLoad.execution_source,
     published_artifact_worker_execution_supplied: nonEmptyObject(runtimeExecution),
     published_artifact_worker_execution_source: runtimeExecutionLoad.source,
     published_artifact_worker_execution_derived: runtimeExecutionLoad.derived,
@@ -1541,6 +2548,7 @@ function main() {
     outcome: recordOutcome,
     runnerBlocked: runnerBlocked,
     artifactVersions: publishedArtifactVersions,
+    executionSource: runtimeExecutionLoad.execution_source,
     findings: findings.map((item) => `${item.scenario_id}: ${item.observed_behavior}`),
     resultPath: path.join(RESULT_DIR, 'activities-result.json'),
   };

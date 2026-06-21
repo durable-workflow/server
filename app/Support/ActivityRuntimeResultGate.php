@@ -31,6 +31,13 @@ final class ActivityRuntimeResultGate
         'ghcr.io/durable-workflow/server',
     ];
 
+    private const PUBLISHED_SERVER_CONTAINER_EXECUTION_SOURCE = 'published_server_container';
+
+    private const FOCUSED_ACTIVITY_HOST_SCENARIO_MODES = [
+        'workflow_embedded_activity_result' => 'workflow-embedded',
+        'standalone_activity_result' => 'standalone',
+    ];
+
     /**
      * @return array<string, mixed>
      */
@@ -75,6 +82,7 @@ final class ActivityRuntimeResultGate
                 'each_pass_scenario_has_scenario_specific_evidence',
                 'published_artifact_install_evidence_reported',
                 'published_activity_runtime_evidence_executes_the_pinned_server_artifact',
+                'published_activity_host_evidence_reported_for_activity_result_cells',
                 'each_non_pass_scenario_has_linked_findings',
                 'run_timestamps_outcome_and_finding_links_are_recorded',
                 'overall_outcome_matches_gate_status',
@@ -178,6 +186,7 @@ final class ActivityRuntimeResultGate
                     array_push(
                         $failures,
                         ...self::publishedServerExecutionFailures($scenarioId, $scenarioResult, $result),
+                        ...self::activityHostEvidenceFailures($scenarioId, $scenarioResult, $result),
                     );
                 }
             } else {
@@ -826,6 +835,274 @@ final class ActivityRuntimeResultGate
         }
 
         return $failures;
+    }
+
+    /**
+     * @param  array<string, mixed>  $scenarioResult
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function activityHostEvidenceFailures(string $scenarioId, array $scenarioResult, array $result): array
+    {
+        $requiredMode = self::FOCUSED_ACTIVITY_HOST_SCENARIO_MODES[$scenarioId] ?? null;
+        if ($requiredMode === null) {
+            return [];
+        }
+
+        $outputs = self::arrayField($scenarioResult, [
+            'observed_outputs',
+            'observedOutputs',
+            'activity_evidence',
+            'activityEvidence',
+            'evidence',
+        ]) ?? [];
+        $scenarioEvidence = self::arrayField($scenarioResult, [
+            'scenario_evidence',
+            'scenarioEvidence',
+        ]) ?? [];
+        $hostEvidence = self::activityHostEvidenceFrom($outputs)
+            ?? self::activityHostEvidenceFrom($scenarioEvidence);
+
+        if ($hostEvidence === null || $hostEvidence === []) {
+            return [[
+                'code' => 'activity_host_evidence_missing',
+                'scenario_id' => $scenarioId,
+                'field' => 'activity_host_evidence',
+                'expected' => 'published_server_container_activity_cells',
+                'actual' => $hostEvidence,
+            ]];
+        }
+
+        $failures = [];
+        $executionSource = self::stringField($hostEvidence, ['execution_source', 'executionSource']);
+        if ($executionSource !== self::PUBLISHED_SERVER_CONTAINER_EXECUTION_SOURCE) {
+            $failures[] = [
+                'code' => 'activity_host_evidence_not_from_published_server_container',
+                'scenario_id' => $scenarioId,
+                'field' => 'activity_host_evidence.execution_source',
+                'expected' => self::PUBLISHED_SERVER_CONTAINER_EXECUTION_SOURCE,
+                'actual' => $executionSource,
+            ];
+        }
+
+        if (self::containsLocalSourceSignal($hostEvidence)
+            || self::truthyField($hostEvidence, ['local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed'])
+            || self::truthyField($outputs, ['local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed'])
+            || self::truthyField($scenarioEvidence, ['local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed'])) {
+            $failures[] = [
+                'code' => 'local_product_source_checkouts_used_must_be_false',
+                'scenario_id' => $scenarioId,
+                'field' => 'activity_host_evidence',
+                'value' => 'local source checkout probe signal',
+            ];
+        }
+
+        if (! self::explicitFalseField($hostEvidence, ['local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed'])) {
+            $failures[] = [
+                'code' => 'local_product_source_checkouts_used_must_be_false',
+                'scenario_id' => $scenarioId,
+                'field' => 'activity_host_evidence.local_product_source_checkouts_used',
+                'value' => $hostEvidence['local_product_source_checkouts_used']
+                    ?? $hostEvidence['localProductSourceCheckoutsUsed']
+                    ?? null,
+            ];
+        }
+
+        $activityCells = self::activityHostCells($hostEvidence);
+        $versions = self::arrayField($result, ['published_artifact_versions', 'publishedArtifactVersions'])
+            ?? self::arrayField($result, ['artifact_versions', 'artifactVersions'])
+            ?? [];
+
+        foreach (['workflow-php', 'sdk-python'] as $runtime) {
+            $matchingCell = false;
+            foreach ($activityCells as $cell) {
+                $status = strtolower(self::stringField($cell, ['status', 'outcome', 'result']));
+                if (self::stringField($cell, ['mode']) === $requiredMode
+                    && self::stringField($cell, ['runtime']) === $runtime
+                    && $status === 'pass'
+                    && self::stringField($cell, ['execution_source', 'executionSource']) === self::PUBLISHED_SERVER_CONTAINER_EXECUTION_SOURCE
+                    && ! self::containsLocalSourceSignal($cell)
+                    && ! self::truthyField($cell, ['local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed'])
+                    && (
+                        $runtime !== 'sdk-python'
+                        || self::sdkPythonActivityCellArtifactFailures($cell, $versions) === []
+                    )) {
+                    $matchingCell = true;
+                    break;
+                }
+            }
+
+            if (! $matchingCell) {
+                $failures[] = [
+                    'code' => 'activity_host_evidence_missing_activity_cell',
+                    'scenario_id' => $scenarioId,
+                    'field' => 'activity_host_evidence.activity_cells',
+                    'mode' => $requiredMode,
+                    'runtime' => $runtime,
+                    'expected' => 'passing published_server_container activity host cell',
+                ];
+            }
+        }
+        foreach ($activityCells as $index => $cell) {
+            $status = strtolower(self::stringField($cell, ['status', 'outcome', 'result']));
+            if (self::stringField($cell, ['mode']) !== $requiredMode
+                || self::stringField($cell, ['runtime']) !== 'sdk-python'
+                || $status !== 'pass') {
+                continue;
+            }
+
+            foreach (self::sdkPythonActivityCellArtifactFailures($cell, $versions) as $failure) {
+                $failures[] = $failure + [
+                    'scenario_id' => $scenarioId,
+                    'field' => sprintf('activity_host_evidence.activity_cells.%d.worker_artifact', $index),
+                ];
+            }
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param  array<string, mixed>  $cell
+     * @param  array<string, mixed>  $versions
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function sdkPythonActivityCellArtifactFailures(array $cell, array $versions): array
+    {
+        $artifact = self::arrayField($cell, [
+            'worker_artifact',
+            'workerArtifact',
+            'sdk_python_worker_artifact',
+            'sdkPythonWorkerArtifact',
+            'published_artifact_worker_execution',
+            'publishedArtifactWorkerExecution',
+        ]);
+        if ($artifact === null || $artifact === []) {
+            return [[
+                'code' => 'sdk_python_activity_worker_artifact_missing',
+                'expected' => 'published sdk-python package worker_artifact evidence',
+            ]];
+        }
+
+        $failures = [];
+        $expectedVersion = self::artifactVersionForInstallChannel($versions, 'sdk-python');
+        $artifactName = self::stringField($artifact, ['artifact', 'name', 'package_artifact', 'packageArtifact']);
+        $version = self::stringField($artifact, [
+            'version',
+            'package_version',
+            'packageVersion',
+            'sdk_version',
+            'sdkVersion',
+        ]);
+        $source = self::stringField($artifact, [
+            'source',
+            'install_source',
+            'installSource',
+            'artifact_source',
+            'artifactSource',
+            'resolved_source',
+            'resolvedSource',
+        ]);
+        $status = strtolower(self::stringField($artifact, ['status', 'result', 'outcome']));
+        $executionSource = self::stringField($artifact, ['execution_source', 'executionSource']);
+        $runtime = strtolower(implode(' ', array_filter([
+            self::stringField($artifact, ['runtime']),
+            self::stringField($artifact, ['language']),
+            self::stringField($artifact, ['worker_runtime', 'workerRuntime']),
+            self::stringField($artifact, ['sdk_runtime', 'sdkRuntime']),
+        ])));
+
+        if ($artifactName !== 'sdk-python') {
+            $failures[] = [
+                'code' => 'sdk_python_activity_worker_artifact_invalid_artifact',
+                'artifact' => $artifactName,
+                'expected' => 'sdk-python',
+            ];
+        }
+        if ($status !== 'pass') {
+            $failures[] = [
+                'code' => 'sdk_python_activity_worker_artifact_not_pass',
+                'status' => $status,
+            ];
+        }
+        if ($version === '' || $version !== $expectedVersion || ! self::isExactVersion($version)) {
+            $failures[] = [
+                'code' => 'sdk_python_activity_worker_artifact_invalid_version',
+                'version' => $version,
+                'expected' => $expectedVersion,
+            ];
+        }
+        if ($source === ''
+            || self::artifactSourceIsForbidden($source)
+            || ! self::matchesPythonArtifactSource($version, $source)) {
+            $failures[] = [
+                'code' => 'sdk_python_activity_worker_artifact_unrecognized_source',
+                'source' => $source,
+                'expected' => $expectedVersion === '' ? 'published PyPI artifact' : 'pypi://durable-workflow=='.$expectedVersion,
+            ];
+        }
+        if ($executionSource !== self::PUBLISHED_SERVER_CONTAINER_EXECUTION_SOURCE) {
+            $failures[] = [
+                'code' => 'sdk_python_activity_worker_artifact_not_from_published_server_container',
+                'execution_source' => $executionSource,
+                'expected' => self::PUBLISHED_SERVER_CONTAINER_EXECUTION_SOURCE,
+            ];
+        }
+        if (! str_contains($runtime, 'python')) {
+            $failures[] = [
+                'code' => 'sdk_python_activity_worker_artifact_not_python_runtime',
+                'runtime' => $runtime,
+            ];
+        }
+        if (self::containsLocalSourceSignal($artifact)
+            || self::truthyField($artifact, ['local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed'])) {
+            $failures[] = [
+                'code' => 'local_product_source_checkouts_used_must_be_false',
+                'value' => 'local source checkout probe signal',
+            ];
+        }
+        if (! self::explicitFalseField($artifact, ['local_product_source_checkouts_used', 'localProductSourceCheckoutsUsed'])) {
+            $failures[] = [
+                'code' => 'local_product_source_checkouts_used_must_be_false',
+                'field' => 'activity_host_evidence.activity_cells.worker_artifact.local_product_source_checkouts_used',
+                'value' => $artifact['local_product_source_checkouts_used']
+                    ?? $artifact['localProductSourceCheckoutsUsed']
+                    ?? null,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param  array<string, mixed>  $source
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function activityHostEvidenceFrom(array $source): ?array
+    {
+        return self::arrayField($source, [
+            'activity_host_evidence',
+            'activityHostEvidence',
+            'published_artifact_activity_host_evidence',
+            'publishedArtifactActivityHostEvidence',
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $hostEvidence
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function activityHostCells(array $hostEvidence): array
+    {
+        $cells = self::arrayField($hostEvidence, ['activity_cells', 'activityCells']) ?? [];
+
+        return array_values(array_filter(
+            $cells,
+            static fn (mixed $cell): bool => is_array($cell),
+        ));
     }
 
     /**

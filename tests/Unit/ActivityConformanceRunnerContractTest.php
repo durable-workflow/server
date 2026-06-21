@@ -24,6 +24,8 @@ class ActivityConformanceRunnerContractTest extends TestCase
         $this->assertStringContainsString('DW_ACTIVITIES_EVIDENCE', $source);
         $this->assertStringContainsString('DW_ACTIVITIES_EVIDENCE_PATH', $source);
         $this->assertStringContainsString('DW_ACTIVITIES_RUNNER_SOURCE', $source);
+        $this->assertStringContainsString('DW_ACTIVITIES_PYTHON_BIN', $source);
+        $this->assertStringContainsString('DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE', $source);
         $this->assertStringContainsString('RUNNER_REPO_ROOT', $source);
 
         foreach ([
@@ -66,6 +68,15 @@ class ActivityConformanceRunnerContractTest extends TestCase
             'SOURCE_FREE_RUNNER_STATEMENT',
             'published_server_image_conformance_handoff',
             'local vendor trees were not used as pass evidence',
+            'focused_published_server_activity_host_probe',
+            'PublishedActivitiesEmbeddedWorkflow',
+            'activity_host_evidence',
+            'published_server_container',
+            'focusedActivityHostEvidenceFailures',
+            'sdkPythonCellArtifactFailures',
+            'worker_artifact',
+            'durable_workflow.serializer.envelope',
+            'sdk_python_activity_worker_artifact_missing',
             'outcome === \'pass\' ? 0 : 1',
         ] as $token) {
             $this->assertStringContainsString($token, $source);
@@ -204,20 +215,24 @@ class ActivityConformanceRunnerContractTest extends TestCase
 
             $scenarioResults = [];
             foreach (ActivityRuntimeContract::manifest()['required_scenarios'] as $scenarioId) {
+                $activityHostEvidence = $this->activityHostEvidenceForScenario($scenarioId);
                 $scenarioResults[] = [
                     'scenario_id' => $scenarioId,
                     'status' => 'pass',
-                    'observed_outputs' => [
+                    'observed_outputs' => array_filter([
                         'evidence' => $scenarioId,
-                    ],
-                    'scenario_evidence' => [
+                        'activity_host_evidence' => $activityHostEvidence,
+                    ]),
+                    'scenario_evidence' => array_filter([
                         'evidence' => $scenarioId,
-                    ],
+                        'activity_host_evidence' => $activityHostEvidence,
+                    ]),
                 ];
             }
 
             $activityEvidence = [
                 'schema' => 'durable-workflow.v2.activity-runtime.host-evidence',
+                'execution_source' => 'published_server_container',
                 'scenario_results' => $scenarioResults,
                 'published_artifact_worker_execution' => $this->publishedServerExecutionEvidence($version, $serverImage),
                 'published_artifact_install' => [
@@ -285,6 +300,588 @@ class ActivityConformanceRunnerContractTest extends TestCase
                 'pass',
                 ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest())['status'],
             );
+        } finally {
+            foreach (glob($resultDir.'/*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($resultDir)) {
+                rmdir($resultDir);
+            }
+        }
+    }
+
+    public function test_runner_records_focused_published_activity_host_evidence_without_passing_full_matrix(): void
+    {
+        if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
+            || trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('bash and node are required to exercise the activities runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = $repoRoot.'/storage/framework/activities-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($resultDir, 0777, true));
+
+        try {
+            $version = '9.9.9';
+            $serverImage = 'durableworkflow/server:'.$version;
+            $installEvidence = $this->completeRunnerInstallEvidence($version);
+            $scenarioResults = [];
+
+            foreach (['workflow_embedded_activity_result', 'standalone_activity_result'] as $scenarioId) {
+                $activityHostEvidence = $this->activityHostEvidenceForScenario($scenarioId);
+                $scenarioResults[] = [
+                    'scenario_id' => $scenarioId,
+                    'status' => 'pass',
+                    'observed_outputs' => [
+                        'activity_result' => $scenarioId.' ok',
+                        'activity_host_evidence' => $activityHostEvidence,
+                    ],
+                    'scenario_evidence' => [
+                        'activity_host_evidence' => $activityHostEvidence,
+                    ],
+                ];
+            }
+
+            $activityEvidence = [
+                'schema' => 'durable-workflow.v2.activity-runtime.host-evidence',
+                'execution_source' => 'published_server_container',
+                'scenario_results' => $scenarioResults,
+                'published_artifact_worker_execution' => $this->publishedServerExecutionEvidence($version, $serverImage),
+                'runtime_matrix' => [
+                    'execution_modes' => ['workflow-embedded', 'standalone'],
+                    'runtimes' => ['workflow-php', 'sdk-python'],
+                    'activity_cells' => array_merge(
+                        $this->activityHostEvidenceForScenario('workflow_embedded_activity_result')['activity_cells'],
+                        $this->activityHostEvidenceForScenario('standalone_activity_result')['activity_cells'],
+                    ),
+                    'behavior_cells' => [
+                        ['scenario' => 'workflow_embedded_activity_result', 'status' => 'pass'],
+                        ['scenario' => 'standalone_activity_result', 'status' => 'pass'],
+                    ],
+                ],
+            ];
+
+            file_put_contents(
+                $resultDir.'/artifact-install-evidence.json',
+                json_encode($installEvidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+            file_put_contents(
+                $resultDir.'/activity-evidence.json',
+                json_encode($activityEvidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+
+            $env = [
+                'DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE' => '1',
+                'DW_SERVER_IMAGE' => $serverImage,
+                'DW_SERVER_VERSION' => $version,
+                'DW_CLI_VERSION' => $version,
+                'DW_PYTHON_SDK_VERSION' => $version,
+                'DW_WORKFLOW_PHP_VERSION' => $version,
+                'DW_WATERLINE_VERSION' => $version,
+            ];
+            $envPrefix = implode(' ', array_map(
+                static fn (string $name, string $value): string => $name.'='.escapeshellarg($value),
+                array_keys($env),
+                array_values($env),
+            ));
+            $command = sprintf(
+                '%s bash %s --result-dir %s >/dev/null 2>&1',
+                $envPrefix,
+                escapeshellarg($repoRoot.'/scripts/conformance/activities-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+            $this->assertSame(1, $exitCode);
+
+            $result = json_decode(
+                file_get_contents($resultDir.'/activities-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('published_server_container', $result['execution_source']);
+
+            $byScenario = [];
+            foreach ($result['scenario_results'] ?? [] as $scenario) {
+                $byScenario[$scenario['scenario_id']] = $scenario;
+            }
+
+            foreach (['workflow_embedded_activity_result', 'standalone_activity_result'] as $scenarioId) {
+                $this->assertSame('pass', $byScenario[$scenarioId]['status'] ?? null);
+                $this->assertArrayNotHasKey('linked_findings', $byScenario[$scenarioId]);
+                $this->assertSame(
+                    'published_server_container',
+                    $byScenario[$scenarioId]['observed_outputs']['activity_host_evidence']['execution_source'] ?? null,
+                );
+                $this->assertNotEmpty(
+                    $byScenario[$scenarioId]['observed_outputs']['activity_host_evidence']['activity_cells'] ?? [],
+                );
+            }
+
+            $this->assertSame('not_covered', $byScenario['retry_attempt_backoff_behavior']['status'] ?? null);
+            $this->assertSame('coverage-gap', $byScenario['retry_attempt_backoff_behavior']['classification'] ?? null);
+
+            $evaluation = ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest());
+            $this->assertSame('non_passing', $evaluation['status']);
+            $focusedMissingFailures = array_filter(
+                $evaluation['gate_failures'],
+                static fn (array $failure): bool => ($failure['code'] ?? null) === 'activity_host_evidence_missing'
+                    && in_array($failure['scenario_id'] ?? null, [
+                        'workflow_embedded_activity_result',
+                        'standalone_activity_result',
+                    ], true),
+            );
+            $this->assertSame([], array_values($focusedMissingFailures));
+        } finally {
+            foreach (glob($resultDir.'/*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($resultDir)) {
+                rmdir($resultDir);
+            }
+        }
+    }
+
+    public function test_runner_rejects_local_source_activity_host_cells_for_focused_evidence(): void
+    {
+        if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
+            || trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('bash and node are required to exercise the activities runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = $repoRoot.'/storage/framework/activities-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($resultDir, 0777, true));
+
+        try {
+            $version = '9.9.9';
+            $serverImage = 'durableworkflow/server:'.$version;
+            $activityEvidence = $this->completeRunnerActivityEvidence($version, $serverImage);
+
+            foreach ($activityEvidence['scenario_results'] as &$scenario) {
+                if (($scenario['scenario_id'] ?? '') === 'workflow_embedded_activity_result') {
+                    $scenario['observed_outputs']['activity_host_evidence']['activity_cells'][0]['local_product_source_checkouts_used'] = true;
+                    $scenario['observed_outputs']['activity_host_evidence']['activity_cells'][0]['probe_source'] = 'local_source_checkout';
+                    $scenario['scenario_evidence']['activity_host_evidence'] = $scenario['observed_outputs']['activity_host_evidence'];
+                }
+
+                if (($scenario['scenario_id'] ?? '') === 'standalone_activity_result') {
+                    $scenario['observed_outputs']['activity_host_evidence']['activity_cells'][1]['localProductSourceCheckoutsUsed'] = true;
+                    $scenario['scenario_evidence']['activity_host_evidence'] = $scenario['observed_outputs']['activity_host_evidence'];
+                }
+            }
+            unset($scenario);
+
+            file_put_contents(
+                $resultDir.'/artifact-install-evidence.json',
+                json_encode($this->completeRunnerInstallEvidence($version), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+            file_put_contents(
+                $resultDir.'/activity-evidence.json',
+                json_encode($activityEvidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+
+            $env = [
+                'DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE' => '1',
+                'DW_SERVER_IMAGE' => $serverImage,
+                'DW_SERVER_VERSION' => $version,
+                'DW_CLI_VERSION' => $version,
+                'DW_PYTHON_SDK_VERSION' => $version,
+                'DW_WORKFLOW_PHP_VERSION' => $version,
+                'DW_WATERLINE_VERSION' => $version,
+            ];
+            $envPrefix = implode(' ', array_map(
+                static fn (string $name, string $value): string => $name.'='.escapeshellarg($value),
+                array_keys($env),
+                array_values($env),
+            ));
+            $command = sprintf(
+                '%s bash %s --result-dir %s >/dev/null 2>&1',
+                $envPrefix,
+                escapeshellarg($repoRoot.'/scripts/conformance/activities-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+            $this->assertSame(1, $exitCode);
+
+            $result = json_decode(
+                file_get_contents($resultDir.'/activities-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                file_get_contents($resultDir.'/activities-record.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('fail', $record['outcome']);
+
+            $byScenario = [];
+            foreach ($result['scenario_results'] ?? [] as $scenario) {
+                $byScenario[$scenario['scenario_id']] = $scenario;
+            }
+
+            foreach (['workflow_embedded_activity_result', 'standalone_activity_result'] as $scenarioId) {
+                $this->assertSame('fail', $byScenario[$scenarioId]['status'] ?? null);
+                $this->assertSame('product-gap', $byScenario[$scenarioId]['classification'] ?? null);
+                $failureText = implode(
+                    '; ',
+                    $byScenario[$scenarioId]['observed_outputs']['activity_host_evidence_failures'] ?? [],
+                );
+                $this->assertStringContainsString('local_product_source_checkouts_used=true', $failureText);
+                $this->assertNotEmpty($byScenario[$scenarioId]['linked_findings'] ?? []);
+            }
+
+            $workflowFailureText = implode(
+                '; ',
+                $byScenario['workflow_embedded_activity_result']['observed_outputs']['activity_host_evidence_failures'] ?? [],
+            );
+            $this->assertStringContainsString('local product source probe signals', $workflowFailureText);
+        } finally {
+            foreach (glob($resultDir.'/*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($resultDir)) {
+                rmdir($resultDir);
+            }
+        }
+    }
+
+    public function test_runner_rejects_focused_activity_host_evidence_without_explicit_source_free_marker(): void
+    {
+        if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
+            || trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('bash and node are required to exercise the activities runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = $repoRoot.'/storage/framework/activities-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($resultDir, 0777, true));
+
+        try {
+            $version = '9.9.9';
+            $serverImage = 'durableworkflow/server:'.$version;
+            $activityEvidence = $this->completeRunnerActivityEvidence($version, $serverImage);
+
+            foreach ($activityEvidence['scenario_results'] as &$scenario) {
+                if (! in_array($scenario['scenario_id'] ?? '', [
+                    'workflow_embedded_activity_result',
+                    'standalone_activity_result',
+                ], true)) {
+                    continue;
+                }
+
+                unset($scenario['observed_outputs']['activity_host_evidence']['local_product_source_checkouts_used']);
+                unset($scenario['scenario_evidence']['activity_host_evidence']['local_product_source_checkouts_used']);
+            }
+            unset($scenario);
+
+            file_put_contents(
+                $resultDir.'/artifact-install-evidence.json',
+                json_encode($this->completeRunnerInstallEvidence($version), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+            file_put_contents(
+                $resultDir.'/activity-evidence.json',
+                json_encode($activityEvidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+
+            $env = [
+                'DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE' => '1',
+                'DW_SERVER_IMAGE' => $serverImage,
+                'DW_SERVER_VERSION' => $version,
+                'DW_CLI_VERSION' => $version,
+                'DW_PYTHON_SDK_VERSION' => $version,
+                'DW_WORKFLOW_PHP_VERSION' => $version,
+                'DW_WATERLINE_VERSION' => $version,
+            ];
+            $envPrefix = implode(' ', array_map(
+                static fn (string $name, string $value): string => $name.'='.escapeshellarg($value),
+                array_keys($env),
+                array_values($env),
+            ));
+            $command = sprintf(
+                '%s bash %s --result-dir %s >/dev/null 2>&1',
+                $envPrefix,
+                escapeshellarg($repoRoot.'/scripts/conformance/activities-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+            $this->assertSame(1, $exitCode);
+
+            $result = json_decode(
+                file_get_contents($resultDir.'/activities-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                file_get_contents($resultDir.'/activities-record.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('fail', $record['outcome']);
+
+            $byScenario = [];
+            foreach ($result['scenario_results'] ?? [] as $scenario) {
+                $byScenario[$scenario['scenario_id']] = $scenario;
+            }
+
+            foreach (['workflow_embedded_activity_result', 'standalone_activity_result'] as $scenarioId) {
+                $this->assertSame('fail', $byScenario[$scenarioId]['status'] ?? null);
+                $this->assertSame('product-gap', $byScenario[$scenarioId]['classification'] ?? null);
+                $failureText = implode(
+                    '; ',
+                    $byScenario[$scenarioId]['observed_outputs']['activity_host_evidence_failures'] ?? [],
+                );
+                $this->assertStringContainsString(
+                    'activity_host_evidence.local_product_source_checkouts_used=false missing',
+                    $failureText,
+                );
+                $this->assertNotEmpty($byScenario[$scenarioId]['linked_findings'] ?? []);
+            }
+
+            $this->assertSame(
+                'non_passing',
+                ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest())['status'],
+            );
+        } finally {
+            foreach (glob($resultDir.'/*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($resultDir)) {
+                rmdir($resultDir);
+            }
+        }
+    }
+
+    public function test_runner_rejects_host_level_local_source_signal_in_focused_activity_evidence(): void
+    {
+        if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
+            || trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('bash and node are required to exercise the activities runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = $repoRoot.'/storage/framework/activities-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($resultDir, 0777, true));
+
+        try {
+            $version = '9.9.9';
+            $serverImage = 'durableworkflow/server:'.$version;
+            $activityEvidence = $this->completeRunnerActivityEvidence($version, $serverImage);
+
+            foreach ($activityEvidence['scenario_results'] as &$scenario) {
+                if (! in_array($scenario['scenario_id'] ?? '', [
+                    'workflow_embedded_activity_result',
+                    'standalone_activity_result',
+                ], true)) {
+                    continue;
+                }
+
+                $scenario['observed_outputs']['activity_host_evidence']['probe_source'] = 'local_source_checkout';
+                $scenario['scenario_evidence']['activity_host_evidence'] = $scenario['observed_outputs']['activity_host_evidence'];
+            }
+            unset($scenario);
+
+            file_put_contents(
+                $resultDir.'/artifact-install-evidence.json',
+                json_encode($this->completeRunnerInstallEvidence($version), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+            file_put_contents(
+                $resultDir.'/activity-evidence.json',
+                json_encode($activityEvidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+
+            $env = [
+                'DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE' => '1',
+                'DW_SERVER_IMAGE' => $serverImage,
+                'DW_SERVER_VERSION' => $version,
+                'DW_CLI_VERSION' => $version,
+                'DW_PYTHON_SDK_VERSION' => $version,
+                'DW_WORKFLOW_PHP_VERSION' => $version,
+                'DW_WATERLINE_VERSION' => $version,
+            ];
+            $envPrefix = implode(' ', array_map(
+                static fn (string $name, string $value): string => $name.'='.escapeshellarg($value),
+                array_keys($env),
+                array_values($env),
+            ));
+            $command = sprintf(
+                '%s bash %s --result-dir %s >/dev/null 2>&1',
+                $envPrefix,
+                escapeshellarg($repoRoot.'/scripts/conformance/activities-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+            $this->assertSame(1, $exitCode);
+
+            $result = json_decode(
+                file_get_contents($resultDir.'/activities-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                file_get_contents($resultDir.'/activities-record.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('fail', $record['outcome']);
+
+            $byScenario = [];
+            foreach ($result['scenario_results'] ?? [] as $scenario) {
+                $byScenario[$scenario['scenario_id']] = $scenario;
+            }
+
+            foreach (['workflow_embedded_activity_result', 'standalone_activity_result'] as $scenarioId) {
+                $this->assertSame('fail', $byScenario[$scenarioId]['status'] ?? null);
+                $this->assertSame('product-gap', $byScenario[$scenarioId]['classification'] ?? null);
+                $failureText = implode(
+                    '; ',
+                    $byScenario[$scenarioId]['observed_outputs']['activity_host_evidence_failures'] ?? [],
+                );
+                $this->assertStringContainsString(
+                    'activity_host_evidence contains local product source probe signals',
+                    $failureText,
+                );
+                $this->assertStringContainsString('local_source_checkout', $failureText);
+                $this->assertNotEmpty($byScenario[$scenarioId]['linked_findings'] ?? []);
+            }
+
+            $evaluation = ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest());
+            $this->assertSame('non_passing', $evaluation['status']);
+        } finally {
+            foreach (glob($resultDir.'/*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($resultDir)) {
+                rmdir($resultDir);
+            }
+        }
+    }
+
+    public function test_runner_rejects_php_only_sdk_python_focused_activity_cells(): void
+    {
+        if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
+            || trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('bash and node are required to exercise the activities runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = $repoRoot.'/storage/framework/activities-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($resultDir, 0777, true));
+
+        try {
+            $version = '9.9.9';
+            $serverImage = 'durableworkflow/server:'.$version;
+            $activityEvidence = $this->completeRunnerActivityEvidence($version, $serverImage);
+
+            foreach ($activityEvidence['scenario_results'] as &$scenario) {
+                if (! in_array($scenario['scenario_id'] ?? '', [
+                    'workflow_embedded_activity_result',
+                    'standalone_activity_result',
+                ], true)) {
+                    continue;
+                }
+
+                foreach ($scenario['observed_outputs']['activity_host_evidence']['activity_cells'] as &$cell) {
+                    if (($cell['runtime'] ?? null) !== 'sdk-python') {
+                        continue;
+                    }
+
+                    unset($cell['worker_artifact']);
+                    $cell['worker_protocol']['registered_runtime'] = 'php';
+                }
+                unset($cell);
+                $scenario['scenario_evidence']['activity_host_evidence'] = $scenario['observed_outputs']['activity_host_evidence'];
+            }
+            unset($scenario);
+
+            file_put_contents(
+                $resultDir.'/artifact-install-evidence.json',
+                json_encode($this->completeRunnerInstallEvidence($version), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+            file_put_contents(
+                $resultDir.'/activity-evidence.json',
+                json_encode($activityEvidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+
+            $env = [
+                'DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE' => '1',
+                'DW_SERVER_IMAGE' => $serverImage,
+                'DW_SERVER_VERSION' => $version,
+                'DW_CLI_VERSION' => $version,
+                'DW_PYTHON_SDK_VERSION' => $version,
+                'DW_WORKFLOW_PHP_VERSION' => $version,
+                'DW_WATERLINE_VERSION' => $version,
+            ];
+            $envPrefix = implode(' ', array_map(
+                static fn (string $name, string $value): string => $name.'='.escapeshellarg($value),
+                array_keys($env),
+                array_values($env),
+            ));
+            $command = sprintf(
+                '%s bash %s --result-dir %s >/dev/null 2>&1',
+                $envPrefix,
+                escapeshellarg($repoRoot.'/scripts/conformance/activities-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+            $this->assertSame(1, $exitCode);
+
+            $result = json_decode(
+                file_get_contents($resultDir.'/activities-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $this->assertSame('non_passing', $result['outcome']);
+
+            $byScenario = [];
+            foreach ($result['scenario_results'] ?? [] as $scenario) {
+                $byScenario[$scenario['scenario_id']] = $scenario;
+            }
+
+            foreach (['workflow_embedded_activity_result', 'standalone_activity_result'] as $scenarioId) {
+                $this->assertSame('fail', $byScenario[$scenarioId]['status'] ?? null);
+                $failureText = implode(
+                    '; ',
+                    $byScenario[$scenarioId]['observed_outputs']['activity_host_evidence_failures'] ?? [],
+                );
+                $this->assertStringContainsString('sdk-python worker_artifact evidence missing', $failureText);
+                $this->assertStringContainsString('missing passing', $failureText);
+            }
         } finally {
             foreach (glob($resultDir.'/*') ?: [] as $file) {
                 if (is_file($file)) {
@@ -621,6 +1218,113 @@ class ActivityConformanceRunnerContractTest extends TestCase
         $this->assertSame([], $evaluation['gate_failures']);
     }
 
+    public function test_result_gate_requires_focused_activity_host_evidence_for_activity_result_cells(): void
+    {
+        $result = $this->completeActivityResult();
+        foreach ($result['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? '') !== 'workflow_embedded_activity_result') {
+                continue;
+            }
+            unset($scenario['observed_outputs']['activity_host_evidence']);
+            unset($scenario['scenario_evidence']['activity_host_evidence']);
+        }
+        unset($scenario);
+
+        $evaluation = ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest());
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'activity_host_evidence_missing',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_local_activity_host_evidence_for_focused_cells(): void
+    {
+        $result = $this->completeActivityResult();
+        foreach ($result['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? '') !== 'standalone_activity_result') {
+                continue;
+            }
+            $scenario['observed_outputs']['activity_host_evidence']['execution_source'] = 'local_checkout';
+            $scenario['observed_outputs']['activity_host_evidence']['local_product_source_checkouts_used'] = true;
+            $scenario['observed_outputs']['activity_host_evidence']['activity_cells'][0]['execution_source'] = 'local_checkout';
+            $scenario['scenario_evidence']['activity_host_evidence'] = $scenario['observed_outputs']['activity_host_evidence'];
+        }
+        unset($scenario);
+
+        $evaluation = ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest());
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'activity_host_evidence_not_from_published_server_container',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+        $this->assertContains(
+            'local_product_source_checkouts_used_must_be_false',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_requires_explicit_source_free_activity_host_marker_for_focused_cells(): void
+    {
+        $result = $this->completeActivityResult();
+        foreach ($result['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? '') !== 'workflow_embedded_activity_result') {
+                continue;
+            }
+
+            unset($scenario['observed_outputs']['activity_host_evidence']['local_product_source_checkouts_used']);
+            unset($scenario['scenario_evidence']['activity_host_evidence']['local_product_source_checkouts_used']);
+        }
+        unset($scenario);
+
+        $evaluation = ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest());
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'activity_host_evidence.local_product_source_checkouts_used',
+            array_column($evaluation['gate_failures'], 'field'),
+        );
+        $this->assertContains(
+            'local_product_source_checkouts_used_must_be_false',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_sdk_python_activity_cell_without_published_sdk_artifact(): void
+    {
+        $result = $this->completeActivityResult();
+        foreach ($result['scenario_results'] as &$scenario) {
+            if (($scenario['scenario_id'] ?? '') !== 'workflow_embedded_activity_result') {
+                continue;
+            }
+            foreach ($scenario['observed_outputs']['activity_host_evidence']['activity_cells'] as &$cell) {
+                if (($cell['runtime'] ?? null) !== 'sdk-python') {
+                    continue;
+                }
+
+                unset($cell['worker_artifact']);
+                $cell['worker_protocol']['registered_runtime'] = 'php';
+            }
+            unset($cell);
+            $scenario['scenario_evidence']['activity_host_evidence'] = $scenario['observed_outputs']['activity_host_evidence'];
+        }
+        unset($scenario);
+
+        $evaluation = ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest());
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'sdk_python_activity_worker_artifact_missing',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+        $this->assertContains(
+            'activity_host_evidence_missing_activity_cell',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
     public function test_result_gate_requires_source_free_statement_for_published_execution_evidence(): void
     {
         $result = $this->completeActivityResult();
@@ -846,20 +1550,24 @@ class ActivityConformanceRunnerContractTest extends TestCase
     {
         $scenarioResults = [];
         foreach (ActivityRuntimeContract::manifest()['required_scenarios'] as $scenarioId) {
+            $activityHostEvidence = $this->activityHostEvidenceForScenario($scenarioId);
             $scenarioResults[] = [
                 'scenario_id' => $scenarioId,
                 'status' => 'pass',
-                'observed_outputs' => [
+                'observed_outputs' => array_filter([
                     'evidence' => $scenarioId,
-                ],
-                'scenario_evidence' => [
+                    'activity_host_evidence' => $activityHostEvidence,
+                ]),
+                'scenario_evidence' => array_filter([
                     'evidence' => $scenarioId,
-                ],
+                    'activity_host_evidence' => $activityHostEvidence,
+                ]),
             ];
         }
 
         return [
             'schema' => 'durable-workflow.v2.activity-runtime.host-evidence',
+            'execution_source' => 'published_server_container',
             'scenario_results' => $scenarioResults,
             'published_artifact_worker_execution' => $this->publishedServerExecutionEvidence(
                 $version,
@@ -901,17 +1609,20 @@ class ActivityConformanceRunnerContractTest extends TestCase
         );
         $scenarioResults = [];
         foreach ($contract['required_scenarios'] as $scenarioId) {
+            $activityHostEvidence = $this->activityHostEvidenceForScenario($scenarioId);
             $scenarioResults[] = [
                 'scenario_id' => $scenarioId,
                 'status' => 'pass',
-                'observed_outputs' => [
+                'observed_outputs' => array_filter([
                     'sample' => $scenarioId,
                     'published_artifact_worker_execution' => $publishedServerExecution,
-                ],
-                'scenario_evidence' => [
+                    'activity_host_evidence' => $activityHostEvidence,
+                ]),
+                'scenario_evidence' => array_filter([
                     'sample' => $scenarioId,
                     'published_artifact_worker_execution' => $publishedServerExecution,
-                ],
+                    'activity_host_evidence' => $activityHostEvidence,
+                ]),
             ];
         }
 
@@ -923,6 +1634,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
             'generated_at' => '2026-06-21T00:00:10Z',
             'artifact_versions' => $artifactVersions,
             'published_artifact_versions' => $artifactVersions,
+            'execution_source' => 'published_server_container',
             'artifact_sources' => [
                 'server' => 'docker.io/durableworkflow/server:9.9.9',
                 'cli' => 'https://github.com/durable-workflow/cli/releases/download/v9.9.9/install.sh',
@@ -953,6 +1665,61 @@ class ActivityConformanceRunnerContractTest extends TestCase
     }
 
     /**
+     * @return array<string, mixed>|null
+     */
+    private function activityHostEvidenceForScenario(string $scenarioId): ?array
+    {
+        $mode = match ($scenarioId) {
+            'workflow_embedded_activity_result' => 'workflow-embedded',
+            'standalone_activity_result' => 'standalone',
+            default => null,
+        };
+
+        if ($mode === null) {
+            return null;
+        }
+
+        return [
+            'schema' => 'durable-workflow.v2.activity-runtime.published-artifact-host-evidence',
+            'status' => 'pass',
+            'scenario_id' => $scenarioId,
+            'execution_source' => 'published_server_container',
+            'local_product_source_checkouts_used' => false,
+            'activity_cells' => [
+                [
+                    'mode' => $mode,
+                    'runtime' => 'workflow-php',
+                    'status' => 'pass',
+                    'execution_source' => 'published_server_container',
+                    'local_product_source_checkouts_used' => false,
+                ],
+                [
+                    'mode' => $mode,
+                    'runtime' => 'sdk-python',
+                    'status' => 'pass',
+                    'execution_source' => 'published_server_container',
+                    'local_product_source_checkouts_used' => false,
+                    'worker_protocol' => [
+                        'registered_runtime' => 'python',
+                    ],
+                    'worker_artifact' => [
+                        'artifact' => 'sdk-python',
+                        'package' => 'durable-workflow',
+                        'version' => '9.9.9',
+                        'source' => 'pypi://durable-workflow==9.9.9',
+                        'status' => 'pass',
+                        'runtime' => 'sdk-python',
+                        'language' => 'python',
+                        'execution_source' => 'published_server_container',
+                        'execution_method' => 'durable_workflow.serializer.envelope',
+                        'local_product_source_checkouts_used' => false,
+                    ],
+                ],
+            ],
+        ];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function publishedServerExecutionEvidence(string $version, string $serverImage): array
@@ -960,6 +1727,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
         return [
             'schema' => 'durable-workflow.v2.activity-runtime.published-server-execution',
             'status' => 'pass',
+            'execution_source' => 'published_server_container',
             'execution_environment' => 'docker_container',
             'worker_execution_mode' => 'published_server_image_conformance_handoff',
             'executed_in_pinned_server_artifact' => true,
@@ -976,6 +1744,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
                     'version' => $version,
                     'source' => $serverImage,
                     'status' => 'pass',
+                    'execution_source' => 'published_server_container',
                     'execution_context' => 'published_server_image_conformance_handoff',
                     'local_product_source_checkouts_used' => false,
                     'source_integrity_statement' => 'Activities conformance ran from the pinned published server container; local product checkouts, branch source, and local vendor trees were not used as pass evidence.',
