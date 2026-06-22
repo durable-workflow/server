@@ -2763,8 +2763,31 @@ def run_python_sdk_baseline(
         run_root=run_root,
         log_file=log_file,
     )
+    outputs: dict[str, Any] = {
+        "worker_runtime": "sdk-python",
+        "python_worker_artifact_source": sources["sdk-python"],
+        "python_worker_sdk_version": versions["sdk-python"],
+        "workflow_id": workflow_id,
+        "task_queue": task_queue,
+        "worker_id": worker_id,
+        "published_artifact_versions": versions,
+        "artifact_sources": sources,
+    }
+    descriptor: dict[str, Any] = {
+        "worker_id": worker_id,
+        "task_queue": task_queue,
+        "workflow_id": workflow_id,
+        "worker_runtime": "sdk-python",
+        "worker_source": sources["sdk-python"],
+        "worker_sdk_version": outputs["python_worker_sdk_version"],
+        "log_file": log_file.name,
+    }
 
     try:
+        installed_sdk_version = python_sdk_distribution_version(python_bin, log_file)
+        outputs["python_worker_sdk_version"] = installed_sdk_version or versions["sdk-python"]
+        descriptor["worker_sdk_version"] = outputs["python_worker_sdk_version"]
+
         worker_registration = wait_for_worker_registered(
             base_url=base_url,
             token=token,
@@ -2773,6 +2796,10 @@ def run_python_sdk_baseline(
             process=worker_process,
             log_file=log_file,
         )
+        outputs["worker_registration"] = worker_registration
+        capabilities = worker_registration.get("capabilities") if isinstance(worker_registration, dict) else None
+        if isinstance(capabilities, list) and "query_tasks" in capabilities:
+            outputs["python_worker_query_task_routing"] = True
 
         start = http_json(
             base_url,
@@ -2791,6 +2818,8 @@ def run_python_sdk_baseline(
             raise RuntimeError(f"Python SDK baseline workflow start failed: {start}")
 
         run_id = str(start["body"].get("run_id", ""))
+        outputs["run_id"] = run_id
+        descriptor["run_id"] = run_id
         initial_query = wait_for_query_result(
             label="initial Python SDK worker CLI query",
             expected=0,
@@ -2809,6 +2838,7 @@ def run_python_sdk_baseline(
                 log_file,
             ),
         )
+        outputs["initial_query_sample"] = initial_query
 
         cli_signal = cli_json_sample(
             cli_bin,
@@ -2827,6 +2857,7 @@ def run_python_sdk_baseline(
         )
         if not public_sample_ok(cli_signal):
             raise RuntimeError(f"Python SDK baseline CLI signal failed: {cli_signal}")
+        outputs["cli_signal_sample"] = cli_signal
 
         cli_query = wait_for_query_result(
             label="Python SDK worker CLI query after CLI signal",
@@ -2846,6 +2877,12 @@ def run_python_sdk_baseline(
                 log_file,
             ),
         )
+        outputs["cli_query_sample"] = cli_query
+        outputs["cli_signal_and_query"] = (
+            public_sample_ok(cli_signal)
+            and public_sample_ok(cli_query)
+            and sample_result_value(cli_query) == 3
+        )
         routed_current_query_task: dict[str, Any] | None = None
         routed_current_query_task_error: dict[str, str] | None = None
         try:
@@ -2861,11 +2898,15 @@ def run_python_sdk_baseline(
             )
         except Exception as exc:  # noqa: BLE001 - retain public client proof for focused missing-route evidence.
             routed_current_query_task_error = probe_error_payload(exc)
+            outputs["routed_current_query_task_error"] = routed_current_query_task_error
+            descriptor["routed_current_query_task_error"] = routed_current_query_task_error
             log_line(
                 log_file,
                 "Python SDK baseline routed current query task proof missing: "
                 f"{type(exc).__name__}: {exc}",
             )
+        if routed_current_query_task is not None:
+            outputs["routed_current_query_task"] = routed_current_query_task
 
         sdk_signal = sdk_success_sample(
             python_bin,
@@ -2880,6 +2921,7 @@ def run_python_sdk_baseline(
         )
         if not public_sample_ok(sdk_signal):
             raise RuntimeError(f"Python SDK baseline SDK signal failed: {sdk_signal}")
+        outputs["sdk_python_signal_sample"] = sdk_signal
 
         sdk_query = wait_for_query_result(
             label="Python SDK worker SDK query after SDK signal",
@@ -2895,6 +2937,12 @@ def run_python_sdk_baseline(
                 "current",
                 log_file,
             ),
+        )
+        outputs["sdk_python_query_sample"] = sdk_query
+        outputs["sdk_python_signal_and_query"] = (
+            public_sample_ok(sdk_signal)
+            and public_sample_ok(sdk_query)
+            and sample_result_value(sdk_query) == 8
         )
 
         repeat_query = wait_for_query_result(
@@ -2915,51 +2963,17 @@ def run_python_sdk_baseline(
                 log_file,
             ),
         )
+        outputs["repeat_query_sample"] = repeat_query
+        outputs["immediate_repeat_query_consistency"] = (
+            sample_result_value(repeat_query) == sample_result_value(sdk_query)
+        )
 
-        installed_sdk_version = python_sdk_distribution_version(python_bin, log_file)
-        outputs = {
-            "worker_runtime": "sdk-python",
-            "python_worker_artifact_source": sources["sdk-python"],
-            "python_worker_sdk_version": installed_sdk_version or versions["sdk-python"],
-            "python_worker_query_task_routing": True,
-            "cli_signal_and_query": public_sample_ok(cli_signal)
-            and public_sample_ok(cli_query)
-            and sample_result_value(cli_query) == 3,
-            "sdk_python_signal_and_query": public_sample_ok(sdk_signal)
-            and public_sample_ok(sdk_query)
-            and sample_result_value(sdk_query) == 8,
-            "immediate_repeat_query_consistency": sample_result_value(repeat_query) == sample_result_value(sdk_query),
-            "workflow_id": workflow_id,
-            "run_id": run_id,
-            "task_queue": task_queue,
-            "worker_id": worker_id,
-            "worker_registration": worker_registration,
-            "initial_query_sample": initial_query,
-            "cli_signal_sample": cli_signal,
-            "cli_query_sample": cli_query,
-            "sdk_python_signal_sample": sdk_signal,
-            "sdk_python_query_sample": sdk_query,
-            "repeat_query_sample": repeat_query,
-            "published_artifact_versions": versions,
-            "artifact_sources": sources,
-        }
-        if routed_current_query_task is not None:
-            outputs["routed_current_query_task"] = routed_current_query_task
-        if routed_current_query_task_error is not None:
-            outputs["routed_current_query_task_error"] = routed_current_query_task_error
-
-        descriptor = {
-            "worker_id": worker_id,
-            "task_queue": task_queue,
-            "workflow_id": workflow_id,
-            "run_id": run_id,
-            "worker_runtime": "sdk-python",
-            "worker_source": sources["sdk-python"],
-            "worker_sdk_version": outputs["python_worker_sdk_version"],
-            "log_file": log_file.name,
-        }
-        if routed_current_query_task_error is not None:
-            descriptor["routed_current_query_task_error"] = routed_current_query_task_error
+        return outputs, descriptor
+    except Exception as exc:  # noqa: BLE001 - retain any public evidence collected before the probe stopped.
+        error = probe_error_payload(exc)
+        outputs["probe_error"] = error
+        descriptor["error"] = f"{type(exc).__name__}: {exc}"
+        log_line(log_file, f"Python SDK baseline probe stopped after partial evidence: {type(exc).__name__}: {exc}")
         return outputs, descriptor
     finally:
         stop_python_sdk_counter_worker(worker_process, log_file)
