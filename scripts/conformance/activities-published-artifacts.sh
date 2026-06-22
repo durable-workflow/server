@@ -321,6 +321,23 @@ function evidence_document(array $scenarioResults, array $activityCells): array
         'php_python_activity_parity',
         'operator_visible_activity_attempt_state',
     ];
+    $scenarioStatusById = [];
+    foreach ($scenarioResults as $scenario) {
+        $scenarioId = is_string($scenario['scenario_id'] ?? null) ? $scenario['scenario_id'] : '';
+        if ($scenarioId !== '') {
+            $scenarioStatusById[$scenarioId] = is_string($scenario['status'] ?? null) ? $scenario['status'] : 'not_covered';
+        }
+    }
+    $durableScenario = null;
+    foreach ($scenarioResults as $scenario) {
+        if (($scenario['scenario_id'] ?? null) === 'durable_result_recording_after_worker_restart') {
+            $durableScenario = $scenario;
+            break;
+        }
+    }
+    $durableOutputs = is_array($durableScenario['observed_outputs'] ?? null)
+        ? $durableScenario['observed_outputs']
+        : [];
 
     return [
         'schema' => 'durable-workflow.v2.activity-runtime.host-evidence',
@@ -335,9 +352,20 @@ function evidence_document(array $scenarioResults, array $activityCells): array
             'runtimes' => ['workflow-php', 'sdk-python'],
             'activity_cells' => $activityCells,
             'behavior_cells' => array_map(
-                static fn (string $scenario): array => ['scenario' => $scenario, 'status' => 'not_covered'],
+                static fn (string $scenario): array => [
+                    'scenario' => $scenario,
+                    'status' => $scenarioStatusById[$scenario] ?? 'not_covered',
+                ],
                 $behaviorCells
             ),
+        ],
+        'durable_result_recording' => [
+            'status' => $scenarioStatusById['durable_result_recording_after_worker_restart'] ?? 'not_covered',
+            'scenario' => 'durable_result_recording_after_worker_restart',
+            'result_recorded_before_restart' => $durableOutputs['result_recorded_before_restart'] ?? null,
+            'result_observed_after_restart' => $durableOutputs['result_observed_after_restart'] ?? null,
+            'activity_execution_id' => $durableOutputs['activity_execution_id'] ?? null,
+            'duplicate_activity_count' => $durableOutputs['duplicate_activity_count'] ?? null,
         ],
     ];
 }
@@ -713,6 +741,23 @@ function event_types(array $history): array
     )));
 }
 
+function count_event_type(array $history, string $eventType): int
+{
+    return count(array_filter(
+        event_types($history),
+        static fn (string $type): bool => $type === $eventType
+    ));
+}
+
+function normalized_workflow_output(mixed $output): mixed
+{
+    try {
+        return decode_payload($output);
+    } catch (Throwable) {
+        return $output;
+    }
+}
+
 function run_embedded_cell(string $runtime): array
 {
     $safeRuntime = str_replace(['/', '_'], '-', $runtime);
@@ -879,6 +924,175 @@ function scenario_from_cells(string $scenarioId, string $mode, array $cells): ar
     return $scenario;
 }
 
+function failure_behavior_scenario(string $scenarioId, Throwable $throwable): array
+{
+    $message = $throwable::class.': '.$throwable->getMessage();
+
+    return [
+        'scenario_id' => $scenarioId,
+        'status' => 'fail',
+        'classification' => 'product-gap',
+        'observed_behavior' => $message,
+        'observed_outputs' => [
+            'execution_source' => HOST_EVIDENCE_SOURCE,
+            'failure' => $message,
+        ],
+        'scenario_evidence' => [
+            'execution_source' => HOST_EVIDENCE_SOURCE,
+            'failure' => $message,
+        ],
+        'linked_findings' => [finding_for_failure($scenarioId, $message)],
+    ];
+}
+
+function run_restart_durable_result_cell(): array
+{
+    $suffix = bin2hex(random_bytes(3));
+    $firstWorkerId = "activities-restart-first-{$suffix}";
+    $restartWorkerId = "activities-restart-replay-{$suffix}";
+    $workflowId = "activities-restart-durable-{$suffix}";
+
+    register_worker($firstWorkerId, [EMBEDDED_WORKFLOW_TYPE], [ACTIVITY_TYPE], 'workflow-php');
+    register_worker($restartWorkerId, [EMBEDDED_WORKFLOW_TYPE], [ACTIVITY_TYPE], 'workflow-php');
+
+    $start = request_json('POST', '/workflows', [
+        'workflow_id' => $workflowId,
+        'workflow_type' => EMBEDDED_WORKFLOW_TYPE,
+        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'input' => [[
+            'scenario_id' => 'durable_result_recording_after_worker_restart',
+            'runtime' => 'workflow-php',
+            'input_marker' => "restart-durable-{$suffix}",
+        ]],
+    ]);
+    $runId = (string) ($start['run_id'] ?? '');
+
+    $workflowTask = poll_task('workflow', $firstWorkerId);
+    complete_workflow_task_from_runtime($workflowTask);
+
+    $activityTask = poll_task('activity', $firstWorkerId);
+    [$activityResult, $activityComplete, $workerArtifact] = complete_activity_task(
+        $activityTask,
+        'workflow-php',
+        'workflow-embedded'
+    );
+
+    $historyAfterRecord = request_json('GET', '/workflows/'.rawurlencode($workflowId).'/runs/'.rawurlencode($runId).'/history');
+    $completedBeforeRestart = count_event_type($historyAfterRecord, 'ActivityCompleted');
+    $resultRecordedBeforeRestart = ($activityComplete['recorded'] ?? null) === true && $completedBeforeRestart === 1;
+    if (! $resultRecordedBeforeRestart) {
+        throw new RuntimeException('activity result was not durably recorded before the worker restart');
+    }
+
+    $resumeTask = poll_task('workflow', $restartWorkerId);
+    $workflowComplete = complete_workflow_task_from_runtime($resumeTask);
+
+    $run = request_json('GET', '/workflows/'.rawurlencode($workflowId).'/runs/'.rawurlencode($runId));
+    $historyAfterReplay = request_json('GET', '/workflows/'.rawurlencode($workflowId).'/runs/'.rawurlencode($runId).'/history');
+    $completedAfterReplay = count_event_type($historyAfterReplay, 'ActivityCompleted');
+    $duplicateActivityCount = max(0, $completedAfterReplay - 1);
+    $workflowOutput = normalized_workflow_output($run['output'] ?? null);
+    $resultObservedAfterRestart = ($run['status'] ?? null) === RunStatus::Completed->value
+        && is_array($workflowOutput)
+        && ($workflowOutput['activity_result_message'] ?? null) === 'published artifact activity completed'
+        && $completedAfterReplay === 1
+        && $duplicateActivityCount === 0;
+
+    $emptyActivityPoll = request_json('POST', '/worker/activity-tasks/poll', [
+        'worker_id' => $restartWorkerId,
+        'task_queue' => ACTIVITIES_TASK_QUEUE,
+    ]);
+    if (is_array($emptyActivityPoll['task'] ?? null)) {
+        throw new RuntimeException('activity task was redelivered after terminal completion was recorded');
+    }
+    if (! $resultObservedAfterRestart) {
+        throw new RuntimeException('workflow replay after worker restart did not observe exactly one durable activity completion');
+    }
+
+    return [
+        'scenario_id' => 'durable_result_recording_after_worker_restart',
+        'mode' => 'workflow-embedded',
+        'runtime' => 'workflow-php',
+        'status' => 'pass',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'first_worker_identity' => $firstWorkerId,
+        'restart_worker_identity' => $restartWorkerId,
+        'workflow_id' => $workflowId,
+        'run_id' => $runId,
+        'activity_execution_id' => $activityTask['activity_execution_id'] ?? null,
+        'activity_attempt_id' => $activityTask['activity_attempt_id'] ?? null,
+        'activity_type' => $activityTask['activity_type'] ?? ACTIVITY_TYPE,
+        'result_payload' => $activityResult,
+        'worker_artifact' => $workerArtifact,
+        'local_product_source_checkouts_used' => false,
+        'result_recorded_before_restart' => $resultRecordedBeforeRestart,
+        'result_observed_after_restart' => $resultObservedAfterRestart,
+        'activity_completed_count_before_restart' => $completedBeforeRestart,
+        'activity_completed_count_after_replay' => $completedAfterReplay,
+        'duplicate_activity_count' => $duplicateActivityCount,
+        'history_events_before_restart' => event_types($historyAfterRecord),
+        'history_events_after_replay' => event_types($historyAfterReplay),
+        'restart_replay_task' => [
+            'lease_owner' => $resumeTask['lease_owner'] ?? null,
+            'workflow_event_type' => $resumeTask['workflow_event_type'] ?? null,
+            'resume_source_kind' => $resumeTask['resume_source_kind'] ?? null,
+            'resume_source_id' => $resumeTask['resume_source_id'] ?? null,
+        ],
+        'worker_protocol' => [
+            'activity_task_completion' => $activityComplete['outcome'] ?? null,
+            'activity_task_recorded' => $activityComplete['recorded'] ?? null,
+            'workflow_task_completion_after_restart' => $workflowComplete['outcome'] ?? null,
+            'run_status_after_restart' => $run['status'] ?? null,
+            'post_completion_activity_poll_status' => $emptyActivityPoll['poll_status'] ?? null,
+        ],
+    ];
+}
+
+function scenario_from_restart_cell(array $cell): array
+{
+    $pass = ($cell['status'] ?? null) === 'pass'
+        && ($cell['result_recorded_before_restart'] ?? null) === true
+        && ($cell['result_observed_after_restart'] ?? null) === true
+        && ($cell['duplicate_activity_count'] ?? 1) === 0;
+
+    $observed = [
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'first_worker_identity' => $cell['first_worker_identity'] ?? null,
+        'restart_worker_identity' => $cell['restart_worker_identity'] ?? null,
+        'workflow_id' => $cell['workflow_id'] ?? null,
+        'run_id' => $cell['run_id'] ?? null,
+        'activity_execution_id' => $cell['activity_execution_id'] ?? null,
+        'activity_attempt_id' => $cell['activity_attempt_id'] ?? null,
+        'result_recorded_before_restart' => $cell['result_recorded_before_restart'] ?? null,
+        'result_observed_after_restart' => $cell['result_observed_after_restart'] ?? null,
+        'activity_completed_count_before_restart' => $cell['activity_completed_count_before_restart'] ?? null,
+        'activity_completed_count_after_replay' => $cell['activity_completed_count_after_replay'] ?? null,
+        'duplicate_activity_count' => $cell['duplicate_activity_count'] ?? null,
+        'history_events_before_restart' => $cell['history_events_before_restart'] ?? null,
+        'history_events_after_replay' => $cell['history_events_after_replay'] ?? null,
+        'restart_replay_task' => $cell['restart_replay_task'] ?? null,
+        'worker_protocol' => $cell['worker_protocol'] ?? null,
+    ];
+
+    $scenario = [
+        'scenario_id' => 'durable_result_recording_after_worker_restart',
+        'status' => $pass ? 'pass' : 'fail',
+        'classification' => $pass ? null : 'product-gap',
+        'observed_outputs' => array_filter($observed, static fn (mixed $value): bool => $value !== null && $value !== []),
+        'scenario_evidence' => array_filter([
+            'restart_durable_result_recording' => $cell,
+        ], static fn (mixed $value): bool => $value !== null && $value !== []),
+    ];
+
+    if (! $pass) {
+        $message = 'activity result recording after worker restart did not prove exactly one terminal completion';
+        $scenario['observed_behavior'] = $message;
+        $scenario['linked_findings'] = [finding_for_failure('durable_result_recording_after_worker_restart', $message)];
+    }
+
+    return $scenario;
+}
+
 function run_cells_for(string $scenarioId, string $mode): array
 {
     $cells = [];
@@ -906,15 +1120,26 @@ try {
 
     $embeddedCells = run_cells_for('workflow_embedded_activity_result', 'workflow-embedded');
     $standaloneCells = run_cells_for('standalone_activity_result', 'standalone');
+    $restartScenario = failure_behavior_scenario(
+        'durable_result_recording_after_worker_restart',
+        new RuntimeException('restart durability scenario did not execute')
+    );
+    try {
+        $restartScenario = scenario_from_restart_cell(run_restart_durable_result_cell());
+    } catch (Throwable $throwable) {
+        $restartScenario = failure_behavior_scenario('durable_result_recording_after_worker_restart', $throwable);
+    }
 
     write_json_file(output_path(), evidence_document([
         scenario_from_cells('workflow_embedded_activity_result', 'workflow-embedded', $embeddedCells),
         scenario_from_cells('standalone_activity_result', 'standalone', $standaloneCells),
+        $restartScenario,
     ], array_merge($embeddedCells, $standaloneCells)));
 } catch (Throwable $throwable) {
     write_json_file(output_path(), evidence_document([
         failure_scenario('workflow_embedded_activity_result', 'workflow-embedded', $throwable),
         failure_scenario('standalone_activity_result', 'standalone', $throwable),
+        failure_behavior_scenario('durable_result_recording_after_worker_restart', $throwable),
     ], []));
 }
 PHP

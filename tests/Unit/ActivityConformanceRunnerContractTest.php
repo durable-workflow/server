@@ -450,6 +450,176 @@ class ActivityConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_records_restart_safe_result_recording_without_passing_full_matrix(): void
+    {
+        if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
+            || trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('bash and node are required to exercise the activities runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = $repoRoot.'/storage/framework/activities-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($resultDir, 0777, true));
+
+        try {
+            $version = '9.9.9';
+            $serverImage = 'durableworkflow/server:'.$version;
+            $scenarioResults = [];
+
+            foreach (['workflow_embedded_activity_result', 'standalone_activity_result'] as $scenarioId) {
+                $activityHostEvidence = $this->activityHostEvidenceForScenario($scenarioId);
+                $scenarioResults[] = [
+                    'scenario_id' => $scenarioId,
+                    'status' => 'pass',
+                    'observed_outputs' => array_filter([
+                        'activity_host_evidence' => $activityHostEvidence,
+                    ]),
+                    'scenario_evidence' => array_filter([
+                        'activity_host_evidence' => $activityHostEvidence,
+                    ]),
+                ];
+            }
+
+            $scenarioResults[] = [
+                'scenario_id' => 'durable_result_recording_after_worker_restart',
+                'status' => 'pass',
+                'observed_outputs' => [
+                    'execution_source' => 'published_server_container',
+                    'first_worker_identity' => 'activities-restart-first-abc123',
+                    'restart_worker_identity' => 'activities-restart-replay-abc123',
+                    'activity_execution_id' => 'act_exec_abc123',
+                    'result_recorded_before_restart' => true,
+                    'result_observed_after_restart' => true,
+                    'activity_completed_count_before_restart' => 1,
+                    'activity_completed_count_after_replay' => 1,
+                    'duplicate_activity_count' => 0,
+                ],
+                'scenario_evidence' => [
+                    'restart_durable_result_recording' => [
+                        'execution_source' => 'published_server_container',
+                        'first_worker_identity' => 'activities-restart-first-abc123',
+                        'restart_worker_identity' => 'activities-restart-replay-abc123',
+                        'activity_execution_id' => 'act_exec_abc123',
+                        'result_recorded_before_restart' => true,
+                        'result_observed_after_restart' => true,
+                        'duplicate_activity_count' => 0,
+                    ],
+                ],
+            ];
+
+            $activityEvidence = [
+                'schema' => 'durable-workflow.v2.activity-runtime.host-evidence',
+                'execution_source' => 'published_server_container',
+                'scenario_results' => $scenarioResults,
+                'published_artifact_worker_execution' => $this->publishedServerExecutionEvidence($version, $serverImage),
+                'runtime_matrix' => [
+                    'execution_modes' => ['workflow-embedded', 'standalone'],
+                    'runtimes' => ['workflow-php', 'sdk-python'],
+                    'activity_cells' => array_merge(
+                        $this->activityHostEvidenceForScenario('workflow_embedded_activity_result')['activity_cells'],
+                        $this->activityHostEvidenceForScenario('standalone_activity_result')['activity_cells'],
+                    ),
+                    'behavior_cells' => [
+                        ['scenario' => 'durable_result_recording_after_worker_restart', 'status' => 'pass'],
+                        ['scenario' => 'retry_attempt_backoff_behavior', 'status' => 'not_covered'],
+                    ],
+                ],
+                'durable_result_recording' => [
+                    'status' => 'pass',
+                    'scenario' => 'durable_result_recording_after_worker_restart',
+                    'activity_execution_id' => 'act_exec_abc123',
+                    'duplicate_activity_count' => 0,
+                ],
+            ];
+
+            file_put_contents(
+                $resultDir.'/artifact-install-evidence.json',
+                json_encode($this->completeRunnerInstallEvidence($version), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+            file_put_contents(
+                $resultDir.'/activity-evidence.json',
+                json_encode($activityEvidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+
+            $env = [
+                'DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE' => '1',
+                'DW_SERVER_IMAGE' => $serverImage,
+                'DW_SERVER_VERSION' => $version,
+                'DW_CLI_VERSION' => $version,
+                'DW_PYTHON_SDK_VERSION' => $version,
+                'DW_WORKFLOW_PHP_VERSION' => $version,
+                'DW_WATERLINE_VERSION' => $version,
+            ];
+            $envPrefix = implode(' ', array_map(
+                static fn (string $name, string $value): string => $name.'='.escapeshellarg($value),
+                array_keys($env),
+                array_values($env),
+            ));
+            $command = sprintf(
+                '%s bash %s --result-dir %s >/dev/null 2>&1',
+                $envPrefix,
+                escapeshellarg($repoRoot.'/scripts/conformance/activities-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+            $this->assertSame(1, $exitCode);
+
+            $result = json_decode(
+                file_get_contents($resultDir.'/activities-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('pass', $result['durable_result_recording']['status'] ?? null);
+            $this->assertSame(0, $result['durable_result_recording']['duplicate_activity_count'] ?? null);
+
+            $byScenario = [];
+            foreach ($result['scenario_results'] ?? [] as $scenario) {
+                $byScenario[$scenario['scenario_id']] = $scenario;
+            }
+
+            $this->assertSame('pass', $byScenario['durable_result_recording_after_worker_restart']['status'] ?? null);
+            $this->assertArrayNotHasKey(
+                'linked_findings',
+                $byScenario['durable_result_recording_after_worker_restart'],
+            );
+            $this->assertSame(
+                true,
+                $byScenario['durable_result_recording_after_worker_restart']['observed_outputs']['result_recorded_before_restart'] ?? null,
+            );
+            $this->assertSame(
+                true,
+                $byScenario['durable_result_recording_after_worker_restart']['observed_outputs']['result_observed_after_restart'] ?? null,
+            );
+            $this->assertSame(
+                0,
+                $byScenario['durable_result_recording_after_worker_restart']['observed_outputs']['duplicate_activity_count'] ?? null,
+            );
+            $this->assertSame('not_covered', $byScenario['retry_attempt_backoff_behavior']['status'] ?? null);
+            $this->assertSame('coverage-gap', $byScenario['retry_attempt_backoff_behavior']['classification'] ?? null);
+
+            $evaluation = ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest());
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertNotContains(
+                'durable_result_recording_after_worker_restart',
+                $evaluation['non_pass_scenarios'],
+            );
+        } finally {
+            foreach (glob($resultDir.'/*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($resultDir)) {
+                rmdir($resultDir);
+            }
+        }
+    }
+
     public function test_runner_rejects_local_source_activity_host_cells_for_focused_evidence(): void
     {
         if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
