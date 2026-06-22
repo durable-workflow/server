@@ -174,6 +174,34 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $this->assertLessThan($productionOffset, $nodeOffset);
     }
 
+    public function test_dockerfile_installs_python_for_focused_activity_sdk_cells(): void
+    {
+        $dockerfile = $this->read('Dockerfile');
+        $activitiesRunner = $this->read('scripts/conformance/activities-published-artifacts.sh');
+
+        $this->assertStringContainsString('FROM php:8.3-cli AS base', $dockerfile);
+        $this->assertStringContainsString('python3', $dockerfile);
+        $this->assertStringContainsString('python3-venv', $dockerfile);
+        $this->assertStringContainsString('prepare_focused_python_sdk', $activitiesRunner);
+        $this->assertStringContainsString('python3 -m venv "$venv"', $activitiesRunner);
+        $this->assertStringContainsString('"durable-workflow==${DW_PYTHON_SDK_VERSION}"', $activitiesRunner);
+        $this->assertStringContainsString('run_python_activity_executor', $activitiesRunner);
+        $this->assertStringContainsString('activity_host_evidence missing passing ${requiredMode}/sdk-python cell', $activitiesRunner);
+
+        $baseOffset = strpos($dockerfile, 'FROM php:8.3-cli AS base');
+        $pythonOffset = strpos($dockerfile, 'python3');
+        $vendorOffset = strpos($dockerfile, 'FROM base AS vendor');
+        $productionOffset = strpos($dockerfile, 'FROM base AS production');
+
+        $this->assertIsInt($baseOffset);
+        $this->assertIsInt($pythonOffset);
+        $this->assertIsInt($vendorOffset);
+        $this->assertIsInt($productionOffset);
+        $this->assertLessThan($pythonOffset, $baseOffset);
+        $this->assertLessThan($vendorOffset, $pythonOffset);
+        $this->assertLessThan($productionOffset, $pythonOffset);
+    }
+
     public function test_docker_build_docs_compose_and_ci_defaults_match_workflow_package_fallback(): void
     {
         $fallback = '2.0.0-alpha.205';
