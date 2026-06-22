@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 20;
+    public const VERSION = 22;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -103,6 +103,7 @@ final class SignalQueryRuntimeResultGate
                 'each_pass_scenario_includes_required_evidence',
                 'published_artifact_install_only_includes_per_artifact_install_proof',
                 'python_worker_baseline_identifies_a_published_python_sdk_worker',
+                'python_worker_baseline_route_evidence_status_is_pass_or_completed',
                 'replay_timing_timestamps_are_ordered',
                 'terminal_run_status_codes_and_reasons_are_typed',
                 'each_non_pass_scenario_has_linked_findings',
@@ -1657,6 +1658,132 @@ final class SignalQueryRuntimeResultGate
                 'field' => 'python_worker_sdk_version',
                 'version' => $version,
                 'expected_version' => $expectedVersion,
+            ];
+        }
+
+        array_push(
+            $failures,
+            ...self::routedCurrentQueryTaskFailures($result, $scenarioResult, $scenarioId),
+        );
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function routedCurrentQueryTaskFailures(
+        array $result,
+        array $scenarioResult,
+        string $scenarioId,
+    ): array {
+        $route = self::arrayEvidenceValue(
+            $result,
+            $scenarioResult,
+            $scenarioId,
+            'routed_current_query_task',
+            'routedCurrentQueryTask',
+        );
+        if ($route === null) {
+            return [
+                [
+                    'code' => 'python_worker_baseline_current_query_not_routed',
+                    'scenario_id' => $scenarioId,
+                    'field' => 'routed_current_query_task',
+                    'reason' => 'missing_route_metadata',
+                ],
+            ];
+        }
+
+        $failures = [];
+        $status = strtolower(trim(self::stringValue($route['status'] ?? null)));
+        if (! in_array($status, ['pass', 'completed'], true)) {
+            $failures[] = [
+                'code' => 'python_worker_baseline_current_query_not_routed',
+                'scenario_id' => $scenarioId,
+                'field' => 'routed_current_query_task.status',
+                'expected' => ['pass', 'completed'],
+                'actual' => $status,
+            ];
+        }
+
+        foreach ([
+            'query_name' => 'current',
+            'worker_runtime' => 'sdk-python',
+            'public_query_surface' => 'cli',
+            'server_route' => 'worker_query_task_poll',
+            'completion_route' => 'worker_query_task_complete',
+        ] as $field => $expected) {
+            $actual = self::stringValue($route[$field] ?? null);
+            if ($actual === $expected) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'python_worker_baseline_current_query_not_routed',
+                'scenario_id' => $scenarioId,
+                'field' => 'routed_current_query_task.'.$field,
+                'expected' => $expected,
+                'actual' => $actual,
+            ];
+        }
+
+        foreach ([
+            'query_task_id',
+            'workflow_id',
+            'run_id',
+            'workflow_type',
+            'task_queue',
+            'worker_id',
+            'lease_owner',
+        ] as $field) {
+            if (self::stringValue($route[$field] ?? null) !== '') {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'python_worker_baseline_current_query_not_routed',
+                'scenario_id' => $scenarioId,
+                'field' => 'routed_current_query_task.'.$field,
+                'reason' => 'missing_public_task_metadata',
+            ];
+        }
+
+        $attempt = self::integerValue($route['query_task_attempt'] ?? null);
+        if ($attempt === null || $attempt < 1) {
+            $failures[] = [
+                'code' => 'python_worker_baseline_current_query_not_routed',
+                'scenario_id' => $scenarioId,
+                'field' => 'routed_current_query_task.query_task_attempt',
+                'reason' => 'missing_public_task_attempt',
+            ];
+        }
+
+        foreach ([
+            'workflow_id',
+            'run_id',
+            'task_queue',
+            'worker_id',
+        ] as $field) {
+            $expected = self::stringValue(self::evidenceValue($result, $scenarioResult, $scenarioId, $field));
+            if ($expected === '') {
+                continue;
+            }
+
+            $actual = self::stringValue($route[$field] ?? null);
+            if ($actual === $expected) {
+                continue;
+            }
+
+            $failures[] = [
+                'code' => 'python_worker_baseline_current_query_route_mismatch',
+                'scenario_id' => $scenarioId,
+                'field' => 'routed_current_query_task.'.$field,
+                'expected' => $expected,
+                'actual' => $actual,
             ];
         }
 

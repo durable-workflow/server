@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(22, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(23, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -293,7 +293,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(20, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(22, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -476,11 +476,18 @@ class SignalQueryRuntimeContractTest extends TestCase
                 'python_worker_artifact_source',
                 'python_worker_sdk_version',
                 'python_worker_query_task_routing',
+                'routed_current_query_task',
                 'cli_signal_and_query',
                 'sdk_python_signal_and_query',
                 'immediate_repeat_query_consistency',
             ],
             $hostRunner['evidence_shards']['python_worker_cli_and_sdk_smoke']['current_evidence_fields'],
+        );
+        $this->assertSame(
+            'signal_query_python_routed_current_query_evidence_missing',
+            $hostRunner['evidence_shards']['python_worker_cli_and_sdk_smoke'][
+                'finding_type_when_routed_current_query_missing'
+            ],
         );
         $this->assertSame(
             [
@@ -1179,6 +1186,7 @@ PY);
             'python_worker_artifact_source' => 'published_pypi_package',
             'python_worker_sdk_version' => '0.4.84',
             'python_worker_query_task_routing' => true,
+            'routed_current_query_task' => $this->routedCurrentQueryTaskEvidence(),
             'cli_signal_and_query' => true,
             'sdk_python_signal_and_query' => true,
             'immediate_repeat_query_consistency' => true,
@@ -1215,6 +1223,7 @@ PY);
             'python_worker_artifact_source' => 'published_pypi_package',
             'python_worker_sdk_version' => '0.4.84',
             'python_worker_query_task_routing' => true,
+            'routed_current_query_task' => $this->routedCurrentQueryTaskEvidence(),
             'cli_signal_and_query' => true,
             'sdk_python_signal_and_query' => true,
             'immediate_repeat_query_consistency' => true,
@@ -1251,6 +1260,32 @@ PY);
         $this->assertContains(
             'signal_query_dedup_contract_current_evidence_missing',
             array_column($result['findings'], 'type'),
+        );
+    }
+
+    public function test_host_runner_requires_routed_current_query_task_for_python_baseline(): void
+    {
+        $result = $this->runSignalQueryHostRunner([
+            'worker_runtime' => 'sdk-python',
+            'python_worker_artifact_source' => 'published_pypi_package',
+            'python_worker_sdk_version' => '0.4.84',
+            'python_worker_query_task_routing' => true,
+            'cli_signal_and_query' => true,
+            'sdk_python_signal_and_query' => true,
+            'immediate_repeat_query_consistency' => true,
+        ]);
+
+        $this->assertSame('not_covered', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
+
+        $pythonFindings = $this->findingsForScenario($result, 'python_worker_cli_and_sdk_baseline');
+        $this->assertCount(1, $pythonFindings);
+        $this->assertSame(
+            'signal_query_python_routed_current_query_evidence_missing',
+            $pythonFindings[0]['type'] ?? null,
+        );
+        $this->assertSame(
+            ['routed_current_query_task'],
+            $pythonFindings[0]['current_evidence']['missing_current_evidence'] ?? null,
         );
     }
 
@@ -3078,6 +3113,72 @@ PY);
         );
     }
 
+    public function test_result_gate_rejects_python_baseline_pass_without_routed_current_query_task(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        unset($result['scenario_results']['python_worker_cli_and_sdk_baseline']['observed_outputs']['routed_current_query_task']);
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            [
+                'code' => 'missing_required_pass_evidence',
+                'scenario_id' => 'python_worker_cli_and_sdk_baseline',
+                'evidence_key' => 'routed_current_query_task',
+            ],
+            $evaluation['gate_failures'],
+        );
+        $this->assertContains(
+            'python_worker_baseline_current_query_not_routed',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_python_baseline_pass_with_local_current_query_observation(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['python_worker_cli_and_sdk_baseline']['observed_outputs'][
+            'routed_current_query_task'
+        ] = $this->routedCurrentQueryTaskEvidence([
+            'public_query_surface' => 'local_handler',
+            'server_route' => 'local_method_call',
+            'query_task_id' => '',
+        ]);
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'python_worker_baseline_current_query_not_routed',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_python_baseline_pass_with_failed_routed_current_query_task(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['python_worker_cli_and_sdk_baseline']['observed_outputs'][
+            'routed_current_query_task'
+        ] = $this->routedCurrentQueryTaskEvidence([
+            'status' => 'fail',
+        ]);
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            [
+                'code' => 'python_worker_baseline_current_query_not_routed',
+                'scenario_id' => 'python_worker_cli_and_sdk_baseline',
+                'field' => 'routed_current_query_task.status',
+                'expected' => ['pass', 'completed'],
+                'actual' => 'fail',
+            ],
+            $evaluation['gate_failures'],
+        );
+    }
+
     public function test_result_gate_rejects_forbidden_sources_reported_in_section_evidence(): void
     {
         $result = $this->completeSignalQueryResult();
@@ -3468,6 +3569,33 @@ PY);
     }
 
     /**
+     * @param array<string, mixed> $overrides
+     *
+     * @return array<string, mixed>
+     */
+    private function routedCurrentQueryTaskEvidence(array $overrides = []): array
+    {
+        return array_replace([
+            'schema' => 'durable-workflow.v2.signal-query-runtime.routed-current-query-task',
+            'status' => 'pass',
+            'worker_runtime' => 'sdk-python',
+            'public_query_surface' => 'cli',
+            'server_route' => 'worker_query_task_poll',
+            'completion_route' => 'worker_query_task_complete',
+            'observed_via' => 'sdk-python worker query task interceptor',
+            'query_task_id' => 'query-task-current-1',
+            'query_task_attempt' => 1,
+            'workflow_id' => 'wf-python-baseline',
+            'run_id' => 'run-python-baseline',
+            'workflow_type' => 'conformance.counter',
+            'task_queue' => 'signals-queries-python-sdk',
+            'worker_id' => 'signals-queries-python-sdk-worker',
+            'lease_owner' => 'signals-queries-python-sdk-worker',
+            'query_name' => 'current',
+        ], $overrides);
+    }
+
+    /**
      * @param array<string, mixed> $result
      *
      * @return array<string, mixed>
@@ -3566,9 +3694,20 @@ PY);
             'python_worker_artifact_source' => 'published_pypi_package',
             'python_worker_sdk_version' => '0.4.58',
             'python_worker_query_task_routing' => true,
+            'routed_current_query_task' => $this->routedCurrentQueryTaskEvidence([
+                'workflow_id' => 'wf-python-baseline',
+                'run_id' => 'run-python-baseline',
+                'task_queue' => 'signals-queries-python-sdk',
+                'worker_id' => 'signals-queries-python-sdk-worker',
+                'lease_owner' => 'signals-queries-python-sdk-worker',
+            ]),
             'cli_signal_and_query' => true,
             'sdk_python_signal_and_query' => true,
             'immediate_repeat_query_consistency' => true,
+            'workflow_id' => 'wf-python-baseline',
+            'run_id' => 'run-python-baseline',
+            'task_queue' => 'signals-queries-python-sdk',
+            'worker_id' => 'signals-queries-python-sdk-worker',
         ];
         $scenarioResults['php_worker_cli_and_sdk_baseline']['observed_outputs'] = [
             'php_worker_query_task_routing' => true,

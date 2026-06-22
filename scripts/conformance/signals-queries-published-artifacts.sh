@@ -1283,6 +1283,127 @@ def public_sample_ok(sample: dict[str, Any]) -> bool:
     return isinstance(exit_code, int) and exit_code == 0
 
 
+def load_query_route_records(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+
+    records: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line == "":
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            records.append(parsed)
+
+    return records
+
+
+def routed_current_query_task_satisfied(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+
+    if value.get("query_name") != "current":
+        return False
+
+    if str(value.get("public_query_surface") or "").strip() != "cli":
+        return False
+
+    status = str(value.get("status") or "").strip().lower()
+    if status not in {"pass", "completed"}:
+        return False
+
+    for field in (
+        "query_task_id",
+        "workflow_id",
+        "run_id",
+        "workflow_type",
+        "task_queue",
+        "worker_id",
+        "worker_runtime",
+        "lease_owner",
+        "server_route",
+        "completion_route",
+    ):
+        if str(value.get(field) or "").strip() == "":
+            return False
+
+    try:
+        attempt = int(value.get("query_task_attempt"))
+    except (TypeError, ValueError):
+        return False
+
+    return attempt >= 1 and str(value.get("worker_runtime")) == "sdk-python"
+
+
+def routed_current_query_task_matches(
+    record: dict[str, Any],
+    *,
+    workflow_id: str,
+    run_id: str,
+    workflow_type: str,
+    task_queue: str,
+    worker_id: str,
+) -> bool:
+    if record.get("query_name") != "current":
+        return False
+    if record.get("workflow_id") != workflow_id:
+        return False
+    if record.get("run_id") != run_id:
+        return False
+    if record.get("workflow_type") != workflow_type:
+        return False
+    if record.get("task_queue") != task_queue:
+        return False
+    if record.get("worker_id") != worker_id:
+        return False
+    status = str(record.get("status") or "").strip().lower()
+    if status not in {"pass", "completed"}:
+        return False
+    return str(record.get("query_task_id") or "").strip() != ""
+
+
+def wait_for_routed_current_query_task(
+    *,
+    evidence_path: Path,
+    workflow_id: str,
+    run_id: str,
+    workflow_type: str,
+    task_queue: str,
+    worker_id: str,
+    public_query_surface: str,
+    log_file: Path,
+    timeout_seconds: float = 15.0,
+) -> dict[str, Any]:
+    deadline = time.time() + timeout_seconds
+    records: list[dict[str, Any]] = []
+    while time.time() < deadline:
+        records = load_query_route_records(evidence_path)
+        for record in records:
+            if not routed_current_query_task_matches(
+                record,
+                workflow_id=workflow_id,
+                run_id=run_id,
+                workflow_type=workflow_type,
+                task_queue=task_queue,
+                worker_id=worker_id,
+            ):
+                continue
+
+            routed = dict(record)
+            routed["public_query_surface"] = public_query_surface
+            if routed_current_query_task_satisfied(routed):
+                return routed
+
+        time.sleep(0.25)
+
+    log_line(log_file, f"routed current query task records: {records}")
+    raise RuntimeError("Python SDK baseline did not record routed current query task evidence")
+
+
 def decode_json_blob(blob: Any) -> Any:
     if not isinstance(blob, str) or blob.strip() == "":
         return None
@@ -2369,11 +2490,14 @@ def write_python_sdk_counter_worker(run_root: Path) -> Path:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from datetime import datetime, timezone
+from pathlib import Path
 import signal
 import sys
 
-from durable_workflow import Client, Worker, workflow
+from durable_workflow import Client, PassthroughWorkerInterceptor, Worker, workflow
 
 
 @workflow.defn(name="conformance.counter")
@@ -2401,9 +2525,41 @@ class CounterWorkflow:
         yield ctx.wait_condition(lambda: False, key="signals-queries-baseline-open", timeout=3600)
 
 
+class QueryRouteEvidenceInterceptor(PassthroughWorkerInterceptor):
+    def __init__(self, evidence_path: Path) -> None:
+        self.evidence_path = evidence_path
+
+    async def execute_query_task(self, context, next):  # type: ignore[no-untyped-def]
+        task = context.task
+        outcome = await next(context)
+        record = {
+            "schema": "durable-workflow.v2.signal-query-runtime.routed-current-query-task",
+            "status": "pass" if outcome == "completed" else outcome,
+            "worker_runtime": "sdk-python",
+            "worker_id": context.worker_id,
+            "task_queue": context.task_queue,
+            "query_task_id": task.get("query_task_id"),
+            "query_task_attempt": task.get("query_task_attempt"),
+            "workflow_id": task.get("workflow_id"),
+            "run_id": task.get("run_id"),
+            "workflow_type": task.get("workflow_type"),
+            "query_name": task.get("query_name"),
+            "lease_owner": task.get("lease_owner"),
+            "run_status": task.get("run_status"),
+            "last_history_sequence": task.get("last_history_sequence"),
+            "server_route": "worker_query_task_poll",
+            "completion_route": "worker_query_task_complete",
+            "observed_via": "sdk-python worker query task interceptor",
+            "observed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        with self.evidence_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+        return outcome
+
+
 async def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    base_url, token, namespace, task_queue, worker_id = sys.argv[1:6]
+    base_url, token, namespace, task_queue, worker_id, evidence_path = sys.argv[1:7]
 
     async with Client(base_url, token=token, namespace=namespace, timeout=30.0) as client:
         worker = Worker(
@@ -2411,6 +2567,7 @@ async def main() -> int:
             task_queue=task_queue,
             workflows=[CounterWorkflow],
             worker_id=worker_id,
+            interceptors=[QueryRouteEvidenceInterceptor(Path(evidence_path))],
             poll_timeout=5.0,
             max_concurrent_workflow_tasks=2,
             max_concurrent_activity_tasks=1,
@@ -2446,6 +2603,7 @@ def start_python_sdk_counter_worker(
     namespace: str,
     task_queue: str,
     worker_id: str,
+    query_route_evidence_path: Path,
     run_root: Path,
     log_file: Path,
 ) -> subprocess.Popen[str]:
@@ -2465,7 +2623,16 @@ def start_python_sdk_counter_worker(
         worker_output.write(f"{now()} python-sdk-worker-output-begin\n")
         worker_output.flush()
         return subprocess.Popen(
-            [python_bin, str(script), base_url, token, namespace, task_queue, worker_id],
+            [
+                python_bin,
+                str(script),
+                base_url,
+                token,
+                namespace,
+                task_queue,
+                worker_id,
+                str(query_route_evidence_path),
+            ],
             cwd=str(run_root),
             env=env,
             text=True,
@@ -2584,6 +2751,7 @@ def run_python_sdk_baseline(
     worker_id = f"signals-queries-python-sdk-worker-{suffix}"
     workflow_type = "conformance.counter"
     workflow_id = f"wf-sq-python-sdk-{suffix}"
+    query_route_evidence_path = run_root / f"{worker_id}-query-route-evidence.jsonl"
     worker_process = start_python_sdk_counter_worker(
         python_bin=python_bin,
         base_url=base_url,
@@ -2591,6 +2759,7 @@ def run_python_sdk_baseline(
         namespace=namespace,
         task_queue=task_queue,
         worker_id=worker_id,
+        query_route_evidence_path=query_route_evidence_path,
         run_root=run_root,
         log_file=log_file,
     )
@@ -2671,11 +2840,21 @@ def run_python_sdk_baseline(
                 [
                     "workflow:query",
                     workflow_id,
-                    "state",
+                    "current",
                     "--output=json",
                 ],
                 log_file,
             ),
+        )
+        routed_current_query_task = wait_for_routed_current_query_task(
+            evidence_path=query_route_evidence_path,
+            workflow_id=workflow_id,
+            run_id=run_id,
+            workflow_type=workflow_type,
+            task_queue=task_queue,
+            worker_id=worker_id,
+            public_query_surface="cli",
+            log_file=log_file,
         )
 
         sdk_signal = sdk_success_sample(
@@ -2703,7 +2882,7 @@ def run_python_sdk_baseline(
                 namespace,
                 workflow_id,
                 "query",
-                "state",
+                "current",
                 log_file,
             ),
         )
@@ -2720,7 +2899,7 @@ def run_python_sdk_baseline(
                 [
                     "workflow:query",
                     workflow_id,
-                    "state",
+                    "current",
                     "--output=json",
                 ],
                 log_file,
@@ -2733,6 +2912,7 @@ def run_python_sdk_baseline(
             "python_worker_artifact_source": sources["sdk-python"],
             "python_worker_sdk_version": installed_sdk_version or versions["sdk-python"],
             "python_worker_query_task_routing": True,
+            "routed_current_query_task": routed_current_query_task,
             "cli_signal_and_query": public_sample_ok(cli_signal)
             and public_sample_ok(cli_query)
             and sample_result_value(cli_query) == 3,
@@ -4412,6 +4592,9 @@ def exact_python_smoke_present() -> bool:
     return (
         isinstance(observed, dict)
         and python_worker_claim_satisfied(observed)
+        and routed_current_query_task_satisfied(
+            evidence_lookup(observed, "routed_current_query_task")
+        )
         and all(
             smoke_field_true(field, "python_worker_cli_and_sdk_baseline")
             for field in (
@@ -4450,6 +4633,7 @@ SCENARIO_REQUIRED_EVIDENCE: dict[str, list[str]] = {
         "python_worker_artifact_source",
         "python_worker_sdk_version",
         "python_worker_query_task_routing",
+        "routed_current_query_task",
         "cli_signal_and_query",
         "sdk_python_signal_and_query",
         "immediate_repeat_query_consistency",
@@ -4861,6 +5045,9 @@ def has_required_evidence(scenario: str, observed: dict[str, Any]) -> bool:
     if scenario == "python_worker_cli_and_sdk_baseline":
         return (
             python_worker_claim_satisfied(observed)
+            and routed_current_query_task_satisfied(
+                evidence_lookup(observed, "routed_current_query_task")
+            )
             and all(
                 required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
                 for evidence_key in SCENARIO_REQUIRED_EVIDENCE[scenario]
@@ -5207,7 +5394,21 @@ SERVER_BASELINE_SCENARIOS = {
     "unknown_signal_and_query_errors",
 }
 
+BASELINE_CURRENT_EVIDENCE_SCENARIOS = SERVER_BASELINE_SCENARIOS | {
+    "python_worker_cli_and_sdk_baseline",
+}
+
 BASELINE_CURRENT_EVIDENCE_FIELDS = {
+    "python_worker_cli_and_sdk_baseline": [
+        "worker_runtime",
+        "python_worker_artifact_source",
+        "python_worker_sdk_version",
+        "python_worker_query_task_routing",
+        "routed_current_query_task",
+        "cli_signal_and_query",
+        "sdk_python_signal_and_query",
+        "immediate_repeat_query_consistency",
+    ],
     "ordered_signal_delivery": [
         "rapid_increment_inputs",
         "accepted_signal_inputs",
@@ -5247,6 +5448,10 @@ BASELINE_PRODUCT_FAILURE_ROUTES = {
 }
 
 BASELINE_CURRENT_MISSING_ROUTES = {
+    "python_worker_cli_and_sdk_baseline": {
+        "type": "signal_query_python_routed_current_query_evidence_missing",
+        "title": "Signals/queries Python baseline routed current-query evidence missing",
+    },
     "ordered_signal_delivery": {
         "type": "signal_query_ordered_delivery_current_evidence_missing",
         "title": "Signals/queries ordered delivery current evidence missing",
@@ -5409,6 +5614,40 @@ def missing_current_evidence_for(scenario: str, observed: dict[str, Any]) -> lis
     if not observed:
         return required_current_evidence_for(scenario)
 
+    if scenario == "python_worker_cli_and_sdk_baseline":
+        missing = [
+            evidence_key
+            for evidence_key in SCENARIO_REQUIRED_EVIDENCE[scenario]
+            if not required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
+        ]
+        if not is_python_worker_runtime(
+            output_field(observed, "worker_runtime", "workerRuntime", "python_worker_runtime")
+        ):
+            missing.append("worker_runtime")
+        if not is_published_python_sdk_source(
+            output_field(
+                observed,
+                "python_worker_artifact_source",
+                "pythonWorkerArtifactSource",
+                "worker_artifact_source",
+                "workerArtifactSource",
+            )
+        ):
+            missing.append("python_worker_artifact_source")
+        if not python_sdk_version_matches_current(
+            output_field(
+                observed,
+                "python_worker_sdk_version",
+                "pythonWorkerSdkVersion",
+                "worker_sdk_version",
+                "workerSdkVersion",
+            )
+        ):
+            missing.append("python_worker_sdk_version")
+        if not routed_current_query_task_satisfied(evidence_lookup(observed, "routed_current_query_task")):
+            missing.append("routed_current_query_task")
+        return unique_strings(missing)
+
     if scenario == "ordered_signal_delivery":
         return ordered_delivery_missing_current_evidence(observed)
 
@@ -5423,7 +5662,7 @@ def missing_current_evidence_for(scenario: str, observed: dict[str, Any]) -> lis
 
 
 def current_evidence_gaps(scenario: str) -> list[str]:
-    if scenario not in SERVER_BASELINE_SCENARIOS:
+    if scenario not in BASELINE_CURRENT_EVIDENCE_SCENARIOS:
         return []
 
     _, observed = current_candidate_and_observed(scenario)
@@ -5702,6 +5941,7 @@ scenario_routes = {
         "acceptance": [
             "start Counter on the Python worker",
             "verify CLI and Python SDK signals update query-visible state",
+            "record a routed current query task from the public CLI through the server to the Python SDK worker",
             "record immediate repeat-query consistency",
         ],
     },
@@ -5880,6 +6120,10 @@ for scenario in required_scenarios:
                 "python_worker_query_task_routing",
                 scenario,
             ),
+            "routed_current_query_task": smoke_field(
+                "routed_current_query_task",
+                scenario,
+            ),
             "cli_signal_and_query": smoke_field("cli_signal_and_query", scenario),
             "sdk_python_signal_and_query": smoke_field("sdk_python_signal_and_query", scenario),
             "immediate_repeat_query_consistency": smoke_field(
@@ -5967,6 +6211,11 @@ for scenario in required_scenarios:
                         result.setdefault("observed_outputs", current_observed)
             if missing_current_evidence and not behavior_failures:
                 current_missing_route = BASELINE_CURRENT_MISSING_ROUTES.get(scenario)
+                if (
+                    scenario == "python_worker_cli_and_sdk_baseline"
+                    and missing_current_evidence != ["routed_current_query_task"]
+                ):
+                    current_missing_route = None
                 if current_missing_route is not None:
                     route = {
                         **route,
