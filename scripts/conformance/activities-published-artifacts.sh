@@ -192,8 +192,10 @@ use Illuminate\Support\Facades\Artisan;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Type;
+use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityOptions;
 use Workflow\V2\Worker\WorkflowFiberRunner;
 use Workflow\V2\Workflow;
@@ -338,6 +340,16 @@ function evidence_document(array $scenarioResults, array $activityCells): array
     $durableOutputs = is_array($durableScenario['observed_outputs'] ?? null)
         ? $durableScenario['observed_outputs']
         : [];
+    $retryScenario = null;
+    foreach ($scenarioResults as $scenario) {
+        if (($scenario['scenario_id'] ?? null) === 'retry_attempt_backoff_behavior') {
+            $retryScenario = $scenario;
+            break;
+        }
+    }
+    $retryOutputs = is_array($retryScenario['observed_outputs'] ?? null)
+        ? $retryScenario['observed_outputs']
+        : [];
 
     return [
         'schema' => 'durable-workflow.v2.activity-runtime.host-evidence',
@@ -366,6 +378,19 @@ function evidence_document(array $scenarioResults, array $activityCells): array
             'result_observed_after_restart' => $durableOutputs['result_observed_after_restart'] ?? null,
             'activity_execution_id' => $durableOutputs['activity_execution_id'] ?? null,
             'duplicate_activity_count' => $durableOutputs['duplicate_activity_count'] ?? null,
+        ],
+        'retry_backoff' => [
+            'status' => $scenarioStatusById['retry_attempt_backoff_behavior'] ?? 'not_covered',
+            'scenario' => 'retry_attempt_backoff_behavior',
+            'attempts' => $retryOutputs['attempts'] ?? null,
+            'failure_payloads' => $retryOutputs['failure_payloads'] ?? null,
+            'configured_retry_policy' => $retryOutputs['configured_retry_policy'] ?? null,
+            'retry_policy' => $retryOutputs['retry_policy'] ?? null,
+            'leased_retry_policies' => $retryOutputs['leased_retry_policies'] ?? null,
+            'configured_backoff_seconds' => $retryOutputs['configured_backoff_seconds'] ?? null,
+            'scheduled_backoff_seconds' => $retryOutputs['scheduled_backoff_seconds'] ?? null,
+            'observed_redelivery_timestamps' => $retryOutputs['observed_redelivery_timestamps'] ?? null,
+            'terminal_result' => $retryOutputs['terminal_result'] ?? null,
         ],
     ];
 }
@@ -749,6 +774,24 @@ function count_event_type(array $history, string $eventType): int
     ));
 }
 
+function history_payloads_for_event(array $history, string $eventType): array
+{
+    $events = $history['history_events'] ?? ($history['events'] ?? []);
+    if (! is_array($events)) {
+        return [];
+    }
+
+    $payloads = [];
+    foreach ($events as $event) {
+        if (! is_array($event) || ($event['event_type'] ?? null) !== $eventType) {
+            continue;
+        }
+        $payloads[] = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+    }
+
+    return $payloads;
+}
+
 function normalized_workflow_output(mixed $output): mixed
 {
     try {
@@ -945,6 +988,87 @@ function failure_behavior_scenario(string $scenarioId, Throwable $throwable): ar
     ];
 }
 
+function timestamp_from_datetime(mixed $value): ?float
+{
+    if ($value instanceof DateTimeInterface) {
+        return (float) $value->format('U.u');
+    }
+    if (is_string($value) && trim($value) !== '') {
+        try {
+            return (float) (new DateTimeImmutable($value))->format('U.u');
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    return null;
+}
+
+function iso_from_datetime(mixed $value): ?string
+{
+    $timestamp = timestamp_from_datetime($value);
+
+    return $timestamp === null ? null : iso_from_timestamp($timestamp);
+}
+
+function iso_from_timestamp(float $timestamp): string
+{
+    $seconds = (int) floor($timestamp);
+    $micros = (int) round(($timestamp - $seconds) * 1_000_000);
+    if ($micros >= 1_000_000) {
+        $seconds++;
+        $micros -= 1_000_000;
+    }
+
+    return gmdate('Y-m-d\TH:i:s', $seconds).sprintf('.%06dZ', $micros);
+}
+
+function workflow_task_available_at(string $taskId): ?DateTimeInterface
+{
+    /** @var WorkflowTask|null $task */
+    $task = WorkflowTask::query()->find($taskId);
+
+    return $task?->available_at instanceof DateTimeInterface ? $task->available_at : null;
+}
+
+function wait_until_timestamp(float $timestamp): void
+{
+    $sleepSeconds = $timestamp - microtime(true);
+    if ($sleepSeconds <= 0) {
+        return;
+    }
+
+    usleep((int) ceil(($sleepSeconds + 0.05) * 1_000_000));
+}
+
+function attempt_snapshots(string $activityExecutionId): array
+{
+    return ActivityAttempt::query()
+        ->where('activity_execution_id', $activityExecutionId)
+        ->orderBy('attempt_number')
+        ->get()
+        ->map(static fn (ActivityAttempt $attempt): array => [
+            'activity_attempt_id' => $attempt->id,
+            'workflow_task_id' => $attempt->workflow_task_id,
+            'attempt_number' => $attempt->attempt_number,
+            'status' => $attempt->status instanceof BackedEnum ? $attempt->status->value : (string) $attempt->status,
+            'lease_owner' => $attempt->lease_owner,
+            'started_at' => $attempt->started_at?->toJSON(),
+            'closed_at' => $attempt->closed_at?->toJSON(),
+        ])
+        ->values()
+        ->all();
+}
+
+function fail_activity_task(array $task, array $failure): array
+{
+    return request_json('POST', '/worker/activity-tasks/'.rawurlencode((string) $task['task_id']).'/fail', [
+        'activity_attempt_id' => $task['activity_attempt_id'] ?? '',
+        'lease_owner' => $task['lease_owner'],
+        'failure' => $failure,
+    ]);
+}
+
 function run_restart_durable_result_cell(): array
 {
     $suffix = bin2hex(random_bytes(3));
@@ -1048,6 +1172,189 @@ function run_restart_durable_result_cell(): array
     ];
 }
 
+function run_retry_backoff_cell(): array
+{
+    $suffix = bin2hex(random_bytes(3));
+    $workerId = "activities-retry-backoff-{$suffix}";
+    $activityId = "activities-retry-backoff-{$suffix}";
+    $retryPolicy = [
+        'max_attempts' => 3,
+        'backoff_seconds' => [1],
+        'non_retryable_error_types' => ['ActivitiesConformanceNonRetryable'],
+    ];
+    $failurePayload = [
+        'message' => 'activities conformance retryable failure',
+        'type' => 'ActivitiesConformanceRetryableFailure',
+        'retryable' => true,
+        'non_retryable' => false,
+    ];
+
+    register_worker($workerId, [], [ACTIVITY_TYPE], 'workflow-php');
+    $start = request_json('POST', '/activities', [
+        'activity_id' => $activityId,
+        'activity_type' => ACTIVITY_TYPE,
+        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'input' => [[
+            'scenario_id' => 'retry_attempt_backoff_behavior',
+            'runtime' => 'workflow-php',
+            'input_marker' => "retry-backoff-{$suffix}",
+        ]],
+        'retry_policy' => $retryPolicy,
+    ]);
+    $runId = (string) ($start['workflow_run_id'] ?? '');
+
+    $firstPollAt = microtime(true);
+    $firstTask = poll_task('activity', $workerId);
+    $firstLeasedAt = microtime(true);
+
+    $failRequestedAt = microtime(true);
+    $failResponse = fail_activity_task($firstTask, $failurePayload);
+    $failRecordedAt = microtime(true);
+    $nextTaskId = is_string($failResponse['next_task_id'] ?? null) ? $failResponse['next_task_id'] : '';
+    if ($nextTaskId === '') {
+        throw new RuntimeException('retryable activity failure did not return a retry task id');
+    }
+
+    $retryAvailableAt = workflow_task_available_at($nextTaskId);
+    $retryAvailableTimestamp = timestamp_from_datetime($retryAvailableAt);
+    if ($retryAvailableTimestamp === null) {
+        throw new RuntimeException('retryable activity failure did not record a retry availability timestamp');
+    }
+
+    $notReadyBeforeBackoff = $retryAvailableTimestamp > microtime(true);
+    wait_until_timestamp($retryAvailableTimestamp);
+
+    $secondPollAt = microtime(true);
+    $secondTask = poll_task('activity', $workerId);
+    $secondLeasedAt = microtime(true);
+
+    [$activityResult, $activityComplete, $workerArtifact] = complete_activity_task(
+        $secondTask,
+        'workflow-php',
+        'standalone'
+    );
+
+    $show = request_json('GET', '/activities/'.rawurlencode($activityId));
+    $history = request_json('GET', '/workflows/'.rawurlencode($activityId).'/runs/'.rawurlencode($runId).'/history');
+
+    if (($show['status'] ?? null) !== RunStatus::Completed->value) {
+        throw new RuntimeException('retry/backoff activity did not complete after the retry attempt');
+    }
+
+    $firstAttemptNumber = (int) ($firstTask['attempt_number'] ?? 0);
+    $secondAttemptNumber = (int) ($secondTask['attempt_number'] ?? 0);
+    $firstLeasePolicy = is_array($firstTask['retry_policy'] ?? null) ? $firstTask['retry_policy'] : [];
+    $secondLeasePolicy = is_array($secondTask['retry_policy'] ?? null) ? $secondTask['retry_policy'] : [];
+    $sameExecution = ($firstTask['activity_execution_id'] ?? null) === ($secondTask['activity_execution_id'] ?? null);
+    $attemptIdsChanged = ($firstTask['activity_attempt_id'] ?? null) !== ($secondTask['activity_attempt_id'] ?? null);
+    $taskIdsChanged = ($firstTask['task_id'] ?? null) !== ($secondTask['task_id'] ?? null);
+    $configuredBackoffSeconds = (int) ($retryPolicy['backoff_seconds'][0] ?? 0);
+    $scheduledBackoffSeconds = max(0.0, round($retryAvailableTimestamp - $failRequestedAt, 3));
+    $observedRedeliveryDelaySeconds = max(0.0, round($secondLeasedAt - $failRecordedAt, 3));
+    $secondAttemptLeasedAfterAvailableAt = $secondLeasedAt + 0.05 >= $retryAvailableTimestamp;
+    $backoffRespected = $scheduledBackoffSeconds >= max(0.0, $configuredBackoffSeconds - 0.2)
+        && $secondAttemptLeasedAfterAvailableAt;
+
+    if (! $sameExecution || ! $attemptIdsChanged || ! $taskIdsChanged) {
+        throw new RuntimeException('retry/backoff attempt identity did not preserve execution id while changing task and attempt ids');
+    }
+    if ($firstAttemptNumber !== 1 || $secondAttemptNumber !== 2) {
+        throw new RuntimeException(sprintf('retry/backoff attempt numbers were %d then %d, expected 1 then 2', $firstAttemptNumber, $secondAttemptNumber));
+    }
+    $policiesPreserveConfiguredInputs = ($firstLeasePolicy['max_attempts'] ?? null) === 3
+        && ($secondLeasePolicy['max_attempts'] ?? null) === 3
+        && ($firstLeasePolicy['backoff_seconds'] ?? null) === [1]
+        && ($secondLeasePolicy['backoff_seconds'] ?? null) === [1]
+        && ($firstLeasePolicy['non_retryable_error_types'] ?? null) === ['ActivitiesConformanceNonRetryable']
+        && ($secondLeasePolicy['non_retryable_error_types'] ?? null) === ['ActivitiesConformanceNonRetryable'];
+    if (! $policiesPreserveConfiguredInputs) {
+        throw new RuntimeException('retry/backoff task leases did not preserve the configured retry policy');
+    }
+    if (($failResponse['outcome'] ?? null) !== 'failed'
+        || ($failResponse['recorded'] ?? null) !== true
+        || ($failResponse['next_task_id'] ?? null) !== $nextTaskId) {
+        throw new RuntimeException('retry/backoff first failure did not record a retry_scheduled outcome');
+    }
+    if (! $backoffRespected) {
+        throw new RuntimeException('retry/backoff redelivery did not respect the configured backoff window');
+    }
+
+    return [
+        'scenario_id' => 'retry_attempt_backoff_behavior',
+        'mode' => 'standalone',
+        'runtime' => 'workflow-php',
+        'status' => 'pass',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'activity_id' => $activityId,
+        'workflow_run_id' => $runId,
+        'activity_execution_id' => $firstTask['activity_execution_id'] ?? null,
+        'activity_type' => $firstTask['activity_type'] ?? ACTIVITY_TYPE,
+        'configured_retry_policy' => $retryPolicy,
+        'retry_policy' => $firstLeasePolicy,
+        'leased_retry_policies' => [
+            'first_attempt' => $firstLeasePolicy,
+            'second_attempt' => $secondLeasePolicy,
+        ],
+        'configured_backoff_seconds' => $configuredBackoffSeconds,
+        'scheduled_backoff_seconds' => $scheduledBackoffSeconds,
+        'observed_redelivery_delay_seconds' => $observedRedeliveryDelaySeconds,
+        'backoff_respected' => $backoffRespected,
+        'attempts' => [
+            [
+                'attempt_number' => $firstAttemptNumber,
+                'task_id' => $firstTask['task_id'] ?? null,
+                'activity_attempt_id' => $firstTask['activity_attempt_id'] ?? null,
+                'activity_execution_id' => $firstTask['activity_execution_id'] ?? null,
+                'lease_owner' => $firstTask['lease_owner'] ?? null,
+                'status_after_report' => 'failed_retry_scheduled',
+                'polled_at' => iso_from_timestamp($firstPollAt),
+                'leased_at' => iso_from_timestamp($firstLeasedAt),
+            ],
+            [
+                'attempt_number' => $secondAttemptNumber,
+                'task_id' => $secondTask['task_id'] ?? null,
+                'activity_attempt_id' => $secondTask['activity_attempt_id'] ?? null,
+                'activity_execution_id' => $secondTask['activity_execution_id'] ?? null,
+                'lease_owner' => $secondTask['lease_owner'] ?? null,
+                'status_after_report' => 'completed',
+                'polled_at' => iso_from_timestamp($secondPollAt),
+                'leased_at' => iso_from_timestamp($secondLeasedAt),
+            ],
+        ],
+        'attempt_state' => attempt_snapshots((string) ($firstTask['activity_execution_id'] ?? '')),
+        'failure_payloads' => [
+            [
+                'attempt_number' => $firstAttemptNumber,
+                'failure' => $failurePayload,
+                'fail_response' => $failResponse,
+                'reported_at' => iso_from_timestamp($failRecordedAt),
+            ],
+        ],
+        'observed_redelivery_timestamps' => [
+            'first_attempt_polled_at' => iso_from_timestamp($firstPollAt),
+            'first_attempt_failed_at' => iso_from_timestamp($failRecordedAt),
+            'retry_task_available_at' => iso_from_datetime($retryAvailableAt),
+            'second_attempt_poll_started_at' => iso_from_timestamp($secondPollAt),
+            'second_attempt_leased_at' => iso_from_timestamp($secondLeasedAt),
+            'retry_task_not_ready_before_backoff_elapsed' => $notReadyBeforeBackoff,
+            'second_attempt_leased_after_available_at' => $secondAttemptLeasedAfterAvailableAt,
+            'observed_redelivery_delay_seconds' => $observedRedeliveryDelaySeconds,
+        ],
+        'terminal_result' => [
+            'activity_status' => $show['activity_status'] ?? null,
+            'run_status' => $show['status'] ?? null,
+            'closed_reason' => $show['closed_reason'] ?? null,
+            'activity_result' => $activityResult,
+            'completion_response' => $activityComplete,
+            'handle_response' => $show,
+        ],
+        'history_events' => event_types($history),
+        'retry_history_events' => history_payloads_for_event($history, 'ActivityRetryScheduled'),
+        'worker_artifact' => $workerArtifact,
+        'local_product_source_checkouts_used' => false,
+    ];
+}
+
 function scenario_from_restart_cell(array $cell): array
 {
     $pass = ($cell['status'] ?? null) === 'pass'
@@ -1093,6 +1400,53 @@ function scenario_from_restart_cell(array $cell): array
     return $scenario;
 }
 
+function scenario_from_retry_backoff_cell(array $cell): array
+{
+    $attempts = is_array($cell['attempts'] ?? null) ? $cell['attempts'] : [];
+    $pass = ($cell['status'] ?? null) === 'pass'
+        && count($attempts) >= 2
+        && ($cell['backoff_respected'] ?? null) === true
+        && ($cell['terminal_result']['run_status'] ?? null) === RunStatus::Completed->value;
+
+    $observed = [
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'activity_id' => $cell['activity_id'] ?? null,
+        'workflow_run_id' => $cell['workflow_run_id'] ?? null,
+        'activity_execution_id' => $cell['activity_execution_id'] ?? null,
+        'activity_type' => $cell['activity_type'] ?? null,
+        'attempts' => $attempts,
+        'attempt_state' => $cell['attempt_state'] ?? null,
+        'failure_payloads' => $cell['failure_payloads'] ?? null,
+        'configured_retry_policy' => $cell['configured_retry_policy'] ?? null,
+        'retry_policy' => $cell['retry_policy'] ?? null,
+        'leased_retry_policies' => $cell['leased_retry_policies'] ?? null,
+        'configured_backoff_seconds' => $cell['configured_backoff_seconds'] ?? null,
+        'scheduled_backoff_seconds' => $cell['scheduled_backoff_seconds'] ?? null,
+        'observed_redelivery_timestamps' => $cell['observed_redelivery_timestamps'] ?? null,
+        'terminal_result' => $cell['terminal_result'] ?? null,
+        'history_events' => $cell['history_events'] ?? null,
+        'retry_history_events' => $cell['retry_history_events'] ?? null,
+    ];
+
+    $scenario = [
+        'scenario_id' => 'retry_attempt_backoff_behavior',
+        'status' => $pass ? 'pass' : 'fail',
+        'classification' => $pass ? null : 'product-gap',
+        'observed_outputs' => array_filter($observed, static fn (mixed $value): bool => $value !== null && $value !== []),
+        'scenario_evidence' => array_filter([
+            'retry_backoff_attempt_behavior' => $cell,
+        ], static fn (mixed $value): bool => $value !== null && $value !== []),
+    ];
+
+    if (! $pass) {
+        $message = 'activity retry/backoff did not prove attempt increment, configured backoff, and terminal completion';
+        $scenario['observed_behavior'] = $message;
+        $scenario['linked_findings'] = [finding_for_failure('retry_attempt_backoff_behavior', $message)];
+    }
+
+    return $scenario;
+}
+
 function run_cells_for(string $scenarioId, string $mode): array
 {
     $cells = [];
@@ -1129,17 +1483,28 @@ try {
     } catch (Throwable $throwable) {
         $restartScenario = failure_behavior_scenario('durable_result_recording_after_worker_restart', $throwable);
     }
+    $retryScenario = failure_behavior_scenario(
+        'retry_attempt_backoff_behavior',
+        new RuntimeException('retry/backoff scenario did not execute')
+    );
+    try {
+        $retryScenario = scenario_from_retry_backoff_cell(run_retry_backoff_cell());
+    } catch (Throwable $throwable) {
+        $retryScenario = failure_behavior_scenario('retry_attempt_backoff_behavior', $throwable);
+    }
 
     write_json_file(output_path(), evidence_document([
         scenario_from_cells('workflow_embedded_activity_result', 'workflow-embedded', $embeddedCells),
         scenario_from_cells('standalone_activity_result', 'standalone', $standaloneCells),
         $restartScenario,
+        $retryScenario,
     ], array_merge($embeddedCells, $standaloneCells)));
 } catch (Throwable $throwable) {
     write_json_file(output_path(), evidence_document([
         failure_scenario('workflow_embedded_activity_result', 'workflow-embedded', $throwable),
         failure_scenario('standalone_activity_result', 'standalone', $throwable),
         failure_behavior_scenario('durable_result_recording_after_worker_restart', $throwable),
+        failure_behavior_scenario('retry_attempt_backoff_behavior', $throwable),
     ], []));
 }
 PHP

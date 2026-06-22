@@ -70,6 +70,8 @@ class ActivityConformanceRunnerContractTest extends TestCase
             'local vendor trees were not used as pass evidence',
             'focused_published_server_activity_host_probe',
             'PublishedActivitiesEmbeddedWorkflow',
+            'run_retry_backoff_cell',
+            'retry_task_not_ready_before_backoff_elapsed',
             'activity_host_evidence',
             'published_server_container',
             'focusedActivityHostEvidenceFailures',
@@ -608,6 +610,247 @@ class ActivityConformanceRunnerContractTest extends TestCase
                 'durable_result_recording_after_worker_restart',
                 $evaluation['non_pass_scenarios'],
             );
+        } finally {
+            foreach (glob($resultDir.'/*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($resultDir)) {
+                rmdir($resultDir);
+            }
+        }
+    }
+
+    public function test_runner_records_retry_backoff_attempt_behavior_without_passing_full_matrix(): void
+    {
+        if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
+            || trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('bash and node are required to exercise the activities runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = $repoRoot.'/storage/framework/activities-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($resultDir, 0777, true));
+
+        try {
+            $version = '9.9.9';
+            $serverImage = 'durableworkflow/server:'.$version;
+            $scenarioResults = [];
+
+            foreach (['workflow_embedded_activity_result', 'standalone_activity_result'] as $scenarioId) {
+                $activityHostEvidence = $this->activityHostEvidenceForScenario($scenarioId);
+                $scenarioResults[] = [
+                    'scenario_id' => $scenarioId,
+                    'status' => 'pass',
+                    'observed_outputs' => array_filter([
+                        'activity_host_evidence' => $activityHostEvidence,
+                    ]),
+                    'scenario_evidence' => array_filter([
+                        'activity_host_evidence' => $activityHostEvidence,
+                    ]),
+                ];
+            }
+
+            $retryObserved = [
+                'execution_source' => 'published_server_container',
+                'activity_id' => 'activities-retry-backoff-abc123',
+                'workflow_run_id' => 'run_retry_backoff_abc123',
+                'activity_execution_id' => 'act_exec_retry_abc123',
+                'activity_type' => 'activities.conformance.echo',
+                'attempts' => [
+                    [
+                        'attempt_number' => 1,
+                        'task_id' => 'task_retry_first',
+                        'activity_attempt_id' => 'attempt_retry_first',
+                        'activity_execution_id' => 'act_exec_retry_abc123',
+                        'status_after_report' => 'failed_retry_scheduled',
+                    ],
+                    [
+                        'attempt_number' => 2,
+                        'task_id' => 'task_retry_second',
+                        'activity_attempt_id' => 'attempt_retry_second',
+                        'activity_execution_id' => 'act_exec_retry_abc123',
+                        'status_after_report' => 'completed',
+                    ],
+                ],
+                'attempt_state' => [
+                    [
+                        'activity_attempt_id' => 'attempt_retry_first',
+                        'attempt_number' => 1,
+                        'status' => 'failed',
+                    ],
+                    [
+                        'activity_attempt_id' => 'attempt_retry_second',
+                        'attempt_number' => 2,
+                        'status' => 'completed',
+                    ],
+                ],
+                'failure_payloads' => [
+                    [
+                        'attempt_number' => 1,
+                        'failure' => [
+                            'message' => 'activities conformance retryable failure',
+                            'type' => 'ActivitiesConformanceRetryableFailure',
+                            'retryable' => true,
+                            'non_retryable' => false,
+                        ],
+                    ],
+                ],
+                'configured_retry_policy' => [
+                    'max_attempts' => 3,
+                    'backoff_seconds' => [1],
+                    'non_retryable_error_types' => ['ActivitiesConformanceNonRetryable'],
+                ],
+                'retry_policy' => [
+                    'snapshot_version' => 1,
+                    'max_attempts' => 3,
+                    'backoff_seconds' => [1],
+                    'start_to_close_timeout' => null,
+                    'schedule_to_start_timeout' => null,
+                    'schedule_to_close_timeout' => null,
+                    'heartbeat_timeout' => null,
+                    'non_retryable_error_types' => ['ActivitiesConformanceNonRetryable'],
+                ],
+                'leased_retry_policies' => [
+                    'first_attempt' => [
+                        'max_attempts' => 3,
+                        'backoff_seconds' => [1],
+                    ],
+                    'second_attempt' => [
+                        'max_attempts' => 3,
+                        'backoff_seconds' => [1],
+                    ],
+                ],
+                'scheduled_backoff_seconds' => 1.0,
+                'configured_backoff_seconds' => 1,
+                'observed_redelivery_timestamps' => [
+                    'first_attempt_failed_at' => '2026-06-22T00:00:00.000000Z',
+                    'retry_task_available_at' => '2026-06-22T00:00:01.000000Z',
+                    'second_attempt_leased_at' => '2026-06-22T00:00:01.050000Z',
+                    'retry_task_not_ready_before_backoff_elapsed' => true,
+                    'second_attempt_leased_after_available_at' => true,
+                    'observed_redelivery_delay_seconds' => 1.05,
+                ],
+                'terminal_result' => [
+                    'activity_status' => 'completed',
+                    'run_status' => 'completed',
+                    'closed_reason' => 'completed',
+                ],
+            ];
+
+            $scenarioResults[] = [
+                'scenario_id' => 'retry_attempt_backoff_behavior',
+                'status' => 'pass',
+                'observed_outputs' => $retryObserved,
+                'scenario_evidence' => [
+                    'retry_backoff_attempt_behavior' => $retryObserved,
+                ],
+            ];
+
+            $activityEvidence = [
+                'schema' => 'durable-workflow.v2.activity-runtime.host-evidence',
+                'execution_source' => 'published_server_container',
+                'scenario_results' => $scenarioResults,
+                'published_artifact_worker_execution' => $this->publishedServerExecutionEvidence($version, $serverImage),
+                'runtime_matrix' => [
+                    'execution_modes' => ['workflow-embedded', 'standalone'],
+                    'runtimes' => ['workflow-php', 'sdk-python'],
+                    'activity_cells' => array_merge(
+                        $this->activityHostEvidenceForScenario('workflow_embedded_activity_result')['activity_cells'],
+                        $this->activityHostEvidenceForScenario('standalone_activity_result')['activity_cells'],
+                    ),
+                    'behavior_cells' => [
+                        ['scenario' => 'durable_result_recording_after_worker_restart', 'status' => 'not_covered'],
+                        ['scenario' => 'retry_attempt_backoff_behavior', 'status' => 'pass'],
+                    ],
+                ],
+                'retry_backoff' => [
+                    'status' => 'pass',
+                    'scenario' => 'retry_attempt_backoff_behavior',
+                    'attempts' => $retryObserved['attempts'],
+                    'failure_payloads' => $retryObserved['failure_payloads'],
+                    'configured_retry_policy' => $retryObserved['configured_retry_policy'],
+                    'retry_policy' => $retryObserved['retry_policy'],
+                    'leased_retry_policies' => $retryObserved['leased_retry_policies'],
+                    'configured_backoff_seconds' => $retryObserved['configured_backoff_seconds'],
+                    'scheduled_backoff_seconds' => $retryObserved['scheduled_backoff_seconds'],
+                    'observed_redelivery_timestamps' => $retryObserved['observed_redelivery_timestamps'],
+                    'terminal_result' => $retryObserved['terminal_result'],
+                ],
+            ];
+
+            file_put_contents(
+                $resultDir.'/artifact-install-evidence.json',
+                json_encode($this->completeRunnerInstallEvidence($version), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+            file_put_contents(
+                $resultDir.'/activity-evidence.json',
+                json_encode($activityEvidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+
+            $env = [
+                'DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE' => '1',
+                'DW_SERVER_IMAGE' => $serverImage,
+                'DW_SERVER_VERSION' => $version,
+                'DW_CLI_VERSION' => $version,
+                'DW_PYTHON_SDK_VERSION' => $version,
+                'DW_WORKFLOW_PHP_VERSION' => $version,
+                'DW_WATERLINE_VERSION' => $version,
+            ];
+            $envPrefix = implode(' ', array_map(
+                static fn (string $name, string $value): string => $name.'='.escapeshellarg($value),
+                array_keys($env),
+                array_values($env),
+            ));
+            $command = sprintf(
+                '%s bash %s --result-dir %s >/dev/null 2>&1',
+                $envPrefix,
+                escapeshellarg($repoRoot.'/scripts/conformance/activities-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+            $this->assertSame(1, $exitCode);
+
+            $result = json_decode(
+                file_get_contents($resultDir.'/activities-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('pass', $result['retry_backoff']['status'] ?? null);
+            $this->assertSame([1], $result['retry_backoff']['configured_retry_policy']['backoff_seconds'] ?? null);
+            $this->assertSame(1, $result['retry_backoff']['configured_backoff_seconds'] ?? null);
+            $this->assertEquals(1.0, $result['retry_backoff']['scheduled_backoff_seconds'] ?? null);
+            $this->assertTrue(
+                $result['retry_backoff']['observed_redelivery_timestamps']['retry_task_not_ready_before_backoff_elapsed'] ?? false,
+            );
+            $this->assertTrue(
+                $result['retry_backoff']['observed_redelivery_timestamps']['second_attempt_leased_after_available_at'] ?? false,
+            );
+            $this->assertSame('completed', $result['retry_backoff']['terminal_result']['run_status'] ?? null);
+
+            $byScenario = [];
+            foreach ($result['scenario_results'] ?? [] as $scenario) {
+                $byScenario[$scenario['scenario_id']] = $scenario;
+            }
+
+            $this->assertSame('pass', $byScenario['retry_attempt_backoff_behavior']['status'] ?? null);
+            $this->assertArrayNotHasKey('linked_findings', $byScenario['retry_attempt_backoff_behavior']);
+            $this->assertSame(
+                2,
+                $byScenario['retry_attempt_backoff_behavior']['observed_outputs']['attempts'][1]['attempt_number'] ?? null,
+            );
+            $this->assertSame('not_covered', $byScenario['timeout_behavior']['status'] ?? null);
+            $this->assertSame('coverage-gap', $byScenario['timeout_behavior']['classification'] ?? null);
+
+            $evaluation = ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest());
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertNotContains('retry_attempt_backoff_behavior', $evaluation['non_pass_scenarios']);
         } finally {
             foreach (glob($resultDir.'/*') ?: [] as $file) {
                 if (is_file($file)) {
