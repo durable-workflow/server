@@ -471,8 +471,9 @@ final class ActivityRuntimeContract
                     'history_activity_attempts',
                     'operator_metrics',
                     'waterline_activity_attempt_view',
+                    'cli_json_list_evidence',
                 ],
-                'expected_behavior' => 'operators can see current and historical activity attempt state through API metrics and Waterline',
+                'expected_behavior' => 'operators can see current and historical activity attempt state through API metrics, Waterline, and CLI JSON list/detail output',
             ],
         ];
     }

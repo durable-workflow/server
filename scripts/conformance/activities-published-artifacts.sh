@@ -34,6 +34,9 @@ Environment overrides:
   DW_SERVER_IMAGE                       Exact server image tag or digest to test.
   DW_SERVER_VERSION                     Exact patch server Docker tag; required for digest-only DW_SERVER_IMAGE.
   DW_CLI_VERSION                        Exact CLI release version.
+  DW_ACTIVITIES_CLI_BIN                 Optional executable official CLI binary to use for CLI observations.
+  DW_CLI_BIN / DW_CLI_EXECUTABLE         Fallback executable official CLI binary names.
+  DW_ACTIVITIES_CLI_INSTALLER_URL        Optional official CLI installer URL override.
   DW_PYTHON_SDK_VERSION                 Exact PyPI durable-workflow version.
   DW_WORKFLOW_PHP_VERSION               Exact Composer durable-workflow/workflow version.
   DW_WATERLINE_VERSION                  Exact Waterline artifact version.
@@ -158,11 +161,78 @@ prepare_focused_python_sdk() {
   fi
 }
 
+prepare_published_activity_cli() {
+  local explicit="${DW_ACTIVITIES_CLI_BIN:-${DW_CLI_BIN:-${DW_CLI_EXECUTABLE:-}}}"
+  if [[ -n "$explicit" ]]; then
+    if [[ -x "$explicit" ]]; then
+      export DW_ACTIVITIES_CLI_BIN="$explicit"
+      export DW_ACTIVITIES_CLI_SOURCE="${DW_ACTIVITIES_CLI_SOURCE:-configured_cli_binary}"
+      return 0
+    fi
+
+    export DW_ACTIVITIES_CLI_UNAVAILABLE_REASON="configured CLI binary is not executable"
+    return 0
+  fi
+
+  if [[ -z "${DW_CLI_VERSION:-}" ]]; then
+    export DW_ACTIVITIES_CLI_UNAVAILABLE_REASON="DW_CLI_VERSION is required to install the official CLI artifact"
+    return 0
+  fi
+  if ! require_command curl; then
+    export DW_ACTIVITIES_CLI_UNAVAILABLE_REASON="curl is required to download the official CLI installer"
+    return 0
+  fi
+
+  local normalized="${DW_CLI_VERSION#v}"
+  local cli_root="$run_root/cli"
+  local cli_bin="$cli_root/bin/dw"
+  local installer="$cli_root/install.sh"
+  local installer_url=""
+  mkdir -p "$cli_root/bin"
+
+  local candidates=()
+  if [[ -n "${DW_ACTIVITIES_CLI_INSTALLER_URL:-${DW_CLI_INSTALLER_URL:-}}" ]]; then
+    candidates+=("${DW_ACTIVITIES_CLI_INSTALLER_URL:-${DW_CLI_INSTALLER_URL:-}}")
+  fi
+  candidates+=(
+    "https://github.com/durable-workflow/cli/releases/download/${normalized}/install.sh"
+    "https://github.com/durable-workflow/cli/releases/download/v${normalized}/install.sh"
+  )
+
+  for candidate_url in "${candidates[@]}"; do
+    if curl -fsSL --retry 3 -o "$installer" "$candidate_url" >"$result_dir/activity-cli-installer-download.log" 2>&1; then
+      installer_url="$candidate_url"
+      break
+    fi
+  done
+
+  if [[ -z "$installer_url" ]]; then
+    export DW_ACTIVITIES_CLI_UNAVAILABLE_REASON="official CLI installer is not downloadable for release ${DW_CLI_VERSION}"
+    return 0
+  fi
+
+  chmod +x "$installer"
+  if VERSION="$DW_CLI_VERSION" \
+    DURABLE_WORKFLOW_INSTALL_DIR="$cli_root/bin" \
+    DURABLE_WORKFLOW_BIN_NAME=dw \
+    DURABLE_WORKFLOW_INSTALL_VERIFY_ATTESTATIONS=0 \
+    sh "$installer" >"$result_dir/activity-cli-install.log" 2>&1 \
+    && [[ -x "$cli_bin" ]]; then
+    export DW_ACTIVITIES_CLI_BIN="$cli_bin"
+    export DW_ACTIVITIES_CLI_SOURCE="$installer_url"
+    return 0
+  fi
+
+  export DW_ACTIVITIES_CLI_UNAVAILABLE_REASON="official CLI installer failed for release ${DW_CLI_VERSION}; see activity-cli-install.log"
+  return 0
+}
+
 run_focused_activity_host_probe() {
   local probe_db="$run_root/activities-focused-host-probe.sqlite"
 
   : > "$probe_db"
   prepare_focused_python_sdk
+  prepare_published_activity_cli
 
   APP_ENV=production \
   APP_DEBUG=false \
@@ -175,6 +245,9 @@ run_focused_activity_host_probe() {
   DW_AUTH_DRIVER=none \
   DW_TASK_DISPATCH_MODE=poll \
   DW_V2_TASK_DISPATCH_MODE=poll \
+  DW_ACTIVITIES_CLI_BIN="${DW_ACTIVITIES_CLI_BIN:-}" \
+  DW_ACTIVITIES_CLI_SOURCE="${DW_ACTIVITIES_CLI_SOURCE:-}" \
+  DW_ACTIVITIES_CLI_UNAVAILABLE_REASON="${DW_ACTIVITIES_CLI_UNAVAILABLE_REASON:-}" \
   RUNNER_REPO_ROOT="$repo_root" \
   RESULT_DIR="$result_dir" \
   RUN_ROOT="$run_root" \
@@ -315,6 +388,15 @@ function finding_for_failure(string $scenarioId, string $message): array
         'next_acceptance_criterion' => 'rerun the focused activity host probe from the pinned published server image and record passing activity host evidence for this scenario',
         'priority' => 'P0',
     ];
+}
+
+function cli_activity_visibility_finding(string $message): array
+{
+    $finding = finding_for_failure('cli_activity_attempt_state_visibility', $message);
+    $finding['owning_surface'] = 'cli';
+    $finding['next_acceptance_criterion'] = 'rerun activities conformance with official dw activity:list and activity:describe JSON output exposing activity execution ids and attempt rows';
+
+    return $finding;
 }
 
 function failure_scenario(string $scenarioId, string $mode, Throwable $throwable): array
@@ -556,6 +638,7 @@ function evidence_document(array $scenarioResults, array $activityCells): array
             'required_operator_states' => $operatorVisibilityOutputs['required_operator_states'] ?? null,
             'operator_state_matrix' => $operatorVisibilityOutputs['operator_state_matrix'] ?? null,
             'operator_state_passes' => $operatorVisibilityOutputs['operator_state_passes'] ?? null,
+            'operator_state_passes_without_cli' => $operatorVisibilityOutputs['operator_state_passes_without_cli'] ?? null,
             'missing_operator_surface_reasons' => $operatorVisibilityOutputs['missing_operator_surface_reasons'] ?? null,
         ],
     ];
@@ -625,6 +708,287 @@ function request_json(string $method, string $path, ?array $body = null, array $
     $decoded = json_decode($payload, true, flags: JSON_THROW_ON_ERROR);
 
     return is_array($decoded) ? $decoded : [];
+}
+
+function focused_result_dir(): string
+{
+    return rtrim(getenv('RESULT_DIR') ?: sys_get_temp_dir(), '/');
+}
+
+function cli_unavailable_reason(): string
+{
+    $reason = getenv('DW_ACTIVITIES_CLI_UNAVAILABLE_REASON');
+    if (is_string($reason) && trim($reason) !== '') {
+        return trim($reason);
+    }
+
+    $bin = getenv('DW_ACTIVITIES_CLI_BIN');
+    if (! is_string($bin) || trim($bin) === '') {
+        return 'DW_ACTIVITIES_CLI_BIN is not configured and the official CLI artifact was not installed';
+    }
+    if (! is_executable($bin)) {
+        return 'configured official CLI binary is not executable';
+    }
+
+    return 'official CLI binary is unavailable';
+}
+
+function reserve_loopback_port(): int
+{
+    $socket = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+    if (! is_resource($socket)) {
+        throw new RuntimeException("could not reserve loopback port for CLI observations: {$errstr}");
+    }
+
+    $name = stream_socket_get_name($socket, false);
+    fclose($socket);
+    $port = is_string($name) && preg_match('/:(\d+)$/', $name, $matches) === 1
+        ? (int) $matches[1]
+        : 0;
+    if ($port <= 0) {
+        throw new RuntimeException('could not determine reserved loopback port for CLI observations');
+    }
+
+    return $port;
+}
+
+function process_status_code(mixed $status): ?int
+{
+    return is_array($status) && is_int($status['exitcode'] ?? null) && $status['exitcode'] >= 0
+        ? $status['exitcode']
+        : null;
+}
+
+function process_environment(array $overrides = []): array
+{
+    $environment = getenv();
+    if (! is_array($environment)) {
+        $environment = [];
+    }
+
+    foreach ($overrides as $key => $value) {
+        if (is_string($value)) {
+            $environment[$key] = $value;
+        }
+    }
+
+    return $environment;
+}
+
+function stop_cli_observation_server(mixed $process): void
+{
+    if (! is_resource($process)) {
+        return;
+    }
+
+    $status = proc_get_status($process);
+    if (is_array($status) && ($status['running'] ?? false) === true) {
+        proc_terminate($process);
+        usleep(200000);
+        $status = proc_get_status($process);
+        if (is_array($status) && ($status['running'] ?? false) === true) {
+            proc_terminate($process, 9);
+        }
+    }
+
+    proc_close($process);
+}
+
+function cli_server_ready(string $baseUrl): bool
+{
+    $context = stream_context_create([
+        'http' => [
+            'method' => 'GET',
+            'ignore_errors' => true,
+            'timeout' => 1,
+            'header' => implode("\r\n", [
+                'Accept: application/json',
+                ControlPlaneProtocol::HEADER.': '.ControlPlaneProtocol::VERSION,
+            ]),
+        ],
+    ]);
+
+    $body = @file_get_contents($baseUrl.'/api/cluster/info', false, $context);
+    if (! is_string($body) || $body === '') {
+        return false;
+    }
+
+    try {
+        $decoded = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+    } catch (Throwable) {
+        return false;
+    }
+
+    return is_array($decoded);
+}
+
+function cli_observation_context(): array
+{
+    static $context = null;
+    if (is_array($context)) {
+        return $context;
+    }
+
+    $bin = getenv('DW_ACTIVITIES_CLI_BIN');
+    if (! is_string($bin) || trim($bin) === '' || ! is_executable($bin)) {
+        return $context = [
+            'available' => false,
+            'reason' => cli_unavailable_reason(),
+            'artifact_source' => getenv('DW_ACTIVITIES_CLI_SOURCE') ?: null,
+        ];
+    }
+
+    $port = reserve_loopback_port();
+    $baseUrl = 'http://127.0.0.1:'.$port;
+    $logPath = focused_result_dir().'/activity-cli-server.log';
+    $command = [PHP_BINARY, 'artisan', 'serve', '--host=127.0.0.1', '--port='.$port];
+    $descriptors = [
+        0 => ['pipe', 'r'],
+        1 => ['file', $logPath, 'a'],
+        2 => ['file', $logPath, 'a'],
+    ];
+    $process = proc_open($command, $descriptors, $pipes, getcwd() ?: null, process_environment([
+        'APP_ENV' => getenv('APP_ENV') ?: 'production',
+        'APP_DEBUG' => getenv('APP_DEBUG') ?: 'false',
+        'APP_KEY' => getenv('APP_KEY') ?: 'base64:QUNUSVZJVElFUy1DT05GT1JNQU5DRS1GT0NVU0VELUhPU1QtUFJPQkU=',
+        'DB_CONNECTION' => getenv('DB_CONNECTION') ?: 'sqlite',
+        'DB_DATABASE' => getenv('DB_DATABASE') ?: '',
+        'QUEUE_CONNECTION' => getenv('QUEUE_CONNECTION') ?: 'database',
+        'CACHE_STORE' => getenv('CACHE_STORE') ?: 'array',
+        'SESSION_DRIVER' => getenv('SESSION_DRIVER') ?: 'array',
+        'DW_AUTH_DRIVER' => getenv('DW_AUTH_DRIVER') ?: 'none',
+        'DW_TASK_DISPATCH_MODE' => getenv('DW_TASK_DISPATCH_MODE') ?: 'poll',
+        'DW_V2_TASK_DISPATCH_MODE' => getenv('DW_V2_TASK_DISPATCH_MODE') ?: 'poll',
+    ]));
+
+    if (! is_resource($process)) {
+        return $context = [
+            'available' => false,
+            'reason' => 'could not start temporary HTTP server for official CLI observations',
+            'artifact_source' => getenv('DW_ACTIVITIES_CLI_SOURCE') ?: null,
+            'server_log' => $logPath,
+        ];
+    }
+    if (isset($pipes[0]) && is_resource($pipes[0])) {
+        fclose($pipes[0]);
+    }
+    register_shutdown_function(static fn () => stop_cli_observation_server($process));
+
+    $ready = false;
+    $deadline = microtime(true) + 15.0;
+    do {
+        if (cli_server_ready($baseUrl)) {
+            $ready = true;
+            break;
+        }
+        usleep(200000);
+        $status = proc_get_status($process);
+        if (is_array($status) && ($status['running'] ?? false) !== true) {
+            break;
+        }
+    } while (microtime(true) < $deadline);
+
+    if (! $ready) {
+        stop_cli_observation_server($process);
+
+        return $context = [
+            'available' => false,
+            'reason' => 'temporary HTTP server for official CLI observations did not become ready',
+            'artifact_source' => getenv('DW_ACTIVITIES_CLI_SOURCE') ?: null,
+            'server_log' => $logPath,
+        ];
+    }
+
+    return $context = [
+        'available' => true,
+        'bin' => $bin,
+        'base_url' => $baseUrl,
+        'artifact_source' => getenv('DW_ACTIVITIES_CLI_SOURCE') ?: null,
+        'server_log' => $logPath,
+    ];
+}
+
+function parse_cli_json_output(string $stdout): array
+{
+    $trimmed = trim($stdout);
+    if ($trimmed === '') {
+        return ['value' => null, 'error' => 'stdout was empty'];
+    }
+
+    try {
+        $decoded = json_decode($trimmed, true, flags: JSON_THROW_ON_ERROR);
+
+        return [
+            'value' => is_array($decoded) ? $decoded : null,
+            'error' => is_array($decoded) ? null : 'stdout did not decode to a JSON object',
+        ];
+    } catch (Throwable $throwable) {
+        return ['value' => null, 'error' => $throwable->getMessage()];
+    }
+}
+
+function run_dw_json_command(array $args, array $context): array
+{
+    if (($context['available'] ?? false) !== true) {
+        return [
+            'command' => ['dw', ...$args],
+            'exit_code' => null,
+            'status' => 'not_exercised',
+            'error' => $context['reason'] ?? 'official CLI unavailable',
+            'parsed_json' => null,
+            'json_parse_error' => null,
+        ];
+    }
+
+    $fullArgs = [
+        ...$args,
+        '--server='.$context['base_url'],
+        '--namespace='.ACTIVITIES_NAMESPACE,
+    ];
+    $descriptors = [
+        0 => ['pipe', 'r'],
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w'],
+    ];
+    $process = proc_open([$context['bin'], ...$fullArgs], $descriptors, $pipes, getcwd() ?: null, process_environment([
+        'DURABLE_WORKFLOW_SERVER_URL' => $context['base_url'],
+        'DURABLE_WORKFLOW_NAMESPACE' => ACTIVITIES_NAMESPACE,
+    ]));
+
+    if (! is_resource($process)) {
+        return [
+            'command' => ['dw', ...$fullArgs],
+            'exit_code' => null,
+            'status' => 'failed_to_start',
+            'error' => 'could not start official CLI process',
+            'parsed_json' => null,
+            'json_parse_error' => null,
+        ];
+    }
+
+    if (isset($pipes[0]) && is_resource($pipes[0])) {
+        fclose($pipes[0]);
+    }
+    $stdout = isset($pipes[1]) && is_resource($pipes[1]) ? stream_get_contents($pipes[1]) : '';
+    $stderr = isset($pipes[2]) && is_resource($pipes[2]) ? stream_get_contents($pipes[2]) : '';
+    if (isset($pipes[1]) && is_resource($pipes[1])) {
+        fclose($pipes[1]);
+    }
+    if (isset($pipes[2]) && is_resource($pipes[2])) {
+        fclose($pipes[2]);
+    }
+    $exitCode = proc_close($process);
+    $parsed = parse_cli_json_output(is_string($stdout) ? $stdout : '');
+
+    return [
+        'command' => ['dw', ...$fullArgs],
+        'exit_code' => is_int($exitCode) ? $exitCode : process_status_code($exitCode),
+        'status' => $exitCode === 0 ? 'completed' : 'failed',
+        'stdout' => is_string($stdout) ? $stdout : '',
+        'stderr' => is_string($stderr) ? $stderr : '',
+        'parsed_json' => $parsed['value'],
+        'json_parse_error' => $parsed['error'],
+    ];
 }
 
 function envelope(mixed $value, ?string $codec = null): array
@@ -1834,6 +2198,129 @@ function activity_list_evidence(string $activityId): array
     ];
 }
 
+function selected_activity_list_entry(array $listEvidence): array
+{
+    $selected = is_array($listEvidence['selected'] ?? null) ? $listEvidence['selected'] : [];
+
+    foreach ($selected as $entry) {
+        if (is_array($entry) && $entry !== []) {
+            return $entry;
+        }
+    }
+
+    return [];
+}
+
+function activity_attempts_visible_in_entry(array $entry, string $activityExecutionId, ?string $activityAttemptId): bool
+{
+    if (($entry['activity_execution_id'] ?? null) !== $activityExecutionId) {
+        return false;
+    }
+
+    $attempts = is_array($entry['attempts'] ?? null) ? $entry['attempts'] : [];
+    if ($attempts === []) {
+        return false;
+    }
+
+    foreach ($attempts as $attempt) {
+        if (! is_array($attempt)) {
+            continue;
+        }
+
+        $attemptId = $attempt['activity_attempt_id'] ?? ($attempt['id'] ?? null);
+        $status = $attempt['status'] ?? null;
+        if (is_string($status) && $status !== ''
+            && ($activityAttemptId === null || $attemptId === $activityAttemptId)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function cli_activity_json_contract_evidence(
+    string $activityId,
+    string $activityExecutionId,
+    ?string $activityAttemptId
+): array {
+    $context = cli_observation_context();
+    $listCommand = run_dw_json_command([
+        'activity:list',
+        '--output=json',
+        '--limit=200',
+    ], $context);
+    $describeCommand = run_dw_json_command([
+        'activity:describe',
+        $activityId,
+        '--output=json',
+    ], $context);
+
+    $listOutput = is_array($listCommand['parsed_json'] ?? null) ? $listCommand['parsed_json'] : [];
+    $describeOutput = is_array($describeCommand['parsed_json'] ?? null) ? $describeCommand['parsed_json'] : [];
+    $listEntry = list_activity_entry($listOutput, $activityId);
+    $listVisible = ($listCommand['exit_code'] ?? null) === 0
+        && ($listCommand['json_parse_error'] ?? null) === null
+        && activity_attempts_visible_in_entry($listEntry, $activityExecutionId, $activityAttemptId);
+    $detailVisible = ($describeCommand['exit_code'] ?? null) === 0
+        && ($describeCommand['json_parse_error'] ?? null) === null
+        && activity_attempts_visible_in_entry($describeOutput, $activityExecutionId, $activityAttemptId);
+    $visible = $listVisible && $detailVisible;
+    $unsupportedCommand = false;
+    foreach ([$listCommand, $describeCommand] as $command) {
+        $text = strtolower((string) ($command['stderr'] ?? '')."\n".(string) ($command['stdout'] ?? '')."\n".(string) ($command['error'] ?? ''));
+        if (str_contains($text, 'command') && (
+            str_contains($text, 'not defined')
+            || str_contains($text, 'does not exist')
+            || str_contains($text, 'unknown command')
+            || str_contains($text, 'no commands defined')
+        )) {
+            $unsupportedCommand = true;
+        }
+    }
+    $status = match (true) {
+        $visible => 'pass',
+        ($context['available'] ?? false) !== true => 'cli_not_exercised',
+        $unsupportedCommand => 'unsupported_cli_command',
+        ($listCommand['exit_code'] ?? null) !== 0 || ($describeCommand['exit_code'] ?? null) !== 0 => 'cli_command_failed',
+        ($listCommand['json_parse_error'] ?? null) !== null || ($describeCommand['json_parse_error'] ?? null) !== null => 'cli_json_parse_failed',
+        default => 'missing_contract_fields',
+    };
+
+    return [
+        'artifact' => 'durable-workflow/cli',
+        'artifact_version' => getenv('DW_CLI_VERSION') ?: 'unknown',
+        'artifact_source' => $context['artifact_source'] ?? null,
+        'expected_surface' => 'published CLI JSON list/detail evidence for activity attempt state',
+        'status' => $status,
+        'cli_list_visible' => $visible,
+        'command_contracts' => [
+            'list' => 'dw activity:list --output=json --limit=200',
+            'describe' => 'dw activity:describe <activity-id> --output=json',
+        ],
+        'json_contract_source' => 'official published dw CLI JSON command output',
+        'cli_observation_server' => [
+            'available' => $context['available'] ?? false,
+            'base_url' => $context['base_url'] ?? null,
+            'server_log' => $context['server_log'] ?? null,
+            'unavailable_reason' => $context['reason'] ?? null,
+        ],
+        'command_outputs' => [
+            'list' => $listCommand,
+            'describe' => $describeCommand,
+        ],
+        'selected_list_entry' => $listEntry,
+        'detail_attempt_state' => [
+            'activity_execution_id' => $describeOutput['activity_execution_id'] ?? null,
+            'current_attempt_id' => $describeOutput['current_attempt_id'] ?? null,
+            'current_attempt_status' => $describeOutput['current_attempt_status'] ?? null,
+            'attempts' => $describeOutput['attempts'] ?? null,
+        ],
+        'observed_behavior' => $visible
+            ? 'the official CLI activity list/detail JSON commands expose the activity execution id and attempt rows with attempt ids and statuses'
+            : 'the official CLI activity list/detail JSON commands did not expose attempt rows with attempt ids and statuses for this state',
+    ];
+}
+
 function operator_surface_snapshot(string $state, string $activityId, string $runId, string $activityExecutionId, ?string $activityAttemptId = null): array
 {
     $apiDetail = request_json('GET', '/activities/'.rawurlencode($activityId));
@@ -1857,6 +2344,11 @@ function operator_surface_snapshot(string $state, string $activityId, string $ru
     $waterlineVisible = ($activityView['id'] ?? null) === $activityExecutionId
         && is_array($activityView['attempts'] ?? null)
         && ($activityView['attempts'] ?? []) !== [];
+    $cliEvidence = cli_activity_json_contract_evidence(
+        $activityId,
+        $activityExecutionId,
+        $activityAttemptId,
+    );
 
     return [
         'state' => $state,
@@ -1891,14 +2383,7 @@ function operator_surface_snapshot(string $state, string $activityId, string $ru
             'activity_view' => $activityView,
             'waterline_visible' => $waterlineVisible,
         ],
-        'cli_json_list_evidence' => [
-            'artifact' => 'durable-workflow/cli',
-            'artifact_version' => getenv('DW_CLI_VERSION') ?: 'unknown',
-            'expected_surface' => 'published CLI JSON list/detail evidence for activity attempt state',
-            'status' => 'unsupported',
-            'cli_list_visible' => false,
-            'observed_behavior' => 'the focused published-artifact host probe records API list evidence but has no published CLI activity list/detail invocation for this state',
-        ],
+        'cli_json_list_evidence' => $cliEvidence,
         'attempt_state' => $attemptState,
         'execution_state' => $executionState,
         'surface_visibility' => [
@@ -1906,7 +2391,7 @@ function operator_surface_snapshot(string $state, string $activityId, string $ru
             'api_list_visible' => $listVisible,
             'history_visible' => in_array(HistoryEventType::ActivityStarted->value, event_types($history), true),
             'waterline_visible' => $waterlineVisible,
-            'cli_list_visible' => false,
+            'cli_list_visible' => ($cliEvidence['cli_list_visible'] ?? null) === true,
         ],
     ];
 }
@@ -2099,15 +2584,17 @@ function operator_visibility_state_observation(string $state, string $suffix): a
     throw new RuntimeException("unsupported operator visibility state {$state}");
 }
 
-function operator_visibility_state_pass(array $observation): bool
+function operator_visibility_state_pass(array $observation, bool $requireCli = true): bool
 {
     $state = is_string($observation['state'] ?? null) ? $observation['state'] : '';
     $visibility = is_array($observation['surface_visibility'] ?? null) ? $observation['surface_visibility'] : [];
     if (($visibility['api_detail_visible'] ?? null) !== true
         || ($visibility['api_list_visible'] ?? null) !== true
         || ($visibility['history_visible'] ?? null) !== true
-        || ($visibility['waterline_visible'] ?? null) !== true
-        || ($visibility['cli_list_visible'] ?? null) !== true) {
+        || ($visibility['waterline_visible'] ?? null) !== true) {
+        return false;
+    }
+    if ($requireCli && ($visibility['cli_list_visible'] ?? null) !== true) {
         return false;
     }
 
@@ -2558,8 +3045,10 @@ function run_operator_visibility_cell(): array
     }
 
     $statePasses = [];
+    $statePassesWithoutCli = [];
     foreach ($stateObservations as $state => $observation) {
         $statePasses[$state] = operator_visibility_state_pass($observation);
+        $statePassesWithoutCli[$state] = operator_visibility_state_pass($observation, false);
     }
     $missingSurfaceReasons = [];
     foreach ($stateObservations as $state => $observation) {
@@ -2591,6 +3080,7 @@ function run_operator_visibility_cell(): array
         'required_operator_states' => ['in_flight', 'retrying', 'timed_out', 'failed', 'completed', 'cancelled'],
         'operator_state_matrix' => $stateObservations,
         'operator_state_passes' => $statePasses,
+        'operator_state_passes_without_cli' => $statePassesWithoutCli,
         'missing_operator_surface_reasons' => $missingSurfaceReasons,
         'api_run_detail' => [
             'workflow_run_detail' => $inFlightObservation['api_run_detail'] ?? null,
@@ -3698,7 +4188,24 @@ function scenario_from_php_python_parity_cell(array $cell): array
 function scenario_from_operator_visibility_cell(array $cell): array
 {
     $statePasses = is_array($cell['operator_state_passes'] ?? null) ? $cell['operator_state_passes'] : [];
+    $statePassesWithoutCli = is_array($cell['operator_state_passes_without_cli'] ?? null)
+        ? $cell['operator_state_passes_without_cli']
+        : [];
     $requiredStates = ['in_flight', 'retrying', 'timed_out', 'failed', 'completed', 'cancelled'];
+    $nonCliSurfacesPass = array_diff($requiredStates, array_keys($statePassesWithoutCli)) === []
+        && ! in_array(false, array_map(
+            static fn (mixed $value): bool => $value === true,
+            $statePassesWithoutCli
+        ), true)
+        && ($cell['api_run_detail']['api_visible'] ?? null) === true
+        && ($cell['history_activity_attempts']['history_visible'] ?? null) === true
+        && ($cell['operator_metrics']['lease_visible'] ?? null) === true
+        && ($cell['waterline_activity_attempt_view']['waterline_visible'] ?? null) === true;
+    $cliOnlyFailure = $nonCliSurfacesPass
+        && in_array(false, array_map(
+            static fn (mixed $value): bool => $value === true,
+            $statePasses
+        ), true);
     $pass = ($cell['status'] ?? null) === 'pass'
         && is_array($cell['api_run_detail'] ?? null)
         && is_array($cell['history_activity_attempts'] ?? null)
@@ -3746,6 +4253,7 @@ function scenario_from_operator_visibility_cell(array $cell): array
         'required_operator_states' => $cell['required_operator_states'] ?? null,
         'operator_state_matrix' => $cell['operator_state_matrix'] ?? null,
         'operator_state_passes' => $statePasses,
+        'operator_state_passes_without_cli' => $statePassesWithoutCli,
         'missing_operator_surface_reasons' => $cell['missing_operator_surface_reasons'] ?? null,
         'heartbeat_details' => $cell['heartbeat_details'] ?? null,
         'heartbeat_response' => $cell['heartbeat_response'] ?? null,
@@ -3769,12 +4277,21 @@ function scenario_from_operator_visibility_cell(array $cell): array
         $missing = is_array($cell['missing_operator_surface_reasons'] ?? null)
             ? implode(', ', $cell['missing_operator_surface_reasons'])
             : '';
-        $message = 'operator visibility did not prove in-flight, retrying, timed-out, failed, completed, and cancelled activity attempt state through API detail/list, history, task queue metrics, Waterline, and CLI/list evidence';
-        if ($missing !== '') {
-            $message .= ': '.$missing;
+        if ($cliOnlyFailure) {
+            $message = 'official CLI activity list/detail JSON commands did not prove in-flight, retrying, timed-out, failed, completed, and cancelled activity attempt state';
+            if ($missing !== '') {
+                $message .= ': '.$missing;
+            }
+            $scenario['observed_behavior'] = $message;
+            $scenario['linked_findings'] = [cli_activity_visibility_finding($message)];
+        } else {
+            $message = 'operator visibility did not prove in-flight, retrying, timed-out, failed, completed, and cancelled activity attempt state through API detail/list, history, task queue metrics, Waterline, and CLI/list evidence';
+            if ($missing !== '') {
+                $message .= ': '.$missing;
+            }
+            $scenario['observed_behavior'] = $message;
+            $scenario['linked_findings'] = [finding_for_failure('operator_visible_activity_attempt_state', $message)];
         }
-        $scenario['observed_behavior'] = $message;
-        $scenario['linked_findings'] = [finding_for_failure('operator_visible_activity_attempt_state', $message)];
     }
 
     return $scenario;

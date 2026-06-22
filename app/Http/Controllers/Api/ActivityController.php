@@ -9,8 +9,11 @@ use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\TaskQueueRoutingGate;
 use App\Support\WorkflowCommandContextFactory;
+use Carbon\CarbonInterface;
+use DateTimeInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
@@ -21,6 +24,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\StandaloneActivity\StandaloneActivityHostType;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
+use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\StandaloneActivityStartService;
 
 /**
@@ -261,26 +265,7 @@ class ActivityController
         $page = $hasMore ? $rows->slice(0, $pageSize)->values() : $rows->values();
 
         return ControlPlaneProtocol::jsonForRequest($request, [
-            'activities' => $page->map(function ($summary): array {
-                /** @var ActivityExecution|null $execution */
-                $execution = ActivityExecution::query()
-                    ->where('workflow_run_id', $summary->id)
-                    ->orderBy('sequence')
-                    ->first();
-
-                return [
-                    'activity_id' => $summary->workflow_instance_id,
-                    'workflow_run_id' => $summary->id,
-                    'activity_type' => $execution?->activity_type,
-                    'activity_class' => $execution?->activity_class,
-                    'task_queue' => $summary->queue,
-                    'status' => $summary->status,
-                    'status_bucket' => $summary->status_bucket,
-                    'business_key' => $summary->business_key,
-                    'started_at' => $summary->started_at?->toJSON(),
-                    'closed_at' => $summary->closed_at?->toJSON(),
-                ];
-            })->all(),
+            'activities' => $page->map(fn ($summary): array => $this->formatActivityListEntry($summary))->all(),
             'activity_count' => $page->count(),
             'next_page_token' => $hasMore ? $this->encodePageToken($offset + $pageSize) : null,
         ]);
@@ -295,11 +280,12 @@ class ActivityController
 
     private function formatActivity(WorkflowRun $run, ?string $namespace): array
     {
-        /** @var ActivityExecution|null $execution */
-        $execution = ActivityExecution::query()
-            ->where('workflow_run_id', $run->id)
-            ->orderBy('sequence')
-            ->first();
+        $execution = $this->firstActivityExecution($run);
+        $activityView = $this->activityViewForExecution($run, $execution);
+        $attempts = $this->formatAttempts($activityView, $execution);
+        $currentAttempt = $this->currentAttempt($attempts, $execution);
+        $currentAttemptId = $currentAttempt['activity_attempt_id'] ?? $execution?->current_attempt_id;
+        $currentAttemptStatus = $currentAttempt['status'] ?? null;
 
         $resultEnvelope = null;
 
@@ -325,6 +311,17 @@ class ActivityController
             'activity_execution_id' => $execution?->id,
             'activity_status' => $execution?->status?->value,
             'attempt_count' => $execution?->attempt_count,
+            'current_attempt_id' => $currentAttemptId,
+            'current_attempt_status' => $currentAttemptStatus,
+            'current_attempt' => $currentAttempt,
+            'attempts' => $attempts,
+            'attempt_state' => [
+                'activity_execution_id' => $execution?->id,
+                'attempt_count' => $execution?->attempt_count,
+                'current_attempt_id' => $currentAttemptId,
+                'current_attempt_status' => $currentAttemptStatus,
+                'attempts' => $attempts,
+            ],
             'task_queue' => $run->queue,
             'business_key' => $run->business_key,
             'status' => $run->status->value,
@@ -339,6 +336,163 @@ class ActivityController
             'last_heartbeat_at' => $execution?->last_heartbeat_at?->toJSON(),
             'result' => $resultEnvelope,
         ];
+    }
+
+    /**
+     * @param object $summary
+     * @return array<string, mixed>
+     */
+    private function formatActivityListEntry(object $summary): array
+    {
+        /** @var WorkflowRun|null $run */
+        $run = WorkflowRun::query()
+            ->with(['activityExecutions.attempts', 'historyEvents'])
+            ->find($summary->id);
+        $execution = $run instanceof WorkflowRun ? $this->firstActivityExecution($run) : null;
+        $activityView = $run instanceof WorkflowRun
+            ? $this->activityViewForExecution($run, $execution)
+            : [];
+        $attempts = $this->formatAttempts($activityView, $execution);
+        $currentAttempt = $this->currentAttempt($attempts, $execution);
+        $currentAttemptId = $currentAttempt['activity_attempt_id'] ?? $execution?->current_attempt_id;
+        $currentAttemptStatus = $currentAttempt['status'] ?? null;
+
+        return [
+            'activity_id' => $summary->workflow_instance_id,
+            'workflow_id' => $summary->workflow_instance_id,
+            'workflow_run_id' => $summary->id,
+            'activity_execution_id' => $execution?->id,
+            'activity_type' => $execution?->activity_type,
+            'activity_class' => $execution?->activity_class,
+            'activity_status' => $execution?->status?->value,
+            'attempt_count' => $execution?->attempt_count,
+            'current_attempt_id' => $currentAttemptId,
+            'current_attempt_status' => $currentAttemptStatus,
+            'current_attempt' => $currentAttempt,
+            'attempts' => $attempts,
+            'attempt_state' => [
+                'activity_execution_id' => $execution?->id,
+                'attempt_count' => $execution?->attempt_count,
+                'current_attempt_id' => $currentAttemptId,
+                'current_attempt_status' => $currentAttemptStatus,
+                'attempts' => $attempts,
+            ],
+            'task_queue' => $summary->queue,
+            'status' => $summary->status,
+            'status_bucket' => $summary->status_bucket,
+            'business_key' => $summary->business_key,
+            'started_at' => $summary->started_at?->toJSON(),
+            'closed_at' => $summary->closed_at?->toJSON(),
+        ];
+    }
+
+    private function firstActivityExecution(WorkflowRun $run): ?ActivityExecution
+    {
+        $run->loadMissing(['activityExecutions.attempts', 'historyEvents']);
+
+        $execution = $run->activityExecutions
+            ->sortBy('sequence')
+            ->first();
+
+        return $execution instanceof ActivityExecution ? $execution : null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function activityViewForExecution(WorkflowRun $run, ?ActivityExecution $execution): array
+    {
+        if (! $execution instanceof ActivityExecution) {
+            return [];
+        }
+
+        foreach (RunActivityView::activitiesForRun($run) as $activity) {
+            if (is_array($activity) && ($activity['id'] ?? null) === $execution->id) {
+                return $activity;
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * @param array<string, mixed> $activityView
+     * @return list<array<string, mixed>>
+     */
+    private function formatAttempts(array $activityView, ?ActivityExecution $execution): array
+    {
+        $attempts = is_array($activityView['attempts'] ?? null) ? $activityView['attempts'] : [];
+
+        return array_values(array_map(
+            fn (array $attempt): array => $this->formatAttempt($attempt, $execution),
+            array_filter($attempts, static fn (mixed $attempt): bool => is_array($attempt)),
+        ));
+    }
+
+    /**
+     * @param array<string, mixed> $attempt
+     * @return array<string, mixed>
+     */
+    private function formatAttempt(array $attempt, ?ActivityExecution $execution): array
+    {
+        $attemptId = is_string($attempt['id'] ?? null) && $attempt['id'] !== ''
+            ? $attempt['id']
+            : null;
+        $taskId = is_string($attempt['task_id'] ?? null) && $attempt['task_id'] !== ''
+            ? $attempt['task_id']
+            : null;
+
+        return [
+            'id' => $attemptId,
+            'activity_attempt_id' => $attemptId,
+            'activity_execution_id' => $execution?->id,
+            'workflow_task_id' => $taskId,
+            'task_id' => $taskId,
+            'attempt_number' => is_int($attempt['attempt_number'] ?? null)
+                ? $attempt['attempt_number']
+                : null,
+            'status' => is_string($attempt['status'] ?? null) ? $attempt['status'] : null,
+            'lease_owner' => is_string($attempt['lease_owner'] ?? null) ? $attempt['lease_owner'] : null,
+            'lease_expires_at' => $this->timestamp($attempt['lease_expires_at'] ?? null),
+            'started_at' => $this->timestamp($attempt['started_at'] ?? null),
+            'last_heartbeat_at' => $this->timestamp($attempt['last_heartbeat_at'] ?? null),
+            'last_heartbeat_progress' => is_array($attempt['last_heartbeat_progress'] ?? null)
+                ? $attempt['last_heartbeat_progress']
+                : null,
+            'closed_at' => $this->timestamp($attempt['closed_at'] ?? null),
+            'can_continue' => ($attempt['can_continue'] ?? null) === true,
+            'cancel_requested' => ($attempt['cancel_requested'] ?? null) === true,
+            'stop_reason' => is_string($attempt['stop_reason'] ?? null) ? $attempt['stop_reason'] : null,
+            'is_current' => $attemptId !== null && $attemptId === $execution?->current_attempt_id,
+        ];
+    }
+
+    /**
+     * @param list<array<string, mixed>> $attempts
+     * @return array<string, mixed>|null
+     */
+    private function currentAttempt(array $attempts, ?ActivityExecution $execution): ?array
+    {
+        foreach ($attempts as $attempt) {
+            if (($attempt['is_current'] ?? false) === true) {
+                return $attempt;
+            }
+        }
+
+        return $attempts === [] ? null : $attempts[array_key_last($attempts)];
+    }
+
+    private function timestamp(mixed $value): ?string
+    {
+        if ($value instanceof CarbonInterface) {
+            return $value->toJSON();
+        }
+
+        if ($value instanceof DateTimeInterface) {
+            return Carbon::instance($value)->toJSON();
+        }
+
+        return is_string($value) && $value !== '' ? $value : null;
     }
 
     private function encodePageToken(int $offset): string

@@ -116,6 +116,10 @@ class ActivityConformanceRunnerContractTest extends TestCase
             'operator_state_matrix',
             'missing_operator_surface_reasons',
             'cli_json_list_evidence',
+            'run_dw_json_command',
+            'official published dw CLI JSON command output',
+            'dw activity:list --output=json --limit=200',
+            'cli_activity_attempt_state_visibility',
             'in_flight',
             'retrying',
             'timed_out',
@@ -134,6 +138,11 @@ class ActivityConformanceRunnerContractTest extends TestCase
         ] as $token) {
             $this->assertStringContainsString($token, $source);
         }
+
+        $this->assertStringNotContainsString(
+            "'json_contract_source' => 'GET /activities and GET /activities/{activity_id}'",
+            $source,
+        );
     }
 
     public function test_runner_does_not_pass_without_activity_product_evidence(): void

@@ -263,9 +263,10 @@
         "api_run_detail",
         "history_activity_attempts",
         "operator_metrics",
-        "waterline_activity_attempt_view"
+        "waterline_activity_attempt_view",
+        "cli_json_list_evidence"
       ],
-      "expected_behavior": "operators can see current and historical activity attempt state through API metrics and Waterline"
+      "expected_behavior": "operators can see current and historical activity attempt state through API metrics, Waterline, and CLI JSON list/detail output"
     }
   },
   "scenarios": [
@@ -536,13 +537,14 @@
       ],
       "operations": [
         "capture in-flight, retrying, timed-out, failed, completed, and cancelled activity attempt state",
-        "compare server API metrics, workflow history, and Waterline selected-run/list evidence",
+        "compare server API metrics, workflow history, Waterline selected-run/list evidence, and CLI JSON list/detail evidence",
         "record activity attempt id, attempt number, status, heartbeat, retry, and deadline fields"
       ],
       "pass_criteria": [
         "operators can see the current attempt and terminal status without reading database tables",
         "Waterline displays activity attempt state for embedded and standalone activity runs where supported",
-        "missing observer fields are routed to a focused Waterline or server product finding"
+        "CLI JSON list/detail output exposes activity execution ids and attempt rows where supported",
+        "missing observer fields are routed to a focused CLI, Waterline, or server product finding"
       ]
     }
   ]

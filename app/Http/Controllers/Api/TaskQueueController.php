@@ -13,6 +13,9 @@ use App\Support\TaskQueuePriorityFairnessSurface;
 use App\Support\WorkflowQueryTaskBroker;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Workflow\V2\Enums\ActivityAttemptStatus;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\StandaloneWorkerVisibility;
@@ -549,6 +552,7 @@ class TaskQueueController
     {
         $stats = is_array($payload['stats'] ?? null) ? $payload['stats'] : [];
         $stats = array_merge($stats, $this->recentTaskFlow($namespace, $taskQueue));
+        $stats['activity_attempts'] = $this->activityAttemptStateCounts($namespace, $taskQueue);
         $payload['stats'] = $stats;
 
         return $payload;
@@ -575,6 +579,98 @@ class TaskQueueController
                 ->where('last_dispatched_at', '>=', $windowStart)
                 ->count(),
         ];
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private function activityAttemptStateCounts(string $namespace, string $taskQueue): array
+    {
+        $counts = [
+            'total_count' => 0,
+            'running_count' => 0,
+            'retrying_count' => 0,
+            'timed_out_count' => 0,
+            'expired_count' => 0,
+            'failed_count' => 0,
+            'completed_count' => 0,
+            'cancelled_count' => 0,
+            'open_count' => 0,
+            'terminal_count' => 0,
+        ];
+
+        $rows = DB::table('activity_attempts')
+            ->join('activity_executions', 'activity_executions.id', '=', 'activity_attempts.activity_execution_id')
+            ->join('workflow_runs', 'workflow_runs.id', '=', 'activity_attempts.workflow_run_id')
+            ->where('workflow_runs.namespace', $namespace)
+            ->whereRaw("COALESCE(activity_executions.queue, workflow_runs.queue, 'default') = ?", [$taskQueue])
+            ->selectRaw('activity_attempts.status as attempt_status, activity_executions.status as execution_status, workflow_runs.closed_reason as run_closed_reason, COUNT(*) as aggregate_count')
+            ->groupBy('activity_attempts.status', 'activity_executions.status', 'workflow_runs.closed_reason')
+            ->get();
+
+        foreach ($rows as $row) {
+            $attemptStatus = is_string($row->attempt_status ?? null) ? $row->attempt_status : '';
+            $executionStatus = is_string($row->execution_status ?? null) ? $row->execution_status : '';
+            $closedReason = is_string($row->run_closed_reason ?? null) ? $row->run_closed_reason : '';
+            $count = (int) ($row->aggregate_count ?? 0);
+
+            if ($count <= 0) {
+                continue;
+            }
+
+            $counts['total_count'] += $count;
+
+            if ($attemptStatus === ActivityAttemptStatus::Running->value) {
+                $counts['running_count'] += $count;
+                $counts['open_count'] += $count;
+                continue;
+            }
+
+            if (
+                $attemptStatus === ActivityAttemptStatus::Failed->value
+                && in_array($executionStatus, [ActivityStatus::Pending->value, ActivityStatus::Running->value], true)
+            ) {
+                $counts['retrying_count'] += $count;
+                $counts['open_count'] += $count;
+                continue;
+            }
+
+            if ($attemptStatus === ActivityAttemptStatus::Expired->value) {
+                $counts['timed_out_count'] += $count;
+                $counts['expired_count'] += $count;
+                $counts['terminal_count'] += $count;
+                continue;
+            }
+
+            if (
+                $attemptStatus === ActivityAttemptStatus::Failed->value
+                && $executionStatus === ActivityStatus::Failed->value
+                && $closedReason === 'timed_out'
+            ) {
+                $counts['timed_out_count'] += $count;
+                $counts['terminal_count'] += $count;
+                continue;
+            }
+
+            if ($attemptStatus === ActivityAttemptStatus::Failed->value) {
+                $counts['failed_count'] += $count;
+                $counts['terminal_count'] += $count;
+                continue;
+            }
+
+            if ($attemptStatus === ActivityAttemptStatus::Completed->value) {
+                $counts['completed_count'] += $count;
+                $counts['terminal_count'] += $count;
+                continue;
+            }
+
+            if ($attemptStatus === ActivityAttemptStatus::Cancelled->value) {
+                $counts['cancelled_count'] += $count;
+                $counts['terminal_count'] += $count;
+            }
+        }
+
+        return $counts;
     }
 
     private function workerStaleAfterSeconds(): int

@@ -15,6 +15,7 @@ use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
@@ -264,6 +265,65 @@ class StandaloneActivityApiTest extends TestCase
         $this->assertSame(1, $body['activity_count']);
         $this->assertSame('standalone-list-1', $body['activities'][0]['activity_id']);
         $this->assertSame('tests.external-greeting-activity', $body['activities'][0]['activity_type']);
+    }
+
+    public function test_show_and_index_include_operator_visible_attempt_state(): void
+    {
+        $this->registerWorker(
+            'php-worker-standalone-visible-attempt',
+            'external-activities',
+            supportedWorkflowTypes: [],
+            supportedActivityTypes: ['tests.external-greeting-activity'],
+        );
+
+        $start = $this->withHeaders($this->apiHeaders())->postJson('/api/activities', [
+            'activity_id' => 'standalone-visible-attempt',
+            'activity_type' => 'tests.external-greeting-activity',
+            'task_queue' => 'external-activities',
+            'input' => ['Visible'],
+            'heartbeat_timeout_seconds' => 30,
+        ]);
+
+        $start->assertStatus(201);
+
+        $workerHeaders = $this->workerHeaders() + [
+            ControlPlaneProtocol::HEADER => ControlPlaneProtocol::VERSION,
+        ];
+
+        $poll = $this->withHeaders($workerHeaders)->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'php-worker-standalone-visible-attempt',
+            'task_queue' => 'external-activities',
+        ]);
+
+        $poll->assertOk();
+        $task = $poll->json('task');
+        $this->assertIsArray($task);
+
+        $show = $this->withHeaders($this->apiHeaders())->getJson('/api/activities/standalone-visible-attempt');
+
+        $show->assertOk()
+            ->assertJsonPath('activity_execution_id', $start->json('activity_execution_id'))
+            ->assertJsonPath('activity_status', ActivityStatus::Running->value)
+            ->assertJsonPath('current_attempt_id', $task['activity_attempt_id'])
+            ->assertJsonPath('current_attempt_status', ActivityAttemptStatus::Running->value)
+            ->assertJsonPath('current_attempt.activity_attempt_id', $task['activity_attempt_id'])
+            ->assertJsonPath('current_attempt.workflow_task_id', $task['task_id'])
+            ->assertJsonPath('current_attempt.status', ActivityAttemptStatus::Running->value)
+            ->assertJsonPath('current_attempt.can_continue', true)
+            ->assertJsonPath('attempts.0.activity_attempt_id', $task['activity_attempt_id'])
+            ->assertJsonPath('attempts.0.status', ActivityAttemptStatus::Running->value)
+            ->assertJsonPath('attempt_state.current_attempt_id', $task['activity_attempt_id'])
+            ->assertJsonPath('attempt_state.attempts.0.activity_attempt_id', $task['activity_attempt_id']);
+
+        $list = $this->withHeaders($this->apiHeaders())->getJson('/api/activities');
+
+        $list->assertOk()
+            ->assertJsonPath('activities.0.activity_id', 'standalone-visible-attempt')
+            ->assertJsonPath('activities.0.activity_execution_id', $start->json('activity_execution_id'))
+            ->assertJsonPath('activities.0.current_attempt_id', $task['activity_attempt_id'])
+            ->assertJsonPath('activities.0.current_attempt_status', ActivityAttemptStatus::Running->value)
+            ->assertJsonPath('activities.0.attempts.0.activity_attempt_id', $task['activity_attempt_id'])
+            ->assertJsonPath('activities.0.attempts.0.status', ActivityAttemptStatus::Running->value);
     }
 
     public function test_failure_then_retry_then_success_closes_host_run_with_result(): void
