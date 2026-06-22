@@ -71,7 +71,13 @@ class ActivityConformanceRunnerContractTest extends TestCase
             'focused_published_server_activity_host_probe',
             'PublishedActivitiesEmbeddedWorkflow',
             'run_retry_backoff_cell',
+            'run_timeout_behavior_cell',
+            'scenario_from_timeout_behavior_cell',
             'retry_task_not_ready_before_backoff_elapsed',
+            'start_to_close_timeout_seconds',
+            'ActivityTimedOut',
+            'enforcement_observed_at',
+            'caller_visible_outcome',
             'activity_host_evidence',
             'published_server_container',
             'focusedActivityHostEvidenceFailures',
@@ -851,6 +857,234 @@ class ActivityConformanceRunnerContractTest extends TestCase
             $evaluation = ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest());
             $this->assertSame('non_passing', $evaluation['status']);
             $this->assertNotContains('retry_attempt_backoff_behavior', $evaluation['non_pass_scenarios']);
+        } finally {
+            foreach (glob($resultDir.'/*') ?: [] as $file) {
+                if (is_file($file)) {
+                    unlink($file);
+                }
+            }
+            if (is_dir($resultDir)) {
+                rmdir($resultDir);
+            }
+        }
+    }
+
+    public function test_runner_records_timeout_behavior_host_evidence_without_passing_full_matrix(): void
+    {
+        if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
+            || trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('bash and node are required to exercise the activities runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = $repoRoot.'/storage/framework/activities-'.bin2hex(random_bytes(4));
+        $this->assertTrue(mkdir($resultDir, 0777, true));
+
+        try {
+            $version = '9.9.9';
+            $serverImage = 'durableworkflow/server:'.$version;
+            $scenarioResults = [];
+            foreach ([
+                'workflow_embedded_activity_result',
+                'standalone_activity_result',
+            ] as $scenarioId) {
+                $activityHostEvidence = $this->activityHostEvidenceForScenario($scenarioId);
+                $scenarioResults[] = [
+                    'scenario_id' => $scenarioId,
+                    'status' => 'pass',
+                    'observed_outputs' => [
+                        'evidence' => $scenarioId,
+                        'activity_host_evidence' => $activityHostEvidence,
+                    ],
+                    'scenario_evidence' => [
+                        'evidence' => $scenarioId,
+                        'activity_host_evidence' => $activityHostEvidence,
+                    ],
+                ];
+            }
+
+            $timeoutObserved = [
+                'activity_host_evidence' => [
+                    'schema' => 'durable-workflow.v2.activity-runtime.published-artifact-host-evidence',
+                    'scenario_id' => 'timeout_behavior',
+                    'status' => 'pass',
+                    'execution_source' => 'published_server_container',
+                    'local_product_source_checkouts_used' => false,
+                    'activity_cells' => [[
+                        'mode' => 'standalone',
+                        'runtime' => 'workflow-php',
+                        'status' => 'pass',
+                        'execution_source' => 'published_server_container',
+                        'worker_visible_deadlines' => [
+                            'start_to_close' => '2026-06-22T00:00:01Z',
+                            'schedule_to_close' => '2026-06-22T00:00:30Z',
+                        ],
+                        'local_product_source_checkouts_used' => false,
+                    ]],
+                ],
+                'configured_timeout_inputs' => [
+                    'start_to_close_timeout_seconds' => 1,
+                    'schedule_to_close_timeout_seconds' => 30,
+                    'retry_policy' => [
+                        'max_attempts' => 1,
+                        'backoff_seconds' => [0],
+                    ],
+                ],
+                'timeout_type' => 'start_to_close',
+                'deadline_at' => '2026-06-22T00:00:01Z',
+                'worker_visible_deadlines' => [
+                    'start_to_close' => '2026-06-22T00:00:01Z',
+                    'schedule_to_close' => '2026-06-22T00:00:30Z',
+                ],
+                'enforcement_endpoint' => 'POST /api/system/activity-timeouts/pass',
+                'enforcement_observed_at' => '2026-06-22T00:00:02Z',
+                'timeout_status_before_enforce' => [
+                    'expired_count' => 1,
+                    'expired_execution_ids' => ['activity-timeout-execution'],
+                    'scan_limit' => 100,
+                    'scan_pressure' => false,
+                ],
+                'enforce_response' => [
+                    'processed' => 1,
+                    'enforced' => 1,
+                    'skipped' => 0,
+                    'failed' => 0,
+                    'results' => [[
+                        'execution_id' => 'activity-timeout-execution',
+                        'outcome' => 'enforced',
+                        'has_retry' => false,
+                    ]],
+                ],
+                'typed_timeout_payload' => [
+                    'timeout_type' => 'start_to_close',
+                    'timeout_kind' => 'start_to_close',
+                    'failure_category' => 'timeout',
+                    'exception_class' => 'Workflow\\V2\\Exceptions\\ActivityTimeoutException',
+                    'message' => 'Activity activities.conformance.echo start-to-close deadline expired at 2026-06-22T00:00:01Z.',
+                    'activity_execution_id' => 'activity-timeout-execution',
+                    'activity_attempt_id' => 'activity-timeout-attempt',
+                ],
+                'activity_status' => 'failed',
+                'caller_visible_outcome' => [
+                    'activity_status' => 'failed',
+                    'run_status' => 'failed',
+                    'closed_reason' => 'timed_out',
+                ],
+                'history_events' => [
+                    'ActivityTimedOut',
+                    'WorkflowFailed',
+                ],
+            ];
+
+            $scenarioResults[] = [
+                'scenario_id' => 'timeout_behavior',
+                'status' => 'pass',
+                'observed_outputs' => $timeoutObserved,
+                'scenario_evidence' => [
+                    'timeout_behavior' => $timeoutObserved,
+                    'activity_host_evidence' => $timeoutObserved['activity_host_evidence'],
+                ],
+            ];
+
+            $activityEvidence = [
+                'schema' => 'durable-workflow.v2.activity-runtime.host-evidence',
+                'execution_source' => 'published_server_container',
+                'scenario_results' => $scenarioResults,
+                'published_artifact_worker_execution' => $this->publishedServerExecutionEvidence($version, $serverImage),
+                'runtime_matrix' => [
+                    'execution_modes' => ['workflow-embedded', 'standalone'],
+                    'runtimes' => ['workflow-php', 'sdk-python'],
+                    'activity_cells' => array_merge(
+                        $this->activityHostEvidenceForScenario('workflow_embedded_activity_result')['activity_cells'],
+                        $this->activityHostEvidenceForScenario('standalone_activity_result')['activity_cells'],
+                    ),
+                    'behavior_cells' => [
+                        ['scenario' => 'timeout_behavior', 'status' => 'pass'],
+                    ],
+                ],
+                'timeout_behavior' => [
+                    'status' => 'pass',
+                    'scenario' => 'timeout_behavior',
+                    'configured_timeout_inputs' => $timeoutObserved['configured_timeout_inputs'],
+                    'timeout_type' => $timeoutObserved['timeout_type'],
+                    'deadline_at' => $timeoutObserved['deadline_at'],
+                    'worker_visible_deadlines' => $timeoutObserved['worker_visible_deadlines'],
+                    'enforcement_endpoint' => $timeoutObserved['enforcement_endpoint'],
+                    'enforcement_observed_at' => $timeoutObserved['enforcement_observed_at'],
+                    'timeout_status_before_enforce' => $timeoutObserved['timeout_status_before_enforce'],
+                    'enforce_response' => $timeoutObserved['enforce_response'],
+                    'typed_timeout_payload' => $timeoutObserved['typed_timeout_payload'],
+                    'activity_status' => $timeoutObserved['activity_status'],
+                    'caller_visible_outcome' => $timeoutObserved['caller_visible_outcome'],
+                    'history_events' => $timeoutObserved['history_events'],
+                ],
+            ];
+
+            file_put_contents(
+                $resultDir.'/artifact-install-evidence.json',
+                json_encode($this->completeRunnerInstallEvidence($version), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+            file_put_contents(
+                $resultDir.'/activity-evidence.json',
+                json_encode($activityEvidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+
+            $env = [
+                'DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE' => '1',
+                'DW_SERVER_IMAGE' => $serverImage,
+                'DW_SERVER_VERSION' => $version,
+                'DW_CLI_VERSION' => $version,
+                'DW_PYTHON_SDK_VERSION' => $version,
+                'DW_WORKFLOW_PHP_VERSION' => $version,
+                'DW_WATERLINE_VERSION' => $version,
+            ];
+            $envPrefix = implode(' ', array_map(
+                static fn (string $name, string $value): string => $name.'='.escapeshellarg($value),
+                array_keys($env),
+                array_values($env),
+            ));
+            $command = sprintf(
+                '%s bash %s --result-dir %s >/dev/null 2>&1',
+                $envPrefix,
+                escapeshellarg($repoRoot.'/scripts/conformance/activities-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+            $this->assertSame(1, $exitCode);
+
+            $result = json_decode(
+                file_get_contents($resultDir.'/activities-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertFalse($result['runner_blocked']);
+            $this->assertSame('pass', $result['timeout_behavior']['status'] ?? null);
+            $this->assertSame('start_to_close', $result['timeout_behavior']['timeout_type'] ?? null);
+            $this->assertSame(1, $result['timeout_behavior']['configured_timeout_inputs']['start_to_close_timeout_seconds'] ?? null);
+            $this->assertSame('POST /api/system/activity-timeouts/pass', $result['timeout_behavior']['enforcement_endpoint'] ?? null);
+            $this->assertSame('timeout', $result['timeout_behavior']['typed_timeout_payload']['failure_category'] ?? null);
+            $this->assertSame('timed_out', $result['timeout_behavior']['caller_visible_outcome']['closed_reason'] ?? null);
+
+            $byScenario = [];
+            foreach ($result['scenario_results'] ?? [] as $scenario) {
+                $byScenario[$scenario['scenario_id']] = $scenario;
+            }
+
+            $this->assertSame('pass', $byScenario['timeout_behavior']['status'] ?? null);
+            $this->assertArrayNotHasKey('linked_findings', $byScenario['timeout_behavior']);
+            $this->assertSame(
+                'start_to_close',
+                $byScenario['timeout_behavior']['observed_outputs']['typed_timeout_payload']['timeout_type'] ?? null,
+            );
+
+            $evaluation = ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest());
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertNotContains('timeout_behavior', $evaluation['non_pass_scenarios']);
+            $this->assertContains('typed_failure_propagation', $evaluation['non_pass_scenarios']);
         } finally {
             foreach (glob($resultDir.'/*') ?: [] as $file) {
                 if (is_file($file)) {

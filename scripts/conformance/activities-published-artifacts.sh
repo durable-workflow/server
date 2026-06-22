@@ -193,6 +193,11 @@ use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowFailure;
+use Workflow\V2\Enums\ActivityStatus;
+use Workflow\V2\Enums\FailureCategory;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -350,6 +355,16 @@ function evidence_document(array $scenarioResults, array $activityCells): array
     $retryOutputs = is_array($retryScenario['observed_outputs'] ?? null)
         ? $retryScenario['observed_outputs']
         : [];
+    $timeoutScenario = null;
+    foreach ($scenarioResults as $scenario) {
+        if (($scenario['scenario_id'] ?? null) === 'timeout_behavior') {
+            $timeoutScenario = $scenario;
+            break;
+        }
+    }
+    $timeoutOutputs = is_array($timeoutScenario['observed_outputs'] ?? null)
+        ? $timeoutScenario['observed_outputs']
+        : [];
 
     return [
         'schema' => 'durable-workflow.v2.activity-runtime.host-evidence',
@@ -391,6 +406,22 @@ function evidence_document(array $scenarioResults, array $activityCells): array
             'scheduled_backoff_seconds' => $retryOutputs['scheduled_backoff_seconds'] ?? null,
             'observed_redelivery_timestamps' => $retryOutputs['observed_redelivery_timestamps'] ?? null,
             'terminal_result' => $retryOutputs['terminal_result'] ?? null,
+        ],
+        'timeout_behavior' => [
+            'status' => $scenarioStatusById['timeout_behavior'] ?? 'not_covered',
+            'scenario' => 'timeout_behavior',
+            'configured_timeout_inputs' => $timeoutOutputs['configured_timeout_inputs'] ?? null,
+            'timeout_type' => $timeoutOutputs['timeout_type'] ?? null,
+            'deadline_at' => $timeoutOutputs['deadline_at'] ?? null,
+            'worker_visible_deadlines' => $timeoutOutputs['worker_visible_deadlines'] ?? null,
+            'enforcement_endpoint' => $timeoutOutputs['enforcement_endpoint'] ?? null,
+            'enforcement_observed_at' => $timeoutOutputs['enforcement_observed_at'] ?? null,
+            'timeout_status_before_enforce' => $timeoutOutputs['timeout_status_before_enforce'] ?? null,
+            'enforce_response' => $timeoutOutputs['enforce_response'] ?? null,
+            'typed_timeout_payload' => $timeoutOutputs['typed_timeout_payload'] ?? null,
+            'activity_status' => $timeoutOutputs['activity_status'] ?? null,
+            'caller_visible_outcome' => $timeoutOutputs['caller_visible_outcome'] ?? null,
+            'history_events' => $timeoutOutputs['history_events'] ?? null,
         ],
     ];
 }
@@ -1355,6 +1386,252 @@ function run_retry_backoff_cell(): array
     ];
 }
 
+function run_timeout_behavior_cell(): array
+{
+    $suffix = bin2hex(random_bytes(3));
+    $workerId = "activities-timeout-{$suffix}";
+    $activityId = "activities-timeout-{$suffix}";
+    $configuredTimeouts = [
+        'start_to_close_timeout_seconds' => 1,
+        'schedule_to_close_timeout_seconds' => 30,
+        'retry_policy' => [
+            'max_attempts' => 1,
+            'backoff_seconds' => [0],
+        ],
+    ];
+
+    register_worker($workerId, [], [ACTIVITY_TYPE], 'workflow-php');
+    $start = request_json('POST', '/activities', [
+        'activity_id' => $activityId,
+        'activity_type' => ACTIVITY_TYPE,
+        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'input' => [[
+            'scenario_id' => 'timeout_behavior',
+            'runtime' => 'workflow-php',
+            'input_marker' => "timeout-behavior-{$suffix}",
+        ]],
+        ...$configuredTimeouts,
+    ]);
+    $runId = (string) ($start['workflow_run_id'] ?? '');
+    $activityExecutionId = (string) ($start['activity_execution_id'] ?? '');
+    if ($activityExecutionId === '' || $runId === '') {
+        throw new RuntimeException('timeout behavior activity start did not return execution and run identifiers');
+    }
+
+    $pollStartedAt = microtime(true);
+    $activityTask = poll_task('activity', $workerId);
+    $leasedAt = microtime(true);
+    $deadlines = is_array($activityTask['deadlines'] ?? null) ? $activityTask['deadlines'] : [];
+    $deadlineAt = is_string($deadlines['start_to_close'] ?? null) ? $deadlines['start_to_close'] : '';
+    $deadlineTimestamp = timestamp_from_datetime($deadlineAt);
+    if ($deadlineTimestamp === null) {
+        throw new RuntimeException('timeout behavior activity lease did not expose a start-to-close deadline to the worker');
+    }
+
+    wait_until_timestamp($deadlineTimestamp + 0.20);
+
+    $statusBefore = request_json('GET', '/system/activity-timeouts');
+    $expiredIds = array_values(array_filter(
+        is_array($statusBefore['expired_execution_ids'] ?? null) ? $statusBefore['expired_execution_ids'] : [],
+        static fn (mixed $value): bool => is_string($value)
+    ));
+    if (! in_array($activityExecutionId, $expiredIds, true)) {
+        wait_until_timestamp($deadlineTimestamp + 0.60);
+        $statusBefore = request_json('GET', '/system/activity-timeouts');
+        $expiredIds = array_values(array_filter(
+            is_array($statusBefore['expired_execution_ids'] ?? null) ? $statusBefore['expired_execution_ids'] : [],
+            static fn (mixed $value): bool => is_string($value)
+        ));
+    }
+    if (! in_array($activityExecutionId, $expiredIds, true)) {
+        throw new RuntimeException('timeout behavior activity did not become visible to the timeout scanner after its start-to-close deadline');
+    }
+
+    $enforcementObservedAt = now_iso();
+    $enforceResponse = request_json('POST', '/system/activity-timeouts/pass', [
+        'execution_ids' => [$activityExecutionId],
+    ]);
+    $enforceResults = is_array($enforceResponse['results'] ?? null) ? $enforceResponse['results'] : [];
+    $enforceResult = is_array($enforceResults[0] ?? null) ? $enforceResults[0] : [];
+    if (($enforceResponse['enforced'] ?? null) !== 1 || ($enforceResult['outcome'] ?? null) !== 'enforced') {
+        throw new RuntimeException('timeout behavior enforcement pass did not enforce the expired activity execution');
+    }
+
+    $show = request_json('GET', '/activities/'.rawurlencode($activityId));
+    $history = request_json('GET', '/workflows/'.rawurlencode($activityId).'/runs/'.rawurlencode($runId).'/history');
+    $timeoutPayloads = history_payloads_for_event($history, HistoryEventType::ActivityTimedOut->value);
+    $timeoutPayload = is_array($timeoutPayloads[0] ?? null) ? $timeoutPayloads[0] : [];
+    $workflowFailedPayloads = history_payloads_for_event($history, HistoryEventType::WorkflowFailed->value);
+    $workflowFailedPayload = is_array($workflowFailedPayloads[0] ?? null) ? $workflowFailedPayloads[0] : [];
+
+    /** @var ActivityExecution|null $execution */
+    $execution = ActivityExecution::query()->find($activityExecutionId);
+    /** @var WorkflowFailure|null $failure */
+    $failure = WorkflowFailure::query()
+        ->where('workflow_run_id', $runId)
+        ->where('source_id', $activityExecutionId)
+        ->first();
+
+    $typedPayload = [
+        'timeout_type' => $timeoutPayload['timeout_kind'] ?? null,
+        'timeout_kind' => $timeoutPayload['timeout_kind'] ?? null,
+        'failure_category' => $timeoutPayload['failure_category'] ?? null,
+        'exception_class' => $timeoutPayload['exception_class'] ?? null,
+        'message' => $timeoutPayload['message'] ?? null,
+        'activity_execution_id' => $timeoutPayload['activity_execution_id'] ?? null,
+        'activity_attempt_id' => $timeoutPayload['activity_attempt_id'] ?? null,
+        'failure_id' => $timeoutPayload['failure_id'] ?? null,
+        'workflow_failed_payload' => $workflowFailedPayload,
+        'failure_row' => $failure instanceof WorkflowFailure ? [
+            'failure_category' => $failure->failure_category instanceof BackedEnum
+                ? $failure->failure_category->value
+                : (string) $failure->failure_category,
+            'propagation_kind' => $failure->propagation_kind,
+            'exception_class' => $failure->exception_class,
+            'message' => $failure->message,
+        ] : null,
+    ];
+
+    $deadlineVisible = isset($deadlines['start_to_close'])
+        && isset($deadlines['schedule_to_close']);
+    $typedTimeoutRecorded = ($typedPayload['timeout_type'] ?? null) === 'start_to_close'
+        && ($typedPayload['failure_category'] ?? null) === FailureCategory::Timeout->value
+        && ($typedPayload['activity_execution_id'] ?? null) === $activityExecutionId;
+    $callerObservedTimeout = ($show['activity_status'] ?? null) === ActivityStatus::Failed->value
+        && ($show['status'] ?? null) === RunStatus::Failed->value
+        && ($show['closed_reason'] ?? null) === 'timed_out';
+
+    if (! $deadlineVisible) {
+        throw new RuntimeException('timeout behavior activity lease did not expose both start-to-close and schedule-to-close deadlines');
+    }
+    if (! $typedTimeoutRecorded) {
+        throw new RuntimeException('timeout behavior did not record an ActivityTimedOut history payload with timeout category and start-to-close kind');
+    }
+    if (! $callerObservedTimeout) {
+        throw new RuntimeException('timeout behavior caller-visible activity handle did not close as a timed-out failure');
+    }
+
+    return [
+        'scenario_id' => 'timeout_behavior',
+        'mode' => 'standalone',
+        'runtime' => 'workflow-php',
+        'status' => 'pass',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'activity_id' => $activityId,
+        'workflow_run_id' => $runId,
+        'activity_execution_id' => $activityExecutionId,
+        'activity_attempt_id' => $activityTask['activity_attempt_id'] ?? null,
+        'activity_type' => $activityTask['activity_type'] ?? ACTIVITY_TYPE,
+        'configured_timeout_inputs' => $configuredTimeouts,
+        'timeout_type' => 'start_to_close',
+        'deadline_at' => $deadlineAt,
+        'worker_visible_deadlines' => $deadlines,
+        'deadline_visible_to_worker' => $deadlineVisible,
+        'activity_task_poll_started_at' => iso_from_timestamp($pollStartedAt),
+        'activity_task_leased_at' => iso_from_timestamp($leasedAt),
+        'timeout_status_before_enforce' => $statusBefore,
+        'enforcement_endpoint' => 'POST /api/system/activity-timeouts/pass',
+        'enforcement_observed_at' => $enforcementObservedAt,
+        'enforce_response' => $enforceResponse,
+        'server_expired_scan_visible' => true,
+        'typed_timeout_payload' => $typedPayload,
+        'typed_timeout_recorded' => $typedTimeoutRecorded,
+        'activity_status' => $show['activity_status'] ?? null,
+        'caller_visible_outcome' => [
+            'activity_status' => $show['activity_status'] ?? null,
+            'run_status' => $show['status'] ?? null,
+            'closed_reason' => $show['closed_reason'] ?? null,
+            'activity_handle_response' => $show,
+        ],
+        'attempt_state' => attempt_snapshots($activityExecutionId),
+        'execution_state' => $execution instanceof ActivityExecution ? [
+            'status' => $execution->status instanceof BackedEnum ? $execution->status->value : (string) $execution->status,
+            'attempt_count' => $execution->attempt_count,
+            'close_deadline_at' => $execution->close_deadline_at?->toJSON(),
+            'schedule_to_close_deadline_at' => $execution->schedule_to_close_deadline_at?->toJSON(),
+            'closed_at' => $execution->closed_at?->toJSON(),
+        ] : null,
+        'history_events' => event_types($history),
+        'timeout_history_events' => $timeoutPayloads,
+        'workflow_failed_history_events' => $workflowFailedPayloads,
+        'local_product_source_checkouts_used' => false,
+    ];
+}
+
+function scenario_from_timeout_behavior_cell(array $cell): array
+{
+    $historyEvents = is_array($cell['history_events'] ?? null) ? $cell['history_events'] : [];
+    $pass = ($cell['status'] ?? null) === 'pass'
+        && ($cell['timeout_type'] ?? null) === 'start_to_close'
+        && ($cell['deadline_visible_to_worker'] ?? null) === true
+        && ($cell['server_expired_scan_visible'] ?? null) === true
+        && ($cell['typed_timeout_recorded'] ?? null) === true
+        && ($cell['activity_status'] ?? null) === ActivityStatus::Failed->value
+        && in_array(HistoryEventType::ActivityTimedOut->value, $historyEvents, true);
+    $hostEvidence = [
+        'schema' => HOST_EVIDENCE_SCHEMA,
+        'scenario_id' => 'timeout_behavior',
+        'status' => $pass ? 'pass' : 'fail',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'executed_in_pinned_server_artifact' => true,
+        'local_product_source_checkouts_used' => false,
+        'activity_cells' => [[
+            'mode' => 'standalone',
+            'runtime' => 'workflow-php',
+            'status' => $pass ? 'pass' : 'fail',
+            'execution_source' => HOST_EVIDENCE_SOURCE,
+            'activity_execution_id' => $cell['activity_execution_id'] ?? null,
+            'activity_attempt_id' => $cell['activity_attempt_id'] ?? null,
+            'worker_visible_deadlines' => $cell['worker_visible_deadlines'] ?? null,
+            'local_product_source_checkouts_used' => false,
+        ]],
+    ];
+    $observed = [
+        'activity_host_evidence' => $hostEvidence,
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'activity_id' => $cell['activity_id'] ?? null,
+        'workflow_run_id' => $cell['workflow_run_id'] ?? null,
+        'activity_execution_id' => $cell['activity_execution_id'] ?? null,
+        'activity_attempt_id' => $cell['activity_attempt_id'] ?? null,
+        'configured_timeout_inputs' => $cell['configured_timeout_inputs'] ?? null,
+        'timeout_type' => $cell['timeout_type'] ?? null,
+        'deadline_at' => $cell['deadline_at'] ?? null,
+        'worker_visible_deadlines' => $cell['worker_visible_deadlines'] ?? null,
+        'deadline_visible_to_worker' => $cell['deadline_visible_to_worker'] ?? null,
+        'timeout_status_before_enforce' => $cell['timeout_status_before_enforce'] ?? null,
+        'enforcement_endpoint' => $cell['enforcement_endpoint'] ?? null,
+        'enforcement_observed_at' => $cell['enforcement_observed_at'] ?? null,
+        'enforce_response' => $cell['enforce_response'] ?? null,
+        'typed_timeout_payload' => $cell['typed_timeout_payload'] ?? null,
+        'activity_status' => $cell['activity_status'] ?? null,
+        'caller_visible_outcome' => $cell['caller_visible_outcome'] ?? null,
+        'attempt_state' => $cell['attempt_state'] ?? null,
+        'execution_state' => $cell['execution_state'] ?? null,
+        'history_events' => $historyEvents,
+        'timeout_history_events' => $cell['timeout_history_events'] ?? null,
+        'workflow_failed_history_events' => $cell['workflow_failed_history_events'] ?? null,
+    ];
+
+    $scenario = [
+        'scenario_id' => 'timeout_behavior',
+        'status' => $pass ? 'pass' : 'fail',
+        'classification' => $pass ? null : 'product-gap',
+        'observed_outputs' => array_filter($observed, static fn (mixed $value): bool => $value !== null && $value !== []),
+        'scenario_evidence' => array_filter([
+            'timeout_behavior' => $cell,
+            'activity_host_evidence' => $hostEvidence,
+        ], static fn (mixed $value): bool => $value !== null && $value !== []),
+    ];
+
+    if (! $pass) {
+        $message = 'activity timeout behavior did not prove worker-visible deadline, typed timeout history, and caller-visible timed-out closure';
+        $scenario['observed_behavior'] = $message;
+        $scenario['linked_findings'] = [finding_for_failure('timeout_behavior', $message)];
+    }
+
+    return $scenario;
+}
+
 function scenario_from_restart_cell(array $cell): array
 {
     $pass = ($cell['status'] ?? null) === 'pass'
@@ -1492,12 +1769,22 @@ try {
     } catch (Throwable $throwable) {
         $retryScenario = failure_behavior_scenario('retry_attempt_backoff_behavior', $throwable);
     }
+    $timeoutScenario = failure_behavior_scenario(
+        'timeout_behavior',
+        new RuntimeException('timeout behavior scenario did not execute')
+    );
+    try {
+        $timeoutScenario = scenario_from_timeout_behavior_cell(run_timeout_behavior_cell());
+    } catch (Throwable $throwable) {
+        $timeoutScenario = failure_behavior_scenario('timeout_behavior', $throwable);
+    }
 
     write_json_file(output_path(), evidence_document([
         scenario_from_cells('workflow_embedded_activity_result', 'workflow-embedded', $embeddedCells),
         scenario_from_cells('standalone_activity_result', 'standalone', $standaloneCells),
         $restartScenario,
         $retryScenario,
+        $timeoutScenario,
     ], array_merge($embeddedCells, $standaloneCells)));
 } catch (Throwable $throwable) {
     write_json_file(output_path(), evidence_document([
@@ -1505,6 +1792,7 @@ try {
         failure_scenario('standalone_activity_result', 'standalone', $throwable),
         failure_behavior_scenario('durable_result_recording_after_worker_restart', $throwable),
         failure_behavior_scenario('retry_attempt_backoff_behavior', $throwable),
+        failure_behavior_scenario('timeout_behavior', $throwable),
     ], []));
 }
 PHP
