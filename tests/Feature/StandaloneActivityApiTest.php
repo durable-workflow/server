@@ -8,6 +8,7 @@ use App\Models\WorkflowNamespace;
 use App\Support\ControlPlaneProtocol;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\File;
 use Tests\Feature\Concerns\ServerTestHelpers;
 use Tests\TestCase;
@@ -105,6 +106,58 @@ class StandaloneActivityApiTest extends TestCase
         $this->assertNotNull($execution);
         $this->assertSame('tests.external-greeting-activity', $execution->activity_type);
         $this->assertSame(ActivityStatus::Pending, $execution->status);
+    }
+
+    public function test_poll_deadline_precision_matches_timeout_scanner_deadline(): void
+    {
+        $startedAt = Carbon::parse('2026-06-22 12:00:00.900000', 'UTC');
+        Carbon::setTestNow($startedAt);
+
+        try {
+            $this->registerWorker(
+                'standalone-timeout-worker',
+                'external-activities',
+                supportedWorkflowTypes: [],
+                supportedActivityTypes: ['tests.external-greeting-activity'],
+            );
+
+            $start = $this->withHeaders($this->apiHeaders())->postJson('/api/activities', [
+                'activity_id' => 'standalone-timeout-precision-1',
+                'activity_type' => 'tests.external-greeting-activity',
+                'task_queue' => 'external-activities',
+                'input' => ['Taylor'],
+                'retry_policy' => [
+                    'max_attempts' => 1,
+                    'backoff_seconds' => [0],
+                ],
+                'start_to_close_timeout_seconds' => 1,
+                'schedule_to_close_timeout_seconds' => 30,
+            ])->assertStatus(201);
+
+            $poll = $this->withHeaders($this->workerHeaders())->postJson('/api/worker/activity-tasks/poll', [
+                'worker_id' => 'standalone-timeout-worker',
+                'task_queue' => 'external-activities',
+            ])->assertOk();
+
+            $startToClose = $poll->json('task.deadlines.start_to_close');
+            $scheduleToClose = $poll->json('task.deadlines.schedule_to_close');
+
+            $this->assertSame('2026-06-22T12:00:01.900000Z', $startToClose);
+            $this->assertSame('2026-06-22T12:00:30.900000Z', $scheduleToClose);
+
+            Carbon::setTestNow(Carbon::parse($startToClose)->addMilliseconds(200));
+
+            $status = $this->withHeaders($this->apiHeaders())
+                ->getJson('/api/system/activity-timeouts')
+                ->assertOk();
+
+            $this->assertContains(
+                $start->json('activity_execution_id'),
+                $status->json('expired_execution_ids'),
+            );
+        } finally {
+            Carbon::setTestNow();
+        }
     }
 
     public function test_external_storage_round_trips_oversize_standalone_activity_payloads(): void

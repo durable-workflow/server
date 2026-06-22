@@ -14,6 +14,7 @@ use App\Support\NamespaceExternalPayloadStorage;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerProtocol;
 use App\Support\WorkerSessionRegistry;
+use Carbon\CarbonInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -772,13 +773,20 @@ class ActivityTaskController
         }
 
         $deadlines = array_filter([
-            'schedule_to_start' => $execution->schedule_deadline_at?->toIso8601String(),
-            'start_to_close' => $execution->close_deadline_at?->toIso8601String(),
-            'schedule_to_close' => $execution->schedule_to_close_deadline_at?->toIso8601String(),
-            'heartbeat' => $execution->heartbeat_deadline_at?->toIso8601String(),
+            'schedule_to_start' => $this->deadlineTimestamp($execution->schedule_deadline_at),
+            'start_to_close' => $this->deadlineTimestamp($execution->close_deadline_at),
+            'schedule_to_close' => $this->deadlineTimestamp($execution->schedule_to_close_deadline_at),
+            'heartbeat' => $this->deadlineTimestamp($execution->heartbeat_deadline_at),
         ], static fn (mixed $v): bool => $v !== null);
 
         return $deadlines !== [] ? $deadlines : null;
+    }
+
+    private function deadlineTimestamp(?CarbonInterface $deadline): ?string
+    {
+        return $deadline?->copy()
+            ->setTimezone('UTC')
+            ->format('Y-m-d\TH:i:s.u\Z');
     }
 
     /**
