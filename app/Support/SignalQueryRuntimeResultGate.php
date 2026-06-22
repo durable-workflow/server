@@ -10,7 +10,7 @@ final class SignalQueryRuntimeResultGate
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.result-gate';
 
-    public const VERSION = 22;
+    public const VERSION = 23;
 
     private const EVIDENCE_SECTION_SCENARIOS = [
         'replay_timing' => [
@@ -104,6 +104,8 @@ final class SignalQueryRuntimeResultGate
                 'published_artifact_install_only_includes_per_artifact_install_proof',
                 'python_worker_baseline_identifies_a_published_python_sdk_worker',
                 'python_worker_baseline_route_evidence_status_is_pass_or_completed',
+                'php_worker_baseline_identifies_a_published_workflow_php_worker',
+                'php_worker_baseline_version_matches_run_tuple',
                 'replay_timing_timestamps_are_ordered',
                 'terminal_run_status_codes_and_reasons_are_typed',
                 'each_non_pass_scenario_has_linked_findings',
@@ -427,6 +429,68 @@ final class SignalQueryRuntimeResultGate
                 'field' => $field,
                 'outcome' => $outcome,
                 'allowed_outcomes' => $allowedOutcomes,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $result
+     * @param array<string, mixed> $contract
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private static function phpWorkerBaselineFailures(
+        array $result,
+        array $contract,
+        array $scenarioResult,
+        string $scenarioId,
+    ): array {
+        $failures = [];
+        $runtime = self::stringValue(
+            self::evidenceValue($result, $scenarioResult, $scenarioId, 'worker_runtime'),
+        );
+        if (! self::sameRuntime($runtime, 'workflow-php')) {
+            $failures[] = [
+                'code' => 'php_worker_baseline_runtime_not_workflow_php',
+                'scenario_id' => $scenarioId,
+                'field' => 'worker_runtime',
+                'runtime' => $runtime,
+            ];
+        }
+
+        $source = self::stringValue(
+            self::evidenceValue($result, $scenarioResult, $scenarioId, 'workflow_php_artifact_source'),
+        );
+        if (! self::publishedWorkflowPhpSource($source, self::expectedArtifactSources($contract))) {
+            $failures[] = [
+                'code' => 'php_worker_baseline_source_not_published_workflow_php',
+                'scenario_id' => $scenarioId,
+                'field' => 'workflow_php_artifact_source',
+                'source' => $source,
+            ];
+        }
+
+        $version = self::stringValue(
+            self::evidenceValue($result, $scenarioResult, $scenarioId, 'workflow_php_sdk_version'),
+        );
+        $expectedVersion = self::artifactVersionValue(self::artifactVersions($result), 'workflow-php');
+        if ($version === '' || self::isPlaceholderVersion($version)) {
+            $failures[] = [
+                'code' => 'php_worker_baseline_missing_sdk_version',
+                'scenario_id' => $scenarioId,
+                'field' => 'workflow_php_sdk_version',
+                'version' => $version,
+            ];
+        } elseif ($expectedVersion !== '' && $version !== $expectedVersion) {
+            $failures[] = [
+                'code' => 'php_worker_baseline_sdk_version_mismatch',
+                'scenario_id' => $scenarioId,
+                'field' => 'workflow_php_sdk_version',
+                'version' => $version,
+                'expected_version' => $expectedVersion,
             ];
         }
 
@@ -1151,6 +1215,14 @@ final class SignalQueryRuntimeResultGate
     }
 
     /**
+     * @param array<string, string> $expectedSources
+     */
+    private static function publishedWorkflowPhpSource(string $source, array $expectedSources): bool
+    {
+        return self::publishedSourceMatchesArtifact($source, 'workflow-php', $expectedSources);
+    }
+
+    /**
      * @param array<mixed> $container
      *
      * @return array<int, array{sources: array<mixed>, field: string, path: string}>
@@ -1508,6 +1580,13 @@ final class SignalQueryRuntimeResultGate
                 array_push(
                     $failures,
                     ...self::pythonWorkerBaselineFailures($result, $contract, $scenarioResult, $scenarioId),
+                );
+            }
+
+            if ($scenarioId === 'php_worker_cli_and_sdk_baseline') {
+                array_push(
+                    $failures,
+                    ...self::phpWorkerBaselineFailures($result, $contract, $scenarioResult, $scenarioId),
                 );
             }
 
@@ -2481,6 +2560,7 @@ final class SignalQueryRuntimeResultGate
 
     private static function sameRuntime(string $reported, string $required): bool
     {
+        $reported = strtolower(trim($reported));
         $aliases = [
             'workflow-php' => ['workflow-php', 'workflow_php', 'php', 'php_worker'],
             'sdk-python' => ['sdk-python', 'sdk_python', 'python', 'python_worker'],

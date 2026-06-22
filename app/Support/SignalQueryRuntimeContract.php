@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 23;
+    public const VERSION = 24;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -195,6 +195,9 @@ final class SignalQueryRuntimeContract
                 ],
                 'php_worker_cli_and_sdk_baseline' => [
                     'evidence' => [
+                        'worker_runtime',
+                        'workflow_php_artifact_source',
+                        'workflow_php_sdk_version',
                         'php_worker_query_task_routing',
                         'cli_signal_and_query',
                         'workflow_php_signal_and_query',
@@ -513,6 +516,9 @@ final class SignalQueryRuntimeContract
                             'php_worker_cli_and_sdk_baseline',
                         ],
                         'required_evidence_fields' => [
+                            'worker_runtime',
+                            'workflow_php_artifact_source',
+                            'workflow_php_sdk_version',
                             'php_worker_query_task_routing',
                             'cli_signal_and_query',
                             'workflow_php_signal_and_query',

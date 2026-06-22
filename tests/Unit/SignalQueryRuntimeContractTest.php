@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(23, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(24, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -293,7 +293,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $resultGate = SignalQueryRuntimeContract::manifest()['result_gate'];
 
         $this->assertSame(SignalQueryRuntimeResultGate::SCHEMA, $resultGate['schema']);
-        $this->assertSame(22, SignalQueryRuntimeResultGate::VERSION);
+        $this->assertSame(23, SignalQueryRuntimeResultGate::VERSION);
         $this->assertSame(SignalQueryRuntimeResultGate::VERSION, $resultGate['version']);
         $this->assertSame(
             SignalQueryRuntimeContract::RESULT_SCHEMA,
@@ -682,13 +682,48 @@ class SignalQueryRuntimeContractTest extends TestCase
             'install_status = "pass" if install_outputs_cover_required_artifacts(install_outputs) else "not_covered"',
             'install_status == "pass"',
             'and has_required_evidence("python_worker_cli_and_sdk_baseline", python_sdk_outputs)',
+            'and has_required_evidence("php_worker_cli_and_sdk_baseline", workflow_php_outputs)',
             '"status": install_status',
             '"status": python_sdk_status',
+            '"status": workflow_php_status',
+            'DW_SIGNALS_QUERIES_RUN_PHP_BASELINE_PROBE',
         ] as $needle) {
             $this->assertStringContainsString($needle, $source);
         }
 
         $this->assertStringNotContainsString('"published_server_endpoint"', $source);
+    }
+
+    public function test_host_runner_generates_published_php_worker_project_for_mirror_baseline(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+artifact_versions = {"workflow-php": "2.0.0-alpha.213"}
+project = Path(tempfile.mkdtemp(prefix="dw-php-project-test."))
+try:
+    write_workflow_php_project(project)
+    composer = json.loads((project / "composer.json").read_text(encoding="utf-8"))
+    worker = (project / "php-counter-worker.php").read_text(encoding="utf-8")
+    client = (project / "php-workflow-client.php").read_text(encoding="utf-8")
+    print(json.dumps({
+        "localhost_url": docker_host_base_url("http://127.0.0.1:8080"),
+        "remote_url": docker_host_base_url("https://server.example.test:8443/base"),
+        "package": composer["require"]["durable-workflow/workflow"],
+        "worker_type": "conformance.counter.php" in worker,
+        "worker_contracts": "workflowCommandContracts" in worker,
+        "worker_query_executor": "WorkflowQueryTaskExecutor::CAPABILITY" in worker,
+        "client_uses_workflow_client": "new WorkflowClient" in client,
+    }, sort_keys=True))
+finally:
+    shutil.rmtree(project, ignore_errors=True)
+PY);
+
+        $this->assertSame('http://host.docker.internal:8080', $result['localhost_url']);
+        $this->assertSame('https://server.example.test:8443/base', $result['remote_url']);
+        $this->assertSame('2.0.0-alpha.213', $result['package']);
+        $this->assertTrue($result['worker_type']);
+        $this->assertTrue($result['worker_contracts']);
+        $this->assertTrue($result['worker_query_executor']);
+        $this->assertTrue($result['client_uses_workflow_client']);
     }
 
     public function test_host_runner_records_configured_server_image_overrides_as_non_published_install_evidence(): void
@@ -2370,6 +2405,33 @@ PY);
         $this->assertSame('non_passing', $result['outcome']);
     }
 
+    public function test_host_runner_does_not_satisfy_php_baseline_with_external_worker_identity(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        $evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['worker_runtime'] =
+            'external-http';
+
+        $result = $this->runSignalQueryHostRunner($evidence);
+
+        $this->assertSame('not_covered', $result['scenario_results']['php_worker_cli_and_sdk_baseline']['status']);
+        $this->assertContains('signal_query_php_worker_mirror_uncovered', array_column($result['findings'], 'type'));
+        $this->assertSame('non_passing', $result['outcome']);
+    }
+
+    public function test_host_runner_does_not_satisfy_php_baseline_with_stale_composer_package(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        $evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'][
+            'workflow_php_sdk_version'
+        ] = '2.0.0-alpha.1';
+
+        $result = $this->runSignalQueryHostRunner($evidence);
+
+        $this->assertSame('not_covered', $result['scenario_results']['php_worker_cli_and_sdk_baseline']['status']);
+        $this->assertContains('signal_query_php_worker_mirror_uncovered', array_column($result['findings'], 'type'));
+        $this->assertSame('non_passing', $result['outcome']);
+    }
+
     public function test_host_runner_rejects_imported_install_evidence_with_forbidden_scenario_sources(): void
     {
         $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
@@ -3431,6 +3493,53 @@ PY);
         );
     }
 
+    public function test_result_gate_rejects_php_baseline_pass_with_external_worker_identity(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['worker_runtime'] =
+            'external-http';
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'php_worker_baseline_runtime_not_workflow_php',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_php_baseline_pass_with_generic_worker_source(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'][
+            'workflow_php_artifact_source'
+        ] = 'published';
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'php_worker_baseline_source_not_published_workflow_php',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
+    public function test_result_gate_rejects_php_baseline_pass_with_stale_composer_package(): void
+    {
+        $result = $this->completeSignalQueryResult();
+        $result['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'][
+            'workflow_php_sdk_version'
+        ] = '2.0.0-alpha.1';
+
+        $evaluation = SignalQueryRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains(
+            'php_worker_baseline_sdk_version_mismatch',
+            array_column($evaluation['gate_failures'], 'code'),
+        );
+    }
+
     public function test_result_gate_rejects_python_baseline_pass_without_routed_current_query_task(): void
     {
         $result = $this->completeSignalQueryResult();
@@ -3967,6 +4076,9 @@ PY);
         $result['scenario_results']['python_worker_cli_and_sdk_baseline']['observed_outputs'][
             'python_worker_sdk_version'
         ] = $versions['sdk-python'];
+        $result['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'][
+            'workflow_php_sdk_version'
+        ] = $versions['workflow-php'];
 
         return $result;
     }
@@ -4028,6 +4140,9 @@ PY);
             'worker_id' => 'signals-queries-python-sdk-worker',
         ];
         $scenarioResults['php_worker_cli_and_sdk_baseline']['observed_outputs'] = [
+            'worker_runtime' => 'workflow-php',
+            'workflow_php_artifact_source' => 'published_composer_package',
+            'workflow_php_sdk_version' => '2.0.0-alpha.161',
             'php_worker_query_task_routing' => true,
             'cli_signal_and_query' => true,
             'workflow_php_signal_and_query' => true,
@@ -4282,6 +4397,7 @@ PY);
                 'cli' => '0.1.45',
                 'sdk-python' => '0.4.58',
                 'workflow' => '2.0.0-alpha.161',
+                'workflow-php' => '2.0.0-alpha.161',
                 'waterline' => '2.0.0-alpha.54',
             ],
             'runtime_matrix' => [
