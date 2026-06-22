@@ -73,11 +73,16 @@ class ActivityConformanceRunnerContractTest extends TestCase
             'run_retry_backoff_cell',
             'run_timeout_behavior_cell',
             'scenario_from_timeout_behavior_cell',
+            'run_typed_failure_propagation_cell',
+            'scenario_from_typed_failure_cell',
             'retry_task_not_ready_before_backoff_elapsed',
             'start_to_close_timeout_seconds',
             'ActivityTimedOut',
+            'ActivityFailed',
             'enforcement_observed_at',
             'caller_visible_outcome',
+            'history_exception',
+            'caller_observed_failure',
             'activity_host_evidence',
             'published_server_container',
             'focusedActivityHostEvidenceFailures',
@@ -869,7 +874,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
         }
     }
 
-    public function test_runner_records_timeout_behavior_host_evidence_without_passing_full_matrix(): void
+    public function test_runner_records_timeout_and_typed_failure_host_evidence_without_passing_full_matrix(): void
     {
         if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
             || trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
@@ -986,6 +991,74 @@ class ActivityConformanceRunnerContractTest extends TestCase
                 ],
             ];
 
+            $typedFailureObserved = [
+                'activity_host_evidence' => [
+                    'schema' => 'durable-workflow.v2.activity-runtime.published-artifact-host-evidence',
+                    'scenario_id' => 'typed_failure_propagation',
+                    'status' => 'pass',
+                    'execution_source' => 'published_server_container',
+                    'local_product_source_checkouts_used' => false,
+                    'activity_cells' => [[
+                        'mode' => 'workflow-embedded',
+                        'runtime' => 'workflow-php',
+                        'status' => 'pass',
+                        'execution_source' => 'published_server_container',
+                        'activity_execution_id' => 'activity-typed-failure-execution',
+                        'activity_attempt_id' => 'activity-typed-failure-attempt',
+                        'local_product_source_checkouts_used' => false,
+                    ]],
+                ],
+                'failure_type' => 'ActivitiesConformanceTypedFailure',
+                'failure_message' => 'typed activity failure propagated from published artifact worker',
+                'failure_details' => [
+                    'failure_code' => 'ACTIVITY_TYPED_FAILURE',
+                    'stage' => 'typed_failure_propagation',
+                    'retry_after_seconds' => 45,
+                    'runtime' => 'workflow-php',
+                ],
+                'history_exception' => [
+                    'type' => 'ActivitiesConformanceTypedFailure',
+                    'class' => 'DurableWorkflow\\Conformance\\Activities\\TypedActivityFailure',
+                    'message' => 'typed activity failure propagated from published artifact worker',
+                    'details_payload_codec' => 'avro',
+                    'details' => 'encoded-details',
+                ],
+                'caller_observed_failure' => [
+                    'status' => 'caught',
+                    'class' => 'Workflow\\V2\\Exceptions\\RestoredWorkflowException',
+                    'original_exception_class' => 'DurableWorkflow\\Conformance\\Activities\\TypedActivityFailure',
+                    'failure_type' => 'ActivitiesConformanceTypedFailure',
+                    'failure_message' => 'typed activity failure propagated from published artifact worker',
+                    'failure_details' => [
+                        'failure_code' => 'ACTIVITY_TYPED_FAILURE',
+                        'stage' => 'typed_failure_propagation',
+                        'retry_after_seconds' => 45,
+                        'runtime' => 'workflow-php',
+                    ],
+                ],
+                'failure_row' => [
+                    'failure_category' => 'activity',
+                    'propagation_kind' => 'activity',
+                    'exception_class' => 'DurableWorkflow\\Conformance\\Activities\\TypedActivityFailure',
+                    'message' => 'typed activity failure propagated from published artifact worker',
+                    'non_retryable' => true,
+                ],
+                'history_events' => [
+                    'ActivityFailed',
+                    'WorkflowCompleted',
+                ],
+            ];
+
+            $scenarioResults[] = [
+                'scenario_id' => 'typed_failure_propagation',
+                'status' => 'pass',
+                'observed_outputs' => $typedFailureObserved,
+                'scenario_evidence' => [
+                    'typed_failure_propagation' => $typedFailureObserved,
+                    'activity_host_evidence' => $typedFailureObserved['activity_host_evidence'],
+                ],
+            ];
+
             $activityEvidence = [
                 'schema' => 'durable-workflow.v2.activity-runtime.host-evidence',
                 'execution_source' => 'published_server_container',
@@ -1000,6 +1073,7 @@ class ActivityConformanceRunnerContractTest extends TestCase
                     ),
                     'behavior_cells' => [
                         ['scenario' => 'timeout_behavior', 'status' => 'pass'],
+                        ['scenario' => 'typed_failure_propagation', 'status' => 'pass'],
                     ],
                 ],
                 'timeout_behavior' => [
@@ -1017,6 +1091,17 @@ class ActivityConformanceRunnerContractTest extends TestCase
                     'activity_status' => $timeoutObserved['activity_status'],
                     'caller_visible_outcome' => $timeoutObserved['caller_visible_outcome'],
                     'history_events' => $timeoutObserved['history_events'],
+                ],
+                'typed_failure_propagation' => [
+                    'status' => 'pass',
+                    'scenario' => 'typed_failure_propagation',
+                    'failure_type' => $typedFailureObserved['failure_type'],
+                    'failure_message' => $typedFailureObserved['failure_message'],
+                    'failure_details' => $typedFailureObserved['failure_details'],
+                    'history_exception' => $typedFailureObserved['history_exception'],
+                    'caller_observed_failure' => $typedFailureObserved['caller_observed_failure'],
+                    'failure_row' => $typedFailureObserved['failure_row'],
+                    'history_events' => $typedFailureObserved['history_events'],
                 ],
             ];
 
@@ -1068,6 +1153,20 @@ class ActivityConformanceRunnerContractTest extends TestCase
             $this->assertSame('POST /api/system/activity-timeouts/pass', $result['timeout_behavior']['enforcement_endpoint'] ?? null);
             $this->assertSame('timeout', $result['timeout_behavior']['typed_timeout_payload']['failure_category'] ?? null);
             $this->assertSame('timed_out', $result['timeout_behavior']['caller_visible_outcome']['closed_reason'] ?? null);
+            $this->assertSame('pass', $result['typed_failure_propagation']['status'] ?? null);
+            $this->assertSame('ActivitiesConformanceTypedFailure', $result['typed_failure_propagation']['failure_type'] ?? null);
+            $this->assertSame(
+                'typed activity failure propagated from published artifact worker',
+                $result['typed_failure_propagation']['failure_message'] ?? null,
+            );
+            $this->assertSame(
+                'ACTIVITY_TYPED_FAILURE',
+                $result['typed_failure_propagation']['failure_details']['failure_code'] ?? null,
+            );
+            $this->assertSame(
+                'ActivitiesConformanceTypedFailure',
+                $result['typed_failure_propagation']['caller_observed_failure']['failure_type'] ?? null,
+            );
 
             $byScenario = [];
             foreach ($result['scenario_results'] ?? [] as $scenario) {
@@ -1080,11 +1179,18 @@ class ActivityConformanceRunnerContractTest extends TestCase
                 'start_to_close',
                 $byScenario['timeout_behavior']['observed_outputs']['typed_timeout_payload']['timeout_type'] ?? null,
             );
+            $this->assertSame('pass', $byScenario['typed_failure_propagation']['status'] ?? null);
+            $this->assertArrayNotHasKey('linked_findings', $byScenario['typed_failure_propagation']);
+            $this->assertSame(
+                'ActivitiesConformanceTypedFailure',
+                $byScenario['typed_failure_propagation']['observed_outputs']['history_exception']['type'] ?? null,
+            );
 
             $evaluation = ActivityRuntimeResultGate::evaluate($result, ActivityRuntimeContract::manifest());
             $this->assertSame('non_passing', $evaluation['status']);
             $this->assertNotContains('timeout_behavior', $evaluation['non_pass_scenarios']);
-            $this->assertContains('typed_failure_propagation', $evaluation['non_pass_scenarios']);
+            $this->assertNotContains('typed_failure_propagation', $evaluation['non_pass_scenarios']);
+            $this->assertContains('heartbeat_and_cancellation_observation', $evaluation['non_pass_scenarios']);
         } finally {
             foreach (glob($resultDir.'/*') ?: [] as $file) {
                 if (is_file($file)) {

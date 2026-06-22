@@ -225,6 +225,51 @@ final class PublishedActivitiesEmbeddedWorkflow extends Workflow
 {
     public function handle(array $payload): array
     {
+        $scenarioId = is_string($payload['scenario_id'] ?? null) ? $payload['scenario_id'] : '';
+
+        if ($scenarioId === 'typed_failure_propagation') {
+            try {
+                Workflow::activity(
+                    ACTIVITY_TYPE,
+                    new ActivityOptions(queue: ACTIVITIES_TASK_QUEUE),
+                    $payload
+                );
+
+                return [
+                    'workflow_runtime' => 'workflow-php',
+                    'requested_runtime' => $payload['runtime'] ?? null,
+                    'caller_observed_failure' => [
+                        'status' => 'unexpected_success',
+                    ],
+                ];
+            } catch (Throwable $throwable) {
+                $failurePayload = method_exists($throwable, 'failurePayload')
+                    ? $throwable->failurePayload()
+                    : [];
+                $details = is_array($failurePayload) && array_key_exists('details', $failurePayload)
+                    ? decode_payload($failurePayload['details'], $failurePayload['details_payload_codec'] ?? null)
+                    : null;
+
+                return [
+                    'workflow_runtime' => 'workflow-php',
+                    'requested_runtime' => $payload['runtime'] ?? null,
+                    'caller_observed_failure' => [
+                        'status' => 'caught',
+                        'class' => $throwable::class,
+                        'message' => $throwable->getMessage(),
+                        'original_exception_class' => method_exists($throwable, 'originalExceptionClass')
+                            ? $throwable->originalExceptionClass()
+                            : $throwable::class,
+                        'failure_type' => is_array($failurePayload) ? ($failurePayload['type'] ?? null) : null,
+                        'failure_message' => is_array($failurePayload) ? ($failurePayload['message'] ?? null) : $throwable->getMessage(),
+                        'details_payload_codec' => is_array($failurePayload) ? ($failurePayload['details_payload_codec'] ?? null) : null,
+                        'failure_details' => $details,
+                        'failure_payload' => $failurePayload,
+                    ],
+                ];
+            }
+        }
+
         $activityResult = Workflow::activity(
             ACTIVITY_TYPE,
             new ActivityOptions(queue: ACTIVITIES_TASK_QUEUE),
@@ -365,6 +410,16 @@ function evidence_document(array $scenarioResults, array $activityCells): array
     $timeoutOutputs = is_array($timeoutScenario['observed_outputs'] ?? null)
         ? $timeoutScenario['observed_outputs']
         : [];
+    $typedFailureScenario = null;
+    foreach ($scenarioResults as $scenario) {
+        if (($scenario['scenario_id'] ?? null) === 'typed_failure_propagation') {
+            $typedFailureScenario = $scenario;
+            break;
+        }
+    }
+    $typedFailureOutputs = is_array($typedFailureScenario['observed_outputs'] ?? null)
+        ? $typedFailureScenario['observed_outputs']
+        : [];
 
     return [
         'schema' => 'durable-workflow.v2.activity-runtime.host-evidence',
@@ -422,6 +477,18 @@ function evidence_document(array $scenarioResults, array $activityCells): array
             'activity_status' => $timeoutOutputs['activity_status'] ?? null,
             'caller_visible_outcome' => $timeoutOutputs['caller_visible_outcome'] ?? null,
             'history_events' => $timeoutOutputs['history_events'] ?? null,
+        ],
+        'typed_failure_propagation' => [
+            'status' => $scenarioStatusById['typed_failure_propagation'] ?? 'not_covered',
+            'scenario' => 'typed_failure_propagation',
+            'failure_type' => $typedFailureOutputs['failure_type'] ?? null,
+            'failure_message' => $typedFailureOutputs['failure_message'] ?? null,
+            'failure_details' => $typedFailureOutputs['failure_details'] ?? null,
+            'history_exception' => $typedFailureOutputs['history_exception'] ?? null,
+            'caller_observed_failure' => $typedFailureOutputs['caller_observed_failure'] ?? null,
+            'history_events' => $typedFailureOutputs['history_events'] ?? null,
+            'activity_failed_history_events' => $typedFailureOutputs['activity_failed_history_events'] ?? null,
+            'failure_row' => $typedFailureOutputs['failure_row'] ?? null,
         ],
     ];
 }
@@ -1558,6 +1625,243 @@ function run_timeout_behavior_cell(): array
     ];
 }
 
+function run_typed_failure_propagation_cell(): array
+{
+    $suffix = bin2hex(random_bytes(3));
+    $workerId = "activities-typed-failure-{$suffix}";
+    $workflowId = "activities-typed-failure-{$suffix}";
+    $failureType = 'ActivitiesConformanceTypedFailure';
+    $failureMessage = 'typed activity failure propagated from published artifact worker';
+    $failureClass = 'DurableWorkflow\\Conformance\\Activities\\TypedActivityFailure';
+    $failureDetails = [
+        'failure_code' => 'ACTIVITY_TYPED_FAILURE',
+        'stage' => 'typed_failure_propagation',
+        'retry_after_seconds' => 45,
+        'runtime' => 'workflow-php',
+    ];
+    $failurePayload = [
+        'message' => $failureMessage,
+        'type' => $failureType,
+        'class' => $failureClass,
+        'code' => 409,
+        'stack_trace' => 'at activities.conformance.typed_failure:42',
+        'non_retryable' => true,
+        'retryable' => false,
+        'details' => envelope($failureDetails, CodecRegistry::defaultCodec()),
+        'runtime_diagnostics' => [
+            'runtime' => 'workflow-php',
+            'scenario_id' => 'typed_failure_propagation',
+        ],
+    ];
+
+    register_worker($workerId, [EMBEDDED_WORKFLOW_TYPE], [ACTIVITY_TYPE], 'workflow-php');
+    $start = request_json('POST', '/workflows', [
+        'workflow_id' => $workflowId,
+        'workflow_type' => EMBEDDED_WORKFLOW_TYPE,
+        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'input' => [[
+            'scenario_id' => 'typed_failure_propagation',
+            'runtime' => 'workflow-php',
+            'input_marker' => "typed-failure-{$suffix}",
+        ]],
+    ]);
+    $runId = (string) ($start['run_id'] ?? '');
+    if ($runId === '') {
+        throw new RuntimeException('typed failure workflow start did not return a run id');
+    }
+
+    $workflowTask = poll_task('workflow', $workerId);
+    complete_workflow_task_from_runtime($workflowTask);
+
+    $activityTask = poll_task('activity', $workerId);
+    $failResponse = fail_activity_task($activityTask, $failurePayload);
+    if (($failResponse['outcome'] ?? null) !== 'failed' || ($failResponse['recorded'] ?? null) !== true) {
+        throw new RuntimeException('typed failure activity report was not durably recorded');
+    }
+
+    $resumeTask = poll_task('workflow', $workerId);
+    $workflowComplete = complete_workflow_task_from_runtime($resumeTask);
+
+    $run = request_json('GET', '/workflows/'.rawurlencode($workflowId).'/runs/'.rawurlencode($runId));
+    $history = request_json('GET', '/workflows/'.rawurlencode($workflowId).'/runs/'.rawurlencode($runId).'/history');
+    $activityFailedPayloads = history_payloads_for_event($history, HistoryEventType::ActivityFailed->value);
+    $activityFailedPayload = is_array($activityFailedPayloads[0] ?? null) ? $activityFailedPayloads[0] : [];
+    $historyException = is_array($activityFailedPayload['exception'] ?? null)
+        ? $activityFailedPayload['exception']
+        : [];
+    $historyDetails = array_key_exists('details', $historyException)
+        ? decode_payload($historyException['details'], $historyException['details_payload_codec'] ?? null)
+        : null;
+    $workflowOutput = normalized_workflow_output($run['output'] ?? null);
+    $callerObservedFailure = is_array($workflowOutput['caller_observed_failure'] ?? null)
+        ? $workflowOutput['caller_observed_failure']
+        : [];
+
+    /** @var ActivityExecution|null $execution */
+    $execution = ActivityExecution::query()->find((string) ($activityTask['activity_execution_id'] ?? ''));
+    /** @var WorkflowFailure|null $failure */
+    $failure = WorkflowFailure::query()
+        ->where('workflow_run_id', $runId)
+        ->where('source_id', (string) ($activityTask['activity_execution_id'] ?? ''))
+        ->first();
+
+    $historyPreservedFailure = ($activityFailedPayload['exception_type'] ?? null) === $failureType
+        && ($activityFailedPayload['message'] ?? null) === $failureMessage
+        && ($historyException['type'] ?? null) === $failureType
+        && ($historyException['message'] ?? null) === $failureMessage
+        && $historyDetails === $failureDetails;
+    $callerObservedTypedFailure = ($callerObservedFailure['status'] ?? null) === 'caught'
+        && ($callerObservedFailure['failure_type'] ?? null) === $failureType
+        && ($callerObservedFailure['failure_message'] ?? null) === $failureMessage
+        && ($callerObservedFailure['failure_details'] ?? null) === $failureDetails;
+    $failureRowPreservedType = $failure instanceof WorkflowFailure
+        && $failure->exception_class === $failureClass
+        && $failure->message === $failureMessage;
+
+    if (($run['status'] ?? null) !== RunStatus::Completed->value) {
+        throw new RuntimeException('typed failure workflow did not complete after catching the activity failure');
+    }
+    if (! $historyPreservedFailure) {
+        throw new RuntimeException('typed failure history did not preserve type, message, and decoded details');
+    }
+    if (! $callerObservedTypedFailure) {
+        throw new RuntimeException('typed failure was not observed by the caller runtime with type, message, and details');
+    }
+    if (! $failureRowPreservedType) {
+        throw new RuntimeException('typed failure row did not preserve exception class and message');
+    }
+
+    return [
+        'scenario_id' => 'typed_failure_propagation',
+        'mode' => 'workflow-embedded',
+        'runtime' => 'workflow-php',
+        'status' => 'pass',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'workflow_id' => $workflowId,
+        'run_id' => $runId,
+        'activity_execution_id' => $activityTask['activity_execution_id'] ?? null,
+        'activity_attempt_id' => $activityTask['activity_attempt_id'] ?? null,
+        'activity_type' => $activityTask['activity_type'] ?? ACTIVITY_TYPE,
+        'failure_type' => $failureType,
+        'failure_message' => $failureMessage,
+        'failure_details' => $failureDetails,
+        'history_exception' => $historyException,
+        'history_details' => $historyDetails,
+        'history_preserved_failure' => $historyPreservedFailure,
+        'caller_observed_failure' => $callerObservedFailure,
+        'caller_observed_typed_failure' => $callerObservedTypedFailure,
+        'failure_row_preserved_type' => $failureRowPreservedType,
+        'failure_report' => [
+            'request' => [
+                'message' => $failurePayload['message'],
+                'type' => $failurePayload['type'],
+                'class' => $failurePayload['class'],
+                'non_retryable' => $failurePayload['non_retryable'],
+                'details' => $failureDetails,
+            ],
+            'response' => $failResponse,
+        ],
+        'failure_row' => $failure instanceof WorkflowFailure ? [
+            'failure_category' => $failure->failure_category instanceof BackedEnum
+                ? $failure->failure_category->value
+                : (string) $failure->failure_category,
+            'propagation_kind' => $failure->propagation_kind,
+            'exception_class' => $failure->exception_class,
+            'message' => $failure->message,
+            'non_retryable' => (bool) $failure->non_retryable,
+        ] : null,
+        'execution_state' => $execution instanceof ActivityExecution ? [
+            'status' => $execution->status instanceof BackedEnum ? $execution->status->value : (string) $execution->status,
+            'exception' => $execution->exception,
+            'attempt_count' => $execution->attempt_count,
+            'closed_at' => $execution->closed_at?->toJSON(),
+        ] : null,
+        'workflow_output' => $workflowOutput,
+        'history_events' => event_types($history),
+        'activity_failed_history_events' => $activityFailedPayloads,
+        'worker_protocol' => [
+            'activity_task_failure' => $failResponse['outcome'] ?? null,
+            'activity_task_recorded' => $failResponse['recorded'] ?? null,
+            'workflow_task_completion_after_failure' => $workflowComplete['outcome'] ?? null,
+            'run_status_after_caller_observation' => $run['status'] ?? null,
+            'registered_runtime' => 'php',
+        ],
+        'local_product_source_checkouts_used' => false,
+    ];
+}
+
+function scenario_from_typed_failure_cell(array $cell): array
+{
+    $historyEvents = is_array($cell['history_events'] ?? null) ? $cell['history_events'] : [];
+    $pass = ($cell['status'] ?? null) === 'pass'
+        && is_string($cell['failure_type'] ?? null)
+        && ($cell['failure_type'] ?? '') !== ''
+        && is_string($cell['failure_message'] ?? null)
+        && ($cell['failure_message'] ?? '') !== ''
+        && is_array($cell['failure_details'] ?? null)
+        && is_array($cell['history_exception'] ?? null)
+        && is_array($cell['caller_observed_failure'] ?? null)
+        && ($cell['history_preserved_failure'] ?? null) === true
+        && ($cell['caller_observed_typed_failure'] ?? null) === true
+        && in_array(HistoryEventType::ActivityFailed->value, $historyEvents, true);
+    $hostEvidence = [
+        'schema' => HOST_EVIDENCE_SCHEMA,
+        'scenario_id' => 'typed_failure_propagation',
+        'status' => $pass ? 'pass' : 'fail',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'executed_in_pinned_server_artifact' => true,
+        'local_product_source_checkouts_used' => false,
+        'activity_cells' => [[
+            'mode' => 'workflow-embedded',
+            'runtime' => 'workflow-php',
+            'status' => $pass ? 'pass' : 'fail',
+            'execution_source' => HOST_EVIDENCE_SOURCE,
+            'activity_execution_id' => $cell['activity_execution_id'] ?? null,
+            'activity_attempt_id' => $cell['activity_attempt_id'] ?? null,
+            'local_product_source_checkouts_used' => false,
+        ]],
+    ];
+    $observed = [
+        'activity_host_evidence' => $hostEvidence,
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'workflow_id' => $cell['workflow_id'] ?? null,
+        'run_id' => $cell['run_id'] ?? null,
+        'activity_execution_id' => $cell['activity_execution_id'] ?? null,
+        'activity_attempt_id' => $cell['activity_attempt_id'] ?? null,
+        'failure_type' => $cell['failure_type'] ?? null,
+        'failure_message' => $cell['failure_message'] ?? null,
+        'failure_details' => $cell['failure_details'] ?? null,
+        'history_exception' => $cell['history_exception'] ?? null,
+        'caller_observed_failure' => $cell['caller_observed_failure'] ?? null,
+        'failure_report' => $cell['failure_report'] ?? null,
+        'failure_row' => $cell['failure_row'] ?? null,
+        'execution_state' => $cell['execution_state'] ?? null,
+        'workflow_output' => $cell['workflow_output'] ?? null,
+        'history_events' => $historyEvents,
+        'activity_failed_history_events' => $cell['activity_failed_history_events'] ?? null,
+        'worker_protocol' => $cell['worker_protocol'] ?? null,
+    ];
+
+    $scenario = [
+        'scenario_id' => 'typed_failure_propagation',
+        'status' => $pass ? 'pass' : 'fail',
+        'classification' => $pass ? null : 'product-gap',
+        'observed_outputs' => array_filter($observed, static fn (mixed $value): bool => $value !== null && $value !== []),
+        'scenario_evidence' => array_filter([
+            'typed_failure_propagation' => $cell,
+            'activity_host_evidence' => $hostEvidence,
+        ], static fn (mixed $value): bool => $value !== null && $value !== []),
+    ];
+
+    if (! $pass) {
+        $message = 'activity typed failure propagation did not prove type, message, details, history visibility, and caller-runtime observation';
+        $scenario['observed_behavior'] = $message;
+        $scenario['linked_findings'] = [finding_for_failure('typed_failure_propagation', $message)];
+    }
+
+    return $scenario;
+}
+
 function scenario_from_timeout_behavior_cell(array $cell): array
 {
     $historyEvents = is_array($cell['history_events'] ?? null) ? $cell['history_events'] : [];
@@ -1778,6 +2082,15 @@ try {
     } catch (Throwable $throwable) {
         $timeoutScenario = failure_behavior_scenario('timeout_behavior', $throwable);
     }
+    $typedFailureScenario = failure_behavior_scenario(
+        'typed_failure_propagation',
+        new RuntimeException('typed failure propagation scenario did not execute')
+    );
+    try {
+        $typedFailureScenario = scenario_from_typed_failure_cell(run_typed_failure_propagation_cell());
+    } catch (Throwable $throwable) {
+        $typedFailureScenario = failure_behavior_scenario('typed_failure_propagation', $throwable);
+    }
 
     write_json_file(output_path(), evidence_document([
         scenario_from_cells('workflow_embedded_activity_result', 'workflow-embedded', $embeddedCells),
@@ -1785,6 +2098,7 @@ try {
         $restartScenario,
         $retryScenario,
         $timeoutScenario,
+        $typedFailureScenario,
     ], array_merge($embeddedCells, $standaloneCells)));
 } catch (Throwable $throwable) {
     write_json_file(output_path(), evidence_document([
@@ -1793,6 +2107,7 @@ try {
         failure_behavior_scenario('durable_result_recording_after_worker_restart', $throwable),
         failure_behavior_scenario('retry_attempt_backoff_behavior', $throwable),
         failure_behavior_scenario('timeout_behavior', $throwable),
+        failure_behavior_scenario('typed_failure_propagation', $throwable),
     ], []));
 }
 PHP
