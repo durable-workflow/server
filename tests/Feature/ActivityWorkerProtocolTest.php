@@ -880,6 +880,7 @@ class ActivityWorkerProtocolTest extends TestCase
                             && $codec === null
                             && ($failure['message'] ?? null) === 'Connection timeout calling external service.'
                             && ($failure['type'] ?? null) === 'TimeoutException'
+                            && ($failure['class'] ?? null) === 'App\\Activities\\TimeoutActivity'
                             && ($failure['kind'] ?? null) === 'timeout'
                             && ($failure['retryable'] ?? null) === true
                             && ($failure['non_retryable'] ?? null) === false
@@ -903,6 +904,7 @@ class ActivityWorkerProtocolTest extends TestCase
                 'failure' => [
                     'message' => 'Connection timeout calling external service.',
                     'type' => 'TimeoutException',
+                    'class' => 'App\\Activities\\TimeoutActivity',
                     'stack_trace' => 'at HttpClient::send(Client.php:120)',
                     'kind' => 'timeout',
                     'retryable' => true,

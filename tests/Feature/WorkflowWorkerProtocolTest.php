@@ -21,6 +21,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\WorkflowChildCall;
+use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
@@ -3439,6 +3440,7 @@ class WorkflowWorkerProtocolTest extends TestCase
                 'failure' => [
                     'message' => 'Inventory service timed out.',
                     'type' => 'TimeoutException',
+                    'class' => 'App\\Activities\\InventoryTimeout',
                     'stack_trace' => 'at activity_worker.py:42',
                     'non_retryable' => true,
                     'details' => [
@@ -3478,6 +3480,18 @@ class WorkflowWorkerProtocolTest extends TestCase
             'avro',
             $activityFailed['payload']['exception']['details_payload_codec'] ?? null,
         );
+        $this->assertSame(
+            'App\\Activities\\InventoryTimeout',
+            $activityFailed['payload']['exception_class'] ?? null,
+        );
+
+        $recordedFailure = WorkflowFailure::query()
+            ->where('workflow_run_id', $runId)
+            ->where('source_kind', 'activity_execution')
+            ->firstOrFail();
+
+        $this->assertSame('App\\Activities\\InventoryTimeout', $recordedFailure->exception_class);
+        $this->assertSame('Inventory service timed out.', $recordedFailure->message);
 
         $completeWorkflow = $this->withHeaders($this->workerHeaders())
             ->postJson(sprintf('/api/worker/workflow-tasks/%s/complete', $resumePoll->json('task.task_id')), [

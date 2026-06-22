@@ -241,6 +241,8 @@ class ActivityTaskController
             'failure' => ['required', 'array'],
             'failure.message' => ['required', 'string'],
             'failure.type' => ['nullable', 'string'],
+            'failure.class' => ['nullable', 'string'],
+            'failure.code' => ['nullable', 'integer'],
             'failure.stack_trace' => ['nullable', 'string'],
             'failure.non_retryable' => ['nullable', 'boolean'],
             'failure.retryable' => ['nullable', 'boolean'],
