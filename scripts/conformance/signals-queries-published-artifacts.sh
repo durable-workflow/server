@@ -2846,16 +2846,26 @@ def run_python_sdk_baseline(
                 log_file,
             ),
         )
-        routed_current_query_task = wait_for_routed_current_query_task(
-            evidence_path=query_route_evidence_path,
-            workflow_id=workflow_id,
-            run_id=run_id,
-            workflow_type=workflow_type,
-            task_queue=task_queue,
-            worker_id=worker_id,
-            public_query_surface="cli",
-            log_file=log_file,
-        )
+        routed_current_query_task: dict[str, Any] | None = None
+        routed_current_query_task_error: dict[str, str] | None = None
+        try:
+            routed_current_query_task = wait_for_routed_current_query_task(
+                evidence_path=query_route_evidence_path,
+                workflow_id=workflow_id,
+                run_id=run_id,
+                workflow_type=workflow_type,
+                task_queue=task_queue,
+                worker_id=worker_id,
+                public_query_surface="cli",
+                log_file=log_file,
+            )
+        except Exception as exc:  # noqa: BLE001 - retain public client proof for focused missing-route evidence.
+            routed_current_query_task_error = probe_error_payload(exc)
+            log_line(
+                log_file,
+                "Python SDK baseline routed current query task proof missing: "
+                f"{type(exc).__name__}: {exc}",
+            )
 
         sdk_signal = sdk_success_sample(
             python_bin,
@@ -2912,7 +2922,6 @@ def run_python_sdk_baseline(
             "python_worker_artifact_source": sources["sdk-python"],
             "python_worker_sdk_version": installed_sdk_version or versions["sdk-python"],
             "python_worker_query_task_routing": True,
-            "routed_current_query_task": routed_current_query_task,
             "cli_signal_and_query": public_sample_ok(cli_signal)
             and public_sample_ok(cli_query)
             and sample_result_value(cli_query) == 3,
@@ -2934,6 +2943,11 @@ def run_python_sdk_baseline(
             "published_artifact_versions": versions,
             "artifact_sources": sources,
         }
+        if routed_current_query_task is not None:
+            outputs["routed_current_query_task"] = routed_current_query_task
+        if routed_current_query_task_error is not None:
+            outputs["routed_current_query_task_error"] = routed_current_query_task_error
+
         descriptor = {
             "worker_id": worker_id,
             "task_queue": task_queue,
@@ -2944,6 +2958,8 @@ def run_python_sdk_baseline(
             "worker_sdk_version": outputs["python_worker_sdk_version"],
             "log_file": log_file.name,
         }
+        if routed_current_query_task_error is not None:
+            descriptor["routed_current_query_task_error"] = routed_current_query_task_error
         return outputs, descriptor
     finally:
         stop_python_sdk_counter_worker(worker_process, log_file)

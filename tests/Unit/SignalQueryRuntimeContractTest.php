@@ -1289,6 +1289,118 @@ PY);
         );
     }
 
+    public function test_host_runner_preserves_python_baseline_candidate_when_route_proof_is_missing(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+versions = {
+    "server": "0.2.224",
+    "cli": "0.1.74",
+    "sdk-python": "0.4.84",
+    "workflow": "2.0.0-alpha.187",
+    "workflow-php": "2.0.0-alpha.187",
+    "waterline": "2.0.0-alpha.69",
+}
+sources = {
+    "server": "published_docker_image",
+    "cli": "published_cli_release",
+    "sdk-python": "published_pypi_package",
+    "workflow-php": "published_composer_package",
+    "waterline": "published_waterline_artifact",
+}
+globals()["artifact_versions"] = versions
+
+query_calls = {"current": 0}
+stopped = {"value": False}
+
+class FakeProcess:
+    pass
+
+def fake_start_python_sdk_counter_worker(**kwargs):
+    return FakeProcess()
+
+def fake_stop_python_sdk_counter_worker(process, log_file):
+    stopped["value"] = True
+
+def fake_wait_for_worker_registered(**kwargs):
+    return {"worker_id": kwargs["worker_id"], "capabilities": ["query_tasks"]}
+
+def fake_http_json(base_url, path, **kwargs):
+    if path.endswith("/workflows"):
+        return {"status_code": 200, "body": {"run_id": "run-python-baseline"}}
+    raise AssertionError(f"unexpected path {path}")
+
+def fake_cli_json_sample(cli_bin, base_url, token, namespace, args, log_file):
+    if args[0] == "workflow:signal":
+        return {"ok": True}
+    if args[0] == "workflow:query" and args[2] == "state":
+        return {"ok": True, "result": 0}
+    if args[0] == "workflow:query" and args[2] == "current":
+        query_calls["current"] += 1
+        return {"ok": True, "result": 3 if query_calls["current"] == 1 else 8}
+    raise AssertionError(f"unexpected cli args {args}")
+
+def fake_sdk_success_sample(python_bin, base_url, token, namespace, workflow_id, operation, name, log_file, args=None):
+    if operation == "signal":
+        return {"ok": True}
+    if operation == "query":
+        return {"ok": True, "result": 8}
+    raise AssertionError(f"unexpected sdk operation {operation}")
+
+def fake_wait_for_routed_current_query_task(**kwargs):
+    raise RuntimeError("route evidence not recorded")
+
+def fake_python_sdk_distribution_version(python_bin, log_file):
+    return versions["sdk-python"]
+
+globals()["start_python_sdk_counter_worker"] = fake_start_python_sdk_counter_worker
+globals()["stop_python_sdk_counter_worker"] = fake_stop_python_sdk_counter_worker
+globals()["wait_for_worker_registered"] = fake_wait_for_worker_registered
+globals()["http_json"] = fake_http_json
+globals()["cli_json_sample"] = fake_cli_json_sample
+globals()["sdk_success_sample"] = fake_sdk_success_sample
+globals()["wait_for_routed_current_query_task"] = fake_wait_for_routed_current_query_task
+globals()["python_sdk_distribution_version"] = fake_python_sdk_distribution_version
+
+run_root = Path(tempfile.mkdtemp(prefix="dw-signals-python-route-test."))
+outputs, descriptor = run_python_sdk_baseline(
+    base_url="http://server.test",
+    token="token",
+    namespace="default",
+    cli_bin="/tmp/dw",
+    python_bin=sys.executable,
+    versions=versions,
+    sources=sources,
+    run_root=run_root,
+    log_file=run_root / "probe.log",
+)
+scenario = baseline_scenario_result("python_worker_cli_and_sdk_baseline", outputs)
+
+print(json.dumps({
+    "status": scenario["status"],
+    "missing": missing_current_evidence_for("python_worker_cli_and_sdk_baseline", outputs),
+    "has_routed_task": "routed_current_query_task" in outputs,
+    "route_error_type": outputs["routed_current_query_task_error"]["type"],
+    "descriptor_error_type": descriptor["routed_current_query_task_error"]["type"],
+    "cli_signal_and_query": outputs["cli_signal_and_query"],
+    "sdk_python_signal_and_query": outputs["sdk_python_signal_and_query"],
+    "immediate_repeat_query_consistency": outputs["immediate_repeat_query_consistency"],
+    "query_task_routing": outputs["python_worker_query_task_routing"],
+    "stopped": stopped["value"],
+}, sort_keys=True))
+PY);
+
+        $this->assertSame('not_covered', $result['status']);
+        $this->assertSame(['routed_current_query_task'], $result['missing']);
+        $this->assertFalse($result['has_routed_task']);
+        $this->assertSame('RuntimeError', $result['route_error_type']);
+        $this->assertSame('RuntimeError', $result['descriptor_error_type']);
+        $this->assertTrue($result['cli_signal_and_query']);
+        $this->assertTrue($result['sdk_python_signal_and_query']);
+        $this->assertTrue($result['immediate_repeat_query_consistency']);
+        $this->assertTrue($result['query_task_routing']);
+        $this->assertTrue($result['stopped']);
+    }
+
     public function test_host_runner_rejects_package_labels_as_python_worker_runtime(): void
     {
         foreach (['python-sdk', 'durable-workflow-python'] as $runtime) {
