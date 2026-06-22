@@ -374,6 +374,122 @@ class ActivityConformanceRunnerContractTest extends TestCase
         }
     }
 
+    public function test_runner_does_not_remove_externally_supplied_run_root_after_pass(): void
+    {
+        if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
+            || trim((string) shell_exec('command -v node 2>/dev/null')) === '') {
+            $this->markTestSkipped('bash and node are required to exercise the activities runner.');
+        }
+
+        $repoRoot = dirname(__DIR__, 2);
+        $workspace = $repoRoot.'/storage/framework/activities-cleanup-'.bin2hex(random_bytes(4));
+        $resultDir = $workspace.'/results';
+        $runRoot = $workspace.'/run-root';
+        $binDir = $workspace.'/bin';
+        $fakeRmLog = $workspace.'/rm.log';
+        $this->assertTrue(mkdir($resultDir, 0777, true));
+        $this->assertTrue(mkdir($runRoot, 0777, true));
+        $this->assertTrue(mkdir($binDir, 0777, true));
+
+        try {
+            $version = '9.9.9';
+            $serverImage = 'durableworkflow/server:'.$version;
+
+            file_put_contents(
+                $resultDir.'/artifact-install-evidence.json',
+                json_encode($this->completeRunnerInstallEvidence($version), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n",
+            );
+            file_put_contents(
+                $resultDir.'/activity-evidence.json',
+                json_encode(
+                    $this->completeRunnerActivityEvidence($version, $serverImage),
+                    JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES,
+                )."\n",
+            );
+            file_put_contents($binDir.'/rm', <<<'SH'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "${DW_ACTIVITIES_FAKE_RM_LOG:?}"
+for arg in "$@"; do
+  if [[ "$arg" == "${DW_ACTIVITIES_PROTECTED_RUN_ROOT:?}" ]]; then
+    printf 'fake rm cleanup failure: %s\n' "$*" >&2
+    exit 1
+  fi
+done
+exec /bin/rm "$@"
+SH);
+            chmod($binDir.'/rm', 0755);
+
+            $processEnv = getenv();
+            if (! is_array($processEnv)) {
+                $processEnv = [];
+            }
+
+            $process = proc_open(
+                [
+                    '/bin/bash',
+                    $repoRoot.'/scripts/conformance/activities-published-artifacts.sh',
+                    '--result-dir',
+                    $resultDir,
+                ],
+                [
+                    1 => ['pipe', 'w'],
+                    2 => ['pipe', 'w'],
+                ],
+                $pipes,
+                $repoRoot,
+                array_merge($processEnv, [
+                    'PATH' => $binDir.PATH_SEPARATOR.(string) getenv('PATH'),
+                    'DW_ACTIVITIES_FAKE_RM_LOG' => $fakeRmLog,
+                    'DW_ACTIVITIES_PROTECTED_RUN_ROOT' => $runRoot,
+                    'DW_ACTIVITIES_RUN_ROOT' => $runRoot,
+                    'DW_ACTIVITIES_SKIP_FOCUSED_HOST_PROBE' => '1',
+                    'DW_SERVER_IMAGE' => $serverImage,
+                    'DW_SERVER_VERSION' => $version,
+                    'DW_CLI_VERSION' => $version,
+                    'DW_PYTHON_SDK_VERSION' => $version,
+                    'DW_WORKFLOW_PHP_VERSION' => $version,
+                    'DW_WATERLINE_VERSION' => $version,
+                ]),
+            );
+            $this->assertIsResource($process);
+            $stdout = stream_get_contents($pipes[1]);
+            $stderr = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $exitCode = proc_close($process);
+
+            $this->assertSame(
+                0,
+                $exitCode,
+                ($stdout === false ? '' : $stdout).($stderr === false ? '' : $stderr),
+            );
+            $this->assertDirectoryExists($runRoot);
+            $this->assertFileDoesNotExist($fakeRmLog);
+
+            $result = json_decode(
+                file_get_contents($resultDir.'/activities-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $record = json_decode(
+                file_get_contents($resultDir.'/activities-record.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+
+            $this->assertSame('pass', $result['outcome']);
+            $this->assertSame('pass', $record['outcome']);
+            $this->assertSame('published_server_container', $result['execution_source']);
+            $this->assertTrue($result['activity_evidence_supplied']);
+            $this->assertFalse($result['local_product_source_checkouts_used']);
+        } finally {
+            $this->removeDirectory($workspace);
+        }
+    }
+
     public function test_runner_records_focused_published_activity_host_evidence_without_passing_full_matrix(): void
     {
         if (trim((string) shell_exec('command -v bash 2>/dev/null')) === ''
@@ -2577,5 +2693,27 @@ class ActivityConformanceRunnerContractTest extends TestCase
         $this->assertIsString($contents, "Unable to read {$path}");
 
         return $contents;
+    }
+
+    private function removeDirectory(string $path): void
+    {
+        if (! is_dir($path)) {
+            return;
+        }
+
+        $items = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($path, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST,
+        );
+
+        foreach ($items as $item) {
+            if ($item->isDir()) {
+                rmdir($item->getPathname());
+            } else {
+                unlink($item->getPathname());
+            }
+        }
+
+        rmdir($path);
     }
 }

@@ -101,8 +101,10 @@ repo_root="$(cd "$script_dir/../.." && pwd)"
 scenario_manifest="${DW_ACTIVITIES_SCENARIO_MANIFEST:-$repo_root/static/platform-conformance/activity-runtime-scenarios.json}"
 
 run_root="${DW_ACTIVITIES_RUN_ROOT:-}"
+run_root_supplied=1
 if [[ -z "$run_root" ]]; then
   run_root="$(mktemp -d "${TMPDIR:-/tmp}/dw-activities.XXXXXX")"
+  run_root_supplied=0
 fi
 mkdir -p "$run_root"
 
@@ -114,7 +116,7 @@ mkdir -p "$result_dir"
 cleanup() {
   local code=$?
 
-  if [[ "$keep_run_root" != "1" && "$code" -eq 0 && "$result_dir" != "$run_root" ]]; then
+  if [[ "$keep_run_root" != "1" && "$code" -eq 0 && "$result_dir" != "$run_root" && "$run_root_supplied" != "1" ]]; then
     rm -rf "$run_root"
   fi
 }
