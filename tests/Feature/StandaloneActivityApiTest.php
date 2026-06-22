@@ -110,7 +110,7 @@ class StandaloneActivityApiTest extends TestCase
 
     public function test_poll_deadline_precision_matches_timeout_scanner_deadline(): void
     {
-        $startedAt = Carbon::parse('2026-06-22 12:00:00.900000', 'UTC');
+        $startedAt = Carbon::parse('2026-06-22 12:00:00.100000', 'UTC');
         Carbon::setTestNow($startedAt);
 
         try {
@@ -142,10 +142,10 @@ class StandaloneActivityApiTest extends TestCase
             $startToClose = $poll->json('task.deadlines.start_to_close');
             $scheduleToClose = $poll->json('task.deadlines.schedule_to_close');
 
-            $this->assertSame('2026-06-22T12:00:01.900000Z', $startToClose);
-            $this->assertSame('2026-06-22T12:00:30.900000Z', $scheduleToClose);
+            $this->assertSame('2026-06-22T12:00:01.100000Z', $startToClose);
+            $this->assertSame('2026-06-22T12:00:30.100000Z', $scheduleToClose);
 
-            Carbon::setTestNow(Carbon::parse($startToClose)->addMilliseconds(200));
+            Carbon::setTestNow(Carbon::parse($startToClose)->addMilliseconds(600));
 
             $status = $this->withHeaders($this->apiHeaders())
                 ->getJson('/api/system/activity-timeouts')

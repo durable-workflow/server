@@ -1,6 +1,7 @@
 <?php
 
 use App\Models\WorkflowNamespace;
+use App\Support\ActivityTimeoutScanner;
 use App\Support\EnvAuditor;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\MigrationAdoption;
@@ -192,7 +193,7 @@ Artisan::command('schedule:evaluate
 Artisan::command('activity:timeout-enforce {--limit=100 : Maximum expired executions to process per pass}', function (): int {
     $limit = max(1, (int) $this->option('limit'));
 
-    $expiredIds = ActivityTimeoutEnforcer::expiredExecutionIds($limit);
+    $expiredIds = ActivityTimeoutScanner::expiredExecutionIds($limit);
 
     if ($expiredIds === []) {
         $this->components->info('No expired activity executions.');

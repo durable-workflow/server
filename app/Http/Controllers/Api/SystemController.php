@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Support\ActivityTimeoutScanner;
 use App\Support\ControlPlaneProtocol;
 use App\Support\HistoryRetentionEnforcer;
 use App\Support\ProjectionDriftMetrics;
@@ -171,7 +172,7 @@ class SystemController
         ]);
 
         $limit = min(100, (int) ($validated['limit'] ?? 100));
-        $expiredIds = ActivityTimeoutEnforcer::expiredExecutionIds($limit);
+        $expiredIds = ActivityTimeoutScanner::expiredExecutionIds($limit);
 
         return ControlPlaneProtocol::json([
             'expired_count' => count($expiredIds),
@@ -201,7 +202,7 @@ class SystemController
         ));
 
         if ($executionIds === []) {
-            $executionIds = ActivityTimeoutEnforcer::expiredExecutionIds($limit);
+            $executionIds = ActivityTimeoutScanner::expiredExecutionIds($limit);
         }
 
         if ($executionIds === []) {
