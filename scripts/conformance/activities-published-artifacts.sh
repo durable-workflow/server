@@ -202,6 +202,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityOptions;
+use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Worker\WorkflowFiberRunner;
 use Workflow\V2\Workflow;
 
@@ -420,6 +421,36 @@ function evidence_document(array $scenarioResults, array $activityCells): array
     $typedFailureOutputs = is_array($typedFailureScenario['observed_outputs'] ?? null)
         ? $typedFailureScenario['observed_outputs']
         : [];
+    $heartbeatScenario = null;
+    foreach ($scenarioResults as $scenario) {
+        if (($scenario['scenario_id'] ?? null) === 'heartbeat_and_cancellation_observation') {
+            $heartbeatScenario = $scenario;
+            break;
+        }
+    }
+    $heartbeatOutputs = is_array($heartbeatScenario['observed_outputs'] ?? null)
+        ? $heartbeatScenario['observed_outputs']
+        : [];
+    $idempotentScenario = null;
+    foreach ($scenarioResults as $scenario) {
+        if (($scenario['scenario_id'] ?? null) === 'idempotent_completion_handling') {
+            $idempotentScenario = $scenario;
+            break;
+        }
+    }
+    $idempotentOutputs = is_array($idempotentScenario['observed_outputs'] ?? null)
+        ? $idempotentScenario['observed_outputs']
+        : [];
+    $operatorVisibilityScenario = null;
+    foreach ($scenarioResults as $scenario) {
+        if (($scenario['scenario_id'] ?? null) === 'operator_visible_activity_attempt_state') {
+            $operatorVisibilityScenario = $scenario;
+            break;
+        }
+    }
+    $operatorVisibilityOutputs = is_array($operatorVisibilityScenario['observed_outputs'] ?? null)
+        ? $operatorVisibilityScenario['observed_outputs']
+        : [];
 
     return [
         'schema' => 'durable-workflow.v2.activity-runtime.host-evidence',
@@ -489,6 +520,43 @@ function evidence_document(array $scenarioResults, array $activityCells): array
             'history_events' => $typedFailureOutputs['history_events'] ?? null,
             'activity_failed_history_events' => $typedFailureOutputs['activity_failed_history_events'] ?? null,
             'failure_row' => $typedFailureOutputs['failure_row'] ?? null,
+        ],
+        'heartbeat_cancellation' => [
+            'status' => $scenarioStatusById['heartbeat_and_cancellation_observation'] ?? 'not_covered',
+            'scenario' => 'heartbeat_and_cancellation_observation',
+            'heartbeat_details' => $heartbeatOutputs['heartbeat_details'] ?? null,
+            'heartbeat_history_event' => $heartbeatOutputs['heartbeat_history_event'] ?? null,
+            'cancel_requested_response' => $heartbeatOutputs['cancel_requested_response'] ?? null,
+            'worker_observed_cancellation' => $heartbeatOutputs['worker_observed_cancellation'] ?? null,
+            'activity_handle_after_cancel' => $heartbeatOutputs['activity_handle_after_cancel'] ?? null,
+            'late_completion_after_cancel_response' => $heartbeatOutputs['late_completion_after_cancel_response'] ?? null,
+            'terminal_cancellation_state' => $heartbeatOutputs['terminal_cancellation_state'] ?? null,
+            'activity_execution_id' => $heartbeatOutputs['activity_execution_id'] ?? null,
+            'activity_attempt_id' => $heartbeatOutputs['activity_attempt_id'] ?? null,
+            'attempt_state' => $heartbeatOutputs['attempt_state'] ?? null,
+        ],
+        'idempotent_completion' => [
+            'status' => $scenarioStatusById['idempotent_completion_handling'] ?? 'not_covered',
+            'scenario' => 'idempotent_completion_handling',
+            'first_completion_response' => $idempotentOutputs['first_completion_response'] ?? null,
+            'duplicate_completion_response' => $idempotentOutputs['duplicate_completion_response'] ?? null,
+            'activity_attempt_id' => $idempotentOutputs['activity_attempt_id'] ?? null,
+            'recorded_once' => $idempotentOutputs['recorded_once'] ?? null,
+            'stale_attempt_or_idempotent_verdict' => $idempotentOutputs['stale_attempt_or_idempotent_verdict'] ?? null,
+            'activity_completed_history_count' => $idempotentOutputs['activity_completed_history_count'] ?? null,
+        ],
+        'operator_visibility' => [
+            'status' => $scenarioStatusById['operator_visible_activity_attempt_state'] ?? 'not_covered',
+            'scenario' => 'operator_visible_activity_attempt_state',
+            'api_run_detail' => $operatorVisibilityOutputs['api_run_detail'] ?? null,
+            'history_activity_attempts' => $operatorVisibilityOutputs['history_activity_attempts'] ?? null,
+            'operator_metrics' => $operatorVisibilityOutputs['operator_metrics'] ?? null,
+            'waterline_activity_attempt_view' => $operatorVisibilityOutputs['waterline_activity_attempt_view'] ?? null,
+            'cli_json_list_evidence' => $operatorVisibilityOutputs['cli_json_list_evidence'] ?? null,
+            'required_operator_states' => $operatorVisibilityOutputs['required_operator_states'] ?? null,
+            'operator_state_matrix' => $operatorVisibilityOutputs['operator_state_matrix'] ?? null,
+            'operator_state_passes' => $operatorVisibilityOutputs['operator_state_passes'] ?? null,
+            'missing_operator_surface_reasons' => $operatorVisibilityOutputs['missing_operator_surface_reasons'] ?? null,
         ],
     ];
 }
@@ -802,7 +870,7 @@ function activity_input(array $task, string $codec): array
     return is_array($payload) ? $payload : [];
 }
 
-function complete_activity_task(array $task, string $runtime, string $mode): array
+function activity_completion_payload(array $task, string $runtime, string $mode): array
 {
     $codec = task_codec($task);
     $payload = activity_input($task, $codec);
@@ -833,19 +901,20 @@ function complete_activity_task(array $task, string $runtime, string $mode): arr
         if (! is_array($python['result_envelope'] ?? null)) {
             throw new RuntimeException('sdk-python activity executor did not return a result envelope');
         }
-        $response = request_json('POST', '/worker/activity-tasks/'.rawurlencode((string) $task['task_id']).'/complete', [
-            'activity_attempt_id' => $task['activity_attempt_id'] ?? '',
-            'lease_owner' => $task['lease_owner'],
-            'result' => $python['result_envelope'],
-        ]);
 
-        return [$result, $response, $workerArtifact];
+        return [$result, $python['result_envelope'], $workerArtifact];
     }
 
+    return [$result, envelope($result, $codec), $workerArtifact];
+}
+
+function complete_activity_task(array $task, string $runtime, string $mode): array
+{
+    [$result, $resultEnvelope, $workerArtifact] = activity_completion_payload($task, $runtime, $mode);
     $response = request_json('POST', '/worker/activity-tasks/'.rawurlencode((string) $task['task_id']).'/complete', [
         'activity_attempt_id' => $task['activity_attempt_id'] ?? '',
         'lease_owner' => $task['lease_owner'],
-        'result' => envelope($result, $codec),
+        'result' => $resultEnvelope,
     ]);
 
     return [$result, $response, $workerArtifact];
@@ -888,6 +957,17 @@ function history_payloads_for_event(array $history, string $eventType): array
     }
 
     return $payloads;
+}
+
+function history_payload_for_execution(array $history, string $eventType, string $activityExecutionId): array
+{
+    foreach (history_payloads_for_event($history, $eventType) as $payload) {
+        if (($payload['activity_execution_id'] ?? null) === $activityExecutionId) {
+            return $payload;
+        }
+    }
+
+    return [];
 }
 
 function normalized_workflow_output(mixed $output): mixed
@@ -1152,6 +1232,9 @@ function attempt_snapshots(string $activityExecutionId): array
             'status' => $attempt->status instanceof BackedEnum ? $attempt->status->value : (string) $attempt->status,
             'lease_owner' => $attempt->lease_owner,
             'started_at' => $attempt->started_at?->toJSON(),
+            'last_heartbeat_at' => $attempt->last_heartbeat_at?->toJSON(),
+            'last_heartbeat_progress' => $attempt->getAttribute('last_heartbeat_progress'),
+            'lease_expires_at' => $attempt->lease_expires_at?->toJSON(),
             'closed_at' => $attempt->closed_at?->toJSON(),
         ])
         ->values()
@@ -1165,6 +1248,1375 @@ function fail_activity_task(array $task, array $failure): array
         'lease_owner' => $task['lease_owner'],
         'failure' => $failure,
     ]);
+}
+
+function heartbeat_activity_task(array $task, array $progress, array $allowed = []): array
+{
+    return request_json(
+        'POST',
+        '/worker/activity-tasks/'.rawurlencode((string) $task['task_id']).'/heartbeat',
+        [
+            'activity_attempt_id' => $task['activity_attempt_id'] ?? '',
+            'lease_owner' => $task['lease_owner'] ?? '',
+            ...$progress,
+        ],
+        $allowed,
+    );
+}
+
+function workflow_run_or_fail(string $runId): WorkflowRun
+{
+    /** @var WorkflowRun|null $run */
+    $run = WorkflowRun::query()
+        ->with(['activityExecutions.attempts', 'historyEvents'])
+        ->find($runId);
+
+    if (! $run instanceof WorkflowRun) {
+        throw new RuntimeException("workflow run {$runId} was not found");
+    }
+
+    return $run;
+}
+
+function activity_execution_state(string $activityExecutionId): ?array
+{
+    /** @var ActivityExecution|null $execution */
+    $execution = ActivityExecution::query()->find($activityExecutionId);
+    if (! $execution instanceof ActivityExecution) {
+        return null;
+    }
+
+    return [
+        'activity_execution_id' => $execution->id,
+        'workflow_run_id' => $execution->workflow_run_id,
+        'activity_type' => $execution->activity_type,
+        'status' => $execution->status instanceof BackedEnum ? $execution->status->value : (string) $execution->status,
+        'attempt_count' => $execution->attempt_count,
+        'current_attempt_id' => $execution->current_attempt_id,
+        'last_heartbeat_at' => $execution->last_heartbeat_at?->toJSON(),
+        'heartbeat_deadline_at' => $execution->heartbeat_deadline_at?->toJSON(),
+        'started_at' => $execution->started_at?->toJSON(),
+        'closed_at' => $execution->closed_at?->toJSON(),
+        'attempts' => attempt_snapshots($activityExecutionId),
+    ];
+}
+
+function run_activity_views(string $runId): array
+{
+    $run = workflow_run_or_fail($runId);
+
+    return RunActivityView::activitiesForRun($run);
+}
+
+function activity_view_for_execution(array $activities, string $activityExecutionId): array
+{
+    foreach ($activities as $activity) {
+        if (! is_array($activity)) {
+            continue;
+        }
+        if (($activity['id'] ?? null) === $activityExecutionId) {
+            return $activity;
+        }
+    }
+
+    return [];
+}
+
+function current_lease_for_attempt(array $taskQueueDetail, string $activityAttemptId): array
+{
+    $leases = is_array($taskQueueDetail['current_leases'] ?? null) ? $taskQueueDetail['current_leases'] : [];
+    foreach ($leases as $lease) {
+        if (! is_array($lease)) {
+            continue;
+        }
+        if (($lease['activity_attempt_id'] ?? null) === $activityAttemptId) {
+            return $lease;
+        }
+    }
+
+    return [];
+}
+
+function latest_attempt_snapshot(array $attempts): array
+{
+    $latest = [];
+    foreach ($attempts as $attempt) {
+        if (is_array($attempt)) {
+            $latest = $attempt;
+        }
+    }
+
+    return $latest;
+}
+
+function cancelled_or_failed_activity_status(mixed $value): bool
+{
+    return is_string($value) && in_array($value, ['cancelled', 'failed'], true);
+}
+
+function same_activity_payload_shape(array $left, array $right): array
+{
+    $keys = ['message', 'mode', 'input_marker', 'activity_type'];
+    $matches = [];
+    foreach ($keys as $key) {
+        $matches[$key] = array_key_exists($key, $left)
+            && array_key_exists($key, $right)
+            && $left[$key] === $right[$key];
+    }
+
+    return [
+        'checked_fields' => $keys,
+        'field_matches' => $matches,
+        'matches' => ! in_array(false, $matches, true),
+    ];
+}
+
+function same_observation_shape(array $left, array $right, array $keys): array
+{
+    $matches = [];
+    foreach ($keys as $key) {
+        $matches[$key] = array_key_exists($key, $left)
+            && array_key_exists($key, $right)
+            && $left[$key] === $right[$key];
+    }
+
+    return [
+        'checked_fields' => $keys,
+        'field_matches' => $matches,
+        'matches' => ! in_array(false, $matches, true),
+    ];
+}
+
+function workflow_php_worker_artifact(): array
+{
+    return [
+        'artifact' => 'workflow-php',
+        'package' => 'durable-workflow/workflow',
+        'version' => getenv('DW_WORKFLOW_PHP_VERSION') ?: 'unknown',
+        'source' => 'packagist://durable-workflow/workflow@'.(getenv('DW_WORKFLOW_PHP_VERSION') ?: 'unknown'),
+        'status' => 'pass',
+        'runtime' => 'workflow-php',
+        'language' => 'php',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'execution_method' => 'Workflow\\Serializers\\Serializer::serializeWithCodec',
+        'local_product_source_checkouts_used' => false,
+    ];
+}
+
+function worker_artifact_probe(array $task, string $runtime, string $mode): array
+{
+    if ($runtime === 'sdk-python') {
+        $python = run_python_activity_executor($task, $mode);
+
+        return is_array($python['worker_artifact'] ?? null) ? $python['worker_artifact'] : [];
+    }
+
+    return workflow_php_worker_artifact();
+}
+
+function start_parity_activity(string $runtime, string $suffix, string $observation, array $options = []): array
+{
+    $safeRuntime = str_replace(['/', '_'], '-', $runtime);
+    $workerId = "activities-parity-{$observation}-{$safeRuntime}-{$suffix}";
+    $activityId = "activities-parity-{$observation}-{$safeRuntime}-{$suffix}";
+
+    register_worker($workerId, [], [ACTIVITY_TYPE], $runtime);
+    $start = request_json('POST', '/activities', [
+        'activity_id' => $activityId,
+        'activity_type' => ACTIVITY_TYPE,
+        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'input' => [[
+            'scenario_id' => 'php_python_activity_parity',
+            'runtime' => $runtime,
+            'observation' => $observation,
+            'input_marker' => "parity-{$observation}-{$suffix}",
+        ]],
+        ...$options,
+    ]);
+    $runId = (string) ($start['workflow_run_id'] ?? '');
+    $activityExecutionId = (string) ($start['activity_execution_id'] ?? '');
+    if ($runId === '' || $activityExecutionId === '') {
+        throw new RuntimeException("parity {$observation} {$runtime} activity start did not return execution and run identifiers");
+    }
+
+    return [
+        'runtime' => $runtime,
+        'worker_id' => $workerId,
+        'activity_id' => $activityId,
+        'workflow_run_id' => $runId,
+        'activity_execution_id' => $activityExecutionId,
+        'task' => poll_task('activity', $workerId),
+    ];
+}
+
+function parity_failure_shape(array $history, string $activityExecutionId): array
+{
+    $payload = history_payload_for_execution(
+        $history,
+        HistoryEventType::ActivityFailed->value,
+        $activityExecutionId,
+    );
+    $exception = is_array($payload['exception'] ?? null) ? $payload['exception'] : [];
+
+    return [
+        'activity_execution_id' => $payload['activity_execution_id'] ?? null,
+        'exception_type' => $payload['exception_type'] ?? ($exception['type'] ?? null),
+        'message' => $payload['message'] ?? ($exception['message'] ?? null),
+        'failure_category' => $payload['failure_category'] ?? null,
+        'non_retryable' => $exception['non_retryable'] ?? ($payload['non_retryable'] ?? null),
+    ];
+}
+
+function run_parity_result_observation(string $runtime, string $suffix): array
+{
+    $activity = start_parity_activity($runtime, $suffix, 'result');
+    [$result, $complete, $workerArtifact] = complete_activity_task($activity['task'], $runtime, 'standalone');
+    $show = request_json('GET', '/activities/'.rawurlencode($activity['activity_id']));
+    $history = request_json('GET', '/workflows/'.rawurlencode($activity['activity_id']).'/runs/'.rawurlencode($activity['workflow_run_id']).'/history');
+    $pass = ($show['status'] ?? null) === RunStatus::Completed->value
+        && ($complete['recorded'] ?? null) === true
+        && is_array($result);
+    if (! $pass) {
+        throw new RuntimeException("parity result observation {$runtime} did not complete");
+    }
+
+    return [
+        'runtime' => $runtime,
+        'status' => 'pass',
+        'activity_id' => $activity['activity_id'],
+        'workflow_run_id' => $activity['workflow_run_id'],
+        'activity_execution_id' => $activity['activity_execution_id'],
+        'activity_attempt_id' => $activity['task']['activity_attempt_id'] ?? null,
+        'result_payload' => $result,
+        'completion_response' => $complete,
+        'handle_response' => $show,
+        'history_events' => event_types($history),
+        'worker_artifact' => $workerArtifact,
+    ];
+}
+
+function run_parity_failure_observation(string $runtime, string $suffix): array
+{
+    $activity = start_parity_activity($runtime, $suffix, 'failure', [
+        'retry_policy' => ['max_attempts' => 1, 'backoff_seconds' => [0]],
+    ]);
+    $workerArtifact = worker_artifact_probe($activity['task'], $runtime, 'standalone');
+    $failure = [
+        'message' => 'activities parity failure shape',
+        'type' => 'ActivitiesConformanceParityFailure',
+        'class' => 'DurableWorkflow\\Conformance\\Activities\\ParityFailure',
+        'code' => 503,
+        'non_retryable' => true,
+        'retryable' => false,
+        'details' => envelope([
+            'failure_code' => 'ACTIVITY_PARITY_FAILURE',
+            'observation' => 'failure',
+        ], task_codec($activity['task'])),
+    ];
+    $failResponse = fail_activity_task($activity['task'], $failure);
+    $show = request_json('GET', '/activities/'.rawurlencode($activity['activity_id']));
+    $history = request_json('GET', '/workflows/'.rawurlencode($activity['activity_id']).'/runs/'.rawurlencode($activity['workflow_run_id']).'/history');
+    $failureShape = parity_failure_shape($history, $activity['activity_execution_id']);
+    $pass = ($failResponse['recorded'] ?? null) === true
+        && ($show['status'] ?? null) === RunStatus::Failed->value
+        && ($show['activity_status'] ?? null) === ActivityStatus::Failed->value
+        && ($failureShape['exception_type'] ?? null) === 'ActivitiesConformanceParityFailure'
+        && ($failureShape['message'] ?? null) === 'activities parity failure shape';
+    if (! $pass) {
+        throw new RuntimeException("parity failure observation {$runtime} did not preserve failure shape");
+    }
+
+    return [
+        'runtime' => $runtime,
+        'status' => 'pass',
+        'activity_id' => $activity['activity_id'],
+        'workflow_run_id' => $activity['workflow_run_id'],
+        'activity_execution_id' => $activity['activity_execution_id'],
+        'activity_attempt_id' => $activity['task']['activity_attempt_id'] ?? null,
+        'failure_payload' => $failure,
+        'failure_response' => $failResponse,
+        'failure_shape' => $failureShape,
+        'handle_response' => $show,
+        'history_events' => event_types($history),
+        'activity_failed_history_events' => history_payloads_for_event($history, HistoryEventType::ActivityFailed->value),
+        'worker_artifact' => $workerArtifact,
+    ];
+}
+
+function run_parity_retry_observation(string $runtime, string $suffix): array
+{
+    $retryPolicy = ['max_attempts' => 2, 'backoff_seconds' => [0]];
+    $activity = start_parity_activity($runtime, $suffix, 'retry', [
+        'retry_policy' => $retryPolicy,
+    ]);
+    $firstTask = $activity['task'];
+    $workerArtifact = worker_artifact_probe($firstTask, $runtime, 'standalone');
+    $failure = [
+        'message' => 'activities parity retryable failure',
+        'type' => 'ActivitiesConformanceParityRetryableFailure',
+        'retryable' => true,
+        'non_retryable' => false,
+    ];
+    $failResponse = fail_activity_task($firstTask, $failure);
+    $nextTaskId = is_string($failResponse['next_task_id'] ?? null) ? $failResponse['next_task_id'] : '';
+    if ($nextTaskId === '') {
+        throw new RuntimeException("parity retry observation {$runtime} did not schedule a retry task");
+    }
+    $retryAvailableAt = workflow_task_available_at($nextTaskId);
+    $retryAvailableTimestamp = timestamp_from_datetime($retryAvailableAt);
+    if ($retryAvailableTimestamp !== null) {
+        wait_until_timestamp($retryAvailableTimestamp);
+    }
+    $secondTask = poll_task('activity', $activity['worker_id']);
+    [$result, $complete, $completionArtifact] = complete_activity_task($secondTask, $runtime, 'standalone');
+    if ($runtime === 'sdk-python') {
+        $workerArtifact = $completionArtifact;
+    }
+    $show = request_json('GET', '/activities/'.rawurlencode($activity['activity_id']));
+    $history = request_json('GET', '/workflows/'.rawurlencode($activity['activity_id']).'/runs/'.rawurlencode($activity['workflow_run_id']).'/history');
+    $pass = ($firstTask['activity_execution_id'] ?? null) === ($secondTask['activity_execution_id'] ?? null)
+        && (int) ($firstTask['attempt_number'] ?? 0) === 1
+        && (int) ($secondTask['attempt_number'] ?? 0) === 2
+        && ($firstTask['activity_attempt_id'] ?? null) !== ($secondTask['activity_attempt_id'] ?? null)
+        && ($show['status'] ?? null) === RunStatus::Completed->value
+        && ($complete['recorded'] ?? null) === true;
+    if (! $pass) {
+        throw new RuntimeException("parity retry observation {$runtime} did not retry then complete on attempt two");
+    }
+
+    return [
+        'runtime' => $runtime,
+        'status' => 'pass',
+        'activity_id' => $activity['activity_id'],
+        'workflow_run_id' => $activity['workflow_run_id'],
+        'activity_execution_id' => $activity['activity_execution_id'],
+        'configured_retry_policy' => $retryPolicy,
+        'attempt_numbers' => [
+            (int) ($firstTask['attempt_number'] ?? 0),
+            (int) ($secondTask['attempt_number'] ?? 0),
+        ],
+        'attempt_ids' => [
+            $firstTask['activity_attempt_id'] ?? null,
+            $secondTask['activity_attempt_id'] ?? null,
+        ],
+        'failure_response' => $failResponse,
+        'completion_response' => $complete,
+        'result_payload' => $result,
+        'handle_response' => $show,
+        'attempt_state' => attempt_snapshots($activity['activity_execution_id']),
+        'history_events' => event_types($history),
+        'retry_history_events' => history_payloads_for_event($history, 'ActivityRetryScheduled'),
+        'worker_artifact' => $workerArtifact,
+    ];
+}
+
+function run_parity_timeout_observation(string $runtime, string $suffix): array
+{
+    $activity = start_parity_activity($runtime, $suffix, 'timeout', [
+        'start_to_close_timeout_seconds' => 1,
+        'schedule_to_close_timeout_seconds' => 30,
+        'retry_policy' => ['max_attempts' => 1, 'backoff_seconds' => [0]],
+    ]);
+    $task = $activity['task'];
+    $workerArtifact = worker_artifact_probe($task, $runtime, 'standalone');
+    $deadlines = is_array($task['deadlines'] ?? null) ? $task['deadlines'] : [];
+    $deadlineTimestamp = timestamp_from_datetime(is_string($deadlines['start_to_close'] ?? null) ? $deadlines['start_to_close'] : null);
+    if ($deadlineTimestamp === null) {
+        throw new RuntimeException("parity timeout observation {$runtime} did not expose a start-to-close deadline");
+    }
+    wait_until_timestamp($deadlineTimestamp + 0.20);
+    $statusBefore = request_json('GET', '/system/activity-timeouts');
+    $expiredIds = is_array($statusBefore['expired_execution_ids'] ?? null) ? $statusBefore['expired_execution_ids'] : [];
+    if (! in_array($activity['activity_execution_id'], $expiredIds, true)) {
+        wait_until_timestamp($deadlineTimestamp + 0.60);
+    }
+    $enforceResponse = request_json('POST', '/system/activity-timeouts/pass', [
+        'execution_ids' => [$activity['activity_execution_id']],
+    ]);
+    $show = request_json('GET', '/activities/'.rawurlencode($activity['activity_id']));
+    $history = request_json('GET', '/workflows/'.rawurlencode($activity['activity_id']).'/runs/'.rawurlencode($activity['workflow_run_id']).'/history');
+    $timeoutPayload = history_payload_for_execution(
+        $history,
+        HistoryEventType::ActivityTimedOut->value,
+        $activity['activity_execution_id'],
+    );
+    $pass = ($enforceResponse['enforced'] ?? null) === 1
+        && ($timeoutPayload['timeout_kind'] ?? null) === 'start_to_close'
+        && ($show['status'] ?? null) === RunStatus::Failed->value
+        && ($show['closed_reason'] ?? null) === 'timed_out';
+    if (! $pass) {
+        throw new RuntimeException("parity timeout observation {$runtime} did not enforce typed start-to-close timeout");
+    }
+
+    return [
+        'runtime' => $runtime,
+        'status' => 'pass',
+        'activity_id' => $activity['activity_id'],
+        'workflow_run_id' => $activity['workflow_run_id'],
+        'activity_execution_id' => $activity['activity_execution_id'],
+        'activity_attempt_id' => $task['activity_attempt_id'] ?? null,
+        'worker_visible_deadlines' => $deadlines,
+        'timeout_status_before_enforce' => $statusBefore,
+        'enforce_response' => $enforceResponse,
+        'timeout_shape' => [
+            'timeout_kind' => $timeoutPayload['timeout_kind'] ?? null,
+            'failure_category' => $timeoutPayload['failure_category'] ?? null,
+            'exception_class' => $timeoutPayload['exception_class'] ?? null,
+            'activity_execution_id' => $timeoutPayload['activity_execution_id'] ?? null,
+        ],
+        'handle_response' => $show,
+        'attempt_state' => attempt_snapshots($activity['activity_execution_id']),
+        'history_events' => event_types($history),
+        'timeout_history_events' => history_payloads_for_event($history, HistoryEventType::ActivityTimedOut->value),
+        'worker_artifact' => $workerArtifact,
+    ];
+}
+
+function run_parity_heartbeat_observation(string $runtime, string $suffix): array
+{
+    $activity = start_parity_activity($runtime, $suffix, 'heartbeat', [
+        'heartbeat_timeout_seconds' => 30,
+        'schedule_to_close_timeout_seconds' => 120,
+    ]);
+    $task = $activity['task'];
+    $workerArtifact = worker_artifact_probe($task, $runtime, 'standalone');
+    $heartbeat = heartbeat_activity_task($task, [
+        'message' => 'parity heartbeat',
+        'current' => 1,
+        'total' => 1,
+        'unit' => 'step',
+        'details' => ['runtime' => $runtime, 'observation' => 'heartbeat'],
+    ]);
+    [$result, $complete, $completionArtifact] = complete_activity_task($task, $runtime, 'standalone');
+    if ($runtime === 'sdk-python') {
+        $workerArtifact = $completionArtifact;
+    }
+    $show = request_json('GET', '/activities/'.rawurlencode($activity['activity_id']));
+    $history = request_json('GET', '/workflows/'.rawurlencode($activity['activity_id']).'/runs/'.rawurlencode($activity['workflow_run_id']).'/history');
+    $heartbeatPayload = history_payload_for_execution(
+        $history,
+        HistoryEventType::ActivityHeartbeatRecorded->value,
+        $activity['activity_execution_id'],
+    );
+    $pass = ($heartbeat['heartbeat_recorded'] ?? null) === true
+        && ($heartbeat['cancel_requested'] ?? null) === false
+        && is_array($heartbeatPayload)
+        && ($show['status'] ?? null) === RunStatus::Completed->value;
+    if (! $pass) {
+        throw new RuntimeException("parity heartbeat observation {$runtime} did not record heartbeat then complete");
+    }
+
+    return [
+        'runtime' => $runtime,
+        'status' => 'pass',
+        'activity_id' => $activity['activity_id'],
+        'workflow_run_id' => $activity['workflow_run_id'],
+        'activity_execution_id' => $activity['activity_execution_id'],
+        'activity_attempt_id' => $task['activity_attempt_id'] ?? null,
+        'heartbeat_response' => $heartbeat,
+        'heartbeat_shape' => [
+            'heartbeat_recorded' => $heartbeat['heartbeat_recorded'] ?? null,
+            'cancel_requested' => $heartbeat['cancel_requested'] ?? null,
+            'history_event_type' => HistoryEventType::ActivityHeartbeatRecorded->value,
+        ],
+        'heartbeat_history_event' => $heartbeatPayload,
+        'completion_response' => $complete,
+        'result_payload' => $result,
+        'handle_response' => $show,
+        'history_events' => event_types($history),
+        'worker_artifact' => $workerArtifact,
+    ];
+}
+
+function run_parity_cancellation_observation(string $runtime, string $suffix): array
+{
+    $activity = start_parity_activity($runtime, $suffix, 'cancellation', [
+        'heartbeat_timeout_seconds' => 30,
+        'schedule_to_close_timeout_seconds' => 120,
+    ]);
+    $task = $activity['task'];
+    heartbeat_activity_task($task, [
+        'message' => 'parity cancellation preflight heartbeat',
+        'details' => ['runtime' => $runtime, 'observation' => 'cancellation'],
+    ]);
+    $cancelResponse = request_json('POST', '/workflows/'.rawurlencode($activity['activity_id']).'/runs/'.rawurlencode($activity['workflow_run_id']).'/cancel', [
+        'reason' => 'activities parity cancellation observation',
+    ]);
+    $cancelHeartbeat = heartbeat_activity_task($task, [
+        'message' => 'parity cancellation check',
+        'details' => ['runtime' => $runtime, 'observation' => 'cancellation'],
+    ]);
+    [$lateResult, $lateEnvelope, $workerArtifact] = activity_completion_payload($task, $runtime, 'standalone');
+    $lateCompletion = request_json(
+        'POST',
+        '/worker/activity-tasks/'.rawurlencode((string) $task['task_id']).'/complete',
+        [
+            'activity_attempt_id' => $task['activity_attempt_id'] ?? '',
+            'lease_owner' => $task['lease_owner'],
+            'result' => $lateEnvelope,
+        ],
+        [409],
+    );
+    $show = request_json('GET', '/activities/'.rawurlencode($activity['activity_id']));
+    $history = request_json('GET', '/workflows/'.rawurlencode($activity['activity_id']).'/runs/'.rawurlencode($activity['workflow_run_id']).'/history');
+    $attemptState = attempt_snapshots($activity['activity_execution_id']);
+    $latestAttempt = latest_attempt_snapshot($attemptState);
+    $terminalState = ($lateCompletion['outcome'] ?? null) === 'ignored'
+        && ($lateCompletion['reason'] ?? null) === 'run_cancelled'
+        && ($lateCompletion['run_status'] ?? null) === RunStatus::Cancelled->value
+        && cancelled_or_failed_activity_status($lateCompletion['activity_status'] ?? null)
+        && cancelled_or_failed_activity_status($latestAttempt['status'] ?? null);
+    $pass = ($cancelHeartbeat['cancel_requested'] ?? null) === true
+        && ($cancelHeartbeat['can_continue'] ?? null) === false
+        && $terminalState;
+    if (! $pass) {
+        throw new RuntimeException("parity cancellation observation {$runtime} did not expose cancel_requested and terminal cancelled state");
+    }
+
+    return [
+        'runtime' => $runtime,
+        'status' => 'pass',
+        'activity_id' => $activity['activity_id'],
+        'workflow_run_id' => $activity['workflow_run_id'],
+        'activity_execution_id' => $activity['activity_execution_id'],
+        'activity_attempt_id' => $task['activity_attempt_id'] ?? null,
+        'cancel_response' => $cancelResponse,
+        'cancel_requested_response' => $cancelHeartbeat,
+        'late_completion_after_cancel_response' => $lateCompletion,
+        'late_completion_after_cancel_result' => $lateResult,
+        'cancellation_shape' => [
+            'cancel_requested' => $cancelHeartbeat['cancel_requested'] ?? null,
+            'can_continue' => $cancelHeartbeat['can_continue'] ?? null,
+            'reason' => $cancelHeartbeat['reason'] ?? null,
+            'run_status' => $lateCompletion['run_status'] ?? null,
+            'activity_status' => $lateCompletion['activity_status'] ?? null,
+            'attempt_status' => $lateCompletion['attempt_status'] ?? null,
+            'task_status' => $lateCompletion['task_status'] ?? null,
+        ],
+        'terminal_cancellation_state' => $terminalState,
+        'handle_response' => $show,
+        'attempt_state' => $attemptState,
+        'history_events' => event_types($history),
+        'worker_artifact' => $workerArtifact,
+    ];
+}
+
+function list_activity_entry(array $listResponse, string $activityId): array
+{
+    $activities = is_array($listResponse['activities'] ?? null) ? $listResponse['activities'] : [];
+    foreach ($activities as $activity) {
+        if (is_array($activity) && ($activity['activity_id'] ?? null) === $activityId) {
+            return $activity;
+        }
+    }
+
+    return [];
+}
+
+function activity_list_evidence(string $activityId): array
+{
+    $all = request_json('GET', '/activities?page_size=200');
+    $running = request_json('GET', '/activities?status=running&page_size=200');
+    $completed = request_json('GET', '/activities?status=completed&page_size=200');
+    $failed = request_json('GET', '/activities?status=failed&page_size=200');
+
+    return [
+        'all' => $all,
+        'running' => $running,
+        'completed' => $completed,
+        'failed' => $failed,
+        'selected' => [
+            'all' => list_activity_entry($all, $activityId),
+            'running' => list_activity_entry($running, $activityId),
+            'completed' => list_activity_entry($completed, $activityId),
+            'failed' => list_activity_entry($failed, $activityId),
+        ],
+    ];
+}
+
+function operator_surface_snapshot(string $state, string $activityId, string $runId, string $activityExecutionId, ?string $activityAttemptId = null): array
+{
+    $apiDetail = request_json('GET', '/activities/'.rawurlencode($activityId));
+    $apiRunDetail = request_json('GET', '/workflows/'.rawurlencode($activityId).'/runs/'.rawurlencode($runId));
+    $history = request_json('GET', '/workflows/'.rawurlencode($activityId).'/runs/'.rawurlencode($runId).'/history');
+    $taskQueueDetail = request_json('GET', '/task-queues/'.rawurlencode(ACTIVITIES_TASK_QUEUE));
+    $listEvidence = activity_list_evidence($activityId);
+    $activityViews = run_activity_views($runId);
+    $activityView = activity_view_for_execution($activityViews, $activityExecutionId);
+    $attemptState = attempt_snapshots($activityExecutionId);
+    $executionState = activity_execution_state($activityExecutionId);
+    $currentLease = $activityAttemptId === null
+        ? []
+        : current_lease_for_attempt($taskQueueDetail, $activityAttemptId);
+    $selectedListEntries = is_array($listEvidence['selected'] ?? null) ? $listEvidence['selected'] : [];
+    $listVisible = array_reduce(
+        $selectedListEntries,
+        static fn (bool $carry, mixed $entry): bool => $carry || (is_array($entry) && $entry !== []),
+        false,
+    );
+    $waterlineVisible = ($activityView['id'] ?? null) === $activityExecutionId
+        && is_array($activityView['attempts'] ?? null)
+        && ($activityView['attempts'] ?? []) !== [];
+
+    return [
+        'state' => $state,
+        'activity_id' => $activityId,
+        'workflow_run_id' => $runId,
+        'activity_execution_id' => $activityExecutionId,
+        'activity_attempt_id' => $activityAttemptId,
+        'api_detail' => $apiDetail,
+        'api_run_detail' => $apiRunDetail,
+        'api_list_evidence' => $listEvidence,
+        'history_events' => event_types($history),
+        'history_payloads' => [
+            'activity_started' => history_payload_for_execution($history, HistoryEventType::ActivityStarted->value, $activityExecutionId),
+            'activity_completed' => history_payload_for_execution($history, HistoryEventType::ActivityCompleted->value, $activityExecutionId),
+            'activity_failed' => history_payload_for_execution($history, HistoryEventType::ActivityFailed->value, $activityExecutionId),
+            'activity_timed_out' => history_payload_for_execution($history, HistoryEventType::ActivityTimedOut->value, $activityExecutionId),
+            'activity_heartbeat_recorded' => history_payload_for_execution($history, HistoryEventType::ActivityHeartbeatRecorded->value, $activityExecutionId),
+        ],
+        'operator_metrics' => [
+            'task_queue' => ACTIVITIES_TASK_QUEUE,
+            'current_lease' => $currentLease,
+            'stats' => $taskQueueDetail['stats'] ?? null,
+            'admission' => $taskQueueDetail['admission'] ?? null,
+        ],
+        'waterline_activity_attempt_view' => [
+            'surface' => 'Waterline selected run activity attempt view',
+            'artifact' => 'durable-workflow/waterline',
+            'artifact_version' => getenv('DW_WATERLINE_VERSION') ?: 'unknown',
+            'artifact_source' => 'packagist://durable-workflow/waterline@'.(getenv('DW_WATERLINE_VERSION') ?: 'unknown'),
+            'selected_run_detail_path' => '/waterline/api/instances/'.$activityId.'/runs/'.$runId,
+            'projection_source' => 'Workflow\\V2\\Support\\RunActivityView::activitiesForRun',
+            'activity_view' => $activityView,
+            'waterline_visible' => $waterlineVisible,
+        ],
+        'cli_json_list_evidence' => [
+            'artifact' => 'durable-workflow/cli',
+            'artifact_version' => getenv('DW_CLI_VERSION') ?: 'unknown',
+            'expected_surface' => 'published CLI JSON list/detail evidence for activity attempt state',
+            'status' => 'unsupported',
+            'cli_list_visible' => false,
+            'observed_behavior' => 'the focused published-artifact host probe records API list evidence but has no published CLI activity list/detail invocation for this state',
+        ],
+        'attempt_state' => $attemptState,
+        'execution_state' => $executionState,
+        'surface_visibility' => [
+            'api_detail_visible' => ($apiDetail['activity_execution_id'] ?? null) === $activityExecutionId,
+            'api_list_visible' => $listVisible,
+            'history_visible' => in_array(HistoryEventType::ActivityStarted->value, event_types($history), true),
+            'waterline_visible' => $waterlineVisible,
+            'cli_list_visible' => false,
+        ],
+    ];
+}
+
+function start_operator_visibility_activity(string $suffix, string $state, array $options = []): array
+{
+    $workerId = "activities-operator-{$state}-{$suffix}";
+    $activityId = "activities-operator-{$state}-{$suffix}";
+
+    register_worker($workerId, [], [ACTIVITY_TYPE], 'workflow-php');
+    $start = request_json('POST', '/activities', [
+        'activity_id' => $activityId,
+        'activity_type' => ACTIVITY_TYPE,
+        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'input' => [[
+            'scenario_id' => 'operator_visible_activity_attempt_state',
+            'runtime' => 'workflow-php',
+            'operator_state' => $state,
+            'input_marker' => "operator-visible-{$state}-{$suffix}",
+        ]],
+        ...$options,
+    ]);
+    $runId = (string) ($start['workflow_run_id'] ?? '');
+    $activityExecutionId = (string) ($start['activity_execution_id'] ?? '');
+    if ($runId === '' || $activityExecutionId === '') {
+        throw new RuntimeException("operator visibility {$state} activity start did not return execution and run identifiers");
+    }
+
+    return [
+        'state' => $state,
+        'worker_id' => $workerId,
+        'activity_id' => $activityId,
+        'workflow_run_id' => $runId,
+        'activity_execution_id' => $activityExecutionId,
+        'task' => poll_task('activity', $workerId),
+    ];
+}
+
+function operator_visibility_state_observation(string $state, string $suffix): array
+{
+    if ($state === 'in_flight') {
+        $activity = start_operator_visibility_activity($suffix, $state, [
+            'heartbeat_timeout_seconds' => 30,
+            'schedule_to_close_timeout_seconds' => 120,
+        ]);
+        $heartbeat = heartbeat_activity_task($activity['task'], [
+            'message' => 'operator visibility heartbeat',
+            'current' => 1,
+            'total' => 3,
+            'unit' => 'step',
+            'details' => ['state' => $state],
+        ]);
+        $snapshot = operator_surface_snapshot(
+            $state,
+            $activity['activity_id'],
+            $activity['workflow_run_id'],
+            $activity['activity_execution_id'],
+            $activity['task']['activity_attempt_id'] ?? null,
+        );
+        $snapshot['heartbeat_response'] = $heartbeat;
+
+        return $snapshot;
+    }
+
+    if ($state === 'retrying') {
+        $activity = start_operator_visibility_activity($suffix, $state, [
+            'retry_policy' => ['max_attempts' => 2, 'backoff_seconds' => [60]],
+        ]);
+        $failure = [
+            'message' => 'operator visibility retryable failure',
+            'type' => 'ActivitiesConformanceVisibilityRetryableFailure',
+            'retryable' => true,
+            'non_retryable' => false,
+        ];
+        $failResponse = fail_activity_task($activity['task'], $failure);
+        $snapshot = operator_surface_snapshot(
+            $state,
+            $activity['activity_id'],
+            $activity['workflow_run_id'],
+            $activity['activity_execution_id'],
+            $activity['task']['activity_attempt_id'] ?? null,
+        );
+        $snapshot['failure_response'] = $failResponse;
+        $snapshot['configured_retry_policy'] = ['max_attempts' => 2, 'backoff_seconds' => [60]];
+
+        return $snapshot;
+    }
+
+    if ($state === 'timed_out') {
+        $activity = start_operator_visibility_activity($suffix, $state, [
+            'start_to_close_timeout_seconds' => 1,
+            'schedule_to_close_timeout_seconds' => 30,
+            'retry_policy' => ['max_attempts' => 1, 'backoff_seconds' => [0]],
+        ]);
+        $deadlines = is_array($activity['task']['deadlines'] ?? null) ? $activity['task']['deadlines'] : [];
+        $deadlineTimestamp = timestamp_from_datetime(is_string($deadlines['start_to_close'] ?? null) ? $deadlines['start_to_close'] : null);
+        if ($deadlineTimestamp === null) {
+            throw new RuntimeException('operator visibility timed-out state did not expose start-to-close deadline');
+        }
+        wait_until_timestamp($deadlineTimestamp + 0.20);
+        $enforceResponse = request_json('POST', '/system/activity-timeouts/pass', [
+            'execution_ids' => [$activity['activity_execution_id']],
+        ]);
+        $snapshot = operator_surface_snapshot(
+            $state,
+            $activity['activity_id'],
+            $activity['workflow_run_id'],
+            $activity['activity_execution_id'],
+            $activity['task']['activity_attempt_id'] ?? null,
+        );
+        $snapshot['worker_visible_deadlines'] = $deadlines;
+        $snapshot['enforce_response'] = $enforceResponse;
+
+        return $snapshot;
+    }
+
+    if ($state === 'failed') {
+        $activity = start_operator_visibility_activity($suffix, $state, [
+            'retry_policy' => ['max_attempts' => 1, 'backoff_seconds' => [0]],
+        ]);
+        $failure = [
+            'message' => 'operator visibility terminal failure',
+            'type' => 'ActivitiesConformanceVisibilityFailure',
+            'retryable' => false,
+            'non_retryable' => true,
+        ];
+        $failResponse = fail_activity_task($activity['task'], $failure);
+        $snapshot = operator_surface_snapshot(
+            $state,
+            $activity['activity_id'],
+            $activity['workflow_run_id'],
+            $activity['activity_execution_id'],
+            $activity['task']['activity_attempt_id'] ?? null,
+        );
+        $snapshot['failure_response'] = $failResponse;
+
+        return $snapshot;
+    }
+
+    if ($state === 'completed') {
+        $activity = start_operator_visibility_activity($suffix, $state);
+        [$result, $complete, $workerArtifact] = complete_activity_task($activity['task'], 'workflow-php', 'standalone');
+        $snapshot = operator_surface_snapshot(
+            $state,
+            $activity['activity_id'],
+            $activity['workflow_run_id'],
+            $activity['activity_execution_id'],
+            $activity['task']['activity_attempt_id'] ?? null,
+        );
+        $snapshot['activity_result'] = $result;
+        $snapshot['completion_response'] = $complete;
+        $snapshot['worker_artifact'] = $workerArtifact;
+
+        return $snapshot;
+    }
+
+    if ($state === 'cancelled') {
+        $activity = start_operator_visibility_activity($suffix, $state, [
+            'heartbeat_timeout_seconds' => 30,
+            'schedule_to_close_timeout_seconds' => 120,
+        ]);
+        request_json('POST', '/workflows/'.rawurlencode($activity['activity_id']).'/runs/'.rawurlencode($activity['workflow_run_id']).'/cancel', [
+            'reason' => 'operator visibility cancellation state',
+        ]);
+        [$lateResult, $lateEnvelope, $workerArtifact] = activity_completion_payload($activity['task'], 'workflow-php', 'standalone');
+        $lateCompletion = request_json(
+            'POST',
+            '/worker/activity-tasks/'.rawurlencode((string) $activity['task']['task_id']).'/complete',
+            [
+                'activity_attempt_id' => $activity['task']['activity_attempt_id'] ?? '',
+                'lease_owner' => $activity['task']['lease_owner'],
+                'result' => $lateEnvelope,
+            ],
+            [409],
+        );
+        $snapshot = operator_surface_snapshot(
+            $state,
+            $activity['activity_id'],
+            $activity['workflow_run_id'],
+            $activity['activity_execution_id'],
+            $activity['task']['activity_attempt_id'] ?? null,
+        );
+        $snapshot['late_completion_after_cancel_response'] = $lateCompletion;
+        $snapshot['late_completion_after_cancel_result'] = $lateResult;
+        $snapshot['worker_artifact'] = $workerArtifact;
+
+        return $snapshot;
+    }
+
+    throw new RuntimeException("unsupported operator visibility state {$state}");
+}
+
+function operator_visibility_state_pass(array $observation): bool
+{
+    $state = is_string($observation['state'] ?? null) ? $observation['state'] : '';
+    $visibility = is_array($observation['surface_visibility'] ?? null) ? $observation['surface_visibility'] : [];
+    if (($visibility['api_detail_visible'] ?? null) !== true
+        || ($visibility['api_list_visible'] ?? null) !== true
+        || ($visibility['history_visible'] ?? null) !== true
+        || ($visibility['waterline_visible'] ?? null) !== true
+        || ($visibility['cli_list_visible'] ?? null) !== true) {
+        return false;
+    }
+
+    $apiStatus = $observation['api_detail']['activity_status'] ?? null;
+    $runStatus = $observation['api_detail']['status'] ?? null;
+    $executionStatus = $observation['execution_state']['status'] ?? null;
+
+    return match ($state) {
+        'in_flight' => $apiStatus === ActivityStatus::Running->value && $runStatus === RunStatus::Running->value,
+        'retrying' => is_array($observation['failure_response'] ?? null)
+            && is_string($observation['failure_response']['next_task_id'] ?? null)
+            && $executionStatus !== ActivityStatus::Failed->value,
+        'timed_out' => $apiStatus === ActivityStatus::Failed->value
+            && $runStatus === RunStatus::Failed->value
+            && ($observation['api_detail']['closed_reason'] ?? null) === 'timed_out',
+        'failed' => $apiStatus === ActivityStatus::Failed->value
+            && $runStatus === RunStatus::Failed->value,
+        'completed' => $apiStatus === ActivityStatus::Completed->value
+            && $runStatus === RunStatus::Completed->value,
+        'cancelled' => cancelled_or_failed_activity_status($apiStatus)
+            && in_array($runStatus, [RunStatus::Cancelled->value, RunStatus::Failed->value], true),
+        default => false,
+    };
+}
+
+function run_heartbeat_cancellation_cell(): array
+{
+    $suffix = bin2hex(random_bytes(3));
+    $workerId = "activities-heartbeat-cancel-{$suffix}";
+    $activityId = "activities-heartbeat-cancel-{$suffix}";
+    $heartbeatDetails = [
+        'message' => 'activities conformance heartbeat',
+        'current' => 1,
+        'total' => 2,
+        'unit' => 'step',
+        'details' => [
+            'phase' => 'heartbeat_and_cancellation_observation',
+            'marker' => "heartbeat-cancel-{$suffix}",
+        ],
+    ];
+
+    register_worker($workerId, [], [ACTIVITY_TYPE], 'workflow-php');
+    $start = request_json('POST', '/activities', [
+        'activity_id' => $activityId,
+        'activity_type' => ACTIVITY_TYPE,
+        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'input' => [[
+            'scenario_id' => 'heartbeat_and_cancellation_observation',
+            'runtime' => 'workflow-php',
+            'input_marker' => "heartbeat-cancel-{$suffix}",
+        ]],
+        'heartbeat_timeout_seconds' => 30,
+        'schedule_to_close_timeout_seconds' => 120,
+    ]);
+    $runId = (string) ($start['workflow_run_id'] ?? '');
+    $activityExecutionId = (string) ($start['activity_execution_id'] ?? '');
+    if ($runId === '' || $activityExecutionId === '') {
+        throw new RuntimeException('heartbeat/cancellation activity start did not return execution and run identifiers');
+    }
+
+    $activityTask = poll_task('activity', $workerId);
+    $heartbeatResponse = heartbeat_activity_task($activityTask, $heartbeatDetails);
+    $historyAfterHeartbeat = request_json('GET', '/workflows/'.rawurlencode($activityId).'/runs/'.rawurlencode($runId).'/history');
+    $heartbeatPayload = history_payload_for_execution(
+        $historyAfterHeartbeat,
+        HistoryEventType::ActivityHeartbeatRecorded->value,
+        $activityExecutionId,
+    );
+    $showAfterHeartbeat = request_json('GET', '/activities/'.rawurlencode($activityId));
+
+    $cancelResponse = request_json('POST', '/workflows/'.rawurlencode($activityId).'/runs/'.rawurlencode($runId).'/cancel', [
+        'reason' => 'activities conformance cancellation observation',
+    ]);
+    $cancelHeartbeatResponse = heartbeat_activity_task($activityTask, [
+        'message' => 'activities conformance cancellation check',
+        'details' => [
+            'phase' => 'cancel_requested',
+            'marker' => "heartbeat-cancel-{$suffix}",
+        ],
+    ]);
+    [$lateResult, $lateResultEnvelope, $workerArtifact] = activity_completion_payload(
+        $activityTask,
+        'workflow-php',
+        'standalone',
+    );
+    $lateCompletionResponse = request_json(
+        'POST',
+        '/worker/activity-tasks/'.rawurlencode((string) $activityTask['task_id']).'/complete',
+        [
+            'activity_attempt_id' => $activityTask['activity_attempt_id'] ?? '',
+            'lease_owner' => $activityTask['lease_owner'],
+            'result' => $lateResultEnvelope,
+        ],
+        [409],
+    );
+    $showAfterCancel = request_json('GET', '/activities/'.rawurlencode($activityId));
+    $historyAfterCancel = request_json('GET', '/workflows/'.rawurlencode($activityId).'/runs/'.rawurlencode($runId).'/history');
+    $attemptState = attempt_snapshots($activityExecutionId);
+    $executionState = activity_execution_state($activityExecutionId);
+    $latestAttempt = latest_attempt_snapshot($attemptState);
+
+    $heartbeatRecorded = ($heartbeatResponse['heartbeat_recorded'] ?? null) === true
+        && ($heartbeatResponse['cancel_requested'] ?? null) === false
+        && ($heartbeatPayload['activity_attempt_id'] ?? null) === ($activityTask['activity_attempt_id'] ?? null)
+        && is_array($heartbeatPayload['progress'] ?? null);
+    $workerObservedCancellation = ($cancelHeartbeatResponse['cancel_requested'] ?? null) === true
+        && ($cancelHeartbeatResponse['can_continue'] ?? null) === false
+        && ($cancelHeartbeatResponse['reason'] ?? null) === 'run_cancelled'
+        && ($cancelHeartbeatResponse['heartbeat_recorded'] ?? null) === false;
+    $terminalCancellationState = ($lateCompletionResponse['outcome'] ?? null) === 'ignored'
+        && ($lateCompletionResponse['recorded'] ?? null) === false
+        && ($lateCompletionResponse['reason'] ?? null) === 'run_cancelled'
+        && ($lateCompletionResponse['cancel_requested'] ?? null) === true
+        && ($lateCompletionResponse['can_continue'] ?? null) === false
+        && ($lateCompletionResponse['run_status'] ?? null) === RunStatus::Cancelled->value
+        && ($lateCompletionResponse['run_closed_reason'] ?? null) === RunStatus::Cancelled->value
+        && cancelled_or_failed_activity_status($lateCompletionResponse['activity_status'] ?? null)
+        && cancelled_or_failed_activity_status($lateCompletionResponse['attempt_status'] ?? null)
+        && cancelled_or_failed_activity_status($lateCompletionResponse['task_status'] ?? null)
+        && ($showAfterCancel['status'] ?? null) === RunStatus::Cancelled->value
+        && cancelled_or_failed_activity_status($showAfterCancel['activity_status'] ?? null)
+        && cancelled_or_failed_activity_status($executionState['status'] ?? null)
+        && cancelled_or_failed_activity_status($latestAttempt['status'] ?? null);
+
+    if (! $heartbeatRecorded) {
+        throw new RuntimeException('heartbeat/cancellation did not record heartbeat details in history and worker response');
+    }
+    if (! $workerObservedCancellation) {
+        throw new RuntimeException('heartbeat/cancellation did not expose cancel_requested=true to the running worker');
+    }
+    if (! $terminalCancellationState) {
+        throw new RuntimeException('heartbeat/cancellation did not expose a documented terminal cancelled or failed activity state after cancellation');
+    }
+
+    return [
+        'scenario_id' => 'heartbeat_and_cancellation_observation',
+        'mode' => 'standalone',
+        'runtime' => 'workflow-php',
+        'status' => 'pass',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'activity_id' => $activityId,
+        'workflow_run_id' => $runId,
+        'activity_execution_id' => $activityExecutionId,
+        'activity_attempt_id' => $activityTask['activity_attempt_id'] ?? null,
+        'activity_type' => $activityTask['activity_type'] ?? ACTIVITY_TYPE,
+        'heartbeat_details' => $heartbeatDetails,
+        'heartbeat_response' => $heartbeatResponse,
+        'heartbeat_history_event' => $heartbeatPayload,
+        'heartbeat_recorded' => $heartbeatRecorded,
+        'cancel_response' => $cancelResponse,
+        'cancel_requested_response' => $cancelHeartbeatResponse,
+        'worker_observed_cancellation' => $workerObservedCancellation,
+        'activity_handle_after_heartbeat' => $showAfterHeartbeat,
+        'activity_handle_after_cancel' => $showAfterCancel,
+        'late_completion_after_cancel_response' => $lateCompletionResponse,
+        'late_completion_after_cancel_result' => $lateResult,
+        'terminal_cancellation_state' => [
+            'documented_terminal_state_observed' => $terminalCancellationState,
+            'run_status' => $lateCompletionResponse['run_status'] ?? null,
+            'run_closed_reason' => $lateCompletionResponse['run_closed_reason'] ?? null,
+            'activity_status' => $lateCompletionResponse['activity_status'] ?? null,
+            'attempt_status' => $lateCompletionResponse['attempt_status'] ?? null,
+            'task_status' => $lateCompletionResponse['task_status'] ?? null,
+            'activity_handle_status' => $showAfterCancel['activity_status'] ?? null,
+            'stored_execution_status' => $executionState['status'] ?? null,
+            'stored_attempt_status' => $latestAttempt['status'] ?? null,
+        ],
+        'worker_artifact' => $workerArtifact,
+        'attempt_state' => $attemptState,
+        'execution_state' => $executionState,
+        'history_events_after_heartbeat' => event_types($historyAfterHeartbeat),
+        'history_events_after_cancel' => event_types($historyAfterCancel),
+        'local_product_source_checkouts_used' => false,
+    ];
+}
+
+function run_idempotent_completion_cell(): array
+{
+    $suffix = bin2hex(random_bytes(3));
+    $workerId = "activities-idempotent-complete-{$suffix}";
+    $activityId = "activities-idempotent-complete-{$suffix}";
+
+    register_worker($workerId, [], [ACTIVITY_TYPE], 'workflow-php');
+    $start = request_json('POST', '/activities', [
+        'activity_id' => $activityId,
+        'activity_type' => ACTIVITY_TYPE,
+        'task_queue' => ACTIVITIES_TASK_QUEUE,
+        'input' => [[
+            'scenario_id' => 'idempotent_completion_handling',
+            'runtime' => 'workflow-php',
+            'input_marker' => "idempotent-complete-{$suffix}",
+        ]],
+    ]);
+    $runId = (string) ($start['workflow_run_id'] ?? '');
+    $activityExecutionId = (string) ($start['activity_execution_id'] ?? '');
+    if ($runId === '' || $activityExecutionId === '') {
+        throw new RuntimeException('idempotent completion activity start did not return execution and run identifiers');
+    }
+
+    $activityTask = poll_task('activity', $workerId);
+    $codec = task_codec($activityTask);
+    $payload = activity_input($activityTask, $codec);
+    $result = [
+        'message' => 'published artifact activity completed',
+        'mode' => 'standalone',
+        'runtime' => 'workflow-php',
+        'input_marker' => $payload['input_marker'] ?? null,
+        'activity_type' => $activityTask['activity_type'] ?? ACTIVITY_TYPE,
+    ];
+    $completionRequest = [
+        'activity_attempt_id' => $activityTask['activity_attempt_id'] ?? '',
+        'lease_owner' => $activityTask['lease_owner'],
+        'result' => envelope($result, $codec),
+    ];
+    $firstCompletion = request_json(
+        'POST',
+        '/worker/activity-tasks/'.rawurlencode((string) $activityTask['task_id']).'/complete',
+        $completionRequest,
+    );
+    $duplicateCompletion = request_json(
+        'POST',
+        '/worker/activity-tasks/'.rawurlencode((string) $activityTask['task_id']).'/complete',
+        $completionRequest,
+        [409],
+    );
+    $show = request_json('GET', '/activities/'.rawurlencode($activityId));
+    $history = request_json('GET', '/workflows/'.rawurlencode($activityId).'/runs/'.rawurlencode($runId).'/history');
+    $completedHistoryCount = count_event_type($history, HistoryEventType::ActivityCompleted->value);
+    $recordedOnce = ($firstCompletion['recorded'] ?? null) === true
+        && ($duplicateCompletion['recorded'] ?? null) === false
+        && $completedHistoryCount === 1;
+    $deterministicDuplicate = ($duplicateCompletion['outcome'] ?? null) === 'completed'
+        && ($duplicateCompletion['reason'] ?? null) === 'stale_attempt';
+
+    if (! $recordedOnce || ! $deterministicDuplicate) {
+        throw new RuntimeException('idempotent completion did not return stale_attempt after exactly one recorded completion');
+    }
+    if (($show['status'] ?? null) !== RunStatus::Completed->value) {
+        throw new RuntimeException('idempotent completion activity did not close as completed after first completion');
+    }
+
+    return [
+        'scenario_id' => 'idempotent_completion_handling',
+        'mode' => 'standalone',
+        'runtime' => 'workflow-php',
+        'status' => 'pass',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'activity_id' => $activityId,
+        'workflow_run_id' => $runId,
+        'activity_execution_id' => $activityExecutionId,
+        'activity_attempt_id' => $activityTask['activity_attempt_id'] ?? null,
+        'activity_type' => $activityTask['activity_type'] ?? ACTIVITY_TYPE,
+        'first_completion_response' => $firstCompletion,
+        'duplicate_completion_response' => $duplicateCompletion,
+        'recorded_once' => $recordedOnce,
+        'stale_attempt_or_idempotent_verdict' => $duplicateCompletion['reason'] ?? null,
+        'activity_completed_history_count' => $completedHistoryCount,
+        'activity_completed_history_events' => history_payloads_for_event($history, HistoryEventType::ActivityCompleted->value),
+        'terminal_result' => [
+            'activity_status' => $show['activity_status'] ?? null,
+            'run_status' => $show['status'] ?? null,
+            'closed_reason' => $show['closed_reason'] ?? null,
+            'activity_result' => $result,
+            'handle_response' => $show,
+        ],
+        'attempt_state' => attempt_snapshots($activityExecutionId),
+        'execution_state' => activity_execution_state($activityExecutionId),
+        'history_events' => event_types($history),
+        'local_product_source_checkouts_used' => false,
+    ];
+}
+
+function run_php_python_parity_cell(): array
+{
+    $suffix = bin2hex(random_bytes(3));
+    $phpResultObservation = run_parity_result_observation('workflow-php', $suffix);
+    $pythonResultObservation = run_parity_result_observation('sdk-python', $suffix);
+    $phpFailureObservation = run_parity_failure_observation('workflow-php', $suffix);
+    $pythonFailureObservation = run_parity_failure_observation('sdk-python', $suffix);
+    $phpRetryObservation = run_parity_retry_observation('workflow-php', $suffix);
+    $pythonRetryObservation = run_parity_retry_observation('sdk-python', $suffix);
+    $phpTimeoutObservation = run_parity_timeout_observation('workflow-php', $suffix);
+    $pythonTimeoutObservation = run_parity_timeout_observation('sdk-python', $suffix);
+    $phpHeartbeatObservation = run_parity_heartbeat_observation('workflow-php', $suffix);
+    $pythonHeartbeatObservation = run_parity_heartbeat_observation('sdk-python', $suffix);
+    $phpCancellationObservation = run_parity_cancellation_observation('workflow-php', $suffix);
+    $pythonCancellationObservation = run_parity_cancellation_observation('sdk-python', $suffix);
+
+    $shape = same_activity_payload_shape(
+        $phpResultObservation['result_payload'] ?? [],
+        $pythonResultObservation['result_payload'] ?? [],
+    );
+    $failureShape = same_observation_shape(
+        $phpFailureObservation['failure_shape'] ?? [],
+        $pythonFailureObservation['failure_shape'] ?? [],
+        ['exception_type', 'message', 'failure_category', 'non_retryable'],
+    );
+    $retryShape = same_observation_shape(
+        [
+            'attempt_numbers' => $phpRetryObservation['attempt_numbers'] ?? null,
+            'terminal_status' => $phpRetryObservation['handle_response']['status'] ?? null,
+        ],
+        [
+            'attempt_numbers' => $pythonRetryObservation['attempt_numbers'] ?? null,
+            'terminal_status' => $pythonRetryObservation['handle_response']['status'] ?? null,
+        ],
+        ['attempt_numbers', 'terminal_status'],
+    );
+    $timeoutShape = same_observation_shape(
+        [
+            'timeout_kind' => $phpTimeoutObservation['timeout_shape']['timeout_kind'] ?? null,
+            'failure_category' => $phpTimeoutObservation['timeout_shape']['failure_category'] ?? null,
+            'terminal_status' => $phpTimeoutObservation['handle_response']['status'] ?? null,
+            'closed_reason' => $phpTimeoutObservation['handle_response']['closed_reason'] ?? null,
+        ],
+        [
+            'timeout_kind' => $pythonTimeoutObservation['timeout_shape']['timeout_kind'] ?? null,
+            'failure_category' => $pythonTimeoutObservation['timeout_shape']['failure_category'] ?? null,
+            'terminal_status' => $pythonTimeoutObservation['handle_response']['status'] ?? null,
+            'closed_reason' => $pythonTimeoutObservation['handle_response']['closed_reason'] ?? null,
+        ],
+        ['timeout_kind', 'failure_category', 'terminal_status', 'closed_reason'],
+    );
+    $heartbeatShape = same_observation_shape(
+        $phpHeartbeatObservation['heartbeat_shape'] ?? [],
+        $pythonHeartbeatObservation['heartbeat_shape'] ?? [],
+        ['heartbeat_recorded', 'cancel_requested', 'history_event_type'],
+    );
+    $cancellationShape = same_observation_shape(
+        $phpCancellationObservation['cancellation_shape'] ?? [],
+        $pythonCancellationObservation['cancellation_shape'] ?? [],
+        ['cancel_requested', 'can_continue', 'reason', 'run_status', 'activity_status', 'attempt_status', 'task_status'],
+    );
+    $parityObservations = [
+        'result' => $shape,
+        'failure' => $failureShape,
+        'retry' => $retryShape,
+        'timeout' => $timeoutShape,
+        'heartbeat' => $heartbeatShape,
+        'cancellation' => $cancellationShape,
+    ];
+    $runtimeMatrix = [
+        'execution_modes' => ['standalone'],
+        'runtimes' => ['workflow-php', 'sdk-python'],
+        'activity_cells' => [
+            [
+                'mode' => 'standalone',
+                'runtime' => 'workflow-php',
+                'status' => 'pass',
+                'execution_source' => HOST_EVIDENCE_SOURCE,
+                'activity_execution_id' => $phpResultObservation['activity_execution_id'] ?? null,
+                'activity_attempt_id' => $phpResultObservation['activity_attempt_id'] ?? null,
+                'worker_artifact' => $phpResultObservation['worker_artifact'] ?? null,
+                'parity_observations' => ['result', 'failure', 'retry', 'timeout', 'heartbeat', 'cancellation'],
+                'local_product_source_checkouts_used' => false,
+            ],
+            [
+                'mode' => 'standalone',
+                'runtime' => 'sdk-python',
+                'status' => 'pass',
+                'execution_source' => HOST_EVIDENCE_SOURCE,
+                'activity_execution_id' => $pythonResultObservation['activity_execution_id'] ?? null,
+                'activity_attempt_id' => $pythonResultObservation['activity_attempt_id'] ?? null,
+                'worker_artifact' => $pythonResultObservation['worker_artifact'] ?? null,
+                'parity_observations' => ['result', 'failure', 'retry', 'timeout', 'heartbeat', 'cancellation'],
+                'local_product_source_checkouts_used' => false,
+            ],
+        ],
+    ];
+    $pythonArtifactOk = ($pythonResultObservation['worker_artifact']['artifact'] ?? null) === 'sdk-python'
+        && ($pythonResultObservation['worker_artifact']['status'] ?? null) === 'pass';
+    $pass = ! in_array(false, array_map(
+        static fn (array $observation): bool => ($observation['matches'] ?? null) === true,
+        $parityObservations
+    ), true)
+        && $pythonArtifactOk;
+
+    if (! $pass) {
+        throw new RuntimeException('PHP/Python activity parity did not preserve result, failure, retry, timeout, heartbeat, and cancellation observation shapes with published sdk-python artifact evidence');
+    }
+
+    return [
+        'scenario_id' => 'php_python_activity_parity',
+        'mode' => 'standalone',
+        'runtime' => 'workflow-php+sdk-python',
+        'status' => 'pass',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'php_activity_id' => $phpResultObservation['activity_id'] ?? null,
+        'python_activity_id' => $pythonResultObservation['activity_id'] ?? null,
+        'php_workflow_run_id' => $phpResultObservation['workflow_run_id'] ?? null,
+        'python_workflow_run_id' => $pythonResultObservation['workflow_run_id'] ?? null,
+        'php_activity_result' => $phpResultObservation['result_payload'] ?? null,
+        'python_activity_result' => $pythonResultObservation['result_payload'] ?? null,
+        'cross_language_payload_shape' => $shape,
+        'cross_language_failure_shape' => $failureShape,
+        'cross_language_retry_shape' => $retryShape,
+        'cross_language_timeout_shape' => $timeoutShape,
+        'cross_language_heartbeat_shape' => $heartbeatShape,
+        'cross_language_cancellation_shape' => $cancellationShape,
+        'parity_observations' => $parityObservations,
+        'runtime_matrix' => $runtimeMatrix,
+        'heartbeat_observations' => [
+            'workflow-php' => $phpHeartbeatObservation,
+            'sdk-python' => $pythonHeartbeatObservation,
+        ],
+        'failure_observations' => [
+            'workflow-php' => $phpFailureObservation,
+            'sdk-python' => $pythonFailureObservation,
+        ],
+        'retry_observations' => [
+            'workflow-php' => $phpRetryObservation,
+            'sdk-python' => $pythonRetryObservation,
+        ],
+        'timeout_observations' => [
+            'workflow-php' => $phpTimeoutObservation,
+            'sdk-python' => $pythonTimeoutObservation,
+        ],
+        'cancellation_observations' => [
+            'workflow-php' => $phpCancellationObservation,
+            'sdk-python' => $pythonCancellationObservation,
+        ],
+        'completion_responses' => [
+            'workflow-php' => $phpResultObservation['completion_response'] ?? null,
+            'sdk-python' => $pythonResultObservation['completion_response'] ?? null,
+        ],
+        'handle_responses' => [
+            'workflow-php' => $phpResultObservation['handle_response'] ?? null,
+            'sdk-python' => $pythonResultObservation['handle_response'] ?? null,
+        ],
+        'history_events' => [
+            'workflow-php' => $phpResultObservation['history_events'] ?? null,
+            'sdk-python' => $pythonResultObservation['history_events'] ?? null,
+        ],
+        'worker_artifacts' => [
+            'workflow-php' => $phpResultObservation['worker_artifact'] ?? null,
+            'sdk-python' => $pythonResultObservation['worker_artifact'] ?? null,
+        ],
+        'local_product_source_checkouts_used' => false,
+    ];
+}
+
+function run_operator_visibility_cell(): array
+{
+    $suffix = bin2hex(random_bytes(3));
+    $stateObservations = [];
+    foreach (['in_flight', 'retrying', 'timed_out', 'failed', 'completed', 'cancelled'] as $state) {
+        $stateObservations[$state] = operator_visibility_state_observation($state, $suffix);
+    }
+
+    $statePasses = [];
+    foreach ($stateObservations as $state => $observation) {
+        $statePasses[$state] = operator_visibility_state_pass($observation);
+    }
+    $missingSurfaceReasons = [];
+    foreach ($stateObservations as $state => $observation) {
+        $visibility = is_array($observation['surface_visibility'] ?? null) ? $observation['surface_visibility'] : [];
+        foreach (['api_detail_visible', 'api_list_visible', 'history_visible', 'waterline_visible', 'cli_list_visible'] as $field) {
+            if (($visibility[$field] ?? null) !== true) {
+                $missingSurfaceReasons[] = "{$state}.{$field}";
+            }
+        }
+        if (($statePasses[$state] ?? false) !== true) {
+            $missingSurfaceReasons[] = "{$state}.state_contract";
+        }
+    }
+
+    $inFlightObservation = $stateObservations['in_flight'];
+    $cellStatus = $missingSurfaceReasons === [] ? 'pass' : 'fail';
+
+    return [
+        'scenario_id' => 'operator_visible_activity_attempt_state',
+        'mode' => 'standalone',
+        'runtime' => 'workflow-php',
+        'status' => $cellStatus,
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'activity_id' => $inFlightObservation['activity_id'] ?? null,
+        'workflow_run_id' => $inFlightObservation['workflow_run_id'] ?? null,
+        'activity_execution_id' => $inFlightObservation['activity_execution_id'] ?? null,
+        'activity_attempt_id' => $inFlightObservation['activity_attempt_id'] ?? null,
+        'activity_type' => ACTIVITY_TYPE,
+        'required_operator_states' => ['in_flight', 'retrying', 'timed_out', 'failed', 'completed', 'cancelled'],
+        'operator_state_matrix' => $stateObservations,
+        'operator_state_passes' => $statePasses,
+        'missing_operator_surface_reasons' => $missingSurfaceReasons,
+        'api_run_detail' => [
+            'workflow_run_detail' => $inFlightObservation['api_run_detail'] ?? null,
+            'activity_handle_detail' => $inFlightObservation['api_detail'] ?? null,
+            'api_list_evidence' => $inFlightObservation['api_list_evidence'] ?? null,
+            'api_visible' => $inFlightObservation['surface_visibility']['api_detail_visible'] ?? null,
+        ],
+        'history_activity_attempts' => [
+            'activity_started' => $inFlightObservation['history_payloads']['activity_started'] ?? null,
+            'activity_heartbeat_recorded' => $inFlightObservation['history_payloads']['activity_heartbeat_recorded'] ?? null,
+            'attempt_snapshots' => $inFlightObservation['attempt_state'] ?? null,
+            'history_events' => $inFlightObservation['history_events'] ?? null,
+            'history_visible' => $inFlightObservation['surface_visibility']['history_visible'] ?? null,
+        ],
+        'operator_metrics' => [
+            'task_queue' => ACTIVITIES_TASK_QUEUE,
+            'current_lease' => $inFlightObservation['operator_metrics']['current_lease'] ?? null,
+            'stats' => $inFlightObservation['operator_metrics']['stats'] ?? null,
+            'admission' => $inFlightObservation['operator_metrics']['admission'] ?? null,
+            'lease_visible' => ($inFlightObservation['operator_metrics']['current_lease']['activity_attempt_id'] ?? null) === ($inFlightObservation['activity_attempt_id'] ?? null),
+        ],
+        'waterline_activity_attempt_view' => $inFlightObservation['waterline_activity_attempt_view'] ?? null,
+        'cli_json_list_evidence' => $inFlightObservation['cli_json_list_evidence'] ?? null,
+        'heartbeat_response' => $inFlightObservation['heartbeat_response'] ?? null,
+        'local_product_source_checkouts_used' => false,
+    ];
 }
 
 function run_restart_durable_result_cell(): array
@@ -2028,6 +3480,306 @@ function scenario_from_retry_backoff_cell(array $cell): array
     return $scenario;
 }
 
+function scenario_from_heartbeat_cancellation_cell(array $cell): array
+{
+    $pass = ($cell['status'] ?? null) === 'pass'
+        && is_array($cell['heartbeat_details'] ?? null)
+        && is_array($cell['heartbeat_history_event'] ?? null)
+        && is_array($cell['cancel_requested_response'] ?? null)
+        && is_array($cell['terminal_cancellation_state'] ?? null)
+        && ($cell['worker_observed_cancellation'] ?? null) === true
+        && ($cell['heartbeat_recorded'] ?? null) === true
+        && ($cell['terminal_cancellation_state']['documented_terminal_state_observed'] ?? null) === true;
+    $hostEvidence = [
+        'schema' => HOST_EVIDENCE_SCHEMA,
+        'scenario_id' => 'heartbeat_and_cancellation_observation',
+        'status' => $pass ? 'pass' : 'fail',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'executed_in_pinned_server_artifact' => true,
+        'local_product_source_checkouts_used' => false,
+        'activity_cells' => [[
+            'mode' => 'standalone',
+            'runtime' => 'workflow-php',
+            'status' => $pass ? 'pass' : 'fail',
+            'execution_source' => HOST_EVIDENCE_SOURCE,
+            'activity_execution_id' => $cell['activity_execution_id'] ?? null,
+            'activity_attempt_id' => $cell['activity_attempt_id'] ?? null,
+            'local_product_source_checkouts_used' => false,
+        ]],
+    ];
+    $observed = [
+        'activity_host_evidence' => $hostEvidence,
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'activity_id' => $cell['activity_id'] ?? null,
+        'workflow_run_id' => $cell['workflow_run_id'] ?? null,
+        'activity_execution_id' => $cell['activity_execution_id'] ?? null,
+        'activity_attempt_id' => $cell['activity_attempt_id'] ?? null,
+        'heartbeat_details' => $cell['heartbeat_details'] ?? null,
+        'heartbeat_response' => $cell['heartbeat_response'] ?? null,
+        'heartbeat_history_event' => $cell['heartbeat_history_event'] ?? null,
+        'cancel_response' => $cell['cancel_response'] ?? null,
+        'cancel_requested_response' => $cell['cancel_requested_response'] ?? null,
+        'worker_observed_cancellation' => $cell['worker_observed_cancellation'] ?? null,
+        'activity_handle_after_heartbeat' => $cell['activity_handle_after_heartbeat'] ?? null,
+        'activity_handle_after_cancel' => $cell['activity_handle_after_cancel'] ?? null,
+        'late_completion_after_cancel_response' => $cell['late_completion_after_cancel_response'] ?? null,
+        'terminal_cancellation_state' => $cell['terminal_cancellation_state'] ?? null,
+        'attempt_state' => $cell['attempt_state'] ?? null,
+        'execution_state' => $cell['execution_state'] ?? null,
+        'history_events_after_heartbeat' => $cell['history_events_after_heartbeat'] ?? null,
+        'history_events_after_cancel' => $cell['history_events_after_cancel'] ?? null,
+    ];
+
+    $scenario = [
+        'scenario_id' => 'heartbeat_and_cancellation_observation',
+        'status' => $pass ? 'pass' : 'fail',
+        'classification' => $pass ? null : 'product-gap',
+        'observed_outputs' => array_filter($observed, static fn (mixed $value): bool => $value !== null && $value !== []),
+        'scenario_evidence' => array_filter([
+            'heartbeat_cancellation' => $cell,
+            'activity_host_evidence' => $hostEvidence,
+        ], static fn (mixed $value): bool => $value !== null && $value !== []),
+    ];
+
+    if (! $pass) {
+        $message = 'activity heartbeat/cancellation did not prove heartbeat details, cancel_requested observation, and terminal cancelled or failed state';
+        $scenario['observed_behavior'] = $message;
+        $scenario['linked_findings'] = [finding_for_failure('heartbeat_and_cancellation_observation', $message)];
+    }
+
+    return $scenario;
+}
+
+function scenario_from_idempotent_completion_cell(array $cell): array
+{
+    $pass = ($cell['status'] ?? null) === 'pass'
+        && is_array($cell['first_completion_response'] ?? null)
+        && is_array($cell['duplicate_completion_response'] ?? null)
+        && is_string($cell['activity_attempt_id'] ?? null)
+        && ($cell['recorded_once'] ?? null) === true
+        && ($cell['stale_attempt_or_idempotent_verdict'] ?? null) === 'stale_attempt'
+        && ($cell['activity_completed_history_count'] ?? null) === 1;
+    $hostEvidence = [
+        'schema' => HOST_EVIDENCE_SCHEMA,
+        'scenario_id' => 'idempotent_completion_handling',
+        'status' => $pass ? 'pass' : 'fail',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'executed_in_pinned_server_artifact' => true,
+        'local_product_source_checkouts_used' => false,
+        'activity_cells' => [[
+            'mode' => 'standalone',
+            'runtime' => 'workflow-php',
+            'status' => $pass ? 'pass' : 'fail',
+            'execution_source' => HOST_EVIDENCE_SOURCE,
+            'activity_execution_id' => $cell['activity_execution_id'] ?? null,
+            'activity_attempt_id' => $cell['activity_attempt_id'] ?? null,
+            'local_product_source_checkouts_used' => false,
+        ]],
+    ];
+    $observed = [
+        'activity_host_evidence' => $hostEvidence,
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'activity_id' => $cell['activity_id'] ?? null,
+        'workflow_run_id' => $cell['workflow_run_id'] ?? null,
+        'activity_execution_id' => $cell['activity_execution_id'] ?? null,
+        'activity_attempt_id' => $cell['activity_attempt_id'] ?? null,
+        'first_completion_response' => $cell['first_completion_response'] ?? null,
+        'duplicate_completion_response' => $cell['duplicate_completion_response'] ?? null,
+        'recorded_once' => $cell['recorded_once'] ?? null,
+        'stale_attempt_or_idempotent_verdict' => $cell['stale_attempt_or_idempotent_verdict'] ?? null,
+        'activity_completed_history_count' => $cell['activity_completed_history_count'] ?? null,
+        'activity_completed_history_events' => $cell['activity_completed_history_events'] ?? null,
+        'terminal_result' => $cell['terminal_result'] ?? null,
+        'attempt_state' => $cell['attempt_state'] ?? null,
+        'execution_state' => $cell['execution_state'] ?? null,
+        'history_events' => $cell['history_events'] ?? null,
+    ];
+
+    $scenario = [
+        'scenario_id' => 'idempotent_completion_handling',
+        'status' => $pass ? 'pass' : 'fail',
+        'classification' => $pass ? null : 'product-gap',
+        'observed_outputs' => array_filter($observed, static fn (mixed $value): bool => $value !== null && $value !== []),
+        'scenario_evidence' => array_filter([
+            'idempotent_completion' => $cell,
+            'activity_host_evidence' => $hostEvidence,
+        ], static fn (mixed $value): bool => $value !== null && $value !== []),
+    ];
+
+    if (! $pass) {
+        $message = 'activity idempotent completion did not prove deterministic stale_attempt response after exactly one terminal completion';
+        $scenario['observed_behavior'] = $message;
+        $scenario['linked_findings'] = [finding_for_failure('idempotent_completion_handling', $message)];
+    }
+
+    return $scenario;
+}
+
+function scenario_from_php_python_parity_cell(array $cell): array
+{
+    $shape = is_array($cell['cross_language_payload_shape'] ?? null) ? $cell['cross_language_payload_shape'] : [];
+    $parityObservations = is_array($cell['parity_observations'] ?? null) ? $cell['parity_observations'] : [];
+    $runtimeMatrix = is_array($cell['runtime_matrix'] ?? null) ? $cell['runtime_matrix'] : [];
+    $activityCells = is_array($runtimeMatrix['activity_cells'] ?? null) ? $runtimeMatrix['activity_cells'] : [];
+    $pass = ($cell['status'] ?? null) === 'pass'
+        && is_array($cell['php_activity_result'] ?? null)
+        && is_array($cell['python_activity_result'] ?? null)
+        && ($shape['matches'] ?? null) === true
+        && isset(
+            $parityObservations['result'],
+            $parityObservations['failure'],
+            $parityObservations['retry'],
+            $parityObservations['timeout'],
+            $parityObservations['heartbeat'],
+            $parityObservations['cancellation']
+        )
+        && ! in_array(false, array_map(
+            static fn (mixed $observation): bool => is_array($observation) && ($observation['matches'] ?? null) === true,
+            $parityObservations
+        ), true)
+        && $activityCells !== [];
+    $hostEvidence = [
+        'schema' => HOST_EVIDENCE_SCHEMA,
+        'scenario_id' => 'php_python_activity_parity',
+        'status' => $pass ? 'pass' : 'fail',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'executed_in_pinned_server_artifact' => true,
+        'local_product_source_checkouts_used' => false,
+        'activity_cells' => $activityCells,
+    ];
+    $observed = [
+        'activity_host_evidence' => $hostEvidence,
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'php_activity_id' => $cell['php_activity_id'] ?? null,
+        'python_activity_id' => $cell['python_activity_id'] ?? null,
+        'php_workflow_run_id' => $cell['php_workflow_run_id'] ?? null,
+        'python_workflow_run_id' => $cell['python_workflow_run_id'] ?? null,
+        'php_activity_result' => $cell['php_activity_result'] ?? null,
+        'python_activity_result' => $cell['python_activity_result'] ?? null,
+        'cross_language_payload_shape' => $shape,
+        'cross_language_failure_shape' => $cell['cross_language_failure_shape'] ?? null,
+        'cross_language_retry_shape' => $cell['cross_language_retry_shape'] ?? null,
+        'cross_language_timeout_shape' => $cell['cross_language_timeout_shape'] ?? null,
+        'cross_language_heartbeat_shape' => $cell['cross_language_heartbeat_shape'] ?? null,
+        'cross_language_cancellation_shape' => $cell['cross_language_cancellation_shape'] ?? null,
+        'parity_observations' => $parityObservations,
+        'runtime_matrix' => $runtimeMatrix,
+        'heartbeat_observations' => $cell['heartbeat_observations'] ?? null,
+        'failure_observations' => $cell['failure_observations'] ?? null,
+        'retry_observations' => $cell['retry_observations'] ?? null,
+        'timeout_observations' => $cell['timeout_observations'] ?? null,
+        'cancellation_observations' => $cell['cancellation_observations'] ?? null,
+        'completion_responses' => $cell['completion_responses'] ?? null,
+        'handle_responses' => $cell['handle_responses'] ?? null,
+        'history_events' => $cell['history_events'] ?? null,
+        'worker_artifacts' => $cell['worker_artifacts'] ?? null,
+    ];
+
+    $scenario = [
+        'scenario_id' => 'php_python_activity_parity',
+        'status' => $pass ? 'pass' : 'fail',
+        'classification' => $pass ? null : 'product-gap',
+        'observed_outputs' => array_filter($observed, static fn (mixed $value): bool => $value !== null && $value !== []),
+        'scenario_evidence' => array_filter([
+            'php_python_activity_parity' => $cell,
+            'activity_host_evidence' => $hostEvidence,
+        ], static fn (mixed $value): bool => $value !== null && $value !== []),
+    ];
+
+    if (! $pass) {
+        $message = 'PHP/Python activity parity did not prove compatible result, failure, retry, timeout, heartbeat, and cancellation observations with published sdk-python worker evidence';
+        $scenario['observed_behavior'] = $message;
+        $scenario['linked_findings'] = [finding_for_failure('php_python_activity_parity', $message)];
+    }
+
+    return $scenario;
+}
+
+function scenario_from_operator_visibility_cell(array $cell): array
+{
+    $statePasses = is_array($cell['operator_state_passes'] ?? null) ? $cell['operator_state_passes'] : [];
+    $requiredStates = ['in_flight', 'retrying', 'timed_out', 'failed', 'completed', 'cancelled'];
+    $pass = ($cell['status'] ?? null) === 'pass'
+        && is_array($cell['api_run_detail'] ?? null)
+        && is_array($cell['history_activity_attempts'] ?? null)
+        && is_array($cell['operator_metrics'] ?? null)
+        && is_array($cell['waterline_activity_attempt_view'] ?? null)
+        && is_array($cell['operator_state_matrix'] ?? null)
+        && array_diff($requiredStates, array_keys($statePasses)) === []
+        && ! in_array(false, array_map(
+            static fn (mixed $value): bool => $value === true,
+            $statePasses
+        ), true)
+        && ($cell['api_run_detail']['api_visible'] ?? null) === true
+        && ($cell['history_activity_attempts']['history_visible'] ?? null) === true
+        && ($cell['operator_metrics']['lease_visible'] ?? null) === true
+        && ($cell['waterline_activity_attempt_view']['waterline_visible'] ?? null) === true;
+    $hostEvidence = [
+        'schema' => HOST_EVIDENCE_SCHEMA,
+        'scenario_id' => 'operator_visible_activity_attempt_state',
+        'status' => $pass ? 'pass' : 'fail',
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'executed_in_pinned_server_artifact' => true,
+        'local_product_source_checkouts_used' => false,
+        'activity_cells' => [[
+            'mode' => 'standalone',
+            'runtime' => 'workflow-php',
+            'status' => $pass ? 'pass' : 'fail',
+            'execution_source' => HOST_EVIDENCE_SOURCE,
+            'activity_execution_id' => $cell['activity_execution_id'] ?? null,
+            'activity_attempt_id' => $cell['activity_attempt_id'] ?? null,
+            'local_product_source_checkouts_used' => false,
+        ]],
+    ];
+    $observed = [
+        'activity_host_evidence' => $hostEvidence,
+        'execution_source' => HOST_EVIDENCE_SOURCE,
+        'activity_id' => $cell['activity_id'] ?? null,
+        'workflow_run_id' => $cell['workflow_run_id'] ?? null,
+        'activity_execution_id' => $cell['activity_execution_id'] ?? null,
+        'activity_attempt_id' => $cell['activity_attempt_id'] ?? null,
+        'api_run_detail' => $cell['api_run_detail'] ?? null,
+        'history_activity_attempts' => $cell['history_activity_attempts'] ?? null,
+        'operator_metrics' => $cell['operator_metrics'] ?? null,
+        'waterline_activity_attempt_view' => $cell['waterline_activity_attempt_view'] ?? null,
+        'cli_json_list_evidence' => $cell['cli_json_list_evidence'] ?? null,
+        'required_operator_states' => $cell['required_operator_states'] ?? null,
+        'operator_state_matrix' => $cell['operator_state_matrix'] ?? null,
+        'operator_state_passes' => $statePasses,
+        'missing_operator_surface_reasons' => $cell['missing_operator_surface_reasons'] ?? null,
+        'heartbeat_details' => $cell['heartbeat_details'] ?? null,
+        'heartbeat_response' => $cell['heartbeat_response'] ?? null,
+        'completion_response' => $cell['completion_response'] ?? null,
+        'activity_result' => $cell['activity_result'] ?? null,
+        'worker_artifact' => $cell['worker_artifact'] ?? null,
+    ];
+
+    $scenario = [
+        'scenario_id' => 'operator_visible_activity_attempt_state',
+        'status' => $pass ? 'pass' : 'fail',
+        'classification' => $pass ? null : 'product-gap',
+        'observed_outputs' => array_filter($observed, static fn (mixed $value): bool => $value !== null && $value !== []),
+        'scenario_evidence' => array_filter([
+            'operator_visibility' => $cell,
+            'activity_host_evidence' => $hostEvidence,
+        ], static fn (mixed $value): bool => $value !== null && $value !== []),
+    ];
+
+    if (! $pass) {
+        $missing = is_array($cell['missing_operator_surface_reasons'] ?? null)
+            ? implode(', ', $cell['missing_operator_surface_reasons'])
+            : '';
+        $message = 'operator visibility did not prove in-flight, retrying, timed-out, failed, completed, and cancelled activity attempt state through API detail/list, history, task queue metrics, Waterline, and CLI/list evidence';
+        if ($missing !== '') {
+            $message .= ': '.$missing;
+        }
+        $scenario['observed_behavior'] = $message;
+        $scenario['linked_findings'] = [finding_for_failure('operator_visible_activity_attempt_state', $message)];
+    }
+
+    return $scenario;
+}
+
 function run_cells_for(string $scenarioId, string $mode): array
 {
     $cells = [];
@@ -2091,6 +3843,42 @@ try {
     } catch (Throwable $throwable) {
         $typedFailureScenario = failure_behavior_scenario('typed_failure_propagation', $throwable);
     }
+    $heartbeatScenario = failure_behavior_scenario(
+        'heartbeat_and_cancellation_observation',
+        new RuntimeException('heartbeat/cancellation scenario did not execute')
+    );
+    try {
+        $heartbeatScenario = scenario_from_heartbeat_cancellation_cell(run_heartbeat_cancellation_cell());
+    } catch (Throwable $throwable) {
+        $heartbeatScenario = failure_behavior_scenario('heartbeat_and_cancellation_observation', $throwable);
+    }
+    $idempotentScenario = failure_behavior_scenario(
+        'idempotent_completion_handling',
+        new RuntimeException('idempotent completion scenario did not execute')
+    );
+    try {
+        $idempotentScenario = scenario_from_idempotent_completion_cell(run_idempotent_completion_cell());
+    } catch (Throwable $throwable) {
+        $idempotentScenario = failure_behavior_scenario('idempotent_completion_handling', $throwable);
+    }
+    $parityScenario = failure_behavior_scenario(
+        'php_python_activity_parity',
+        new RuntimeException('PHP/Python activity parity scenario did not execute')
+    );
+    try {
+        $parityScenario = scenario_from_php_python_parity_cell(run_php_python_parity_cell());
+    } catch (Throwable $throwable) {
+        $parityScenario = failure_behavior_scenario('php_python_activity_parity', $throwable);
+    }
+    $operatorVisibilityScenario = failure_behavior_scenario(
+        'operator_visible_activity_attempt_state',
+        new RuntimeException('operator visibility scenario did not execute')
+    );
+    try {
+        $operatorVisibilityScenario = scenario_from_operator_visibility_cell(run_operator_visibility_cell());
+    } catch (Throwable $throwable) {
+        $operatorVisibilityScenario = failure_behavior_scenario('operator_visible_activity_attempt_state', $throwable);
+    }
 
     write_json_file(output_path(), evidence_document([
         scenario_from_cells('workflow_embedded_activity_result', 'workflow-embedded', $embeddedCells),
@@ -2099,6 +3887,10 @@ try {
         $retryScenario,
         $timeoutScenario,
         $typedFailureScenario,
+        $heartbeatScenario,
+        $idempotentScenario,
+        $parityScenario,
+        $operatorVisibilityScenario,
     ], array_merge($embeddedCells, $standaloneCells)));
 } catch (Throwable $throwable) {
     write_json_file(output_path(), evidence_document([
@@ -2108,6 +3900,10 @@ try {
         failure_behavior_scenario('retry_attempt_backoff_behavior', $throwable),
         failure_behavior_scenario('timeout_behavior', $throwable),
         failure_behavior_scenario('typed_failure_propagation', $throwable),
+        failure_behavior_scenario('heartbeat_and_cancellation_observation', $throwable),
+        failure_behavior_scenario('idempotent_completion_handling', $throwable),
+        failure_behavior_scenario('php_python_activity_parity', $throwable),
+        failure_behavior_scenario('operator_visible_activity_attempt_state', $throwable),
     ], []));
 }
 PHP
