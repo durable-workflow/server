@@ -256,8 +256,9 @@ def command_contract() -> dict[str, Any]:
     minimum_parameter["name"] = "minimum"
 
     return {
-        "queries": ["count-at-least", "state"],
+        "queries": ["count-at-least", "current", "state"],
         "query_contracts": [
+            {"name": "current", "parameters": []},
             {"name": "state", "parameters": []},
             {"name": "count-at-least", "parameters": [minimum_parameter]},
         ],
@@ -5761,6 +5762,37 @@ def missing_current_evidence_for(scenario: str, observed: dict[str, Any]) -> lis
     ]
 
 
+def python_worker_claim_observed_for_focused_route() -> dict[str, Any]:
+    _, observed = current_candidate_and_observed("python_worker_cli_and_sdk_baseline")
+    if observed:
+        return observed
+
+    if evidence_source_policy_violations(smoke_evidence):
+        return {}
+
+    if not smoke_evidence_matches_current_tuple():
+        return {}
+
+    observed = {}
+    for evidence_key in (
+        "worker_runtime",
+        "python_worker_artifact_source",
+        "python_worker_sdk_version",
+    ):
+        value = flat_smoke_field(evidence_key)
+        if value is not MISSING:
+            observed[evidence_key] = value
+
+    return observed
+
+
+def python_routed_current_missing_route_allowed(missing_current_evidence: list[str]) -> bool:
+    return (
+        "routed_current_query_task" in missing_current_evidence
+        and python_worker_claim_satisfied(python_worker_claim_observed_for_focused_route())
+    )
+
+
 def current_evidence_gaps(scenario: str) -> list[str]:
     if scenario not in BASELINE_CURRENT_EVIDENCE_SCENARIOS:
         return []
@@ -6313,10 +6345,12 @@ for scenario in required_scenarios:
                 current_missing_route = BASELINE_CURRENT_MISSING_ROUTES.get(scenario)
                 if (
                     scenario == "python_worker_cli_and_sdk_baseline"
-                    and missing_current_evidence != ["routed_current_query_task"]
+                    and not python_routed_current_missing_route_allowed(missing_current_evidence)
                 ):
                     current_missing_route = None
                 if current_missing_route is not None:
+                    if scenario == "python_worker_cli_and_sdk_baseline":
+                        missing_current_evidence = ["routed_current_query_task"]
                     route = {
                         **route,
                         "type": current_missing_route["type"],

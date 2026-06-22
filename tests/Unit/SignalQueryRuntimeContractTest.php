@@ -1289,6 +1289,29 @@ PY);
         );
     }
 
+    public function test_host_runner_routes_missing_python_route_proof_even_when_later_public_samples_are_absent(): void
+    {
+        $result = $this->runSignalQueryHostRunner([
+            'worker_runtime' => 'sdk-python',
+            'python_worker_artifact_source' => 'published_pypi_package',
+            'python_worker_sdk_version' => '0.4.84',
+            'python_worker_query_task_routing' => true,
+        ]);
+
+        $this->assertSame('not_covered', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
+
+        $pythonFindings = $this->findingsForScenario($result, 'python_worker_cli_and_sdk_baseline');
+        $this->assertCount(1, $pythonFindings);
+        $this->assertSame(
+            'signal_query_python_routed_current_query_evidence_missing',
+            $pythonFindings[0]['type'] ?? null,
+        );
+        $this->assertSame(
+            ['routed_current_query_task'],
+            $pythonFindings[0]['current_evidence']['missing_current_evidence'] ?? null,
+        );
+    }
+
     public function test_host_runner_preserves_python_baseline_candidate_when_route_proof_is_missing(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
@@ -1561,6 +1584,24 @@ PY);
         $this->assertSame(8, $result['worker_routed_envelope']);
     }
 
+    public function test_baseline_probe_external_worker_contract_declares_current_query(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+contract = command_contract()
+
+print(json.dumps({
+    "queries": contract["queries"],
+    "query_contract_names": [
+        query_contract["name"]
+        for query_contract in contract["query_contracts"]
+    ],
+}, sort_keys=True))
+PY);
+
+        $this->assertContains('current', $result['queries']);
+        $this->assertContains('current', $result['query_contract_names']);
+    }
+
     public function test_host_runner_rejects_package_labels_as_python_worker_runtime(): void
     {
         foreach (['python-sdk', 'durable-workflow-python'] as $runtime) {
@@ -1581,6 +1622,11 @@ PY);
             );
             $this->assertContains(
                 'signal_query_python_smoke_uncovered',
+                array_column($result['findings'], 'type'),
+                $runtime,
+            );
+            $this->assertNotContains(
+                'signal_query_python_routed_current_query_evidence_missing',
                 array_column($result['findings'], 'type'),
                 $runtime,
             );
