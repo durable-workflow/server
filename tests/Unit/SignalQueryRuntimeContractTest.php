@@ -1518,6 +1518,49 @@ PY);
         $this->assertTrue($result['stopped']);
     }
 
+    public function test_python_baseline_reads_nested_sdk_query_result_samples(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+samples = {
+    "cli_direct": {
+        "ok": True,
+        "result": 3,
+    },
+    "sdk_wrapped_control_plane": {
+        "client": "sdk-python",
+        "operation": "query",
+        "operation_name": "current",
+        "ok": True,
+        "result": {
+            "success": True,
+            "workflow_id": "wf-sq-python-sdk",
+            "run_id": "run-python-baseline",
+            "query_name": "current",
+            "target_scope": "instance",
+            "result": 8,
+        },
+    },
+    "worker_routed_envelope": {
+        "ok": True,
+        "result": None,
+        "result_envelope": {
+            "codec": "json",
+            "blob": "8",
+        },
+    },
+}
+
+print(json.dumps({
+    key: sample_result_value(sample)
+    for key, sample in samples.items()
+}, sort_keys=True))
+PY);
+
+        $this->assertSame(3, $result['cli_direct']);
+        $this->assertSame(8, $result['sdk_wrapped_control_plane']);
+        $this->assertSame(8, $result['worker_routed_envelope']);
+    }
+
     public function test_host_runner_rejects_package_labels_as_python_worker_runtime(): void
     {
         foreach (['python-sdk', 'durable-workflow-python'] as $runtime) {

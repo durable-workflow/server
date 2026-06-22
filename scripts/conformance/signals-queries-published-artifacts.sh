@@ -1257,6 +1257,79 @@ raise SystemExit(asyncio.run(main()))
     return sample
 
 
+_NO_SAMPLE_RESULT = object()
+
+
+def envelope_result_value(candidate: dict[str, Any]) -> Any:
+    for envelope_key in ("result_envelope", "resultEnvelope"):
+        envelope = candidate.get(envelope_key)
+        if not isinstance(envelope, dict):
+            continue
+
+        blob = envelope.get("blob")
+        if not isinstance(blob, str):
+            continue
+
+        decoded = decode_json_blob(blob)
+        if decoded is not None:
+            return decoded
+
+    return _NO_SAMPLE_RESULT
+
+
+def looks_like_control_plane_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and any(
+            key in value
+            for key in (
+                "success",
+                "workflow_id",
+                "run_id",
+                "query_name",
+                "operation",
+                "operation_name",
+                "target_scope",
+                "result_envelope",
+                "resultEnvelope",
+            )
+        )
+    )
+
+
+def candidate_result_value(candidate: dict[str, Any]) -> Any:
+    if "result" in candidate:
+        result = candidate["result"]
+        if looks_like_control_plane_result(result):
+            nested = candidate_result_value(result)
+            if nested is not _NO_SAMPLE_RESULT:
+                return nested
+
+        if result is not None:
+            return result
+
+        envelope = envelope_result_value(candidate)
+        if envelope is not _NO_SAMPLE_RESULT:
+            return envelope
+
+        return None
+
+    envelope = envelope_result_value(candidate)
+    if envelope is not _NO_SAMPLE_RESULT:
+        return envelope
+
+    for nested_key in ("body", "data", "output", "server_response"):
+        nested = candidate.get(nested_key)
+        if not isinstance(nested, dict):
+            continue
+
+        value = candidate_result_value(nested)
+        if value is not _NO_SAMPLE_RESULT:
+            return value
+
+    return _NO_SAMPLE_RESULT
+
+
 def sample_result_value(sample: dict[str, Any]) -> Any:
     for candidate in (
         sample,
@@ -1265,14 +1338,11 @@ def sample_result_value(sample: dict[str, Any]) -> Any:
     ):
         if not isinstance(candidate, dict):
             continue
-        if "result" in candidate:
-            return candidate["result"]
-        body = candidate.get("body")
-        if isinstance(body, dict) and "result" in body:
-            return body["result"]
-        data = candidate.get("data")
-        if isinstance(data, dict) and "result" in data:
-            return data["result"]
+
+        value = candidate_result_value(candidate)
+        if value is not _NO_SAMPLE_RESULT:
+            return value
+
     return None
 
 
