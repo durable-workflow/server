@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(24, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(25, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -484,6 +484,12 @@ class SignalQueryRuntimeContractTest extends TestCase
             $hostRunner['evidence_shards']['python_worker_cli_and_sdk_smoke']['current_evidence_fields'],
         );
         $this->assertSame(
+            'signal_query_python_baseline_failed',
+            $hostRunner['evidence_shards']['python_worker_cli_and_sdk_smoke'][
+                'finding_type_when_product_behavior_fails'
+            ],
+        );
+        $this->assertSame(
             'signal_query_python_routed_current_query_evidence_missing',
             $hostRunner['evidence_shards']['python_worker_cli_and_sdk_smoke'][
                 'finding_type_when_routed_current_query_missing'
@@ -633,6 +639,7 @@ class SignalQueryRuntimeContractTest extends TestCase
             'signal_query_unknown_handler_errors_current_evidence_missing',
             'signal_query_adversarial_error_shapes_uncovered',
             'signal_query_waterline_observer_comparison_uncovered',
+            'signal_query_python_baseline_failed',
             '"runner_blocked": runner_blocked',
             'server_readiness_topology',
             'runner_blocker',
@@ -1546,11 +1553,14 @@ scenario = baseline_scenario_result("python_worker_cli_and_sdk_baseline", output
 print(json.dumps({
     "status": scenario["status"],
     "missing": missing_current_evidence_for("python_worker_cli_and_sdk_baseline", outputs),
+    "behavior_failures": current_behavior_failures_for("python_worker_cli_and_sdk_baseline", outputs),
     "worker_runtime": outputs["worker_runtime"],
     "python_worker_artifact_source": outputs["python_worker_artifact_source"],
     "python_worker_sdk_version": outputs["python_worker_sdk_version"],
     "query_task_routing": outputs["python_worker_query_task_routing"],
     "cli_signal_and_query": outputs["cli_signal_and_query"],
+    "sdk_python_signal_and_query": outputs["sdk_python_signal_and_query"],
+    "sdk_error_type": outputs["sdk_python_signal_and_query_error"]["type"],
     "has_routed_task": "routed_current_query_task" in outputs,
     "route_error_type": outputs["routed_current_query_task_error"]["type"],
     "probe_error_type": outputs["probe_error"]["type"],
@@ -1559,16 +1569,19 @@ print(json.dumps({
 }, sort_keys=True))
 PY);
 
-        $this->assertSame('not_covered', $result['status']);
+        $this->assertSame('fail', $result['status']);
+        $this->assertContains('routed_current_query_task', $result['missing']);
         $this->assertSame(
-            ['routed_current_query_task', 'sdk_python_signal_and_query', 'immediate_repeat_query_consistency'],
-            $result['missing'],
+            'python_sdk_signal_query_mismatch',
+            $result['behavior_failures'][0]['code'] ?? null,
         );
         $this->assertSame('sdk-python', $result['worker_runtime']);
         $this->assertSame('published_pypi_package', $result['python_worker_artifact_source']);
         $this->assertSame('0.4.84', $result['python_worker_sdk_version']);
         $this->assertTrue($result['query_task_routing']);
         $this->assertTrue($result['cli_signal_and_query']);
+        $this->assertFalse($result['sdk_python_signal_and_query']);
+        $this->assertSame('RuntimeError', $result['sdk_error_type']);
         $this->assertFalse($result['has_routed_task']);
         $this->assertSame('RuntimeError', $result['route_error_type']);
         $this->assertSame('RuntimeError', $result['probe_error_type']);
@@ -1935,6 +1948,27 @@ PY);
         $complete = $this->completeSignalQueryResultForCurrentHostRunner();
         $versions = $this->currentHostRunnerArtifactVersions();
         $sources = $this->expectedHostRunnerArtifactSources();
+        $python = $complete['scenario_results']['python_worker_cli_and_sdk_baseline'];
+        $python['observed_outputs']['published_artifact_versions'] = $versions;
+        $python['observed_outputs']['artifact_sources'] = $sources;
+        $python['observed_outputs']['sdk_python_signal_and_query'] = false;
+        $python['observed_outputs']['sdk_python_signal_sample'] = [
+            'ok' => true,
+            'client' => 'sdk-python',
+            'operation' => 'signal',
+            'operation_name' => 'increment',
+        ];
+        $python['observed_outputs']['sdk_python_query_sample'] = [
+            'ok' => true,
+            'client' => 'sdk-python',
+            'operation' => 'query',
+            'operation_name' => 'current',
+            'result' => 7,
+        ];
+        $python['observed_outputs']['sdk_python_signal_and_query_error'] = [
+            'type' => 'RuntimeError',
+            'message' => 'Python SDK query current returned 7, expected 8',
+        ];
         $ordered = $complete['scenario_results']['ordered_signal_delivery'];
         $ordered['observed_outputs']['published_artifact_versions'] = $versions;
         $ordered['observed_outputs']['artifact_sources'] = $sources;
@@ -1951,15 +1985,29 @@ PY);
         $result = $this->runSignalQueryHostRunner([
             'artifact_versions' => $versions,
             'scenario_results' => [
+                'python_worker_cli_and_sdk_baseline' => $python,
                 'ordered_signal_delivery' => $ordered,
                 'dedup_contract_observation' => $dedup,
                 'unknown_signal_and_query_errors' => $unknown,
             ],
         ]);
+        $pythonFindings = $this->findingsForScenario($result, 'python_worker_cli_and_sdk_baseline');
         $orderedFindings = $this->findingsForScenario($result, 'ordered_signal_delivery');
         $dedupFindings = $this->findingsForScenario($result, 'dedup_contract_observation');
         $unknownFindings = $this->findingsForScenario($result, 'unknown_signal_and_query_errors');
 
+        $this->assertSame('fail', $result['scenario_results']['python_worker_cli_and_sdk_baseline']['status']);
+        $this->assertNotEmpty($pythonFindings);
+        $this->assertSame('signal_query_python_baseline_failed', $pythonFindings[0]['type'] ?? null);
+        $this->assertSame(
+            'python_sdk_signal_query_mismatch',
+            $pythonFindings[0]['current_evidence']['current_behavior_failures'][0]['code'] ?? null,
+        );
+        $this->assertArrayNotHasKey(
+            'missing_current_evidence',
+            $pythonFindings[0]['current_evidence'] ?? [],
+        );
+        $this->assertStringNotContainsString('missing current evidence', $pythonFindings[0]['title'] ?? '');
         $this->assertSame('fail', $result['scenario_results']['ordered_signal_delivery']['status']);
         $this->assertNotEmpty($orderedFindings);
         $this->assertSame('signal_query_ordered_delivery_failed', $orderedFindings[0]['type'] ?? null);

@@ -3386,12 +3386,16 @@ def wait_for_query_result(
     label: str,
     log_file: Path,
     timeout_seconds: float = 60.0,
+    last_sample_holder: dict[str, Any] | None = None,
+    last_sample_key: str | None = None,
 ) -> dict[str, Any]:
     deadline = time.time() + timeout_seconds
     last_sample: dict[str, Any] | None = None
     while time.time() < deadline:
         sample = sample_factory()
         last_sample = sample
+        if last_sample_holder is not None and last_sample_key is not None:
+            last_sample_holder[last_sample_key] = sample
         if public_sample_ok(sample) and sample_result_value(sample) == expected:
             return sample
         time.sleep(0.5)
@@ -3598,36 +3602,52 @@ def run_python_sdk_baseline(
         if routed_current_query_task is not None:
             outputs["routed_current_query_task"] = routed_current_query_task
 
-        sdk_signal = sdk_success_sample(
-            python_bin,
-            base_url,
-            token,
-            namespace,
-            workflow_id,
-            "signal",
-            "increment",
-            log_file,
-            args=[5],
-        )
-        if not public_sample_ok(sdk_signal):
-            raise RuntimeError(f"Python SDK baseline SDK signal failed: {sdk_signal}")
-        outputs["sdk_python_signal_sample"] = sdk_signal
-
-        sdk_query = wait_for_query_result(
-            label="Python SDK worker SDK query after SDK signal",
-            expected=8,
-            log_file=log_file,
-            sample_factory=lambda: sdk_success_sample(
+        try:
+            sdk_signal = sdk_success_sample(
                 python_bin,
                 base_url,
                 token,
                 namespace,
                 workflow_id,
-                "query",
-                "current",
+                "signal",
+                "increment",
                 log_file,
-            ),
-        )
+                args=[5],
+            )
+        except Exception as exc:  # noqa: BLE001 - preserve SDK failure as product behavior evidence.
+            outputs["sdk_python_signal_and_query"] = False
+            outputs["sdk_python_signal_and_query_error"] = probe_error_payload(exc)
+            raise
+        outputs["sdk_python_signal_sample"] = sdk_signal
+        if not public_sample_ok(sdk_signal):
+            outputs["sdk_python_signal_and_query"] = False
+            outputs["sdk_python_signal_and_query_error"] = probe_error_payload(
+                RuntimeError(f"Python SDK baseline SDK signal failed: {sdk_signal}")
+            )
+            raise RuntimeError(f"Python SDK baseline SDK signal failed: {sdk_signal}")
+
+        try:
+            sdk_query = wait_for_query_result(
+                label="Python SDK worker SDK query after SDK signal",
+                expected=8,
+                log_file=log_file,
+                sample_factory=lambda: sdk_success_sample(
+                    python_bin,
+                    base_url,
+                    token,
+                    namespace,
+                    workflow_id,
+                    "query",
+                    "current",
+                    log_file,
+                ),
+                last_sample_holder=outputs,
+                last_sample_key="sdk_python_query_sample",
+            )
+        except Exception as exc:  # noqa: BLE001 - preserve public SDK evidence for product-failure routing.
+            outputs["sdk_python_signal_and_query"] = False
+            outputs["sdk_python_signal_and_query_error"] = probe_error_payload(exc)
+            raise
         outputs["sdk_python_query_sample"] = sdk_query
         outputs["sdk_python_signal_and_query"] = (
             public_sample_ok(sdk_signal)
@@ -3635,24 +3655,31 @@ def run_python_sdk_baseline(
             and sample_result_value(sdk_query) == 8
         )
 
-        repeat_query = wait_for_query_result(
-            label="Python SDK worker repeat CLI query",
-            expected=8,
-            log_file=log_file,
-            sample_factory=lambda: cli_json_sample(
-                cli_bin,
-                base_url,
-                token,
-                namespace,
-                [
-                    "workflow:query",
-                    workflow_id,
-                    "current",
-                    "--output=json",
-                ],
-                log_file,
-            ),
-        )
+        try:
+            repeat_query = wait_for_query_result(
+                label="Python SDK worker repeat CLI query",
+                expected=8,
+                log_file=log_file,
+                sample_factory=lambda: cli_json_sample(
+                    cli_bin,
+                    base_url,
+                    token,
+                    namespace,
+                    [
+                        "workflow:query",
+                        workflow_id,
+                        "current",
+                        "--output=json",
+                    ],
+                    log_file,
+                ),
+                last_sample_holder=outputs,
+                last_sample_key="repeat_query_sample",
+            )
+        except Exception as exc:  # noqa: BLE001 - preserve repeat-query evidence for product-failure routing.
+            outputs["immediate_repeat_query_consistency"] = False
+            outputs["immediate_repeat_query_consistency_error"] = probe_error_payload(exc)
+            raise
         outputs["repeat_query_sample"] = repeat_query
         outputs["immediate_repeat_query_consistency"] = (
             sample_result_value(repeat_query) == sample_result_value(sdk_query)
@@ -6533,6 +6560,10 @@ BASELINE_CURRENT_EVIDENCE_FIELDS = {
 }
 
 BASELINE_PRODUCT_FAILURE_ROUTES = {
+    "python_worker_cli_and_sdk_baseline": {
+        "type": "signal_query_python_baseline_failed",
+        "title": "Signals/queries Python worker CLI and SDK baseline behavior failed",
+    },
     "ordered_signal_delivery": {
         "type": "signal_query_ordered_delivery_failed",
         "title": "Signals/queries ordered delivery behavior failed",
@@ -6810,6 +6841,50 @@ def behavior_failure(code: str, evidence_key: str, expected: Any, actual: Any) -
     }
 
 
+def sample_readout(sample: Any) -> dict[str, Any] | None:
+    if not isinstance(sample, dict):
+        return None
+
+    return {
+        "ok": public_sample_ok(sample),
+        "result": sample_result_value(sample),
+        "status_code": sample.get("status_code"),
+        "reason": sample.get("reason"),
+        "exception": sample.get("exception"),
+    }
+
+
+def python_baseline_behavior_failures(observed: dict[str, Any]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    sdk_signal_and_query = evidence_lookup(observed, "sdk_python_signal_and_query")
+    if sdk_signal_and_query is not MISSING and not evidence_true(sdk_signal_and_query):
+        failures.append(behavior_failure(
+            "python_sdk_signal_query_mismatch",
+            "sdk_python_signal_and_query",
+            "Python SDK signal increment(5) succeeds and Python SDK query current returns 8",
+            {
+                "sdk_signal": sample_readout(observed.get("sdk_python_signal_sample")),
+                "sdk_query": sample_readout(observed.get("sdk_python_query_sample")),
+                "error": observed.get("sdk_python_signal_and_query_error"),
+            },
+        ))
+
+    repeat_consistency = evidence_lookup(observed, "immediate_repeat_query_consistency")
+    if repeat_consistency is not MISSING and not evidence_true(repeat_consistency):
+        failures.append(behavior_failure(
+            "immediate_repeat_query_mismatch",
+            "immediate_repeat_query_consistency",
+            "immediate repeat query result equals the preceding Python SDK query result",
+            {
+                "sdk_query": sample_readout(observed.get("sdk_python_query_sample")),
+                "repeat_query": sample_readout(observed.get("repeat_query_sample")),
+                "error": observed.get("immediate_repeat_query_consistency_error"),
+            },
+        ))
+
+    return failures
+
+
 def ordered_delivery_behavior_failures(observed: dict[str, Any]) -> list[dict[str, Any]]:
     failures: list[dict[str, Any]] = []
     expected_inputs = expected_rapid_signal_inputs()
@@ -6945,6 +7020,9 @@ def unknown_handler_behavior_failures(observed: dict[str, Any]) -> list[dict[str
 
 
 def current_behavior_failures_for(scenario: str, observed: dict[str, Any]) -> list[dict[str, Any]]:
+    if scenario == "python_worker_cli_and_sdk_baseline":
+        return python_baseline_behavior_failures(observed)
+
     if scenario == "ordered_signal_delivery":
         return ordered_delivery_behavior_failures(observed)
 
@@ -6958,7 +7036,7 @@ def current_behavior_failures_for(scenario: str, observed: dict[str, Any]) -> li
 
 
 def current_behavior_failures(scenario: str) -> list[dict[str, Any]]:
-    if scenario not in SERVER_BASELINE_SCENARIOS:
+    if scenario not in BASELINE_CURRENT_EVIDENCE_SCENARIOS:
         return []
 
     _, observed = current_candidate_and_observed(scenario)

@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 24;
+    public const VERSION = 25;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -481,6 +481,7 @@ final class SignalQueryRuntimeContract
                         'baseline_probe_claims_pass' => true,
                         'pass_claim_source' => 'published_python_sdk_worker_baseline_probe',
                         'finding_type_when_missing' => 'signal_query_python_smoke_uncovered',
+                        'finding_type_when_product_behavior_fails' => 'signal_query_python_baseline_failed',
                         'finding_type_when_routed_current_query_missing' => 'signal_query_python_routed_current_query_evidence_missing',
                         'owning_surface' => 'sdk-python, cli, server',
                     ],
