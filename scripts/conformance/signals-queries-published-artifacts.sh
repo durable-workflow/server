@@ -7672,12 +7672,60 @@ def section_for(*scenario_ids: str) -> dict[str, dict[str, Any]]:
     }
 
 
+def retained_behavior_failure_diagnostics(findings: list[dict[str, Any]]) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {}
+
+    for finding in findings:
+        if finding.get("scenario_id") != "php_worker_cli_and_sdk_baseline":
+            continue
+        if finding.get("type") != "signal_query_php_worker_mirror_failed":
+            continue
+
+        current_evidence = finding.get("current_evidence")
+        if not isinstance(current_evidence, dict):
+            continue
+
+        retained_failures: list[dict[str, Any]] = []
+        behavior_failures = current_evidence.get("current_behavior_failures")
+        if not isinstance(behavior_failures, list):
+            continue
+
+        for failure in behavior_failures:
+            if not isinstance(failure, dict):
+                continue
+            if failure.get("code") != "php_worker_mirror_probe_failed":
+                continue
+
+            retained_failures.append(
+                {
+                    "code": failure.get("code"),
+                    "evidence_key": failure.get("evidence_key"),
+                    "expected": failure.get("expected"),
+                    "actual": failure.get("actual"),
+                }
+            )
+
+        if not retained_failures:
+            continue
+
+        diagnostics["php_worker_cli_and_sdk_baseline"] = {
+            "finding_id": finding.get("id"),
+            "finding_type": finding.get("type"),
+            "current_evidence_candidate_status": current_evidence.get("current_evidence_candidate_status"),
+            "current_behavior_failures": retained_failures,
+        }
+
+    return diagnostics
+
+
 if runner_blocked:
     outcome = "non_passing_runner_blocked"
 elif not findings and all(item["status"] == "pass" for item in scenario_results.values()):
     outcome = "pass"
 else:
     outcome = "non_passing"
+
+behavior_failure_diagnostics = retained_behavior_failure_diagnostics(findings)
 result = {
     "schema": "durable-workflow.v2.signal-query-runtime.result",
     "started_at": started_at,
@@ -7724,6 +7772,8 @@ result = {
     "findings": findings,
     "finding_links": finding_links,
 }
+if behavior_failure_diagnostics:
+    result["behavior_failure_diagnostics"] = behavior_failure_diagnostics
 if runner_blocked and baseline_readiness_blocker is not None:
     result["runner_blocker"] = baseline_readiness_blocker
 write_json(result_dir / "signals-queries-result.json", result)
@@ -7747,9 +7797,14 @@ record = {
 }
 if ordered_signal_delivery_evidence:
     record["ordered_signal_delivery_evidence"] = ordered_signal_delivery_evidence
+if behavior_failure_diagnostics:
+    record["behavior_failure_diagnostics"] = behavior_failure_diagnostics
 if runner_blocked and baseline_readiness_blocker is not None:
     record["runner_blocker"] = baseline_readiness_blocker
 write_json(result_dir / "signals-queries-record.json", record)
 
-print(json.dumps({"outcome": outcome, "result_dir": str(result_dir)}, sort_keys=True))
+stdout_record = {"outcome": outcome, "result_dir": str(result_dir)}
+if behavior_failure_diagnostics:
+    stdout_record["behavior_failure_diagnostics"] = behavior_failure_diagnostics
+print(json.dumps(stdout_record, sort_keys=True))
 PY

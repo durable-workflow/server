@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(26, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(27, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -522,6 +522,28 @@ class SignalQueryRuntimeContractTest extends TestCase
             'signal_query_php_worker_mirror_failed',
             $hostRunner['evidence_shards']['php_worker_mirror'][
                 'finding_type_when_product_behavior_fails'
+            ],
+        );
+        $this->assertSame(
+            [
+                'probe_error',
+                'worker_registration',
+                'workflow_php_start',
+                'initial_query',
+                'cli_signal',
+                'cli_query',
+                'workflow_php_signal',
+                'workflow_php_query',
+                'repeat_query',
+            ],
+            $hostRunner['evidence_shards']['php_worker_mirror']['retained_failure_diagnostics'][
+                'actual_payload_fields'
+            ],
+        );
+        $this->assertSame(
+            'behavior_failure_diagnostics.php_worker_cli_and_sdk_baseline.current_behavior_failures[].actual',
+            $hostRunner['evidence_shards']['php_worker_mirror']['retained_failure_diagnostics'][
+                'record_field'
             ],
         );
         $this->assertSame(
@@ -2591,6 +2613,98 @@ PY);
             'missing_current_evidence',
             $findings[0]['current_evidence'] ?? [],
         );
+    }
+
+    public function test_host_runner_retains_php_mirror_probe_diagnostics_in_result_and_record(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        $outputs = &$evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs'];
+        unset($outputs['php_worker_query_task_routing']);
+        $outputs['probe_error'] = [
+            'type' => 'RuntimeError',
+            'message' => 'PHP worker did not record routed current query evidence',
+        ];
+        $outputs['worker_registration'] = [
+            'worker_id' => 'signals-queries-workflow-php-worker',
+            'task_queue' => 'signals-queries-workflow-php',
+            'capabilities' => ['query_tasks'],
+        ];
+        $outputs['workflow_php_start_sample'] = [
+            'ok' => true,
+            'status_code' => 201,
+            'result' => ['run_id' => 'run-php-baseline'],
+        ];
+        $outputs['initial_query_sample'] = [
+            'ok' => true,
+            'status_code' => 200,
+            'result' => 0,
+        ];
+        $outputs['cli_signal_sample'] = [
+            'ok' => true,
+            'status_code' => 202,
+        ];
+        $outputs['cli_query_sample'] = [
+            'ok' => true,
+            'status_code' => 200,
+            'result' => 3,
+        ];
+        $outputs['workflow_php_signal_sample'] = [
+            'ok' => true,
+            'status_code' => 202,
+        ];
+        $outputs['workflow_php_query_sample'] = [
+            'ok' => true,
+            'status_code' => 200,
+            'result' => 8,
+        ];
+        $outputs['repeat_query_sample'] = [
+            'ok' => true,
+            'status_code' => 200,
+            'result' => 8,
+        ];
+        unset($outputs);
+
+        $artifacts = $this->runSignalQueryHostRunnerArtifacts($evidence);
+        $result = $artifacts['result'];
+        $record = $artifacts['record'];
+
+        $this->assertSame('fail', $result['scenario_results']['php_worker_cli_and_sdk_baseline']['status']);
+        $this->assertSame('non_passing', $record['outcome']);
+
+        $resultActual = $result['behavior_failure_diagnostics']['php_worker_cli_and_sdk_baseline'][
+            'current_behavior_failures'
+        ][0]['actual'] ?? null;
+        $recordActual = $record['behavior_failure_diagnostics']['php_worker_cli_and_sdk_baseline'][
+            'current_behavior_failures'
+        ][0]['actual'] ?? null;
+
+        $this->assertSame($resultActual, $recordActual);
+        $this->assertSame(
+            'PHP worker did not record routed current query evidence',
+            $recordActual['probe_error']['message'] ?? null,
+        );
+        $this->assertSame(
+            ['query_tasks'],
+            $recordActual['worker_registration']['capabilities'] ?? null,
+        );
+        $this->assertSame(0, $recordActual['initial_query']['result'] ?? null);
+        $this->assertSame(3, $recordActual['cli_query']['result'] ?? null);
+        $this->assertSame(8, $recordActual['workflow_php_query']['result'] ?? null);
+        $this->assertSame(8, $recordActual['repeat_query']['result'] ?? null);
+
+        foreach ([
+            'probe_error',
+            'worker_registration',
+            'workflow_php_start',
+            'initial_query',
+            'cli_signal',
+            'cli_query',
+            'workflow_php_signal',
+            'workflow_php_query',
+            'repeat_query',
+        ] as $field) {
+            $this->assertArrayHasKey($field, $recordActual);
+        }
     }
 
     public function test_host_runner_rejects_imported_query_replay_evidence_before_consistent_state(): void

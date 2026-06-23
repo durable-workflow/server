@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 26;
+    public const VERSION = 27;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -527,6 +527,24 @@ final class SignalQueryRuntimeContract
                         ],
                         'finding_type_when_missing' => 'signal_query_php_worker_mirror_uncovered',
                         'finding_type_when_product_behavior_fails' => 'signal_query_php_worker_mirror_failed',
+                        'retained_failure_diagnostics' => [
+                            'failure_code' => 'php_worker_mirror_probe_failed',
+                            'source_field' => 'current_behavior_failures[].actual',
+                            'result_field' => 'behavior_failure_diagnostics.php_worker_cli_and_sdk_baseline.current_behavior_failures[].actual',
+                            'record_field' => 'behavior_failure_diagnostics.php_worker_cli_and_sdk_baseline.current_behavior_failures[].actual',
+                            'stdout_field' => 'behavior_failure_diagnostics.php_worker_cli_and_sdk_baseline.current_behavior_failures[].actual',
+                            'actual_payload_fields' => [
+                                'probe_error',
+                                'worker_registration',
+                                'workflow_php_start',
+                                'initial_query',
+                                'cli_signal',
+                                'cli_query',
+                                'workflow_php_signal',
+                                'workflow_php_query',
+                                'repeat_query',
+                            ],
+                        ],
                         'owning_surface' => 'workflow',
                     ],
                     'cross_language_client_matrix' => [
