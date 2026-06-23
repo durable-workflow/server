@@ -477,6 +477,7 @@ final class WorkflowQueryTaskBroker
         string $namespace,
         WorkerRegistration $worker,
         ?string $pollRequestId = null,
+        ?int $timeoutSeconds = null,
     ): ?array {
         $pollRequestId = $this->stringValue($pollRequestId);
         $taskQueue = (string) $worker->task_queue;
@@ -497,6 +498,7 @@ final class WorkflowQueryTaskBroker
                 $pollRequestId,
                 $supportedWorkflowTypes,
                 $workflowDefinitionFingerprints,
+                $timeoutSeconds,
             );
         }
 
@@ -507,6 +509,7 @@ final class WorkflowQueryTaskBroker
             $supportedWorkflowTypes,
             $workflowDefinitionFingerprints,
             $buildId,
+            timeoutSeconds: $timeoutSeconds,
         );
     }
 
@@ -523,6 +526,7 @@ final class WorkflowQueryTaskBroker
         string $pollRequestId,
         array $supportedWorkflowTypes,
         array $workflowDefinitionFingerprints,
+        ?int $timeoutSeconds,
     ): ?array {
         for ($attempt = 0; $attempt < 3; $attempt++) {
             $cached = $this->cachedPollResult($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
@@ -540,6 +544,7 @@ final class WorkflowQueryTaskBroker
                     $pollRequestId,
                     $supportedWorkflowTypes,
                     $workflowDefinitionFingerprints,
+                    $timeoutSeconds,
                 );
             }
 
@@ -572,6 +577,7 @@ final class WorkflowQueryTaskBroker
         string $pollRequestId,
         array $supportedWorkflowTypes,
         array $workflowDefinitionFingerprints,
+        ?int $timeoutSeconds,
     ): ?array {
         try {
             $task = $this->performPoll(
@@ -582,6 +588,7 @@ final class WorkflowQueryTaskBroker
                 $workflowDefinitionFingerprints,
                 $buildId,
                 $pollRequestId,
+                $timeoutSeconds,
             );
         } catch (\Throwable $exception) {
             $this->pollRequests->forgetPending($namespace, $taskQueue, $buildId, $leaseOwner, $pollRequestId);
@@ -707,6 +714,7 @@ final class WorkflowQueryTaskBroker
         array $workflowDefinitionFingerprints,
         ?string $buildId = null,
         ?string $pollRequestId = null,
+        ?int $timeoutSeconds = null,
     ): ?array {
         $result = $this->longPoller->until(
             function () use ($namespace, $taskQueue, $leaseOwner, $supportedWorkflowTypes, $workflowDefinitionFingerprints, $buildId, $pollRequestId): ?array {
@@ -728,6 +736,7 @@ final class WorkflowQueryTaskBroker
                 );
             },
             static fn (?array $task): bool => $task !== null,
+            timeoutSeconds: $timeoutSeconds,
             wakeChannels: $this->signals->queryTaskPollChannels($namespace, $taskQueue),
             reserveWorkerWaitSlot: true,
             waitSlotPool: 'query-task',

@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "e4260651c9a9f459523915c4b80191fe",
+    "content-hash": "3c55057ada9788ed714c427cac401771",
     "packages": [
         {
             "name": "apache/avro",
@@ -505,11 +505,11 @@
         },
         {
             "name": "durable-workflow/workflow",
-            "version": "2.0.0-alpha.218",
+            "version": "2.0.0-alpha.223",
             "dist": {
                 "type": "path",
                 "url": "/workflow",
-                "reference": "289421c3e5ca65f9c8e3baaa2b8e0ff4f5836b1f"
+                "reference": "8a870df6435e4a21a06daa720d38f02ac55b7594"
             },
             "require": {
                 "apache/avro": "^1.12",

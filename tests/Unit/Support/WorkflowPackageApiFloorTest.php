@@ -169,7 +169,7 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertNotFalse($capability);
         $this->assertTrue($capability->isPublic());
 
-        $this->assertSame('1.10', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.11', WorkerProtocolVersion::VERSION);
         $this->assertSame(WorkerProtocol::VERSION, WorkerProtocolVersion::VERSION);
         $this->assertSame('query_tasks', WorkerProtocolVersion::CAPABILITY_QUERY_TASKS);
         $this->assertSame(['poll', 'complete', 'fail'], WorkerProtocolVersion::queryTaskVerbs());
@@ -177,6 +177,10 @@ class WorkflowPackageApiFloorTest extends TestCase
         $this->assertSame(
             '/api/worker/query-tasks',
             WorkerProtocolVersion::queryTaskSemantics()['path_prefix'] ?? null,
+        );
+        $this->assertContains(
+            'timeout_seconds',
+            WorkerProtocolVersion::queryTaskSemantics()['endpoints']['poll']['request_fields'] ?? [],
         );
     }
 

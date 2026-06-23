@@ -121,7 +121,7 @@ class WorkerProtocolVersionCoverageTest extends TestCase
             ->assertJsonPath('server_capabilities.query_tasks', true);
     }
 
-    public function test_worker_registration_accepts_current_protocol_1_10_workers(): void
+    public function test_worker_registration_accepts_previous_protocol_1_10_workers(): void
     {
         $response = $this->postJson('/api/worker/register', [
             'worker_id' => 'php-protocol-110-worker',

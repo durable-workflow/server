@@ -308,6 +308,59 @@ class WorkerProtocolSuccessContractTest extends TestCase
             ->assertJsonPath('poll_status', 'empty');
     }
 
+    public function test_query_task_poll_honors_request_timeout_seconds(): void
+    {
+        config(['server.query_tasks.timeout' => 2]);
+
+        WorkerRegistration::query()->create([
+            'worker_id' => 'worker-query-short-timeout',
+            'namespace' => 'default',
+            'task_queue' => 'contract-queue',
+            'runtime' => 'php',
+            'supported_workflow_types' => ['ContractWorkflow'],
+            'supported_activity_types' => [],
+            'capabilities' => ['query_tasks'],
+            'last_heartbeat_at' => now(),
+            'status' => 'active',
+        ]);
+
+        $this->mock(LongPoller::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('until')
+                ->once()
+                ->andReturnUsing(function (
+                    callable $probe,
+                    callable $ready,
+                    ?int $timeoutSeconds = null,
+                    ?int $intervalMilliseconds = null,
+                    array $wakeChannels = [],
+                    ?callable $nextProbeAt = null,
+                    bool $reserveWorkerWaitSlot = false,
+                    string $waitSlotPool = 'worker',
+                ) {
+                    $this->assertSame(0, $timeoutSeconds);
+                    $this->assertTrue($reserveWorkerWaitSlot);
+                    $this->assertSame('query-task', $waitSlotPool);
+
+                    $initial = $probe();
+
+                    $this->assertNull($initial);
+                    $this->assertFalse($ready($initial));
+
+                    return null;
+                });
+        });
+
+        $poll = $this->postJson('/api/worker/query-tasks/poll', [
+            'worker_id' => 'worker-query-short-timeout',
+            'task_queue' => 'contract-queue',
+            'timeout_seconds' => 0,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
+    }
+
     public function test_leased_workflow_task_success_responses_use_worker_protocol_contract(): void
     {
         Queue::fake();

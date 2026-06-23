@@ -183,7 +183,7 @@ def http_json(
         "X-Namespace": namespace,
     }
     if worker:
-        headers["X-Durable-Workflow-Protocol-Version"] = "1.10"
+        headers["X-Durable-Workflow-Protocol-Version"] = "1.11"
     else:
         headers["X-Durable-Workflow-Control-Plane-Version"] = "2"
 

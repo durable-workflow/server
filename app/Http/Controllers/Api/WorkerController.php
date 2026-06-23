@@ -2029,7 +2029,16 @@ class WorkerController
             'worker_id' => ['required', 'string'],
             'task_queue' => ['required', 'string'],
             'poll_request_id' => ['nullable', 'string', 'max:255'],
+            'timeout_seconds' => [
+                'nullable',
+                'integer',
+                'min:0',
+                'max:'.WorkerProtocolVersion::MAX_LONG_POLL_TIMEOUT,
+            ],
         ]);
+        $timeoutSeconds = isset($validated['timeout_seconds'])
+            ? (int) $validated['timeout_seconds']
+            : null;
 
         $worker = $this->resolveRegisteredWorker(
             $namespace,
@@ -2042,7 +2051,12 @@ class WorkerController
         }
 
         try {
-            $task = $this->queryTasks->poll($namespace, $worker, $validated['poll_request_id'] ?? null);
+            $task = $this->queryTasks->poll(
+                $namespace,
+                $worker,
+                $validated['poll_request_id'] ?? null,
+                $timeoutSeconds,
+            );
         } catch (QueryTaskQueueUnavailableException $exception) {
             return WorkerProtocol::json([
                 'task' => null,
