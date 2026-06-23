@@ -4016,6 +4016,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
         cli_bin: str | None = None
         python_bin: str | None = None
         workflow_php_project: Path | None = None
+        workflow_php_install_error: dict[str, str] | None = None
         install_descriptors: dict[str, Any] = {}
         try:
             cli_bin, cli_install = install_cli(run_root, log_file)
@@ -4055,6 +4056,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
             workflow_php_project, workflow_php_install = ensure_workflow_php_sdk(run_root, log_file)
             install_entries["workflow-php"] = workflow_php_install
         except Exception as exc:  # noqa: BLE001 - PHP mirror evidence is reported as its own baseline cell.
+            workflow_php_install_error = probe_error_payload(exc)
             log_line(log_file, f"PHP workflow package install probe failed: {type(exc).__name__}: {exc}")
             workflow_php_install = configured_artifact_entry(
                 "workflow-php",
@@ -4148,6 +4150,21 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     "error": f"{type(exc).__name__}: {exc}",
                     "log_file": log_file.name,
                 }
+        elif workflow_php_install_error is not None:
+            workflow_php_outputs = {
+                "worker_runtime": "workflow-php",
+                "workflow_php_artifact_source": sources["workflow-php"],
+                "workflow_php_sdk_version": versions["workflow-php"],
+                "published_artifact_versions": versions,
+                "artifact_sources": sources,
+                "workflow_php_install_evidence": install_entries["workflow-php"],
+                "probe_error": workflow_php_install_error,
+            }
+            workflow_php_descriptor = {
+                "error": f"{workflow_php_install_error['type']}: {workflow_php_install_error['message']}",
+                "install_probes": install_descriptors,
+                "log_file": log_file.name,
+            }
         else:
             workflow_php_descriptor = {
                 "skipped": "cli_or_php_workflow_install_unavailable",
@@ -6523,6 +6540,7 @@ SERVER_BASELINE_SCENARIOS = {
 
 BASELINE_CURRENT_EVIDENCE_SCENARIOS = SERVER_BASELINE_SCENARIOS | {
     "python_worker_cli_and_sdk_baseline",
+    "php_worker_cli_and_sdk_baseline",
 }
 
 BASELINE_CURRENT_EVIDENCE_FIELDS = {
@@ -6534,6 +6552,15 @@ BASELINE_CURRENT_EVIDENCE_FIELDS = {
         "routed_current_query_task",
         "cli_signal_and_query",
         "sdk_python_signal_and_query",
+        "immediate_repeat_query_consistency",
+    ],
+    "php_worker_cli_and_sdk_baseline": [
+        "worker_runtime",
+        "workflow_php_artifact_source",
+        "workflow_php_sdk_version",
+        "php_worker_query_task_routing",
+        "cli_signal_and_query",
+        "workflow_php_signal_and_query",
         "immediate_repeat_query_consistency",
     ],
     "ordered_signal_delivery": [
@@ -6564,6 +6591,10 @@ BASELINE_PRODUCT_FAILURE_ROUTES = {
         "type": "signal_query_python_baseline_failed",
         "title": "Signals/queries Python worker CLI and SDK baseline behavior failed",
     },
+    "php_worker_cli_and_sdk_baseline": {
+        "type": "signal_query_php_worker_mirror_failed",
+        "title": "Signals/queries PHP worker mirror behavior failed",
+    },
     "ordered_signal_delivery": {
         "type": "signal_query_ordered_delivery_failed",
         "title": "Signals/queries ordered delivery behavior failed",
@@ -6582,6 +6613,10 @@ BASELINE_CURRENT_MISSING_ROUTES = {
     "python_worker_cli_and_sdk_baseline": {
         "type": "signal_query_python_routed_current_query_evidence_missing",
         "title": "Signals/queries Python baseline routed current-query evidence missing",
+    },
+    "php_worker_cli_and_sdk_baseline": {
+        "type": "signal_query_php_worker_mirror_current_evidence_missing",
+        "title": "Signals/queries PHP worker mirror current evidence missing",
     },
     "ordered_signal_delivery": {
         "type": "signal_query_ordered_delivery_current_evidence_missing",
@@ -6779,6 +6814,38 @@ def missing_current_evidence_for(scenario: str, observed: dict[str, Any]) -> lis
             missing.append("routed_current_query_task")
         return unique_strings(missing)
 
+    if scenario == "php_worker_cli_and_sdk_baseline":
+        missing = [
+            evidence_key
+            for evidence_key in SCENARIO_REQUIRED_EVIDENCE[scenario]
+            if not required_evidence_satisfied(evidence_key, evidence_lookup(observed, evidence_key))
+        ]
+        if not is_workflow_php_worker_runtime(
+            output_field(observed, "worker_runtime", "workerRuntime", "php_worker_runtime")
+        ):
+            missing.append("worker_runtime")
+        if not is_published_workflow_php_source(
+            output_field(
+                observed,
+                "workflow_php_artifact_source",
+                "workflowPhpArtifactSource",
+                "worker_artifact_source",
+                "workerArtifactSource",
+            )
+        ):
+            missing.append("workflow_php_artifact_source")
+        if not workflow_php_version_matches_current(
+            output_field(
+                observed,
+                "workflow_php_sdk_version",
+                "workflowPhpSdkVersion",
+                "worker_sdk_version",
+                "workerSdkVersion",
+            )
+        ):
+            missing.append("workflow_php_sdk_version")
+        return unique_strings(missing)
+
     if scenario == "ordered_signal_delivery":
         return ordered_delivery_missing_current_evidence(observed)
 
@@ -6879,6 +6946,96 @@ def python_baseline_behavior_failures(observed: dict[str, Any]) -> list[dict[str
                 "sdk_query": sample_readout(observed.get("sdk_python_query_sample")),
                 "repeat_query": sample_readout(observed.get("repeat_query_sample")),
                 "error": observed.get("immediate_repeat_query_consistency_error"),
+            },
+        ))
+
+    return failures
+
+
+def php_baseline_behavior_failures(observed: dict[str, Any]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    workflow_php_sdk_version = output_field(
+        observed,
+        "workflow_php_sdk_version",
+        "workflowPhpSdkVersion",
+        "worker_sdk_version",
+        "workerSdkVersion",
+    )
+    actual_workflow_php_version = (
+        str(workflow_php_sdk_version).strip()
+        if workflow_php_sdk_version is not MISSING
+        else ""
+    )
+    expected_workflow_php_version = artifact_version_value(artifact_versions, "workflow-php")
+    if (
+        actual_workflow_php_version != ""
+        and not is_placeholder_version(actual_workflow_php_version)
+        and expected_workflow_php_version != ""
+        and not is_placeholder_version(expected_workflow_php_version)
+        and actual_workflow_php_version != expected_workflow_php_version
+    ):
+        failures.append(behavior_failure(
+            "workflow_php_sdk_version_mismatch",
+            "workflow_php_sdk_version",
+            expected_workflow_php_version,
+            actual_workflow_php_version,
+        ))
+
+    cli_signal_and_query = evidence_lookup(observed, "cli_signal_and_query")
+    if cli_signal_and_query is not MISSING and not evidence_true(cli_signal_and_query):
+        failures.append(behavior_failure(
+            "php_worker_cli_signal_query_mismatch",
+            "cli_signal_and_query",
+            "CLI signal increment(3) succeeds and CLI query current returns 3 against the PHP worker",
+            {
+                "cli_signal": sample_readout(observed.get("cli_signal_sample")),
+                "cli_query": sample_readout(observed.get("cli_query_sample")),
+                "error": observed.get("cli_signal_and_query_error"),
+            },
+        ))
+
+    workflow_php_signal_and_query = evidence_lookup(observed, "workflow_php_signal_and_query")
+    if workflow_php_signal_and_query is not MISSING and not evidence_true(workflow_php_signal_and_query):
+        failures.append(behavior_failure(
+            "php_sdk_signal_query_mismatch",
+            "workflow_php_signal_and_query",
+            "PHP SDK signal increment(5) succeeds and PHP SDK query current returns 8 against the PHP worker",
+            {
+                "workflow_php_signal": sample_readout(observed.get("workflow_php_signal_sample")),
+                "workflow_php_query": sample_readout(observed.get("workflow_php_query_sample")),
+                "error": observed.get("workflow_php_signal_and_query_error"),
+            },
+        ))
+
+    repeat_consistency = evidence_lookup(observed, "immediate_repeat_query_consistency")
+    if repeat_consistency is not MISSING and not evidence_true(repeat_consistency):
+        failures.append(behavior_failure(
+            "php_immediate_repeat_query_mismatch",
+            "immediate_repeat_query_consistency",
+            "immediate repeat query result equals the preceding PHP SDK query result",
+            {
+                "workflow_php_query": sample_readout(observed.get("workflow_php_query_sample")),
+                "repeat_query": sample_readout(observed.get("repeat_query_sample")),
+                "error": observed.get("immediate_repeat_query_consistency_error"),
+            },
+        ))
+
+    probe_error = observed.get("probe_error")
+    if isinstance(probe_error, dict) and probe_error:
+        failures.append(behavior_failure(
+            "php_worker_mirror_probe_failed",
+            "probe_error",
+            "published PHP worker completes start, signal, query, and routed current-query evidence",
+            {
+                "probe_error": probe_error,
+                "worker_registration": observed.get("worker_registration"),
+                "workflow_php_start": sample_readout(observed.get("workflow_php_start_sample")),
+                "initial_query": sample_readout(observed.get("initial_query_sample")),
+                "cli_signal": sample_readout(observed.get("cli_signal_sample")),
+                "cli_query": sample_readout(observed.get("cli_query_sample")),
+                "workflow_php_signal": sample_readout(observed.get("workflow_php_signal_sample")),
+                "workflow_php_query": sample_readout(observed.get("workflow_php_query_sample")),
+                "repeat_query": sample_readout(observed.get("repeat_query_sample")),
             },
         ))
 
@@ -7022,6 +7179,9 @@ def unknown_handler_behavior_failures(observed: dict[str, Any]) -> list[dict[str
 def current_behavior_failures_for(scenario: str, observed: dict[str, Any]) -> list[dict[str, Any]]:
     if scenario == "python_worker_cli_and_sdk_baseline":
         return python_baseline_behavior_failures(observed)
+
+    if scenario == "php_worker_cli_and_sdk_baseline":
+        return php_baseline_behavior_failures(observed)
 
     if scenario == "ordered_signal_delivery":
         return ordered_delivery_behavior_failures(observed)

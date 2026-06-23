@@ -14,7 +14,7 @@ class SignalQueryRuntimeContractTest extends TestCase
         $manifest = SignalQueryRuntimeContract::manifest();
 
         $this->assertSame('durable-workflow.v2.signal-query-runtime.contract', $manifest['schema']);
-        $this->assertSame(25, SignalQueryRuntimeContract::VERSION);
+        $this->assertSame(26, SignalQueryRuntimeContract::VERSION);
         $this->assertSame(SignalQueryRuntimeContract::VERSION, $manifest['version']);
         $this->assertSame('durable-workflow.v2.signal-query-runtime.result', $manifest['result_schema']);
         $this->assertSame('signal_query_runtime_contract', $manifest['fixture_category']);
@@ -508,12 +508,21 @@ class SignalQueryRuntimeContractTest extends TestCase
         );
         $this->assertSame(
             [
+                'worker_runtime',
+                'workflow_php_artifact_source',
+                'workflow_php_sdk_version',
                 'php_worker_query_task_routing',
                 'cli_signal_and_query',
                 'workflow_php_signal_and_query',
                 'immediate_repeat_query_consistency',
             ],
             $hostRunner['evidence_shards']['php_worker_mirror']['required_evidence_fields'],
+        );
+        $this->assertSame(
+            'signal_query_php_worker_mirror_failed',
+            $hostRunner['evidence_shards']['php_worker_mirror'][
+                'finding_type_when_product_behavior_fails'
+            ],
         );
         $this->assertSame(
             [
@@ -632,6 +641,8 @@ class SignalQueryRuntimeContractTest extends TestCase
             'signal_query_dedup_contract_uncovered',
             'signal_query_dedup_contract_current_evidence_missing',
             'signal_query_php_worker_mirror_uncovered',
+            'signal_query_php_worker_mirror_failed',
+            'signal_query_php_worker_mirror_current_evidence_missing',
             'signal_query_cross_language_client_matrix_uncovered',
             'signal_query_replay_timing_uncovered',
             'signal_query_completed_run_handling_uncovered',
@@ -1969,6 +1980,27 @@ PY);
             'type' => 'RuntimeError',
             'message' => 'Python SDK query current returned 7, expected 8',
         ];
+        $php = $complete['scenario_results']['php_worker_cli_and_sdk_baseline'];
+        $php['observed_outputs']['published_artifact_versions'] = $versions;
+        $php['observed_outputs']['artifact_sources'] = $sources;
+        $php['observed_outputs']['workflow_php_signal_and_query'] = false;
+        $php['observed_outputs']['workflow_php_signal_sample'] = [
+            'ok' => true,
+            'client' => 'workflow-php',
+            'operation' => 'signal',
+            'operation_name' => 'increment',
+        ];
+        $php['observed_outputs']['workflow_php_query_sample'] = [
+            'ok' => true,
+            'client' => 'workflow-php',
+            'operation' => 'query',
+            'operation_name' => 'current',
+            'result' => 7,
+        ];
+        $php['observed_outputs']['workflow_php_signal_and_query_error'] = [
+            'type' => 'RuntimeError',
+            'message' => 'PHP SDK query current returned 7, expected 8',
+        ];
         $ordered = $complete['scenario_results']['ordered_signal_delivery'];
         $ordered['observed_outputs']['published_artifact_versions'] = $versions;
         $ordered['observed_outputs']['artifact_sources'] = $sources;
@@ -1986,12 +2018,14 @@ PY);
             'artifact_versions' => $versions,
             'scenario_results' => [
                 'python_worker_cli_and_sdk_baseline' => $python,
+                'php_worker_cli_and_sdk_baseline' => $php,
                 'ordered_signal_delivery' => $ordered,
                 'dedup_contract_observation' => $dedup,
                 'unknown_signal_and_query_errors' => $unknown,
             ],
         ]);
         $pythonFindings = $this->findingsForScenario($result, 'python_worker_cli_and_sdk_baseline');
+        $phpFindings = $this->findingsForScenario($result, 'php_worker_cli_and_sdk_baseline');
         $orderedFindings = $this->findingsForScenario($result, 'ordered_signal_delivery');
         $dedupFindings = $this->findingsForScenario($result, 'dedup_contract_observation');
         $unknownFindings = $this->findingsForScenario($result, 'unknown_signal_and_query_errors');
@@ -2008,6 +2042,18 @@ PY);
             $pythonFindings[0]['current_evidence'] ?? [],
         );
         $this->assertStringNotContainsString('missing current evidence', $pythonFindings[0]['title'] ?? '');
+        $this->assertSame('fail', $result['scenario_results']['php_worker_cli_and_sdk_baseline']['status']);
+        $this->assertNotEmpty($phpFindings);
+        $this->assertSame('signal_query_php_worker_mirror_failed', $phpFindings[0]['type'] ?? null);
+        $this->assertSame(
+            'php_sdk_signal_query_mismatch',
+            $phpFindings[0]['current_evidence']['current_behavior_failures'][0]['code'] ?? null,
+        );
+        $this->assertArrayNotHasKey(
+            'missing_current_evidence',
+            $phpFindings[0]['current_evidence'] ?? [],
+        );
+        $this->assertStringNotContainsString('missing current evidence', $phpFindings[0]['title'] ?? '');
         $this->assertSame('fail', $result['scenario_results']['ordered_signal_delivery']['status']);
         $this->assertNotEmpty($orderedFindings);
         $this->assertSame('signal_query_ordered_delivery_failed', $orderedFindings[0]['type'] ?? null);
@@ -2399,7 +2445,10 @@ PY);
         $result = $this->runSignalQueryHostRunner($evidence);
 
         $this->assertSame('not_covered', $result['scenario_results']['php_worker_cli_and_sdk_baseline']['status']);
-        $this->assertContains('signal_query_php_worker_mirror_uncovered', array_column($result['findings'], 'type'));
+        $this->assertContains(
+            'signal_query_php_worker_mirror_current_evidence_missing',
+            array_column($result['findings'], 'type'),
+        );
         $this->assertSame('non_passing', $result['outcome']);
     }
 
@@ -2462,7 +2511,10 @@ PY);
         $result = $this->runSignalQueryHostRunner($evidence);
 
         $this->assertSame('not_covered', $result['scenario_results']['php_worker_cli_and_sdk_baseline']['status']);
-        $this->assertContains('signal_query_php_worker_mirror_uncovered', array_column($result['findings'], 'type'));
+        $this->assertContains(
+            'signal_query_php_worker_mirror_current_evidence_missing',
+            array_column($result['findings'], 'type'),
+        );
         $this->assertSame('non_passing', $result['outcome']);
     }
 
@@ -2474,9 +2526,19 @@ PY);
         ] = '2.0.0-alpha.1';
 
         $result = $this->runSignalQueryHostRunner($evidence);
+        $findings = $this->findingsForScenario($result, 'php_worker_cli_and_sdk_baseline');
 
-        $this->assertSame('not_covered', $result['scenario_results']['php_worker_cli_and_sdk_baseline']['status']);
-        $this->assertContains('signal_query_php_worker_mirror_uncovered', array_column($result['findings'], 'type'));
+        $this->assertSame('fail', $result['scenario_results']['php_worker_cli_and_sdk_baseline']['status']);
+        $this->assertNotEmpty($findings);
+        $this->assertSame('signal_query_php_worker_mirror_failed', $findings[0]['type'] ?? null);
+        $this->assertSame(
+            'workflow_php_sdk_version_mismatch',
+            $findings[0]['current_evidence']['current_behavior_failures'][0]['code'] ?? null,
+        );
+        $this->assertArrayNotHasKey(
+            'missing_current_evidence',
+            $findings[0]['current_evidence'] ?? [],
+        );
         $this->assertSame('non_passing', $result['outcome']);
     }
 
@@ -2502,8 +2564,33 @@ PY);
 
         $result = $this->runSignalQueryHostRunner($evidence);
 
-        $this->assertSame('not_covered', $result['scenario_results']['php_worker_cli_and_sdk_baseline']['status']);
-        $this->assertContains('signal_query_php_worker_mirror_uncovered', array_column($result['findings'], 'type'));
+        $this->assertSame('fail', $result['scenario_results']['php_worker_cli_and_sdk_baseline']['status']);
+        $this->assertContains('signal_query_php_worker_mirror_failed', array_column($result['findings'], 'type'));
+    }
+
+    public function test_host_runner_routes_php_mirror_probe_error_as_product_finding(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        unset($evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['php_worker_query_task_routing']);
+        $evidence['scenario_results']['php_worker_cli_and_sdk_baseline']['observed_outputs']['probe_error'] = [
+            'type' => 'RuntimeError',
+            'message' => 'PHP worker did not record routed current query evidence',
+        ];
+
+        $result = $this->runSignalQueryHostRunner($evidence);
+        $findings = $this->findingsForScenario($result, 'php_worker_cli_and_sdk_baseline');
+
+        $this->assertSame('fail', $result['scenario_results']['php_worker_cli_and_sdk_baseline']['status']);
+        $this->assertNotEmpty($findings);
+        $this->assertSame('signal_query_php_worker_mirror_failed', $findings[0]['type'] ?? null);
+        $this->assertSame(
+            'php_worker_mirror_probe_failed',
+            $findings[0]['current_evidence']['current_behavior_failures'][0]['code'] ?? null,
+        );
+        $this->assertArrayNotHasKey(
+            'missing_current_evidence',
+            $findings[0]['current_evidence'] ?? [],
+        );
     }
 
     public function test_host_runner_rejects_imported_query_replay_evidence_before_consistent_state(): void

@@ -16,7 +16,7 @@ final class SignalQueryRuntimeContract
 {
     public const SCHEMA = 'durable-workflow.v2.signal-query-runtime.contract';
 
-    public const VERSION = 25;
+    public const VERSION = 26;
 
     public const RESULT_SCHEMA = 'durable-workflow.v2.signal-query-runtime.result';
 
@@ -526,6 +526,7 @@ final class SignalQueryRuntimeContract
                             'immediate_repeat_query_consistency',
                         ],
                         'finding_type_when_missing' => 'signal_query_php_worker_mirror_uncovered',
+                        'finding_type_when_product_behavior_fails' => 'signal_query_php_worker_mirror_failed',
                         'owning_surface' => 'workflow',
                     ],
                     'cross_language_client_matrix' => [
