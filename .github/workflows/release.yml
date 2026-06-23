@@ -40,6 +40,9 @@ jobs:
 
       - name: Select compatible workflow package version
         id: workflow
+        env:
+          WORKFLOW_PACKAGE_REF: 2.0.0-alpha.218
+          WORKFLOW_PACKAGE_COMMIT: 289421c3e5ca65f9c8e3baaa2b8e0ff4f5836b1f
         run: scripts/ci/select-compatible-workflow-package-ref.sh
 
       - name: Set up QEMU

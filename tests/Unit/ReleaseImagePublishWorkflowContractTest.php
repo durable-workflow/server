@@ -83,6 +83,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
             'dev.durable-workflow.release.run-attempt=${{ github.run_attempt }}',
             'dev.durable-workflow.workflow.version=${{ steps.workflow.outputs.tag }}',
             'dev.durable-workflow.workflow.commit=${{ steps.workflow.outputs.commit }}',
+            'WORKFLOW_PACKAGE_REF: 2.0.0-alpha.218',
+            'WORKFLOW_PACKAGE_COMMIT: 289421c3e5ca65f9c8e3baaa2b8e0ff4f5836b1f',
             'WORKFLOW_PACKAGE_REF=${{ steps.workflow.outputs.tag }}',
             'WORKFLOW_PACKAGE_COMMIT=${{ steps.workflow.outputs.commit }}',
             'WORKFLOW_PACKAGE_REF: ${{ steps.workflow.outputs.tag }}',
@@ -98,8 +100,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
         $metadataScript = $this->read('scripts/ci/prepare-release-workflow-composer-metadata.php');
 
         foreach ([
-            'ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.217',
-            'ARG WORKFLOW_PACKAGE_COMMIT=',
+            'ARG WORKFLOW_PACKAGE_REF=2.0.0-alpha.218',
+            'ARG WORKFLOW_PACKAGE_COMMIT=289421c3e5ca65f9c8e3baaa2b8e0ff4f5836b1f',
             'prepare-release-workflow-composer-metadata.php',
             'composer update durable-workflow/workflow',
             'cp composer.json /tmp/release-composer.json',
@@ -204,7 +206,8 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
 
     public function test_docker_build_docs_compose_and_ci_defaults_match_workflow_package_fallback(): void
     {
-        $fallback = '2.0.0-alpha.217';
+        $fallback = '2.0.0-alpha.218';
+        $commit = '289421c3e5ca65f9c8e3baaa2b8e0ff4f5836b1f';
 
         foreach ([
             'Dockerfile',
@@ -219,10 +222,23 @@ class ReleaseImagePublishWorkflowContractTest extends TestCase
             $this->assertStringNotContainsString('2.0.0-alpha.200', $source, "{$path} must not keep the stale workflow package fallback.");
         }
 
+        foreach ([
+            'Dockerfile',
+            'docker-compose.yml',
+            'docker-compose.small-cluster.yml',
+            '.github/workflows/release.yml',
+        ] as $path) {
+            $this->assertStringContainsString(
+                $commit,
+                $this->read($path),
+                "{$path} must use the current workflow package commit.",
+            );
+        }
+
         $readme = $this->read('README.md');
 
-        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF=2.0.0-alpha.217', $readme);
-        $this->assertStringContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.217` tag', $readme);
+        $this->assertStringContainsString('WORKFLOW_PACKAGE_REF=2.0.0-alpha.218', $readme);
+        $this->assertStringContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.218` tag', $readme);
         $this->assertStringContainsString('Composer package metadata', $readme);
         $this->assertStringNotContainsString('The Dockerfile clones the `durable-workflow/workflow` `2.0.0-alpha.200` tag', $readme);
         $this->assertStringNotContainsString('The image build fetches the `durable-workflow/workflow` `2.0.0-alpha.200`', $readme);
@@ -585,8 +601,8 @@ SH;
         $releaseCommit = str_repeat('b', 40);
         $runId = '27420890537';
         $runAttempt = '2';
-        $workflowRef = '2.0.0-alpha.217';
-        $workflowCommit = '50f6b6db11b3bfd5d043a4b3378d628d3eb8914b';
+        $workflowRef = '2.0.0-alpha.218';
+        $workflowCommit = '289421c3e5ca65f9c8e3baaa2b8e0ff4f5836b1f';
         $imageConfig = json_encode([
             'config' => [
                 'Labels' => [
@@ -930,7 +946,7 @@ SH;
     {
         $evidenceFile = tempnam(sys_get_temp_dir(), 'release-image-evidence-');
         $this->assertIsString($evidenceFile);
-        $workflowCommit = '50f6b6db11b3bfd5d043a4b3378d628d3eb8914b';
+        $workflowCommit = '289421c3e5ca65f9c8e3baaa2b8e0ff4f5836b1f';
 
         try {
             $result = $this->runScript('scripts/ci/write-release-image-publish-evidence.sh', [
@@ -945,19 +961,19 @@ SH;
                 'RELEASE_COMMIT' => str_repeat('b', 40),
                 'RELEASE_RUN_ID' => '12345',
                 'RELEASE_RUN_ATTEMPT' => '2',
-                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.217',
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.218',
                 'WORKFLOW_PACKAGE_COMMIT' => $workflowCommit,
             ]);
 
             $this->assertSame(0, $result['exitCode']);
             $decoded = json_decode((string) file_get_contents($evidenceFile), true, flags: JSON_THROW_ON_ERROR);
             $this->assertSame(
-                'durable-workflow/workflow:2.0.0-alpha.217',
+                'durable-workflow/workflow:2.0.0-alpha.218',
                 $decoded['artifact_versions']['workflow-php'],
             );
             $this->assertSame('durable-workflow/workflow', $decoded['workflow_package']['name']);
             $this->assertSame('https://github.com/durable-workflow/workflow.git', $decoded['workflow_package']['source']);
-            $this->assertSame('2.0.0-alpha.217', $decoded['workflow_package']['version']);
+            $this->assertSame('2.0.0-alpha.218', $decoded['workflow_package']['version']);
             $this->assertSame($workflowCommit, $decoded['workflow_package']['commit']);
         } finally {
             @unlink($evidenceFile);
@@ -968,7 +984,7 @@ SH;
     {
         $outputFile = tempnam(sys_get_temp_dir(), 'workflow-package-output-');
         $this->assertIsString($outputFile);
-        $selectedCommit = '50f6b6db11b3bfd5d043a4b3378d628d3eb8914b';
+        $selectedCommit = '289421c3e5ca65f9c8e3baaa2b8e0ff4f5836b1f';
 
         try {
             $result = $this->runScript('scripts/ci/select-compatible-workflow-package-ref.sh', [
@@ -978,6 +994,7 @@ SH;
                     'refs/tags/2.0.0-alpha.199',
                     'refs/tags/2.0.0-alpha.200',
                     'refs/tags/2.0.0-alpha.217',
+                    'refs/tags/2.0.0-alpha.218',
                     'refs/tags/2.0.0-alpha.be7ddbc37b41',
                     'refs/tags/1.0.0-alpha.1',
                 ]),
@@ -987,9 +1004,10 @@ SH;
                     '2.0.0-alpha.199=1.10',
                     '2.0.0-alpha.200=1.10',
                     '2.0.0-alpha.217=1.10',
+                    '2.0.0-alpha.218=1.10',
                 ]),
                 'WORKFLOW_PACKAGE_TAG_COMMITS' => implode("\n", [
-                    '2.0.0-alpha.217='.$selectedCommit,
+                    '2.0.0-alpha.218='.$selectedCommit,
                 ]),
                 'GITHUB_OUTPUT' => $outputFile,
             ]);
@@ -997,15 +1015,44 @@ SH;
             $this->assertSame(0, $result['exitCode']);
             $outputs = file_get_contents($outputFile);
             $this->assertNotFalse($outputs);
-            $this->assertStringContainsString("tag=2.0.0-alpha.217\n", $outputs);
+            $this->assertStringContainsString("tag=2.0.0-alpha.218\n", $outputs);
             $this->assertStringContainsString("protocol=1.10\n", $outputs);
             $this->assertStringContainsString("server_protocol=1.10\n", $outputs);
             $this->assertStringContainsString("commit={$selectedCommit}\n", $outputs);
             $this->assertStringContainsString(
-                'Using workflow package version: 2.0.0-alpha.217 (worker protocol 1.10, server requires 1.10)',
+                'Using workflow package version: 2.0.0-alpha.218 (worker protocol 1.10, server requires 1.10)',
                 $result['stdout'],
             );
             $this->assertStringContainsString($selectedCommit, $result['stdout']);
+        } finally {
+            @unlink($outputFile);
+        }
+    }
+
+    public function test_workflow_package_selector_honors_pinned_ref_and_commit(): void
+    {
+        $outputFile = tempnam(sys_get_temp_dir(), 'workflow-package-output-');
+        $this->assertIsString($outputFile);
+        $selectedCommit = '289421c3e5ca65f9c8e3baaa2b8e0ff4f5836b1f';
+
+        try {
+            $result = $this->runScript('scripts/ci/select-compatible-workflow-package-ref.sh', [
+                'WORKFLOW_PACKAGE_REF' => '2.0.0-alpha.218',
+                'WORKFLOW_PACKAGE_COMMIT' => $selectedCommit,
+                'WORKFLOW_PACKAGE_PROTOCOL_VERSIONS' => '2.0.0-alpha.218=1.10',
+                'WORKFLOW_PACKAGE_TAG_COMMITS' => '2.0.0-alpha.218='.$selectedCommit,
+                'GITHUB_OUTPUT' => $outputFile,
+            ]);
+
+            $this->assertSame(0, $result['exitCode']);
+            $outputs = file_get_contents($outputFile);
+            $this->assertNotFalse($outputs);
+            $this->assertStringContainsString("tag=2.0.0-alpha.218\n", $outputs);
+            $this->assertStringContainsString("commit={$selectedCommit}\n", $outputs);
+            $this->assertStringContainsString(
+                'Using workflow package version: 2.0.0-alpha.218 (worker protocol 1.10, server requires 1.10)',
+                $result['stdout'],
+            );
         } finally {
             @unlink($outputFile);
         }

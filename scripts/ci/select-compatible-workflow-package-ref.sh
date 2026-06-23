@@ -3,6 +3,8 @@
 set -eu
 
 workflow_source="${WORKFLOW_PACKAGE_SOURCE:-https://github.com/durable-workflow/workflow.git}"
+requested_tag="${WORKFLOW_PACKAGE_REF:-}"
+requested_commit="${WORKFLOW_PACKAGE_COMMIT:-}"
 server_protocol_file="${SERVER_WORKER_PROTOCOL_FILE:-app/Support/WorkerProtocol.php}"
 workflow_protocol_file="${WORKFLOW_WORKER_PROTOCOL_FILE:-src/V2/Support/WorkerProtocolVersion.php}"
 tmp_dir=""
@@ -177,6 +179,28 @@ server_protocol="$(php_const_version "$server_protocol_file")"
 
 if [ -z "$server_protocol" ]; then
     fail "Server worker protocol unavailable" "Cannot determine App\\Support\\WorkerProtocol::VERSION from ${server_protocol_file}."
+fi
+
+if [ -n "$requested_tag" ]; then
+    selected_protocol="$(fetch_protocol_version "$requested_tag")"
+
+    if [ "$selected_protocol" != "$server_protocol" ]; then
+        fail "Pinned workflow package incompatible" "Pinned durable-workflow/workflow tag ${requested_tag} advertises worker protocol ${selected_protocol}, but server requires ${server_protocol}."
+    fi
+
+    selected_commit="$(fetch_tag_commit "$requested_tag")"
+
+    if [ -n "$requested_commit" ] && [ "$selected_commit" != "$requested_commit" ]; then
+        fail "Pinned workflow package commit mismatch" "Pinned durable-workflow/workflow tag ${requested_tag} resolves to ${selected_commit}, not WORKFLOW_PACKAGE_COMMIT=${requested_commit}."
+    fi
+
+    write_output "tag" "$requested_tag"
+    write_output "protocol" "$selected_protocol"
+    write_output "server_protocol" "$server_protocol"
+    write_output "commit" "$selected_commit"
+
+    printf 'Using workflow package version: %s (worker protocol %s, server requires %s) at commit %s\n' "$requested_tag" "$selected_protocol" "$server_protocol" "$selected_commit"
+    exit 0
 fi
 
 tags="$(collect_prerelease_tags)"
