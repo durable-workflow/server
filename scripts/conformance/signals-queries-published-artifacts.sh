@@ -1636,10 +1636,7 @@ def php_workflow_client_sample(
     )
     completed = run_command(command, log_file=log_file, timeout=120)
     output = completed.stdout.strip()
-    try:
-        sample = json.loads(output) if output else {}
-    except json.JSONDecodeError:
-        sample = {"raw_stdout": output}
+    sample = json_sample_from_stdout(output)
     sample.setdefault("client", "workflow-php")
     sample.setdefault("operation", operation)
     sample.setdefault("operation_name", name)
@@ -1875,6 +1872,40 @@ raise SystemExit(asyncio.run(main()))
     sample.setdefault("exit_code", completed.returncode)
     sample.setdefault("ok", completed.returncode == 0)
     return sample
+
+
+def json_sample_from_stdout(output: str) -> dict[str, Any]:
+    raw = output.strip()
+    if raw == "":
+        return {}
+
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError:
+        decoded = None
+
+    if isinstance(decoded, dict):
+        return decoded
+
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(raw):
+        if character != "{":
+            continue
+
+        try:
+            decoded, end = decoder.raw_decode(raw, index)
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(decoded, dict):
+            continue
+
+        sample = dict(decoded)
+        if raw[:index].strip() or raw[end:].strip():
+            sample.setdefault("raw_stdout", raw)
+        return sample
+
+    return {"raw_stdout": raw}
 
 
 _NO_SAMPLE_RESULT = object()
@@ -6957,13 +6988,17 @@ def sample_readout(sample: Any) -> dict[str, Any] | None:
     if not isinstance(sample, dict):
         return None
 
-    return {
+    readout = {
         "ok": public_sample_ok(sample),
         "result": sample_result_value(sample),
         "status_code": sample.get("status_code"),
         "reason": sample.get("reason"),
         "exception": sample.get("exception"),
     }
+    if isinstance(sample.get("raw_stdout"), str):
+        readout["raw_stdout"] = sample["raw_stdout"]
+
+    return readout
 
 
 def python_baseline_behavior_failures(observed: dict[str, Any]) -> list[dict[str, Any]]:

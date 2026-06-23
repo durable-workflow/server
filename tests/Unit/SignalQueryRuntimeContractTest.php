@@ -1665,6 +1665,33 @@ PY);
         $this->assertSame(8, $result['worker_routed_envelope']);
     }
 
+    public function test_php_start_stdout_parser_accepts_warning_prefixed_nested_run_id(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+stdout = """PHP Warning:  Module "sockets" is already loaded in Unknown on line 0
+{"client":"workflow-php","operation":"start","operation_name":"start","ok":true,"result":{"success":true,"workflow_id":"wf-warning-prefix","run_id":"run-warning-prefix"}}
+"""
+sample = json_sample_from_stdout(stdout)
+readout = sample_readout(sample)
+
+print(json.dumps({
+    "ok": public_sample_ok(sample),
+    "run_id": workflow_start_run_id(sample),
+    "result_run_id": sample_result_value(sample)["run_id"],
+    "raw_stdout": sample.get("raw_stdout"),
+    "readout_raw_stdout": readout.get("raw_stdout") if readout else None,
+    "readout_result_run_id": readout["result"]["run_id"] if readout else None,
+}, sort_keys=True))
+PY);
+
+        $this->assertTrue($result['ok']);
+        $this->assertSame('run-warning-prefix', $result['run_id']);
+        $this->assertSame('run-warning-prefix', $result['result_run_id']);
+        $this->assertStringContainsString('PHP Warning:', $result['raw_stdout']);
+        $this->assertStringContainsString('PHP Warning:', $result['readout_raw_stdout']);
+        $this->assertSame('run-warning-prefix', $result['readout_result_run_id']);
+    }
+
     public function test_php_baseline_accepts_nested_workflow_start_run_id_and_continues_probe(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
