@@ -7672,7 +7672,87 @@ def section_for(*scenario_ids: str) -> dict[str, dict[str, Any]]:
     }
 
 
-def retained_behavior_failure_diagnostics(findings: list[dict[str, Any]]) -> dict[str, Any]:
+def retainable_php_worker_mirror_failures(behavior_failures: Any) -> list[dict[str, Any]]:
+    if not isinstance(behavior_failures, list):
+        return []
+
+    retained_failures: list[dict[str, Any]] = []
+    for failure in behavior_failures:
+        if not isinstance(failure, dict):
+            continue
+        if failure.get("code") != "php_worker_mirror_probe_failed":
+            continue
+        if failure.get("actual") is None:
+            continue
+
+        retained_failures.append(
+            {
+                "code": failure.get("code"),
+                "evidence_key": failure.get("evidence_key"),
+                "expected": failure.get("expected"),
+                "actual": failure.get("actual"),
+            }
+        )
+
+    return retained_failures
+
+
+def compact_finding_ref(
+    scenario_result: dict[str, Any],
+) -> tuple[Any | None, Any | None]:
+    linked_findings = scenario_result.get("linked_findings")
+    if not isinstance(linked_findings, list):
+        return None, None
+
+    for finding in linked_findings:
+        if isinstance(finding, dict):
+            finding_type = finding.get("type")
+            finding_id = finding.get("id") or finding_type
+            if finding_type == "signal_query_php_worker_mirror_failed":
+                return finding_id, finding_type
+        elif finding == "signal_query_php_worker_mirror_failed":
+            return finding, finding
+
+    return None, None
+
+
+def php_worker_mirror_diagnostics_from_scenario_result(
+    scenario_results: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    scenario_result = scenario_results.get("php_worker_cli_and_sdk_baseline")
+    if not isinstance(scenario_result, dict):
+        return None
+    if scenario_result.get("status") != "fail":
+        return None
+
+    observed = scenario_result.get("observed_outputs")
+    if not isinstance(observed, dict):
+        return None
+
+    retained_failures = retainable_php_worker_mirror_failures(
+        php_baseline_behavior_failures(observed)
+    )
+    if not retained_failures:
+        return None
+
+    finding_id, finding_type = compact_finding_ref(scenario_result)
+    finding_type = finding_type or "signal_query_php_worker_mirror_failed"
+    finding_id = finding_id or finding_type
+
+    return {
+        "finding_id": finding_id,
+        "finding_type": finding_type,
+        "current_evidence_candidate_status": current_evidence_candidate_status(
+            "php_worker_cli_and_sdk_baseline"
+        ),
+        "current_behavior_failures": retained_failures,
+    }
+
+
+def retained_behavior_failure_diagnostics(
+    findings: list[dict[str, Any]],
+    scenario_results: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     diagnostics: dict[str, Any] = {}
 
     for finding in findings:
@@ -7685,26 +7765,9 @@ def retained_behavior_failure_diagnostics(findings: list[dict[str, Any]]) -> dic
         if not isinstance(current_evidence, dict):
             continue
 
-        retained_failures: list[dict[str, Any]] = []
-        behavior_failures = current_evidence.get("current_behavior_failures")
-        if not isinstance(behavior_failures, list):
-            continue
-
-        for failure in behavior_failures:
-            if not isinstance(failure, dict):
-                continue
-            if failure.get("code") != "php_worker_mirror_probe_failed":
-                continue
-
-            retained_failures.append(
-                {
-                    "code": failure.get("code"),
-                    "evidence_key": failure.get("evidence_key"),
-                    "expected": failure.get("expected"),
-                    "actual": failure.get("actual"),
-                }
-            )
-
+        retained_failures = retainable_php_worker_mirror_failures(
+            current_evidence.get("current_behavior_failures")
+        )
         if not retained_failures:
             continue
 
@@ -7714,6 +7777,11 @@ def retained_behavior_failure_diagnostics(findings: list[dict[str, Any]]) -> dic
             "current_evidence_candidate_status": current_evidence.get("current_evidence_candidate_status"),
             "current_behavior_failures": retained_failures,
         }
+
+    if "php_worker_cli_and_sdk_baseline" not in diagnostics:
+        raw_diagnostics = php_worker_mirror_diagnostics_from_scenario_result(scenario_results)
+        if raw_diagnostics is not None:
+            diagnostics["php_worker_cli_and_sdk_baseline"] = raw_diagnostics
 
     return diagnostics
 
@@ -7725,7 +7793,7 @@ elif not findings and all(item["status"] == "pass" for item in scenario_results.
 else:
     outcome = "non_passing"
 
-behavior_failure_diagnostics = retained_behavior_failure_diagnostics(findings)
+behavior_failure_diagnostics = retained_behavior_failure_diagnostics(findings, scenario_results)
 result = {
     "schema": "durable-workflow.v2.signal-query-runtime.result",
     "started_at": started_at,

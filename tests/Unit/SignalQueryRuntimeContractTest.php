@@ -2707,6 +2707,113 @@ PY);
         }
     }
 
+    public function test_host_runner_retains_php_mirror_probe_diagnostics_from_compact_finding(): void
+    {
+        $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
+        $phpScenario = &$evidence['scenario_results']['php_worker_cli_and_sdk_baseline'];
+        $phpScenario['status'] = 'fail';
+        $phpScenario['linked_findings'] = [
+            [
+                'id' => 'signal_query_php_worker_mirror_failed',
+                'type' => 'signal_query_php_worker_mirror_failed',
+                'scenario_id' => 'php_worker_cli_and_sdk_baseline',
+                'title' => 'Signals/queries PHP worker mirror failed',
+            ],
+        ];
+        $outputs = &$phpScenario['observed_outputs'];
+        unset($outputs['php_worker_query_task_routing']);
+        $outputs['probe_error'] = [
+            'type' => 'RuntimeError',
+            'message' => 'PHP worker did not record routed current query evidence',
+        ];
+        $outputs['worker_registration'] = [
+            'worker_id' => 'signals-queries-workflow-php-worker',
+            'task_queue' => 'signals-queries-workflow-php',
+            'capabilities' => ['query_tasks'],
+        ];
+        $outputs['workflow_php_start_sample'] = [
+            'ok' => true,
+            'status_code' => 201,
+            'result' => ['run_id' => 'run-php-baseline'],
+        ];
+        $outputs['initial_query_sample'] = [
+            'ok' => true,
+            'status_code' => 200,
+            'result' => 0,
+        ];
+        $outputs['cli_signal_sample'] = [
+            'ok' => true,
+            'status_code' => 202,
+        ];
+        $outputs['cli_query_sample'] = [
+            'ok' => true,
+            'status_code' => 200,
+            'result' => 3,
+        ];
+        $outputs['workflow_php_signal_sample'] = [
+            'ok' => true,
+            'status_code' => 202,
+        ];
+        $outputs['workflow_php_query_sample'] = [
+            'ok' => true,
+            'status_code' => 200,
+            'result' => 8,
+        ];
+        $outputs['repeat_query_sample'] = [
+            'ok' => true,
+            'status_code' => 200,
+            'result' => 8,
+        ];
+        unset($outputs, $phpScenario);
+
+        $artifacts = $this->runSignalQueryHostRunnerArtifacts($evidence);
+        $result = $artifacts['result'];
+        $record = $artifacts['record'];
+        $stdout = $artifacts['stdout'];
+        $findings = $this->findingsForScenario($result, 'php_worker_cli_and_sdk_baseline');
+
+        $this->assertSame('fail', $result['scenario_results']['php_worker_cli_and_sdk_baseline']['status']);
+        $this->assertSame('non_passing', $record['outcome']);
+        $this->assertNotEmpty($findings);
+        $this->assertArrayNotHasKey('current_evidence', $findings[0]);
+
+        $recordActual = $record['behavior_failure_diagnostics']['php_worker_cli_and_sdk_baseline'][
+            'current_behavior_failures'
+        ][0]['actual'] ?? null;
+        $stdoutActual = $stdout['behavior_failure_diagnostics']['php_worker_cli_and_sdk_baseline'][
+            'current_behavior_failures'
+        ][0]['actual'] ?? null;
+
+        $this->assertSame($recordActual, $stdoutActual);
+        $this->assertSame(
+            'PHP worker did not record routed current query evidence',
+            $recordActual['probe_error']['message'] ?? null,
+        );
+        $this->assertSame(
+            ['query_tasks'],
+            $recordActual['worker_registration']['capabilities'] ?? null,
+        );
+        $this->assertSame(0, $recordActual['initial_query']['result'] ?? null);
+        $this->assertSame(3, $recordActual['cli_query']['result'] ?? null);
+        $this->assertSame(8, $recordActual['workflow_php_query']['result'] ?? null);
+        $this->assertSame(8, $recordActual['repeat_query']['result'] ?? null);
+
+        foreach ([
+            'probe_error',
+            'worker_registration',
+            'workflow_php_start',
+            'initial_query',
+            'cli_signal',
+            'cli_query',
+            'workflow_php_signal',
+            'workflow_php_query',
+            'repeat_query',
+        ] as $field) {
+            $this->assertArrayHasKey($field, $recordActual);
+            $this->assertArrayHasKey($field, $stdoutActual);
+        }
+    }
+
     public function test_host_runner_rejects_imported_query_replay_evidence_before_consistent_state(): void
     {
         $evidence = $this->completeSignalQueryResultForCurrentHostRunner();
@@ -3919,7 +4026,7 @@ PY);
     /**
      * @param array<string, mixed> $smokeEvidence
      *
-     * @return array{result: array<string, mixed>, record: array<string, mixed>}
+     * @return array{result: array<string, mixed>, record: array<string, mixed>, stdout: array<string, mixed>}
      */
     private function runSignalQueryHostRunnerArtifacts(array $smokeEvidence): array
     {
@@ -3951,6 +4058,20 @@ PY);
 
             $this->assertSame(0, $exitCode, implode("\n", $output));
 
+            $stdoutRecord = null;
+            foreach (array_reverse($output) as $line) {
+                $decoded = json_decode($line, true);
+                if (
+                    json_last_error() === JSON_ERROR_NONE
+                    && is_array($decoded)
+                    && array_key_exists('outcome', $decoded)
+                ) {
+                    $stdoutRecord = $decoded;
+                    break;
+                }
+            }
+            $this->assertIsArray($stdoutRecord, implode("\n", $output));
+
             $resultPath = $resultDir . '/signals-queries-result.json';
             $this->assertFileExists($resultPath);
 
@@ -3960,6 +4081,7 @@ PY);
             return [
                 'result' => json_decode((string) file_get_contents($resultPath), true, 512, JSON_THROW_ON_ERROR),
                 'record' => json_decode((string) file_get_contents($recordPath), true, 512, JSON_THROW_ON_ERROR),
+                'stdout' => $stdoutRecord,
             ];
         } finally {
             $this->removeDirectory($resultDir);
