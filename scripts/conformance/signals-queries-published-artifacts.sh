@@ -237,6 +237,11 @@ def response_sample(response: dict[str, Any]) -> dict[str, Any]:
         "run_id",
         "signal_name",
         "query_name",
+        "command_contract_source",
+        "command_contract_backfill_needed",
+        "command_contract_backfill_available",
+        "declared_signals",
+        "signal_admission",
     ):
         if key in body:
             sample[key] = body[key]
@@ -4584,7 +4589,7 @@ def run_baseline_probe(result_dir: Path) -> tuple[dict[str, Any] | None, dict[st
                     base_url,
                     api_path("workflows", ordered_workflow_id, "signal", "increment"),
                     method="POST",
-                    body={"input": {"amount": amount}, "request_id": f"{ordered_workflow_id}-{amount}"},
+                    body={"input": [amount], "request_id": f"{ordered_workflow_id}-{amount}"},
                     token=token,
                     namespace=namespace,
                     timeout=30,
