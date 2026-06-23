@@ -2341,6 +2341,39 @@ class WorkflowQueryTaskBrokerTest extends TestCase
             ->assertJsonPath('poll_status', 'query_task_pending');
     }
 
+    public function test_worker_task_polls_honor_request_timeout_seconds(): void
+    {
+        Queue::fake();
+        config(['server.polling.timeout' => 2]);
+
+        $this->registerWorkerWithActivities(
+            'python-short-poll-worker',
+            'python-short-polls',
+            ['python.queryable'],
+            ['python.activity'],
+        );
+
+        $workflowPoll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'python-short-poll-worker',
+            'task_queue' => 'python-short-polls',
+            'timeout_seconds' => 0,
+        ], $this->workerHeaders());
+
+        $workflowPoll->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
+
+        $activityPoll = $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'python-short-poll-worker',
+            'task_queue' => 'python-short-polls',
+            'timeout_seconds' => 0,
+        ], $this->workerHeaders());
+
+        $activityPoll->assertOk()
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
+    }
+
     public function test_query_task_lease_timeout_is_clamped_beyond_control_plane_wait(): void
     {
         Queue::fake();

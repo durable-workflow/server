@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\WorkerRegistration;
 use App\Support\ControlPlaneProtocol;
+use App\Support\LongPoller;
 use App\Support\NamespaceWorkflowScope;
 use App\Support\WorkerProtocol;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -88,6 +89,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
                     'worker_id' => 'worker-success',
                     'task_queue' => 'contract-queue',
                     'poll_request_id' => 'poll-contract-1',
+                    'timeout_seconds' => 0,
                 ],
                 'status' => 200,
                 'structure' => ['task', 'poll_status', 'protocol_version', 'server_capabilities'],
@@ -99,6 +101,7 @@ class WorkerProtocolSuccessContractTest extends TestCase
                 'body' => [
                     'worker_id' => 'worker-success',
                     'task_queue' => 'contract-queue',
+                    'timeout_seconds' => 0,
                 ],
                 'status' => 200,
                 'structure' => ['task', 'poll_status', 'protocol_version', 'server_capabilities'],
@@ -221,6 +224,88 @@ class WorkerProtocolSuccessContractTest extends TestCase
                 'worker_protocol_version_below_worker_session_minimum',
             )
             ->assertJsonMissingPath('control_plane');
+    }
+
+    public function test_workflow_task_poll_treats_null_timeout_seconds_as_default(): void
+    {
+        config(['server.polling.timeout' => 2]);
+
+        $this->registerWorker(
+            workerId: 'worker-null-workflow-timeout',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['ContractWorkflow'],
+            supportedActivityTypes: ['ContractActivity'],
+        );
+
+        $this->mock(LongPoller::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('until')
+                ->once()
+                ->andReturnUsing(function (
+                    callable $probe,
+                    callable $ready,
+                    ?int $timeoutSeconds = null,
+                ) {
+                    $this->assertNull($timeoutSeconds);
+
+                    $initial = $probe();
+
+                    $this->assertNull($initial);
+                    $this->assertFalse($ready($initial));
+
+                    return null;
+                });
+        });
+
+        $poll = $this->postJson('/api/worker/workflow-tasks/poll', [
+            'worker_id' => 'worker-null-workflow-timeout',
+            'task_queue' => 'contract-queue',
+            'timeout_seconds' => null,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
+    }
+
+    public function test_activity_task_poll_treats_null_timeout_seconds_as_default(): void
+    {
+        config(['server.polling.timeout' => 2]);
+
+        $this->registerWorker(
+            workerId: 'worker-null-activity-timeout',
+            taskQueue: 'contract-queue',
+            supportedWorkflowTypes: ['ContractWorkflow'],
+            supportedActivityTypes: ['ContractActivity'],
+        );
+
+        $this->mock(LongPoller::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('until')
+                ->once()
+                ->andReturnUsing(function (
+                    callable $probe,
+                    callable $ready,
+                    ?int $timeoutSeconds = null,
+                ) {
+                    $this->assertNull($timeoutSeconds);
+
+                    $initial = $probe();
+
+                    $this->assertNull($initial);
+                    $this->assertFalse($ready($initial));
+
+                    return null;
+                });
+        });
+
+        $poll = $this->postJson('/api/worker/activity-tasks/poll', [
+            'worker_id' => 'worker-null-activity-timeout',
+            'task_queue' => 'contract-queue',
+            'timeout_seconds' => null,
+        ], $this->workerProtocolHeaders());
+
+        $this->assertWorkerProtocolSuccess($poll)
+            ->assertJsonPath('task', null)
+            ->assertJsonPath('poll_status', 'empty');
     }
 
     public function test_leased_workflow_task_success_responses_use_worker_protocol_contract(): void

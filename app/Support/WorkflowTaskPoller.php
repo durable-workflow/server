@@ -58,6 +58,7 @@ final class WorkflowTaskPoller
         array $supportedWorkflowTypes = [],
         array $workflowDefinitionFingerprints = [],
         bool $acceptsQueryTasks = false,
+        ?int $timeoutSeconds = null,
     ): array {
         $pollRequestId = $this->nonEmptyString($pollRequestId);
 
@@ -74,6 +75,7 @@ final class WorkflowTaskPoller
                 supportedWorkflowTypes: $supportedWorkflowTypes,
                 workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
                 acceptsQueryTasks: $acceptsQueryTasks,
+                timeoutSeconds: $timeoutSeconds,
             );
         }
 
@@ -89,6 +91,7 @@ final class WorkflowTaskPoller
             supportedWorkflowTypes: $supportedWorkflowTypes,
             workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
             acceptsQueryTasks: $acceptsQueryTasks,
+            timeoutSeconds: $timeoutSeconds,
         );
     }
 
@@ -109,6 +112,7 @@ final class WorkflowTaskPoller
         array $supportedWorkflowTypes = [],
         array $workflowDefinitionFingerprints = [],
         bool $acceptsQueryTasks = false,
+        ?int $timeoutSeconds = null,
     ): array {
         for ($attempt = 0; $attempt < 3; $attempt++) {
             $cached = $this->cachedPollResult(
@@ -145,6 +149,7 @@ final class WorkflowTaskPoller
                     supportedWorkflowTypes: $supportedWorkflowTypes,
                     workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
                     acceptsQueryTasks: $acceptsQueryTasks,
+                    timeoutSeconds: $timeoutSeconds,
                 );
             }
 
@@ -263,6 +268,7 @@ final class WorkflowTaskPoller
         array $supportedWorkflowTypes = [],
         array $workflowDefinitionFingerprints = [],
         bool $acceptsQueryTasks = false,
+        ?int $timeoutSeconds = null,
     ): array {
         try {
             $task = $this->performPoll(
@@ -277,6 +283,7 @@ final class WorkflowTaskPoller
                 supportedWorkflowTypes: $supportedWorkflowTypes,
                 workflowDefinitionFingerprints: $workflowDefinitionFingerprints,
                 acceptsQueryTasks: $acceptsQueryTasks,
+                timeoutSeconds: $timeoutSeconds,
             );
         } catch (Throwable $exception) {
             $this->pollRequests->forgetPending(
@@ -320,6 +327,7 @@ final class WorkflowTaskPoller
         array $supportedWorkflowTypes = [],
         array $workflowDefinitionFingerprints = [],
         bool $acceptsQueryTasks = false,
+        ?int $timeoutSeconds = null,
     ): array {
         $limit = max(10, max(1, (int) config('server.polling.max_tasks_per_poll', 1)) * 10);
         $nextProbeAt = null;
@@ -371,6 +379,7 @@ final class WorkflowTaskPoller
                 return $resolvedResult['task'] ?? null;
             },
             static fn (?array $result): bool => is_array($result),
+            timeoutSeconds: $timeoutSeconds,
             wakeChannels: [
                 ...$this->signals->workflowTaskPollChannels($namespace, null, $taskQueue),
                 ...$this->signals->queryTaskPollChannels($namespace, $taskQueue),

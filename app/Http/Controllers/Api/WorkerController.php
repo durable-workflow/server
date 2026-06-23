@@ -877,6 +877,12 @@ class WorkerController
             'task_queue' => ['required', 'string'],
             'build_id' => ['nullable', 'string'],
             'poll_request_id' => ['nullable', 'string', 'max:255'],
+            'timeout_seconds' => [
+                'nullable',
+                'integer',
+                'min:0',
+                'max:'.WorkerProtocolVersion::MAX_LONG_POLL_TIMEOUT,
+            ],
             'history_page_size' => [
                 'nullable',
                 'integer',
@@ -896,6 +902,9 @@ class WorkerController
             : min((int) $requestedPageSize, $maxPageSize);
 
         $acceptHistoryEncoding = $validated['accept_history_encoding'] ?? null;
+        $timeoutSeconds = isset($validated['timeout_seconds'])
+            ? (int) $validated['timeout_seconds']
+            : null;
 
         $worker = $this->resolveRegisteredWorker(
             $namespace,
@@ -948,6 +957,7 @@ class WorkerController
                     $namespace,
                     $worker,
                 ),
+                timeoutSeconds: $timeoutSeconds,
             );
         } catch (\Throwable $exception) {
             if (BackendLockPressure::is($exception)) {

@@ -28,6 +28,7 @@ use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
+use Workflow\V2\Support\WorkerProtocolVersion;
 
 class ActivityTaskController
 {
@@ -57,7 +58,16 @@ class ActivityTaskController
             'task_queue' => ['required', 'string'],
             'build_id' => ['nullable', 'string'],
             'poll_request_id' => ['nullable', 'string', 'max:255'],
+            'timeout_seconds' => [
+                'nullable',
+                'integer',
+                'min:0',
+                'max:'.WorkerProtocolVersion::MAX_LONG_POLL_TIMEOUT,
+            ],
         ]);
+        $timeoutSeconds = isset($validated['timeout_seconds'])
+            ? (int) $validated['timeout_seconds']
+            : null;
 
         $worker = $this->resolveRegisteredWorker(
             $namespace,
@@ -103,6 +113,7 @@ class ActivityTaskController
                 workerSessionsAvailable: WorkerProtocol::workerSessionsAvailableForRequest(
                     $request,
                 ),
+                timeoutSeconds: $timeoutSeconds,
             );
         } catch (\Throwable $exception) {
             if (BackendLockPressure::is($exception)) {
