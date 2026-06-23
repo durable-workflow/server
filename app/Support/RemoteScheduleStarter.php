@@ -67,7 +67,13 @@ final class RemoteScheduleStarter implements ScheduleWorkflowStarter
             'duplicate_policy' => $duplicatePolicy,
         ], static fn (mixed $v): bool => $v !== null);
 
-        $result = $this->startService->start($payload, $schedule->namespace);
+        // Scheduled fires may target unversioned workers from another SDK.
+        // If no durable build-id pin was selected, keep the run unpinned.
+        $result = $this->startService->start(
+            $payload,
+            $schedule->namespace,
+            allowAmbientCompatibilityFallback: false,
+        );
         $started = is_bool($result['started'] ?? null)
             ? $result['started']
             : ($result['reason'] ?? null) === null;

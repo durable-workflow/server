@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\SearchAttributeDefinition;
 use App\Models\WorkflowNamespace;
+use App\Support\WorkerProtocol;
 use App\Support\WorkflowStartService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
@@ -13,6 +14,7 @@ use Tests\TestCase;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSchedule;
+use Workflow\V2\Models\WorkflowTask;
 
 class ScheduleEvaluateTest extends TestCase
 {
@@ -809,6 +811,90 @@ class ScheduleEvaluateTest extends TestCase
         $this->assertEquals(180, $capturedParams['run_timeout_seconds']);
     }
 
+    public function test_scheduled_polyglot_start_stays_unpinned_when_no_worker_build_id_is_selected(): void
+    {
+        config()->set('workflows.v2.compatibility.current', 'server-image-build');
+        config()->set('workflows.v2.compatibility.supported', ['server-image-build']);
+
+        $workflowType = 'SchedulesConformancePhpWorkflow';
+        $taskQueue = 'schedules-shared';
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/register', [
+                'worker_id' => 'schedules-php-worker',
+                'task_queue' => $taskQueue,
+                'runtime' => 'php',
+                'sdk_version' => '2.0.0-alpha.test',
+                'supported_workflow_types' => [$workflowType],
+                'workflow_definition_fingerprints' => [
+                    $workflowType => 'schedules-conformance:SchedulesConformancePhpWorkflow:php',
+                ],
+                'supported_activity_types' => [],
+                'max_concurrent_workflow_tasks' => 10,
+                'max_concurrent_activity_tasks' => 10,
+                'task_slots' => [
+                    'workflow_available' => 10,
+                    'activity_available' => 10,
+                ],
+            ])
+            ->assertCreated()
+            ->assertJsonPath('build_id', null);
+
+        $this->withHeaders($this->apiHeaders())
+            ->postJson('/api/schedules', [
+                'schedule_id' => 'python-created-php-worker',
+                'spec' => [
+                    'intervals' => [['every' => 'PT30S']],
+                    'timezone' => 'UTC',
+                ],
+                'action' => [
+                    'workflow_type' => $workflowType,
+                    'task_queue' => $taskQueue,
+                    'input' => [[
+                        'scenario' => 'python_created_php_workflow',
+                        'schedule_creator' => 'sdk-python',
+                        'workflow_runtime' => 'workflow-php',
+                    ]],
+                ],
+                'overlap_policy' => 'allow_all',
+                'jitter_seconds' => 0,
+                'max_runs' => 1,
+            ])
+            ->assertCreated()
+            ->assertJsonPath('schedule_id', 'python-created-php-worker');
+
+        WorkflowSchedule::query()
+            ->where('schedule_id', 'python-created-php-worker')
+            ->update(['next_fire_at' => now()->subSecond()]);
+
+        $exitCode = Artisan::call('schedule:evaluate', ['--json' => true]);
+        $report = json_decode(trim(Artisan::output()), true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame(0, $exitCode);
+        $this->assertSame(1, $report['fired_count']);
+
+        $run = WorkflowRun::query()
+            ->where('workflow_type', $workflowType)
+            ->firstOrFail();
+        $this->assertNull($run->compatibility);
+
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->firstOrFail();
+        $this->assertNull($task->compatibility);
+
+        $this->withHeaders($this->workerHeaders())
+            ->postJson('/api/worker/workflow-tasks/poll', [
+                'worker_id' => 'schedules-php-worker',
+                'task_queue' => $taskQueue,
+            ])
+            ->assertOk()
+            ->assertJsonPath('poll_status', 'leased')
+            ->assertJsonPath('task.workflow_id', $run->workflow_instance_id)
+            ->assertJsonPath('task.workflow_type', $workflowType)
+            ->assertJsonPath('task.compatibility', null);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     private function createNamespace(string $name): void
@@ -824,6 +910,28 @@ class ScheduleEvaluateTest extends TestCase
     }
 
     /**
+     * @return array<string, string>
+     */
+    private function apiHeaders(): array
+    {
+        return [
+            'X-Namespace' => 'default',
+            'X-Durable-Workflow-Control-Plane-Version' => '2',
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function workerHeaders(): array
+    {
+        return [
+            'X-Namespace' => 'default',
+            WorkerProtocol::HEADER => WorkerProtocol::VERSION,
+        ];
+    }
+
+    /**
      * Bind a fake WorkflowStartService into the container.
      */
     private function fakeStartService(
@@ -834,7 +942,12 @@ class ScheduleEvaluateTest extends TestCase
         $this->mock(WorkflowStartService::class, function (MockInterface $mock) use ($result, $exception, $callback): void {
             $mock->shouldReceive('start')
                 ->zeroOrMoreTimes()
-                ->andReturnUsing(function (array $validated, ?string $namespace = null) use ($result, $exception, $callback): array {
+                ->andReturnUsing(function (
+                    array $validated,
+                    ?string $namespace = null,
+                    mixed $commandContext = null,
+                    bool $allowAmbientCompatibilityFallback = true,
+                ) use ($result, $exception, $callback): array {
                     if ($exception) {
                         throw $exception;
                     }

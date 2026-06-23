@@ -41,6 +41,7 @@ class WorkflowStartService
         array $validated,
         ?string $namespace = null,
         ?CommandContext $commandContext = null,
+        bool $allowAmbientCompatibilityFallback = true,
     ): array {
         $workflowType = (string) $validated['workflow_type'];
         $workflowId = isset($validated['workflow_id']) && is_string($validated['workflow_id'])
@@ -55,6 +56,7 @@ class WorkflowStartService
             $validated,
             $namespace,
             $commandContext,
+            $allowAmbientCompatibilityFallback,
         );
     }
 
@@ -99,6 +101,7 @@ class WorkflowStartService
         array $validated,
         ?string $namespace = null,
         ?CommandContext $commandContext = null,
+        bool $allowAmbientCompatibilityFallback = true,
     ): array {
         $envelope = PayloadEnvelopeResolver::resolve(
             $validated['input'] ?? null,
@@ -122,7 +125,7 @@ class WorkflowStartService
             ];
         $pinnedBuildId = $startCohort['build_id'];
 
-        $result = $this->controlPlane->start($workflowType, $workflowId, array_filter([
+        $startOptions = array_filter([
             'arguments' => $arguments,
             'payload_codec' => $payloadCodec,
             'queue' => $taskQueue,
@@ -146,7 +149,13 @@ class WorkflowStartService
             'namespace' => $namespace,
             'command_context' => $commandContext,
             'build_id' => $pinnedBuildId,
-        ], static fn (mixed $value): bool => $value !== null));
+        ], static fn (mixed $value): bool => $value !== null);
+
+        $result = $this->withAmbientCompatibilityFallback(
+            $pinnedBuildId,
+            $allowAmbientCompatibilityFallback,
+            fn (): array => $this->controlPlane->start($workflowType, $workflowId, $startOptions),
+        );
 
         $started = (bool) ($result['started'] ?? false);
         $reason = isset($result['reason']) && is_string($result['reason'])
@@ -449,5 +458,31 @@ class WorkflowStartService
         return is_string($queue) && trim($queue) !== ''
             ? trim($queue)
             : 'default';
+    }
+
+    /**
+     * @template TReturn
+     *
+     * @param  callable(): TReturn  $callback
+     * @return TReturn
+     */
+    private function withAmbientCompatibilityFallback(
+        ?string $explicitBuildId,
+        bool $allowFallback,
+        callable $callback,
+    ): mixed {
+        if ($explicitBuildId !== null || $allowFallback) {
+            return $callback();
+        }
+
+        $previousCurrent = config('workflows.v2.compatibility.current');
+
+        config(['workflows.v2.compatibility.current' => null]);
+
+        try {
+            return $callback();
+        } finally {
+            config(['workflows.v2.compatibility.current' => $previousCurrent]);
+        }
     }
 }

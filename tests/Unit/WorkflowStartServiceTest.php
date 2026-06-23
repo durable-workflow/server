@@ -152,6 +152,92 @@ class WorkflowStartServiceTest extends TestCase
         $this->assertSame('Workflow instance [wf-service-compat-blocked] cannot start.', $start['message']);
     }
 
+    public function test_it_preserves_ambient_compatibility_current_for_default_unpinned_starts(): void
+    {
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()->set('workflows.v2.types.workflows', [
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $this->mock(WorkflowControlPlane::class, function (MockInterface $mock): void {
+            $mock->shouldReceive('start')
+                ->once()
+                ->with(
+                    'tests.external-greeting-workflow',
+                    'wf-service-ambient-default',
+                    \Mockery::on(static function (array $options): bool {
+                        return config('workflows.v2.compatibility.current') === 'build-a'
+                            && ! array_key_exists('build_id', $options);
+                    }),
+                )
+                ->andReturn([
+                    'started' => true,
+                    'workflow_instance_id' => 'wf-service-ambient-default',
+                    'workflow_run_id' => 'run-service-ambient-default',
+                    'workflow_type' => 'tests.external-greeting-workflow',
+                    'outcome' => 'started_new',
+                    'reason' => null,
+                ]);
+        });
+
+        $service = app(WorkflowStartService::class);
+
+        $start = $service->start([
+            'workflow_id' => 'wf-service-ambient-default',
+            'workflow_type' => 'tests.external-greeting-workflow',
+        ]);
+
+        $this->assertSame('started_new', $start['outcome']);
+        $this->assertSame('build-a', config('workflows.v2.compatibility.current'));
+    }
+
+    public function test_it_can_suppress_ambient_compatibility_current_for_unpinned_starts(): void
+    {
+        config()->set('workflows.v2.compatibility.current', 'build-a');
+        config()->set('workflows.v2.types.workflows', [
+            'tests.external-greeting-workflow' => ExternalGreetingWorkflow::class,
+        ]);
+
+        $observedCurrent = 'not-called';
+
+        $this->mock(WorkflowControlPlane::class, function (MockInterface $mock) use (&$observedCurrent): void {
+            $mock->shouldReceive('start')
+                ->once()
+                ->with(
+                    'tests.external-greeting-workflow',
+                    'wf-service-ambient-suppressed',
+                    \Mockery::on(static function (array $options) use (&$observedCurrent): bool {
+                        $observedCurrent = config('workflows.v2.compatibility.current');
+
+                        return $observedCurrent === null
+                            && ! array_key_exists('build_id', $options);
+                    }),
+                )
+                ->andReturn([
+                    'started' => true,
+                    'workflow_instance_id' => 'wf-service-ambient-suppressed',
+                    'workflow_run_id' => 'run-service-ambient-suppressed',
+                    'workflow_type' => 'tests.external-greeting-workflow',
+                    'outcome' => 'started_new',
+                    'reason' => null,
+                ]);
+        });
+
+        $service = app(WorkflowStartService::class);
+
+        $start = $service->start(
+            [
+                'workflow_id' => 'wf-service-ambient-suppressed',
+                'workflow_type' => 'tests.external-greeting-workflow',
+            ],
+            allowAmbientCompatibilityFallback: false,
+        );
+
+        $this->assertSame('started_new', $start['outcome']);
+        $this->assertNull($observedCurrent);
+        $this->assertSame('build-a', config('workflows.v2.compatibility.current'));
+    }
+
     public function test_it_rejects_invalid_configured_dotted_workflow_type_mappings_before_control_plane_start(): void
     {
         config()->set('server.mode', 'embedded');
