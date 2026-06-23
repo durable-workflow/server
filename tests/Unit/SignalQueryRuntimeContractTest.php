@@ -1665,6 +1665,171 @@ PY);
         $this->assertSame(8, $result['worker_routed_envelope']);
     }
 
+    public function test_php_baseline_accepts_nested_workflow_start_run_id_and_continues_probe(): void
+    {
+        $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'
+versions = {
+    "server": "0.2.485",
+    "cli": "0.1.82",
+    "sdk-python": "0.4.90",
+    "workflow": "2.0.0-alpha.218",
+    "workflow-php": "2.0.0-alpha.218",
+    "waterline": "2.0.0-alpha.111",
+}
+sources = {
+    "server": "published_docker_image",
+    "cli": "published_cli_release",
+    "sdk-python": "published_pypi_package",
+    "workflow-php": "published_composer_package",
+    "waterline": "published_waterline_artifact",
+}
+globals()["artifact_versions"] = versions
+
+php_calls = []
+cli_calls = []
+commands = []
+
+def fake_php_docker_command(project_dir, args, name=None, detach=False):
+    command = ["php-docker"] + list(args)
+    if name is not None:
+        command.append(f"name={name}")
+    if detach:
+        command.append("detach=true")
+    return command
+
+def fake_run_command(command, *, log_file, env=None, cwd=None, timeout=120.0):
+    commands.append(command)
+    return subprocess.CompletedProcess(command, 0, stdout="container-php\n", stderr="")
+
+def fake_wait_for_docker_worker_registered(**kwargs):
+    return {
+        "worker_id": kwargs["worker_id"],
+        "task_queue": kwargs["container_name"].replace("dw-sq-php-", "signals-queries-workflow-php-"),
+        "capabilities": ["workflow_tasks", "query_tasks"],
+    }
+
+def fake_php_workflow_client_sample(
+    workflow_php_project,
+    base_url,
+    token,
+    namespace,
+    operation,
+    workflow_type,
+    workflow_id,
+    task_queue,
+    name,
+    log_file,
+    args=None,
+):
+    php_calls.append({"operation": operation, "name": name, "args": args})
+    if operation == "start":
+        return {
+            "ok": True,
+            "status_code": 201,
+            "result": {
+                "success": True,
+                "workflow_id": workflow_id,
+                "start_result": {
+                    "workflow_id": workflow_id,
+                    "run_id": "run-php-baseline",
+                },
+            },
+        }
+    if operation == "signal":
+        return {"ok": True, "status_code": 202, "result": {"accepted": True}}
+    if operation == "query":
+        return {
+            "ok": True,
+            "status_code": 200,
+            "result": {
+                "success": True,
+                "workflow_id": workflow_id,
+                "run_id": "run-php-baseline",
+                "query_name": name,
+                "result": 8,
+            },
+        }
+    raise AssertionError(f"unexpected PHP operation {operation}")
+
+def fake_cli_json_sample(cli_bin, base_url, token, namespace, args, log_file):
+    cli_calls.append(args)
+    if args[0] == "workflow:signal":
+        return {"ok": True, "status_code": 202}
+    if args[0] == "workflow:query" and args[2] == "state":
+        return {"ok": True, "status_code": 200, "result": 0}
+    if args[0] == "workflow:query" and args[2] == "current":
+        return {"ok": True, "status_code": 200, "result": 3}
+    raise AssertionError(f"unexpected CLI args {args}")
+
+def fake_wait_for_php_query_route_evidence(query_route_evidence_path, workflow_id, worker_id):
+    return {
+        "status": "pass",
+        "worker_runtime": "workflow-php",
+        "worker_id": worker_id,
+        "workflow_id": workflow_id,
+        "run_id": "run-php-baseline",
+        "query_name": "current",
+    }
+
+globals()["php_docker_command"] = fake_php_docker_command
+globals()["run_command"] = fake_run_command
+globals()["wait_for_docker_worker_registered"] = fake_wait_for_docker_worker_registered
+globals()["php_workflow_client_sample"] = fake_php_workflow_client_sample
+globals()["cli_json_sample"] = fake_cli_json_sample
+globals()["wait_for_php_query_route_evidence"] = fake_wait_for_php_query_route_evidence
+
+run_root = Path(tempfile.mkdtemp(prefix="dw-signals-php-nested-start-test."))
+outputs, descriptor = run_workflow_php_baseline(
+    base_url="http://server.test",
+    token="token",
+    namespace="default",
+    cli_bin="/tmp/dw",
+    workflow_php_project=run_root / "workflow-php",
+    versions=versions,
+    sources=sources,
+    install_entry={"status": "pass", "source": "published_composer_package"},
+    run_root=run_root,
+    log_file=run_root / "probe.log",
+)
+scenario = baseline_scenario_result("php_worker_cli_and_sdk_baseline", outputs)
+
+print(json.dumps({
+    "status": scenario["status"],
+    "run_id": outputs["run_id"],
+    "descriptor_run_id": descriptor["run_id"],
+    "query_task_routing": outputs["php_worker_query_task_routing"],
+    "cli_signal_and_query": outputs["cli_signal_and_query"],
+    "workflow_php_signal_and_query": outputs["workflow_php_signal_and_query"],
+    "immediate_repeat_query_consistency": outputs["immediate_repeat_query_consistency"],
+    "initial_query": sample_result_value(outputs["initial_query_sample"]),
+    "cli_query": sample_result_value(outputs["cli_query_sample"]),
+    "php_query": sample_result_value(outputs["workflow_php_query_sample"]),
+    "repeat_query": sample_result_value(outputs["repeat_query_sample"]),
+    "php_operations": [call["operation"] for call in php_calls],
+    "cli_operations": [call[0] for call in cli_calls],
+    "has_probe_error": "probe_error" in outputs,
+}, sort_keys=True))
+PY);
+
+        $this->assertSame('pass', $result['status']);
+        $this->assertSame('run-php-baseline', $result['run_id']);
+        $this->assertSame('run-php-baseline', $result['descriptor_run_id']);
+        $this->assertTrue($result['query_task_routing']);
+        $this->assertTrue($result['cli_signal_and_query']);
+        $this->assertTrue($result['workflow_php_signal_and_query']);
+        $this->assertTrue($result['immediate_repeat_query_consistency']);
+        $this->assertSame(0, $result['initial_query']);
+        $this->assertSame(3, $result['cli_query']);
+        $this->assertSame(8, $result['php_query']);
+        $this->assertSame(8, $result['repeat_query']);
+        $this->assertSame(['start', 'signal', 'query', 'query'], $result['php_operations']);
+        $this->assertSame(
+            ['workflow:query', 'workflow:signal', 'workflow:query'],
+            $result['cli_operations'],
+        );
+        $this->assertFalse($result['has_probe_error']);
+    }
+
     public function test_baseline_probe_external_worker_contract_declares_current_query(): void
     {
         $result = $this->runSignalQueryRunnerPythonSnippet(<<<'PY'

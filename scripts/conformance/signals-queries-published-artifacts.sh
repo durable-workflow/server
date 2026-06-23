@@ -1966,6 +1966,52 @@ def sample_result_value(sample: dict[str, Any]) -> Any:
     return None
 
 
+def workflow_start_run_id(sample: dict[str, Any]) -> str:
+    candidates: list[Any] = [sample, sample.get("result"), sample.get("output"), sample.get("server_response")]
+    seen: set[int] = set()
+    nested_keys = (
+        "result",
+        "start",
+        "start_result",
+        "startResult",
+        "workflow_start",
+        "workflowStart",
+        "body",
+        "data",
+        "output",
+        "server_response",
+        "serverResponse",
+        "response",
+        "workflow",
+        "workflow_execution",
+        "workflowExecution",
+        "execution",
+        "handle",
+    )
+
+    while candidates:
+        candidate = candidates.pop(0)
+        if not isinstance(candidate, dict):
+            continue
+
+        marker = id(candidate)
+        if marker in seen:
+            continue
+        seen.add(marker)
+
+        for key in ("run_id", "runId", "workflow_run_id", "workflowRunId"):
+            value = candidate.get(key)
+            if isinstance(value, str) and value.strip() != "":
+                return value.strip()
+
+        for key in nested_keys:
+            nested = candidate.get(key)
+            if isinstance(nested, dict):
+                candidates.append(nested)
+
+    return ""
+
+
 def public_sample_ok(sample: dict[str, Any]) -> bool:
     if sample.get("ok") is True:
         return True
@@ -3809,8 +3855,7 @@ def run_workflow_php_baseline(
         if not public_sample_ok(start_sample):
             raise RuntimeError(f"PHP baseline workflow start failed: {start_sample}")
 
-        start_result = start_sample.get("result") if isinstance(start_sample.get("result"), dict) else {}
-        run_id = str(start_result.get("run_id", ""))
+        run_id = workflow_start_run_id(start_sample)
         if not run_id:
             raise RuntimeError(f"PHP baseline workflow start did not return a run_id: {start_sample}")
         outputs["run_id"] = run_id
