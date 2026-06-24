@@ -8,9 +8,9 @@ use Workflow\V2\Support\PlatformConformanceSuite;
  * Machine-readable contract for timer and sleep runtime conformance.
  *
  * The current handoff emits source-free published-artifact evidence for normal
- * sleep completion plus worker and server restart while sleeping, and focused
- * coverage-gap findings for timer cells that still need first-class
- * host-runner implementation.
+ * sleep completion, worker and server restart while sleeping, replay after
+ * timer fire, and focused coverage-gap findings for timer cells that still
+ * need first-class host-runner implementation.
  */
 final class TimerRuntimeContract
 {
@@ -87,6 +87,21 @@ final class TimerRuntimeContract
                 'runner_blocked',
             ],
             'timer_semantics' => [
+                'replay_after_timer_fire' => [
+                    'required_behavior' => 'replay_after_timer_fire_is_deterministic_and_does_not_schedule_duplicate_timers',
+                    'required_evidence' => [
+                        'workflow_id',
+                        'timer_id',
+                        'fired_at',
+                        'replay_started_at',
+                        'replayed_event_ids',
+                        'replayed_event_types',
+                        'duplicate_timer_commands',
+                    ],
+                    'replay_timing_policy' => 'replay_started_at must be greater than or equal to fired_at',
+                    'replayed_history_policy' => 'replayed_event_ids must be non-empty and replayed_event_types must include TimerFired',
+                    'no_duplicate_timer_policy' => 'duplicate_timer_commands must be exactly zero after replaying the fired timer history',
+                ],
                 'concurrent_timers_distinct_deadlines' => [
                     'required_behavior' => 'timers_resume_in_recorded_wake_up_order_without_early_or_duplicate_fires',
                     'required_evidence' => [
@@ -182,6 +197,7 @@ final class TimerRuntimeContract
                         'fired_at',
                         'replay_started_at',
                         'replayed_event_ids',
+                        'replayed_event_types',
                         'duplicate_timer_commands',
                     ],
                     'required_behavior' => 'replay_after_timer_fire_is_deterministic_and_does_not_schedule_duplicate_timers',
@@ -238,6 +254,9 @@ final class TimerRuntimeContract
                     'findings_linked_for_non_pass_scenarios',
                     'coverage_gap_scenario_findings_are_top_level_and_linked',
                     'normal_sleep_completion_completes_at_or_after_wake_up',
+                    'replay_after_timer_fire_starts_at_or_after_fire',
+                    'replay_after_timer_fire_replays_recorded_events',
+                    'replay_after_timer_fire_does_not_schedule_duplicate_timer_commands',
                     'concurrent_timer_resume_order_matches_wake_up_times',
                     'concurrent_timer_fires_are_not_early',
                     'concurrent_timer_fires_are_not_duplicated',
@@ -264,7 +283,7 @@ final class TimerRuntimeContract
                 'coverage_gap_outcome' => 'non_passing',
             ],
             'host_runner_contract' => [
-                'status' => 'published_handoff_proves_normal_sleep_worker_restart_and_server_restart_while_sleeping_then_marks_remaining_timer_cells_coverage_gap',
+                'status' => 'published_handoff_proves_normal_sleep_worker_restart_server_restart_and_replay_after_timer_fire_then_marks_remaining_timer_cells_coverage_gap',
                 'result_schema' => self::RESULT_SCHEMA,
                 'runner_repository' => 'server',
                 'runner_path' => 'scripts/conformance/timers-published-artifacts.sh',

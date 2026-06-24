@@ -56,6 +56,9 @@ final class TimerRuntimeResultGate
                 'published_artifact_versions_are_recorded_and_pinned',
                 'no_local_product_source_artifacts_are_reported',
                 'normal_sleep_completion_completes_at_or_after_wake_up',
+                'replay_after_timer_fire_starts_at_or_after_fire',
+                'replay_after_timer_fire_replays_recorded_events',
+                'replay_after_timer_fire_does_not_schedule_duplicate_timer_commands',
                 'concurrent_timer_resume_order_matches_wake_up_times',
                 'concurrent_timer_fires_are_not_early',
                 'concurrent_timer_fires_are_not_duplicated',
@@ -100,6 +103,13 @@ final class TimerRuntimeResultGate
                     'timer_state_recovered_true',
                     'timer_fire_count_exactly_one',
                     'duplicate_resume_count_zero',
+                ],
+                'replay_after_timer_fire' => [
+                    'fired_at',
+                    'replay_started_at_must_be_greater_than_or_equal_to_fired_at',
+                    'replayed_event_ids_non_empty',
+                    'replayed_event_types_include_timer_fired',
+                    'duplicate_timer_commands_zero',
                 ],
                 'concurrent_timers_distinct_deadlines' => [
                     'wake_up_times',
@@ -414,6 +424,7 @@ final class TimerRuntimeResultGate
             'normal_sleep_completion' => self::normalSleepCompletionFailures($scenarioResult),
             'worker_restart_while_sleeping' => self::workerRestartWhileSleepingFailures($scenarioResult),
             'server_restart_while_sleeping' => self::serverRestartWhileSleepingFailures($scenarioResult),
+            'replay_after_timer_fire' => self::replayAfterTimerFireFailures($scenarioResult),
             'concurrent_timers_distinct_deadlines' => self::concurrentTimerFailures($scenarioResult),
             'cancellation_while_waiting' => self::cancellationWhileWaitingFailures($scenarioResult, $contract),
             'operator_visible_timer_waiting_state' => self::operatorVisibleWaitingFailures($scenarioResult, $contract),
@@ -513,6 +524,104 @@ final class TimerRuntimeResultGate
                 'code' => 'normal_sleep_early_resume_observed',
                 'scenario_id' => $scenarioId,
                 'early_resume_observed' => true,
+            ];
+        }
+
+        return $failures;
+    }
+
+    /**
+     * @param array<string, mixed> $scenarioResult
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function replayAfterTimerFireFailures(array $scenarioResult): array
+    {
+        $evidence = self::scenarioEvidence($scenarioResult);
+        $scenarioId = 'replay_after_timer_fire';
+        $firedAt = self::stringField($evidence, [
+            'fired_at',
+            'firedAt',
+            'timer_fired_at',
+            'timerFiredAt',
+        ]);
+        $replayStartedAt = self::stringField($evidence, [
+            'replay_started_at',
+            'replayStartedAt',
+            'replayed_at',
+            'replayedAt',
+        ]);
+        $replayedEventIds = self::arrayField($evidence, [
+            'replayed_event_ids',
+            'replayedEventIds',
+            'history_event_ids',
+            'historyEventIds',
+        ]) ?? [];
+        $replayedEventTypes = self::stringList(self::arrayField($evidence, [
+            'replayed_event_types',
+            'replayedEventTypes',
+            'history_event_types',
+            'historyEventTypes',
+        ]) ?? []);
+        $duplicateTimerCommands = self::integerField($evidence, [
+            'duplicate_timer_commands',
+            'duplicateTimerCommands',
+            'duplicate_timer_command_count',
+            'duplicateTimerCommandCount',
+            'start_timer_command_count_after_replay',
+            'startTimerCommandCountAfterReplay',
+        ]);
+
+        $failures = [];
+        $firedEpoch = self::timestampEpoch($firedAt);
+        $replayStartedEpoch = self::timestampEpoch($replayStartedAt);
+
+        if ($firedEpoch === null) {
+            $failures[] = [
+                'code' => 'missing_or_invalid_timer_fired_time',
+                'scenario_id' => $scenarioId,
+                'fired_at' => $firedAt,
+            ];
+        }
+
+        if ($replayStartedEpoch === null) {
+            $failures[] = [
+                'code' => 'missing_or_invalid_replay_started_time',
+                'scenario_id' => $scenarioId,
+                'replay_started_at' => $replayStartedAt,
+            ];
+        }
+
+        if ($firedEpoch !== null && $replayStartedEpoch !== null && $replayStartedEpoch < $firedEpoch) {
+            $failures[] = [
+                'code' => 'timer_replay_started_before_fire',
+                'scenario_id' => $scenarioId,
+                'fired_at' => $firedAt,
+                'replay_started_at' => $replayStartedAt,
+            ];
+        }
+
+        if ($replayedEventIds === []) {
+            $failures[] = [
+                'code' => 'missing_replayed_event_ids',
+                'scenario_id' => $scenarioId,
+            ];
+        }
+
+        if (! in_array('TimerFired', $replayedEventTypes, true)) {
+            $failures[] = [
+                'code' => 'replayed_history_missing_timer_fired',
+                'scenario_id' => $scenarioId,
+                'replayed_event_types' => $replayedEventTypes,
+            ];
+        }
+
+        if ($duplicateTimerCommands !== 0) {
+            $failures[] = [
+                'code' => 'duplicate_timer_commands_after_replay',
+                'scenario_id' => $scenarioId,
+                'expected_count' => 0,
+                'actual_count' => $duplicateTimerCommands,
             ];
         }
 

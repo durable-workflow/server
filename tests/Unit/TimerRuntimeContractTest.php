@@ -35,7 +35,7 @@ final class TimerRuntimeContractTest extends TestCase
             $manifest['required_scenarios'],
         );
         $this->assertSame(
-            'published_handoff_proves_normal_sleep_worker_restart_and_server_restart_while_sleeping_then_marks_remaining_timer_cells_coverage_gap',
+            'published_handoff_proves_normal_sleep_worker_restart_server_restart_and_replay_after_timer_fire_then_marks_remaining_timer_cells_coverage_gap',
             $manifest['host_runner_contract']['status'],
         );
         $this->assertTrue($manifest['host_runner_contract']['host_runner_implemented']);
@@ -408,6 +408,85 @@ final class TimerRuntimeContractTest extends TestCase
         }
     }
 
+    public function test_published_artifact_handoff_ingests_replay_after_timer_fire_runtime_evidence(): void
+    {
+        $repoRoot = dirname(__DIR__, 2);
+        $resultDir = sys_get_temp_dir().'/dw-timers-conformance-'.bin2hex(random_bytes(6));
+        mkdir($resultDir, 0777, true);
+
+        try {
+            $evidencePath = $resultDir.'/timer-evidence.json';
+            file_put_contents($evidencePath, json_encode([
+                'schema' => 'durable-workflow.v2.timer-runtime.published-artifact-host-evidence',
+                'generated_at' => '2026-06-24T10:00:12Z',
+                'evidence_source' => 'focused_published_server_timer_host_probe',
+                'execution_source' => 'published_server_container',
+                'local_product_source_checkouts_used' => false,
+                'scenario_results' => [
+                    [
+                        'scenario_id' => 'replay_after_timer_fire',
+                        'status' => 'pass',
+                        'classification' => null,
+                        'observed_outputs' => [
+                            'workflow_id' => 'timer-replay-after-fire',
+                            'run_id' => 'run-replay-after-fire',
+                            'timer_id' => 'timer-replay-after-fire-1',
+                            'fired_at' => '2026-06-24T10:00:10Z',
+                            'replay_started_at' => '2026-06-24T10:00:12Z',
+                            'replayed_event_ids' => [1, 2, 3, 4],
+                            'replayed_event_types' => [
+                                'WorkflowStarted',
+                                'TimerScheduled',
+                                'TimerFired',
+                            ],
+                            'duplicate_timer_commands' => 0,
+                            'timer_fire_count' => 1,
+                        ],
+                    ],
+                ],
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n");
+
+            $command = sprintf(
+                'DW_SERVER_IMAGE=%s DW_SERVER_VERSION=%s DW_CLI_VERSION=%s DW_PYTHON_SDK_VERSION=%s DW_WORKFLOW_PHP_VERSION=%s DW_WATERLINE_VERSION=%s DW_TIMERS_EVIDENCE_PATH=%s bash %s --result-dir %s 2>&1',
+                escapeshellarg('durableworkflow/server:0.2.495'),
+                escapeshellarg('0.2.495'),
+                escapeshellarg('0.1.82'),
+                escapeshellarg('0.4.90'),
+                escapeshellarg('2.0.0-alpha.223'),
+                escapeshellarg('2.0.0-alpha.111'),
+                escapeshellarg($evidencePath),
+                escapeshellarg($repoRoot.'/scripts/conformance/timers-published-artifacts.sh'),
+                escapeshellarg($resultDir),
+            );
+
+            exec($command, $output, $exitCode);
+
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+
+            $result = json_decode(
+                file_get_contents($resultDir.'/timer-runtime-result.json') ?: '',
+                true,
+                512,
+                JSON_THROW_ON_ERROR,
+            );
+            $replay = $result['scenario_results']['replay_after_timer_fire'];
+
+            $this->assertSame('non_passing', $result['outcome']);
+            $this->assertContains('replay_after_timer_fire', $result['proven_timer_cells']);
+            $this->assertNotContains('replay_after_timer_fire', $result['unproven_timer_cells']);
+            $this->assertSame('pass', $replay['status']);
+            $this->assertSame(0, $replay['observed_outputs']['duplicate_timer_commands']);
+            $this->assertSame([1, 2, 3, 4], $replay['observed_outputs']['replayed_event_ids']);
+            $this->assertArrayNotHasKey('replay_after_timer_fire', $result['finding_links']);
+
+            $evaluation = TimerRuntimeResultGate::evaluate($result);
+            $this->assertSame('non_passing', $evaluation['status']);
+            $this->assertSame([], $evaluation['gate_failures']);
+        } finally {
+            $this->removeDirectory($resultDir);
+        }
+    }
+
     public function test_published_artifact_handoff_routes_normal_sleep_failure_as_product_finding(): void
     {
         $repoRoot = dirname(__DIR__, 2);
@@ -657,6 +736,16 @@ final class TimerRuntimeContractTest extends TestCase
         $this->assertContains('concurrent_timer_fire_counts_cover_declared_timer_ids', $resultGate['pass_requires']);
         $this->assertContains('concurrent_timer_fire_counts_are_exactly_one', $resultGate['pass_requires']);
         $this->assertContains('normal_sleep_completion_completes_at_or_after_wake_up', $resultGate['pass_requires']);
+        $this->assertContains('replay_after_timer_fire_starts_at_or_after_fire', $resultGate['pass_requires']);
+        $this->assertContains('replay_after_timer_fire_replays_recorded_events', $resultGate['pass_requires']);
+        $this->assertContains(
+            'replayed_event_types_include_timer_fired',
+            $resultGate['semantic_evidence_policy']['replay_after_timer_fire'],
+        );
+        $this->assertContains(
+            'replay_after_timer_fire_does_not_schedule_duplicate_timer_commands',
+            $resultGate['pass_requires'],
+        );
         $this->assertContains('cancellation_occurs_before_recorded_wake_up', $resultGate['pass_requires']);
         $this->assertContains('cancelled_timer_does_not_fire_after_cancel', $resultGate['pass_requires']);
         $this->assertContains('operator_waiting_state_uses_recognized_public_surface', $resultGate['pass_requires']);
@@ -843,6 +932,51 @@ final class TimerRuntimeContractTest extends TestCase
 
         $this->assertSame('non_passing', $evaluation['status']);
         $this->assertNotEmpty($matchingFailures);
+    }
+
+    public function test_result_gate_rejects_replay_after_timer_fire_started_before_fire(): void
+    {
+        $result = $this->completePassingTimerResult();
+        $result['scenario_results']['replay_after_timer_fire']['observed_outputs']['replay_started_at'] =
+            '2026-06-24T10:00:09Z';
+
+        $evaluation = TimerRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('timer_replay_started_before_fire', array_column($evaluation['gate_failures'], 'code'));
+    }
+
+    public function test_result_gate_rejects_replay_after_timer_fire_duplicate_timer_commands(): void
+    {
+        $result = $this->completePassingTimerResult();
+        $result['scenario_results']['replay_after_timer_fire']['observed_outputs']['duplicate_timer_commands'] = 1;
+
+        $evaluation = TimerRuntimeResultGate::evaluate($result);
+
+        $matchingFailures = array_filter(
+            $evaluation['gate_failures'],
+            static fn (array $failure): bool => ($failure['code'] ?? null) === 'duplicate_timer_commands_after_replay'
+                && ($failure['scenario_id'] ?? null) === 'replay_after_timer_fire'
+                && ($failure['expected_count'] ?? null) === 0
+                && ($failure['actual_count'] ?? null) === 1,
+        );
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertNotEmpty($matchingFailures);
+    }
+
+    public function test_result_gate_rejects_replay_after_timer_fire_without_timer_fired_history(): void
+    {
+        $result = $this->completePassingTimerResult();
+        $result['scenario_results']['replay_after_timer_fire']['observed_outputs']['replayed_event_types'] = [
+            'WorkflowStarted',
+            'TimerScheduled',
+        ];
+
+        $evaluation = TimerRuntimeResultGate::evaluate($result);
+
+        $this->assertSame('non_passing', $evaluation['status']);
+        $this->assertContains('replayed_history_missing_timer_fired', array_column($evaluation['gate_failures'], 'code'));
     }
 
     public function test_result_gate_rejects_concurrent_timer_resume_order_that_does_not_match_wake_up_times(): void
@@ -1100,6 +1234,11 @@ final class TimerRuntimeContractTest extends TestCase
                         'fired_at' => '2026-06-24T10:00:10Z',
                         'replay_started_at' => '2026-06-24T10:00:12Z',
                         'replayed_event_ids' => [1, 2, 3],
+                        'replayed_event_types' => [
+                            'WorkflowStarted',
+                            'TimerScheduled',
+                            'TimerFired',
+                        ],
                         'duplicate_timer_commands' => 0,
                     ],
                 ],

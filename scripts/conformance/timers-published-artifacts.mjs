@@ -54,7 +54,7 @@ const FALLBACK_SCENARIOS = [
   {
     id: 'replay_after_timer_fire',
     description: 'Replay after a timer has fired is deterministic and does not schedule duplicate timers.',
-    required_evidence: ['workflow_id', 'timer_id', 'fired_at', 'replay_started_at', 'replayed_event_ids', 'duplicate_timer_commands'],
+    required_evidence: ['workflow_id', 'timer_id', 'fired_at', 'replay_started_at', 'replayed_event_ids', 'replayed_event_types', 'duplicate_timer_commands'],
     required_behavior: 'replay_after_timer_fire_is_deterministic_and_does_not_schedule_duplicate_timers',
   },
   {
